@@ -41,6 +41,7 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
 import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "../core/models.js";
@@ -734,68 +735,153 @@ export function doesUndoStepActivateHighRiskDevice(
   const dev = devices.find((d) => d.id === step.deviceId);
   if (!dev) return false;
   const facets = facetsById?.[dev.id] ?? [];
-  if (step.commands.some((cmd) => facetRestoreNeedsConfirmation(dev, cmd, facets, devices))) return true;
-  if (!ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices)) {
-    return false;
-  }
-  const snapKind = kindSnapshots?.get(step.deviceId);
-  if (snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
+  const primaryPowerRequiresConfirmation = ManualControlPolicy.requiresConfirmation(
+    { targetId: dev.id, operation: { kind: "power", isOn: true } },
+    devices,
+  );
   const coverRestoreNeedsConfirmation = (restoredOpen: boolean): boolean =>
     ManualControlPolicy.requiresConfirmation(
       { targetId: dev.id, operation: { kind: "power", isOn: restoredOpen } },
       devices,
     );
-  return step.commands.some((cmd) => {
+
+  let hasNonFacetCommand = false;
+  for (const cmd of step.commands) {
+    const facetVerdict = facetRestoreNeedsConfirmation(dev, cmd, facets, devices);
+    if (facetVerdict !== null) {
+      if (facetVerdict) return true;
+      continue;
+    }
+    hasNonFacetCommand = true;
+    if (!primaryPowerRequiresConfirmation) continue;
     switch (cmd.kind) {
       case "setSwitch":
-        if (dev.kind.kind === "plug" && dev.kind.childLockEntityId === cmd.entityId) return false;
-        if (dev.kind.kind === "appliance" && dev.kind.light?.entityId === cmd.entityId) return false;
-        return cmd.isOn;
+        if (cmd.isOn) return true;
+        break;
       case "setClimatePower":
-        return cmd.isOn;
+        if (cmd.isOn) return true;
+        break;
       case "setClimateMode":
-        return cmd.hvacMode.trim().toLowerCase() !== "off";
+        if (cmd.hvacMode.trim().toLowerCase() !== "off") return true;
+        break;
       case "setSelectOption":
-        if (dev.kind.kind === "camera" || dev.kind.kind === "fridge") return false;
+        if (dev.kind.kind === "camera" || dev.kind.kind === "fridge") break;
         if (dev.kind.kind === "cover") {
-          return coverRestoreNeedsConfirmation(cmd.option === dev.kind.openDescription);
+          if (coverRestoreNeedsConfirmation(cmd.option === dev.kind.openDescription)) return true;
+          break;
         }
-        return cmd.option.trim().toLowerCase() !== "off";
+        if (cmd.option.trim().toLowerCase() !== "off") return true;
+        break;
       case "setNumberValue":
-        return dev.kind.kind === "cover" && coverRestoreNeedsConfirmation(cmd.value > 0);
+        if (dev.kind.kind === "cover" && coverRestoreNeedsConfirmation(cmd.value > 0)) return true;
+        break;
       case "vacuumAction":
-        return cmd.action === "start";
+        if (cmd.action === "start") return true;
+        break;
       case "pressButton":
-        return dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true;
-      case "setMiotProperty":
-        // Backstop only: a matching facet row was judged above, so this catches the cover position
-        // restore an older snapshot can carry without one. A high-risk card with no row at all is
-        // already refused (or approved) by `facetRestoreNeedsConfirmation`; the direction rule is
-        // the same as the position write above.
-        return dev.kind.kind === "cover" && typeof cmd.value === "number" && coverRestoreNeedsConfirmation(cmd.value > 0);
+        if (dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true) return true;
+        break;
       default:
-        return false;
+        break;
     }
-  });
+  }
+
+  if (primaryPowerRequiresConfirmation && (hasNonFacetCommand || step.commands.length === 0)) {
+    const snapKind = kindSnapshots?.get(step.deviceId);
+    if (snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) return true;
+  }
+  return false;
 }
 
-/** The hazard a facet restore carries, judged by the table the original write used. */
+function facetControlForCommand(
+  cmd: DeviceCommand,
+  facets: readonly FacetControl[],
+): { readonly control: FacetControl; readonly value: unknown } | null {
+  switch (cmd.kind) {
+    case "setMiotProperty": {
+      const control = facets.find(
+        (item) =>
+          item.target?.kind === "property" &&
+          item.target.entityId === cmd.entityId &&
+          item.target.piid === cmd.piid,
+      );
+      return control ? { control, value: cmd.value } : null;
+    }
+    case "setSwitch": {
+      const control = facets.find(
+        (item) =>
+          item.target?.kind === "property" &&
+          (item.target.entityId === cmd.entityId || item.target.entityId === `${cmd.entityId}#power`),
+      );
+      return control ? { control, value: cmd.isOn } : null;
+    }
+    case "setSelectOption": {
+      const control = facets.find(
+        (item) =>
+          item.target?.kind === "property" &&
+          (item.target.entityId === cmd.entityId || item.target.entityId === `${cmd.entityId}#source`),
+      );
+      return control ? { control, value: cmd.option } : null;
+    }
+    case "setNumberValue": {
+      const control = facets.find(
+        (item) =>
+          item.target?.kind === "property" &&
+          (item.target.entityId === cmd.entityId || item.target.entityId === `${cmd.entityId}#position`),
+      );
+      return control ? { control, value: cmd.value } : null;
+    }
+    case "pressButton": {
+      const control = facets.find(
+        (item) => item.target?.kind === "action" && item.target.entityId === cmd.entityId,
+      );
+      return control ? { control, value: null } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/**
+ * The hazard a facet or auxiliary-switch restore carries, judged by the table the original write
+ * used. Returns `null` when `cmd` targets the card's own primary control rather than a facet or
+ * auxiliary channel.
+ */
 function facetRestoreNeedsConfirmation(
   dev: SmartDevice,
   cmd: DeviceCommand,
   facets: readonly FacetControl[],
   devices: readonly SmartDevice[],
-): boolean {
-  if (cmd.kind !== "setMiotProperty") return false;
-  const control = facets.find(
-    (item) =>
-      item.target?.kind === "property" &&
-      item.target.entityId === cmd.entityId &&
-      item.target.piid === cmd.piid,
-  );
-  if (control) return ManualControlPolicy.facetRequiresConfirmation(control, cmd.value, dev);
-  // No row explains this property: only the device-level hazard can speak.
-  return ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices);
+): boolean | null {
+  if (cmd.kind === "setSwitch") {
+    if (dev.kind.kind === "plug" && dev.kind.childLockEntityId === cmd.entityId) return false;
+    if (dev.kind.kind === "appliance" && dev.kind.light?.entityId === cmd.entityId) return false;
+    if (ManualControlPolicy.isPrimaryPowerEntity(dev, cmd.entityId)) return null;
+    const matched = facetControlForCommand(cmd, facets);
+    if (matched) return ManualControlPolicy.facetRequiresConfirmation(matched.control, matched.value, dev);
+    if (!cmd.isOn) return false;
+    // Auxiliary switch restore without a cached facet row still ignores the primary-power light mark.
+    return ManualControlPolicy.requiresConfirmation(
+      { targetId: dev.id, operation: { kind: "power", isOn: true } },
+      devices,
+      new Set(),
+      cmd.entityId,
+    );
+  }
+  const matched = facetControlForCommand(cmd, facets);
+  if (matched) return ManualControlPolicy.facetRequiresConfirmation(matched.control, matched.value, dev);
+  if (cmd.kind === "pressButton" && dev.kind.kind === "plug" && !ManualControlPolicy.isPrimaryPowerEntity(dev, cmd.entityId)) {
+    return true;
+  }
+  if (cmd.kind === "setMiotProperty") {
+    // No row explains this property: only the unmarked device-level hazard can speak.
+    return ManualControlPolicy.requiresConfirmation(
+      { targetId: dev.id, operation: { kind: "power", isOn: true } },
+      devices,
+      new Set(),
+    );
+  }
+  return null;
 }
 
 type HighRiskUndoRestoreDirection = "open" | "close" | "restore";
@@ -810,14 +896,21 @@ function classifyHighRiskUndoStepDirection(
   if (!dev) return "restore";
   const facets = facetsById?.[dev.id] ?? [];
   const directions = new Set<HighRiskUndoRestoreDirection>();
+  const primaryPowerRequiresConfirmation = ManualControlPolicy.requiresConfirmation(
+    { targetId: dev.id, operation: { kind: "power", isOn: true } },
+    devices,
+  );
   const coverRestoreNeedsConfirmation = (restoredOpen: boolean): boolean =>
     ManualControlPolicy.requiresConfirmation(
       { targetId: dev.id, operation: { kind: "power", isOn: restoredOpen } },
       devices,
     );
 
+  let hasNonFacetCommand = false;
   for (const cmd of step.commands) {
-    if (facetRestoreNeedsConfirmation(dev, cmd, facets, devices)) {
+    const facetVerdict = facetRestoreNeedsConfirmation(dev, cmd, facets, devices);
+    if (facetVerdict !== null) {
+      if (!facetVerdict) continue;
       if (cmd.kind === "setMiotProperty") {
         if (dev.kind.kind === "cover" && typeof cmd.value === "number") {
           directions.add(cmd.value > 0 ? "open" : "close");
@@ -855,13 +948,21 @@ function classifyHighRiskUndoStepDirection(
         } else {
           directions.add("restore");
         }
+      } else if (cmd.kind === "setSwitch") {
+        directions.add(cmd.isOn ? "open" : "close");
+      } else if (cmd.kind === "setSelectOption") {
+        directions.add(cmd.option.trim().toLowerCase() === "off" ? "close" : "open");
+      } else if (cmd.kind === "pressButton") {
+        directions.add("open");
+      } else if (cmd.kind === "setNumberValue") {
+        directions.add("restore");
       }
       continue;
     }
+    hasNonFacetCommand = true;
+    if (!primaryPowerRequiresConfirmation) continue;
     switch (cmd.kind) {
       case "setSwitch":
-        if (dev.kind.kind === "plug" && dev.kind.childLockEntityId === cmd.entityId) break;
-        if (dev.kind.kind === "appliance" && dev.kind.light?.entityId === cmd.entityId) break;
         if (cmd.isOn) directions.add("open");
         break;
       case "setClimatePower":
@@ -900,17 +1001,14 @@ function classifyHighRiskUndoStepDirection(
           directions.add("open");
         }
         break;
-      case "setMiotProperty":
-        if (dev.kind.kind === "cover" && typeof cmd.value === "number" && coverRestoreNeedsConfirmation(cmd.value > 0)) {
-          directions.add(cmd.value > 0 ? "open" : "close");
-        }
-        break;
     }
   }
 
-  const snapKind = kindSnapshots?.get(step.deviceId);
-  if (directions.size === 0 && snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) {
-    directions.add("open");
+  if (primaryPowerRequiresConfirmation && (hasNonFacetCommand || step.commands.length === 0)) {
+    const snapKind = kindSnapshots?.get(step.deviceId);
+    if (directions.size === 0 && snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) {
+      directions.add("open");
+    }
   }
   return mergeHighRiskUndoDirections(directions);
 }
@@ -1915,9 +2013,35 @@ interface UpperCardFactory {
   readonly render: (opts: { readonly stackCount: number; readonly showStackControls: boolean }) => string;
 }
 
+/**
+ * #104: returns the aliased wall-switch device when an active, current-revision primary-power
+ * `pendingHighRisk` confirmation should offer «这是灯，以后不再询问». Shared by Fluent `liveBanner`
+ * and Classic `reply:banner` so both themes apply identical eligibility rules.
+ */
+export function primaryPowerSwitchLightMarkDevice(
+  host: MenuMijiaWindowsApp,
+  nowMs = Date.now(),
+): SmartDevice | null {
+  const armed = host.pendingHighRisk;
+  if (
+    !armed ||
+    !armed.primaryPower ||
+    armed.expiresAtMs <= nowMs ||
+    armed.sourceRevision !== host.sourceRevision
+  ) {
+    return null;
+  }
+  const prefs = host.layout ?? host.settings?.layout;
+  const aliased = prefs ? withAliases(prefs, host.devices) : host.devices;
+  const device = aliased.find((d) => d.id === armed.deviceId);
+  if (!device || isSwitchMarkedAsLight(device.id)) return null;
+  return ManualControlPolicy.wallSwitchMayControlLight(device) ? device : null;
+}
+
 /** Wall-switch rename guidance under a confirmation, kept when the reply merges into the undo card (#104). */
-function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null): string {
-  return reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
+function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null, overrideHint?: string | null): string {
+  const text = overrideHint ?? reply?.hint;
+  return text ? `<p class="cc-feedback-hint">${host.escapeHtml(text)}</p>` : "";
 }
 
 function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperCardFactory[] {
@@ -1997,9 +2121,20 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
 
   if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo && !replyConsumedByArmedAuto) {
     const reply = host.replyBanner;
-    const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
-    const hint = feedbackHint(host, reply);
-    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
+    const hasActiveHighRisk = host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs;
+    const isDismissible = !hasActiveHighRisk;
+    const markDevice = primaryPowerSwitchLightMarkDevice(host, nowMs);
+    const markPill = markDevice
+      ? `<button class="cc-inline-pill" data-mark-switch-light="${host.escapeHtml(markDevice.id)}">${t("这是灯，以后不再询问")}</button>`
+      : "";
+    const hint = feedbackHint(
+      host,
+      reply,
+      markDevice ? ManualControlPolicy.wallSwitchMarkPromptHint(markDevice) : undefined,
+    );
+    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
+    if (hasActiveHighRisk) factories.unshift(replyFactory);
+    else factories.push(replyFactory);
   }
   if (host.pendingSuggestions.length > 0) {
     factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));

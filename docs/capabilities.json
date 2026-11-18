@@ -261,6 +261,13 @@
       "windows": "supported"
     },
     {
+      "id": "switch-light-mark",
+      "en": "Wall Switch Marked as a Light",
+      "zh": "墙壁开关标记为灯",
+      "macos": "supported",
+      "windows": "supported"
+    },
+    {
       "id": "code-signing",
       "en": "Code Signing & Integrity",
       "zh": "安装签名与更新机制",
