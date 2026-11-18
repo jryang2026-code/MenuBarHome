@@ -7,7 +7,14 @@ import Observation
 extension HomeStore {
     public var assistantConfig: AssistantConfig {
         get { AssistantConfig.load(from: userDefaults, vault: credentialVault) }
-        set { newValue.save(to: userDefaults, vault: credentialVault) }
+        set { _ = newValue.save(to: userDefaults, vault: credentialVault) }
+    }
+
+    /// Persists an AI configuration and reports whether the Keychain accepted the key (#7). The Settings
+    /// and onboarding forms use this instead of the silent setter so a refused write never looks saved.
+    @discardableResult
+    public func saveAssistantConfig(_ config: AssistantConfig) -> Bool {
+        config.save(to: userDefaults, vault: credentialVault)
     }
 
     public var userHabitMemory: UserHabitMemory {
@@ -18,7 +25,7 @@ extension HomeStore {
     public func presentAssistantBar(startVoice: Bool = false) {
         isShowingAssistantBar = true
         refreshProactiveSuggestionCacheIfStale()
-        if startVoice {
+        if startVoice && enableVoiceInput {
             assistantVoiceRequest &+= 1
         } else {
             assistantFocusRequest &+= 1
@@ -229,7 +236,15 @@ extension HomeStore {
 
     /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
-        assistantConfig = draftConfig
+        guard saveAssistantConfig(draftConfig) else {
+            return (
+                false,
+                L10n.tr(
+                    "无法写入钥匙串，请授权钥匙串访问后重试",
+                    "Could not save to Keychain; allow Keychain access and try again"
+                )
+            )
+        }
         guard homeBackend != .demo else {
             return (false, L10n.tr("演示模式不联网，请切换数据源后测试连接", "Demo mode is offline; switch the data source to test this connection"))
         }
@@ -518,15 +533,25 @@ extension HomeStore {
             setAssistantState(.failed(L10n.tr("没有可以撤销的操作", "Nothing to undo")))
             return
         }
+        // A locked Mac refuses the restore itself, not just the command that made the change: the
+        // entry stays recorded so the same 撤销 works after unlocking (#143).
+        if rejectControlWhileLocked() {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return
+        }
         let confirmation = confirmUndoTargets(last.restore, previousDevices: last.previous)
         if confirmation.abortUndo {
             setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
             return
         }
+        let savedBanner = undoBanner?.actionId == last.actionId ? undoBanner : nil
         lastAssistantUndo = nil
-        undoTimerTask?.cancel()
-        undoBanner = nil
-        let undoRevision = undoStateRevision
+        if savedBanner != nil {
+            undoTimerTask?.cancel()
+            undoBanner = nil
+        }
+        let capturedAssistantRevision = assistantUndoRevision
+        let capturedBannerRevision = bannerUndoRevision
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
@@ -551,14 +576,50 @@ extension HomeStore {
             setAssistantState(.done(L10n.tr("已撤销：\(what)", "Undone: \(what)")))
             return
         }
-        if undoStateRevision == undoRevision {
-            lastAssistantUndo = (
-                reply: last.reply,
-                restore: outcome.failedCommands,
-                previous: last.previous.filter { outcome.failedDeviceIds.contains($0.id) },
-                at: assistantNow(),
-                habitReceipt: outcome.habitReceipt
-            )
+        let lockedBeforeAnySend = outcome.blockedByScreenLock && !outcome.didSendAnyCommand
+        if assistantUndoRevision == capturedAssistantRevision {
+            if lockedBeforeAnySend {
+                lastAssistantUndo = last
+            } else {
+                lastAssistantUndo = AssistantUndoEntry(
+                    actionId: last.actionId,
+                    reply: last.reply,
+                    restore: outcome.failedCommands,
+                    previous: last.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                    at: assistantNow(),
+                    habitReceipt: outcome.habitReceipt
+                )
+            }
+        }
+        if let savedBanner, bannerUndoRevision == capturedBannerRevision {
+            if lockedBeforeAnySend {
+                scheduleUndoBanner(
+                    actionId: savedBanner.actionId,
+                    title: savedBanner.title,
+                    restoreCommands: savedBanner.restoreCommands,
+                    previousDevices: savedBanner.previousDevices,
+                    deviceCount: savedBanner.deviceCount,
+                    habitReceipt: savedBanner.habitReceipt,
+                    duration: savedBanner.duration,
+                    isAllOff: savedBanner.isAllOff,
+                    attemptedDeviceIds: savedBanner.attemptedDeviceIds
+                )
+            } else {
+                scheduleUndoBanner(
+                    actionId: savedBanner.actionId,
+                    title: savedBanner.title,
+                    restoreCommands: outcome.failedCommands,
+                    previousDevices: savedBanner.previousDevices.filter { outcome.failedDeviceIds.contains($0.id) },
+                    deviceCount: outcome.failedDeviceIds.count,
+                    habitReceipt: outcome.habitReceipt,
+                    duration: savedBanner.duration,
+                    isAllOff: savedBanner.isAllOff
+                )
+            }
+        }
+        if outcome.blockedByScreenLock {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return
         }
         let sep = L10n.isEnglish ? ", " : "、"
         let list = outcome.failedNames.joined(separator: sep)
@@ -964,27 +1025,29 @@ extension HomeStore {
         }
 
         if !appliedDeviceIds.isEmpty {
-            lastAssistantUndo = (
+            let actionId = UUID()
+            lastAssistantUndo = AssistantUndoEntry(
+                actionId: actionId,
                 reply: plan.reply,
                 restore: restoreCommands.reversed(),
                 previous: previousSnapshot.filter { appliedDeviceIds.contains($0.id) },
                 at: Date(),
                 habitReceipt: habitReceipt
             )
-        }
-
-        // Automation rules always offer undo, even for one device, and keep the banner long enough
-        // to survive a lock/sleep round trip (#59). GrokBall pills promise undo too (#114).
-        // The panel keeps its 2+ device rule (#53).
-        if !appliedDeviceIds.isEmpty, appliedDeviceIds.count > 1 || origin == .automation || offersUndoBanner {
-            scheduleUndoBanner(
-                title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
-                restoreCommands: restoreCommands.reversed(),
-                previousDevices: previousSnapshot,
-                deviceCount: appliedDeviceIds.count,
-                habitReceipt: habitReceipt,
-                duration: origin == .automation ? AutomationPolicy.undoWindow : nil
-            )
+            // Automation rules always offer undo, even for one device, and keep the banner long enough
+            // to survive a lock/sleep round trip (#59). GrokBall pills promise undo too (#114).
+            // The panel keeps its 2+ device rule (#53).
+            if appliedDeviceIds.count > 1 || origin == .automation || offersUndoBanner {
+                scheduleUndoBanner(
+                    actionId: actionId,
+                    title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
+                    restoreCommands: restoreCommands.reversed(),
+                    previousDevices: previousSnapshot,
+                    deviceCount: appliedDeviceIds.count,
+                    habitReceipt: habitReceipt,
+                    duration: origin == .automation ? AutomationPolicy.undoWindow : nil
+                )
+            }
         }
 
         if !failedNames.isEmpty {

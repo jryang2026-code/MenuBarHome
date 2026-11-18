@@ -36,7 +36,7 @@ import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
-import { shouldKeepPopoverPinned } from "./speechGuard.js";
+import { setVoiceInputEnabled, shouldKeepPopoverPinned } from "./speechGuard.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -518,6 +518,16 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
     host.root.querySelector<HTMLInputElement>("#settings-quick-actions")?.addEventListener("change", (e) => {
       host.settings.showQuickActionsBar = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
+      host.saveSettings();
+      host.render();
+    });
+
+    host.root.querySelector<HTMLInputElement>("#settings-voice-input")?.addEventListener("change", (e) => {
+      setVoiceInputEnabled(host, (e.target as HTMLInputElement).checked, {
+        persistSettings: false,
+        render: false,
+      });
       syncSettingsSaveHint(host, "auto-saved");
       host.saveSettings();
       host.render();

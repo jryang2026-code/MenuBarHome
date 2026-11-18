@@ -546,15 +546,16 @@ function keepEditingSettings(host: SettingsEventsHost): boolean {
   return true;
 }
 
-function requestCloseSettingsSheet(host: SettingsEventsHost): void {
+export function requestCloseSettingsSheet(host: SettingsEventsHost): boolean {
   if (hasUnsavedSettingsChanges(host)) {
     const unsavedBar = settingsUnsavedConfirm(host);
     if (unsavedBar) {
       unsavedBar.hidden = false;
-      return;
+      return false;
     }
   }
   closeSettingsSheetImmediate(host);
+  return true;
 }
 
 export function handleSettingsSheetEscape(host: SettingsEventsHost): void {
@@ -769,7 +770,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     box.addEventListener("change", () => {
       const id = box.dataset.alloffDevice ?? "";
       const device = host.devices.find((d) => d.id === id);
-      if (!device) return;
+      if (!device || device.kind.kind === "cover") return;
       if (box.checked === joinsAllOffByDefault(device)) {
         delete host.settings.allOffOverrides[id];
       } else {

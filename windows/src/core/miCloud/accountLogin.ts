@@ -119,7 +119,9 @@ export class MiAccountLogin {
       ssecurity: scanned.ssecurity,
       serviceToken: cookie.token,
       passToken: scanned.passToken,
-      region: this.region,
+      // The login response's `location` proves the account's data centre; a hand-picked region
+      // would keep sending a cross-region session to an API that rejects it (#9).
+      region: regionCodeFromLoginLocation(scanned.location) ?? this.region,
       ...(cookie.expiresAt !== undefined ? { expiresAt: cookie.expiresAt } : {}),
     };
   }
@@ -189,6 +191,9 @@ export class MiAccountLogin {
   }
 
   private async fetchServiceToken(initialLocation: string): Promise<{ token: string; expiresAt?: number }> {
+    if (!isTrustedXiaomiLoginRedirect(initialLocation)) {
+      throw new MiCloudError("badResponse", t("非小米登录跳转地址"));
+    }
     let url = initialLocation;
     for (let i = 0; i < 5; i++) {
       const resp = await this.transport({
@@ -222,6 +227,57 @@ export class MiAccountLogin {
     }
     throw new MiCloudError("badResponse", t("登录成功但未拿到 serviceToken，请重试"));
   }
+}
+
+const REGION_BY_DATA_CENTER: Readonly<Record<string, string>> = {
+  china: "cn",
+  europe: "de",
+  india: "i2",
+  russia: "ru",
+  singapore: "sg",
+  america: "us",
+  "north america": "us",
+  "united states": "us",
+  usa: "us",
+};
+
+/** Only the region codes this app models are accepted; any other country code is ambiguous. */
+const REGION_BY_COUNTRY_CODE: Readonly<Record<string, string>> = {
+  CN: "cn",
+  DE: "de",
+  IN: "i2",
+  RU: "ru",
+  SG: "sg",
+  US: "us",
+};
+
+/**
+ * Infers the account's cloud region from the QR login response's `location` URL (#9).
+ * Xiaomi puts the data centre in `p_idc` and the country in `p_ur`; unknown hosts or
+ * unmapped values return `null`, so the caller keeps the region the user picked.
+ */
+export function regionCodeFromLoginLocation(rawUrl: string): string | null {
+  if (!isTrustedXiaomiLoginRedirect(rawUrl)) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return null;
+  }
+  const query = new Map<string, string>();
+  for (const [key, value] of parsed.searchParams.entries()) {
+    const trimmed = value.trim();
+    if (trimmed !== "") query.set(key.toLowerCase(), trimmed);
+  }
+  const idc = query.get("p_idc")?.toLowerCase();
+  if (idc !== undefined && REGION_BY_DATA_CENTER[idc] !== undefined) {
+    return REGION_BY_DATA_CENTER[idc]!;
+  }
+  const country = query.get("p_ur")?.toUpperCase();
+  if (country !== undefined && REGION_BY_COUNTRY_CODE[country] !== undefined) {
+    return REGION_BY_COUNTRY_CODE[country]!;
+  }
+  return null;
 }
 
 export function isTrustedXiaomiLoginRedirect(rawUrl: string): boolean {

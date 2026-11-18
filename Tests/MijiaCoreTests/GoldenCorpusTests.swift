@@ -1784,15 +1784,17 @@ struct GoldenCorpusTests {
     private struct ConfirmationCorpus: Decodable {
         let rows: [ConfirmationRow]
         let decisionRows: [ConfirmationDecisionRow]
+        let facetRows: [ConfirmationFacetRow]
 
         private enum CodingKeys: String, CodingKey {
-            case rows, decisionRows
+            case rows, decisionRows, facetRows
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             rows = try container.decode([ConfirmationRow].self, forKey: .rows)
             decisionRows = try container.decodeIfPresent([ConfirmationDecisionRow].self, forKey: .decisionRows) ?? []
+            facetRows = try container.decodeIfPresent([ConfirmationFacetRow].self, forKey: .facetRows) ?? []
         }
     }
 
@@ -1805,6 +1807,42 @@ struct GoldenCorpusTests {
         let confidence: Double
         let askWhenUnsure: Bool
         let expectAutoRun: Bool
+    }
+
+    private struct ConfirmationFacetControl: Decodable {
+        let kind: MiotFacetKind
+        let name: String
+        let serviceName: String
+        let value: JSONValue?
+        let writesByDefault: Bool
+
+        func toFacetControl(deviceId: String) -> FacetControl {
+            let target: FacetTarget = kind == .button
+                ? .action(entityId: "miot:\(deviceId):a2")
+                : .property(entityId: "miot:\(deviceId):2", piid: 5)
+            return FacetControl(
+                id: "2.5",
+                kind: kind,
+                name: name,
+                title: nil,
+                serviceName: serviceName,
+                value: value,
+                isWritable: true,
+                writesByDefault: writesByDefault,
+                isHighValue: true,
+                target: target
+            )
+        }
+    }
+
+    /// A row for `ManualControlPolicy.facetRequiresConfirmation`, keeping facet-level confirmation
+    /// rules (such as unknown starting temperatures on water heaters) in cross-platform lockstep.
+    private struct ConfirmationFacetRow: Decodable {
+        let id: String
+        let device: ConfirmationDevice
+        let facet: ConfirmationFacetControl
+        let value: JSONValue?
+        let confirm: Bool
     }
 
     private struct ConfirmationRow: Decodable {
@@ -1850,6 +1888,9 @@ struct GoldenCorpusTests {
             case vacuum
             case camera
             case sensor
+            /// Cover subtype string; an unknown value falls back to `.windowOpener` like the corpus decoder.
+            case cover(String)
+            case appliance(heats: Bool, targetTemperature: Double?)
         }
 
         let id: String
@@ -1858,7 +1899,7 @@ struct GoldenCorpusTests {
         let kind: Kind
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, model, kind, targetTemperature
+            case id, name, model, kind, targetTemperature, subtype, heats
         }
 
         init(from decoder: Decoder) throws {
@@ -1868,6 +1909,7 @@ struct GoldenCorpusTests {
             model = try container.decode(String.self, forKey: .model)
             let kindName = try container.decode(String.self, forKey: .kind)
             let hasSetpoint = container.contains(.targetTemperature)
+            let hasHeats = container.contains(.heats)
             switch kindName {
             case "climate":
                 guard hasSetpoint else {
@@ -1877,13 +1919,55 @@ struct GoldenCorpusTests {
                         debugDescription: "climate device \(id) must include targetTemperature"
                     )
                 }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "climate device \(id) must omit heats"
+                    )
+                }
                 kind = .climate(try container.decode(Double.self, forKey: .targetTemperature))
+            case "appliance":
+                guard hasSetpoint else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .kind,
+                        in: container,
+                        debugDescription: "appliance device \(id) must include targetTemperature (or null)"
+                    )
+                }
+                kind = .appliance(
+                    heats: try container.decode(Bool.self, forKey: .heats),
+                    targetTemperature: try container.decodeIfPresent(Double.self, forKey: .targetTemperature)
+                )
+            case "cover":
+                guard !hasSetpoint else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .targetTemperature,
+                        in: container,
+                        debugDescription: "cover device \(id) must omit targetTemperature"
+                    )
+                }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "cover device \(id) must omit heats"
+                    )
+                }
+                kind = .cover(try container.decode(String.self, forKey: .subtype))
             case "light", "fan", "plug", "vacuum", "camera", "sensor":
                 guard !hasSetpoint else {
                     throw DecodingError.dataCorruptedError(
                         forKey: .targetTemperature,
                         in: container,
                         debugDescription: "\(kindName) device \(id) must omit targetTemperature"
+                    )
+                }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "\(kindName) device \(id) must omit heats"
                     )
                 }
                 switch kindName {
@@ -1961,6 +2045,28 @@ struct GoldenCorpusTests {
                 deviceKind = .camera(CameraSpec(entityId: "e", isOn: false))
             case .sensor:
                 deviceKind = .sensor(SensorSpec())
+            case .cover(let subtype):
+                deviceKind = .cover(CoverSpec(
+                    entityId: "e",
+                    subtype: CoverSubtype(rawValue: subtype) ?? .windowOpener,
+                    positionPercent: 0,
+                    positionWritable: true,
+                    openDescription: "Open",
+                    closeDescription: "Close",
+                    pauseDescription: "Pause"
+                ))
+            case .appliance(let heats, let setpoint):
+                deviceKind = .appliance(ApplianceSpec(
+                    entityId: "miot:\(id):2",
+                    isOn: true,
+                    powerPresent: true,
+                    powerWritable: true,
+                    targetTemperature: setpoint,
+                    minTemp: 0,
+                    maxTemp: 80,
+                    temperatureWritable: setpoint != nil,
+                    heats: heats
+                ))
             }
             return SmartDevice(
                 id: id,
@@ -2028,10 +2134,12 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 84)
+        #expect(corpus.rows.count == 90)
         #expect(corpus.decisionRows.count == 4)
+        #expect(corpus.facetRows.count == 12)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)
+        #expect(Set(corpus.facetRows.map(\.id)).count == corpus.facetRows.count)
         for row in corpus.rows {
             if let device = row.device {
                 #expect(device.id == row.id, "\(row.id)")
@@ -2062,6 +2170,16 @@ struct GoldenCorpusTests {
                 #expect(decision.suggestions.count == 1, "\(row.id)")
             }
         }
+
+        for row in corpus.facetRows {
+            #expect(row.device.id == row.id, "\(row.id)")
+            let device = row.device.toSmartDevice()
+            let facet = row.facet.toFacetControl(deviceId: device.id)
+            #expect(
+                ManualControlPolicy.facetRequiresConfirmation(facet, value: row.value, for: device) == row.confirm,
+                "\(row.id)"
+            )
+        }
     }
 
     @Test("Scene-name collisions across Traditional and Simplified Chinese preserve exact script or reject ambiguity")
@@ -2078,5 +2196,147 @@ struct GoldenCorpusTests {
         let dupB = HomeScene(id: "scene_b", name: "晚間場景", entityId: "scene.b")
         #expect(LocalIntentParser.parse("执行晚間", devices: [], scenes: [dupA, dupB]) == nil)
         #expect(LocalIntentParser.parse("执行晚间", devices: [], scenes: [dupA, dupB]) == nil)
+    }
+
+    private struct CapabilitySelectionCorpus: Decodable {
+        struct Catalog: Decodable {
+            let devices: [CapabilityIndexedDevice], scenes: [SceneReference], deviceGroups: [DeviceGroupReference]
+        }
+        struct InvalidDeviceCase: Decodable {
+            let id: String, rawDevice: [String: JSONValue]
+        }
+        struct UpgradeCase: Decodable {
+            let id: String, evidence: CapabilityInstallEvidence, expectedMode: CapabilityInstallResolutionMode
+            let expectedPersistMigrationComplete: Bool, expectedRetryDiagnostic: String?, expectedSelection: CapabilitySelection
+        }
+        struct DeactivationCase: Decodable {
+            let id: String, current: CapabilitySelection, proposed: CapabilitySelection
+            let safetyPolicy: SafetyRetentionPolicy, references: CapabilityReferenceGraph
+            let expectedDisposition: DeactivationDisposition, expectedCascadedCapabilities: [CapabilityID]
+            let expectedItemsToPause: [AffectedReferenceItem], expectedSoftNotices: [CapabilitySoftNotice]
+            let expectedBlockingReasons: [CapabilityBlockingReason], expectedPreservedPreferenceDeviceIds: [String]
+            let expectedPartition: DeviceSetPartition, expectLeakAlertWhenSensorTriggers: Bool?
+        }
+        struct WriteGateCase: Decodable {
+            let id: String, targetKind: ControlTargetKind, targetId: String, candidateIds: [String]
+            let expectedGeneration: Int?, currentGeneration: Int?, selection: CapabilitySelection
+            let expectedAllowed: Bool, expectedWriteCount: Int, expectedRejectionCode: String?
+            let expectedZhMessage: String?, expectedEnMessage: String?
+            let expectedMayControlHiddenDevices: Bool, expectConfirmationFalseOnCroppedSet: Bool
+        }
+        struct PlanGateCase: Decodable {
+            struct Target: Decodable { let kind: ControlTargetKind, id: String }
+            let id: String, targets: [Target], selection: CapabilitySelection
+            let expectedAllowed: Bool, expectedWriteCount: Int, expectedRejectedTargetId: String?, expectedRejectionCode: String?
+        }
+        struct ResumeCase: Decodable {
+            let id: String, timer: TimerReference, fireAtEpochSeconds: Int, nowEpochSeconds: Int
+            let activeConnectionScopes: [String], selection: CapabilitySelection, expectedDisposition: PausedTimerResumeDisposition
+        }
+        let version: Int, allCategories: [DeviceCategoryID], allFeatures: [FeatureID]
+        let catalog: Catalog, invalidDeviceCases: [InvalidDeviceCase], upgradeCases: [UpgradeCase], deactivationCases: [DeactivationCase]
+        let writeGateCases: [WriteGateCase], planGateCases: [PlanGateCase], pausedTimerResumeCases: [ResumeCase]
+    }
+
+    @Test("Shared capability selection and reference verdicts match capability_selection_golden.json")
+    func capabilitySelectionGoldenCorpus() throws {
+        let manifestURL = try Self.locateGoldenFixture("Shared/capability-manifest.json")
+        let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/capability_selection_golden.json")
+        let manifest = try CapabilityManifest.parse(from: Data(contentsOf: manifestURL))
+        let corpus = try JSONDecoder().decode(CapabilitySelectionCorpus.self, from: Data(contentsOf: fixtureURL))
+        #expect(corpus.version == 1)
+
+        let manifestCategories = manifest.entries.compactMap { entry -> DeviceCategoryID? in
+            if case .deviceCategory(let cat) = entry.id { return cat }
+            return nil
+        }.sorted { $0.rawValue < $1.rawValue }
+        let manifestFeatures = manifest.entries.compactMap { entry -> FeatureID? in
+            if case .feature(let feat) = entry.id { return feat }
+            return nil
+        }.sorted { $0.rawValue < $1.rawValue }
+        #expect(corpus.allCategories == manifestCategories)
+        #expect(Set(corpus.allCategories) == Set(DeviceCategoryID.allCases))
+        #expect(corpus.allFeatures == manifestFeatures)
+        #expect(Set(corpus.allFeatures) == Set(FeatureID.allCases))
+
+        for inv in corpus.invalidDeviceCases {
+            let rawData = try JSONEncoder().encode(inv.rawDevice)
+            #expect(throws: (any Error).self, "\(inv.id)") {
+                _ = try JSONDecoder().decode(CapabilityIndexedDevice.self, from: rawData)
+            }
+        }
+
+        for c in corpus.upgradeCases {
+            let actual = CapabilityReferenceEngine.resolveInstallSelection(evidence: c.evidence, manifest: manifest)
+            #expect(actual.mode == c.expectedMode, "\(c.id)")
+            #expect(actual.persistMigrationComplete == c.expectedPersistMigrationComplete, "\(c.id)")
+            #expect(actual.retryDiagnostic == c.expectedRetryDiagnostic, "\(c.id)")
+            #expect(actual.selection == c.expectedSelection, "\(c.id)")
+        }
+
+        let leakSmartDevice = SmartDevice(
+            id: "sensor.kitchen_leak", name: "厨房水浸传感器", roomId: "kitchen", roomName: "厨房",
+            model: "lumi.sensor_wleak.aq1", isOnline: true,
+            kind: .sensor(SensorSpec(observations: [SensorObservation(sourceId: "105.2.1", kind: .leak, alarming: true)]))
+        )
+        for c in corpus.deactivationCases {
+            let actual = CapabilityReferenceEngine.evaluateDeactivation(
+                current: c.current, proposed: c.proposed, manifest: manifest,
+                devices: corpus.catalog.devices, safetyPolicy: c.safetyPolicy, references: c.references
+            )
+            #expect(actual.disposition == c.expectedDisposition, "\(c.id)")
+            #expect(actual.cascadedCapabilities == c.expectedCascadedCapabilities, "\(c.id)")
+            #expect(actual.itemsToPause == c.expectedItemsToPause, "\(c.id)")
+            #expect(actual.softNotices == c.expectedSoftNotices, "\(c.id)")
+            #expect(actual.blockingReasons == c.expectedBlockingReasons, "\(c.id)")
+            #expect(actual.preservedPreferenceDeviceIds == c.expectedPreservedPreferenceDeviceIds, "\(c.id)")
+            #expect(actual.partition == c.expectedPartition, "\(c.id)")
+            if let expectLeak = c.expectLeakAlertWhenSensorTriggers {
+                let evalDevices = actual.partition.safetyEvaluationDeviceIds.contains(leakSmartDevice.id) ? [leakSmartDevice] : []
+                let policy = SensorAlertPolicy(enabled: [.leak: c.safetyPolicy.enabledSignals.contains(.leak)], onlyWhenAway: false, includesAway: true)
+                let alerts = SensorAlerts.evaluate(devices: evalDevices, ledger: [:], now: Date(timeIntervalSince1970: 1_700_000_000), calendar: Calendar(identifier: .gregorian), policy: policy).alerts
+                #expect((!alerts.isEmpty) == expectLeak, "\(c.id)")
+            }
+        }
+
+        for c in corpus.writeGateCases {
+            let v = CapabilityReferenceEngine.evaluateControlTargetGate(
+                targetKind: c.targetKind, targetId: c.targetId, candidateIds: c.candidateIds,
+                expectedGeneration: c.expectedGeneration, currentGeneration: c.currentGeneration,
+                selection: c.selection, devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+            )
+            #expect(v.allowed == c.expectedAllowed, "\(c.id)")
+            #expect(v.writeCount == c.expectedWriteCount, "\(c.id)")
+            #expect(v.rejectionReason?.code == c.expectedRejectionCode, "\(c.id)")
+            #expect(v.mayControlHiddenDevices == c.expectedMayControlHiddenDevices, "\(c.id)")
+            let zh = L10n.$overrideLanguage.withValue(.zhHans) { v.rejectionReason?.userMessage }
+            let en = L10n.$overrideLanguage.withValue(.en) { v.rejectionReason?.userMessage }
+            #expect(zh == c.expectedZhMessage, "\(c.id)")
+            #expect(en == c.expectedEnMessage, "\(c.id)")
+            if c.expectConfirmationFalseOnCroppedSet {
+                let intent = DeviceIntent(targetId: c.targetId, operation: .power(true))
+                #expect(ModelActionPolicy.needsConfirmation(intent, devices: []) == false, "\(c.id)")
+            }
+        }
+
+        for c in corpus.planGateCases {
+            let v = CapabilityReferenceEngine.evaluatePlanTargetsGate(
+                targets: c.targets.map { ($0.kind, $0.id) },
+                selection: c.selection, devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+            )
+            #expect(v.allowed == c.expectedAllowed, "\(c.id)")
+            #expect(v.writeCount == c.expectedWriteCount, "\(c.id)")
+            #expect(v.rejectedTargetId == c.expectedRejectedTargetId, "\(c.id)")
+            #expect(v.rejectionReason?.code == c.expectedRejectionCode, "\(c.id)")
+        }
+
+        for c in corpus.pausedTimerResumeCases {
+            let d = CapabilityReferenceEngine.revalidatePausedTimer(
+                timer: c.timer, fireAtEpochSeconds: c.fireAtEpochSeconds, nowEpochSeconds: c.nowEpochSeconds,
+                activeConnectionScopes: Set(c.activeConnectionScopes), selection: c.selection,
+                devices: corpus.catalog.devices, scenes: corpus.catalog.scenes, deviceGroups: corpus.catalog.deviceGroups
+            )
+            #expect(d == c.expectedDisposition, "\(c.id)")
+        }
     }
 }

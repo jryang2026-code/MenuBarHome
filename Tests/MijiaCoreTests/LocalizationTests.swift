@@ -296,6 +296,37 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Traditional Chinese voice input toggle and descriptions use the shipped resource table")
+    func traditionalVoiceInputToggle() {
+        let toggleCaptionZh = "开启后，面板顶部显示麦克风按钮，也能按 V 或长按菜单栏图标、全局快捷键说话。关闭后隐藏麦克风按钮，也不会启动语音识别。"
+        let toggleCaptionEn = "When on, the panel shows the microphone button and lets you speak by pressing V or holding the menu bar icon or global shortcut. When off, the microphone button is hidden and voice recognition never starts."
+
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(L10n.tr("语音输入", "Voice Input") == "語音輸入")
+            #expect(L10n.tr(toggleCaptionZh, toggleCaptionEn) == "開啟後，面板頂部顯示麥克風按鈕，也能按 V 或長按選單欄圖示、全域快捷鍵說話。關閉後隱藏麥克風按鈕，也不會啟動語音識別。")
+            #expect(L10n.tr("启用全局快捷键 ⌥M（短按面板，长按语音）", "Global shortcut ⌥M (tap for dashboard, hold to speak)") == "啟用全域性快捷鍵 ⌥M（短按面板，長按語音）")
+            #expect(L10n.tr("启用全局快捷键 ⌥M（打开/收起面板）", "Global shortcut ⌥M (open or close dashboard)") == "啟用全域性快捷鍵 ⌥M（開啟/收起面板）")
+            #expect(L10n.tr("搜索设备，或直接说一句话", "Search devices, or say a command") == "搜尋裝置，或直接說一句話")
+            #expect(L10n.tr("搜索设备，或输入一句话", "Search devices, or type a command") == "搜尋裝置，或輸入一句話")
+            #expect(L10n.tr("轻点展开或收起建议，拖动调整位置，长按开始语音输入", "Click to toggle suggestions, drag to reposition, or hold to start voice input") == "輕點展開或收起建議，拖動調整位置，長按開始語音輸入")
+            #expect(L10n.tr("轻点展开或收起建议，拖动调整位置", "Click to toggle suggestions or drag to reposition") == "輕點展開或收起建議，拖動調整位置")
+            #expect(L10n.tr("轻点推荐 · 拖动移位 · 长按说话", "Click for suggestions · Drag to move · Hold to speak") == "輕點推薦 · 拖動移位 · 長按說話")
+            #expect(L10n.tr("轻点推荐 · 拖动移位", "Click for suggestions · Drag to move") == "輕點推薦 · 拖動移位")
+        }
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(L10n.tr("语音输入", "Voice Input") == "语音输入")
+            #expect(L10n.tr(toggleCaptionZh, toggleCaptionEn) == toggleCaptionZh)
+            #expect(L10n.tr("启用全局快捷键 ⌥M（打开/收起面板）", "Global shortcut ⌥M (open or close dashboard)") == "启用全局快捷键 ⌥M（打开/收起面板）")
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(L10n.tr("语音输入", "Voice Input") == "Voice Input")
+            #expect(L10n.tr(toggleCaptionZh, toggleCaptionEn) == toggleCaptionEn)
+            #expect(L10n.tr("启用全局快捷键 ⌥M（打开/收起面板）", "Global shortcut ⌥M (open or close dashboard)") == "Global shortcut ⌥M (open or close dashboard)")
+        }
+    }
+
     @Test("Habit readable items and offline bare-category replies follow active UI language (C13, F30h)")
     func habitDayTypeSuffixAndOfflineReplyLocalization() throws {
         var memory = UserHabitMemory()

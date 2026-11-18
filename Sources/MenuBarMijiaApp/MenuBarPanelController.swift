@@ -84,6 +84,9 @@ final class MenuBarPanelController: NSObject {
     var isClosing = false
     /// Bumped on every show, so stale presentation completions cannot hide a reopened panel.
     var presentationGeneration = 0
+    /// Drives `\.isPanelVisible` inside the kept-alive hosting tree; flips `false` once `orderOut`
+    /// removes the window from screen so hidden animations, spinners, and clocks tear down cleanly.
+    let panelHostingVisibility = PanelHostingVisibility()
 
     /// Page-routing boundary used by the status menu; the app delegates to the existing Settings owner.
     var showSettings: (SettingsTab?) -> Void = { SettingsWindowOpener.shared.show(tab: $0) }
@@ -187,6 +190,7 @@ final class MenuBarPanelController: NSObject {
     private var observers: [any NSObjectProtocol] = []
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var voiceInputObserverID: UUID?
     private var didInstall = false
 
     var isLabelTimerRunning: Bool {
@@ -207,7 +211,16 @@ final class MenuBarPanelController: NSObject {
     /// item never acquired a button window (which only happens when it was created too early), it is
     /// recreated once at `applicationDidFinishLaunching`.
     func install(with store: HomeStore) {
+        if let oldStore = self.store, let voiceInputObserverID {
+            oldStore.removeVoiceInputPreferenceObserver(voiceInputObserverID)
+            self.voiceInputObserverID = nil
+        }
         self.store = store
+        self.voiceInputObserverID = store.addVoiceInputPreferenceObserver { [weak self] enabled in
+            if !enabled {
+                self?.cancelHoldToTalkOnDisable()
+            }
+        }
         guard !didInstall else { return }
         didInstall = true
         lastSeenPreferences = WatchedPreferences(from: userDefaults)
@@ -257,6 +270,7 @@ final class MenuBarPanelController: NSObject {
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
         stopPressTimer()
+        pressTriggered = false
         suppressReleaseUntil = 0
         suppressContextMenuUntil = 0
         suppressResignActiveHideUntil = 0
@@ -269,6 +283,10 @@ final class MenuBarPanelController: NSObject {
         grokBallSidecar?.tearDown()
         grokBallSidecar = nil
         store?.dismissGrokBallStage()
+        if let store, let voiceInputObserverID {
+            store.removeVoiceInputPreferenceObserver(voiceInputObserverID)
+        }
+        voiceInputObserverID = nil
         backdropWindow?.orderOut(nil)
         backdropWindow?.contentView = nil
         backdropWindow = nil
@@ -276,6 +294,7 @@ final class MenuBarPanelController: NSObject {
         panelWindow?.contentView = nil
         panelWindow = nil
         hostedPanelTheme = nil
+        panelHostingVisibility.setVisible(false)
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -880,7 +899,13 @@ final class MenuBarPanelController: NSObject {
         panel.contentView = nil
         panel.contentMinSize = .zero
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let hosting = NSHostingView(rootView: Self.panelRoot(store: store, theme: theme))
+        let hosting = PanelHostingView(
+            rootView: Self.panelRoot(
+                store: store,
+                theme: theme,
+                visibility: panelHostingVisibility
+            )
+        )
         // Neither theme delegates window sizing to AppKit's intrinsic-content constraints: `.classic`
         // sizes explicitly via `updatePanelSize`, and `.liquidGlass` spans the screen height. Leaving
         // `sizingOptions` at its default stamps fixed min/max content constraints onto the reused
@@ -910,18 +935,47 @@ final class MenuBarPanelController: NSObject {
     /// backdrop belongs to the Liquid Glass tree, so it leaves with it — including mid-close.
     func dropPanelContent() {
         hideBackdropShadow()
+        panelHostingVisibility.setVisible(false)
         panelWindow?.contentView = nil
         panelWindow?.contentMinSize = .zero
         panelWindow?.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         hostedPanelTheme = nil
     }
 
-    private static func panelRoot(store: HomeStore, theme: PanelTheme) -> AnyView {
+    private static func panelRoot(
+        store: HomeStore,
+        theme: PanelTheme,
+        visibility: PanelHostingVisibility
+    ) -> AnyView {
         switch theme {
         case .classic:
-            return AnyView(ClassicControlCenterPanel(store: store))
+            return AnyView(
+                HostedPanelRoot(visibility: visibility) {
+                    ClassicControlCenterPanel(store: store)
+                }
+            )
         case .liquidGlass:
-            return AnyView(ControlCenterPanel(store: store).environment(\.appearsActive, true))
+            return AnyView(
+                HostedPanelRoot(visibility: visibility) {
+                    ControlCenterPanel(store: store)
+                        .environment(\.appearsActive, true)
+                }
+            )
+        }
+    }
+    private struct HostedPanelRoot<Content: View>: View {
+        let visibility: PanelHostingVisibility
+        @ViewBuilder let content: Content
+
+        var body: some View {
+            content
+                .environment(\.isPanelVisible, visibility.isVisible)
+                .transaction { transaction in
+                    if !visibility.isVisible {
+                        transaction.disablesAnimations = true
+                        transaction.animation = nil
+                    }
+                }
         }
     }
 
@@ -1026,6 +1080,13 @@ final class MenuBarPanelController: NSObject {
             )
             return
         }
+        guard store?.enableVoiceInput ?? true else {
+            traceStatusItem(
+                "handleStatusItemNativeLongPressEvent event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) guard=voiceInputDisabled"
+            )
+            restoreStatusItemHighlight()
+            return
+        }
         traceStatusItem(
             "handleStatusItemNativeLongPressEvent event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) decision=primaryLongPress(finishImmediately=\((pressedMouseButtons & 0x1) == 0))"
         )
@@ -1107,6 +1168,7 @@ final class MenuBarPanelController: NSObject {
 
     @objc private func handlePressTick(_ timer: Timer) {
         if (NSEvent.pressedMouseButtons & 0x1) != 0 {
+            guard store?.enableVoiceInput ?? true else { return }
             guard !pressTriggered,
                   statusItemUptime() - pressStartedAt >= Self.holdThreshold else { return }
             // Keep ticking so the release still stops dictation.
@@ -1210,7 +1272,7 @@ final class MenuBarPanelController: NSObject {
     // MARK: - Hold to Talk
 
     func beginHoldToTalk() {
-        guard let store else { return }
+        guard let store, store.enableVoiceInput else { return }
         suppressStatusItemReopenUntil = 0
         resignActiveAwaitingMonitorMouseDown = false
         SpeechInputController.shared.startHoldToTalk(store: store)
@@ -1238,6 +1300,21 @@ final class MenuBarPanelController: NSObject {
             self.syncStatusItem()
             self.showPanel()
         }
+    }
+
+    func cancelHoldToTalkOnDisable() {
+        let wasTriggered = pressTriggered
+        pressTriggered = false
+        if wasTriggered {
+            pressAllowsToggle = false
+            stopPressTimer()
+        }
+        if let store {
+            SpeechInputController.shared.handleVoiceInputPreferenceChanged(enabled: false, store: store)
+        }
+        syncStatusItem()
+        updateLabelTimer()
+        restoreStatusItemHighlight()
     }
 
     // MARK: - Outside Click, Screens & Preferences

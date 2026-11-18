@@ -487,5 +487,122 @@ struct PreReleaseMacOSUIFixesTests {
         unsaved.unregister("ha")
         #expect(!unsaved.isDirty)
     }
+
+    @Test("LG Settings save guard snaps toggle back and stops pairing/reset when Keychain refuses saves")
+    func lgSettingsSaveGuardReflectsRealSaveResult() async throws {
+        final class RefusingVaultBox: @unchecked Sendable {
+            private let lock = NSLock()
+            var blob: Data?
+            var readable = false
+            var writable = false
+            var storage: CredentialVault.Storage {
+                CredentialVault.Storage(
+                    read: { [self] in
+                        lock.withLock {
+                            guard readable else { return .unavailable }
+                            return blob.map(CredentialVault.Storage.ReadResult.found) ?? .notFound
+                        }
+                    },
+                    write: { [self] data in
+                        lock.withLock {
+                            guard writable else { return false }
+                            blob = data
+                            return true
+                        }
+                    }
+                )
+            }
+        }
+
+        let suite = "test.prerelease.lgsettings.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+        defaults.set(false, forKey: "automatically_checks_for_updates")
+
+        let box = RefusingVaultBox()
+        let vault = CredentialVault(storage: box.storage)
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        var isEnabled = false
+        var hostDraft = "192.0.2.50"
+        var macDraft = "AA:BB:CC:DD:EE:FF"
+
+        // 1. Toggling on while vault is unavailable snaps isEnabled back to false and keeps error toast.
+        let toggled = LGWebOSSettingsSaveGuard.toggleEnabled(
+            true,
+            isEnabled: &isEnabled,
+            hostDraft: hostDraft,
+            macDraft: macDraft,
+            in: store
+        )
+        #expect(toggled == false)
+        #expect(isEnabled == false)
+        #expect(store.lgConfig.isEnabled == false)
+        #expect(store.toastNotice?.isError == true)
+
+        // 2. Pair TV refuses to call triggerLGWebOSPairing when saveDrafts fails.
+        isEnabled = true
+        store.dismissToast()
+        let paired = LGWebOSSettingsSaveGuard.pairTV(
+            isEnabled: &isEnabled,
+            hostDraft: &hostDraft,
+            macDraft: &macDraft,
+            in: store
+        )
+        #expect(paired == false)
+        #expect(isEnabled == false)
+        #expect(store.lgWebOSClient == nil)
+        let pairNotice = try #require(store.toastNotice)
+        #expect(pairNotice.isError)
+        #expect(!pairNotice.message.contains("已向电视发送配对请求"))
+        #expect(!pairNotice.message.contains("Pairing request sent"))
+
+        // 3. Trust reset stops when saveDrafts fails.
+        isEnabled = true
+        store.dismissToast()
+        let blockedReset = LGWebOSSettingsSaveGuard.resetTrustAndPair(
+            isEnabled: &isEnabled,
+            hostDraft: &hostDraft,
+            macDraft: &macDraft,
+            in: store
+        )
+        #expect(blockedReset == nil)
+        #expect(isEnabled == false)
+        #expect(store.toastNotice?.isError == true)
+
+        // 4. Once unlocked and paired, refusing Keychain writes during reset keeps the pairing key intact.
+        box.readable = true
+        box.writable = true
+        isEnabled = true
+        #expect(LGWebOSSettingsSaveGuard.saveDrafts(
+            isEnabled: &isEnabled,
+            hostDraft: &hostDraft,
+            macDraft: &macDraft,
+            in: store
+        ))
+        #expect(store.applyLGClientKey("saved-key"))
+
+        box.writable = false
+        store.dismissToast()
+        let resetTask = try #require(LGWebOSSettingsSaveGuard.resetTrustAndPair(
+            isEnabled: &isEnabled,
+            hostDraft: &hostDraft,
+            macDraft: &macDraft,
+            in: store
+        ))
+        #expect(await resetTask.value == false)
+        #expect(store.lgConfig.clientKey == "saved-key")
+        let resetNotice = try #require(store.toastNotice)
+        #expect(resetNotice.isError)
+        #expect(!resetNotice.message.contains("旧电视身份已清除"))
+        await store.lgWebOSClient?.shutdown()
+    }
 }
 }

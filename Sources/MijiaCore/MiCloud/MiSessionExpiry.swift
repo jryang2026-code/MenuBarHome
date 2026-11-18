@@ -28,4 +28,11 @@ extension MiSession {
     public func expiryState(at now: Date = Date()) -> MiSessionExpiryState {
         MiSessionExpiryPolicy.state(expiresAt: expiresAt, now: now)
     }
+
+    /// Credential identity, matching `MiSessionStore.markRejected`: a server rejection only moves
+    /// `expiresAt`, while a new QR scan replaces the `serviceToken`. Two sessions that do not share
+    /// credentials are different logins, not the same one retried.
+    public func sharesCredentials(with other: MiSession) -> Bool {
+        userId == other.userId && serviceToken == other.serviceToken
+    }
 }

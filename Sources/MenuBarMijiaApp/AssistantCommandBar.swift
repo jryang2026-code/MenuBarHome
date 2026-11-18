@@ -60,6 +60,132 @@ private nonisolated enum SpeechRuntimeBridge {
 
 // MARK: - Live Speech Recognizer (macOS Speech + AVAudioEngine)
 
+enum SpeechCaptureStartError: Error {
+    case recognizerUnavailable
+    case noMicrophoneDevice
+    case engineStartFailed(String)
+}
+
+@MainActor
+struct SpeechCaptureSession {
+    var endAudio: @MainActor () -> Void
+    var cancelRecognitionTask: @MainActor () -> Void
+    var stopAudioEngine: @MainActor () -> Void
+    var removeAudioTap: @MainActor () -> Void
+}
+
+@MainActor
+struct SpeechInputRuntime {
+    var isPackagedApp: @MainActor () -> Bool
+    var requestMicrophoneAccess: @MainActor () async -> Bool
+    var requestSpeechAuthorization: @MainActor () async -> SFSpeechRecognizerAuthorizationStatus
+    var isHoldInputPhysicallyActive: @MainActor () -> Bool
+    var startCaptureSession: @MainActor (
+        _ store: HomeStore,
+        _ onTapInstalled: @escaping @MainActor () -> Void,
+        _ onTapRemoved: @escaping @MainActor () -> Void,
+        _ onEngineStarted: @escaping @MainActor () -> Void,
+        _ onEngineStopped: @escaping @MainActor () -> Void,
+        _ onRecognitionTaskStarted: @escaping @MainActor () -> Void,
+        _ onRecognitionTaskCancelled: @escaping @MainActor () -> Void,
+        _ onEvent: @escaping @Sendable (String?, Bool, Bool) -> Void
+    ) throws -> SpeechCaptureSession
+
+    static var live: Self {
+        Self(
+            isPackagedApp: { Bundle.main.bundleURL.pathExtension == "app" },
+            requestMicrophoneAccess: { await SpeechRuntimeBridge.requestMicrophoneAccess() },
+            requestSpeechAuthorization: { await SpeechRuntimeBridge.requestSpeechAuthorization() },
+            isHoldInputPhysicallyActive: {
+                ((NSEvent.pressedMouseButtons & 0x3) != 0)
+                    || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown
+            },
+            startCaptureSession: {
+                store,
+                onTapInstalled,
+                onTapRemoved,
+                onEngineStarted,
+                onEngineStopped,
+                onRecognitionTaskStarted,
+                onRecognitionTaskCancelled,
+                onEvent in
+                let preferredLocale = Locale(identifier: store.effectiveLanguage.speechLocaleIdentifier)
+                guard let recognizer = SFSpeechRecognizer(locale: preferredLocale)
+                        ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
+                        ?? SFSpeechRecognizer(),
+                      recognizer.isAvailable else {
+                    throw SpeechCaptureStartError.recognizerUnavailable
+                }
+
+                let engine = AVAudioEngine()
+                let request = SFSpeechAudioBufferRecognitionRequest()
+                request.shouldReportPartialResults = true
+                request.contextualStrings = SpeechRecognitionHints.contextualStrings(
+                    devices: store.devices, rooms: store.rooms, scenes: store.scenes,
+                    favoriteDeviceIds: store.favoriteDeviceIds, favoriteOrder: store.favoriteOrder
+                )
+                // Privacy option: keep recognition on this Mac when the system supports it.
+                if store.prefersOnDeviceSpeech && recognizer.supportsOnDeviceRecognition {
+                    request.requiresOnDeviceRecognition = true
+                }
+
+                let inputNode = engine.inputNode
+                let format = inputNode.outputFormat(forBus: 0)
+                guard format.sampleRate > 0, format.channelCount > 0 else {
+                    throw SpeechCaptureStartError.noMicrophoneDevice
+                }
+
+                SpeechRuntimeBridge.installAudioTap(on: inputNode, format: format, request: request)
+                onTapInstalled()
+
+                do {
+                    engine.prepare()
+                    try engine.start()
+                    onEngineStarted()
+                } catch {
+                    inputNode.removeTap(onBus: 0)
+                    onTapRemoved()
+                    throw SpeechCaptureStartError.engineStartFailed(error.localizedDescription)
+                }
+
+                let task = SpeechRuntimeBridge.startRecognitionTask(
+                    recognizer: recognizer,
+                    request: request,
+                    onEvent: onEvent
+                )
+                onRecognitionTaskStarted()
+
+                var didRemoveTap = false
+                var didStopEngine = false
+                var didCancelTask = false
+                return SpeechCaptureSession(
+                    endAudio: {
+                        request.endAudio()
+                    },
+                    cancelRecognitionTask: {
+                        guard !didCancelTask else { return }
+                        didCancelTask = true
+                        task.cancel()
+                        onRecognitionTaskCancelled()
+                    },
+                    stopAudioEngine: {
+                        guard !didStopEngine else { return }
+                        didStopEngine = true
+                        engine.stop()
+                        onEngineStopped()
+                    },
+                    removeAudioTap: {
+                        guard !didRemoveTap else { return }
+                        didRemoveTap = true
+                        engine.inputNode.removeTap(onBus: 0)
+                        onTapRemoved()
+                    }
+                )
+            }
+        )
+    }
+}
+
 @Observable
 @MainActor
 public final class SpeechInputController {
@@ -70,16 +196,81 @@ public final class SpeechInputController {
     public private(set) var isHoldToTalk: Bool = false
     public private(set) var errorMessage: String?
 
-    private var audioEngine: AVAudioEngine?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
+    @ObservationIgnored var runtime: SpeechInputRuntime = .live
+    @ObservationIgnored var silenceAutoSubmitDelay: Duration = .milliseconds(1100)
+    @ObservationIgnored var holdReleaseDelay: Duration = .milliseconds(320)
+
+    private var activeCaptureSession: SpeechCaptureSession?
     private var silenceTimerTask: Task<Void, Never>?
     private var holdReleaseTask: Task<Void, Never>?
     private var hasCapturedSpeech: Bool = false
-    private var isStarting: Bool = false
+    private(set) var isStarting: Bool = false
     private var isHoldGestureActive: Bool = false
+    private(set) var sessionGeneration: UInt64 = 0
+
+    @ObservationIgnored private weak var observedStore: HomeStore?
+    @ObservationIgnored private var storeObserverID: UUID?
+
+    private(set) var recognitionTasksStartedCount: Int = 0
+    private(set) var recognitionTasksCancelledCount: Int = 0
+    private(set) var activeRecognitionTaskCount: Int = 0
+    private(set) var audioTapsInstalledCount: Int = 0
+    private(set) var audioTapsRemovedCount: Int = 0
+    private(set) var activeAudioTapCount: Int = 0
+    private(set) var isAudioEngineRunning: Bool = false
+    private(set) var silenceTimersScheduledCount: Int = 0
+    private(set) var holdReleaseTimersScheduledCount: Int = 0
+    private(set) var submittedCommandsCount: Int = 0
+    private(set) var submittedCommands: [String] = []
+
+    var hasActiveSilenceTimer: Bool { silenceTimerTask != nil }
+    var hasActiveHoldReleaseTimer: Bool { holdReleaseTask != nil }
 
     public init() {}
+
+    func resetMetricsAndRuntimeForTesting(runtime: SpeechInputRuntime = .live) {
+        stop(andSubmit: false, store: nil)
+        if let observedStore, let storeObserverID {
+            observedStore.removeVoiceInputPreferenceObserver(storeObserverID)
+        }
+        observedStore = nil
+        storeObserverID = nil
+        self.runtime = runtime
+        self.silenceAutoSubmitDelay = .milliseconds(1100)
+        self.holdReleaseDelay = .milliseconds(320)
+        self.draft = ""
+        self.errorMessage = nil
+        self.recognitionTasksStartedCount = 0
+        self.recognitionTasksCancelledCount = 0
+        self.activeRecognitionTaskCount = 0
+        self.audioTapsInstalledCount = 0
+        self.audioTapsRemovedCount = 0
+        self.activeAudioTapCount = 0
+        self.isAudioEngineRunning = false
+        self.silenceTimersScheduledCount = 0
+        self.holdReleaseTimersScheduledCount = 0
+        self.submittedCommandsCount = 0
+        self.submittedCommands = []
+    }
+
+    private func bindStorePreferenceObserverIfNeeded(_ store: HomeStore) {
+        if observedStore === store, storeObserverID != nil { return }
+        if let observedStore, let storeObserverID {
+            observedStore.removeVoiceInputPreferenceObserver(storeObserverID)
+        }
+        observedStore = store
+        storeObserverID = store.addVoiceInputPreferenceObserver { [weak self, weak store] enabled in
+            self?.handleVoiceInputPreferenceChanged(enabled: enabled, store: store)
+        }
+    }
+
+    public func handleVoiceInputPreferenceChanged(enabled: Bool, store: HomeStore?) {
+        guard !enabled else { return }
+        draft = ""
+        errorMessage = nil
+        hasCapturedSpeech = false
+        stop(andSubmit: false, store: store)
+    }
 
     public func setPreviewState(isListening: Bool, isHoldToTalk: Bool, draft: String, errorMessage: String? = nil) {
         self.isListening = isListening
@@ -95,14 +286,19 @@ public final class SpeechInputController {
     }
 
     public func requestPermissions() async -> Bool {
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return false }
-        let micAllowed = await SpeechRuntimeBridge.requestMicrophoneAccess()
+        guard runtime.isPackagedApp() else { return false }
+        let micAllowed = await runtime.requestMicrophoneAccess()
         guard micAllowed else { return false }
-        let speechStatus = await SpeechRuntimeBridge.requestSpeechAuthorization()
+        let speechStatus = await runtime.requestSpeechAuthorization()
         return speechStatus == .authorized
     }
 
     public func toggle(store: HomeStore) {
+        bindStorePreferenceObserverIfNeeded(store)
+        guard store.enableVoiceInput else {
+            stop(andSubmit: false, store: store)
+            return
+        }
         if isListening {
             stop(andSubmit: hasCapturedSpeech, store: store)
         } else {
@@ -111,6 +307,11 @@ public final class SpeechInputController {
     }
 
     public func startHoldToTalk(store: HomeStore) {
+        bindStorePreferenceObserverIfNeeded(store)
+        guard store.enableVoiceInput else {
+            stop(andSubmit: false, store: store)
+            return
+        }
         holdReleaseTask?.cancel()
         holdReleaseTask = nil
         isHoldGestureActive = true
@@ -124,13 +325,26 @@ public final class SpeechInputController {
     }
 
     public func finishHoldToTalk(store: HomeStore) {
+        bindStorePreferenceObserverIfNeeded(store)
         isHoldGestureActive = false
+        guard store.enableVoiceInput else {
+            stop(andSubmit: false, store: store)
+            return
+        }
         guard isHoldToTalk || isListening || isStarting else { return }
         holdReleaseTask?.cancel()
-        holdReleaseTask = Task { @MainActor [weak self] in
+        holdReleaseTimersScheduledCount += 1
+        let generation = sessionGeneration
+        let delay = holdReleaseDelay
+        holdReleaseTask = Task { @MainActor [weak self, weak store] in
             // Allow 320ms after mouse/key release for SFSpeechRecognizer to flush any syllables spoken while held.
-            try? await Task.sleep(for: .milliseconds(320))
-            guard !Task.isCancelled, let self else { return }
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled,
+                  let self,
+                  let store,
+                  store.enableVoiceInput,
+                  self.sessionGeneration == generation else { return }
+            self.holdReleaseTask = nil
             let hasText = self.hasCapturedSpeech || !self.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             if self.isListening {
                 if hasText {
@@ -148,16 +362,27 @@ public final class SpeechInputController {
     }
 
     public func start(holdMode: Bool, store: HomeStore) async {
+        bindStorePreferenceObserverIfNeeded(store)
+        guard store.enableVoiceInput else {
+            stop(andSubmit: false, store: store)
+            return
+        }
         guard !isListening, !isStarting else {
             if holdMode { isHoldToTalk = true }
             return
         }
-        guard Bundle.main.bundleURL.pathExtension == "app" else {
+        guard runtime.isPackagedApp() else {
             errorMessage = L10n.tr("语音识别仅在打包后的 App 中可用", "Speech recognition is only available in the packaged App")
             return
         }
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
         isStarting = true
-        defer { isStarting = false }
+        defer {
+            if sessionGeneration == generation {
+                isStarting = false
+            }
+        }
 
         errorMessage = nil
         hasCapturedSpeech = false
@@ -166,7 +391,10 @@ public final class SpeechInputController {
             draft = ""
         }
 
-        let micAllowed = await SpeechRuntimeBridge.requestMicrophoneAccess()
+        let micAllowed = await runtime.requestMicrophoneAccess()
+        guard sessionGeneration == generation, store.enableVoiceInput else {
+            return
+        }
         guard micAllowed else {
             isHoldToTalk = false
             errorMessage = L10n.tr(
@@ -176,7 +404,10 @@ public final class SpeechInputController {
             return
         }
 
-        let speechStatus = await SpeechRuntimeBridge.requestSpeechAuthorization()
+        let speechStatus = await runtime.requestSpeechAuthorization()
+        guard sessionGeneration == generation, store.enableVoiceInput else {
+            return
+        }
         guard speechStatus == .authorized else {
             isHoldToTalk = false
             errorMessage = L10n.tr(
@@ -186,51 +417,83 @@ public final class SpeechInputController {
             return
         }
 
-        let preferredLocale = Locale(identifier: store.effectiveLanguage.speechLocaleIdentifier)
-        guard let recognizer = SFSpeechRecognizer(locale: preferredLocale)
-                ?? SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
-                ?? SFSpeechRecognizer(),
-              recognizer.isAvailable else {
+        let gestureStillActive = isHoldGestureActive
+        teardownActiveSession()
+        isHoldGestureActive = gestureStillActive
+        let isStillHoldingInput = gestureStillActive || runtime.isHoldInputPhysicallyActive()
+        isHoldToTalk = holdMode && isStillHoldingInput
+
+        let captureSession: SpeechCaptureSession
+        do {
+            captureSession = try runtime.startCaptureSession(
+                store,
+                { [weak self] in
+                    guard let self else { return }
+                    self.audioTapsInstalledCount += 1
+                    self.activeAudioTapCount += 1
+                },
+                { [weak self] in
+                    guard let self else { return }
+                    self.audioTapsRemovedCount += 1
+                    self.activeAudioTapCount = max(0, self.activeAudioTapCount - 1)
+                },
+                { [weak self] in
+                    self?.isAudioEngineRunning = true
+                },
+                { [weak self] in
+                    self?.isAudioEngineRunning = false
+                },
+                { [weak self] in
+                    guard let self else { return }
+                    self.recognitionTasksStartedCount += 1
+                    self.activeRecognitionTaskCount += 1
+                },
+                { [weak self] in
+                    guard let self else { return }
+                    self.recognitionTasksCancelledCount += 1
+                    self.activeRecognitionTaskCount = max(0, self.activeRecognitionTaskCount - 1)
+                },
+                { [weak self, weak store] transcript, isFinal, hasError in
+                    Task { @MainActor [weak self, weak store] in
+                        guard let self,
+                              let store,
+                              store.enableVoiceInput,
+                              self.sessionGeneration == generation,
+                              self.isListening else { return }
+                        if let transcript {
+                            let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                self.hasCapturedSpeech = true
+                                self.draft = trimmed
+                                if !self.isHoldToTalk {
+                                    self.scheduleSilenceAutoSubmit(store: store, generation: generation)
+                                }
+                            }
+                        }
+                        if isFinal || hasError {
+                            if !self.isHoldToTalk {
+                                self.stop(andSubmit: self.hasCapturedSpeech, store: store)
+                            }
+                        }
+                    }
+                }
+            )
+        } catch SpeechCaptureStartError.recognizerUnavailable {
             isHoldToTalk = false
             errorMessage = L10n.tr("当前系统语音识别服务暂不可用", "System speech recognition is currently unavailable")
             return
-        }
-
-        let gestureStillActive = isHoldGestureActive
-        stop(andSubmit: false, store: store)
-        isHoldGestureActive = gestureStillActive
-        let isStillHoldingInput = gestureStillActive
-            || ((NSEvent.pressedMouseButtons & 0x3) != 0)
-            || HotkeyAndNotificationManager.shared.isHotkeyPhysicallyDown
-        isHoldToTalk = holdMode && isStillHoldingInput
-
-        let engine = AVAudioEngine()
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.contextualStrings = SpeechRecognitionHints.contextualStrings(
-            devices: store.devices, rooms: store.rooms, scenes: store.scenes,
-            favoriteDeviceIds: store.favoriteDeviceIds, favoriteOrder: store.favoriteOrder
-        )
-        // Privacy option: keep recognition on this Mac when the system supports it.
-        if store.prefersOnDeviceSpeech && recognizer.supportsOnDeviceRecognition {
-            request.requiresOnDeviceRecognition = true
-        }
-
-        let inputNode = engine.inputNode
-        let format = inputNode.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else {
+        } catch SpeechCaptureStartError.noMicrophoneDevice {
             isHoldToTalk = false
             errorMessage = L10n.tr("未检测到可用麦克风输入设备", "No available microphone input device detected")
             return
-        }
-
-        SpeechRuntimeBridge.installAudioTap(on: inputNode, format: format, request: request)
-
-        do {
-            engine.prepare()
-            try engine.start()
+        } catch let SpeechCaptureStartError.engineStartFailed(message) {
+            isHoldToTalk = false
+            errorMessage = L10n.tr(
+                "麦克风启动失败：\(message)",
+                "Microphone failed to start: \(message)"
+            )
+            return
         } catch {
-            inputNode.removeTap(onBus: 0)
             isHoldToTalk = false
             errorMessage = L10n.tr(
                 "麦克风启动失败：\(error.localizedDescription)",
@@ -239,58 +502,39 @@ public final class SpeechInputController {
             return
         }
 
-        self.audioEngine = engine
-        self.recognitionRequest = request
+        self.activeCaptureSession = captureSession
         self.isListening = true
-
-        self.recognitionTask = SpeechRuntimeBridge.startRecognitionTask(
-            recognizer: recognizer,
-            request: request
-        ) { [weak self, weak store] transcript, isFinal, hasError in
-            Task { @MainActor [weak self, weak store] in
-                guard let self, let store, self.isListening else { return }
-                if let transcript {
-                    let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !trimmed.isEmpty {
-                        self.hasCapturedSpeech = true
-                        self.draft = trimmed
-                        if !self.isHoldToTalk {
-                            self.scheduleSilenceAutoSubmit(store: store)
-                        }
-                    }
-                }
-                if isFinal || hasError {
-                    if !self.isHoldToTalk {
-                        self.stop(andSubmit: self.hasCapturedSpeech, store: store)
-                    }
-                }
-            }
-        }
     }
 
-    public func stop(andSubmit: Bool, store: HomeStore?) {
+    private func teardownActiveSession() {
         silenceTimerTask?.cancel()
         silenceTimerTask = nil
         holdReleaseTask?.cancel()
         holdReleaseTask = nil
 
-        let textToSubmit = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        let shouldSubmit = andSubmit && (hasCapturedSpeech || !textToSubmit.isEmpty)
         hasCapturedSpeech = false
         isListening = false
         isHoldToTalk = false
         isHoldGestureActive = false
 
-        recognitionRequest?.endAudio()
-        recognitionRequest = nil
-        recognitionTask?.cancel()
-        recognitionTask = nil
-
-        if let engine = audioEngine {
-            engine.stop()
-            engine.inputNode.removeTap(onBus: 0)
+        if let session = activeCaptureSession {
+            activeCaptureSession = nil
+            session.endAudio()
+            session.cancelRecognitionTask()
+            session.stopAudioEngine()
+            session.removeAudioTap()
         }
-        audioEngine = nil
+    }
+
+    public func stop(andSubmit: Bool, store: HomeStore?) {
+        sessionGeneration &+= 1
+        isStarting = false
+
+        let textToSubmit = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let voiceEnabled = store?.enableVoiceInput ?? true
+        let shouldSubmit = andSubmit && voiceEnabled && (hasCapturedSpeech || !textToSubmit.isEmpty)
+
+        teardownActiveSession()
 
         if shouldSubmit, let store {
             submit(store: store)
@@ -298,8 +542,11 @@ public final class SpeechInputController {
     }
 
     public func submit(store: HomeStore) {
+        guard store.enableVoiceInput else { return }
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, store.assistantState != .thinking else { return }
+        submittedCommandsCount += 1
+        submittedCommands.append(text)
         Task { @MainActor in
             await store.runAssistantCommand(text)
             if case .done = store.assistantState {
@@ -308,12 +555,23 @@ public final class SpeechInputController {
         }
     }
 
-    private func scheduleSilenceAutoSubmit(store: HomeStore) {
+    private func scheduleSilenceAutoSubmit(store: HomeStore, generation: UInt64) {
+        guard store.enableVoiceInput else { return }
         silenceTimerTask?.cancel()
+        silenceTimersScheduledCount += 1
+        let delay = silenceAutoSubmitDelay
         // Wait 1.1s after the last recognized syllable before auto-submitting the command.
         silenceTimerTask = Task { @MainActor [weak self, weak store] in
-            try? await Task.sleep(for: .milliseconds(1100))
-            guard !Task.isCancelled, let self, let store, self.isListening, !self.isHoldToTalk, self.hasCapturedSpeech else { return }
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled,
+                  let self,
+                  let store,
+                  store.enableVoiceInput,
+                  self.sessionGeneration == generation,
+                  self.isListening,
+                  !self.isHoldToTalk,
+                  self.hasCapturedSpeech else { return }
+            self.silenceTimerTask = nil
             self.stop(andSubmit: true, store: store)
         }
     }
@@ -327,6 +585,7 @@ public final class SpeechInputController {
 struct AssistantResponseArea: View {
     let store: HomeStore
 
+    @Environment(\.isPanelVisible) private var isPanelVisible
     @Bindable private var speech = SpeechInputController.shared
     /// Asked once when the first timer is scheduled (#55).
     @State private var asksForTimerNotifications = false
@@ -537,9 +796,11 @@ struct AssistantResponseArea: View {
                         .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(entry.fireDate, style: .timer)
-                        .monospacedDigit()
-                        .foregroundStyle(DesignTokens.secondaryText)
+                    if isPanelVisible {
+                        Text(entry.fireDate, style: .timer)
+                            .monospacedDigit()
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
                     Button {
                         store.cancelScheduledCommands(id: entry.id)
                     } label: {
@@ -578,6 +839,7 @@ struct AssistantResponseArea: View {
 
 /// "Jev suggests" plus the habit/AI suggestion chips. Shown while the panel's input is focused.
 struct AssistantSuggestionsRow: View {
+    @Environment(\.isPanelVisible) private var isPanelVisible
     let store: HomeStore
 
     var body: some View {
@@ -589,9 +851,14 @@ struct AssistantSuggestionsRow: View {
                 } label: {
                     HStack(spacing: 3.5) {
                         if store.isProactiveRecommending {
-                            ProgressView()
-                                .controlSize(.mini)
-                                .scaleEffect(0.65)
+                            if isPanelVisible {
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .scaleEffect(0.65)
+                            } else {
+                                Color.clear
+                                    .frame(width: 11, height: 11)
+                            }
                         } else {
                             Image(systemName: "wand.and.stars")
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -1061,10 +1328,16 @@ struct AssistantSettingsSection: View {
             store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
             return nil
         }
-        store.assistantConfig = cfg
-        // `AssistantConfig.save` does not report a refused Keychain write or delete, so read the key back
-        // before the draft counts as saved. A replacement that was not stored would be lost on leaving,
-        // and a clearing that was refused would leave the old key active (#148).
+        guard store.saveAssistantConfig(cfg) else {
+            store.showToast(
+                L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                isError: true
+            )
+            return nil
+        }
+        // `saveAssistantConfig` already reports a refused Keychain write; the read-back covers the
+        // custom-endpoint binding too, so a replacement that was not stored never counts as saved
+        // and a refused clear cannot leave the old key active (#148).
         if store.storedAssistantAPIKey(forBaseURL: cfg.baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
             != cfg.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) {
             store.showToast(
@@ -1322,7 +1595,10 @@ struct AssistantSettingsSection: View {
                         store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
                     } else {
                         store.showToast(
-                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            L10n.tr(
+                                "CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key，或无法写入钥匙串",
+                                "No \(selectedPreset.shortTitle) key in CodexBar or environment variables, or the Keychain refused the write"
+                            ),
                             isError: true
                         )
                     }

@@ -4,10 +4,12 @@ import Foundation
 enum SnapshotAssertion {
     /// How far a render may drift from its baseline and still count as the same picture.
     ///
-    /// Baselines are recorded on one Mac, then compared on whichever Mac, display and wallpaper the
-    /// developer has that day. Measured over 92 baselines on a machine with a second display attached:
-    /// 78 differed by at most 3 of 255 in any channel (invisible rounding), and the other 14 differed in
+    /// CI records and compares baselines on one pinned runner (macos-26-intel, Xcode 26.6, zh_CN).
+    /// The numbers below were measured on a Mac with a second display attached. 78 of 92 baselines
+    /// differed by at most 3 of 255 in any channel (invisible rounding), and the other 14 differed in
     /// at most 71 pixels, all SF Symbol and glyph edges. A byte-exact comparison called all 92 failures.
+    /// This budget covers that edge rounding. It is not room for a different OS or Xcode.
+    /// Re-record when the runner image or Xcode pin changes. Do not raise the budget instead.
     ///
     /// - `channel`: a pixel whose every channel is within this of the baseline is the same pixel.
     /// - `pixelBudget`: this many pixels beyond that may differ freely, for anti-aliased symbol edges.

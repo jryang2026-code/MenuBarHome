@@ -36,6 +36,7 @@ enum PanelKeyRouter {
         var editMode: PanelEditMode = .none
         var hasExpandedDevice = false
         var hasFocusedDevice = false
+        var voiceInputEnabled = true
     }
 
     enum Action: Equatable {
@@ -131,7 +132,7 @@ enum PanelKeyRouter {
 
         let plain = !key.command && !key.option && !key.control
         if plain, key.characters == "/" { return .presentAssistant(voice: false) }
-        if plain, key.characters?.lowercased() == "v" { return .presentAssistant(voice: true) }
+        if plain, context.voiceInputEnabled, key.characters?.lowercased() == "v" { return .presentAssistant(voice: true) }
 
         switch key.code {
         case kVK_UpArrow: return .moveFocus(-1)

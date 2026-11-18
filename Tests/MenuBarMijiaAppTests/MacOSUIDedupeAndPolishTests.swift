@@ -122,4 +122,72 @@ struct MacOSUIDedupeAndPolishTests {
         controller.handleUserDefaultsDidChange()
         #expect(controller.preferencesReloadCount == 1)
     }
+
+    @Test("Liquid Glass and Classic device card context menus hide All Off option for cover and generic devices")
+    func contextMenuHidesAllOffOptionForCoverAndGenericDevices() {
+        let light = SmartDevice(
+            id: "l1", name: "客厅灯", roomId: "r1", roomName: "客厅",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.1", isOn: true))
+        )
+        let garage = SmartDevice(
+            id: "g1", name: "车库门", roomId: "r1", roomName: "车库",
+            model: "fixture.garage", isOnline: true,
+            kind: .cover(CoverSpec(entityId: "cover.garage", subtype: .garageDoor, positionPercent: 100, positionWritable: true))
+        )
+        let curtain = SmartDevice(
+            id: "c1", name: "客厅窗帘", roomId: "r1", roomName: "客厅",
+            model: "fixture.curtain", isOnline: true,
+            kind: .cover(CoverSpec(entityId: "cover.curtain", subtype: .curtain, positionPercent: 50, positionWritable: true))
+        )
+        let generic = SmartDevice(
+            id: "gen1", name: "未知设备", roomId: "r1", roomName: "客厅",
+            model: "fixture.generic", isOnline: true,
+            kind: .generic(GenericSpec(deviceType: "switch", typeTitle: "开关", isOn: true, isReadOnly: false))
+        )
+
+        #expect(DeviceCardView.showsAllOffMenuOption(for: light) == true)
+        #expect(DeviceCardView.showsAllOffMenuOption(for: garage) == false)
+        #expect(DeviceCardView.showsAllOffMenuOption(for: curtain) == false)
+        #expect(DeviceCardView.showsAllOffMenuOption(for: generic) == false)
+
+        #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: light) == true)
+        #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: garage) == false)
+        #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: curtain) == false)
+        #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: generic) == false)
+    }
+
+    @Test("LGWebOSSettingsSection scan caller preserves rejected-host explanation toast when no TV is found")
+    func lgScanCallerPreservesRejectedHostExplanation() async throws {
+        let suite = "test.lg.settings.scan.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        var hostDraft = "8.8.8.8"
+        LGWebOSSettingsSection.handleDiscoveryResult([], hostHint: hostDraft, store: store) {
+            hostDraft = $0
+        }
+        #expect(hostDraft == "8.8.8.8")
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == LGWebOSClient.discoveryFailureMessage(hostHint: "8.8.8.8"))
+        #expect(store.toastNotice?.message.contains("8.8.8.8") == true)
+
+        LGWebOSSettingsSection.handleDiscoveryResult([], hostHint: "192.168.1.50", store: store) {
+            hostDraft = $0
+        }
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == LGWebOSClient.discoveryFailureMessage(hostHint: "192.168.1.50"))
+        #expect(store.toastNotice?.message.contains("192.168.1.50") == false)
+
+        let tv = LGWebOSDiscoveredTV(host: "192.168.1.55", friendlyName: "LG C2 电视")
+        LGWebOSSettingsSection.handleDiscoveryResult([tv], hostHint: "8.8.8.8", store: store) {
+            hostDraft = $0
+        }
+        #expect(hostDraft == "192.168.1.55")
+        #expect(store.toastNotice?.isError == false)
+        #expect(store.toastNotice?.message.contains("192.168.1.55") == true)
+    }
 }

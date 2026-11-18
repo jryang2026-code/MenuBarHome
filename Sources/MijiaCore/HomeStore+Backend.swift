@@ -42,8 +42,16 @@ extension HomeStore {
 
     func startLGWebOSIfNeeded() {
         guard homeBackend != .demo else { return }
+        let trustStore: LGCertificateTrust = if let credentialVault {
+            LGCertificateTrust(vault: credentialVault)
+        } else if userDefaults !== UserDefaults.standard {
+            LGCertificateTrust(defaults: userDefaults)
+        } else {
+            .shared
+        }
         let client = LGWebOSClient(
             config: lgConfig,
+            trustStore: trustStore,
             onDeviceUpdated: { [weak self] dev in
                 Task { @MainActor [weak self] in
                     self?.applyLGDeviceUpdate(dev)
@@ -52,8 +60,9 @@ extension HomeStore {
             onClientKeyRegistered: { [weak self] key in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.lgConfig.clientKey = key
-                    self.showToast(L10n.tr("已成功配对 \(self.lgConfig.name)", "Paired with \(self.lgConfig.name)"))
+                    // The pairing only counts once the key is actually in the Keychain (#7);
+                    // `applyLGClientKey` owns both the success toast and the error.
+                    self.applyLGClientKey(key)
                 }
             },
             onSecurityFailure: { [weak self] message in
@@ -72,10 +81,42 @@ extension HomeStore {
         }
     }
 
+    /// Applies a freshly registered LG pairing key. Returns false when the Keychain refused to store it,
+    /// rolling the live client back to the persisted `lgConfig` so client and store never diverge and the
+    /// caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
+    @discardableResult
+    func applyLGClientKey(_ key: String) -> Bool {
+        var updated = lgConfig
+        updated.clientKey = key
+        // Write before swapping the in-memory config so a refused write keeps the old pairing key.
+        guard updated.save(to: userDefaults, vault: credentialVault) else {
+            lgConfigSaveFailed = true
+            let persistedConfig = lgConfig
+            if let lgClient = lgWebOSClient {
+                Task { await lgClient.updateConfig(persistedConfig) }
+            }
+            showToast(
+                L10n.tr(
+                    "电视已确认配对，但配对密钥无法写入钥匙串；请授权钥匙串访问后重新配对",
+                    "The TV confirmed pairing, but the key could not be saved to Keychain; allow access and pair again"
+                ),
+                isError: true
+            )
+            return false
+        }
+        lgConfigSaveFailed = false
+        suppressNextLGConfigDidSetSave = true
+        defer { suppressNextLGConfigDidSetSave = false }
+        lgConfig = updated
+        showToast(L10n.tr("已成功配对 \(lgConfig.name)", "Paired with \(lgConfig.name)"))
+        return true
+    }
+
     func applyLGDeviceUpdate(_ dev: SmartDevice) {
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: dev.id)
             devices.removeAll { $0.id == dev.id }
             return
         }
@@ -85,6 +126,7 @@ extension HomeStore {
         }
         latestLGDevice = dev
         rawDeviceNames[dev.id] = dev.name
+        lastReportedDevices[dev.id] = dev
         let now = optimisticNow()
         pruneExpiredOptimisticLocks(for: dev.id, at: now)
         let lockedFields = activeLockedFields(for: dev.id, at: now)
@@ -113,6 +155,8 @@ extension HomeStore {
         hasReceivedInitialSnapshot = false
         connectedBackends = []
         deviceBackends = [:]
+        deviceTransportDiagnostics = [:]
+        localNetworkBlocks = []
         // The devices on screen belong to the previous connection until the next snapshot lands;
         // scheduling refuses that window instead of stamping a stale list with the new sources.
         listeningSnapshotGeneration = snapshotGeneration
@@ -222,31 +266,63 @@ extension HomeStore {
             : incomingPosition <= localPosition
     }
 
-    private func handleProviderEvent(_ event: HomeProviderEvent) {
+    /// Records a server rejection as the stored session's end and keeps `miAccounts`/`miSessionExpiresAt`
+    /// in step. Split out of the event switch so the rejection path is testable without a live provider.
+    func handleMiSessionRejected(_ rejected: MiSession) {
+        guard let updated = MiSessionStore.markRejected(
+            rejected,
+            defaults: userDefaults,
+            vault: credentialVault
+        ) else { return }
+        if let idx = miAccounts.firstIndex(where: {
+            $0.session.userId == updated.userId && $0.session.serviceToken == updated.serviceToken
+        }) {
+            miAccounts[idx].session = updated
+        }
+        miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
+        refreshMiAccountsAfterRejection()
+    }
+
+    /// Hands the live provider the list the rejection just changed, so that account's child is
+    /// rebuilt around the stored end instead of waking on the dead token forever. The update rides
+    /// the same serialized chain as a provider swap; every other account keeps its child and data.
+    private func refreshMiAccountsAfterRejection() {
+        guard let provider = activeMiAccountsProvider else { return }
+        let accounts = miAccounts
+        activeMiProviderAccounts = accounts
+        let previous = providerShutdownTask
+        providerShutdownTask = Task {
+            await previous?.value
+            await provider.updateAccounts(accounts)
+        }
+    }
+
+    func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
             if connectionStatus != status { connectionStatus = status }
             if case .disconnected = status {
                 connectedBackends = []
-            } else if case .connected = status, connectedBackends.isEmpty {
-                connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend]
+            } else if case .connected = status {
+                if connectedBackends.isEmpty { connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend] }
+                if !hasMiSource { localNetworkBlocks.remove(.homeAssistant) }
             }
 
         case .sourceStatusesChanged(let statuses):
             if sourceStatuses != statuses { sourceStatuses = statuses }
+            if case .connected = statuses[.homeAssistant],
+               connectedBackends.contains(.homeAssistant) || (!hasMiSource && connectionStatus.isConnected) {
+                localNetworkBlocks.remove(.homeAssistant)
+            }
+
+        case .localNetworkPermissionChanged(let blocked):
+            if localNetworkBlocks != blocked { localNetworkBlocks = blocked }
 
         case .doorbellRang(let ring):
             handleDoorbellRing(ring)
 
         case .sessionExpired(let rejected):
-            if let updated = MiSessionStore.markRejected(rejected, defaults: userDefaults, vault: credentialVault) {
-                if let idx = miAccounts.firstIndex(where: {
-                    $0.session.userId == updated.userId && $0.session.serviceToken == updated.serviceToken
-                }) {
-                    miAccounts[idx].session = updated
-                }
-                miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
-            }
+            handleMiSessionRejected(rejected)
 
         case .snapshotUpdated(let snapshot):
             isApplyingProviderSnapshot = true
@@ -274,6 +350,12 @@ extension HomeStore {
             if pairedDeviceIDs != snapshot.pairedDeviceIDs { pairedDeviceIDs = snapshot.pairedDeviceIDs }
             if lightGroupOwners != snapshot.lightGroupOwners { lightGroupOwners = snapshot.lightGroupOwners }
             if sourceStatuses != snapshot.sourceStatuses { sourceStatuses = snapshot.sourceStatuses }
+            if deviceTransportDiagnostics != snapshot.deviceTransportDiagnostics {
+                deviceTransportDiagnostics = snapshot.deviceTransportDiagnostics
+            }
+            if localNetworkBlocks != snapshot.localNetworkBlockedFeatures {
+                localNetworkBlocks = snapshot.localNetworkBlockedFeatures
+            }
             var nextRooms = snapshot.rooms
             if var lgDev = latestLGDevice, lgConfig.isEnabled {
                 if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
@@ -389,6 +471,15 @@ extension HomeStore {
             }
             // 更多设置 rows lock independently per controlId: a write in flight keeps only that
             // facet's local value until the lock expires or a read-back confirms it (#5).
+            var nextReportedDevices = Dictionary(
+                snapshot.devices.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, nextReportedDevices[lgDev.id] == nil {
+                nextReportedDevices[lgDev.id] = lgDev
+            }
+            lastReportedDevices = nextReportedDevices
+            lastReportedFacets = snapshot.deviceFacets
             var nextFacets: [String: [FacetControl]] = [:]
             for device in snapshot.devices {
                 var lockedControlIds = activeLockedFacetControlIds(for: device.id, at: now)
@@ -536,7 +627,7 @@ extension HomeStore {
         if devices != nextDevices { devices = nextDevices }
     }
 
-    private func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
+    func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
         var result = input
         let aliases: [String: String]
         if let overrides {
@@ -589,7 +680,8 @@ extension HomeStore {
                 Task { @MainActor [weak self] in
                     self?.askHAPlaintext(url)
                 }
-            }
+            },
+            isNetworkSatisfied: { @MainActor [weak self] in self?.isNetworkSatisfiedForResume ?? true }
         )
     }
 
@@ -876,9 +968,11 @@ extension HomeStore {
         self.miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
         self.isShowingMiReauth = false
         self.miSessionScopeIdentifier = miAccounts.first?.session.historyScopeIdentifier
+        let previousRegion = miCloudRegion
         if let region = MiCloudRegion(rawValue: session.region.lowercased()) {
             self.miCloudRegion = region
         }
+        let regionChanged = miCloudRegion != previousRegion
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
         if superseded { return }
@@ -891,7 +985,14 @@ extension HomeStore {
         self.completeOnboarding()
         rebuildLiveProvider()
         resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
-        showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
+        showToast(
+            regionChanged
+                ? L10n.tr(
+                    "已登录米家账号 (\(session.maskedUserId))，已切换到账号地区 \(miCloudRegion.label)",
+                    "Signed in to Xiaomi Home (\(session.maskedUserId)); switched to the account's region \(miCloudRegion.label)"
+                )
+                : L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))")
+        )
     }
 
     /// Returns false when the Keychain/vault refused to delete the stored Mi session; the in-memory
@@ -913,6 +1014,8 @@ extension HomeStore {
             invalidateUndoContext()
             self.devices = []
             self.deviceFacets = [:]
+            self.deviceTransportDiagnostics = [:]
+            self.localNetworkBlocks.remove(.xiaomiLAN)
             self.rooms = []
             self.environmentReadings = []
             self.scenes = []
@@ -967,6 +1070,7 @@ extension HomeStore {
         hasHASource = false
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
+        localNetworkBlocks.remove(.homeAssistant)
         guard homeBackend != .demo,
               (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
         invalidateUndoContext()
@@ -975,6 +1079,7 @@ extension HomeStore {
         } else {
             devices = []
             deviceFacets = [:]
+            deviceTransportDiagnostics = [:]
             rooms = []
             environmentReadings = []
             scenes = []
@@ -1011,6 +1116,12 @@ extension HomeStore {
             for removedId in removedDeviceIds {
                 cancelFacetWrites(for: removedId)
                 deviceFacets.removeValue(forKey: removedId)
+                deviceTransportDiagnostics.removeValue(forKey: removedId)
+                lastReportedDevices.removeValue(forKey: removedId)
+                lastReportedFacets.removeValue(forKey: removedId)
+            }
+            if miAccounts.isEmpty {
+                localNetworkBlocks.remove(.xiaomiLAN)
             }
             environmentReadings.removeAll { removedDeviceIds.contains($0.id) }
             rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
@@ -1151,14 +1262,27 @@ extension HomeStore {
         return found
     }
 
-    public func updateLGWebOSConfig(_ newConfig: LGWebOSConfig) {
+    @discardableResult
+    public func updateLGWebOSConfig(_ newConfig: LGWebOSConfig) -> Bool {
+        // Write before swapping `lgConfig` or updating `lgWebOSClient` so a refused Keychain write
+        // never leaves unsaved config in memory, never connects with it, and never shows a success toast (#7).
+        guard newConfig.save(to: userDefaults, vault: credentialVault) else {
+            lgConfigSaveFailed = true
+            showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+            return false
+        }
         if newConfig.host != lgConfig.host || newConfig.isEnabled != lgConfig.isEnabled || newConfig.clientKey != lgConfig.clientKey {
             invalidateUndoContext()
         }
+        lgConfigSaveFailed = false
+        suppressNextLGConfigDidSetSave = true
         self.lgConfig = newConfig
+        suppressNextLGConfigDidSetSave = false
         if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: LGWebOSProtocol.deviceId)
             devices.removeAll { $0.id == LGWebOSProtocol.deviceId }
+            localNetworkBlocks.remove(.lgWebOS)
         }
         // Demo mode persists the preference but never connects to the LAN (#47).
         guard homeBackend != .demo else {
@@ -1167,7 +1291,7 @@ extension HomeStore {
                     ? L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs")
                     : L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection")
             )
-            return
+            return true
         }
         if let lgClient = lgWebOSClient {
             Task {
@@ -1186,6 +1310,7 @@ extension HomeStore {
         } else {
             showToast(L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection"))
         }
+        return true
     }
 
     public func triggerLGWebOSPairing() {
@@ -1208,23 +1333,87 @@ extension HomeStore {
     }
 
     /// Called only after Settings confirms discarding the saved TV identity.
-    public func resetLGWebOSTrustAndPair() {
+    @discardableResult
+    public func resetLGWebOSTrustAndPair() -> Task<Bool, Never>? {
         guard homeBackend != .demo else {
             showToast(L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs"), isError: true)
-            return
+            return nil
         }
-        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient else { return }
+        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient else { return nil }
         let host = lgConfig.host
-        Task {
-            do {
-                try await client.resetTrustAndPair()
-                guard lgConfig.host == host else { return }
-                lgConfig.clientKey = ""
-                showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
-            } catch {
-                showToast(error.localizedDescription, isError: true)
+        return Task { @MainActor [weak self] () -> Bool in
+            guard let self else { return false }
+            guard !Task.isCancelled, self.lgWebOSClient === client, self.lgConfig.host == host else { return false }
+            let previousConfig = self.lgConfig
+            var cleared = previousConfig
+            cleared.clientKey = ""
+            let pairingVault: CredentialVault? = self.credentialVault
+                ?? (self.userDefaults === UserDefaults.standard ? .shared : nil)
+
+            // When trust and pairing key share a CredentialVault, clear both in one atomic Keychain
+            // commit before stopping the client. Otherwise persist the cleared config first, then
+            // reset trust (rolling back on error) so no failure leaves a split state.
+            let clearedKeyAtomically: Bool
+            if let pairingVault, await client.trustStoreSharesVault(pairingVault) {
+                do {
+                    clearedKeyAtomically = try await client.resetTrust(
+                        expectedHost: host,
+                        clearingPairingKeyInVault: pairingVault
+                    )
+                } catch {
+                    self.lgConfigSaveFailed = true
+                    self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+                    return false
+                }
+            } else {
+                guard !Task.isCancelled, self.lgWebOSClient === client, self.lgConfig.host == host else { return false }
+                guard cleared.save(to: self.userDefaults, vault: self.credentialVault) else {
+                    self.lgConfigSaveFailed = true
+                    self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+                    return false
+                }
+                do {
+                    clearedKeyAtomically = try await client.resetTrust(expectedHost: host)
+                } catch {
+                    _ = previousConfig.save(to: self.userDefaults, vault: self.credentialVault)
+                    self.lgConfigSaveFailed = true
+                    let message: String = (error as? LGCertificateTrust.Failure == .unavailable)
+                        ? Self.lgKeychainSaveErrorMessage
+                        : error.localizedDescription
+                    self.showToast(message, isError: true)
+                    return false
+                }
             }
+
+            guard self.lgConfig.host == host, self.lgWebOSClient === client else { return false }
+            if clearedKeyAtomically {
+                // Keep UserDefaults metadata / legacy cleanup in sync; the vault slot is already nil,
+                // so `save` returns immediately without performing a second Keychain write.
+                guard cleared.save(to: self.userDefaults, vault: self.credentialVault) else {
+                    _ = previousConfig.save(to: self.userDefaults, vault: self.credentialVault)
+                    self.lgConfigSaveFailed = true
+                    self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+                    return false
+                }
+            }
+
+            self.lgConfigSaveFailed = false
+            self.suppressNextLGConfigDidSetSave = true
+            self.lgConfig = cleared
+            self.suppressNextLGConfigDidSetSave = false
+            await client.updateConfig(cleared)
+            self.showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
+            return true
         }
+    }
+
+    public func lgWebOSDiscoveryFailureMessage(hostHint: String? = nil) -> String {
+        guard homeBackend != .demo else {
+            return L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs")
+        }
+        let hint = (hostHint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveHint = hint.isEmpty ? lgConfig.host : hint
+        return LGWebOSClient.discoveryFailureMessage(hostHint: effectiveHint)
     }
 
     public func discoverLGWebOSTVs(hostHint: String? = nil) async -> [LGWebOSDiscoveredTV] {
@@ -1326,6 +1515,15 @@ extension HomeStore {
         isShowingMiReauth = false
     }
 
+    public var effectiveLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> {
+        guard homeBackend != .demo else { return [] }
+        var blocks = localNetworkBlocks
+        if !hasHASource { blocks.remove(.homeAssistant) }
+        if !hasMiSource { blocks.remove(.xiaomiLAN) }
+        if !lgConfig.isEnabled || !lgConfig.hasConfiguredHost { blocks.remove(.lgWebOS) }
+        return blocks
+    }
+
     /// The one connection verdict the footer, the settings badge and the menu-bar tooltip share.
     public var panelHealth: PanelHealth {
         PanelHealthResolver.resolve(PanelHealthInput(
@@ -1344,7 +1542,8 @@ extension HomeStore {
                 account.session.expiryState(at: Date()) != .expired
             },
             deviceValuesAreStale: deviceValuesAreStale,
-            connectionStatus: connectionStatus
+            connectionStatus: connectionStatus,
+            localNetworkBlocks: effectiveLocalNetworkBlocks
         ))
     }
 }
@@ -1377,6 +1576,7 @@ struct PanelHealthInput: Equatable, Sendable {
     var anotherMiAccountSignedIn: Bool
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
+    var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
 }
 
 /// Priority is the thing the user must deal with first.
@@ -1408,6 +1608,25 @@ enum PanelHealthResolver {
         }
         if !input.hasHASource && !input.hasMiSource {
             return .notConfigured
+        }
+        if !input.localNetworkBlocks.isEmpty {
+            let haBlocked = input.hasHASource && input.localNetworkBlocks.contains(.homeAssistant)
+            let miLANBlocked = input.hasMiSource && input.localNetworkBlocks.contains(.xiaomiLAN)
+            let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.connectionStatus.isConnected
+            let haWorking = input.hasHASource && !haBlocked && (input.haStatus.isConnected || (!input.hasMiSource && input.connectionStatus.isConnected))
+            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openConnectionSettings)
+            if haBlocked && miLANBlocked {
+                return miWorking ? .degraded(reason: L10n.tr("本地网络权限受阻，当前仅米家云端可用", "Local network access is blocked. Using Xiaomi Cloud fallback")) : blockedVerdict
+            }
+            if haBlocked {
+                return miWorking ? .degraded(reason: L10n.tr("Home Assistant 本地网络权限受阻，米家云端仍可用", "Home Assistant local network access is blocked. Xiaomi Cloud still works")) : blockedVerdict
+            }
+            if miLANBlocked {
+                return (miWorking || haWorking) ? .degraded(reason: L10n.tr("米家局域网直连权限受阻，已回退云端", "Xiaomi LAN access is blocked. Using cloud fallback")) : blockedVerdict
+            }
+            if input.localNetworkBlocks.contains(.lgWebOS) {
+                return (miWorking || haWorking) ? .degraded(reason: L10n.tr("电视本地网络权限受阻", "TV local network access is blocked")) : blockedVerdict
+            }
         }
         if input.miSessionShowsExpired, input.hasHASource,
            case .connected = input.connectionStatus, case .connected = input.haStatus {

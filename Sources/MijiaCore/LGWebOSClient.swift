@@ -71,7 +71,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         self.clientKey = clientKey
     }
 
-    public static func load(from defaults: UserDefaults) -> LGWebOSConfig {
+    public static func load(from defaults: UserDefaults, vault: CredentialVault? = nil) -> LGWebOSConfig {
         let enabled = defaults.object(forKey: "lg_webos_enabled") == nil
             ? false
             : defaults.bool(forKey: "lg_webos_enabled")
@@ -79,7 +79,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         let mac = defaults.string(forKey: "lg_webos_mac")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = defaults.string(forKey: "lg_webos_name")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let room = defaults.string(forKey: "lg_webos_room")?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = Self.loadClientKey(from: defaults)
+        let key = Self.loadClientKey(from: defaults, vault: vault)
 
         return LGWebOSConfig(
             isEnabled: enabled,
@@ -91,18 +91,25 @@ public struct LGWebOSConfig: Equatable, Sendable {
         )
     }
 
-    public func save(to defaults: UserDefaults) {
+    /// Returns false when the pairing key could not be stored (#7): the caller must report that to the
+    /// user instead of claiming the TV was paired.
+    @discardableResult
+    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
+        guard Self.saveClientKey(clientKey, to: defaults, vault: vault) else { return false }
         defaults.set(isEnabled, forKey: "lg_webos_enabled")
         defaults.set(host, forKey: "lg_webos_host")
         defaults.set(macAddress, forKey: "lg_webos_mac")
         defaults.set(name, forKey: "lg_webos_name")
         defaults.set(roomName, forKey: "lg_webos_room")
-        Self.saveClientKey(clientKey, to: defaults)
+        return true
     }
 
     /// The pairing key is a credential, so `.standard` keeps it only in the Keychain (#16). Other suites (tests)
-    /// keep it inside the suite.
-    private static func loadClientKey(from defaults: UserDefaults) -> String {
+    /// keep it inside the suite unless an explicit vault is injected.
+    private static func loadClientKey(from defaults: UserDefaults, vault: CredentialVault?) -> String {
+        if let vault {
+            return KeychainHelper.readKeychainSecret(account: clientKeyAccount, vault: vault) ?? ""
+        }
         guard defaults === UserDefaults.standard else {
             return defaults.string(forKey: clientKeyDefaultsKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -119,7 +126,15 @@ public struct LGWebOSConfig: Equatable, Sendable {
         return KeychainHelper.readKeychainSecret(account: clientKeyAccount) ?? ""
     }
 
-    private static func saveClientKey(_ key: String, to defaults: UserDefaults) {
+    private static func saveClientKey(_ key: String, to defaults: UserDefaults, vault: CredentialVault?) -> Bool {
+        if let vault {
+            return KeychainHelper.saveSecret(
+                key,
+                account: clientKeyAccount,
+                defaults: defaults,
+                vault: vault
+            )
+        }
         guard defaults === UserDefaults.standard else {
             let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -127,10 +142,11 @@ public struct LGWebOSConfig: Equatable, Sendable {
             } else {
                 defaults.set(trimmed, forKey: clientKeyDefaultsKey)
             }
-            return
+            return true
         }
-        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return }
+        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return false }
         defaults.removeObject(forKey: clientKeyDefaultsKey)
+        return true
     }
 }
 
@@ -419,6 +435,7 @@ final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
 public actor LGWebOSClient {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LGWebOS")
     private var config: LGWebOSConfig
+    private let trustStore: LGCertificateTrust
     private var session: URLSession?
     private var isShutDown = false
     private let onDeviceUpdated: @Sendable (SmartDevice) -> Void
@@ -430,14 +447,27 @@ public actor LGWebOSClient {
     private var sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
     private var nextRequestId: Int = 1
 
+    var configForTesting: LGWebOSConfig { config }
     var hasActiveSessionForTesting: Bool { session != nil }
+    var hasConnectionLoopForTesting: Bool { loopTask != nil }
     var isConnectedForTesting: Bool { isConnected }
     var isShutDownForTesting: Bool { isShutDown }
     private(set) var createdSessionCountForTesting: Int = 0
     private(set) var invalidatedSessionCountForTesting: Int = 0
+    private(set) var stopCallCountForTesting: Int = 0
 
     func prepareSessionForTesting() {
         _ = replaceSession()
+    }
+
+    func simulateRegisteredForTesting(clientKey: String) {
+        isConnected = true
+        isWaitingForPairing = false
+        if config.clientKey != clientKey {
+            config.clientKey = clientKey
+            onClientKeyRegistered(clientKey)
+        }
+        emitCurrentDevice()
     }
 
     private var isConnected: Bool = false
@@ -456,6 +486,7 @@ public actor LGWebOSClient {
         onSecurityFailure: @escaping @Sendable (String) -> Void
     ) {
         self.config = config
+        self.trustStore = .shared
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
@@ -464,30 +495,32 @@ public actor LGWebOSClient {
 
     init(
         config: LGWebOSConfig,
+        trustStore: LGCertificateTrust = .shared,
         onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
         onClientKeyRegistered: @escaping @Sendable (String) -> Void,
         onSecurityFailure: @escaping @Sendable (String) -> Void,
-        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
+        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)? = nil
     ) {
         self.config = config
+        self.trustStore = trustStore
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
         self.sendFrameOverrideForTesting = sendFrameOverrideForTesting
     }
 
-    private static func makeURLSession() -> URLSession {
+    private static func makeURLSession(trustStore: LGCertificateTrust) -> URLSession {
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
         urlConfig.timeoutIntervalForRequest = 30
         urlConfig.waitsForConnectivity = false
-        return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(), delegateQueue: nil)
+        return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(trustStore: trustStore), delegateQueue: nil)
     }
 
     private func replaceSession() -> URLSession? {
         guard !isShutDown else { return nil }
         let previous = self.session
-        let created = Self.makeURLSession()
+        let created = Self.makeURLSession(trustStore: trustStore)
         self.session = created
         createdSessionCountForTesting += 1
         if let previous {
@@ -523,6 +556,7 @@ public actor LGWebOSClient {
     }
 
     public func stop() {
+        stopCallCountForTesting += 1
         loopTask?.cancel()
         loopTask = nil
         activeWebSocket?.cancel(with: .goingAway, reason: nil)
@@ -553,14 +587,31 @@ public actor LGWebOSClient {
         }
     }
 
-    func resetTrustAndPair() throws {
-        guard !isShutDown else { return }
-        stop()
-        guard LGCertificateTrust.shared.reset(host: config.host) else {
+    func trustStoreSharesVault(_ vault: CredentialVault) -> Bool {
+        trustStore.sharesVault(vault)
+    }
+
+    /// Persists discarding the pinned TLS certificate (and, when `clearingPairingKeyInVault` shares
+    /// the trust store's `CredentialVault`, the pairing key in the same atomic commit) before
+    /// stopping any active connection. Any failure leaves the certificate pin, pairing key, and
+    /// live connection intact. Returns `true` when the pairing key was cleared atomically.
+    @discardableResult
+    func resetTrust(expectedHost: String? = nil, clearingPairingKeyInVault pairingVault: CredentialVault? = nil) throws -> Bool {
+        guard !isShutDown else {
             throw LGCertificateTrust.Failure.unavailable
         }
-        config.clientKey = ""
-        start()
+        if let expectedHost, config.host != expectedHost {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        let clearsKeyAtomically = pairingVault.map { trustStore.sharesVault($0) } ?? false
+        let extraUpdates: [String: Data?] = clearsKeyAtomically
+            ? [LGWebOSConfig.clientKeyAccount: nil]
+            : [:]
+        guard trustStore.reset(host: config.host, additionalVaultUpdates: extraUpdates) else {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        stop()
+        return clearsKeyAtomically
     }
 
     // MARK: - Command Execution
@@ -700,7 +751,7 @@ public actor LGWebOSClient {
                 isConnected = false
                 isWaitingForPairing = false
                 emitCurrentDevice()
-                if let failure = LGCertificateTrust.shared.failure(for: config.host) {
+                if let failure = trustStore.failure(for: config.host) {
                     onSecurityFailure(failure.localizedDescription)
                     return
                 }
@@ -897,18 +948,49 @@ public actor LGWebOSClient {
         #endif
     }
 
-    public static func discoverOnLAN(hostHint: String = LGWebOSConfig.defaultHost) async -> [LGWebOSDiscoveredTV] {
+    /// Canonical private LAN IPv4 or `.local` hostname permitted for unencrypted UPnP LAN discovery (#12).
+    public static func normalizedLANDiscoveryHost(_ rawHost: String) -> String? {
+        var host = rawHost
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        guard HADiscovery.isAllowedLANDiscoveryHost(host) else {
+            return nil
+        }
+        return host
+    }
+
+    /// Human-readable reason when LAN discovery finds no TV, explaining when a non-LAN `hostHint` was skipped (#12).
+    public static func discoveryFailureMessage(hostHint: String) -> String {
+        let trimmed = hostHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, normalizedLANDiscoveryHost(trimmed) == nil {
+            return L10n.tr(
+                "未扫描到开机状态的 LG 电视（已跳过非局域网私网或 .local 地址 \(trimmed)）",
+                "No powered-on LG TV found on LAN (skipped non-LAN or non-.local host \(trimmed))"
+            )
+        }
+        return L10n.tr("未扫描到开机状态的 LG 电视", "No powered-on LG TV found on LAN")
+    }
+
+    public static func discoverOnLAN(
+        hostHint: String = LGWebOSConfig.defaultHost,
+        arpHostsProvider: (@Sendable () -> [String])? = nil,
+        probeHost: (@Sendable (String) async -> LGWebOSDiscoveredTV?)? = nil
+    ) async -> [LGWebOSDiscoveredTV] {
         var candidates: [String] = []
         var seen: Set<String> = []
-        let trimmedHint = hostHint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedHint.isEmpty, seen.insert(trimmedHint).inserted {
-            candidates.append(trimmedHint)
+        if let safeHint = normalizedLANDiscoveryHost(hostHint), seen.insert(safeHint).inserted {
+            candidates.append(safeHint)
         }
         let arpHosts = await Task.detached(priority: .utility) {
-            HADiscovery.queryARPHosts()
+            arpHostsProvider?() ?? HADiscovery.queryARPHosts()
         }.value
-        for ip in arpHosts where seen.insert(ip).inserted {
-            candidates.append(ip)
+        for ip in arpHosts {
+            if let safeIP = normalizedLANDiscoveryHost(ip), seen.insert(safeIP).inserted {
+                candidates.append(safeIP)
+            }
         }
         guard !candidates.isEmpty else { return [] }
 
@@ -923,6 +1005,10 @@ public actor LGWebOSClient {
         return await withTaskGroup(of: (Int, LGWebOSDiscoveredTV?).self) { group in
             for (idx, host) in candidates.enumerated() {
                 group.addTask {
+                    if let probeHost {
+                        let discovered = await probeHost(host)
+                        return (idx, discovered)
+                    }
                     guard let url = URL(string: "http://\(host):1869/") else { return (idx, nil) }
                     var req = URLRequest(url: url)
                     req.timeoutInterval = 0.9

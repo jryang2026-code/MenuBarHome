@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 LINT_ONLY=0
 SKIP_SNAPSHOTS=0
+RUN_SNAPSHOTS=0
 RUN_SCRIPT_TESTS=0
 CHANGED_ONLY=0
 BASE_REF=""
@@ -20,6 +21,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --skip-snapshots)
             SKIP_SNAPSHOTS=1
+            shift
+            ;;
+        --snapshots)
+            RUN_SNAPSHOTS=1
             shift
             ;;
         --script-tests)
@@ -39,11 +44,16 @@ while [ "$#" -gt 0 ]; do
             shift 2
             ;;
         *)
-            echo "❌ 未知参数：$1（可用：--lint-only --script-tests --changed [--base <ref>] --skip-snapshots）" >&2
+            echo "❌ 未知参数：$1（可用：--lint-only --script-tests --changed [--base <ref>] --skip-snapshots --snapshots）" >&2
             exit 2
             ;;
     esac
 done
+
+if [ "$SKIP_SNAPSHOTS" = "1" ] && [ "$RUN_SNAPSHOTS" = "1" ]; then
+    echo "❌ --snapshots 与 --skip-snapshots 不能同时使用" >&2
+    exit 2
+fi
 
 # The hooks live in the shared git directory, so every worktree gets the same gates.
 GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || true)"
@@ -267,6 +277,7 @@ if [ -n "$PYTHON_BIN" ]; then
     "$PYTHON_BIN" scripts/check_workflows.py
     "$PYTHON_BIN" scripts/check_doc_links.py
     "$PYTHON_BIN" scripts/check_capability_matrix.py
+    "$PYTHON_BIN" scripts/check_capability_manifest.py
     "$PYTHON_BIN" scripts/check_supported_devices.py
     "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" - <<'PY'
@@ -335,7 +346,9 @@ run_script_self_tests() {
         run_clean_env "$PYTHON_BIN" scripts/local_ci_dns.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/local_macos_runner.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/check_windows_test_lints.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_capability_manifest.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
+        run_clean_env bash scripts/test_snapshot_ci.sh
         run_clean_env bash scripts/test_check_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
         run_clean_env bash scripts/test_merge_pr.sh
@@ -507,8 +520,7 @@ run_swift_gate() {
         echo "⏭️  跳过 Swift 门槛：未找到 swift"
         return 0
     elif [ "$SKIP_SNAPSHOTS" = "1" ]; then
-        # For a machine whose renderer is not the reference (any Mac other than the one that records the
-        # baselines). The default gate compares snapshots.
+        # Pixel baselines are compared on macos-26-intel. A local Mac is not that renderer.
         echo "运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
         run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
@@ -516,12 +528,32 @@ run_swift_gate() {
         record_gate_result "Snapshots=skip"
     elif [ "$CHANGED_ONLY" = "1" ] && [ "$MACOS_APP_CHANGED" = "0" ]; then
         echo "ℹ️  仅核心层改动，跳过 UI 快照渲染比对，运行 MijiaCore 单元测试..."
+        echo "像素基准是 GitHub 托管机 macos-26-intel。重录用 Actions 的 Record snapshots。"
         run_logged "Swift 核心测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
-    else
-        echo "运行 Swift 单元测试 (swift test) 与双端黄金语料校验..."
-        run_logged "Swift 测试" swift test || status=$?
+    elif [ "$RUN_SNAPSHOTS" = "1" ]; then
+        echo "运行 Swift 单元测试，并额外做一次本机快照比对（失败不阻断）..."
+        echo "像素基准是 GitHub 托管机 macos-26-intel（Xcode 26.6，zh_CN）。本机结果只供参考。"
+        run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
+        if [ "$status" -eq 0 ]; then
+            local snap=0
+            set +e
+            swift test --filter SnapshotTests
+            snap=$?
+            set -e
+            if [ "$snap" -ne 0 ]; then
+                echo "⚠️ 本机快照与基准不一致。这不阻断本机门禁。重录请运行 Actions 的 Record snapshots。"
+                record_gate_result "Snapshots=advisory"
+            fi
+        fi
+    else
+        echo "运行 Swift 单元测试（跳过快照像素比对）与双端黄金语料校验..."
+        echo "像素基准是 GitHub 托管机 macos-26-intel（Xcode 26.6，zh_CN）。本机渲染不同，不能当基准。"
+        echo "重录：Actions → Record snapshots，Branch 填本仓库的分支名。更换该镜像或 Xcode 后必须重录。"
+        run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
+        record_gate_result "Swift=${status}"
+        record_gate_result "Snapshots=skip"
     fi
     [ "$status" -eq 0 ]
 }

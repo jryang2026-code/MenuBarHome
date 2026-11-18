@@ -28,6 +28,12 @@ public enum KeychainHelper {
     /// `UserDefaults` key where ≤1.0.6 mirrored the HA token in plain text. Only read by
     /// `migratePlaintextCredentialsToKeychain`; nothing writes it any more (#16).
     static let legacyPlaintextTokenKey = "ha_fallback_token"
+    /// A development-only token override. It is honoured only when the app is started with the
+    /// explicit opt-in below and the user has no saved credential (#10); it can never shadow a
+    /// Keychain token, and an explicit sign-out keeps it suppressed until the user saves a new token.
+    public static let environmentTokenName = "HA_ACCESS_TOKEN"
+    public static let environmentTokenOptInKey = "MENUBARHOME_ALLOW_HA_ACCESS_TOKEN"
+    static let environmentTokenSignedOutKey = "ha_environment_token_signed_out"
 
     public static var localizedDefaultHomeName: String {
         L10n.tr("我的家", "My Home")
@@ -35,18 +41,37 @@ public enum KeychainHelper {
     public static let defaultNASURL = "http://homeassistant.local:8123"
     public static let defaultSeededToken = ""
 
-    public static func loadToken(defaults: UserDefaults = .standard, vault: CredentialVault? = nil) -> String {
+    public static func loadToken(
+        defaults: UserDefaults = .standard,
+        vault: CredentialVault? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String {
         if let vault { return readKeychainSecret(account: account, vault: vault) ?? defaultSeededToken }
         guard defaults === UserDefaults.standard else {
             return loadSecret(account: account, defaults: defaults)
         }
-        if let envToken = ProcessInfo.processInfo.environment["HA_ACCESS_TOKEN"],
-           !envToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return envToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
         // Credentials live only in the Keychain (#16). An unreadable item reads as "not signed in" instead of
         // looping on the Keychain authorization prompt.
-        return readKeychainSecret(account: account) ?? defaultSeededToken
+        let stored = readKeychainSecret(account: account) ?? defaultSeededToken
+        return resolvedToken(
+            stored: stored,
+            environment: environment,
+            signedOut: defaults.bool(forKey: environmentTokenSignedOutKey)
+        )
+    }
+
+    /// The environment token is a development escape hatch, never a credential of its own (#10):
+    /// a saved token wins, an explicit sign-out wins, and without the opt-in it is ignored.
+    static func resolvedToken(stored: String, environment: [String: String], signedOut: Bool) -> String {
+        guard stored.isEmpty,
+              !signedOut,
+              environment[environmentTokenOptInKey] == "1",
+              let envToken = environment[environmentTokenName]?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+              !envToken.isEmpty else {
+            return stored
+        }
+        return envToken
     }
 
     /// Saves (or, with an empty token, deletes) the Home Assistant token. Returns false when the
@@ -62,6 +87,10 @@ public enum KeychainHelper {
         if let vault {
             guard writeKeychainSecret(token, account: account, vault: vault) else { return false }
             defaults.removeObject(forKey: secretFallbackKey(for: account))
+            defaults.set(
+                token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                forKey: environmentTokenSignedOutKey
+            )
             return true
         }
         // A test suite keeps its token in the suite, never in the real login Keychain. This mirrors
@@ -74,10 +103,15 @@ public enum KeychainHelper {
             } else {
                 defaults.set(trimmed, forKey: key)
             }
+            defaults.set(trimmed.isEmpty, forKey: environmentTokenSignedOutKey)
             return true
         }
         guard writeKeychainSecret(token, account: account) else { return false }
         defaults.removeObject(forKey: legacyPlaintextTokenKey)
+        defaults.set(
+            token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            forKey: environmentTokenSignedOutKey
+        )
         return true
     }
 

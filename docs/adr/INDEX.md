@@ -25,3 +25,5 @@
 | [0019](0019-scheduled-command-source-scope.md) | 2026-11-09 | 已接受 | 定时指令记录创建时的 `sourceScopes`，按当前连接源集合过滤执行与保存。 |
 | [0020](0020-backend-descriptor-table.md) | 2026-11-13 | 已接受 | 连接后端保持封闭枚举，散落分支收进穷尽描述表；Windows 补齐 `HomeProvider` 接口层。 |
 | [0021](0021-lan-first-hybrid-miio.md) | 2026-11-15 | 已接受 | macOS 落地 miIO UDP 54321 局域网优先混合读写与云端自动回退（取代 ADR-0007）。 |
+| [0022](0022-github-hosted-snapshot-baselines.md) | 2026-11-17 | 已接受 | UI 快照基准改为 GitHub 托管 `macos-26-intel`，不再用维护者的 Mac（取代 ADR-0018 第 5 条）。 |
+| [0023](0023-host-owned-builtin-capabilities.md) | 2026-11-18 | 已接受 | 宿主统一持有内置能力选择、生命周期、引用判决与写入门，保留 ADR-0020 封闭后端并排除第三方代码插件。 |

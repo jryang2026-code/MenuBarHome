@@ -40,6 +40,9 @@ public struct ToastNotice: Equatable, Sendable {
 
 public struct UndoBanner: Equatable, Sendable {
     public let id: UUID
+    /// Logical action identity shared with `lastAssistantUndo` only when both entries were recorded
+    /// by the same execution, so a partial or refused undo never cross-pollinates independent stacks.
+    public let actionId: UUID
     public var title: String
     public var restoreCommands: [DeviceCommand]
     public var previousDevices: [SmartDevice]
@@ -59,6 +62,7 @@ public struct UndoBanner: Equatable, Sendable {
 
     public init(
         id: UUID = UUID(),
+        actionId: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
         previousDevices: [SmartDevice],
@@ -69,6 +73,7 @@ public struct UndoBanner: Equatable, Sendable {
         attemptedDeviceIds: Set<String>? = nil
     ) {
         self.id = id
+        self.actionId = actionId
         self.title = title
         self.restoreCommands = restoreCommands
         self.previousDevices = previousDevices
@@ -77,6 +82,31 @@ public struct UndoBanner: Equatable, Sendable {
         self.duration = duration
         self.isAllOff = isAllOff
         self.attemptedDeviceIds = attemptedDeviceIds
+    }
+}
+
+struct AssistantUndoEntry: Equatable, Sendable {
+    var actionId: UUID
+    var reply: String
+    var restore: [DeviceCommand]
+    var previous: [SmartDevice]
+    var at: Date
+    var habitReceipt: UserHabitMemory.RecordingReceipt?
+
+    init(
+        actionId: UUID = UUID(),
+        reply: String,
+        restore: [DeviceCommand],
+        previous: [SmartDevice],
+        at: Date,
+        habitReceipt: UserHabitMemory.RecordingReceipt? = nil
+    ) {
+        self.actionId = actionId
+        self.reply = reply
+        self.restore = restore
+        self.previous = previous
+        self.at = at
+        self.habitReceipt = habitReceipt
     }
 }
 
@@ -117,6 +147,8 @@ public final class HomeStore {
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
     /// while an optimistic write is locked.
     public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
+    public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
+    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
     public internal(set) var lightGroupOwners: [String: String] = [:]
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
@@ -200,6 +232,18 @@ public final class HomeStore {
         didSet {
             HomePreferences.enableGlobalHotkey.save(enableGlobalHotkey, to: userDefaults)
             onGlobalHotkeyPreferenceChanged?(enableGlobalHotkey)
+        }
+    }
+
+    public var enableVoiceInput: Bool {
+        didSet {
+            HomePreferences.enableVoiceInput.save(enableVoiceInput, to: userDefaults)
+            if enableVoiceInput != oldValue {
+                onVoiceInputPreferenceChanged?(enableVoiceInput)
+                for observer in voiceInputPreferenceObservers.values {
+                    observer(enableVoiceInput)
+                }
+            }
         }
     }
 
@@ -657,17 +701,31 @@ public final class HomeStore {
     public private(set) var toastNotice: ToastNotice?
     public internal(set) var undoBanner: UndoBanner? {
         didSet {
-            if undoBanner != nil {
-                undoStateRevision &+= 1
+            if let undoBanner, undoBanner.id != oldValue?.id {
+                bannerUndoRevision &+= 1
             }
             scheduleRaycastSnapshotExport()
         }
     }
-    var undoStateRevision: UInt64 = 0
+    var bannerUndoRevision: UInt64 = 0
+    var assistantUndoRevision: UInt64 = 0
     /// Delivers a newly fired safety alert to the app's notifier. Optional: the panel's activity
     /// stack records the alert in `recentSafetyAlerts` whether or not this is installed.
     public var onSafetyAlert: ((SafetyAlert) -> Void)?
     public var onGlobalHotkeyPreferenceChanged: ((Bool) -> Void)?
+    public var onVoiceInputPreferenceChanged: ((Bool) -> Void)?
+    @ObservationIgnored private var voiceInputPreferenceObservers: [UUID: (Bool) -> Void] = [:]
+
+    @discardableResult
+    public func addVoiceInputPreferenceObserver(_ observer: @escaping (Bool) -> Void) -> UUID {
+        let id = UUID()
+        voiceInputPreferenceObservers[id] = observer
+        return id
+    }
+
+    public func removeVoiceInputPreferenceObserver(_ id: UUID) {
+        voiceInputPreferenceObservers.removeValue(forKey: id)
+    }
 
     public var onOpenCameraLiveView: ((SmartDevice) -> Void)?
     public internal(set) var activeLiveCameraDeviceId: String?
@@ -700,14 +758,36 @@ public final class HomeStore {
         if case .installing = updateState { return true }
         return false
     }
-    /// How long a relaunch may take before the update is treated as not landed. Longer than the
-    /// swap script's own 15 s wait for this process to exit. `nil` disables the watchdog (tests).
-    public var updateRelaunchWatchdogInterval: Duration? = .seconds(20)
+    /// How long a relaunch may take before checking whether the detached swap process is still running.
+    /// Longer than the swap script's nominal 15 s wait for this process to exit; the watchdog also
+    /// defers while the swap process is alive. `nil` disables the watchdog (tests).
+    public var updateRelaunchWatchdogInterval: Duration? = .seconds(30)
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
-    public var lgConfig: LGWebOSConfig {
-        didSet { lgConfig.save(to: userDefaults) }
+    static var lgKeychainSaveErrorMessage: String {
+        L10n.tr(
+            "无法把电视配对密钥写入钥匙串，请授权钥匙串访问后重试",
+            "Could not save the TV pairing key to Keychain; allow Keychain access and try again"
+        )
     }
+
+    public var lgConfig: LGWebOSConfig {
+        didSet {
+            guard !suppressNextLGConfigDidSetSave else { return }
+            lgConfigSaveCallsInDidSetForTesting += 1
+            lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
+            if lgConfigSaveFailed {
+                showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+            }
+        }
+    }
+    /// Set by `lgConfig.didSet` when the Keychain refused the pairing key (#7); the pairing callback
+    /// reads it to decide between "Paired" and an error, instead of claiming a pairing that was not stored.
+    @ObservationIgnored var lgConfigSaveFailed = false
+    /// Prevents `lgConfig.didSet` from re-saving and potentially flipping `lgConfigSaveFailed` when the
+    /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
+    @ObservationIgnored var suppressNextLGConfigDidSetSave = false
+    @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
@@ -783,11 +863,30 @@ public final class HomeStore {
     }
     var manualWriteSessions: [String: ManualWriteSession] = [:]
     struct FacetWriteState {
+        enum Phase {
+            case debouncing
+            case inFlight
+        }
         let token: UUID
         let origin: JSONValue?
+        let originSnapshotGeneration: UInt64
+        let value: JSONValue?
+        /// Confirmation kind covering this tick's value when `dispatchFacetWrite` rechecks before sending.
+        let approval: FacetDragApproval?
+        /// Confirmation kinds the user already approved during this still-debouncing slider drag.
+        var confirmedApprovals: Set<FacetDragApproval>
+        var phase: Phase
         var bannerID: UUID?
     }
     var facetWrites: [String: FacetWriteState] = [:]
+    /// Latest provider- or LAN-reported device rows before optimistic locks merge local values on top.
+    /// Written only by real device reports (`snapshotUpdated`, `applyLGDeviceUpdate`) and cleared in
+    /// `invalidateUndoContext()` and per-account in `logoutMiAccount(id:)` (§13).
+    @ObservationIgnored var lastReportedDevices: [String: SmartDevice] = [:]
+    /// Latest provider-reported facet rows before `optimisticFacetLocks` preserve local values.
+    /// Written only by `snapshotUpdated` and cleared in `invalidateUndoContext()` and per-account in
+    /// `logoutMiAccount(id:)` (§13), so local `deviceFacets` mutations can never poison baselines.
+    @ObservationIgnored var lastReportedFacets: [String: [FacetControl]] = [:]
     var undoTimerTask: Task<Void, Never>?
     /// Bulk actions whose commands are still being sent, keyed by the banner they created.
     /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
@@ -962,7 +1061,7 @@ public final class HomeStore {
             }
         }
         self.selectedMiHomeId = initialSelectedHomeId
-        self.lgConfig = LGWebOSConfig.load(from: ud)
+        self.lgConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
         self.homeName = HomePreferences.homeName.load(from: ud)
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
         let habitShareKey = "assistant_habit_share_enabled"
@@ -997,6 +1096,7 @@ public final class HomeStore {
         self.hideGroupedLights = HomePreferences.hideGroupedLights.load(from: ud)
         self.allowAdvancedFacetWrites = HomePreferences.allowAdvancedFacetWrites.load(from: ud)
         self.enableGlobalHotkey = HomePreferences.enableGlobalHotkey.load(from: ud)
+        self.enableVoiceInput = HomePreferences.enableVoiceInput.load(from: ud)
         self.enableSafetyAlerts = HomePreferences.enableSafetyAlerts.load(from: ud)
         self.doorbellAutoPopup = HomePreferences.doorbellAutoPopup.load(from: ud)
         self.enableWeeklyHealthReport = HomePreferences.enableWeeklyHealthReport.load(from: ud)
@@ -1270,16 +1370,10 @@ public final class HomeStore {
     /// Card writes that have finished, including a cancellation that shows no toast.
     @ObservationIgnored var manualWriteExits = 0
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
-    var lastAssistantUndo: (
-        reply: String,
-        restore: [DeviceCommand],
-        previous: [SmartDevice],
-        at: Date,
-        habitReceipt: UserHabitMemory.RecordingReceipt?
-    )? {
+    var lastAssistantUndo: AssistantUndoEntry? {
         didSet {
             if lastAssistantUndo != nil {
-                undoStateRevision &+= 1
+                assistantUndoRevision &+= 1
             }
             scheduleRaycastSnapshotExport()
         }

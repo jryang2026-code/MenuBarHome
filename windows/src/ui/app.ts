@@ -21,6 +21,7 @@ import {
   MiotSpecResolver,
   type QRLoginTicket,
   maskedMiUserId,
+  miCloudRegionLabel,
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
 import {
@@ -134,7 +135,7 @@ import {
   persistMiSessionExpired,
 } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents } from "./settingsEvents.js";
+import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.js";
 import { type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
@@ -729,53 +730,55 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindAllOffControl(): void {
-    this.clearAllOffHold();
-    const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
-    if (!allOff) return;
-    const beginHold = () => {
-      if (this.allOffHoldTimer !== null) return;
-      this.allOffHoldConsumed = false;
-      allOff.classList.add("is-holding");
-      this.allOffHoldTimer = window.setTimeout(() => {
-        this.allOffHoldTimer = null;
-        // The popover hides on window blur but the button stays in the DOM: never fire a hold the
-        // user cannot see finish.
-        if (!allOff.isConnected || !document.hasFocus()) return;
-        this.allOffHoldConsumed = true;
+    this.pipeline.eventScope.bindWithinCurrentScope(this.root, () => {
+      this.clearAllOffHold();
+      const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
+      if (!allOff) return;
+      const beginHold = () => {
+        if (this.allOffHoldTimer !== null) return;
+        this.allOffHoldConsumed = false;
+        allOff.classList.add("is-holding");
+        this.allOffHoldTimer = window.setTimeout(() => {
+          this.allOffHoldTimer = null;
+          // The popover hides on window blur but the button stays in the DOM: never fire a hold the
+          // user cannot see finish.
+          if (!allOff.isConnected || !document.hasFocus()) return;
+          this.allOffHoldConsumed = true;
+          allOff.classList.remove("is-holding");
+          void this.turnAllOff();
+        }, 600);
+      };
+      // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
+      const endHold = (hint: "never" | "if-pending" | "always") => {
+        const pending = this.allOffHoldTimer !== null;
+        this.clearAllOffHold();
         allOff.classList.remove("is-holding");
-        void this.turnAllOff();
-      }, 600);
-    };
-    // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
-    const endHold = (hint: "never" | "if-pending" | "always") => {
-      const pending = this.allOffHoldTimer !== null;
-      this.clearAllOffHold();
-      allOff.classList.remove("is-holding");
-      const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
-      if (!showHint) return;
-      this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
-      this.render();
-    };
-    const isHoldKey = (event: KeyboardEvent) => event.key === " " || event.key === "Spacebar" || event.key === "Enter";
-    allOff.addEventListener("pointerdown", () => beginHold());
-    allOff.addEventListener("pointerup", () => endHold("always"));
-    allOff.addEventListener("pointerleave", () => endHold("never"));
-    allOff.addEventListener("blur", () => {
-      this.clearAllOffHold();
-      allOff.classList.remove("is-holding");
-    });
-    allOff.addEventListener("keydown", (event) => {
-      if (!isHoldKey(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.repeat) return;
-      beginHold();
-    });
-    allOff.addEventListener("keyup", (event) => {
-      if (!isHoldKey(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      endHold("if-pending");
+        const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
+        if (!showHint) return;
+        this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
+        this.render();
+      };
+      const isHoldKey = (event: KeyboardEvent) => event.key === " " || event.key === "Spacebar" || event.key === "Enter";
+      allOff.addEventListener("pointerdown", () => beginHold());
+      allOff.addEventListener("pointerup", () => endHold("always"));
+      allOff.addEventListener("pointerleave", () => endHold("never"));
+      allOff.addEventListener("blur", () => {
+        this.clearAllOffHold();
+        allOff.classList.remove("is-holding");
+      });
+      allOff.addEventListener("keydown", (event) => {
+        if (!isHoldKey(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        beginHold();
+      });
+      allOff.addEventListener("keyup", (event) => {
+        if (!isHoldKey(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        endHold("if-pending");
+      });
     });
   }
 
@@ -1064,6 +1067,7 @@ export class MenuMijiaWindowsApp {
   public async startXiaomiQRLogin(): Promise<void> {
     if (this.isPollingQR) return;
     const sourceRevAtStart = this.sourceRevision;
+    const requestedRegion = normalizeMiCloudRegion(this.settings.miCloudRegion);
     this.isPollingQR = true;
     this.qrStatusText = t("正在获取小米安全登录二维码...");
     invokeTauriVoid("set_pin_popover", { pin: true });
@@ -1084,6 +1088,8 @@ export class MenuMijiaWindowsApp {
       this.settings.miSession = sessionWithoutPassToken(session);
       this.miSessionExpired = false;
       this.settings.miCloudRegion = normalizeMiCloudRegion(session.region);
+      const regionSwitched = this.settings.miCloudRegion !== requestedRegion;
+      const regionLabel = miCloudRegionLabel(this.settings.miCloudRegion);
       this.settings.connectionMode = "xiaomiCloud";
       this.settings.hasCompletedOnboarding = true;
       // Clear fake demo devices immediately upon real Xiaomi login
@@ -1099,9 +1105,16 @@ export class MenuMijiaWindowsApp {
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       this.saveSettings();
 
-      this.qrStatusText = t("已连接小米账号 {user}", { user: maskedMiUserId(session.userId) });
+      this.qrStatusText = regionSwitched
+        ? t("已连接小米账号 {user}（已切换到账号地区 {region}）", { user: maskedMiUserId(session.userId), region: regionLabel })
+        : t("已连接小米账号 {user}", { user: maskedMiUserId(session.userId) });
       this.replyBanner = {
-        text: t("已登录小米账号 {user}，正在拉取真实设备...", { user: maskedMiUserId(session.userId) }),
+        text: regionSwitched
+          ? t("已登录小米账号 {user}，已切换到账号地区 {region}，正在拉取真实设备...", {
+              user: maskedMiUserId(session.userId),
+              region: regionLabel,
+            })
+          : t("已登录小米账号 {user}，正在拉取真实设备...", { user: maskedMiUserId(session.userId) }),
         source: t("扫码成功"),
       };
       this.render();
@@ -1534,6 +1547,10 @@ export class MenuMijiaWindowsApp {
    */
   public bindSettingsEvents(): void {
     bindSettingsEvents(this);
+  }
+
+  public requestCloseSettingsSheet(): boolean {
+    return requestCloseSettingsSheet(this);
   }
 
   private bindLayoutGestures(): void {

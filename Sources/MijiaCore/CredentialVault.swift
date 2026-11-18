@@ -111,13 +111,26 @@ public final class CredentialVault: @unchecked Sendable {
     /// has to be readable before any of it is rewritten.
     @discardableResult
     func set(_ data: Data?, for account: String) -> Bool {
+        setAll([account: data])
+    }
+
+    /// Atomically applies multiple account updates in a single vault persistence write.
+    /// If the write fails, none of the accounts change in memory or on disk.
+    @discardableResult
+    func setAll(_ updates: [String: Data?]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         var pendingLegacyDelete: Set<String> = []
         loadIfNeeded(retryingUnavailable: true, completedLegacyAccounts: &pendingLegacyDelete)
         guard case .loaded(var items) = state else { return false }
-        if items[account] == data && pendingLegacyDelete.isEmpty { return true }
-        items[account] = data
+        var changed = false
+        for (account, data) in updates {
+            if items[account] != data {
+                items[account] = data
+                changed = true
+            }
+        }
+        if !changed && pendingLegacyDelete.isEmpty { return true }
         guard persist(items) else { return false }
         for legacyAccount in pendingLegacyDelete {
             legacy.delete(legacyAccount)

@@ -21,16 +21,20 @@ public struct DeviceMergeResult: Equatable, Sendable {
     public var rooms: RoomIdentityRegistry
     /// Home Assistant device id → the merged card id, whichever source won the card.
     public var haCanonicalIDs: [String: String]
+    /// Mi cloud device did → the merged card id, whichever source won the card (#23).
+    public var miCanonicalIDs: [String: String]
 
     public init(
         home: SynthesizedHome,
         routes: [String: DeviceMergeRoute],
         canonical: CanonicalDeviceRegistry,
         rooms: RoomIdentityRegistry,
-        haCanonicalIDs: [String: String] = [:]
+        haCanonicalIDs: [String: String] = [:],
+        miCanonicalIDs: [String: String] = [:]
     ) {
         self.home = home
         self.haCanonicalIDs = haCanonicalIDs
+        self.miCanonicalIDs = miCanonicalIDs
         self.routes = routes
         self.canonical = canonical
         self.rooms = rooms
@@ -389,6 +393,11 @@ public enum DeviceDeduplicator {
             if let preferred, !preferred.isEmpty { mergedFacets[cardID] = preferred }
         }
         home.deviceFacets = mergedFacets
+        for (sourceID, diag) in xiaomiCloud?.deviceTransportDiagnostics ?? [:] {
+            let cardID = miCanonicalIDs[sourceID] ?? sourceID
+            if mergedIDs.contains(cardID), routes[cardID]?.backend == .xiaomiCloud { home.deviceTransportDiagnostics[cardID] = diag }
+        }
+        home.localNetworkBlockedFeatures = (homeAssistant?.localNetworkBlockedFeatures ?? []).union(xiaomiCloud?.localNetworkBlockedFeatures ?? [])
         // Ownership arrives keyed by Mi source dids. A member or group paired with an HA card is
         // shown under the canonical id, so translate both endpoints before keeping the pair (#189).
         home.lightGroupOwners = (xiaomiCloud?.lightGroupOwners ?? [:]).reduce(into: [:]) { owners, entry in
@@ -405,7 +414,8 @@ public enum DeviceDeduplicator {
             routes: routes,
             canonical: updatedCanonical,
             rooms: updatedRooms,
-            haCanonicalIDs: haCanonicalIDs
+            haCanonicalIDs: haCanonicalIDs,
+            miCanonicalIDs: miCanonicalIDs
         )
     }
 

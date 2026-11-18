@@ -18,7 +18,7 @@ import {
   parseCachedHAHome,
 } from "../src/core/homeAssistant.js";
 import { setLanguage } from "../src/core/i18n.js";
-import { MiAccountLogin, isTrustedXiaomiLoginRedirect } from "../src/core/miCloud/accountLogin.js";
+import { MiAccountLogin, isTrustedXiaomiLoginRedirect, regionCodeFromLoginLocation } from "../src/core/miCloud/accountLogin.js";
 import { MiCloudError, MI_SESSION_WARNING_LEAD_MS, miSessionExpiryState, type HttpResponse } from "../src/core/miCloud/session.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 import { availableQuickActions, planQuickAction } from "../src/core/quickActions.js";
@@ -1273,5 +1273,87 @@ describe("Demo offline guard, credential error banner, mic pin guard & hover pau
       );
       assert.equal(seenUrls.length, 2);
     }
+
+    for (const badInitial of [
+      "https://evil.example/steal",
+      "http://sts.api.io.mi.com/sts",
+      "https://user@sts.api.io.mi.com/sts",
+    ]) {
+      const seenUrls: string[] = [];
+      const badInitialLogin = new MiAccountLogin(async (req): Promise<HttpResponse> => {
+        seenUrls.push(req.url);
+        if (req.url === "https://lp.example/poll") {
+          return {
+            status: 200,
+            headers: {},
+            body: `&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"${badInitial}"}`,
+          };
+        }
+        assert.fail(`Unexpected request to untrusted initial location ${req.url}`);
+      });
+      await assert.rejects(
+        () => badInitialLogin.waitForScan(ticket),
+        (err: unknown) => err instanceof MiCloudError && err.kind === "badResponse",
+      );
+      assert.equal(seenUrls.length, 1);
+    }
+  });
+
+  it("uses the region proven by the QR login location instead of the hand-picked one (#9)", async () => {
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=AT&p_idc=Europe"), "de");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=CN&p_idc=China"), "cn");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=IN&p_idc=India"), "i2");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=SG&p_idc=Singapore"), "sg");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=US&p_idc=America"), "us");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=RU&p_idc=Russia"), "ru");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=DE"), "de");
+    assert.equal(regionCodeFromLoginLocation("https://sts.api.io.mi.com/sts?d=wb_1&p_ur=GB&p_idc=Europe"), "de");
+    for (const untrusted of [
+      "https://evil.example/sts?p_ur=DE&p_idc=Europe",
+      "https://xiaomi.com.evil.example/sts?p_ur=DE&p_idc=Europe",
+      "http://sts.api.io.mi.com/sts?p_ur=DE&p_idc=Europe",
+      "https://sts.api.io.mi.com/sts?d=wb_1",
+      "https://sts.api.io.mi.com/sts?d=wb_1&p_ur=XX&p_idc=Unknown",
+    ]) {
+      assert.equal(regionCodeFromLoginLocation(untrusted), null, untrusted);
+    }
+
+    const ticket = {
+      qrImageURL: "https://qr.example/img",
+      loginURL: "https://login.example/qr",
+      longPollURL: "https://lp.example/poll",
+      timeout: 30,
+    };
+    const transport = async (req: { url: string }): Promise<HttpResponse> => {
+      if (req.url === "https://lp.example/poll") {
+        return {
+          status: 200,
+          headers: {},
+          body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?d=wb_1&p_ur=DE&p_idc=Europe"}',
+        };
+      }
+      if (req.url.startsWith("https://sts.api.io.mi.com/sts")) {
+        return { status: 200, headers: { "Set-Cookie": "serviceToken=tok-de; Path=/" }, body: "ok" };
+      }
+      return { status: 404, headers: {}, body: "" };
+    };
+    const proven = await new MiAccountLogin(transport, "cn").waitForScan(ticket);
+    assert.equal(proven.region, "de", "the location's data centre wins over the picked region");
+
+    const unknownLocation = new MiAccountLogin(async (req: { url: string }): Promise<HttpResponse> => {
+      if (req.url === "https://lp.example/poll") {
+        return {
+          status: 200,
+          headers: {},
+          body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?d=wb_1&p_ur=XX&p_idc=Unknown"}',
+        };
+      }
+      if (req.url.startsWith("https://sts.api.io.mi.com/sts")) {
+        return { status: 200, headers: { "Set-Cookie": "serviceToken=tok-sg; Path=/" }, body: "ok" };
+      }
+      return { status: 404, headers: {}, body: "" };
+    }, "sg");
+    const kept = await unknownLocation.waitForScan(ticket);
+    assert.equal(kept.region, "sg", "an unrecognized region hint keeps the picked region");
   });
 });

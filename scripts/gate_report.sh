@@ -4,9 +4,10 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 usage:
-  gate_report.sh summary Swift=0 Windows=skip Raycast=0
+  gate_report.sh summary Swift=0 Windows=skip Snapshots=advisory
   gate_report.sh hook-success LOG
   gate_report.sh failing-tests LOG
+  gate_report.sh suite-state LOG
   gate_report.sh record-verdict STATUS LOG
   gate_report.sh list-snapshot-changes DIR
   gate_report.sh png-size-manifest DIR
@@ -32,17 +33,20 @@ join_by() {
 cmd_summary() {
     local failed=0
     local -a skips=()
+    local -a advisories=()
     local -a fail_parts=()
     local arg key val line
     for arg in "$@"; do
         key="${arg%%=*}"
         val="${arg#*=}"
         if [ "$key" = "$arg" ] || [ -z "$key" ]; then
-            echo "❌ summary 参数必须是 名称=0、名称=skip 或 名称=退出码：${arg}" >&2
+            echo "❌ summary 参数必须是 名称=0、名称=skip、名称=advisory 或 名称=退出码：${arg}" >&2
             exit 2
         fi
         if [ "$val" = "skip" ]; then
             skips+=("$key")
+        elif [ "$val" = "advisory" ]; then
+            advisories+=("$key")
         elif [ "$val" != "0" ]; then
             failed=1
             fail_parts+=("${key}=${val}")
@@ -56,11 +60,39 @@ cmd_summary() {
         printf '%s\n' "$line"
         exit 1
     fi
+    if [ "${#advisories[@]}" -gt 0 ]; then
+        line="⚠️ 部分通过：本机快照仅供参考（$(join_by '、' "${advisories[@]}")）"
+        if [ "${#skips[@]}" -gt 0 ]; then
+            line="${line}；跳过 $(join_by '、' "${skips[@]}")"
+        fi
+        printf '%s\n' "$line"
+        exit 0
+    fi
     if [ "${#skips[@]}" -gt 0 ]; then
         printf '⚠️ 部分通过：跳过 %s\n' "$(join_by '、' "${skips[@]}")"
         exit 0
     fi
     printf '%s\n' "✅ 所有门禁检查与单元测试全部通过！"
+}
+
+cmd_suite_state() {
+    local log="$1"
+    awk '
+        /(^|◇ )Test run started\./ { pending = 1; next }
+        /Test run with [0-9]+ tests? in [0-9]+ suites?/ {
+            summaries++
+            pending = 0
+            if ($0 !~ /Test run with [0-9]+ tests? in [0-9]+ suites? passed/) failed = 1
+            next
+        }
+        /✘ Test |recorded an issue/ { failed = 1 }
+        /unexpected signal code|Fatal error:/ { crash = 1 }
+        END {
+            if (crash || summaries == 0 || pending) print "incomplete"
+            else if (failed) print "failed"
+            else print "passed"
+        }
+    ' "$log"
 }
 
 cmd_hook_success() {
@@ -208,6 +240,7 @@ case "${1:-}" in
     summary) shift; cmd_summary "$@" ;;
     hook-success) cmd_hook_success "${2:?}" ;;
     failing-tests) cmd_failing_tests "${2:?}" ;;
+    suite-state) cmd_suite_state "${2:?}" ;;
     record-verdict) cmd_record_verdict "${2:?}" "${3:?}" ;;
     list-snapshot-changes) cmd_list_snapshot_changes "${2:?}" ;;
     png-size-manifest) cmd_png_size_manifest "${2:?}" ;;

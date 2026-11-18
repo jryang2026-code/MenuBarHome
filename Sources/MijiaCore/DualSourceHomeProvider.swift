@@ -22,15 +22,48 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var miStatus: ConnectionStatus = .connecting
     private var haSnapshot: SynthesizedHome?
     private var miSnapshot: SynthesizedHome?
+    private var haLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    private var miLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    private var lastEmittedLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var lastStatus: ConnectionStatus?
 
     private var canonical: CanonicalDeviceRegistry
     private var rooms = RoomIdentityRegistry()
     private var routes: [String: DeviceMergeRoute] = [:]
     private var haCanonicalIDs: [String: String] = [:]
+    private var miCanonicalIDs: [String: String] = [:]
     private var activeCameraRoutes: [String: DeviceMergeRoute] = [:]
+    /// Merged card id → recent emitted press timestamps per backend. Keeping a bounded history
+    /// rather than only the latest timestamp lets a delayed poll from the slower source still
+    /// recognize an earlier press after a newer press has already arrived (#23).
+    private var doorbellPressesByCard: [String: [HomeBackend: [Date]]] = [:]
+
+    /// A doorbell press the two sources both report within this window counts once (#23). Both
+    /// timestamps come from the device's own event clock, so cross-source skew stays far under
+    /// the window; a human double-press (plus the doorbell's own debounce) spans well over it.
+    /// The window is a fixed constant, so the boundary is deterministic and testable.
+    static let crossSourceDoorbellDedupWindow: TimeInterval = 2
+
+    /// Maximum event-time age an unmatched press stays in history to pair with a delayed report
+    /// from the other source (#23).
+    static let crossSourceDoorbellHistoryRetention: TimeInterval = 120
+
+    /// Maximum unmatched presses retained per card and source so rapid presses cannot grow
+    /// history without bound (#23).
+    static let crossSourceDoorbellHistoryLimit = 16
+
+    /// Maximum distinct cards retained in doorbell dedupe history.
+    static let crossSourceDoorbellCardLimit = 64
 
     var isShutDownForTesting: Bool { isShutDown }
+
+    func doorbellPressHistoryCountForTesting(cardID: String, backend: HomeBackend) -> Int {
+        doorbellPressesByCard[cardID]?[backend]?.count ?? 0
+    }
+
+    var doorbellTrackedCardCountForTesting: Int {
+        doorbellPressesByCard.count
+    }
 
     public init(
         homeAssistant: (any HomeProvider)?,
@@ -107,15 +140,18 @@ public actor DualSourceHomeProvider: HomeProvider {
         if backend == .homeAssistant, homeAssistant != nil {
             haSnapshot = nil
             haStatus = .connecting
+            haLocalNetworkBlocks = []
         } else if backend == .xiaomiCloud, xiaomiCloud != nil {
             miSnapshot = nil
             miStatus = .connecting
+            miLocalNetworkBlocks = []
         } else {
             return
         }
         guard started else { return }
         emitStatus(force: true)
         emitSourceStatuses()
+        emitLocalNetworkPermission()
         recompute()
     }
 
@@ -132,6 +168,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             homeAssistant = next
             haSnapshot = nil
             haStatus = .connecting
+            haLocalNetworkBlocks = []
         } else {
             miTask?.cancel()
             miTask = nil
@@ -139,6 +176,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             xiaomiCloud = next
             miSnapshot = nil
             miStatus = .connecting
+            miLocalNetworkBlocks = []
         }
         await previous?.shutdown()
         guard !isShutDown, started else { return }
@@ -148,6 +186,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         emitStatus(force: true)
         emitSourceStatuses()
+        emitLocalNetworkPermission()
         if previous != nil {
             recompute(allowEmpty: homeAssistant == nil && xiaomiCloud == nil)
         }
@@ -161,34 +200,57 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .statusChanged(let status):
             if backend == .homeAssistant {
                 haStatus = status
+                if case .connected = status { haLocalNetworkBlocks.remove(.homeAssistant) }
             } else if backend == .xiaomiCloud {
                 miStatus = status
             }
             emitStatus()
             emitSourceStatuses()
+            emitLocalNetworkPermission()
             recompute()
 
         case .sessionExpired(let session):
             continuation?.yield(.sessionExpired(session))
 
         case .doorbellRang(var ring):
-            if backend == .homeAssistant, let cardID = haCanonicalIDs[ring.deviceId] {
+            // Both sources report presses with their own device id; translate onto the merged
+            // card so the paired card's popup and the activity feed can find it (#23).
+            let sourceCanonicalIDs = backend == .homeAssistant ? haCanonicalIDs : miCanonicalIDs
+            if let cardID = sourceCanonicalIDs[ring.deviceId] {
                 ring.deviceId = cardID
+            }
+            // The same physical press can arrive from both sources with different entity ids
+            // and slightly different timestamps. Yield it once.
+            if let firedAt = ring.firedAtDate,
+               backend == .homeAssistant || backend == .xiaomiCloud {
+                if matchAndConsumeCrossSourceDoorbellPress(of: ring.deviceId, from: backend, at: firedAt) {
+                    return
+                }
+                recordDoorbellPress(of: ring.deviceId, from: backend, at: firedAt)
             }
             continuation?.yield(.doorbellRang(ring))
 
         case .sourceStatusesChanged:
             break
 
+        case .localNetworkPermissionChanged(let blocked):
+            if backend == .homeAssistant { haLocalNetworkBlocks = blocked }
+            else if backend == .xiaomiCloud { miLocalNetworkBlocks = blocked }
+            emitLocalNetworkPermission()
+            recompute()
+
         case .snapshotUpdated(let home):
             if backend == .homeAssistant {
                 haStatus = .connected
                 haSnapshot = home
+                haLocalNetworkBlocks = home.localNetworkBlockedFeatures
             } else if backend == .xiaomiCloud {
                 miStatus = .connected
                 miSnapshot = home
+                miLocalNetworkBlocks = home.localNetworkBlockedFeatures
             }
             emitStatus()
+            emitLocalNetworkPermission()
             recompute()
         }
     }
@@ -205,6 +267,109 @@ public actor DualSourceHomeProvider: HomeProvider {
         emitStatus()
         emitSourceStatuses()
         recompute()
+    }
+
+    /// True when the other backend already reported a press for this card within the dedupe
+    /// window (#23). Matching consumes the closest unmatched press so a genuine later press
+    /// within the window is never swallowed, and suppressed duplicates are never recorded.
+    private func matchAndConsumeCrossSourceDoorbellPress(
+        of cardID: String,
+        from backend: HomeBackend,
+        at firedAt: Date
+    ) -> Bool {
+        let referenceDate = latestDoorbellPressDate(of: cardID, including: firedAt)
+        pruneDoorbellHistory(of: cardID, referenceDate: referenceDate)
+
+        let otherBackend: HomeBackend = backend == .homeAssistant ? .xiaomiCloud : .homeAssistant
+        guard var byBackend = doorbellPressesByCard[cardID],
+              var otherPresses = byBackend[otherBackend],
+              !otherPresses.isEmpty else {
+            return false
+        }
+
+        var bestIndex: Int?
+        var bestDistance = TimeInterval.infinity
+        for (index, candidate) in otherPresses.enumerated() {
+            let distance = abs(firedAt.timeIntervalSince(candidate))
+            if distance <= Self.crossSourceDoorbellDedupWindow, distance < bestDistance {
+                bestDistance = distance
+                bestIndex = index
+            }
+        }
+        guard let matchedIndex = bestIndex else { return false }
+
+        otherPresses.remove(at: matchedIndex)
+        if otherPresses.isEmpty {
+            byBackend.removeValue(forKey: otherBackend)
+        } else {
+            byBackend[otherBackend] = otherPresses
+        }
+        if byBackend.isEmpty {
+            doorbellPressesByCard.removeValue(forKey: cardID)
+        } else {
+            doorbellPressesByCard[cardID] = byBackend
+        }
+        return true
+    }
+
+    private func recordDoorbellPress(of cardID: String, from backend: HomeBackend, at firedAt: Date) {
+        let referenceDate = latestDoorbellPressDate(of: cardID, including: firedAt)
+        var byBackend = doorbellPressesByCard[cardID] ?? [:]
+        var presses = byBackend[backend] ?? []
+        presses.append(firedAt)
+        presses.sort()
+        byBackend[backend] = presses
+        doorbellPressesByCard[cardID] = byBackend
+        pruneDoorbellHistory(of: cardID, referenceDate: referenceDate)
+        pruneExcessDoorbellCards()
+    }
+
+    private func latestDoorbellPressDate(of cardID: String, including candidate: Date) -> Date {
+        guard let byBackend = doorbellPressesByCard[cardID] else { return candidate }
+        var latest = candidate
+        for timestamps in byBackend.values {
+            if let backendMax = timestamps.max(), backendMax > latest {
+                latest = backendMax
+            }
+        }
+        return latest
+    }
+
+    private func pruneDoorbellHistory(of cardID: String, referenceDate: Date) {
+        guard var byBackend = doorbellPressesByCard[cardID] else { return }
+        for backend in Array(byBackend.keys) {
+            var timestamps = byBackend[backend] ?? []
+            timestamps.removeAll {
+                referenceDate.timeIntervalSince($0) > Self.crossSourceDoorbellHistoryRetention
+            }
+            if timestamps.count > Self.crossSourceDoorbellHistoryLimit {
+                timestamps.sort()
+                timestamps.removeFirst(timestamps.count - Self.crossSourceDoorbellHistoryLimit)
+            }
+            if timestamps.isEmpty {
+                byBackend.removeValue(forKey: backend)
+            } else {
+                byBackend[backend] = timestamps
+            }
+        }
+        if byBackend.isEmpty {
+            doorbellPressesByCard.removeValue(forKey: cardID)
+        } else {
+            doorbellPressesByCard[cardID] = byBackend
+        }
+    }
+
+    private func pruneExcessDoorbellCards() {
+        while doorbellPressesByCard.count > Self.crossSourceDoorbellCardLimit {
+            guard let oldestCard = doorbellPressesByCard.min(by: { lhs, rhs in
+                let lhsMax = lhs.value.values.compactMap { $0.max() }.max() ?? .distantPast
+                let rhsMax = rhs.value.values.compactMap { $0.max() }.max() ?? .distantPast
+                return lhsMax < rhsMax
+            })?.key else {
+                break
+            }
+            doorbellPressesByCard.removeValue(forKey: oldestCard)
+        }
     }
 
     private func emitStatus(force: Bool = false) {
@@ -260,6 +425,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         rooms = result.rooms
         routes = result.routes
         haCanonicalIDs = result.haCanonicalIDs
+        miCanonicalIDs = result.miCanonicalIDs
         for (deviceID, activeRoute) in activeCameraRoutes {
             let nextRoute = result.routes[deviceID]
             if nextRoute?.backend != activeRoute.backend || nextRoute?.sourceDeviceID != activeRoute.sourceDeviceID {
@@ -280,7 +446,19 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         var home = result.home
         home.sourceStatuses = configuredSourceStatuses()
+        home.localNetworkBlockedFeatures = currentLocalNetworkBlocks()
         continuation?.yield(.snapshotUpdated(home))
+    }
+
+    private func currentLocalNetworkBlocks() -> Set<LocalNetworkBlockedFeature> {
+        (homeAssistant != nil ? haLocalNetworkBlocks : []).union(xiaomiCloud != nil ? miLocalNetworkBlocks : [])
+    }
+
+    private func emitLocalNetworkPermission() {
+        let next = currentLocalNetworkBlocks()
+        guard next != lastEmittedLocalNetworkBlocks else { return }
+        lastEmittedLocalNetworkBlocks = next
+        continuation?.yield(.localNetworkPermissionChanged(next))
     }
 
     private func configuredSourceStatuses() -> [HomeBackend: ConnectionStatus] {

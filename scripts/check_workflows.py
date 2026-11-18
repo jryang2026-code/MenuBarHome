@@ -21,6 +21,8 @@ ActionlintMode = Literal["auto", "required", "off"]
 CANONICAL_MACOS_RUNNER = "macos-26-intel"
 CANONICAL_XCODE_VERSION = "26.6"
 CANONICAL_CAMERA_WORKFLOW = "./.github/workflows/camera-bin.yml"
+REFERENCE_JOB_IDS = frozenset({"macos-snapshots", "record-snapshots"})
+REFERENCE_LOCALE_RUN = "bash scripts/ci_snapshot_locale.sh --require-xcode 26.6"
 ALLOWED_MACOS_RUNS_ON: frozenset[str] = frozenset(
     {
         CANONICAL_MACOS_RUNNER,
@@ -375,6 +377,39 @@ def _check_ci_release_parity(ci_spec: WorkflowSpec, rel_spec: WorkflowSpec, diag
         err(rel_spec.rel_path, 1, f"W3: camera-bin reusable workflow mismatch between ci.yml ({ci_cam}) and release.yml ({rel_cam})")
 
 
+def _check_snapshot_reference(specs: list[WorkflowSpec], diags: list[WorkflowDiagnostic]) -> None:
+    root = Path(__file__).resolve().parent.parent
+    found: dict[str, tuple[WorkflowSpec, WorkflowJob]] = {}
+    for spec in specs:
+        for job in spec.jobs:
+            if job.job_id in REFERENCE_JOB_IDS:
+                found[job.job_id] = (spec, job)
+    for job_id in sorted(REFERENCE_JOB_IDS):
+        if job_id not in found:
+            diags.append(WorkflowDiagnostic(".github/workflows", 1, f"W1: missing snapshot reference job '{job_id}'"))
+            continue
+        spec, job = found[job_id]
+        candidates = _resolved_runs_on_candidates(job)
+        if candidates != [CANONICAL_MACOS_RUNNER]:
+            line = job.runs_on[0] if job.runs_on else job.line
+            diags.append(
+                WorkflowDiagnostic(
+                    spec.rel_path,
+                    line,
+                    f"W1: snapshot reference job '{job.job_id}' must run on '{CANONICAL_MACOS_RUNNER}' only, not {candidates!r}",
+                )
+            )
+        text = (root / spec.rel_path).read_text(encoding="utf-8")
+        if REFERENCE_LOCALE_RUN not in text:
+            diags.append(
+                WorkflowDiagnostic(
+                    spec.rel_path,
+                    job.line,
+                    f"W2: job '{job.job_id}' must run `{REFERENCE_LOCALE_RUN}`",
+                )
+            )
+
+
 def check_parity_and_runners(specs: list[WorkflowSpec]) -> list[WorkflowDiagnostic]:
     diags: list[WorkflowDiagnostic] = []
     by_name = {Path(spec.rel_path).name: spec for spec in specs}
@@ -383,6 +418,7 @@ def check_parity_and_runners(specs: list[WorkflowSpec]) -> list[WorkflowDiagnost
             diags.append(WorkflowDiagnostic(spec.rel_path, line_no, f"W2: stale bare 'macos-26' comment (use '{CANONICAL_MACOS_RUNNER}'): {comment}"))
         for job in spec.jobs:
             _check_job(spec, job, diags)
+    _check_snapshot_reference(specs, diags)
     if "ci.yml" in by_name and "release.yml" in by_name:
         _check_ci_release_parity(by_name["ci.yml"], by_name["release.yml"], diags)
     return diags

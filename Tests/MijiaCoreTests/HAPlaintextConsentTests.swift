@@ -10,14 +10,14 @@ struct HAPlaintextConsentTests {
         UserDefaults(suiteName: "test.ha.plaintext.\(UUID().uuidString)")!
     }
 
-    @Test("https and local-network addresses never ask; public plain http does")
+    @Test("https and local-network addresses never ask; public or dotless single-label plain http does")
     func whoNeedsConsent() {
         for url in ["https://myhome.duckdns.org", "https://203.0.113.5:8123", "http://192.168.1.20:8123",
-                    "http://homeassistant.local:8123", "http://homeassistant:8123", "http://100.101.102.103:8123",
+                    "http://homeassistant.local:8123", "http://100.101.102.103:8123",
                     "192.168.1.20:8123"] {
             #expect(!HAPlaintextConsent.needsConsent(url), "\(url)")
         }
-        for url in [Self.publicHTTP, "http://myhome.duckdns.org:8123", "http://ha.example.com/"] {
+        for url in [Self.publicHTTP, "http://homeassistant:8123", "http://myhome.duckdns.org:8123", "http://ha.example.com/"] {
             #expect(HAPlaintextConsent.needsConsent(url), "\(url)")
         }
     }

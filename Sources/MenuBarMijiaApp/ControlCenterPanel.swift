@@ -5,6 +5,7 @@ import MijiaCore
 
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
@@ -355,7 +356,7 @@ public struct ControlCenterPanel: View {
         // Typing, ⌘F, "/" and dictation all ask for the field; it unfolds before it takes focus.
         .onChange(of: search.focusRequest) { _, _ in revealSearch() }
         .onChange(of: store.assistantFocusRequest) { _, _ in revealSearch() }
-        .onChange(of: store.assistantVoiceRequest) { _, _ in revealSearch() }
+        .onChange(of: store.assistantVoiceRequest) { _, _ in if store.enableVoiceInput { revealSearch() } }
         .onChange(of: isSearchFieldFocused) { _, focused in if !focused { foldSearchIfIdle() } }
         .onChange(of: isDrawerHovered) { _, hovered in if !hovered, !isSearchFieldFocused { foldSearchIfIdle() } }
         // A device reached by keyboard, the status line or the assistant opens its stack first.
@@ -498,11 +499,10 @@ public struct ControlCenterPanel: View {
         let shape = Capsule(style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 7) {
-            Image(systemName: listening ? "waveform" : "magnifyingglass")
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(listening ? Color.red : Color.secondary)
-                .symbolEffect(.variableColor.iterative, isActive: listening)
-                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+            OmnibarLeadingSymbol(
+                listening: listening,
+                isThinking: store.assistantState == .thinking
+            )
 
             TextField(
                 omnibarPlaceholder,
@@ -536,11 +536,16 @@ public struct ControlCenterPanel: View {
             }
 
             if store.assistantState == .thinking {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
-                    .frame(width: 20, height: 18)
-            } else {
+                if isPanelVisible {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 20, height: 18)
+                } else {
+                    Color.clear
+                        .frame(width: 20, height: 18)
+                }
+            } else if store.enableVoiceInput {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
                         store.presentAssistantBar(startVoice: true)
@@ -574,6 +579,7 @@ public struct ControlCenterPanel: View {
         .onChange(of: store.assistantFocusRequest) { _, _ in focusInput() }
         .onChange(of: store.assistantVoiceRequest) { _, newValue in
             lastHandledVoiceRequest = newValue
+            guard store.enableVoiceInput else { return }
             speech.toggle(store: store)
         }
         // Dictation lands in the same field; once the instruction ran the draft empties and so does it.
@@ -588,7 +594,11 @@ public struct ControlCenterPanel: View {
         .onAppear {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
                 lastHandledVoiceRequest = store.assistantVoiceRequest
-                Task { await speech.start(holdMode: false, store: store) }
+                if store.enableVoiceInput {
+                    Task { await speech.start(holdMode: false, store: store) }
+                } else {
+                    focusInput()
+                }
             } else {
                 // The field only mounts when someone asked for it, so it takes the caret at once.
                 focusInput()
@@ -612,6 +622,9 @@ public struct ControlCenterPanel: View {
         }
         if speech.isListening {
             return L10n.tr("正在聆听…说完自动执行", "Listening… runs when you stop")
+        }
+        if !store.enableVoiceInput {
+            return L10n.tr("搜索设备，或输入一句话", "Search devices, or type a command")
         }
         return L10n.tr("搜索设备，或直接说一句话", "Search devices, or say a command")
     }
