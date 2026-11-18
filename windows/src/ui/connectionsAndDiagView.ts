@@ -31,7 +31,7 @@ import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
-import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
+import { isPlainHttpRemoteEndpoint, type SettingsTab, type SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 
@@ -83,9 +83,9 @@ interface ConnectionsDiagSearchAnchorSpec {
   readonly synonyms: readonly string[];
 }
 
-const SEC_CONNECTION: readonly [string, string, string] = ["数据源", "資料來源", "Data Source"];
+const SEC_CONNECTION: readonly [string, string, string] = ["家居连接", "家居連線", "Connections"];
 const SEC_DIAGNOSTICS: readonly [string, string, string] = ["诊断与隐私", "診斷與隱私", "Diagnostics & Privacy"];
-const SEC_GENERAL: readonly [string, string, string] = ["外观与面板", "外觀與面板", "Appearance & Panel"];
+const SEC_GENERAL: readonly [string, string, string] = ["常规", "常規", "General"];
 
 export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnchorSpec[] = [
   {
@@ -97,12 +97,15 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
       "多账号",
       "多帳號",
       "添加账号",
+      "添加更多米家账号",
+      "新增更多米家帳號",
       "新增帳號",
       "副账号",
       "跨地区",
       "单账号退出",
       "multi account",
       "add account",
+      "add more xiaomi accounts",
       "secondary account",
       "sign out",
       "duozhanghao",
@@ -133,6 +136,9 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
     synonyms: [
       "双源",
       "雙源",
+      "同时连接多个家居平台",
+      "同時連接多個家居平台",
+      "相同设备自动合并",
       "融合",
       "去重",
       "并行",
@@ -140,6 +146,7 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
       "数据源锁定",
       "临时兜底",
       "dual source",
+      "connect multiple home platforms",
       "merge",
       "deduplicate",
       "fallback",
@@ -148,7 +155,7 @@ export const CONNECTIONS_DIAG_SEARCH_ANCHORS: readonly ConnectionsDiagSearchAnch
   },
   {
     anchor: "dashboardTitle",
-    tab: "connection",
+    tab: "general",
     section: SEC_GENERAL,
     title: ["面板标题", "面板標題", "Dashboard Title"],
     synonyms: [
@@ -369,6 +376,9 @@ function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: string): s
   } catch {
   }
   host.saveSettings();
+  // The title is applied, so the render must not capture the typed text as an unsaved draft.
+  const titleInput = host.root.querySelector<HTMLInputElement>("#settings-custom-home-title");
+  if (titleInput) titleInput.value = titleInput.defaultValue;
   host.render();
   return normalized;
 }
@@ -1463,6 +1473,12 @@ export function openConnectionsAndDiagModal(
     diagnostics: "#conn-diag-diagnostics-section",
   };
   const target = host.root.querySelector<HTMLElement>(anchorMap[section]);
+  for (let cur = target?.parentElement ?? null; cur; cur = cur.parentElement) {
+    if (cur.tagName === "DETAILS") {
+      (cur as HTMLDetailsElement).open = true;
+      cur.setAttribute("open", "");
+    }
+  }
   if (section === "title" && target?.tagName === "INPUT") {
     target.focus({ preventScroll: true });
   } else {
@@ -1521,10 +1537,33 @@ function resolveHostFromContext(ctx: ConnectionsAndDiagViewContext): Connections
   return undefined;
 }
 
-export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewContext): string {
+export function renderCustomHomeTitleField(ctx: ConnectionsAndDiagViewContext): string {
   const esc = ctx.escapeHtml ? (v: string) => ctx.escapeHtml!(v) : escapeFallback;
   const host = resolveHostFromContext(ctx);
   const lang = activeLanguage(ctx.settings.interfaceLanguage);
+  const session = host ? getHostConnDiagSession(host) : null;
+  const customTitleValue = session?.titleDraft ?? readCustomHomeTitle(ctx.settings);
+  const defaultTitlePlaceholder = host ? defaultPanelHomeTitle(host) : tr3("我的米家", "我的米家", "My Home", lang);
+  return `
+    <div class="cc-field" id="conn-diag-title-section" data-settings-anchor="dashboardTitle">
+      <label for="settings-custom-home-title">${esc(tr3("自定义面板顶部标题", "自訂面板頂部標題", "Custom Panel Header Title", lang))}</label>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <input id="settings-custom-home-title" class="cc-input" type="text" autocomplete="off" placeholder="${esc(defaultTitlePlaceholder)}" value="${esc(customTitleValue)}" style="flex:1;" />
+        <button type="button" class="cc-btn-secondary" id="btn-save-custom-home-title">${esc(tr3("应用", "套用", "Apply", lang))}</button>
+        ${readCustomHomeTitle(ctx.settings) !== "" ? `<button type="button" class="cc-inline-pill" id="btn-reset-custom-home-title">${esc(tr3("恢复默认", "恢復預設", "Reset", lang))}</button>` : ""}
+      </div>
+      <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("留空并点击应用将恢复默认家庭名称。", "留空並點擊套用將恢復預設家庭名稱。", "Leave blank and apply to restore the default home name.", lang))}</p>
+    </div>`;
+}
+
+export function renderConnectionsAndDiagSection(
+  ctx: ConnectionsAndDiagViewContext,
+  options: { readonly includeDashboardTitle?: boolean } = {},
+): string {
+  const esc = ctx.escapeHtml ? (v: string) => ctx.escapeHtml!(v) : escapeFallback;
+  const host = resolveHostFromContext(ctx);
+  const lang = activeLanguage(ctx.settings.interfaceLanguage);
+  const includeDashboardTitle = options.includeDashboardTitle ?? !("activeTab" in ctx);
 
   if (host) {
     syncConnectionContextWatcher(host);
@@ -1551,9 +1590,6 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
     : hasHAConfigured && hasMiConfigured;
   const dualChecked = host ? isDualSourceEnabled(host) : Boolean(ctx.settings.dualSourceEnabled);
   const dualState = host ? getHostDualSourceState(host) : null;
-
-  const customTitleValue = session?.titleDraft ?? readCustomHomeTitle(ctx.settings);
-  const defaultTitlePlaceholder = host ? defaultPanelHomeTitle(host) : tr3("我的米家", "我的米家", "My Home", lang);
 
   const scanner = session?.scanner ?? null;
   const unsupportedDevices = scanner?.devices ?? [];
@@ -1691,81 +1727,83 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
 
   return `
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
-      <div class="cc-field" id="conn-diag-accounts-section" data-settings-anchor="miMultiAccounts">
-        <div class="cc-field-row" style="margin-bottom:6px;">
-          <label style="margin:0;font-weight:600;">${esc(tr3("连接 · 米家多账号管理", "連線 · 米家多帳號管理", "Connections · Xiaomi Multi-Account", lang))}</label>
-          <span class="cc-field-hint" style="margin:0;">${esc(tr3(`已登录 ${accounts.length} 个账号`, `已登入 ${accounts.length} 個帳號`, `${accounts.length} signed in`, lang))}</span>
-        </div>
-        ${accountCardsHtml}
-        ${accountIndexWarningHtml}
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
-          <button type="button" class="cc-btn-secondary" id="btn-add-mi-account">${esc(tr3("＋ 添加另一个米家账号", "＋ 新增另一個米家帳號", "+ Add Another Xiaomi Account", lang))}</button>
-        </div>
-        ${addQrHtml}
+      <div class="cc-field" id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
+        <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
       </div>
 
-      <div class="cc-field" id="conn-diag-dual-ha-section" data-settings-anchor="dualSourceFusion">
-        <label class="cc-switch-row" for="settings-dual-source-enabled">
-          <span>${esc(tr3("同时启用 Home Assistant 与米家双源融合", "同時啟用 Home Assistant 與米家雙源融合", "Fuse Home Assistant & Xiaomi Cloud Simultaneously", lang))}</span>
-          <input id="settings-dual-source-enabled" type="checkbox" ${dualChecked ? "checked" : ""} ${dualSupported || dualChecked ? "" : "disabled"} />
-        </label>
-        <p class="cc-field-hint" style="margin-top:4px;">${esc(dualHint)}</p>
-        <div id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="margin-top:8px;padding-top:8px;border-top:1px solid rgba(128,128,128,0.14);display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
-          <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
-        </div>
-      </div>
+      <details class="cc-conn-secondary" data-conn-section="advancedConnectionOptions">
+        <summary class="cc-conn-secondary-summary">${esc(tr3("高级连接选项", "進階連線選項", "Advanced Connection Options", lang))}</summary>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div class="cc-field" id="conn-diag-accounts-section" data-settings-anchor="miMultiAccounts">
+            <div class="cc-field-row" style="margin-bottom:6px;">
+              <label style="margin:0;font-weight:600;">${esc(tr3("连接 · 米家多账号管理", "連線 · 米家多帳號管理", "Connections · Xiaomi Multi-Account", lang))}</label>
+              <span class="cc-field-hint" style="margin:0;">${esc(tr3(`已登录 ${accounts.length} 个账号`, `已登入 ${accounts.length} 個帳號`, `${accounts.length} signed in`, lang))}</span>
+            </div>
+            ${accountCardsHtml}
+            ${accountIndexWarningHtml}
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+              <button type="button" class="cc-btn-secondary" id="btn-add-mi-account">${esc(tr3("＋ 添加更多米家账号", "＋ 新增更多米家帳號", "+ Add More Xiaomi Accounts", lang))}</button>
+            </div>
+            ${addQrHtml}
+          </div>
 
-      <div class="cc-field" id="conn-diag-title-section" data-settings-anchor="dashboardTitle">
-        <label for="settings-custom-home-title">${esc(tr3("自定义面板顶部标题", "自訂面板頂部標題", "Custom Panel Header Title", lang))}</label>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <input id="settings-custom-home-title" class="cc-input" type="text" autocomplete="off" placeholder="${esc(defaultTitlePlaceholder)}" value="${esc(customTitleValue)}" style="flex:1;" />
-          <button type="button" class="cc-btn-secondary" id="btn-save-custom-home-title">${esc(tr3("应用", "套用", "Apply", lang))}</button>
-          ${readCustomHomeTitle(ctx.settings) !== "" ? `<button type="button" class="cc-inline-pill" id="btn-reset-custom-home-title">${esc(tr3("恢复默认", "恢復預設", "Reset", lang))}</button>` : ""}
+          <div class="cc-field" id="conn-diag-dual-ha-section" data-settings-anchor="dualSourceFusion">
+            <label class="cc-switch-row" for="settings-dual-source-enabled">
+              <span>${esc(tr3("同时连接多个家居平台（相同设备自动合并）", "同時連接多個家居平台（相同裝置自動合併）", "Connect Multiple Home Platforms Simultaneously (Auto-Merge Identical Devices)", lang))}</span>
+              <input id="settings-dual-source-enabled" type="checkbox" ${dualChecked ? "checked" : ""} ${dualSupported || dualChecked ? "" : "disabled"} />
+            </label>
+            <p class="cc-field-hint" style="margin-top:4px;">${esc(dualHint)}</p>
+          </div>
+          ${includeDashboardTitle ? renderCustomHomeTitleField(ctx) : ""}
         </div>
-        <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("留空并点击应用将恢复默认家庭名称。", "留空並點擊套用將恢復預設家庭名稱。", "Leave blank and apply to restore the default home name.", lang))}</p>
-      </div>
+      </details>
 
-      <div class="cc-field" id="conn-diag-scanner-section" data-settings-anchor="scanUnsupportedDevices">
-        <div class="cc-field-row" style="gap:8px;flex-wrap:wrap;">
-          <label style="margin:0;font-weight:600;">${esc(tr3("未能显示在面板的设备", "未能顯示在面板的裝置", "Devices Not Shown in Panel", lang))}</label>
-          <button type="button" class="cc-btn-secondary" id="btn-scan-unsupported-devices" style="margin-left:auto;" ${isScanning ? "disabled" : ""}>${esc(isScanning ? tr3("正在扫描…", "正在掃描…", "Scanning…", lang) : tr3("扫描未能显示的设备", "掃描未能顯示的裝置", "Scan Hidden Devices", lang))}</button>
-        </div>
-        <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("遍历所有已登录米家账号及活跃后端，列出未识别型号与跳过原因，并提供零隐私泄露的适配反馈链接。", "遍歷所有已登入米家帳號及活躍後端，列出未識別型號與略過原因，並提供零隱私洩漏的適配回饋連結。", "Scans all signed-in Xiaomi accounts and active backends for skipped models with desensitized GitHub feedback links.", lang))}</p>
-        ${scanError ? `<p class="cc-field-hint" id="conn-diag-scan-error" style="color:#e67e22;margin-top:4px;">${esc(scanError)}</p>` : ""}
-        ${!isScanning && lastScannedAtMs !== null && unsupportedDevices.length === 0 && !scanError ? `<p class="cc-field-hint" id="conn-diag-scan-empty" style="color:#2ecc71;margin-top:4px;">${esc(tr3("未发现未能显示的设备", "未發現未能顯示的裝置", "No skipped devices found", lang))}</p>` : ""}
-        ${
-          unsupportedDevices.length > 0
-            ? `<div id="conn-diag-unsupported-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
-                ${unsupportedDevices
-                  .map((item) => {
-                    const specLine = item.specSummary ? formatSpecSummaryText(item.specSummary) : "";
-                    const modelText = item.model || tr3("未知型号", "未知型號", "Unknown model", lang);
-                    return `<div data-unsupported-device-row="${esc(item.model)}" style="padding:7px 9px;border-radius:8px;background:rgba(128,128,128,0.08);display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;">
-                      <div style="flex:1;min-width:160px;">
-                        <div style="font-size:12px;font-weight:600;">${esc(item.name)}</div>
-                        <div class="cc-field-hint" style="margin:2px 0 0;"><code>${esc(modelText)}</code> · ${esc(item.reasonText)}${specLine ? ` · ${esc(specLine)}` : ""}</div>
-                      </div>
-                      ${item.feedbackURL ? `<a class="cc-inline-pill" data-feedback-issue-url="${esc(item.feedbackURL)}" href="${esc(item.feedbackURL)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;align-self:center;">${esc(tr3("提交适配反馈（GitHub Issue）", "提交適配回饋（GitHub Issue）", "Report on GitHub", lang))}</a>` : ""}
-                    </div>`;
-                  })
-                  .join("")}
-              </div>`
-            : ""
-        }
-      </div>
+      <details class="cc-conn-secondary" data-conn-section="diagnosticsAndScanner">
+        <summary class="cc-conn-secondary-summary">${esc(tr3("设备扫描与排障信息", "裝置掃描與排障資訊", "Device Scan & Diagnostics", lang))}</summary>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div class="cc-field" id="conn-diag-scanner-section" data-settings-anchor="scanUnsupportedDevices">
+            <div class="cc-field-row" style="gap:8px;flex-wrap:wrap;">
+              <label style="margin:0;font-weight:600;">${esc(tr3("未能显示在面板的设备", "未能顯示在面板的裝置", "Devices Not Shown in Panel", lang))}</label>
+              <button type="button" class="cc-btn-secondary" id="btn-scan-unsupported-devices" style="margin-left:auto;" ${isScanning ? "disabled" : ""}>${esc(isScanning ? tr3("正在扫描…", "正在掃描…", "Scanning…", lang) : tr3("扫描未能显示的设备", "掃描未能顯示的裝置", "Scan Hidden Devices", lang))}</button>
+            </div>
+            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("遍历所有已登录米家账号及活跃后端，列出未识别型号与跳过原因，并提供零隐私泄露的适配反馈链接。", "遍歷所有已登入米家帳號及活躍後端，列出未識別型號與略過原因，並提供零隱私洩漏的適配回饋連結。", "Scans all signed-in Xiaomi accounts and active backends for skipped models with desensitized GitHub feedback links.", lang))}</p>
+            ${scanError ? `<p class="cc-field-hint" id="conn-diag-scan-error" style="color:#e67e22;margin-top:4px;">${esc(scanError)}</p>` : ""}
+            ${!isScanning && lastScannedAtMs !== null && unsupportedDevices.length === 0 && !scanError ? `<p class="cc-field-hint" id="conn-diag-scan-empty" style="color:#2ecc71;margin-top:4px;">${esc(tr3("未发现未能显示的设备", "未發現未能顯示的裝置", "No skipped devices found", lang))}</p>` : ""}
+            ${
+              unsupportedDevices.length > 0
+                ? `<div id="conn-diag-unsupported-list" style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+                    ${unsupportedDevices
+                      .map((item) => {
+                        const specLine = item.specSummary ? formatSpecSummaryText(item.specSummary) : "";
+                        const modelText = item.model || tr3("未知型号", "未知型號", "Unknown model", lang);
+                        return `<div data-unsupported-device-row="${esc(item.model)}" style="padding:7px 9px;border-radius:8px;background:rgba(128,128,128,0.08);display:flex;align-items:flex-start;gap:8px;flex-wrap:wrap;">
+                          <div style="flex:1;min-width:160px;">
+                            <div style="font-size:12px;font-weight:600;">${esc(item.name)}</div>
+                            <div class="cc-field-hint" style="margin:2px 0 0;"><code>${esc(modelText)}</code> · ${esc(item.reasonText)}${specLine ? ` · ${esc(specLine)}` : ""}</div>
+                          </div>
+                          ${item.feedbackURL ? `<a class="cc-inline-pill" data-feedback-issue-url="${esc(item.feedbackURL)}" href="${esc(item.feedbackURL)}" target="_blank" rel="noopener noreferrer" style="text-decoration:none;align-self:center;">${esc(tr3("提交适配反馈（GitHub Issue）", "提交適配回饋（GitHub Issue）", "Report on GitHub", lang))}</a>` : ""}
+                        </div>`;
+                      })
+                      .join("")}
+                  </div>`
+                : ""
+            }
+          </div>
 
-      <div class="cc-field" id="conn-diag-diagnostics-section" data-settings-anchor="copyDiagnostics">
-        <div class="cc-field-row" style="gap:8px;flex-wrap:wrap;">
-          <label style="margin:0;font-weight:600;">${esc(tr3("脱敏诊断报告", "去識別化診斷報告", "Desensitized Diagnostics", lang))}</label>
-          <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-            ${session?.diagCopied ? `<span id="conn-diag-copied-badge" class="cc-field-hint" style="margin:0;color:#2ecc71;">${esc(tr3("已复制", "已複製", "Copied", lang))}</span>` : ""}
-            <button type="button" class="cc-btn-primary" id="btn-copy-diagnostics-report">${esc(tr3("复制脱敏诊断报告", "複製去識別化診斷報告", "Copy Diagnostics Report", lang))}</button>
+          <div class="cc-field" id="conn-diag-diagnostics-section" data-settings-anchor="copyDiagnostics">
+            <div class="cc-field-row" style="gap:8px;flex-wrap:wrap;">
+              <label style="margin:0;font-weight:600;">${esc(tr3("脱敏诊断报告", "去識別化診斷報告", "Desensitized Diagnostics", lang))}</label>
+              <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
+                ${session?.diagCopied ? `<span id="conn-diag-copied-badge" class="cc-field-hint" style="margin:0;color:#2ecc71;">${esc(tr3("已复制", "已複製", "Copied", lang))}</span>` : ""}
+                <button type="button" class="cc-btn-primary" id="btn-copy-diagnostics-report">${esc(tr3("复制脱敏诊断报告", "複製去識別化診斷報告", "Copy Diagnostics Report", lang))}</button>
+              </div>
+            </div>
+            <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("导出含版本、后端、设备型号计数、摄像机流模式、轮询退避与错误计数的 Markdown 摘要，绝不包含令牌、DID、IP/MAC 或家庭名称。", "匯出含版本、後端、裝置型號計數、攝影機串流模式、輪詢退避與錯誤計數的 Markdown 摘要，絕不包含權杖、DID、IP/MAC 或家庭名稱。", "Exports Markdown with version, backend, model counts, camera stream modes, and error counts — zero tokens, DIDs, IPs/MACs, or home names.", lang))}</p>
+            ${session?.diagMarkdownPreview ? `<textarea id="conn-diag-markdown-preview" class="cc-input" readonly rows="7" style="margin-top:6px;width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;resize:vertical;">${esc(session.diagMarkdownPreview)}</textarea>` : ""}
           </div>
         </div>
-        <p class="cc-field-hint" style="margin-top:4px;">${esc(tr3("导出含版本、后端、设备型号计数、摄像机流模式、轮询退避与错误计数的 Markdown 摘要，绝不包含令牌、DID、IP/MAC 或家庭名称。", "匯出含版本、後端、裝置型號計數、攝影機串流模式、輪詢退避與錯誤計數的 Markdown 摘要，絕不包含權杖、DID、IP/MAC 或家庭名稱。", "Exports Markdown with version, backend, model counts, camera stream modes, and error counts — zero tokens, DIDs, IPs/MACs, or home names.", lang))}</p>
-        ${session?.diagMarkdownPreview ? `<textarea id="conn-diag-markdown-preview" class="cc-input" readonly rows="7" style="margin-top:6px;width:100%;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;resize:vertical;">${esc(session.diagMarkdownPreview)}</textarea>` : ""}
-      </div>
+      </details>
     </div>`;
 }
 
@@ -1781,7 +1819,7 @@ export function renderConnectionsAndDiagModal(host: ConnectionsAndDiagHost): str
           <button type="button" class="cc-circle-btn is-small" id="btn-close-conn-diag-modal" aria-label="${esc(tr3("关闭", "關閉", "Close", lang))}">${SF_ICONS.xmark}</button>
         </div>
         <div class="cc-sheet-body" style="overflow-y:auto;padding-right:2px;">
-          ${renderConnectionsAndDiagSection({ settings: host.settings, devices: host.devices, host, escapeHtml: esc })}
+          ${renderConnectionsAndDiagSection({ settings: host.settings, devices: host.devices, host, escapeHtml: esc }, { includeDashboardTitle: true })}
         </div>
       </div>
     </div>`;
@@ -1898,6 +1936,23 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
     });
   });
   onClick("#btn-copy-diagnostics-report", () => void copyDiagnosticsReportOnHost(host));
+  const haUrlInput = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
+  const syncHaUrlControls = (val: string) => {
+    const warnEl = host.root.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    if (warnEl) warnEl.hidden = !isPlainHttpRemoteEndpoint(val);
+    const fillBtn = host.root.querySelector<HTMLButtonElement>("#btn-fill-default-ha");
+    if (fillBtn) fillBtn.disabled = val.trim().length > 0;
+  };
+  bindElementListener(haUrlInput, "input", (input) => {
+    syncHaUrlControls(input.value);
+  });
+  onClick("#btn-fill-default-ha", () => {
+    const input = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
+    if (!input || input.value.trim().length > 0) return;
+    input.value = "http://homeassistant.local:8123";
+    syncHaUrlControls(input.value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 }
 
 export function bindConnectionsAndDiagPanelEvents(host: ConnectionsAndDiagHost): void {
