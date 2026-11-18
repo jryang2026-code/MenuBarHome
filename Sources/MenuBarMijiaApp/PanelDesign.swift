@@ -157,15 +157,43 @@ public struct TileSurface: Equatable, Sendable {
 
 /// Status dot that breathes slowly while connected.
 ///
-/// `repeatForever` 一旦启动就不会自己停：面板关闭时 SwiftUI 只把窗口 orderOut，视图树是刻意保活的
-/// （见 `MenuBarPanelController+Presentation.hidePanel`），于是这个动画会继续以屏幕刷新率驱动
-/// `ViewGraph` 重算动画值。窗口不可见时不产生 display cycle，所以 sample 里看不到渲染热点，
-/// 但 CPU 会常驻约 10%（实测：面板关闭后 11.10% → 停止动画后 1.1%）。
-/// 因此这里按 `animate` 的取值启停，而不是只在 `onAppear` 里启动一次。
+/// 面板关闭时窗口只做 `orderOut`，SwiftUI 视图树刻意保活（见 `MenuBarPanelController+Presentation.hidePanel`）。
+/// 在 macOS 26+ 上，对同一个 `Circle` 用 `disablesAnimations = true` 重置状态并不会清掉
+/// `AnimatableAttribute` 内部的 `RepeatAnimation`：动画仍会逐帧推进 `ViewGraph` 时间，并连带触发
+/// Liquid Glass 卡片上 `FlexCoreInteractionModifier` 的弹簧重算（实测空闲约 40% CPU）。
+/// 因此停止呼吸时直接卸载带动画的子节点，从 `AttributeGraph` 彻底销毁该动画属性。
 struct BreathingDot: View {
     @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Environment(\.isPanelVisible) private var isPanelVisible
     let color: Color
     let animate: Bool
+
+    private var shouldAnimate: Bool {
+        animate && isPanelVisible && !reduceMotion
+    }
+
+    var body: some View {
+        Group {
+            if shouldAnimate {
+                PulsingDotCircle(color: color)
+                    .transition(.identity)
+            } else {
+                Circle()
+                    .fill(color)
+                    .frame(width: 7, height: 7)
+                    .transition(.identity)
+            }
+        }
+        .transaction { transaction in
+            if !shouldAnimate {
+                transaction.animation = nil
+            }
+        }
+    }
+}
+
+private struct PulsingDotCircle: View {
+    let color: Color
     @State private var dim = false
 
     var body: some View {
@@ -173,24 +201,60 @@ struct BreathingDot: View {
             .fill(color)
             .frame(width: 7, height: 7)
             .opacity(dim ? 0.35 : 1)
-            .onAppear { syncAnimation() }
-            .onChange(of: animate) { _, _ in syncAnimation() }
-            .onDisappear { stopAnimation() }
+            .onAppear {
+                withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                    dim = true
+                }
+            }
+    }
+}
+
+/// Leading icon for the control-center omnibar (`magnifyingglass` / `waveform`).
+///
+/// Like `BreathingDot`, `.symbolEffect(..., isActive:)` must be unmounted rather than flipped
+/// `true -> false` in place when the panel hides: transitioning `isActive` to `false` on an
+/// ordered-out window leaves SwiftUI's symbol-effect removal animation ticking `ViewGraph` at
+/// thousands of wakeups per second.
+struct OmnibarLeadingSymbol: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
+    @Environment(\.isPanelVisible) private var isPanelVisible
+    let listening: Bool
+    let isThinking: Bool
+
+    private var shouldAnimate: Bool {
+        isPanelVisible && !reduceMotion && (listening || isThinking)
     }
 
-    private func syncAnimation() {
-        guard animate, !reduceMotion else {
-            stopAnimation()
-            return
+    var body: some View {
+        Group {
+            if shouldAnimate {
+                AnimatedOmnibarSymbol(listening: listening, isThinking: isThinking)
+                    .transition(.identity)
+            } else {
+                Image(systemName: listening ? "waveform" : "magnifyingglass")
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(listening ? Color.red : Color.secondary)
+                    .transition(.identity)
+            }
         }
-        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { dim = true }
+        .transaction { transaction in
+            if !shouldAnimate {
+                transaction.animation = nil
+            }
+        }
     }
+}
 
-    /// 用无动画事务把 `dim` 推回初始值：这一步会移除 `repeatForever`，动画才真正停下。
-    private func stopAnimation() {
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { dim = false }
+private struct AnimatedOmnibarSymbol: View {
+    let listening: Bool
+    let isThinking: Bool
+
+    var body: some View {
+        Image(systemName: listening ? "waveform" : "magnifyingglass")
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+            .foregroundStyle(listening ? Color.red : Color.secondary)
+            .symbolEffect(.variableColor.iterative, isActive: listening)
+            .symbolEffect(.pulse, isActive: isThinking)
     }
 }
 

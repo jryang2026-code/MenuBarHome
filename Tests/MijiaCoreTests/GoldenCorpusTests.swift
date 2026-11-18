@@ -1850,6 +1850,8 @@ struct GoldenCorpusTests {
             case vacuum
             case camera
             case sensor
+            /// Cover subtype string; an unknown value falls back to `.windowOpener` like the corpus decoder.
+            case cover(String)
         }
 
         let id: String
@@ -1858,7 +1860,7 @@ struct GoldenCorpusTests {
         let kind: Kind
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, model, kind, targetTemperature
+            case id, name, model, kind, targetTemperature, subtype
         }
 
         init(from decoder: Decoder) throws {
@@ -1878,6 +1880,15 @@ struct GoldenCorpusTests {
                     )
                 }
                 kind = .climate(try container.decode(Double.self, forKey: .targetTemperature))
+            case "cover":
+                guard !hasSetpoint else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .targetTemperature,
+                        in: container,
+                        debugDescription: "cover device \(id) must omit targetTemperature"
+                    )
+                }
+                kind = .cover(try container.decode(String.self, forKey: .subtype))
             case "light", "fan", "plug", "vacuum", "camera", "sensor":
                 guard !hasSetpoint else {
                     throw DecodingError.dataCorruptedError(
@@ -1961,6 +1972,16 @@ struct GoldenCorpusTests {
                 deviceKind = .camera(CameraSpec(entityId: "e", isOn: false))
             case .sensor:
                 deviceKind = .sensor(SensorSpec())
+            case .cover(let subtype):
+                deviceKind = .cover(CoverSpec(
+                    entityId: "e",
+                    subtype: CoverSubtype(rawValue: subtype) ?? .windowOpener,
+                    positionPercent: 0,
+                    positionWritable: true,
+                    openDescription: "Open",
+                    closeDescription: "Close",
+                    pauseDescription: "Pause"
+                ))
             }
             return SmartDevice(
                 id: id,
@@ -2028,7 +2049,7 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 84)
+        #expect(corpus.rows.count == 90)
         #expect(corpus.decisionRows.count == 4)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)

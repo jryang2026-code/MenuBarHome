@@ -5,6 +5,7 @@ import MijiaCore
 
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
@@ -498,11 +499,10 @@ public struct ControlCenterPanel: View {
         let shape = Capsule(style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 7) {
-            Image(systemName: listening ? "waveform" : "magnifyingglass")
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .foregroundStyle(listening ? Color.red : Color.secondary)
-                .symbolEffect(.variableColor.iterative, isActive: listening)
-                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+            OmnibarLeadingSymbol(
+                listening: listening,
+                isThinking: store.assistantState == .thinking
+            )
 
             TextField(
                 omnibarPlaceholder,
@@ -536,10 +536,15 @@ public struct ControlCenterPanel: View {
             }
 
             if store.assistantState == .thinking {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.7)
-                    .frame(width: 20, height: 18)
+                if isPanelVisible {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: 20, height: 18)
+                } else {
+                    Color.clear
+                        .frame(width: 20, height: 18)
+                }
             } else {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {

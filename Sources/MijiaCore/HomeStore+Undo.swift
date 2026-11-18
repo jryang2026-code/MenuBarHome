@@ -540,22 +540,26 @@ extension HomeStore {
     static let undoWaitLockCeiling: Duration = .seconds(120)
 
     func scheduleUndoBanner(
+        actionId: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
         previousDevices: [SmartDevice],
         deviceCount: Int,
         habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
         duration: TimeInterval? = nil,
-        isAllOff: Bool = false
+        isAllOff: Bool = false,
+        attemptedDeviceIds: Set<String>? = nil
     ) {
         let banner = UndoBanner(
+            actionId: actionId,
             title: title,
             restoreCommands: restoreCommands,
             previousDevices: previousDevices,
             deviceCount: deviceCount,
             habitReceipt: habitReceipt,
             duration: duration,
-            isAllOff: isAllOff
+            isAllOff: isAllOff,
+            attemptedDeviceIds: attemptedDeviceIds
         )
         self.undoBanner = banner
         undoTimerTask?.cancel()
@@ -733,6 +737,10 @@ extension HomeStore {
         // puts its rows back and drops this banner through the blocked path, which is exactly the
         // cleanup an undo would otherwise do.
         guard let banner = undoBanner else { return nil }
+        // The undo of a control write is itself a user control: the same lock gate as
+        // `turnAllOff` refuses it before the banner, the rows or a batch state move, and a
+        // refused undo stays retryable after unlocking (#143).
+        guard !rejectControlWhileLocked() else { return nil }
         // Only an undo whose restores are all Mi-dependent is refused outright. A mixed undo sends
         // its LAN restores, keeps the refused Mi ones in the banner and leaves the expiry toast up.
         let hasLGRestore = banner.restoreCommands.contains { lgClientServes($0) }
@@ -741,7 +749,9 @@ extension HomeStore {
             return nil
         }
         if banner.restoreCommands.isEmpty {
-            lastAssistantUndo = nil
+            if lastAssistantUndo?.actionId == banner.actionId {
+                lastAssistantUndo = nil
+            }
             undoTimerTask?.cancel()
             self.undoBanner = nil
             return nil
@@ -758,13 +768,17 @@ extension HomeStore {
         if confirmation.abortUndo {
             return nil
         }
-        lastAssistantUndo = nil
+        let savedAssistantUndo = lastAssistantUndo?.actionId == banner.actionId ? lastAssistantUndo : nil
+        if savedAssistantUndo != nil {
+            lastAssistantUndo = nil
+        }
         undoTimerTask?.cancel()
         self.undoBanner = nil
         batch?.isStopped = true
         let batchTask = batch?.task
         let attemptedDeviceIds = batch?.attemptedDeviceIds ?? banner.attemptedDeviceIds
-        let undoRevision = undoStateRevision
+        let capturedBannerRevision = bannerUndoRevision
+        let capturedAssistantRevision = assistantUndoRevision
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
@@ -857,20 +871,53 @@ extension HomeStore {
                 showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
                 return
             }
-            if undoStateRevision == undoRevision {
-                scheduleUndoBanner(
-                    title: banner.title,
-                    restoreCommands: outcome.failedCommands,
-                    previousDevices: banner.previousDevices,
-                    deviceCount: outcome.failedDeviceIds.count,
-                    habitReceipt: outcome.habitReceipt,
-                    duration: banner.duration,
-                    isAllOff: banner.isAllOff
-                )
+            let lockedBeforeAnySend = outcome.blockedByScreenLock && !outcome.didSendAnyCommand
+            if bannerUndoRevision == capturedBannerRevision {
+                if lockedBeforeAnySend, batchTask == nil {
+                    scheduleUndoBanner(
+                        actionId: banner.actionId,
+                        title: banner.title,
+                        restoreCommands: banner.restoreCommands,
+                        previousDevices: banner.previousDevices,
+                        deviceCount: banner.deviceCount,
+                        habitReceipt: banner.habitReceipt,
+                        duration: banner.duration,
+                        isAllOff: banner.isAllOff,
+                        attemptedDeviceIds: banner.attemptedDeviceIds
+                    )
+                } else {
+                    scheduleUndoBanner(
+                        actionId: banner.actionId,
+                        title: banner.title,
+                        restoreCommands: outcome.failedCommands,
+                        previousDevices: banner.previousDevices.filter { outcome.failedDeviceIds.contains($0.id) },
+                        deviceCount: outcome.failedDeviceIds.count,
+                        habitReceipt: outcome.habitReceipt,
+                        duration: banner.duration,
+                        isAllOff: banner.isAllOff
+                    )
+                }
             }
-            // The refused Mi commands stay in the banner; the persistent expiry toast already
-            // explains them, so the generic "did not respond" message would only replace it.
-            if !outcome.blockedByMiSession {
+            if let savedAssistantUndo,
+               assistantUndoRevision == capturedAssistantRevision,
+               Date().timeIntervalSince(savedAssistantUndo.at) <= Self.voiceUndoWindow {
+                if lockedBeforeAnySend {
+                    lastAssistantUndo = savedAssistantUndo
+                } else {
+                    lastAssistantUndo = AssistantUndoEntry(
+                        actionId: savedAssistantUndo.actionId,
+                        reply: savedAssistantUndo.reply,
+                        restore: outcome.failedCommands,
+                        previous: savedAssistantUndo.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                        at: assistantNow(),
+                        habitReceipt: outcome.habitReceipt
+                    )
+                }
+            }
+            // The refused Mi commands or screen-locked restores stay in the banner; the expiry or
+            // lock toast already explains them, so the generic "did not respond" message would only
+            // replace it.
+            if !outcome.blockedByMiSession, !outcome.blockedByScreenLock {
                 let sep = L10n.isEnglish ? ", " : "、"
                 let list = outcome.failedNames.joined(separator: sep)
                 showToast(
@@ -957,10 +1004,13 @@ extension HomeStore {
                 resolved = nil
             }
             guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
-            settle(device, requiresConfirmation: restored.isActiveOn && ManualControlPolicy.requiresConfirmation(
-                DeviceIntent(targetId: device.id, operation: .power(true)), devices: devices
-            )) {
-                allowManualControl(.power(true), for: device)
+            // The restore direction is the restored state's, not an assumed "back on": a garage
+            // door returning to closed is as hazardous as one returning to open (a cover keeps the
+            // off direction in the subtype hazard table), while a plug or heater restore that ends
+            // in off stays direct.
+            let restoreOperation = IntentOperation.power(restored.isActiveOn)
+            settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device)) {
+                allowManualControl(restoreOperation, for: device)
             }
         }
         // A device approved by an earlier restore is not approved for this undo once a later restore
@@ -992,6 +1042,10 @@ extension HomeStore {
         let habitReceipt: UserHabitMemory.RecordingReceipt?
         /// At least one restore was refused by the expired Mi session; its persistent toast is up.
         let blockedByMiSession: Bool
+        /// At least one restore was refused because the Mac locked before or during the send loop.
+        let blockedByScreenLock: Bool
+        /// Whether any restore command reached `executeDeviceCommand` before a lock or failure stopped the rest.
+        let didSendAnyCommand: Bool
 
         var succeeded: Bool { failedCommands.isEmpty }
     }
@@ -1010,12 +1064,28 @@ extension HomeStore {
         var failedDeviceIds: Set<String> = []
         var failedNames: [String] = []
         var blockedByMiSession = false
+        var blockedByScreenLock = false
+        var didSendAnyCommand = false
         for item in applicable {
             guard context == controlContextID else { return nil }
             if failedDeviceIds.contains(item.deviceId) {
                 failedCommands.append(item.command)
                 continue
             }
+            // The undo entries already refused a locked screen before any state moved. Checking
+            // before each send catches a lock that lands while waiting on an in-flight batch or
+            // mid-restore, and treats remaining restores as retryable failures that roll back
+            // their optimistic rows and preserve the undo entry (#143).
+            if blockedByScreenLock || rejectControlWhileLocked() {
+                blockedByScreenLock = true
+                failedCommands.append(item.command)
+                failedDeviceIds.insert(item.deviceId)
+                if !failedNames.contains(item.deviceName) {
+                    failedNames.append(item.deviceName)
+                }
+                continue
+            }
+            didSendAnyCommand = true
             do {
                 try await executeDeviceCommand(item.command)
             } catch {
@@ -1039,7 +1109,9 @@ extension HomeStore {
                 failedDeviceIds: [],
                 failedNames: [],
                 habitReceipt: nil,
-                blockedByMiSession: false
+                blockedByMiSession: false,
+                blockedByScreenLock: false,
+                didSendAnyCommand: didSendAnyCommand
             )
         }
         rollbackFailedUndoDevices(
@@ -1061,7 +1133,9 @@ extension HomeStore {
             failedDeviceIds: failedDeviceIds,
             failedNames: failedNames,
             habitReceipt: remainingReceipt,
-            blockedByMiSession: blockedByMiSession
+            blockedByMiSession: blockedByMiSession,
+            blockedByScreenLock: blockedByScreenLock,
+            didSendAnyCommand: didSendAnyCommand
         )
     }
 
