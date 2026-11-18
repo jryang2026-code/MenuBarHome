@@ -272,4 +272,191 @@ describe("Audit #35: layoutGestures clears prior long-press timer on new pointer
       Object.defineProperty(window, "clearTimeout", { configurable: true, value: origClearTimeout });
     }
   });
+
+  it("cancels an active card drag completely when a second finger presses the background or an excluded control", async () => {
+    const app = startDemoApp();
+    await flushAsync();
+
+    const selector = '[data-tile-id="light.living_ceiling"]';
+    element(selector).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
+    await click("[data-start-editing]");
+    assert.equal(app.isEditingLayout, true);
+
+    const startDrag = async (): Promise<void> => {
+      element(selector).dispatchEvent(
+        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 40, clientY: 40 }),
+      );
+      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 60 }));
+      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 160, clientY: 80 }));
+      await flushAsync();
+      assert.equal(app.draggingId, "light.living_ceiling");
+      assert.ok(app.dragPointer);
+      assert.equal(element(selector).classList.contains("is-dragging"), true);
+      assert.notEqual(element(selector).style.translate, "");
+    };
+
+    // Case 1: second finger presses panel background.
+    await startDrag();
+    element(".cc-devices-grid").dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }),
+    );
+    await flushAsync();
+
+    assert.equal(app.draggingId, null, "background pointerdown must clear draggingId");
+    assert.equal(app.dragPointer, null, "background pointerdown must clear dragPointer");
+    assert.equal(element(selector).classList.contains("is-dragging"), false, "card must leave is-dragging class");
+    assert.equal(element(selector).style.translate, "", "card must clear drag translate");
+
+    // Subsequent moves and both releases must keep the card unstuck.
+    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 220, clientY: 120 }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    await flushAsync();
+    assert.equal(app.draggingId, null);
+    assert.equal(app.dragPointer, null);
+    assert.equal(element(selector).classList.contains("is-dragging"), false);
+
+    // Case 2: second finger presses an excluded control (search input).
+    await startDrag();
+    element("#command-input").dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 10 }),
+    );
+    await flushAsync();
+
+    assert.equal(app.draggingId, null, "excluded-control pointerdown must clear draggingId");
+    assert.equal(app.dragPointer, null, "excluded-control pointerdown must clear dragPointer");
+    assert.equal(element(selector).classList.contains("is-dragging"), false);
+    assert.equal(element(selector).style.translate, "");
+
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    await flushAsync();
+    assert.equal(app.draggingId, null);
+  });
+
+  it("cancels an active dim preview without sending a command when a second finger presses background or excluded controls", async () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "xiaomiCloud",
+        hasCompletedOnboarding: true,
+        isCompactGridMode: false,
+        cachedXiaomiDevices: [
+          {
+            id: "rw-light",
+            name: "客厅吸顶灯",
+            roomId: "r1",
+            roomName: "客厅",
+            model: "yeelink.light.ceiling22",
+            isOnline: true,
+            kind: {
+              kind: "light",
+              entityId: "miot:rw-light:2",
+              isOn: true,
+              brightnessPercent: 40,
+              colorTempKelvin: 4000,
+              minKelvin: 2700,
+              maxKelvin: 6500,
+              currentEffect: null,
+              availableEffects: [],
+              powerWritable: true,
+              brightnessWritable: true,
+              colorWritable: false,
+            },
+          },
+        ],
+      }),
+    );
+
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    await flushAsync();
+
+    let commandCalls = 0;
+    const origExecuteSingleCommand = app.executeSingleCommand.bind(app);
+    app.executeSingleCommand = async (...args) => {
+      commandCalls += 1;
+      return origExecuteSingleCommand(...args);
+    };
+
+    const tileSelector = '[data-tile-id="rw-light"]';
+    const fill = () => document.querySelector(`${tileSelector} .cc-tile-fill`)?.getAttribute("style") ?? "";
+
+    const startDimPreview = async (): Promise<void> => {
+      element(tileSelector).dispatchEvent(
+        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 40 }),
+      );
+      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 180, clientY: 42 }));
+      await flushAsync();
+      assert.deepEqual(app.dimPreview, { id: "rw-light", percent: 100 });
+      assert.match(fill(), /width:100%/);
+    };
+
+    // Case 1: second finger presses panel background.
+    await startDimPreview();
+    element(".cc-devices-grid").dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }),
+    );
+    await flushAsync();
+
+    assert.equal(app.dimPreview, null, "background pointerdown must clear dimPreview");
+    assert.equal(app.suppressNextClick, false, "background pointerdown must clear suppressNextClick");
+    assert.match(fill(), /width:40%/, "tile fill must revert to real brightness");
+
+    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 42 }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    await flushAsync();
+    assert.equal(app.dimPreview, null);
+    assert.equal(commandCalls, 0, "cancelled dim preview must not send a brightness command");
+    assert.doesNotMatch(document.body.textContent ?? "", /已将|控制失败/);
+
+    // Case 2: second finger presses an excluded inline slider wrapper (which stops bubble propagation).
+    const excludedTarget = element(`${tileSelector} [data-inline-slider-wrap]`);
+    await startDimPreview();
+    excludedTarget.dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 30, clientY: 50 }),
+    );
+    await flushAsync();
+
+    assert.equal(app.dimPreview, null, "excluded-control pointerdown must clear dimPreview");
+    assert.match(fill(), /width:40%/, "tile fill must revert to real brightness");
+
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    await flushAsync();
+    assert.equal(app.dimPreview, null);
+    assert.equal(commandCalls, 0, "cancelled dim preview must not send a brightness command");
+  });
+
+  it("clears prior drag or dim preview when a second finger presses another tile", async () => {
+    const app = startDemoApp();
+    await flushAsync();
+
+    const tileA = '[data-tile-id="light.living_ceiling"]';
+    const tileB = '[data-tile-id="light.study_desk"]';
+
+    element(tileA).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
+    await click("[data-start-editing]");
+
+    element(tileA).dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 40, clientY: 40 }),
+    );
+    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 60 }));
+    await flushAsync();
+    assert.equal(app.draggingId, "light.living_ceiling");
+
+    // Second finger presses tile B while tile A is being dragged.
+    element(tileB).dispatchEvent(
+      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 200, clientY: 60 }),
+    );
+    await flushAsync();
+    assert.equal(app.draggingId, null, "pressing tile B must clear tile A draggingId");
+    assert.equal(app.dragPointer, null, "pressing tile B must clear tile A dragPointer");
+    assert.equal(element(tileA).classList.contains("is-dragging"), false);
+
+    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    await flushAsync();
+    assert.equal(app.draggingId, null);
+  });
 });
+

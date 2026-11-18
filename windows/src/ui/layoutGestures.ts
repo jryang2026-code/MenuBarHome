@@ -89,20 +89,13 @@ export interface LayoutGestureHost {
       host.suppressNextClick = true;
     };
 
-    host.root.addEventListener(
-      "pointerdown",
-      () => {
-        host.pointerIsDown = true;
-      },
-      { capture: true },
-    );
     /**
-     * A cancelled gesture (pointer cancel, window blur) ends the press without sending anything: the
-     * pending dim preview and the long-press timer are dropped, so the next plain click on the tile is
-     * a plain click instead of a brightness write against a stale preview.
+     * Ends any in-flight gesture (resize, long-press timer, reorder drag, or dim preview) without
+     * committing a brightness write. Shared by external cancellation (pointercancel/blur) and a new
+     * primary pointerdown so a second finger hitting the background or an excluded control never
+     * strands draggingId, dragPointer, or dimPreview.
      */
-    const cancelGesture = (): void => {
-      host.pointerIsDown = false;
+    const clearActiveGesture = (): void => {
       if (resizing) {
         endHandleGesture(resizing.id);
         resizing = null;
@@ -124,6 +117,20 @@ export interface LayoutGestureHost {
       if (droppedPreview || droppedDrag) host.render();
     };
 
+    const cancelGesture = (): void => {
+      host.pointerIsDown = false;
+      clearActiveGesture();
+    };
+
+    host.root.addEventListener(
+      "pointerdown",
+      (e) => {
+        host.pointerIsDown = true;
+        if (e.button === 0) clearActiveGesture();
+      },
+      { capture: true },
+    );
+
     window.addEventListener(
       "pointerup",
       () => {
@@ -136,12 +143,9 @@ export interface LayoutGestureHost {
 
     host.root.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      if (press) {
-        window.clearTimeout(press.timer);
-        press = null;
-      }
       suppressNextHandleClick = false;
-      const handleEl = (e.target as HTMLElement).closest<HTMLElement>(".cc-resize-handle");
+      const target = e.target as HTMLElement;
+      const handleEl = target.closest<HTMLElement>(".cc-resize-handle");
       if (handleEl && host.isEditingLayout) {
         const id = handleEl.dataset.resizeHandle ?? handleEl.dataset.cycleSize ?? "";
         const dev = host.devices.find((d) => d.id === id);
@@ -157,20 +161,25 @@ export interface LayoutGestureHost {
             lastDy: 0,
             samples: [{ x: e.clientX, y: e.clientY, t: performance.now() }],
           };
-          handleEl.classList.add("is-active");
-          handleEl.closest<HTMLElement>("[data-tile-id]")?.classList.add("is-resizing");
+          const liveTile = host.root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(dev.id)}"]`);
+          const liveHandle = handleEl.isConnected
+            ? handleEl
+            : (liveTile?.querySelector<HTMLElement>(".cc-resize-handle") ?? handleEl);
+          liveHandle.classList.add("is-active");
+          (liveTile ?? handleEl.closest<HTMLElement>("[data-tile-id]"))?.classList.add("is-resizing");
         }
         return;
       }
-      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
-      if (!el || (e.target as HTMLElement).closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
+      const el = target.closest<HTMLElement>("[data-tile-id]");
+      if (!el || target.closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
       const id = el.dataset.tileId as string;
-      const currentPress = { id, x: e.clientX, y: e.clientY, timer: 0, dimming: false, el };
+      const liveEl = el.isConnected ? el : (host.root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(id)}"]`) ?? el);
+      const currentPress = { id, x: e.clientX, y: e.clientY, timer: 0, dimming: false, el: liveEl };
       currentPress.timer = host.isEditingLayout
         ? 0
         : window.setTimeout(() => {
             if (press !== currentPress || currentPress.dimming) return;
-            beginDrag(id, el, currentPress.x, currentPress.y);
+            beginDrag(id, liveEl, currentPress.x, currentPress.y);
             host.startEditing();
           }, 450);
       press = currentPress;
