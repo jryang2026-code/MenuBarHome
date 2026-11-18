@@ -80,13 +80,22 @@ final class MacContextObserver: MacContextProviding {
             wifiSSID: wifiSSID(),
             isWiFiAuthorized: isWiFiAuthorized,
             isFocusActive: focusActive(),
-            isUserPresent: CGDisplayIsAsleep(CGMainDisplayID()) == 0,
+            isUserPresent: Self.isUserPresent(),
             meetings: calendarMeetings(now: now)
         )
         guard let handler else { return }
         Task { @MainActor in
             await handler(snapshot, now)
         }
+    }
+
+    /// Display wake alone is not user presence: a notification or DarkWake can light up the lock
+    /// screen while the user is asleep, so a locked session must never count as present (#19).
+    static func isUserPresent(
+        displayIsAsleep: Bool = CGDisplayIsAsleep(CGMainDisplayID()) != 0,
+        session: [String: Any]? = CGSessionCopyCurrentDictionary() as? [String: Any]
+    ) -> Bool {
+        !displayIsAsleep && !ScreenLockPolicy.isLocked(session: session)
     }
 
     // MARK: - Power

@@ -78,6 +78,7 @@ import {
 } from "../src/core/secureStore.js";
 import {
   allOffTargets,
+  joinsAllOff,
   joinsAllOffByDefault,
   partitionDueTimers,
   cloudRefreshDue,
@@ -3424,6 +3425,48 @@ describe("全关 leaves plugs and vacuums alone unless asked (#23)", () => {
     assert.equal(joinsAllOffByDefault(lamp), true);
     assert.deepEqual(allOffTargets([lamp, router], {}).map((d) => d.id), ["lamp"]);
     assert.deepEqual(allOffTargets([lamp, router], { router: true, lamp: false }).map((d) => d.id), ["router"]);
+  });
+
+  it("never includes cover devices in 全关 even when legacy allOffOverrides has true", () => {
+    const coverDevices: SmartDevice[] = (["garage-door", "curtain", "window-opener", "clothes-airer"] as const).map(
+      (subtype, index) => ({
+        id: `cover_${subtype}_${index}`,
+        name: subtype === "garage-door" ? "车库门" : subtype,
+        roomId: "study",
+        roomName: "书房",
+        model: "fixture.cover.model",
+        isOnline: true,
+        kind: {
+          kind: "cover",
+          entityId: `cover.${subtype}`,
+          subtype,
+          positionPercent: 80,
+          positionWritable: true,
+          openDescription: "Open",
+          closeDescription: "Close",
+          pauseDescription: "Pause",
+          batteryPercent: null,
+          faultText: null,
+          motion: "stopped",
+        },
+      }),
+    );
+
+    const overrides: Record<string, boolean> = Object.fromEntries(
+      coverDevices.map((d) => [d.id, true]),
+    );
+    const snapshot = { ...overrides };
+
+    for (const cover of coverDevices) {
+      assert.equal(joinsAllOffByDefault(cover), false);
+      assert.equal(joinsAllOff(cover, overrides), false, `${cover.id} must ignore legacy true override`);
+    }
+    assert.deepEqual(
+      allOffTargets([lamp, ...coverDevices], overrides).map((d) => d.id),
+      ["lamp"],
+      "only the light enters allOffTargets while covers are ignored",
+    );
+    assert.deepEqual(overrides, snapshot, "legacy overrides are ignored without mutating/deleting them");
   });
 });
 

@@ -976,4 +976,100 @@ describe("Queued external URLs: data-source switch, hidden panel & lock probes",
       "the next render retries the same content instead of treating it as exported",
     );
   });
+
+  it("URL scene=allOff excludes garage door and curtain covers even when legacy allOffOverrides has true", async () => {
+    const app = startDemoApp({
+      enableRaycastIntegration: true,
+      allowDirectURLControl: false,
+      allOffOverrides: {
+        "cover.garage_door": true,
+        "cover.curtain": true,
+      },
+    });
+    await flushAsync();
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+
+    const garageDoor: SmartDevice = {
+      id: "cover.garage_door",
+      name: "车库门",
+      roomId: "garage",
+      roomName: "车库",
+      model: "fixture.garage",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.garage_door",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const curtain: SmartDevice = {
+      id: "cover.curtain",
+      name: "客厅窗帘",
+      roomId: "living",
+      roomName: "客厅",
+      model: "fixture.curtain",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.curtain",
+        subtype: "curtain",
+        positionPercent: 80,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const lamp: SmartDevice = {
+      id: "light.living",
+      name: "客厅灯",
+      roomId: "living",
+      roomName: "客厅",
+      model: "yeelink.light.lamp4",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.living",
+        isOn: true,
+        brightnessPercent: 75,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+    app.devices = [garageDoor, curtain, lamp];
+    app.render();
+    await flushAsync();
+
+    const snap = getLatestRaycastSnapshotForHost(app);
+    const allOffQuickAction = snap.quickActions.find((q) => q.id === "allOff");
+    assert.equal(allOffQuickAction?.affectedCount, 1, "raycast snapshot allOff count excludes covers");
+
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://scene?name=allOff&id=req_alloff_cover&token=${token}`,
+    );
+    await flushAsync();
+
+    const updatedGarage = app.devices.find((d) => d.id === "cover.garage_door")!;
+    const updatedCurtain = app.devices.find((d) => d.id === "cover.curtain")!;
+    const updatedLamp = app.devices.find((d) => d.id === "light.living")!;
+    assert.equal(updatedGarage.kind.kind === "cover" ? updatedGarage.kind.positionPercent : null, 100);
+    assert.equal(updatedCurtain.kind.kind === "cover" ? updatedCurtain.kind.positionPercent : null, 80);
+    assert.equal(updatedLamp.kind.kind === "light" ? updatedLamp.kind.isOn : true, false);
+    assert.equal(app.settings.allOffOverrides["cover.garage_door"], true, "old override is preserved");
+  });
 });

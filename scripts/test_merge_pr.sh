@@ -186,6 +186,22 @@ if run_pr 1 "只有 Cursor 检查时拒绝合并" "$PR" "$HEAD_SHA"; then
     merged_never "只有 Cursor 检查时未调用 gh pr merge"
 fi
 
+# 3c-1) 同名检查以最新一次为准：被取消的旧运行不挡合并，新失败仍要拦住
+GUARD_OLD='{"__typename":"CheckRun","name":"snapshot-baselines","workflowName":"Snapshot Guard","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-11-18T12:50:00Z"}'
+GUARD_NEW='{"__typename":"CheckRun","name":"snapshot-baselines","workflowName":"Snapshot Guard","status":"COMPLETED","conclusion":"SKIPPED","startedAt":"2026-11-18T12:51:00Z"}'
+GUARD_FAIL='{"__typename":"CheckRun","name":"snapshot-baselines","workflowName":"Snapshot Guard","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-11-18T12:52:00Z"}'
+FAKE_GH_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${HEAD_SHA}\",\"mergeCommit\":null,\"statusCheckRollup\":[${GUARD_OLD},${GUARD_NEW}]}"
+export FAKE_GH_PR_JSON
+if run_pr 0 "被新运行取代的取消检查不挡合并" "$PR" "$HEAD_SHA"; then
+    expect_in "取代后按 head 合并" "--match-head-commit ${HEAD_SHA}" "$FAKE_GH_MERGE_LOG"
+fi
+FAKE_GH_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${HEAD_SHA}\",\"mergeCommit\":null,\"statusCheckRollup\":[${GUARD_NEW},${GUARD_FAIL}]}"
+export FAKE_GH_PR_JSON
+if run_pr 1 "最新一次失败仍拒绝合并" "$PR" "$HEAD_SHA"; then
+    expect_in "拒绝时点名最新失败" "snapshot-baselines: FAILURE"
+    merged_never "最新失败时未调用 gh pr merge"
+fi
+
 # 3d) 卡住的 Cursor 检查不挡合并
 export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "[$CURSOR_PENDING,${GREEN#[}" "")"
 if run_pr 0 "卡住的 Cursor 检查不挡合并" "$PR" "$HEAD_SHA"; then
