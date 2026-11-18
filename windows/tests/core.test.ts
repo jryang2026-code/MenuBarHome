@@ -2159,7 +2159,7 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
   });
 });
 
-type ConfirmationDeviceKind = "light" | "climate" | "fan" | "plug" | "vacuum" | "camera" | "sensor";
+type ConfirmationDeviceKind = "light" | "climate" | "fan" | "plug" | "vacuum" | "camera" | "sensor" | "cover";
 
 interface ConfirmationFixtureDevice {
   readonly id: string;
@@ -2167,6 +2167,7 @@ interface ConfirmationFixtureDevice {
   readonly model: string;
   readonly kind: ConfirmationDeviceKind;
   readonly targetTemperature: number | null;
+  readonly subtype: string | null;
 }
 
 interface ConfirmationFixtureRow {
@@ -2197,7 +2198,8 @@ function isConfirmationDeviceKind(kind: string): kind is ConfirmationDeviceKind 
     kind === "plug" ||
     kind === "vacuum" ||
     kind === "camera" ||
-    kind === "sensor"
+    kind === "sensor" ||
+    kind === "cover"
   );
 }
 
@@ -2239,10 +2241,17 @@ function parseConfirmationDevice(raw: unknown, rowId: string): ConfirmationFixtu
     if (!hasSetpoint || typeof raw.targetTemperature !== "number") {
       throw new Error(`${rowId} climate must include targetTemperature`);
     }
-    return { id, name, model, kind, targetTemperature: raw.targetTemperature };
+    return { id, name, model, kind, targetTemperature: raw.targetTemperature, subtype: null };
   }
   if (hasSetpoint) throw new Error(`${rowId} ${kind} must omit targetTemperature`);
-  return { id, name, model, kind, targetTemperature: null };
+  if (kind === "cover") {
+    if (typeof raw.subtype !== "string" || raw.subtype === "") {
+      throw new Error(`${rowId} cover must include subtype`);
+    }
+    return { id, name, model, kind, targetTemperature: null, subtype: raw.subtype };
+  }
+  if (Object.prototype.hasOwnProperty.call(raw, "subtype")) throw new Error(`${rowId} ${kind} must omit subtype`);
+  return { id, name, model, kind, targetTemperature: null, subtype: null };
 }
 
 function parseConfirmationRows(raw: string): ConfirmationFixtureRow[] {
@@ -2397,6 +2406,30 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
           statusText: null,
         },
       };
+    case "cover": {
+      const subtype = device.subtype;
+      if (subtype === null) throw new Error(`${device.id} cover subtype`);
+      const coverSubtype: "curtain" | "window-opener" | "garage-door" | "clothes-airer" =
+        subtype === "curtain" || subtype === "window-opener" || subtype === "garage-door" || subtype === "clothes-airer"
+          ? subtype
+          : "window-opener";
+      return {
+        ...common,
+        kind: {
+          kind: "cover",
+          entityId: "e",
+          subtype: coverSubtype,
+          positionPercent: 0,
+          positionWritable: true,
+          openDescription: "Open",
+          closeDescription: "Close",
+          pauseDescription: "Pause",
+          batteryPercent: null,
+          faultText: null,
+          motion: "stopped",
+        },
+      };
+    }
     default: {
       const unreachable: never = device.kind;
       return unreachable;
@@ -2407,7 +2440,7 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 84);
+  assert.equal(rows.length, 90);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);

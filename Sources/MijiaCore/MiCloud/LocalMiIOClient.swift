@@ -1,17 +1,34 @@
 import Foundation
 import os
+#if canImport(Darwin)
+import Darwin
+#endif
 #if canImport(Network)
 import Network
 #endif
 
 // MARK: - UDP Transport Seam
 
+public struct MiIOBroadcastReply: Equatable, Sendable {
+    public var sourceIP: String
+    public var packet: Data
+    public init(sourceIP: String, packet: Data) { self.sourceIP = sourceIP; self.packet = packet }
+}
+
+public struct MiIODeviceCandidate: Equatable, Sendable {
+    public var did: String
+    public var token: String
+    public init(did: String, token: String) { self.did = did; self.token = token }
+}
+
 public protocol MiIOUDPTransport: Sendable {
     func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data
+    func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply]
     func shutdown() async
 }
 
 extension MiIOUDPTransport {
+    public func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] { [] }
     public func shutdown() async {}
 }
 
@@ -138,6 +155,16 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
         }
     }
 
+    public func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw MiIOError.shutDown }
+        #if canImport(Darwin)
+        return try await DarwinBSDMiIOBroadcastScanner.probeBroadcast(packet: packet, port: port, timeout: timeout)
+        #else
+        return []
+        #endif
+    }
+
     private func register(_ call: PendingCall, id: UUID) {
         if isShutDown {
             call.fail(MiIOError.shutDown)
@@ -169,6 +196,106 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
         for call in active {
             call.fail(MiIOError.shutDown)
         }
+    }
+}
+#endif
+
+#if canImport(Darwin)
+enum DarwinBSDMiIOBroadcastScanner {
+    private static let broadcastQueue = DispatchQueue(label: "com.jryang1997.MenuBarMijia.LocalMiIO.Broadcast", qos: .utility, attributes: .concurrent)
+
+    static func directedBroadcastIP(address: String, netmask: String) -> String? {
+        var addr = in_addr(), mask = in_addr()
+        guard inet_pton(AF_INET, address, &addr) == 1, inet_pton(AF_INET, netmask, &mask) == 1 else { return nil }
+        let hostAddr = UInt32(bigEndian: addr.s_addr), hostMask = UInt32(bigEndian: mask.s_addr)
+        return (hostMask != 0 && hostMask != UInt32.max) ? ipv4String(from: in_addr(s_addr: ((hostAddr & hostMask) | ~hostMask).bigEndian)) : nil
+    }
+
+    static func isValidBroadcastResponderIP(_ sourceIP: String, localIPs: Set<String>, broadcastIPs: Set<String>) -> Bool {
+        let t = sourceIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t != "255.255.255.255" && t != "0.0.0.0" && !localIPs.contains(t) && !broadcastIPs.contains(t) && LocalMiIOClient.isPrivateRFC1918IPv4(t)
+    }
+
+    static func probeBroadcast(packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
+        try Task.checkCancellation()
+        let cancelFlag = OSAllocatedUnfairLock(initialState: false)
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { cont in
+                broadcastQueue.async {
+                    if cancelFlag.withLock({ $0 }) { cont.resume(throwing: CancellationError()); return }
+                    do { cont.resume(returning: try performBlockingBroadcast(packet: packet, port: port, timeout: timeout, cancelFlag: cancelFlag)) }
+                    catch { cont.resume(throwing: error) }
+                }
+            }
+        } onCancel: { cancelFlag.withLock { $0 = true } }
+    }
+
+    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: OSAllocatedUnfairLock<Bool>) throws -> [MiIOBroadcastReply] {
+        var localIPs: Set<String> = ["0.0.0.0", "127.0.0.1"], broadcastIPs: Set<String> = ["255.255.255.255"]
+        var ifap: UnsafeMutablePointer<ifaddrs>?
+        if getifaddrs(&ifap) == 0, let first = ifap {
+            defer { freeifaddrs(first) }
+            var cursor: UnsafeMutablePointer<ifaddrs>? = first
+            while let ifa = cursor?.pointee {
+                defer { cursor = ifa.ifa_next }
+                let flags = Int32(ifa.ifa_flags)
+                guard (flags & IFF_UP) != 0, (flags & IFF_LOOPBACK) == 0, let addrPtr = ifa.ifa_addr, Int32(addrPtr.pointee.sa_family) == AF_INET,
+                      let ipString = ipv4String(from: UnsafeRawPointer(addrPtr).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr),
+                      LocalMiIOClient.isPrivateRFC1918IPv4(ipString) else { continue }
+                localIPs.insert(ipString)
+                if let maskPtr = ifa.ifa_netmask, Int32(maskPtr.pointee.sa_family) == AF_INET,
+                   let maskString = ipv4String(from: UnsafeRawPointer(maskPtr).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr),
+                   let directed = directedBroadcastIP(address: ipString, netmask: maskString) { broadcastIPs.insert(directed) }
+                if (flags & IFF_BROADCAST) != 0, let dstPtr = ifa.ifa_dstaddr, Int32(dstPtr.pointee.sa_family) == AF_INET,
+                   let bcast = ipv4String(from: UnsafeRawPointer(dstPtr).assumingMemoryBound(to: sockaddr_in.self).pointee.sin_addr) { broadcastIPs.insert(bcast) }
+            }
+        }
+        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard fd >= 0 else { throw MiIOError.transportUnavailable }
+        defer { Darwin.close(fd) }
+        var broadcastOn: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &broadcastOn, socklen_t(MemoryLayout<Int32>.size))
+        _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK)
+        let packetBytes = [UInt8](packet)
+        var sentCount = 0
+        for target in broadcastIPs.sorted() {
+            var dst = sockaddr_in(sin_len: UInt8(MemoryLayout<sockaddr_in>.size), sin_family: sa_family_t(AF_INET), sin_port: port.bigEndian, sin_addr: in_addr(), sin_zero: (0, 0, 0, 0, 0, 0, 0, 0))
+            guard inet_pton(AF_INET, target, &dst.sin_addr) == 1 else { continue }
+            let sent = packetBytes.withUnsafeBytes { rawBuf in
+                withUnsafePointer(to: &dst) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { sendto(fd, rawBuf.baseAddress, packetBytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+            }
+            if sent >= 0 { sentCount += 1 }
+        }
+        if sentCount == 0 { return [] }
+        let deadline = ContinuousClock.now + .milliseconds(max(1, Int(timeout.components.seconds) * 1000 + Int(timeout.components.attoseconds / 1_000_000_000_000_000)))
+        var replies: [MiIOBroadcastReply] = [], seenSources: Set<String> = [], buf = [UInt8](repeating: 0, count: 2048)
+        while !cancelFlag.withLock({ $0 }) {
+            let rem = deadline - ContinuousClock.now
+            let remMs = Int(rem.components.seconds) * 1000 + Int(rem.components.attoseconds / 1_000_000_000_000_000)
+            if remMs <= 0 { break }
+            var pfd = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&pfd, 1, Int32(min(50, max(1, remMs))))
+            if ready < 0 { if errno == EINTR { continue }; break }
+            if ready == 0 || (pfd.revents & Int16(POLLIN)) == 0 { continue }
+            while true {
+                var srcAddr = sockaddr_in(), srcLen = socklen_t(MemoryLayout<sockaddr_in>.size)
+                let n = buf.withUnsafeMutableBytes { rawBuf in
+                    withUnsafeMutablePointer(to: &srcAddr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, rawBuf.baseAddress, rawBuf.count, 0, $0, &srcLen) } }
+                }
+                if n <= 0 { break }
+                guard n >= MiIOPacket.headerSize, let sourceIP = ipv4String(from: srcAddr.sin_addr),
+                      isValidBroadcastResponderIP(sourceIP, localIPs: localIPs, broadcastIPs: broadcastIPs),
+                      seenSources.insert(sourceIP).inserted else { continue }
+                replies.append(MiIOBroadcastReply(sourceIP: sourceIP, packet: Data(buf.prefix(n))))
+            }
+        }
+        if cancelFlag.withLock({ $0 }) { throw CancellationError() }
+        return replies
+    }
+
+    private static func ipv4String(from addr: in_addr) -> String? {
+        var copy = addr, buffer = [UInt8](repeating: 0, count: Int(INET_ADDRSTRLEN))
+        return inet_ntop(AF_INET, &copy, &buffer, socklen_t(INET_ADDRSTRLEN)) != nil ? String(decoding: buffer.prefix { $0 != 0 }, as: UTF8.self) : nil
     }
 }
 #endif
@@ -220,9 +347,20 @@ public actor LocalMiIOClient {
     private let maxBatchSize: Int
     private let now: @Sendable () -> Date
 
+    private struct HardwareDeviceID: Equatable, Sendable {
+        var unknown: UInt32
+        var deviceId: UInt32
+
+        func matches(_ header: MiIOPacketHeader) -> Bool {
+            let headerUnknown = header.unknown == UInt32.max ? 0 : header.unknown
+            return header.deviceId == deviceId && headerUnknown == unknown
+        }
+    }
+
     private struct DeviceSession: Sendable {
         var ip: String
         var tokenData: Data
+        var unknown: UInt32
         var deviceId32: UInt32
         var baseStamp: UInt32
         var handshakeAt: Date
@@ -245,6 +383,8 @@ public actor LocalMiIOClient {
     }
 
     private var sessions: [String: DeviceSession] = [:]
+    private var knownHardwareIdsByDid: [String: HardwareDeviceID] = [:]
+    private var lastRTTMsByDid: [String: Int] = [:]
     private var commandTails: [String: Task<Void, Never>] = [:]
     private var inFlightTasks: [UUID: Task<Void, Never>] = [:]
     private var nextRequestId: Int = 100
@@ -290,7 +430,84 @@ public actor LocalMiIOClient {
         }
         commandTails.removeAll()
         sessions.removeAll()
+        knownHardwareIdsByDid.removeAll()
+        lastRTTMsByDid.removeAll()
         await transport.shutdown()
+    }
+
+    public func lastRoundTripMs(for did: String) -> Int? { lastRTTMsByDid[did] }
+
+    public func discoverEndpoints(
+        for candidates: [MiIODeviceCandidate], broadcastTimeout: Duration = .milliseconds(650)
+    ) async throws -> [String: String] {
+        try Task.checkCancellation()
+        guard !isShutDown else { throw MiIOError.shutDown }
+        var validCandidates: [(did: String, tokenData: Data)] = [], seenDids: Set<String> = []
+        for c in candidates where !c.did.isEmpty && seenDids.insert(c.did).inserted {
+            if let tokenData = MiIOPacket.validateToken(c.token) { validCandidates.append((c.did, tokenData)) }
+        }
+        guard !validCandidates.isEmpty else { return [:] }
+        let replies = try await transport.probeBroadcast(MiIOPacket.helloPacket, port: port, timeout: broadcastTimeout)
+        guard !isShutDown else { throw MiIOError.shutDown }
+        var parsedReplies: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)] = [], seenReplyIPs: Set<String> = []
+        for reply in replies {
+            let ip = reply.sourceIP.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard ip != "255.255.255.255", Self.isPrivateRFC1918IPv4(ip), seenReplyIPs.insert(ip).inserted,
+                  let header = try? MiIOPacket.decodeHeader(reply.packet), header.deviceId != 0, header.deviceId != UInt32.max else { continue }
+            parsedReplies.append((ip, reply.packet, header))
+        }
+        guard !parsedReplies.isEmpty else { return [:] }
+
+        var discovered: [String: String] = [:], claimedIPs: Set<String> = []
+        for candidate in validCandidates {
+            let matching = parsedReplies.filter { r in
+                guard !claimedIPs.contains(r.sourceIP) else { return false }
+                if let known = knownHardwareIdsByDid[candidate.did], known.matches(r.header) { return true }
+                guard let did64 = UInt64(candidate.did) else { return false }
+                return r.header.deviceId64 == did64 || ((r.header.unknown == 0 || r.header.unknown == UInt32.max) && UInt32(truncatingIfNeeded: did64) == r.header.deviceId)
+            }
+            for reply in matching {
+                try Task.checkCancellation()
+                if try await verifyBroadcastCandidate(did: candidate.did, tokenData: candidate.tokenData, sourceIP: reply.sourceIP, packet: reply.packet, header: reply.header) {
+                    discovered[candidate.did] = reply.sourceIP; claimedIPs.insert(reply.sourceIP); break
+                }
+            }
+        }
+        var unclaimedProbesRemaining = 8
+        for candidate in validCandidates where discovered[candidate.did] == nil && UInt64(candidate.did) == nil && knownHardwareIdsByDid[candidate.did] == nil {
+            for reply in parsedReplies where !claimedIPs.contains(reply.sourceIP) && unclaimedProbesRemaining > 0 {
+                if MiIOPacket.helloChecksumMatches(reply.packet, token: candidate.tokenData) == false { continue }
+                unclaimedProbesRemaining -= 1
+                try Task.checkCancellation()
+                if try await verifyBroadcastCandidate(did: candidate.did, tokenData: candidate.tokenData, sourceIP: reply.sourceIP, packet: reply.packet, header: reply.header) {
+                    discovered[candidate.did] = reply.sourceIP; claimedIPs.insert(reply.sourceIP); break
+                }
+            }
+        }
+        return discovered
+    }
+
+    private func verifyBroadcastCandidate(
+        did: String, tokenData: Data, sourceIP: String, packet: Data, header: MiIOPacketHeader
+    ) async throws -> Bool {
+        if MiIOPacket.helloChecksumMatches(packet, token: tokenData) == false { return false }
+        let reqId = allocateRequestId(), resolvedUnknown = header.unknown == UInt32.max ? 0 : header.unknown, probeStamp = header.stamp &+ 1
+        let rpc: JSONValue = .object(["id": .number(Double(reqId)), "method": .string("get_properties"), "params": .array([.object(["did": .string(did), "siid": .number(1), "piid": .number(1)])])])
+        let probePacket = try MiIOPacket.encode(deviceId: header.deviceId, stamp: probeStamp, token: tokenData, payload: Data(rpc.compactJSONString.utf8), unknown: resolvedUnknown)
+        let sendStart = ContinuousClock.now, responsePacket: Data
+        do { responsePacket = try await transport.send(probePacket, to: sourceIP, port: port, timeout: handshakeTimeout) }
+        catch is CancellationError { throw CancellationError() }
+        catch { return false }
+        guard !isShutDown else { throw MiIOError.shutDown }
+        guard let (respHeader, plaintext) = try? MiIOPacket.decode(responsePacket, token: tokenData),
+              let rawText = String(data: plaintext, encoding: .utf8) else { return false }
+        let cleaned = cleanMalformedFirmwareJSON(rawText)
+        guard !cleaned.isEmpty, let decoded = try? JSONDecoder().decode(JSONValue.self, from: Data(cleaned.utf8)),
+              decoded["id"]?.intValue == reqId else { return false }
+        lastRTTMsByDid[did] = Self.milliseconds(since: sendStart)
+        knownHardwareIdsByDid[did] = HardwareDeviceID(unknown: resolvedUnknown, deviceId: header.deviceId)
+        sessions[did] = DeviceSession(ip: sourceIP, tokenData: tokenData, unknown: resolvedUnknown, deviceId32: header.deviceId, baseStamp: respHeader.stamp, handshakeAt: now(), lastSentStamp: probeStamp)
+        return true
     }
 
     public func handshake(for endpoint: MiIODeviceEndpoint) async throws -> MiIOHandshakeInfo {
@@ -486,6 +703,7 @@ public actor LocalMiIOClient {
     private func performHandshake(did: String, host: String, tokenData: Data) async throws -> DeviceSession {
         try Task.checkCancellation()
         guard !isShutDown else { throw MiIOError.shutDown }
+        let start = ContinuousClock.now
         let response: Data
         do {
             response = try await transport.send(MiIOPacket.helloPacket, to: host, port: port, timeout: handshakeTimeout)
@@ -496,18 +714,25 @@ public actor LocalMiIOClient {
         } catch {
             throw MiIOError.handshakeFailed
         }
+        guard !isShutDown else { throw MiIOError.shutDown }
+        lastRTTMsByDid[did] = Self.milliseconds(since: start)
         let header = try MiIOPacket.decodeHeader(response)
-        let deviceId32: UInt32
+        let (resolvedUnknown, deviceId32): (UInt32, UInt32)
         if header.deviceId != 0 && header.deviceId != UInt32.max {
-            deviceId32 = header.deviceId
-        } else if let numericDid = UInt32(did) {
-            deviceId32 = numericDid
+            (resolvedUnknown, deviceId32) = (header.unknown == UInt32.max ? 0 : header.unknown, header.deviceId)
+        } else if let numericDid32 = UInt32(did) {
+            (resolvedUnknown, deviceId32) = (0, numericDid32)
+        } else if let numericDid64 = UInt64(did) {
+            (resolvedUnknown, deviceId32) = (UInt32(truncatingIfNeeded: numericDid64 >> 32), UInt32(truncatingIfNeeded: numericDid64))
+        } else if let known = knownHardwareIdsByDid[did] {
+            (resolvedUnknown, deviceId32) = (known.unknown, known.deviceId)
         } else {
             throw MiIOError.unsupportedNonNumericDeviceId
         }
         let session = DeviceSession(
             ip: host,
             tokenData: tokenData,
+            unknown: resolvedUnknown,
             deviceId32: deviceId32,
             baseStamp: header.stamp,
             handshakeAt: now(),
@@ -540,11 +765,11 @@ public actor LocalMiIOClient {
                 )
             } catch {
                 lastError = error
+                // Drop any unauthenticated or stale session before deciding whether to retry.
+                sessions.removeValue(forKey: did)
                 guard Self.isRetryable(error), attempt < maxRetries else {
                     throw error
                 }
-                // Clear cached session so the retry re-handshakes and refreshes stamp skew.
-                sessions.removeValue(forKey: did)
                 logger.notice("Retrying local miIO \(method, privacy: .public) for \(did, privacy: .public) after error: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -574,11 +799,14 @@ public actor LocalMiIOClient {
             deviceId: session.deviceId32,
             stamp: stamp,
             token: tokenData,
-            payload: payloadData
+            payload: payloadData,
+            unknown: session.unknown
         )
         let json: JSONValue
+        let sendStart = ContinuousClock.now
         do {
             let responsePacket = try await transport.send(packet, to: host, port: port, timeout: requestTimeout)
+            if !isShutDown { lastRTTMsByDid[did] = Self.milliseconds(since: sendStart) }
             let (_, responsePlaintext) = try MiIOPacket.decode(responsePacket, token: tokenData)
             guard let rawText = String(data: responsePlaintext, encoding: .utf8) else {
                 throw MiIOError.malformedPacket
@@ -611,12 +839,20 @@ public actor LocalMiIOClient {
             }
             throw MiIOError.malformedPacket
         }
+        if !isShutDown {
+            knownHardwareIdsByDid[did] = HardwareDeviceID(unknown: session.unknown, deviceId: session.deviceId32)
+        }
         if let errObj = json["error"], case .object = errObj {
             let code = errObj["code"]?.intValue ?? -1
             let message = errObj["message"]?.stringValue ?? "device error"
             throw MiCloudError.deviceError(code: code, message: message)
         }
         return json["result"] ?? .null
+    }
+
+    private static func milliseconds(since start: ContinuousClock.Instant) -> Int {
+        let elapsed = ContinuousClock.now - start
+        return max(1, Int(elapsed.components.seconds) * 1000 + Int(elapsed.components.attoseconds / 1_000_000_000_000_000))
     }
 
     private func allocateRequestId() -> Int {

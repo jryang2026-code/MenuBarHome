@@ -7,19 +7,32 @@ public struct CachedMiTopology: Codable, Equatable, Sendable {
     public var devices: [MiDeviceRecord]
     public var rooms: [MiRoom]
     public var groupMembersByGroup: [String: [String]]
+    public var discoveredLANIPsByDid: [String: String]
 
     public init(
         version: Int = 1,
         savedAt: Date,
         devices: [MiDeviceRecord],
         rooms: [MiRoom],
-        groupMembersByGroup: [String: [String]] = [:]
+        groupMembersByGroup: [String: [String]] = [:],
+        discoveredLANIPsByDid: [String: String] = [:]
     ) {
         self.version = version
         self.savedAt = savedAt
         self.devices = devices
         self.rooms = rooms
         self.groupMembersByGroup = groupMembersByGroup
+        self.discoveredLANIPsByDid = discoveredLANIPsByDid
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.version = try c.decode(Int.self, forKey: .version)
+        self.savedAt = try c.decode(Date.self, forKey: .savedAt)
+        self.devices = try c.decode([MiDeviceRecord].self, forKey: .devices)
+        self.rooms = try c.decode([MiRoom].self, forKey: .rooms)
+        self.groupMembersByGroup = try c.decodeIfPresent([String: [String]].self, forKey: .groupMembersByGroup) ?? [:]
+        self.discoveredLANIPsByDid = try c.decodeIfPresent([String: String].self, forKey: .discoveredLANIPsByDid) ?? [:]
     }
 }
 

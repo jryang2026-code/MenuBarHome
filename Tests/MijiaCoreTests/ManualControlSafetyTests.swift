@@ -348,6 +348,546 @@ struct ManualControlSafetyTests {
         #expect(store.devices.first(where: { $0.id == plug.id })?.isActiveOn == true)
     }
 
+    @Test("The 全关 undo banner is refused while the Mac is locked and stays retryable")
+    @MainActor
+    func screenLockBlocksUndoBanner() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        _ = await store.turnAllOff()?.value
+        #expect(store.undoBanner != nil)
+        let commandsAfterAllOff = await mock.executedCommands
+
+        store.setScreenLocked(true)
+        // Even a handler that approves every hazard cannot unblock the lock gate: the undo of a
+        // control write is itself a user control (#143).
+        store.manualControlConfirmationHandler = { _ in true }
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(store.undoBanner != nil, "A refused undo keeps the banner retryable after unlocking")
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        #expect(await mock.executedCommands.count == commandsAfterAllOff.count, "No restore command while locked")
+
+        store.setScreenLocked(false)
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+        #expect(await mock.executedCommands.count == commandsAfterAllOff.count + 1)
+        #expect(store.devices.first?.isActiveOn == true)
+    }
+
+    @Test("Voice undo is refused while the Mac is locked and stays retryable")
+    @MainActor
+    func screenLockBlocksVoiceUndo() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [DeviceIntent(targetId: onLight.id, operation: .power(false))],
+                reply: "关灯",
+                source: .local
+            ),
+            recordedUtterance: "关灯",
+            origin: .userInitiated
+        )
+        let commandsAfterOff = await mock.executedCommands
+        #expect(store.devices.first?.isActiveOn == false)
+
+        store.setScreenLocked(true)
+        _ = await store.runAssistantCommand("撤销")
+        if case .failed(let message) = store.assistantState {
+            #expect(message == store.screenLockBlockedMessage)
+        } else {
+            Issue.record("A locked voice undo must report the lock message")
+        }
+        #expect(await mock.executedCommands.count == commandsAfterOff.count, "No restore command while locked")
+
+        store.setScreenLocked(false)
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(await mock.executedCommands.count == commandsAfterOff.count + 1)
+    }
+
+    @Test("Locking the Mac while undoTurnAllOff waits on an in-flight batch rolls back optimistic restore and keeps undo retryable")
+    @MainActor
+    func screenLockDuringInFlightUndoBatchRollsBackAndKeepsUndoRetryable() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        store.toastAutoDismissInterval = nil
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        #expect(store.devices.first?.isActiveOn == true, "Optimistically restored while waiting on the in-flight batch")
+
+        store.setScreenLocked(true)
+        await mock.releaseExecute()
+        _ = await batch?.value
+        await undo.value
+
+        #expect(
+            await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)],
+            "No restore command may be sent after the Mac locks"
+        )
+        #expect(store.devices.first?.isActiveOn == false, "Optimistic restore must roll back when send is refused by screen lock")
+        #expect(store.optimisticLockUntil.isEmpty, "Failed undo must release its optimistic lock")
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        let rearmedBanner = try #require(store.undoBanner, "Refused undo must re-arm the banner for retry after unlock")
+        #expect(rearmedBanner.restoreCommands == [.setLightPower(entityId: "light.study", isOn: true)])
+
+        store.setScreenLocked(false)
+        let retry = try #require(store.undoTurnAllOff())
+        await retry.value
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(store.undoBanner == nil)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.study", isOn: true),
+        ])
+    }
+
+    @Test("Locking the Mac mid-voice-undo rolls back remaining devices, preserves undo entries, and retries after unlock")
+    @MainActor
+    func screenLockDuringVoiceUndoRollsBackAndKeepsVoiceUndoRetryable() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, mock) = try await makeStore([studyLight, livingLight])
+        store.toastAutoDismissInterval = nil
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [
+                    DeviceIntent(targetId: studyLight.id, operation: .power(false)),
+                    DeviceIntent(targetId: livingLight.id, operation: .power(false)),
+                ],
+                reply: "已关闭 2 盏灯",
+                source: .local
+            ),
+            recordedUtterance: "关灯",
+            origin: .userInitiated
+        )
+        store.pauseUndoBannerCountdown()
+        let startedBeforeUndo = await mock.executeStarted
+        await mock.holdNextExecute()
+
+        let voiceUndoTask = Task { @MainActor in
+            await store.runAssistantCommand("撤销")
+        }
+        await waitUntil { await mock.executeStarted > startedBeforeUndo }
+
+        store.setScreenLocked(true)
+        await mock.releaseExecute()
+        _ = await voiceUndoTask.value
+
+        // The first restore command was already in flight before lock; the second must be refused,
+        // rolled back, and kept in lastAssistantUndo (and undoBanner) for retry after unlocking.
+        let executedAfterLockedUndo = await mock.executedCommands
+        #expect(executedAfterLockedUndo.count == 3)
+        let firstRestoredDeviceId = executedAfterLockedUndo.last == .setLightPower(entityId: "light.living", isOn: true)
+            ? livingLight.id
+            : studyLight.id
+        let refusedDeviceId = firstRestoredDeviceId == livingLight.id ? studyLight.id : livingLight.id
+        let refusedEntityId = refusedDeviceId == livingLight.id ? "light.living" : "light.study"
+
+        #expect(store.devices.first(where: { $0.id == firstRestoredDeviceId })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == refusedDeviceId })?.isActiveOn == false)
+        #expect(store.optimisticLockUntil[refusedDeviceId] == nil)
+        #expect(store.assistantState == .failed(store.screenLockBlockedMessage))
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: refusedEntityId, isOn: true)])
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: refusedEntityId, isOn: true)])
+
+        store.setScreenLocked(false)
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.lastAssistantUndo == nil)
+        #expect(await mock.executedCommands.count == 4)
+    }
+
+    @Test("When banner and voice undo belong to different actions, a failed voice undo leaves the banner untouched")
+    @MainActor
+    func failedVoiceUndoDoesNotOverwriteIndependentBannerUndo() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, mock) = try await makeStore([studyLight, livingLight])
+        store.toastAutoDismissInterval = nil
+
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [DeviceIntent(targetId: studyLight.id, operation: .power(false))],
+                reply: "已关闭书房灯",
+                source: .local
+            ),
+            recordedUtterance: "关闭书房灯",
+            origin: .userInitiated
+        )
+        #expect(store.undoBanner == nil)
+
+        _ = await store.turnAllOff()?.value
+        store.pauseUndoBannerCountdown()
+        let bannerBefore = try #require(store.undoBanner)
+        #expect(bannerBefore.isAllOff)
+        #expect(bannerBefore.restoreCommands == [.setLightPower(entityId: "light.living", isOn: true)])
+
+        await mock.setFailingTargets(["light.study"])
+        _ = await store.runAssistantCommand("撤销")
+
+        #expect(store.lastAssistantUndo?.reply == "已关闭书房灯")
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: "light.study", isOn: true)])
+        #expect(store.undoBanner == bannerBefore)
+
+        await mock.setFailingTargets([])
+        let bannerUndo = try #require(store.undoTurnAllOff())
+        await bannerUndo.value
+        #expect(store.devices.first(where: { $0.id == livingLight.id })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == studyLight.id })?.isActiveOn == false)
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: "light.study", isOn: true)])
+
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.lastAssistantUndo == nil)
+    }
+
+    @Test("When banner and voice undo belong to different actions, a failed banner undo leaves the voice undo untouched")
+    @MainActor
+    func failedBannerUndoDoesNotOverwriteIndependentVoiceUndo() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, mock) = try await makeStore([studyLight, livingLight])
+        store.toastAutoDismissInterval = nil
+
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [DeviceIntent(targetId: studyLight.id, operation: .power(false))],
+                reply: "已关闭书房灯",
+                source: .local
+            ),
+            recordedUtterance: "关闭书房灯",
+            origin: .userInitiated
+        )
+        let voiceAtBefore = try #require(store.lastAssistantUndo?.at)
+
+        _ = await store.turnAllOff()?.value
+        store.pauseUndoBannerCountdown()
+
+        await mock.setFailingTargets(["light.living"])
+        let failedBannerUndo = try #require(store.undoTurnAllOff())
+        await failedBannerUndo.value
+        store.pauseUndoBannerCountdown()
+
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.living", isOn: true)])
+        #expect(store.undoBanner?.isAllOff == true)
+        #expect(store.lastAssistantUndo?.reply == "已关闭书房灯")
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: "light.study", isOn: true)])
+        #expect(store.lastAssistantUndo?.at == voiceAtBefore)
+
+        await mock.setFailingTargets([])
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.first(where: { $0.id == studyLight.id })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == livingLight.id })?.isActiveOn == false)
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.living", isOn: true)])
+
+        let retryBanner = try #require(store.undoTurnAllOff())
+        await retryBanner.value
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.undoBanner == nil)
+    }
+
+    @Test("Partial failure on a shared action keeps only failed commands on both entry points and never resends succeeded ones")
+    @MainActor
+    func partialUndoOfSharedActionKeepsOnlyFailedCommandsOnBothEntries() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, mock) = try await makeStore([studyLight, livingLight])
+        store.toastAutoDismissInterval = nil
+
+        let turnBothOffPlan = IntentPlan(
+            intents: [
+                DeviceIntent(targetId: studyLight.id, operation: .power(false)),
+                DeviceIntent(targetId: livingLight.id, operation: .power(false)),
+            ],
+            reply: "已关闭 2 盏灯",
+            source: .local
+        )
+
+        // Direction 1: Banner undo partially fails -> both entry points hold only the failed command -> voice retry finishes without resending.
+        _ = await store.executeIntentPlan(turnBothOffPlan, recordedUtterance: "关灯", origin: .userInitiated)
+        store.pauseUndoBannerCountdown()
+        #expect(store.undoBanner?.actionId == store.lastAssistantUndo?.actionId)
+
+        await mock.setFailingTargets(["light.study"])
+        let partialBannerUndo = try #require(store.undoTurnAllOff())
+        await partialBannerUndo.value
+        store.pauseUndoBannerCountdown()
+
+        #expect(store.devices.first(where: { $0.id == livingLight.id })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == studyLight.id })?.isActiveOn == false)
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.study", isOn: true)])
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: "light.study", isOn: true)])
+        #expect(store.undoBanner?.actionId == store.lastAssistantUndo?.actionId)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: true),
+        ])
+
+        await mock.setFailingTargets([])
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.lastAssistantUndo == nil)
+        #expect(store.undoBanner == nil)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: true),
+            .setLightPower(entityId: "light.study", isOn: true),
+        ])
+
+        // Direction 2: Voice undo partially fails -> both entry points hold only the failed command -> banner retry finishes without resending.
+        _ = await store.executeIntentPlan(turnBothOffPlan, recordedUtterance: "关灯", origin: .userInitiated)
+        store.pauseUndoBannerCountdown()
+
+        await mock.setFailingTargets(["light.living"])
+        _ = await store.runAssistantCommand("撤销")
+        store.pauseUndoBannerCountdown()
+
+        #expect(store.devices.first(where: { $0.id == studyLight.id })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == livingLight.id })?.isActiveOn == false)
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: "light.living", isOn: true)])
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.living", isOn: true)])
+        #expect(store.undoBanner?.actionId == store.lastAssistantUndo?.actionId)
+
+        await mock.setFailingTargets([])
+        let retryBanner = try #require(store.undoTurnAllOff())
+        await retryBanner.value
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.undoBanner == nil)
+        #expect(store.lastAssistantUndo == nil)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: true),
+            .setLightPower(entityId: "light.study", isOn: true),
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.living", isOn: false),
+            .setLightPower(entityId: "light.study", isOn: true),
+            .setLightPower(entityId: "light.living", isOn: true),
+        ])
+    }
+
+    @Test("Screen lock with zero commands sent restores pre-undo state and keeps both entry points retryable")
+    @MainActor
+    func screenLockBeforeAnySendPreservesBothUndoEntryPointsForRetry() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let heaterPlug = SmartDevice(
+            id: "dev_plug_heater",
+            name: "取暖插座",
+            roomId: "living",
+            roomName: "客厅",
+            model: "chuangmi.plug.212a01",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true))
+        )
+
+        // Case 1: Independent actions — mid-wait lock before any restore command is sent keeps both independent entries retryable.
+        do {
+            let (store, mock) = try await makeStore([studyLight, livingLight])
+            store.toastAutoDismissInterval = nil
+
+            _ = await store.executeIntentPlan(
+                IntentPlan(
+                    intents: [DeviceIntent(targetId: studyLight.id, operation: .power(false))],
+                    reply: "已关闭书房灯",
+                    source: .local
+                ),
+                recordedUtterance: "关闭书房灯",
+                origin: .userInitiated
+            )
+            let voiceBefore = try #require(store.lastAssistantUndo)
+
+            let startedBeforeAllOff = await mock.executeStarted
+            await mock.holdNextExecute()
+            let batch = store.turnAllOff()
+            store.pauseUndoBannerCountdown()
+            await waitUntil { await mock.executeStarted > startedBeforeAllOff }
+
+            let undo = try #require(store.undoTurnAllOff())
+            store.setScreenLocked(true)
+            await mock.releaseExecute()
+            _ = await batch?.value
+            await undo.value
+            store.pauseUndoBannerCountdown()
+
+            #expect(await mock.executedCommands == [
+                .setLightPower(entityId: "light.study", isOn: false),
+                .setLightPower(entityId: "light.living", isOn: false),
+            ])
+            #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.living", isOn: true)])
+            #expect(store.lastAssistantUndo == voiceBefore)
+
+            store.setScreenLocked(false)
+            let retryBanner = try #require(store.undoTurnAllOff())
+            await retryBanner.value
+            #expect(store.devices.first(where: { $0.id == livingLight.id })?.isActiveOn == true)
+            #expect(store.devices.first(where: { $0.id == studyLight.id })?.isActiveOn == false)
+
+            _ = await store.runAssistantCommand("撤销")
+            #expect(store.devices.allSatisfy { $0.isActiveOn })
+            #expect(store.lastAssistantUndo == nil)
+        }
+
+        // Case 2: Shared action — lock arriving after confirmation but before the first restore command restores both entries verbatim.
+        do {
+            let (store, mock) = try await makeStore([studyLight, heaterPlug])
+            store.toastAutoDismissInterval = nil
+
+            _ = await store.executeIntentPlan(
+                IntentPlan(
+                    intents: [
+                        DeviceIntent(targetId: studyLight.id, operation: .power(false)),
+                        DeviceIntent(targetId: heaterPlug.id, operation: .power(false)),
+                    ],
+                    reply: "已关闭 2 台设备",
+                    source: .local
+                ),
+                recordedUtterance: "全关",
+                origin: .userInitiated
+            )
+            store.pauseUndoBannerCountdown()
+            let voiceBefore = try #require(store.lastAssistantUndo)
+            let bannerBefore = try #require(store.undoBanner)
+
+            store.manualControlConfirmationHandler = { _ in
+                store.setScreenLocked(true)
+                return true
+            }
+            _ = await store.runAssistantCommand("撤销")
+            store.pauseUndoBannerCountdown()
+
+            #expect(await mock.executedCommands.count == 2, "Zero restore commands may be sent once the Mac locks")
+            #expect(store.devices.allSatisfy { !$0.isActiveOn })
+            #expect(store.lastAssistantUndo == voiceBefore)
+            #expect(store.undoBanner?.actionId == bannerBefore.actionId)
+            #expect(store.undoBanner?.restoreCommands == bannerBefore.restoreCommands)
+            #expect(store.undoBanner?.previousDevices == bannerBefore.previousDevices)
+            #expect(store.undoBanner?.deviceCount == bannerBefore.deviceCount)
+
+            store.setScreenLocked(false)
+            store.manualControlConfirmationHandler = { _ in true }
+            let retryBanner = try #require(store.undoTurnAllOff())
+            await retryBanner.value
+            #expect(store.devices.allSatisfy { $0.isActiveOn })
+            #expect(store.undoBanner == nil)
+            #expect(store.lastAssistantUndo == nil)
+            #expect(await mock.executedCommands.count == 4)
+        }
+    }
+
     @Test("Speaker directive commands require confirmation and return false when cancelled while TTS succeeds directly")
     @MainActor
     func speakerDirectiveConfirmation() async throws {
