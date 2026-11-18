@@ -286,8 +286,8 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   {
     anchor: "voiceControl",
     section: SEC_GENERAL,
-    title: ["语音指令与长按说话", "語音指令與長按說話", "Voice Dictation & Hold-to-Speak"],
-    synonyms: ["语音", "語音", "麦克风", "麥克風", "说话", "听写", "长按说话", "录音", "voice", "mic", "microphone", "speech", "dictation", "speak", "yuyin", "maikefeng"],
+    title: ["语音输入", "語音輸入", "Voice Input"],
+    synonyms: ["语音", "語音", "语音输入", "語音輸入", "麦克风", "麥克風", "说话", "听写", "长按说话", "录音", "开关", "关闭语音", "停用", "voice", "voice input", "mic", "microphone", "speech", "dictation", "speak", "toggle", "disable", "yuyin", "maikefeng"],
   },
   {
     anchor: "setupGuide",

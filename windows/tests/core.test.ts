@@ -56,7 +56,7 @@ import {
   parseMiotInstanceIndex,
   type MiotDeviceSpec,
 } from "../src/core/miCloudClient.js";
-import type { FacetControl } from "../src/core/models.js";
+import type { FacetControl, FacetKind } from "../src/core/models.js";
 import { isFallbackSpec } from "../src/core/miCloud/spec.js";
 import {
   checkForUpdate,
@@ -2159,7 +2159,7 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
   });
 });
 
-type ConfirmationDeviceKind = "light" | "climate" | "fan" | "plug" | "vacuum" | "camera" | "sensor" | "cover";
+type ConfirmationDeviceKind = "light" | "climate" | "fan" | "plug" | "vacuum" | "camera" | "sensor" | "cover" | "appliance";
 
 interface ConfirmationFixtureDevice {
   readonly id: string;
@@ -2168,6 +2168,7 @@ interface ConfirmationFixtureDevice {
   readonly kind: ConfirmationDeviceKind;
   readonly targetTemperature: number | null;
   readonly subtype: string | null;
+  readonly heats: boolean | null;
 }
 
 interface ConfirmationFixtureRow {
@@ -2186,6 +2187,22 @@ interface ConfirmationFixtureDecisionRow {
   readonly expectAutoRun: boolean;
 }
 
+interface ConfirmationFixtureFacet {
+  readonly kind: FacetKind;
+  readonly name: string;
+  readonly serviceName: string;
+  readonly value: unknown;
+  readonly writesByDefault: boolean;
+}
+
+interface ConfirmationFixtureFacetRow {
+  readonly id: string;
+  readonly device: ConfirmationFixtureDevice;
+  readonly facet: ConfirmationFixtureFacet;
+  readonly value: unknown;
+  readonly confirm: boolean;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2199,7 +2216,18 @@ function isConfirmationDeviceKind(kind: string): kind is ConfirmationDeviceKind 
     kind === "vacuum" ||
     kind === "camera" ||
     kind === "sensor" ||
-    kind === "cover"
+    kind === "cover" ||
+    kind === "appliance"
+  );
+}
+
+function isFacetKind(kind: string): kind is FacetKind {
+  return (
+    kind === "toggle" ||
+    kind === "select" ||
+    kind === "slider" ||
+    kind === "reading" ||
+    kind === "button"
   );
 }
 
@@ -2237,21 +2265,34 @@ function parseConfirmationDevice(raw: unknown, rowId: string): ConfirmationFixtu
   }
   if (!isConfirmationDeviceKind(kind)) throw new Error(`${rowId} kind ${kind}`);
   const hasSetpoint = Object.prototype.hasOwnProperty.call(raw, "targetTemperature");
+  const hasHeats = Object.prototype.hasOwnProperty.call(raw, "heats");
   if (kind === "climate") {
     if (!hasSetpoint || typeof raw.targetTemperature !== "number") {
       throw new Error(`${rowId} climate must include targetTemperature`);
     }
-    return { id, name, model, kind, targetTemperature: raw.targetTemperature, subtype: null };
+    if (hasHeats) throw new Error(`${rowId} climate must omit heats`);
+    return { id, name, model, kind, targetTemperature: raw.targetTemperature, subtype: null, heats: null };
+  }
+  if (kind === "appliance") {
+    if (!hasSetpoint || (raw.targetTemperature !== null && typeof raw.targetTemperature !== "number")) {
+      throw new Error(`${rowId} appliance must include targetTemperature (or null)`);
+    }
+    if (!hasHeats || typeof raw.heats !== "boolean") {
+      throw new Error(`${rowId} appliance must include heats`);
+    }
+    if (Object.prototype.hasOwnProperty.call(raw, "subtype")) throw new Error(`${rowId} appliance must omit subtype`);
+    return { id, name, model, kind, targetTemperature: raw.targetTemperature, subtype: null, heats: raw.heats };
   }
   if (hasSetpoint) throw new Error(`${rowId} ${kind} must omit targetTemperature`);
+  if (hasHeats) throw new Error(`${rowId} ${kind} must omit heats`);
   if (kind === "cover") {
     if (typeof raw.subtype !== "string" || raw.subtype === "") {
       throw new Error(`${rowId} cover must include subtype`);
     }
-    return { id, name, model, kind, targetTemperature: null, subtype: raw.subtype };
+    return { id, name, model, kind, targetTemperature: null, subtype: raw.subtype, heats: null };
   }
   if (Object.prototype.hasOwnProperty.call(raw, "subtype")) throw new Error(`${rowId} ${kind} must omit subtype`);
-  return { id, name, model, kind, targetTemperature: null, subtype: null };
+  return { id, name, model, kind, targetTemperature: null, subtype: null, heats: null };
 }
 
 function parseConfirmationRows(raw: string): ConfirmationFixtureRow[] {
@@ -2291,6 +2332,63 @@ function parseConfirmationDecisionRows(raw: string): ConfirmationFixtureDecision
       expectAutoRun: entry.expectAutoRun,
     };
   });
+}
+
+function parseConfirmationFacet(raw: unknown, rowId: string): ConfirmationFixtureFacet {
+  if (!isRecord(raw)) throw new Error(`${rowId} facet`);
+  if (typeof raw.kind !== "string" || !isFacetKind(raw.kind)) throw new Error(`${rowId} facet kind`);
+  if (typeof raw.name !== "string") throw new Error(`${rowId} facet name`);
+  if (typeof raw.serviceName !== "string") throw new Error(`${rowId} facet serviceName`);
+  if (typeof raw.writesByDefault !== "boolean") throw new Error(`${rowId} facet writesByDefault`);
+  return {
+    kind: raw.kind,
+    name: raw.name,
+    serviceName: raw.serviceName,
+    value: Object.prototype.hasOwnProperty.call(raw, "value") ? raw.value : null,
+    writesByDefault: raw.writesByDefault,
+  };
+}
+
+function parseConfirmationFacetRows(raw: string): ConfirmationFixtureFacetRow[] {
+  const parsed: unknown = JSON.parse(raw);
+  if (!isRecord(parsed) || !Array.isArray(parsed.facetRows)) throw new Error("confirmation facetRows");
+  return parsed.facetRows.map((entry, index) => {
+    if (!isRecord(entry) || typeof entry.id !== "string") throw new Error(`facet row ${index} id`);
+    const id = entry.id;
+    if (!Object.prototype.hasOwnProperty.call(entry, "device") || entry.device === null) {
+      throw new Error(`${id} device`);
+    }
+    if (typeof entry.confirm !== "boolean") throw new Error(`${id} confirm`);
+    return {
+      id,
+      device: parseConfirmationDevice(entry.device, id),
+      facet: parseConfirmationFacet(entry.facet, id),
+      value: Object.prototype.hasOwnProperty.call(entry, "value") ? entry.value : null,
+      confirm: entry.confirm,
+    };
+  });
+}
+
+function facetControlFromConfirmation(facet: ConfirmationFixtureFacet, deviceId: string): FacetControl {
+  return {
+    id: "2.5",
+    kind: facet.kind,
+    name: facet.name,
+    title: null,
+    serviceName: facet.serviceName,
+    unit: null,
+    scale: null,
+    value: facet.value,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: facet.writesByDefault,
+    isHighValue: true,
+    target:
+      facet.kind === "button"
+        ? { kind: "action", entityId: `miot:${deviceId}:a2` }
+        : { kind: "property", entityId: `miot:${deviceId}:2`, piid: 5 },
+  };
 }
 
 function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDevice {
@@ -2430,6 +2528,43 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
         },
       };
     }
+    case "appliance": {
+      if (device.heats === null) throw new Error(`${device.id} appliance heats`);
+      return {
+        ...common,
+        kind: {
+          kind: "appliance",
+          entityId: `miot:${device.id}:2`,
+          isOn: true,
+          powerPresent: true,
+          powerWritable: true,
+          currentMode: null,
+          availableModes: [],
+          modeWritable: false,
+          targetTemperature: device.targetTemperature,
+          currentTemperature: null,
+          minTemp: 0,
+          maxTemp: 80,
+          step: 1,
+          temperatureWritable: device.targetTemperature !== null,
+          statusText: null,
+          faultText: null,
+          remainingMinutes: null,
+          startAction: null,
+          pauseAction: null,
+          stopAction: null,
+          powerEntityId: `miot:${device.id}:2`,
+          modeEntityId: `miot:${device.id}:2`,
+          temperatureEntityId: `miot:${device.id}:2`,
+          light: null,
+          fanLevel: null,
+          currentHumidity: null,
+          symbolName: null,
+          roomReading: false,
+          heats: device.heats,
+        },
+      };
+    }
     default: {
       const unreachable: never = device.kind;
       return unreachable;
@@ -2468,6 +2603,16 @@ it("matches the shared confirmation table in confirmation_golden.json", () => {
     );
     assert.deepEqual(decision.intents, row.expectAutoRun ? [intent] : [], row.id);
     if (!row.expectAutoRun) assert.ok(decision.suggestions.length > 0, row.id);
+  }
+
+  const facetRows = parseConfirmationFacetRows(raw);
+  assert.equal(facetRows.length, 12);
+  assert.equal(new Set(facetRows.map((row) => row.id)).size, facetRows.length);
+  for (const row of facetRows) {
+    assert.equal(row.device.id, row.id, row.id);
+    const device = smartDeviceFromConfirmation(row.device);
+    const facet = facetControlFromConfirmation(row.facet, device.id);
+    assert.equal(ManualControlPolicy.facetRequiresConfirmation(facet, row.value, device), row.confirm, row.id);
   }
 });
 

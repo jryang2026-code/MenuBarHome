@@ -815,11 +815,30 @@ public final class HomeStore {
     }
     var manualWriteSessions: [String: ManualWriteSession] = [:]
     struct FacetWriteState {
+        enum Phase {
+            case debouncing
+            case inFlight
+        }
         let token: UUID
         let origin: JSONValue?
+        let originSnapshotGeneration: UInt64
+        let value: JSONValue?
+        /// Confirmation kind covering this tick's value when `dispatchFacetWrite` rechecks before sending.
+        let approval: FacetDragApproval?
+        /// Confirmation kinds the user already approved during this still-debouncing slider drag.
+        var confirmedApprovals: Set<FacetDragApproval>
+        var phase: Phase
         var bannerID: UUID?
     }
     var facetWrites: [String: FacetWriteState] = [:]
+    /// Latest provider- or LAN-reported device rows before optimistic locks merge local values on top.
+    /// Written only by real device reports (`snapshotUpdated`, `applyLGDeviceUpdate`) and cleared in
+    /// `invalidateUndoContext()` and per-account in `logoutMiAccount(id:)` (§13).
+    @ObservationIgnored var lastReportedDevices: [String: SmartDevice] = [:]
+    /// Latest provider-reported facet rows before `optimisticFacetLocks` preserve local values.
+    /// Written only by `snapshotUpdated` and cleared in `invalidateUndoContext()` and per-account in
+    /// `logoutMiAccount(id:)` (§13), so local `deviceFacets` mutations can never poison baselines.
+    @ObservationIgnored var lastReportedFacets: [String: [FacetControl]] = [:]
     var undoTimerTask: Task<Void, Never>?
     /// Bulk actions whose commands are still being sent, keyed by the banner they created.
     /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).

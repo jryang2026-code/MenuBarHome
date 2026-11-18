@@ -78,8 +78,10 @@ extension HomeStore {
         debounceTasks.removeAll()
         debouncedWrites.removeAll()
         manualWriteSessions.removeAll()
-        // The cover drag answer belongs to the slot that asked for it (§13).
+        // The cover drag answer and reported facet/device baselines belong to the connection that recorded them (§13).
         confirmedCoverDragAnswers.removeAll()
+        lastReportedDevices.removeAll()
+        lastReportedFacets.removeAll()
         // A persistent toast carries an action for the connection that raised it (the expired Mi
         // session's Scan button). Reaching demo mode or another account leaves it a dead button,
         // so it must end with the context that created it (§13). A suspended prompt is dropped too,
