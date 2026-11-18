@@ -14,8 +14,6 @@ import {
 import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
-import { cancelRunningBatch } from "./intentExecution.js";
-import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
 import { tr3 } from "./undoTracker.js";
 
 const PROACTIVE_RETRY_COOLDOWN_MS = 5 * 60_000;
@@ -261,30 +259,4 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
       host.isRefreshingProactive = false;
       host.proactiveRetryAfterMs = Date.now() + PROACTIVE_RETRY_COOLDOWN_MS;
     });
-}
-
-export function invalidateSourceControl(host: MenuMijiaWindowsApp): void {
-  abortVoiceInput(host);
-  // Bump sourceRevision before resolving any pending URL confirmation so the drain loop sees
-  // queued links as belonging to the previous source and cancels them cleanly.
-  host.sourceRevision += 1;
-  cancelRunningBatch(host, "sourceChanged");
-  clearUndoHoverPause(host);
-  host.timerSnapshot = null;
-  host.syncGeneration += 1;
-  host.isSyncingCloud = false;
-  host.isPollingQR = false;
-  host.qrTicket = null;
-  host.isResolvingIntent = false;
-  host.aiProactiveSuggestions = null;
-  host.aiProactiveSignature = null;
-  host.isRefreshingProactive = false;
-  host.proactiveRetryAfterMs = null;
-  host.applyPanelHeight();
-  host.haConnectionError = null;
-  host.lastUndoAction = null;
-  host.pendingCloudConsent = null;
-  host.clearPendingHighRisk();
-  host.lastManuallyUsedLightId = null;
-  host.pendingSuggestions = [];
 }

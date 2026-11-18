@@ -8,6 +8,7 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import {
   classifyProactiveSuggestionSource,
   maybeRefreshProactiveInBackground,
@@ -208,7 +209,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
     app.replyBanner = null;
     app.render();
     assert.ok(document.querySelector("#btn-header-undo"));
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assertMissing(document.querySelector("#btn-header-undo"));
   });

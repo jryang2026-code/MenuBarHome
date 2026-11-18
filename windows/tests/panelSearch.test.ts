@@ -141,7 +141,7 @@ describe("Panel keyboard on the rendered demo", () => {
       if (transition === "blur") field.blur();
       else if (transition === "window blur") window.dispatchEvent(new Event("blur"));
       else if (transition === "settings") app.openSettingsSheet();
-      else { app.sourceRevision += 1; app.render(); }
+      else { app.sourceEpoch.advance("source"); app.render(); }
       assert.equal(app.panelSearch.isComposing, false);
       if (transition === "settings") assert.ok(document.querySelector(".cc-sheet"));
       app.activeSheet = "none"; app.isShowingAssistantBar = true; app.render();

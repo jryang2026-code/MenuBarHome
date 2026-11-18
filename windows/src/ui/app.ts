@@ -116,7 +116,9 @@ import {
 } from "./sensorHistoryView.js";
 import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
-import { currentProactiveSuggestions, invalidateSourceControl, maybeRefreshProactiveInBackground } from "./proactive.js";
+import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
+import { SourceEpoch } from "./sourceEpoch.js";
+import { switchHome, switchSource } from "./sourceSwitch.js";
 import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
@@ -311,10 +313,21 @@ export class MenuMijiaWindowsApp {
   public proactiveRetryAfterMs: number | null = null;
   public isResolvingIntent = false;
   public isSyncingCloud = false;
-  public syncGeneration = 0;
+  /** Connection-source epoch; the single owner of the three invalidation counters below. */
+  public readonly sourceEpoch = new SourceEpoch();
+  /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
+  public get sourceRevision(): number {
+    return this.sourceEpoch.sourceRevision;
+  }
+  /** Advances on source/home switches and sync-run claims (today's `syncGeneration`). */
+  public get homeGeneration(): number {
+    return this.sourceEpoch.homeGeneration;
+  }
+  /** Advances on source/home switches and local control writes (today's `localControlRevision`). */
+  public get localRevision(): number {
+    return this.sourceEpoch.localRevision;
+  }
   public lastCloudRefreshAt: number | null = null;
-  public localControlRevision = 0;
-  public sourceRevision = 0;
   /** A silent cloud result that is waiting for the user to finish interacting. */
   public pendingCloudRender = false;
   public endpointSubmission: Promise<unknown> = Promise.resolve();
@@ -662,15 +675,7 @@ export class MenuMijiaWindowsApp {
     this.selectRoom(null);
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
-    // Invalidate any in-flight cloud refresh from the previous home so it cannot overwrite the new selection.
-    this.localControlRevision += 1;
-    this.syncGeneration += 1;
-    this.isSyncingCloud = false;
-    // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
-    this.aiProactiveSuggestions = null;
-    this.aiProactiveSignature = null;
-    this.isRefreshingProactive = false;
-    this.proactiveRetryAfterMs = null;
+    switchHome(this);
     this.applyPanelHeight();
     this.saveSettings();
     this.render();
@@ -846,11 +851,6 @@ export class MenuMijiaWindowsApp {
 
   public maybeRefreshProactiveInBackground(): void {
     maybeRefreshProactiveInBackground(this);
-  }
-
-  public invalidateSourceControl(): void {
-    this.pipeline.clearTransientState();
-    invalidateSourceControl(this);
   }
 
   public signOutXiaomiAccount(): void {
@@ -1087,7 +1087,7 @@ export class MenuMijiaWindowsApp {
 
       const session = await login.waitForScan(ticket);
       if (this.sourceRevision !== sourceRevAtStart) return;
-      this.invalidateSourceControl();
+      switchSource(this, "qr-login-success");
       // The account-level passToken is never persisted (#27).
       this.settings.miSession = sessionWithoutPassToken(session);
       this.miSessionExpired = false;
@@ -1102,7 +1102,7 @@ export class MenuMijiaWindowsApp {
       this.activeSheet = "none";
       this.qrTicket = null;
       this.isPollingQR = false;
-      // invalidateSourceControl() moved sourceRevision on, so the `finally` below no longer
+      // switchSource() moved sourceRevision on, so the `finally` below no longer
       // matches; release the pin taken at the start here or the flyout stops dismissing.
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
       this.saveSettings();

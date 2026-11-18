@@ -9,6 +9,7 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { SF_ICONS } from "../src/ui/appConstants.js";
 import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
@@ -5630,7 +5631,7 @@ describe("Manual control parity with macOS (#143)", () => {
     await setRange('[data-actemp="heater"]', "27");
     assert.ok(app.pendingHighRisk);
 
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assert.equal(app.pendingHighRisk, null);
     assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null);
@@ -5645,7 +5646,7 @@ describe("Manual control parity with macOS (#143)", () => {
     const target = () =>
       (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
 
-    app.sourceRevision += 1;
+    app.sourceEpoch.advance("source");
     element('[data-high-risk-confirm="heater"]').click();
     await setImmediate();
     assert.equal(target(), 20, "a stale revision must not run the captured command");

@@ -1,6 +1,7 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { processScheduledCommands } from "./scheduledCommands.js";
+import { switchSource } from "./sourceSwitch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
@@ -286,11 +287,10 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     setPendingMiVaultDeletion(true);
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
     if (!retryOnly && wasXiaomiMode) {
-      host.localControlRevision += 1;
       if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
         host.cameraLive.closeCameraLiveView();
       }
-      host.invalidateSourceControl();
+      switchSource(host, "sign-out-xiaomi-account");
       host.devices = [];
       host.scenes = [];
       host.environmentReadings = [];
