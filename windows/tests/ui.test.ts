@@ -9,11 +9,13 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { SF_ICONS } from "../src/ui/appConstants.js";
 import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
+import type { CameraLiveController } from "../src/ui/cameraLive.js";
 import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
 let dom: Window;
@@ -82,6 +84,20 @@ async function withTimeout<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * Drains microtasks plus already-armed timer callbacks without parking on the wall
+ * clock: there is no deadline, so a slow machine only takes longer — it cannot
+ * time out. Queued continuations (aborted frame gaps, late negotiation follow-ups)
+ * get to run here so later assertions can require the counters to stay frozen.
+ */
+async function drainAsyncQueue(): Promise<void> {
+  for (let round = 0; round < 3; round += 1) {
+    await setImmediate();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  await setImmediate();
 }
 
 beforeEach(() => {
@@ -2443,6 +2459,12 @@ describe("Smart camera support and live view (#97)", () => {
     await click('[data-cameramotion="camera.living_cam"]');
     assert.doesNotMatch(tile("camera.living_cam"), /侦测开/);
     await click("#btn-undo");
+    assert.doesNotMatch(
+      tile("camera.living_cam"),
+      /侦测开/,
+      "restoring a camera write is a high-risk restore, so the first undo click only arms it",
+    );
+    await click("#btn-undo");
     assert.match(tile("camera.living_cam"), /侦测开/);
   });
 
@@ -2966,6 +2988,7 @@ describe("Smart camera support and live view (#97)", () => {
     frameSrcs: string[];
     p2pStarts: { count: number };
     p2pStops: { count: number };
+    controller: CameraLiveController;
   }> {
     const camSpec = {
       type: "urn:miot-spec-v2:device:camera:0000A01C:chuangmi-81ac1:1",
@@ -3079,7 +3102,7 @@ describe("Smart camera support and live view (#97)", () => {
     app.cameraLive.cameraFrameRetryMs = options.retryMs;
     await waitFor(() => document.querySelector('[data-body-device="cam-1"]') !== null);
     await click('[data-body-device="cam-1"]');
-    return { bridgeCalls, stopBridgeCalls, frameSrcs, p2pStarts, p2pStops };
+    return { bridgeCalls, stopBridgeCalls, frameSrcs, p2pStarts, p2pStops, controller: app.cameraLive };
   }
 
   it("shows a picture after one missed Xiaomi cloud frame without opening a second bridge", async () => {
@@ -3097,7 +3120,6 @@ describe("Smart camera support and live view (#97)", () => {
       () =>
         (document.querySelector("#cc-camera-live-img") as HTMLImageElement | null)?.getAttribute("src") ===
         "data:image/jpeg;base64,aGVsbG8",
-      800,
     );
     assert.equal(live.bridgeCalls.length, 1);
     assert.equal(live.p2pStarts.count, 1);
@@ -3113,7 +3135,12 @@ describe("Smart camera support and live view (#97)", () => {
         throw "读取摄像机画面失败 (HTTP 500)";
       },
     });
-    await waitFor(() => (document.body.textContent ?? "").includes("读取摄像机画面失败 (HTTP 500)"), 500);
+    // No explicit cap: the give-up budget (cameraFrameGiveUpMs 80 ms) is real wall
+    // clock in the product and the negotiation before it (signed MiCloud calls,
+    // X25519 keygen, bridge start) is load-dependent, so a sub-second deadline
+    // flakes on slow runners. The default 2 s deadline only bounds the wait; the
+    // assertions below are unchanged.
+    await waitFor(() => (document.body.textContent ?? "").includes("读取摄像机画面失败 (HTTP 500)"));
     assert.match(document.body.textContent ?? "", /实时画面连接失败，请点右上角重新连接/);
     assert.equal((document.body.textContent ?? "").includes("正在握手并连接摄像机实时画面"), false);
     assert.ok(live.frameSrcs.length >= 2, `expected repeated frame reads, saw ${live.frameSrcs.length}`);
@@ -3122,7 +3149,14 @@ describe("Smart camera support and live view (#97)", () => {
     assert.equal(live.p2pStarts.count, 1);
     assert.ok(document.querySelector("#btn-copy-camera-diag"));
 
-    await new Promise((resolve) => setTimeout(resolve, 1_300));
+    // The give-up must end the frame pump for good: failLivePicture nulls the
+    // pump's AbortController before the error renders, so once the error text is
+    // visible no live frame reader exists. Drain queued continuations and require
+    // the counters to stay frozen — no blind wall-clock sleep, and no renegotiation.
+    assert.equal(live.controller.liveCameraAbort, null, "the failed pump must be aborted with no live frame reader");
+    const framesAtGiveUp = live.frameSrcs.length;
+    await drainAsyncQueue();
+    assert.equal(live.frameSrcs.length, framesAtGiveUp, "no residual frame retry may run after the give-up");
     assert.equal(live.bridgeCalls.length, 1, "a missed frame must not open another P2P bridge");
     assert.equal(live.p2pStarts.count, 1);
 
@@ -3160,7 +3194,6 @@ describe("Smart camera support and live view (#97)", () => {
       () =>
         (document.querySelector("#cc-camera-live-img") as HTMLImageElement | null)?.getAttribute("src") ===
         "data:image/jpeg;base64,aGVsbG8",
-      800,
     );
     const img = document.querySelector("#cc-camera-live-img") as HTMLImageElement;
     assert.ok(img);
@@ -3177,11 +3210,11 @@ describe("Smart camera support and live view (#97)", () => {
         else this.setAttribute("src", v);
       },
     });
-    await waitFor(() => framePolls >= 3 && img.getAttribute("src") === "data:image/jpeg;base64,d29ybGQ", 800);
+    await waitFor(() => framePolls >= 3 && img.getAttribute("src") === "data:image/jpeg;base64,d29ybGQ");
     assert.equal(srcMutations, 1, "identical consecutive base64 frame must not reassign img.src");
 
     await click('[data-cameraquality="cam-1"][data-cameraquality-value="max"]');
-    await waitFor(() => live.bridgeCalls.length === 2, 800);
+    await waitFor(() => live.bridgeCalls.length === 2);
     assert.deepEqual(live.stopBridgeCalls, [{ did: "cam-1" }]);
     assert.equal(live.bridgeCalls[1]?.["quality"], "max");
   });
@@ -4085,6 +4118,10 @@ describe("Home Assistant source", () => {
     await click('[data-toggle-device="heat-only"]');
     assert.deepEqual(modes, ["heat"]);
     await click('[data-toggle-device="heat-only"]');
+    await click("#btn-undo");
+    // Restoring heating is the hazardous direction, so undo asks exactly like macOS
+    // `confirmUndoTargets`: the first click arms, the second restores.
+    assert.deepEqual(modes, ["heat", "off"], "the first undo click only arms the restore");
     await click("#btn-undo");
     assert.deepEqual(modes, ["heat", "off", "heat"]);
   });
@@ -5620,7 +5657,7 @@ describe("Manual control parity with macOS (#143)", () => {
     await setRange('[data-actemp="heater"]', "27");
     assert.ok(app.pendingHighRisk);
 
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assert.equal(app.pendingHighRisk, null);
     assert.ok(document.querySelector('[data-high-risk-confirm="heater"]') === null);
@@ -5635,7 +5672,7 @@ describe("Manual control parity with macOS (#143)", () => {
     const target = () =>
       (app.devices.find((device) => device.id === "heater")!.kind as Extract<SmartDevice["kind"], { kind: "climate" }>).targetTemperature;
 
-    app.sourceRevision += 1;
+    app.sourceEpoch.advance("source");
     element('[data-high-risk-confirm="heater"]').click();
     await setImmediate();
     assert.equal(target(), 20, "a stale revision must not run the captured command");

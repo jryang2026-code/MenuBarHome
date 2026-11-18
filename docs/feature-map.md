@@ -23,8 +23,8 @@
 ## Windows 端前端与 Tauri 原生层（`windows/`）
 
 - **核心业务与协议**：`windows/src/core/models.ts`、`windows/src/core/homeProvider.ts`、`windows/src/core/dualSourceProvider.ts`、`windows/src/core/homeAssistant.ts`、`windows/src/core/miAccountsStore.ts`、`windows/src/core/miCloudClient.ts`、`windows/src/core/miCloud/command.ts`、`windows/src/core/assistant.ts`、`windows/src/core/appUrlCommand.ts`、`windows/src/core/i18n.ts`
-- **面板 UI 与双主题动效**：`windows/src/ui/app.ts`、`windows/src/ui/appLifecycle.ts`、`windows/src/ui/panelView.ts`、`windows/src/ui/panelTheme.ts`、`windows/src/ui/reconciler.ts`、`windows/src/ui/motionSpring.ts`、`windows/src/ui/liquidGlassSlider.ts`、`windows/src/ui/detailDrawers.ts`、`windows/src/ui/connectionsAndDiagView.ts`、`windows/src/ui/settings.ts`、`windows/src/ui/cameraLive.ts`、`windows/src/ui/styles.css`
-- **Tauri Rust 宿主层**：`windows/src-tauri/src/main.rs`、`windows/src-tauri/src/desktop_shell.rs`、`windows/src-tauri/src/credentials.rs`、`windows/src-tauri/src/home_assistant.rs`、`windows/src-tauri/src/camera_stream.rs`、`windows/src-tauri/src/update.rs`、`windows/src-tauri/src/window.rs`
+- **面板 UI 与双主题动效**：`windows/src/ui/app.ts`、`windows/src/ui/appLifecycle.ts`、`windows/src/ui/sourceEpoch.ts`、`windows/src/ui/sourceSwitch.ts`、`windows/src/ui/activityStackView.ts`、`windows/src/ui/systemContextPoll.ts`、`windows/src/ui/panelView.ts`、`windows/src/ui/panelTheme.ts`、`windows/src/ui/reconciler.ts`、`windows/src/ui/motionSpring.ts`、`windows/src/ui/liquidGlassSlider.ts`、`windows/src/ui/detailDrawers.ts`、`windows/src/ui/connectionsAndDiagView.ts`、`windows/src/ui/settings.ts`、`windows/src/ui/cameraLive.ts`、`windows/src/ui/styles.css`
+- **Tauri Rust 宿主层**：`windows/src-tauri/src/main.rs`、`windows/src-tauri/src/desktop_shell.rs`、`windows/src-tauri/src/system_events.rs`、`windows/src-tauri/src/wifi.rs`、`windows/src-tauri/src/credentials.rs`、`windows/src-tauri/src/home_assistant.rs`、`windows/src-tauri/src/camera_stream.rs`、`windows/src-tauri/src/update.rs`、`windows/src-tauri/src/window.rs`
 - **Windows 本地校验工具**：`windows/scripts/test-file.mjs`、`windows/scripts/verify-flyout-layout.mjs`
 
 ## Raycast 扩展与测试根目录
@@ -34,6 +34,6 @@
 
 ## 门禁、发版与协同脚本（`scripts/`）
 
-- **主门禁与依赖复用**：`scripts/check.sh`、`scripts/shared_windows_deps.sh`、`scripts/ci_relevant_paths.sh`、`scripts/check_doc_links.py`、`scripts/check_swift_harness_lints.py`、`scripts/check_workflows.py`
+- **主门禁与依赖复用**：`scripts/check.sh`、`scripts/shared_windows_deps.sh`、`scripts/ci_relevant_paths.sh`、`scripts/check_doc_links.py`、`scripts/check_swift_harness_lints.py`、`scripts/check_windows_test_lints.py`、`scripts/check_workflows.py`
 - **PR 与 Issue 协同**：`scripts/pr-ready.sh`、`scripts/ci_errors.sh`、`scripts/pending-work.sh`、`scripts/issue-frontier.sh`
-- **打包、更新与测试**：`scripts/build_app.sh`、`scripts/release.sh`、`scripts/check_release.sh`、`scripts/mijia`、`scripts/linux-check/run.sh`
+- **打包、更新与测试**：`scripts/build_app.sh`、`scripts/release.sh`、`scripts/check_release.sh`、`scripts/mijia`、`scripts/linux-check/run.sh`、`scripts/repeat_test.sh`、`scripts/test_harness_tools.sh`

@@ -344,6 +344,74 @@ struct CurtainDeviceTests {
         #expect(Set(merged.home.devices.map(\.id)) == ["dual1.s2", "dual1.s3"])
     }
 
+    @Test("Stale or disconnected dual-track Mi curtain cards do not suppress a live HA card, and re-suppress on reconnect")
+    func staleDualTrackMiCurtainDoesNotSuppressLiveHACard() throws {
+        let (drape, lace, _) = try dualTrackHome()
+        var miHome = SynthesizedHome(devices: [drape, lace])
+        miHome.deviceIdentities = [
+            drape.id: DeviceSourceIdentity(
+                dids: ["dual1"], macAddresses: ["aabbccddeeff"], model: Self.dualModel,
+                name: drape.name, roomName: drape.roomName, kindTag: .cover
+            ),
+            lace.id: DeviceSourceIdentity(
+                dids: ["dual1"], macAddresses: ["aabbccddeeff"], model: Self.dualModel,
+                name: lace.name, roomName: lace.roomName, kindTag: .cover
+            ),
+        ]
+
+        let haDidCard = SmartDevice(
+            id: "ha-dual", name: "卧室窗帘", roomId: "bed", roomName: "卧室",
+            model: Self.dualModel, isOnline: true,
+            kind: .sensor(SensorSpec(battery: 80))
+        )
+        let haMacCard = SmartDevice(
+            id: "ha-mac", name: "窗帘电量", roomId: "bed", roomName: "卧室",
+            model: "sensor.battery", isOnline: true,
+            kind: .sensor(SensorSpec(battery: 80))
+        )
+        var haHome = SynthesizedHome(devices: [haDidCard, haMacCard])
+        haHome.deviceIdentities = [
+            haDidCard.id: DeviceSourceIdentity(
+                dids: ["dual1"], model: Self.dualModel, name: haDidCard.name,
+                roomName: haDidCard.roomName, kindTag: .sensor
+            ),
+            haMacCard.id: DeviceSourceIdentity(
+                macAddresses: ["AA-BB-CC-DD-EE-FF"], model: haMacCard.model,
+                name: haMacCard.name, roomName: haMacCard.roomName, kindTag: .sensor
+            ),
+        ]
+
+        let connected = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            haConnected: true,
+            miConnected: true
+        )
+        #expect(Set(connected.home.devices.map(\.id)) == ["dual1.s2", "dual1.s3"])
+
+        let disconnected = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            haConnected: true,
+            miConnected: false,
+            canonical: connected.canonical,
+            rooms: connected.rooms
+        )
+        #expect(Set(disconnected.home.devices.map(\.id)) == ["ha-dual", "ha-mac", "dual1.s2", "dual1.s3"])
+        #expect(disconnected.home.devices.first { $0.id == "ha-dual" }?.isOnline == true)
+        #expect(disconnected.home.devices.first { $0.id == "ha-mac" }?.isOnline == true)
+
+        let reconnected = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            haConnected: true,
+            miConnected: true,
+            canonical: disconnected.canonical,
+            rooms: disconnected.rooms
+        )
+        #expect(Set(reconnected.home.devices.map(\.id)) == ["dual1.s2", "dual1.s3"])
+    }
+
     // MARK: Dual source
 
     @Test("A curtain reached through both Mijia and Home Assistant keeps one card")

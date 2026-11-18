@@ -315,6 +315,7 @@ public final class HomeStore {
     /// Credential storage shared by the store and its views. An explicit vault takes precedence
     /// over suite storage; nil uses the Keychain for standard defaults and isolated suite storage otherwise.
     @ObservationIgnored public internal(set) var credentialVault: CredentialVault?
+    @ObservationIgnored let topologyCache: MiTopologyCache?
 
     public var sensorAlertsOnlyWhenAway: Bool {
         didSet { HomePreferences.sensorAlertsOnlyWhenAway.save(sensorAlertsOnlyWhenAway, to: userDefaults) }
@@ -353,6 +354,13 @@ public final class HomeStore {
 
     /// Test seam for the manual-control debounce window (sliders fire continuously, #113).
     var controlDebounceInterval: Duration = .milliseconds(280)
+
+    /// Test seam for the debounce wait itself. A test parks a drag here, delivers the provider
+    /// snapshot that would take the row over, and only then releases it, so the ordering is fixed
+    /// instead of raced against a wall clock.
+    @ObservationIgnored var controlDebounceSleep: @Sendable (Duration) async throws -> Void = {
+        try await Task.sleep(for: $0)
+    }
 
     /// How long a cover command keeps its optimistic row. The product value is 8 seconds.
     /// Tests set a shorter value instead of waiting out that lock.
@@ -488,14 +496,14 @@ public final class HomeStore {
     public var serverURLString: String {
         didSet {
             userDefaults.set(serverURLString, forKey: "ha_server_url")
-            syncSensorHistoryScope()
+            syncHistoryConnectionScopes()
         }
     }
 
     public internal(set) var homeBackend: HomeBackend {
         didSet {
             userDefaults.set(homeBackend.rawValue, forKey: "home_backend")
-            syncSensorHistoryScope()
+            syncHistoryConnectionScopes()
             if homeBackend == .demo { deviceValuesAreStale = false }
         }
     }
@@ -518,7 +526,7 @@ public final class HomeStore {
     var miSessionExpiryRevision: UInt64 = 0
     var miSessionExpiryTimerTask: Task<Void, Never>?
     var miSessionScopeIdentifier: String? {
-        didSet { syncSensorHistoryScope() }
+        didSet { syncHistoryConnectionScopes() }
     }
 
     /// Whether an HA token is saved. The chosen `homeBackend` no longer implies the only live source.
@@ -745,6 +753,10 @@ public final class HomeStore {
         let token: UUID
         let deviceId: String
         let origin: SmartDevice
+        /// The revision this drag owns and the fields it changed, kept so a patch that can no
+        /// longer be sent can put back exactly what it showed.
+        let revision: UInt64
+        let fields: Set<OptimisticField>
     }
     var debouncedWrites: [String: DebouncedWriteState] = [:]
     struct ManualWritePatch {
@@ -758,6 +770,8 @@ public final class HomeStore {
         var phase: Phase
         let fields: Set<OptimisticField>
         var lockEntry: OptimisticLockEntry?
+        /// For a cover position write: what it commands and the hazard answer that covers it.
+        var coverDrag: CoverDragPlan?
         let apply: @Sendable (inout SmartDevice) -> Void
     }
     struct ManualWriteSession {
@@ -851,6 +865,13 @@ public final class HomeStore {
     /// Position the card showed when the current cover travel started. A stopped report at that
     /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
+    /// The cover position hazard prompt the user answered, per debounce slot: the confirmation kind
+    /// that was approved and the slot token carrying it. A direction answer and an unknown-start
+    /// answer are different kinds, so a drag whose start becomes known or unknown cannot reuse the
+    /// other kind. `setCoverPosition` honours it only while that slot is still accumulating the same
+    /// drag and the tick needs the same kind, so a reversal or a second drag after the command went
+    /// out asks again.
+    var confirmedCoverDragAnswers: [String: (token: UUID, approval: CoverDragApproval)] = [:]
     /// Last position each cover reported. Inferred travel survives only while this value changes,
     /// so an obstructed motor with a stale target stops showing "opening" (#298).
     var lastCoverPositions: [String: Int] = [:]
@@ -871,11 +892,13 @@ public final class HomeStore {
         dualSource: (homeAssistant: any HomeProvider, xiaomiCloud: any HomeProvider)? = nil,
         defaultsSuiteName: String? = nil,
         updater: AppUpdater? = nil,
-        credentialVault: CredentialVault? = nil
+        credentialVault: CredentialVault? = nil,
+        topologyCache: MiTopologyCache? = nil
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
+        self.topologyCache = topologyCache ?? (ud === UserDefaults.standard ? .shared : nil)
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
@@ -1030,7 +1053,7 @@ public final class HomeStore {
         if provider == nil, dualSource == nil, initialBackend != .demo {
             self.provider = makeLiveProvider()
         }
-        syncSensorHistoryScope()
+        syncHistoryConnectionScopes()
         scheduleMiSessionExpiryTransition()
         startListening()
         restoreScheduledCommands()
@@ -1047,10 +1070,15 @@ public final class HomeStore {
 
     /// One `MiCloudProvider` per account behind a single `HomeProvider`, so a second sign-in merges
     /// into the panel instead of replacing the first account.
-    private static func makeMiAccountsProvider(accounts: [MiAccount], defaults: UserDefaults) -> MiAccountsProvider {
+    private static func makeMiAccountsProvider(
+        accounts: [MiAccount],
+        defaults: UserDefaults,
+        topologyCache: MiTopologyCache?
+    ) -> MiAccountsProvider {
         nonisolated(unsafe) let ud = defaults
         return MiAccountsProvider(
             accounts: accounts,
+            topologyCache: topologyCache,
             selectedHomeLoader: { ud.string(forKey: MiCloudProvider.selectedHomeKey) },
             clearSelectedHome: { ud.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
         )
@@ -1061,7 +1089,11 @@ public final class HomeStore {
     func makeMiAccountsProvider() -> MiAccountsProvider {
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
         activeMiProviderAccounts = miAccounts
-        return Self.makeMiAccountsProvider(accounts: miAccounts, defaults: userDefaults)
+        return Self.makeMiAccountsProvider(
+            accounts: miAccounts,
+            defaults: userDefaults,
+            topologyCache: topologyCache
+        )
     }
 
     /// Re-resolves `effectiveLanguage` and pushes it to `L10n`; also called from the language

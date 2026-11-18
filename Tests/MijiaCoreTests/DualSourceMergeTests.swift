@@ -1310,4 +1310,52 @@ struct DualSourceMergeTests {
         #expect(merged.home.devices.contains { $0.name == "一路灯" })
         #expect(merged.home.devices.contains { $0.name == "二路灯" })
     }
+
+    @Test("A pinned source with stale telemetry yields to a fresh online source and reclaims routing when fresh again")
+    func stalePinnedSourceYieldsToFreshOnlineSource() throws {
+        let haLight = makeLight(id: "ha-fresh-light", name: "客厅灯", roomId: "living_room", roomName: "客厅")
+        var staleMiLight = makeLight(id: "555666780", name: "客厅灯", roomId: "mi_room_1", roomName: "客厅", model: "xiaomi.light")
+        staleMiLight.telemetryStale = true
+        let haIdentity = makeIdentity(
+            dids: DeviceIdentityNormalizer.didCandidates(from: ["xiaomi_home_555666780"]),
+            model: haLight.model,
+            name: haLight.name,
+            roomName: haLight.roomName,
+            kind: .light
+        )
+        let miIdentity = makeIdentity(
+            dids: ["555666780"],
+            model: staleMiLight.model,
+            name: staleMiLight.name,
+            roomName: staleMiLight.roomName,
+            kind: .light
+        )
+        let haHome = makeHome(devices: [haLight], identities: [haLight.id: haIdentity])
+        let staleMiHome = makeHome(devices: [staleMiLight], identities: [staleMiLight.id: miIdentity])
+
+        let automatic = DeviceDeduplicator.merge(homeAssistant: haHome, xiaomiCloud: staleMiHome)
+        let cardID = try #require(automatic.home.devices.first?.id)
+
+        let whileStale = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: staleMiHome,
+            pinnedBackends: [cardID: .xiaomiCloud]
+        )
+        #expect(whileStale.home.deviceBackends[cardID] == .homeAssistant)
+        #expect(whileStale.routes[cardID]?.backend == .homeAssistant)
+        #expect(whileStale.routes[cardID]?.sourceDeviceID == haLight.id)
+        #expect(whileStale.home.devices.first?.telemetryStale == false)
+
+        var freshMiLight = staleMiLight
+        freshMiLight.telemetryStale = false
+        let freshMiHome = makeHome(devices: [freshMiLight], identities: [freshMiLight.id: miIdentity])
+        let onceFresh = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: freshMiHome,
+            pinnedBackends: [cardID: .xiaomiCloud]
+        )
+        #expect(onceFresh.home.deviceBackends[cardID] == .xiaomiCloud)
+        #expect(onceFresh.routes[cardID]?.backend == .xiaomiCloud)
+        #expect(onceFresh.routes[cardID]?.sourceDeviceID == freshMiLight.id)
+    }
 }

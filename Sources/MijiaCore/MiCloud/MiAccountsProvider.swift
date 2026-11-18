@@ -86,6 +86,7 @@ public actor MiAccountsProvider: HomeProvider {
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
     private let localClientFactory: @Sendable () -> LocalMiIOClient?
+    private let topologyCache: MiTopologyCache?
     private let pollInterval: Duration
     private let closedPollInterval: Duration
     private let deviceRefreshEveryPolls: Int
@@ -99,6 +100,7 @@ public actor MiAccountsProvider: HomeProvider {
     private var forwardTasks: [String: Task<Void, Never>] = [:]
     private var snapshots: [String: SynthesizedHome] = [:]
     private var statuses: [String: ConnectionStatus] = [:]
+    private var disconnectedStatuses: [String: ConnectionStatus] = [:]
     /// Accounts that delivered a post-poll snapshot (`closesAwayGap == true`) in the current wake cycle.
     private var freshAccounts: Set<String> = []
     private var expiredAccounts: Set<String> = []
@@ -120,6 +122,7 @@ public actor MiAccountsProvider: HomeProvider {
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
         localClientFactory: @escaping @Sendable () -> LocalMiIOClient? = { LocalMiIOClient() },
+        topologyCache: MiTopologyCache? = nil,
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
         closedPollInterval: Duration = PollingPolicy.panelClosedInterval,
         deviceRefreshEveryPolls: Int = 20,
@@ -138,6 +141,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.specSource = specSource
         self.cameraBridge = cameraBridge
         self.localClientFactory = localClientFactory
+        self.topologyCache = topologyCache
         self.pollInterval = pollInterval
         self.closedPollInterval = closedPollInterval
         self.deviceRefreshEveryPolls = deviceRefreshEveryPolls
@@ -188,6 +192,7 @@ public actor MiAccountsProvider: HomeProvider {
     private func startChild(for account: MiAccount) -> MiCloudProvider {
         if account.session.expiryState(at: Date()) == .expired {
             expiredAccounts.insert(account.id)
+            disconnectedStatuses[account.id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
         }
         let provider = MiCloudProvider(
             account: account,
@@ -195,6 +200,7 @@ public actor MiAccountsProvider: HomeProvider {
             specSource: specSource,
             cameraBridge: cameraBridge,
             localClient: localClientFactory(),
+            topologyCache: topologyCache,
             pollInterval: pollInterval,
             closedPollInterval: closedPollInterval,
             deviceRefreshEveryPolls: deviceRefreshEveryPolls,
@@ -242,6 +248,7 @@ public actor MiAccountsProvider: HomeProvider {
                 forwardTasks.removeValue(forKey: entry.account.id)?.cancel()
                 snapshots.removeValue(forKey: entry.account.id)
                 statuses.removeValue(forKey: entry.account.id)
+                disconnectedStatuses.removeValue(forKey: entry.account.id)
                 freshAccounts.remove(entry.account.id)
                 expiredAccounts.remove(entry.account.id)
                 removedChildIds.insert(entry.account.id)
@@ -372,12 +379,21 @@ public actor MiAccountsProvider: HomeProvider {
         switch event {
         case .statusChanged(let status):
             statuses[accountId] = status
+            switch status {
+            case .connected:
+                disconnectedStatuses.removeValue(forKey: accountId)
+            case .disconnected:
+                disconnectedStatuses[accountId] = status
+            case .connecting:
+                break
+            }
             publishStatus()
             if !snapshots.isEmpty {
                 publishSnapshot()
             }
         case .sessionExpired(let session):
             expiredAccounts.insert(accountId)
+            disconnectedStatuses[accountId] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
             continuation?.yield(.sessionExpired(session))
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
@@ -388,6 +404,16 @@ public actor MiAccountsProvider: HomeProvider {
             continuation?.yield(.doorbellRang(ring))
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
+            if !expiredAccounts.contains(accountId), !home.devices.isEmpty {
+                if home.closesAwayGap {
+                    disconnectedStatuses.removeValue(forKey: accountId)
+                    if case .connecting? = statuses[accountId] {
+                        statuses[accountId] = .connected
+                    }
+                } else if disconnectedStatuses[accountId] == nil, case .connecting? = statuses[accountId] {
+                    statuses[accountId] = .connected
+                }
+            }
             if home.closesAwayGap {
                 freshAccounts.insert(accountId)
             } else {
@@ -434,12 +460,13 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func isDisconnected(_ accountId: String) -> Bool {
+        if disconnectedStatuses[accountId] != nil { return true }
         if case .disconnected? = statuses[accountId] { return true }
         return false
     }
 
     private func isDisconnectedWithNoDevices(_ accountId: String) -> Bool {
-        guard case .disconnected = statuses[accountId],
+        guard isDisconnected(accountId),
               let home = snapshots[accountId],
               home.devices.isEmpty else {
             return false
@@ -447,9 +474,34 @@ public actor MiAccountsProvider: HomeProvider {
         return true
     }
 
-    /// Account order first, first occurrence per id: a did shared by two accounts reaches the panel once.
+    private static func deviceFreshnessRank(_ device: SmartDevice, accountDisconnected: Bool) -> Int {
+        if accountDisconnected { return 3 }
+        if device.telemetryStale { return 2 }
+        return device.isOnline ? 0 : 1
+    }
+
+    private func ownerFreshnessRank(accountId: String, key: String) -> Int {
+        let accountDisconnected = isDisconnected(accountId)
+        guard !accountDisconnected, let home = snapshots[accountId] else {
+            return 3
+        }
+        var bestRank = 2
+        for device in home.devices where device.id == key || device.miotCommandDids.contains(key) {
+            let rank = Self.deviceFreshnessRank(device, accountDisconnected: false)
+            if rank < bestRank {
+                bestRank = rank
+            }
+        }
+        return bestRank
+    }
+
     private func publishSnapshot() {
-        let reported = accounts.compactMap { snapshots[$0.id] }
+        let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
+            + accounts.filter { isDisconnected($0.id) }
+        let reported = orderedAccounts.compactMap { account -> (account: MiAccount, home: SynthesizedHome)? in
+            guard let home = snapshots[account.id] else { return nil }
+            return (account, home)
+        }
         guard !reported.isEmpty else { return }
         var rooms: [RoomArea] = []
         var devices: [SmartDevice] = []
@@ -458,6 +510,9 @@ public actor MiAccountsProvider: HomeProvider {
         var homes: [HomeOption] = []
         var roomIds = Set<String>()
         var deviceIds = Set<String>()
+        var deviceIndexById: [String: Int] = [:]
+        var bestRankByDeviceId: [String: Int] = [:]
+        var winningAccountByDeviceId: [String: String] = [:]
         var readingIds = Set<String>()
         var sceneIds = Set<String>()
         var homeIds = Set<String>()
@@ -465,33 +520,82 @@ public actor MiAccountsProvider: HomeProvider {
         var lightGroupOwners: [String: String] = [:]
         var facetsByDevice: [String: [FacetControl]] = [:]
         var closesAwayGap = true
-        for home in reported {
+        for (account, home) in reported {
+            let accountDisconnected = isDisconnected(account.id)
             closesAwayGap = closesAwayGap && home.closesAwayGap
-            for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
-            for device in home.devices where deviceIds.insert(device.id).inserted {
-                devices.append(device)
-                if let identity = home.deviceIdentities[device.id] {
-                    identities[device.id] = identity
+            for rawDevice in home.devices {
+                var device = rawDevice
+                if accountDisconnected {
+                    device.isOnline = false
+                    device.telemetryStale = true
                 }
-                if let facets = home.deviceFacets[device.id] {
-                    facetsByDevice[device.id] = facets
+                let rank = Self.deviceFreshnessRank(device, accountDisconnected: accountDisconnected)
+                if let existingIndex = deviceIndexById[device.id],
+                   let existingRank = bestRankByDeviceId[device.id] {
+                    if rank < existingRank {
+                        devices[existingIndex] = device
+                        bestRankByDeviceId[device.id] = rank
+                        winningAccountByDeviceId[device.id] = account.id
+                        if let identity = home.deviceIdentities[device.id] {
+                            identities[device.id] = identity
+                        } else {
+                            identities.removeValue(forKey: device.id)
+                        }
+                        if let facets = home.deviceFacets[device.id] {
+                            facetsByDevice[device.id] = facets
+                        } else {
+                            facetsByDevice.removeValue(forKey: device.id)
+                        }
+                    }
+                } else {
+                    deviceIndexById[device.id] = devices.count
+                    bestRankByDeviceId[device.id] = rank
+                    winningAccountByDeviceId[device.id] = account.id
+                    deviceIds.insert(device.id)
+                    devices.append(device)
+                    if let identity = home.deviceIdentities[device.id] {
+                        identities[device.id] = identity
+                    }
+                    if let facets = home.deviceFacets[device.id] {
+                        facetsByDevice[device.id] = facets
+                    }
                 }
             }
+        }
+        for (account, home) in reported {
+            let accountDisconnected = isDisconnected(account.id)
             for (id, identity) in home.deviceIdentities where identities[id] == nil {
                 identities[id] = identity
             }
-            for (memberDid, groupDid) in home.lightGroupOwners where lightGroupOwners[memberDid] == nil {
-                lightGroupOwners[memberDid] = groupDid
+            for (memberDid, groupDid) in home.lightGroupOwners {
+                if winningAccountByDeviceId[memberDid] == account.id || lightGroupOwners[memberDid] == nil {
+                    lightGroupOwners[memberDid] = groupDid
+                }
             }
-            for reading in home.environmentReadings where readingIds.insert(reading.id).inserted {
-                readings.append(reading)
+            if !accountDisconnected {
+                for reading in home.environmentReadings {
+                    if let winningAccount = winningAccountByDeviceId[reading.id], winningAccount != account.id {
+                        continue
+                    }
+                    if readingIds.insert(reading.id).inserted {
+                        readings.append(reading)
+                    }
+                }
             }
             for scene in home.scenes where sceneIds.insert(scene.id).inserted { scenes.append(scene) }
+        }
+        for account in accounts {
+            guard let home = snapshots[account.id] else { continue }
+            for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
             for option in home.homes where homeIds.insert(option.id).inserted { homes.append(option) }
         }
         var merged = SynthesizedHome(rooms: rooms, devices: devices, environmentReadings: readings, scenes: scenes)
         merged.homes = homes
-        merged.accountStatuses = statuses
+        var effectiveStatuses = statuses
+        for (id, disconnectedStatus) in disconnectedStatuses {
+            effectiveStatuses[id] = disconnectedStatus
+        }
+        merged.accountStatuses = effectiveStatuses
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
         merged.lightGroupOwners = lightGroupOwners.filter {
@@ -513,32 +617,92 @@ public actor MiAccountsProvider: HomeProvider {
         children.first { $0.account.id == accountId }?.provider
     }
 
+    private func preferredOwners(for key: String) -> [String] {
+        let raw = deviceOwners[key] ?? []
+        return raw.enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = ownerFreshnessRank(accountId: lhs.element, key: key)
+                let rhsRank = ownerFreshnessRank(accountId: rhs.element, key: key)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
     // MARK: Commands & Device Calls
+
+    private static func isPreTransmitURLError(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .notConnectedToInternet,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .cannotConnectToHost,
+             .dataNotAllowed,
+             .internationalRoamingOff,
+             .secureConnectionFailed,
+             .serverCertificateUntrusted,
+             .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot,
+             .clientCertificateRejected:
+            return true
+        default:
+            return false
+        }
+    }
 
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
             throw MiotCommandError.invalidAddress(entityId)
         }
-        let owners = deviceOwners[did] ?? []
+        let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
-        var expired = false
+        var lastFallbackError: (any Error)?
         for ownerId in owners {
             guard let child = childProvider(for: ownerId) else { continue }
+            let nonIdempotent: Bool
+            if !command.isIdempotentForAccountFallback {
+                nonIdempotent = true
+            } else {
+                nonIdempotent = await child.mapsToAction(command)
+            }
             do {
                 try await child.execute(command)
                 return
             } catch MiCloudError.sessionExpired {
-                expired = true
+                lastFallbackError = MiCloudError.sessionExpired
+            } catch MiCloudError.notLoggedIn {
+                if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                    lastFallbackError = MiCloudError.notLoggedIn
+                }
+            } catch let cloudErr as MiCloudError {
+                if case .http(let status) = cloudErr {
+                    guard !nonIdempotent || (400..<500).contains(status) else {
+                        throw cloudErr
+                    }
+                    if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                        lastFallbackError = cloudErr
+                    }
+                    continue
+                }
+                throw cloudErr
+            } catch let urlErr as URLError {
+                guard !nonIdempotent || Self.isPreTransmitURLError(urlErr.code) else {
+                    throw urlErr
+                }
+                if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                    lastFallbackError = urlErr
+                }
             } catch {
                 throw error
             }
         }
-        throw expired ? MiCloudError.sessionExpired : MiCloudError.notLoggedIn
+        throw lastFallbackError ?? MiCloudError.notLoggedIn
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
-        guard let ownerId = deviceOwners[deviceId]?.first,
+        guard let ownerId = preferredOwners(for: deviceId).first,
               let child = childProvider(for: ownerId) else { return .failed }
         return await child.readBack(deviceId: deviceId)
     }
@@ -548,7 +712,7 @@ public actor MiAccountsProvider: HomeProvider {
         window: SensorHistoryWindow,
         now: Date
     ) async -> [SensorHistorySample] {
-        guard let ownerId = deviceOwners[deviceId]?.first,
+        guard let ownerId = preferredOwners(for: deviceId).first,
               let child = childProvider(for: ownerId) else { return [] }
         return await child.fetchSensorHistory(deviceId: deviceId, window: window, now: now)
     }
@@ -566,7 +730,7 @@ public actor MiAccountsProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
-        let ownerId = deviceOwners[device.id]?.first ?? device.accountId
+        let ownerId = preferredOwners(for: device.id).first ?? device.accountId
         guard let ownerId, let child = childProvider(for: ownerId) else {
             throw HomeProviderError.serviceCallFailed(
                 501,

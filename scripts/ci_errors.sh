@@ -1,24 +1,59 @@
 #!/usr/bin/env bash
 # Print the failure lines of a GitHub Actions run, plus check-run annotations.
 #
-# Usage: bash scripts/ci_errors.sh <run-id>
+# Usage: bash scripts/ci_errors.sh [--attempt <n>] <run-id>
+# `--attempt` reads an earlier attempt's failure after a successful rerun.
 # Needs `gh` logged in to the repository.
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-    echo "用法：bash scripts/ci_errors.sh <run-id>" >&2
+usage() {
+    echo "用法：bash scripts/ci_errors.sh [--attempt <n>] <run-id>" >&2
     exit 2
+}
+
+attempt=""
+run=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --attempt)
+            [ "$#" -ge 2 ] || usage
+            attempt="$2"
+            shift 2
+            ;;
+        -*)
+            usage
+            ;;
+        *)
+            if [ -n "$run" ]; then
+                usage
+            fi
+            run="$1"
+            shift
+            ;;
+    esac
+done
+if [ -z "$run" ]; then
+    usage
 fi
-run="$1"
+# Bash 3.2 + set -u cannot expand an empty array, so the attempt flag rides
+# the positional parameters instead.
+if [ -n "$attempt" ]; then
+    if ! printf '%s\n' "$attempt" | grep -Eq '^[0-9]+$'; then
+        usage
+    fi
+    set -- --attempt "$attempt"
+else
+    set --
+fi
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/ci-errors.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 gh repo view --json nameWithOwner >"$tmp/repo.json"
-gh run view "$run" --json jobs,event,headBranch,headSha,createdAt,databaseId,workflowName >"$tmp/run.json" || {
+gh run view "$run" "$@" --json jobs,event,headBranch,headSha,createdAt,databaseId,workflowName >"$tmp/run.json" || {
     echo "❌ 读不到 run ${run}（id 不对，或 gh 未登录/网络失败）" >&2
     exit 1
 }
-gh run view "$run" --log-failed >"$tmp/log.txt" || true
+gh run view "$run" "$@" --log-failed >"$tmp/log.txt" || true
 branch="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("headBranch") or "")' "$tmp/run.json")"
 workflow="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8")).get("workflowName") or "")' "$tmp/run.json")"
 if [ -n "$branch" ]; then
@@ -51,7 +86,9 @@ log = open(log_path, encoding="utf-8", errors="replace").read()
 
 QUIET = {"success", "skipped", "", None}
 prefix = re.compile(r"^[^\t]*\t[^\t]*\t[0-9T:.Z-]+ ?")
-error_line = re.compile(r"error:|✘ (Test|Suite)|Test run with .* failed|##\[error\]")
+# TAP reports each failing test as `not ok <n> - <name>` (often indented as a
+# subtest); a passing `ok <n> - <name>` line never matches `not ok <n> - `.
+error_line = re.compile(r"error:|✘ (Test|Suite)|Test run with .* failed|##\[error\]|(?:^|\s)not ok [0-9]+ - ")
 ansi = re.compile(r"\x1b\[[0-9;]*m")
 
 

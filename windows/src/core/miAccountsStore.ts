@@ -6,7 +6,6 @@ import { currentLanguage,
   type AppLanguage,
   type LanguagePreference,
 } from "./i18n.js";
-import { sha256 } from "./miCloudCrypto.js";
 import { MI_SESSION_WARNING_LEAD_MS,
   miSessionExpiryState,
 } from "./miCloud/session.js";
@@ -40,9 +39,12 @@ import { environmentReadingPriority,
   type SynthesizedHome,
 } from "./models.js";
 import { clearPersistedMiSessionExpired,
-  isPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
   isXiaomiRateLimitError,
+  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
+  miAccountId,
   miSessionFingerprint,
+  miSessionRejectedRecord,
   persistMiSessionExpired,
   PollingPolicy,
 } from "./pollingPolicy.js";
@@ -70,28 +72,14 @@ function tr3(zhHans: string,
   );
 }
 
-const utf8Encoder = new TextEncoder();
-
-function bytesToHex(bytes: Uint8Array): string { let out = "";
-  for (let i = 0; i < bytes.length; i += 1) { out += (bytes[i] ?? 0).toString(16).padStart(2, "0");
-  }
-  return out;
-}
-
 function defaultStorage(): Storage | null { try { return typeof localStorage !== "undefined" ? localStorage : null;
   } catch { return null;
   }
 }
 
 export const MI_ACCOUNTS_INDEX_STORAGE_KEY = "menumijia.windows.miAccountsIndex.v1";
-export const MI_ACCOUNTS_EXPIRED_STORAGE_KEY = "menumijia.windows.miAccountsExpired.v1";
-
-export function miAccountId(session: Pick<MiSession, "userId" | "region">): string {
-  const region = normalizeMiCloudRegion(session.region);
-  const rawKey = `${region}:${session.userId.trim()}`;
-  const digest = sha256(utf8Encoder.encode(rawKey));
-  return `mi:${region}:${bytesToHex(digest.subarray(0, 8))}`;
-}
+// Re-exported for existing imports; the rejection store itself lives in `pollingPolicy.ts`.
+export { MI_ACCOUNTS_EXPIRED_STORAGE_KEY, miAccountId };
 
 function miAccountSlotId(accountIdOrSession: string | Pick<MiSession, "userId" | "region">,
 ): string { const id = typeof accountIdOrSession === "string"
@@ -167,41 +155,11 @@ export type MiAccountTokenStatus = | { readonly kind: "valid" }
       readonly expiredAtMs?: number;
     };
 
-interface PersistedAccountExpiredRecord { readonly fingerprint: string;
-  readonly expiredAtMs: number;
-}
-
-function readPersistedAccountExpiryMap(storage: Storage | null,
-): Record<string, PersistedAccountExpiredRecord> { if (!storage) return {};
-  try { const raw = storage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, PersistedAccountExpiredRecord> = {};
-    for (const [accountId, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
-      const rec = value as Record<string, unknown>;
-      if (typeof rec["fingerprint"] === "string" && typeof rec["expiredAtMs"] === "number") { out[accountId] = {
-          fingerprint: rec["fingerprint"],
-          expiredAtMs: rec["expiredAtMs"],
-        };
-      }
-    }
-    return out;
-  } catch { return {};
-  }
-}
-
-function writePersistedAccountExpiryMap(storage: Storage | null,
-  map: Readonly<Record<string, PersistedAccountExpiredRecord>>,
-): void { if (!storage) return;
-  try { if (Object.keys(map).length === 0) { storage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
-    } else { storage.setItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY, JSON.stringify(map));
-    }
-  } catch {
-  }
-}
-
+/**
+ * Records a server rejection (or clears it) for one session. Both modes are per-fingerprint key
+ * writes, so they never read-modify-write a shared object and cannot drop another window's record.
+ * `isPrimary` is accepted for call-site compatibility; per-key storage no longer needs it.
+ */
 export function markAccountSessionRejected(session: MiSession | null | undefined,
   expired: boolean,
   options: { readonly isPrimary?: boolean;
@@ -210,20 +168,7 @@ export function markAccountSessionRejected(session: MiSession | null | undefined
   } = {},
 ): void { if (!session) return;
   const storage = options.storage !== undefined ? options.storage : defaultStorage();
-  const nowMs = options.nowMs ?? Date.now();
-  const accountId = miAccountId(session);
-  const map = readPersistedAccountExpiryMap(storage);
-  if (expired) { map[accountId] = {
-      fingerprint: miSessionFingerprint(session),
-      expiredAtMs: nowMs,
-    };
-    if (options.isPrimary) { persistMiSessionExpired(session, true, storage, nowMs);
-    }
-  } else { delete map[accountId];
-    if (options.isPrimary || isPersistedMiSessionExpired(session, storage)) { clearPersistedMiSessionExpired(storage);
-    }
-  }
-  writePersistedAccountExpiryMap(storage, map);
+  persistMiSessionExpired(session, expired, storage, options.nowMs ?? Date.now());
 }
 
 export function getAccountTokenStatus(accountOrSession: MiAccount | MiSession,
@@ -231,13 +176,12 @@ export function getAccountTokenStatus(accountOrSession: MiAccount | MiSession,
   storage: Storage | null = defaultStorage(),
   warningLeadMs = MI_SESSION_WARNING_LEAD_MS,
 ): MiAccountTokenStatus { const session = "session" in accountOrSession ? accountOrSession.session : accountOrSession;
-  const accountId = miAccountId(session);
-  const map = readPersistedAccountExpiryMap(storage);
-  const fp = miSessionFingerprint(session);
-  const rejected = map[accountId];
-  if (rejected?.fingerprint === fp) { return { kind: "expired", source: "rejected", expiredAtMs: rejected.expiredAtMs };
-  }
-  if (isPersistedMiSessionExpired(session, storage)) { return { kind: "expired", source: "rejected" };
+  const rejection = miSessionRejectedRecord(session, storage);
+  if (rejection) { return {
+      kind: "expired",
+      source: "rejected",
+      expiredAtMs: rejection.expiredAtMs,
+    };
   }
   const effectiveExpiresAt = typeof session.expiresAt === "number" && Number.isFinite(session.expiresAt)
       ? session.expiresAt
@@ -286,42 +230,80 @@ interface MiAccountIndexEntry { readonly id: string;
   readonly maskedUserId: string;
 }
 
-export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage(),
-): boolean { if (!storage) return false;
+export type MiAccountIndexStatus = "missing" | "ok" | "corrupt";
+
+export interface MiAccountIndexSnapshot {
+  /** `missing`: no stored index. `ok`: parsed, with any unusable entry skipped. `corrupt`: exists but unreadable. */
+  readonly status: MiAccountIndexStatus;
+  /** Valid entries only; always empty for `missing` and `corrupt`. */
+  readonly entries: readonly MiAccountIndexEntry[];
+}
+
+function parseAccountIndexEntries(parsed: readonly unknown[]): MiAccountIndexEntry[] { const out: MiAccountIndexEntry[] = [];
+  const seen = new Set<string>();
+  for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const id = typeof rec["id"] === "string" ? rec["id"].trim() : "";
+    const rawSlot = typeof rec["slotId"] === "string" ? rec["slotId"].trim() : "";
+    if (!id || seen.has(id)) continue;
+    let slotId: string;
+    try { slotId = normalizeMiCredentialSlotId(rawSlot || id);
+    } catch { continue;
+    }
+    seen.add(id);
+    const region = normalizeMiCloudRegion(rec["region"]);
+    const maskedUserId = typeof rec["maskedUserId"] === "string" && rec["maskedUserId"].trim() !== ""
+        ? rec["maskedUserId"].trim()
+        : "****";
+    out.push({ id, slotId, region, maskedUserId });
+  }
+  return out;
+}
+
+/**
+ * Reads the persisted account index together with its storage state (#228).
+ *
+ * The old reader returned `[]` for both "no index yet" and "index exists but cannot be parsed",
+ * which let `loadUnlocked` treat corruption as an empty account list: cached secondaries were
+ * dropped and the corrupt value was overwritten with a primary-only index.
+ */
+export function readAccountIndexState(storage: Storage | null = defaultStorage()): MiAccountIndexSnapshot { if (!storage) return { status: "missing", entries: [] };
+  let raw: string | null;
+  try { raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+  } catch {
+    // Unreadable storage is not proof that no accounts exist; fail closed instead of clearing.
+    return { status: "corrupt", entries: [] };
+  }
+  if (!raw) return { status: "missing", entries: [] };
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw);
+  } catch { return { status: "corrupt", entries: [] };
+  }
+  if (!Array.isArray(parsed)) return { status: "corrupt", entries: [] };
+  const entries = parseAccountIndexEntries(parsed);
+  // A non-empty array where no entry survives validation is corruption, not "no accounts":
+  // `writeAccountIndex` never stores such a value, and treating it as empty drops every slot.
+  if (parsed.length > 0 && entries.length === 0) return { status: "corrupt", entries: [] };
+  return { status: "ok", entries };
+}
+
+export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] {
+  return [...readAccountIndexState(storage).entries];
+}
+
+export function hasSecondaryMiAccountsInIndex(storage: Storage | null = defaultStorage()): boolean { if (!storage) return false;
   try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
     if (!raw) return false;
     const parsed: unknown = JSON.parse(raw);
+    // Raw length, not the validated entry count: a partially damaged index must still trigger
+    // hydration so the surviving secondary entry is read and the index is repaired.
     return Array.isArray(parsed) && parsed.length > 1;
   } catch { return false;
   }
 }
 
-export function readAccountIndex(storage: Storage | null = defaultStorage()): MiAccountIndexEntry[] { if (!storage) return [];
-  try { const raw = storage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const out: MiAccountIndexEntry[] = [];
-    const seen = new Set<string>();
-    for (const item of parsed) { if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-      const rec = item as Record<string, unknown>;
-      const id = typeof rec["id"] === "string" ? rec["id"].trim() : "";
-      const rawSlot = typeof rec["slotId"] === "string" ? rec["slotId"].trim() : "";
-      if (!id || seen.has(id)) continue;
-      let slotId: string;
-      try { slotId = normalizeMiCredentialSlotId(rawSlot || id);
-      } catch { continue;
-      }
-      seen.add(id);
-      const region = normalizeMiCloudRegion(rec["region"]);
-      const maskedUserId = typeof rec["maskedUserId"] === "string" && rec["maskedUserId"].trim() !== ""
-          ? rec["maskedUserId"].trim()
-          : "****";
-      out.push({ id, slotId, region, maskedUserId });
-    }
-    return out;
-  } catch { return [];
-  }
+export function hasCorruptMiAccountIndex(storage: Storage | null = defaultStorage()): boolean {
+  return readAccountIndexState(storage).status === "corrupt";
 }
 
 function writeAccountIndex(storage: Storage | null,
@@ -343,9 +325,31 @@ function writeAccountIndex(storage: Storage | null,
   }
 }
 
+function accountIndexMatches(storage: Storage | null, accounts: readonly MiAccount[]): boolean {
+  const state = readAccountIndexState(storage);
+  if (state.status === "missing") return accounts.length === 0;
+  if (state.status !== "ok" || state.entries.length !== accounts.length) return false;
+  return accounts.every((account, index) => {
+    const entry = state.entries[index]!;
+    return entry.id === account.id
+      && entry.slotId === account.slotId
+      && entry.region === account.region
+      && entry.maskedUserId === account.maskedUserId;
+  });
+}
+
+export type MiAccountsReadState = "complete" | "partial";
+
 export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private loaded = false;
   private lastWroteIndexToStorage = false;
+  private firstLoadDone = false;
+  private accountsReadState: MiAccountsReadState = "complete";
+  private primaryConfirmed = false;
+  /** The last load's `mi_session` read failed; a cached first account is not its owner. */
+  private lastPrimaryReadFailed = false;
+  /** Slot sessions from the last successful enumeration; used to clear leftovers on sign-out. */
+  private enumeratedSessions: Readonly<Record<string, MiSession>> | null = null;
   private opQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly vault: CredentialVault = new CredentialVault(),
@@ -378,12 +382,39 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     return this.cachedAccounts[0]?.session ?? null;
   }
 
+  /** `partial` drives a non-blocking notice: some credentials could not be read this load. */
+  getAccountsReadState(): MiAccountsReadState { return this.accountsReadState;
+  }
+
+  /**
+   * True only when this load read `mi_session` successfully or promoted a secondary into it. A
+   * failed primary read can still yield a cached/secondary first account; settings must not adopt
+   * that session as the primary.
+   */
+  hasConfirmedPrimarySession(): boolean { return this.primaryConfirmed;
+  }
+
+  /** Re-reads `mi_session` to prove a just-recovered primary is still the stored credential. */
+  async checkPrimarySession(session: MiSession): Promise<"current" | "stale" | "unavailable"> {
+    const current = await this.vault.loadPrimaryMiSession();
+    if (this.vault.didLastPrimaryMiSessionReadFail()) return "unavailable";
+    if (current === null) return "stale";
+    return miSessionFingerprint(current) === miSessionFingerprint(session) ? "current" : "stale";
+  }
+
   async load(): Promise<MiAccount[]> {
     return this.enqueue(() => this.loadUnlocked());
   }
 
+  /**
+   * Credentials are the source of truth for which accounts exist; the index only orders them and
+   * supplies display metadata (#228). Enumeration is additive and runs on the first load of a
+   * cold store (plus a corrupt/missing index with an empty cache), never on every poll.
+   */
   private async loadUnlocked(): Promise<MiAccount[]> { this.syncExternalRevocation();
-    const index = readAccountIndex(this.storage);
+    const indexState = readAccountIndexState(this.storage);
+    const index = indexState.entries;
+    const indexUnreadable = indexState.status === "corrupt";
     let primaryReadFailed = false;
     let primarySession: MiSession | null = null;
     try {
@@ -393,63 +424,94 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       primaryReadFailed = true;
     }
     const primaryAccount = primarySession ? makeMiAccount(primarySession) : null;
-    if (!primaryReadFailed && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
+    if (!primaryReadFailed && !indexUnreadable && this.storage !== null && index.length === 0 && this.cachedAccounts.length > 0) {
       this.cachedAccounts = [];
     }
 
-    const secondarySlotIds: string[] = [];
-    for (const entry of index) { if (primaryAccount && entry.id === primaryAccount.id) continue;
-      secondarySlotIds.push(entry.slotId);
-    }
-    for (const mem of this.cachedAccounts) { if (primaryAccount && mem.id === primaryAccount.id) continue;
-      if (!secondarySlotIds.includes(mem.slotId)) { secondarySlotIds.push(mem.slotId);
-      }
-    }
+    const shouldEnumerate = !this.firstLoadDone
+      || ((indexState.status !== "ok") && this.cachedAccounts.length === 0);
+    const scannedSlotIds = shouldEnumerate
+      ? await this.vault.listMiAccountSlotIds().catch(() => null)
+      : null;
+
+    const slotIds: string[] = [];
+    const pushSlot = (slotId: string): void => { if (!slotIds.includes(slotId)) slotIds.push(slotId);
+    };
+    for (const entry of index) pushSlot(entry.slotId);
+    for (const cached of this.cachedAccounts) pushSlot(cached.slotId);
+    for (const slotId of scannedSlotIds ?? []) pushSlot(slotId);
 
     let slotsReadFailed = false;
     let loadedSlots: Record<string, MiSession> = {};
     try {
-      loadedSlots = await this.vault.loadMiAccountSlots(secondarySlotIds);
+      loadedSlots = await this.vault.loadMiAccountSlots(slotIds);
       if (this.vault.didLastMiAccountSlotsReadFail?.() === true) slotsReadFailed = true;
     } catch {
       slotsReadFailed = true;
     }
+
     const ordered: MiAccount[] = [];
     const seenIds = new Set<string>();
-
-    if (primaryAccount) { ordered.push(primaryAccount);
-      seenIds.add(primaryAccount.id);
-    } else if (primaryReadFailed && this.cachedAccounts.length > 0) {
-      const cachedPrimary = this.cachedAccounts[0]!;
-      ordered.push(cachedPrimary);
-      seenIds.add(cachedPrimary.id);
-    }
-
-    const candidateOrder = [
-      ...index.map((entry) => entry.slotId),
-      ...secondarySlotIds.filter((slot) => !index.some((entry) => entry.slotId === slot)),
-    ];
-    for (const slotId of candidateOrder) { const slotSession = loadedSlots[slotId];
-      if (!slotSession) continue;
-      const account = makeMiAccount(slotSession);
-      if (seenIds.has(account.id)) {
-        if (!primaryReadFailed && !slotsReadFailed) {
-          await this.vault.deleteMiAccountSlot(slotId).catch(() => {});
-        }
-        continue;
-      }
+    const pushAccount = (account: MiAccount): void => { if (seenIds.has(account.id)) return;
       seenIds.add(account.id);
       ordered.push(account);
+    };
+
+    if (primaryAccount) pushAccount(primaryAccount);
+    else if (primaryReadFailed && this.cachedAccounts.length > 0) pushAccount(this.cachedAccounts[0]!);
+
+    // Index order first, then cached accounts that outlived the index, then newly discovered slots.
+    for (const slotId of slotIds) { const session = loadedSlots[slotId];
+      if (session) pushAccount(makeMiAccount(session));
     }
 
-    if (!primaryAccount && !primaryReadFailed && ordered.length > 0) { const promoted = ordered[0]!;
-      await this.vault.savePrimaryMiSession(promoted.session);
-      await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
+    // The vault cannot distinguish "missing" from "unreadable": a slot that is not in `loadedSlots`
+    // may have thrown, returned null or held invalid content. Keep the in-memory account in every
+    // such case, independent of whether this load enumerated (#228).
+    for (const cached of this.cachedAccounts) { if (seenIds.has(cached.id)) continue;
+      if (loadedSlots[cached.slotId] !== undefined) continue;
+      pushAccount(cached);
     }
 
+    const promoted = !primaryAccount && !primaryReadFailed && ordered.length > 0;
+    if (promoted) { const first = ordered[0]!;
+      await this.vault.savePrimaryMiSession(first.session);
+      await this.vault.deleteMiAccountSlot(first.slotId).catch(() => {});
+    }
+    // A transient read failure must not revoke ownership already established for the retained
+    // cached primary; otherwise removing it would skip clearing `mi_session`.
+    const retainedCachedPrimary = !primaryAccount && primaryReadFailed && this.cachedAccounts.length > 0;
+    this.primaryConfirmed = Boolean(primaryAccount)
+      || promoted
+      || (retainedCachedPrimary && this.primaryConfirmed);
+    this.lastPrimaryReadFailed = primaryReadFailed && !promoted;
+
+    if (scannedSlotIds !== null) this.enumeratedSessions = { ...loadedSlots };
+    const unreadScannedSlots = scannedSlotIds !== null
+      ? scannedSlotIds.filter((slotId) => loadedSlots[slotId] === undefined)
+      : [];
+    // Index/cache slots count too: the vault cannot distinguish missing from unreadable, so any
+    // known slot without a parsed session keeps its cached account and marks the read partial.
+    const primarySlotId = primaryAccount?.slotId
+      ?? (primaryReadFailed && this.primaryConfirmed ? this.cachedAccounts[0]?.slotId : undefined);
+    const unreadKnownSlots = slotIds.filter((slotId) =>
+      slotId !== primarySlotId && loadedSlots[slotId] === undefined);
+    this.accountsReadState = slotsReadFailed
+      || unreadKnownSlots.length > 0
+      || unreadScannedSlots.length > 0
+      || (indexUnreadable && scannedSlotIds === null)
+      ? "partial"
+      : "complete";
+    this.firstLoadDone = true;
     this.cachedAccounts = ordered;
     this.loaded = true;
-    if (!primaryReadFailed && !slotsReadFailed) {
+
+    // A corrupt index is only replaced once enumeration proved the list is complete; otherwise the
+    // damaged raw value and the in-memory accounts stay untouched.
+    const indexWritable = !primaryReadFailed
+      && !slotsReadFailed
+      && (!indexUnreadable || (scannedSlotIds !== null && unreadScannedSlots.length === 0));
+    if (indexWritable && !accountIndexMatches(this.storage, ordered)) {
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, ordered);
     }
     return [...ordered];
@@ -458,6 +520,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     async upsertAccount(rawSession: MiSession): Promise<{ readonly accounts: MiAccount[];
     readonly account: MiAccount;
     readonly added: boolean;
+    readonly primarySessionKnown: boolean;
   }> { const parsed = parseMiSession(rawSession);
     if (!parsed) { throw new Error("Invalid Xiaomi session");
     }
@@ -475,21 +538,33 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       }
 
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
-      if (existingIdx === 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[0]!.session);
-        await this.vault.savePrimaryMiSession(account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
-            isPrimary: true,
+      if (existingIdx === 0) { const previousSession = this.cachedAccounts[0]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
+        const ownsPrimary = this.primaryConfirmed;
+        if (ownsPrimary) {
+          await this.vault.savePrimaryMiSession(account.session);
+          this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
+        } else {
+          // The first cached account is a recovered secondary; never overwrite an unread primary.
+          await this.vault.saveMiAccountSlot(account.slotId, account.session);
+        }
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
+            isPrimary: ownsPrimary,
             storage: this.storage,
           });
         }
         this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: false };
+        return { accounts: [...this.cachedAccounts], account, added: false, primarySessionKnown: this.primaryConfirmed };
       }
 
-      if (existingIdx > 0) { const prevFp = miSessionFingerprint(this.cachedAccounts[existingIdx]!.session);
+      if (existingIdx > 0) { const previousSession = this.cachedAccounts[existingIdx]!.session;
+        const prevFp = miSessionFingerprint(previousSession);
         await this.vault.saveMiAccountSlot(account.slotId, account.session);
-        if (prevFp !== miSessionFingerprint(account.session)) { markAccountSessionRejected(account.session, false, {
+        if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
+          markAccountSessionRejected(account.session, false, {
             isPrimary: false,
             storage: this.storage,
           });
@@ -498,17 +573,27 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         next[existingIdx] = account;
         this.cachedAccounts = next;
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: false };
+        return { accounts: [...this.cachedAccounts], account, added: false, primarySessionKnown: this.primaryConfirmed };
       }
 
-      if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
+      if (this.cachedAccounts.length === 0) {
+        // If `mi_session` could not be read, a new login must not overwrite it; write a slot and
+        // leave the unread primary intact for a later load.
+        const ownsPrimary = !this.lastPrimaryReadFailed;
+        if (ownsPrimary) {
+          await this.vault.savePrimaryMiSession(account.session);
+          this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
+        } else {
+          await this.vault.saveMiAccountSlot(account.slotId, account.session);
+        }
         markAccountSessionRejected(account.session, false, {
-          isPrimary: true,
+          isPrimary: ownsPrimary,
           storage: this.storage,
         });
         this.cachedAccounts = [account];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: true };
+        return { accounts: [...this.cachedAccounts], account, added: true, primarySessionKnown: this.primaryConfirmed };
       }
 
       await this.vault.saveMiAccountSlot(account.slotId, account.session);
@@ -518,14 +603,29 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       });
       this.cachedAccounts = [...this.cachedAccounts, account];
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-      return { accounts: [...this.cachedAccounts], account, added: true };
+      return { accounts: [...this.cachedAccounts], account, added: true, primarySessionKnown: this.primaryConfirmed };
     });
+  }
+
+  /**
+   * Slot ids for `account`, including duplicates seen by the last enumeration. Never triggers a
+   * new scan: a normal index removal stays independent from the rest of the credential store, and
+   * an unknown leftover slot can surface on a later cold start for the user to remove again (#228).
+   */
+  private slotIdsForAccount(account: MiAccount): string[] {
+    const slots = new Set<string>([account.slotId]);
+    for (const [slotId, session] of Object.entries(this.enumeratedSessions ?? {})) {
+      if (makeMiAccount(session).id === account.id) slots.add(slotId);
+    }
+    return [...slots];
   }
 
     async removeAccount(accountId: string,
     selectedHomeId?: string | null,
   ): Promise<{ readonly accounts: MiAccount[];
     readonly primarySession: MiSession | null;
+    /** False when the first cached account is not a confirmed primary; callers must keep settings. */
+    readonly primarySessionKnown: boolean;
     readonly resetSelectedHome: boolean;
   }> { return this.enqueue(async () => {
       if (!this.loaded) { await this.loadUnlocked();
@@ -534,27 +634,44 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (idx < 0) { return {
           accounts: [...this.cachedAccounts],
           primarySession: this.primarySession(),
+          primarySessionKnown: this.primaryConfirmed,
           resetSelectedHome: false,
         };
       }
 
       const removed = this.cachedAccounts[idx]!;
+      const ownsPrimary = this.primaryConfirmed;
       const resetSelectedHome = Boolean(selectedHomeId &&
           (MiAccountScope.isOwned(selectedHomeId, accountId) ||
             (MiAccountScope.owner(selectedHomeId) === null && idx === 0)),
       );
 
+      const slotsForRemoval = this.slotIdsForAccount(removed);
       const remaining = this.cachedAccounts.filter((item) => item.id !== accountId);
-      if (idx === 0) { if (remaining.length === 0) { await this.vault.deleteMiSession();
+      if (idx === 0 && ownsPrimary) { if (remaining.length === 0) {
+          // Remove only the selected account. `deleteMiSession()` would also wipe unrelated slots
+          // that a failed read left in the vault's `known` map; those credentials are real and must
+          // surface on a later load instead (#228).
+          await this.vault.savePrimaryMiSession(null);
+          for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
+          // Only after every deletion: a failed retry must still know this account owned the primary.
+          this.primaryConfirmed = false;
+          this.lastPrimaryReadFailed = false;
         } else { const promoted = remaining[0]!;
           await this.vault.savePrimaryMiSession(promoted.session);
+          for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
           await this.vault.deleteMiAccountSlot(promoted.slotId);
+          this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
         }
-      } else { await this.vault.deleteMiAccountSlot(removed.slotId);
+      } else {
+        // The first cached account is a recovered secondary, not the primary: never overwrite the
+        // unread `mi_session` credential just because it sits at index zero (#228).
+        for (const slotId of slotsForRemoval) await this.vault.deleteMiAccountSlot(slotId);
       }
 
       markAccountSessionRejected(removed.session, false, {
-        isPrimary: idx === 0 && remaining.length === 0,
+        isPrimary: ownsPrimary && idx === 0 && remaining.length === 0,
         storage: this.storage,
       });
       this.cachedAccounts = remaining;
@@ -562,6 +679,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       return {
         accounts: [...remaining],
         primarySession: remaining[0]?.session ?? null,
+        primarySessionKnown: ownsPrimary,
         resetSelectedHome,
       };
     });
@@ -575,11 +693,15 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         ...this.cachedAccounts.map((acc) => acc.slotId),
         ...index.map((entry) => entry.slotId),
       ]);
+      // Any deletion failure propagates: the UI reports an incomplete sign-out and the user can
+      // retry. Credentials that survive are real and may show up on the next cold start.
       await this.vault.deleteMiSession([...slotIds]);
       this.cachedAccounts = [];
       this.loaded = true;
+      this.accountsReadState = "complete";
+      this.primaryConfirmed = false;
+      this.lastPrimaryReadFailed = false;
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, []);
-      writePersistedAccountExpiryMap(this.storage, {});
       clearPersistedMiSessionExpired(this.storage);
     });
   }

@@ -705,4 +705,193 @@ struct DualSourceIntegrationTests {
         #expect(haOnlyStore.devices.isEmpty)
         #expect(haOnlyStore.rooms.isEmpty)
     }
+
+    @MainActor
+    @Test("Transient Xiaomi Cloud disconnect retains unpaired Mi-only cards as offline+stale with favorites and aliases intact, then recovers")
+    func transientMiDisconnectRetainsUnpairedCardsAndRecovers() async throws {
+        let suite = "test.dual.retain_unpaired.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let pairedHA = light(
+            id: haID,
+            name: "客厅吸顶灯",
+            roomID: "ha-living",
+            roomName: "客厅",
+            entityId: "light.living_ceiling"
+        )
+        let pairedMi = light(
+            id: did,
+            name: "吸顶灯",
+            roomID: "mi-living",
+            roomName: "客厅",
+            entityId: "miot:\(did):2"
+        )
+        let unpairedMiDid = "mi-only-kettle-888"
+        let unpairedMi = SmartDevice(
+            id: unpairedMiDid,
+            name: "恒温电水壶",
+            roomId: "mi-kitchen",
+            roomName: "厨房",
+            model: "yunmi.kettle.v1",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:\(unpairedMiDid):2", isOn: true))
+        )
+
+        let haHome = home(
+            [pairedHA],
+            identities: [
+                haID: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅吸顶灯", roomName: "客厅", kindTag: .light)
+            ]
+        )
+        let miHome = home(
+            [pairedMi, unpairedMi],
+            identities: [
+                did: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "吸顶灯", roomName: "客厅", kindTag: .light),
+                unpairedMiDid: DeviceSourceIdentity(dids: [unpairedMiDid], model: "yunmi.kettle.v1", name: "恒温电水壶", roomName: "厨房", kindTag: .plug),
+            ]
+        )
+
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: miHome)
+        let store = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
+            defaultsSuiteName: suite
+        )
+
+        await waitUntil {
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.devices.count == 2
+        }
+
+        store.favoriteDeviceIds = []
+        store.favoriteOrder = []
+        store.toggleFavorite(unpairedMiDid)
+        store.applyDeviceAliases([unpairedMiDid: "吧台水壶"])
+        #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
+
+        await miMock.sendStatus(.disconnected("HTTP 429 Too Many Requests"))
+        await waitUntil {
+            guard store.connectedBackends == Set([.homeAssistant]),
+                  let kettle = store.devices.first(where: { $0.id == unpairedMiDid }) else { return false }
+            return !kettle.isOnline && kettle.telemetryStale
+        }
+
+        #expect(store.devices.count == 2)
+        let retainedKettle = try #require(store.devices.first { $0.id == unpairedMiDid })
+        #expect(retainedKettle.isOnline == false)
+        #expect(retainedKettle.telemetryStale == true)
+        #expect(retainedKettle.name == "吧台水壶")
+        #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
+
+        let onlineLight = try #require(store.devices.first { $0.id == haID })
+        #expect(onlineLight.isOnline == true)
+        #expect(onlineLight.telemetryStale == false)
+
+        await miMock.updateSnapshot(miHome)
+        await waitUntil {
+            guard store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]),
+                  let kettle = store.devices.first(where: { $0.id == unpairedMiDid }) else { return false }
+            return kettle.isOnline && !kettle.telemetryStale
+        }
+        #expect(store.devices.first(where: { $0.id == unpairedMiDid })?.name == "吧台水壶")
+        #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
+    }
+
+    @MainActor
+    @Test("Disconnecting 1 of 2 Xiaomi accounts fails over its paired cards to Home Assistant while aggregate Mi status stays connected")
+    func multiAccountSingleDisconnectFailsOverPairedCardToHA() async throws {
+        let suite = "test.dual.multi_acc_failover.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let acc1Id = "cn:1001"
+        let acc2Id = "de:2002"
+        let sharedDid = "cam-did-1"
+        let haCamId = "ha-cam-1"
+
+        let haCamWithoutStream = SmartDevice(
+            id: haCamId,
+            name: "玄关摄像机",
+            roomId: "ha-entry",
+            roomName: "玄关",
+            model: "chuangmi.camera.061a01",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "switch.entry_cam", isOn: true))
+        )
+        let miCamAcc1 = SmartDevice(
+            id: sharedDid,
+            name: "玄关摄像机",
+            roomId: "\(acc1Id)/r1",
+            roomName: "玄关",
+            model: "chuangmi.camera.061a01",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "miot:\(sharedDid):2", isOn: true)),
+            accountId: acc1Id,
+            accountLabel: "10****01"
+        )
+        let miPlugAcc2 = SmartDevice(
+            id: "de-plug-1",
+            name: "书房插座",
+            roomId: "\(acc2Id)/r2",
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:de-plug-1:2", isOn: true)),
+            accountId: acc2Id,
+            accountLabel: "20****02"
+        )
+
+        let haHome = home(
+            [haCamWithoutStream],
+            identities: [
+                haCamId: DeviceSourceIdentity(dids: [sharedDid], model: "chuangmi.camera.061a01", name: "玄关摄像机", roomName: "玄关", kindTag: .camera)
+            ]
+        )
+        var miHomeBothConnected = home(
+            [miCamAcc1, miPlugAcc2],
+            identities: [
+                sharedDid: DeviceSourceIdentity(dids: [sharedDid], model: "chuangmi.camera.061a01", name: "玄关摄像机", roomName: "玄关", kindTag: .camera),
+                "de-plug-1": DeviceSourceIdentity(dids: ["de-plug-1"], model: "cuco.plug.v3", name: "书房插座", roomName: "书房", kindTag: .plug),
+            ]
+        )
+        miHomeBothConnected.accountStatuses = [
+            acc1Id: .connected,
+            acc2Id: .connected,
+        ]
+
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: miHomeBothConnected)
+        let store = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
+            defaultsSuiteName: suite
+        )
+
+        await waitUntil {
+            store.devices.count == 2 && store.deviceBackend(for: haCamId) == .xiaomiCloud
+        }
+
+        var miHomeAcc1Disconnected = miHomeBothConnected
+        miHomeAcc1Disconnected.accountStatuses = [
+            acc1Id: .disconnected("HTTP 502"),
+            acc2Id: .connected,
+        ]
+        await miMock.updateSnapshot(miHomeAcc1Disconnected)
+
+        await waitUntil {
+            store.deviceBackend(for: haCamId) == .homeAssistant
+        }
+        let camCard = try #require(store.devices.first { $0.id == haCamId })
+        #expect(camCard.isOnline == true)
+        #expect(camCard.telemetryStale == false)
+
+        var miHomeAcc1Retrying = miHomeBothConnected
+        miHomeAcc1Retrying.accountStatuses = [
+            acc1Id: .connecting,
+            acc2Id: .connected,
+        ]
+        await miMock.updateSnapshot(miHomeAcc1Retrying)
+        #expect(store.deviceBackend(for: haCamId) == .homeAssistant)
+        let camCardDuringRetry = try #require(store.devices.first { $0.id == haCamId })
+        #expect(camCardDuringRetry.isOnline == true)
+        #expect(camCardDuringRetry.telemetryStale == false)
+    }
 }

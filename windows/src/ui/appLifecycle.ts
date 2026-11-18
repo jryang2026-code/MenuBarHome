@@ -1,6 +1,7 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { processScheduledCommands } from "./scheduledCommands.js";
+import { switchSource } from "./sourceSwitch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
@@ -29,7 +30,10 @@ import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
   dispatchSystemContextEvent,
+  notifyDisplayPowerChanged,
   notifyPanelWakeLifecycle,
+  notifySystemSleep,
+  notifySystemWake,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
@@ -41,10 +45,10 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   clearAccountRateLimitBackoff,
-  MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
+import { clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
 import {
   clearUpdateProgress,
   didMiExpiryKindChange,
@@ -108,7 +112,9 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
           // Keep pendingSignOut flag so the user is not auto-signed back in and can still retry.
         }
       }
-      const effectiveCredentials = pendingSignOut ? { ...credentials, miSession: null } : credentials;
+      const effectiveCredentials = pendingSignOut
+        ? { ...credentials, miSession: null }
+        : credentials;
       if (!hasCredentials(effectiveCredentials)) {
         if (pendingSignOut) host.render();
         return;
@@ -220,7 +226,8 @@ export async function clearHostSessionAndDualSourceState(
   try {
     if (typeof localStorage !== "undefined") {
       localStorage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
-      localStorage.removeItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY);
+      // Removes the per-fingerprint rejection keys plus the two v1 migration keys.
+      clearPersistedMiSessionExpired();
       if (options.revokeAll) {
         localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
         localStorage.removeItem(PINNED_DEVICE_SOURCES_STORAGE_KEY);
@@ -238,11 +245,36 @@ export async function clearHostSessionAndDualSourceState(
       host.settings.dualSourceEnabled = false;
     }
   }
+  let signOutError: unknown = null;
   if (store) {
-    await store.clearAll().catch(() => {});
+    try {
+      await store.clearAll();
+    } catch (error) {
+      signOutError = error;
+    }
   }
   if (host.credentialVault && slotIds.length > 0) {
-    await host.credentialVault.deleteMiSession(slotIds).catch(() => {});
+    try {
+      await host.credentialVault.deleteMiSession(slotIds);
+    } catch (error) {
+      signOutError ??= error;
+    }
+  }
+  if (signOutError && host.replyBanner !== undefined) {
+    const detail =
+      signOutError instanceof Error && signOutError.message.trim()
+        ? ` (${signOutError.message.trim()})`
+        : "";
+    host.replyBanner = {
+      text: `${tr3(
+        "退出未完成，部分米家凭据仍保留，请重试",
+        "登出未完成，部分米家憑據仍保留，請重試",
+        "Sign-out incomplete; some Xiaomi credentials are still stored. Please retry",
+      )}${detail}`,
+      source: tr3("出错提示", "出錯提示", "Error"),
+      isError: true,
+    };
+    host.render?.();
   }
 }
 
@@ -255,11 +287,10 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     setPendingMiVaultDeletion(true);
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
     if (!retryOnly && wasXiaomiMode) {
-      host.localControlRevision += 1;
       if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
         host.cameraLive.closeCameraLiveView();
       }
-      host.invalidateSourceControl();
+      switchSource(host, "sign-out-xiaomi-account");
       host.devices = [];
       host.scenes = [];
       host.environmentReadings = [];
@@ -925,6 +956,21 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
     }
   };
+  // Native power callbacks (`system_events.rs`) forward suspend, resume and console-display
+  // changes as DOM events; a 10 s poll cannot see any of them in time.
+  const onSystemSleep = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    notifySystemSleep(host);
+  };
+  const onSystemWake = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    notifySystemWake(host);
+  };
+  const onDisplayPower = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    const detail = (event as CustomEvent<{ readonly asleep?: unknown } | null>).detail;
+    notifyDisplayPowerChanged(host, detail?.asleep === true);
+  };
 
   state.recoveryDisposers.push(
     listen(ownerDoc, "visibilitychange", onVisibilityChange),
@@ -933,6 +979,9 @@ export function bindLifecycleRecovery(
     listen(ownerWin, "online", onOnline),
     listen(ownerWin, "offline", onOffline),
     listen(ownerWin, "menumijia:resume", onResume),
+    listen(ownerWin, "menumijia:system-sleep", onSystemSleep),
+    listen(ownerWin, "menumijia:system-wake", onSystemWake),
+    listen(ownerWin, "menumijia:display-power", onDisplayPower),
     listen(ownerWin, "pagehide", onPageHide),
   );
 

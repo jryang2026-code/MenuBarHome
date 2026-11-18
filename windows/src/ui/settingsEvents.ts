@@ -59,6 +59,7 @@ import {
   type SettingsAnchor,
 } from "./settingsSearch.js";
 import { setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
+import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
 import { bindConnectionsAndDiagEvents } from "./connectionsAndDiagView.js";
@@ -72,7 +73,7 @@ function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = cur
   return zhHans;
 }
 
-export interface SettingsEventsHost {
+export interface SettingsEventsHost extends SourceSwitchHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
   readonly cameraLive: {
@@ -101,7 +102,6 @@ export interface SettingsEventsHost {
   groupOwnerByMemberDid: Map<string, string>;
   hotkeyNeedsHint: boolean;
   isRecordingHotkey: boolean;
-  localControlRevision: number;
   pendingCloudConsent: { utterance: string; endpoint: string } | null;
   replyBanner: ReplyBannerState | null;
   selectRoom(roomId: string | null, roomName?: string): void;
@@ -109,7 +109,6 @@ export interface SettingsEventsHost {
   lastHabitAction(): HabitLastAction | null;
   checkForAppUpdate(manual: boolean): Promise<void>;
   handleNaturalCommand(raw: string, fromScheduled?: boolean): Promise<void>;
-  invalidateSourceControl(): void;
   openSettingsSheet(tab?: SettingsTab): void;
   openUpdatePage(): void;
   refreshDevices(silent?: boolean): Promise<void>;
@@ -419,8 +418,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
     host.cameraLive.closeCameraLiveView();
   }
   host.cameraLive.discardRetainedCloudSessions?.();
-  host.localControlRevision += 1;
-  host.invalidateSourceControl();
+  switchSource(host, "settings-sign-out-revoke-all");
   host.clearPendingHighRisk();
   host.pendingCloudConsent = null;
 
@@ -580,9 +578,8 @@ function commitSettingsSave(host: SettingsEventsHost): void {
     }
     endpoint = endpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
     if (endpoint !== host.settings.haBaseURL) {
-      host.invalidateSourceControl();
+      switchSource(host, "settings-ha-endpoint-changed");
       host.settings.cachedHAHome = null;
-      host.localControlRevision += 1;
       if (host.settings.connectionMode === "homeAssistant") {
         host.devices = [];
         host.scenes = [];
@@ -596,9 +593,8 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   if (haToken) {
     const token = haToken.value.trim();
     if (token !== host.settings.haToken) {
-      host.invalidateSourceControl();
+      switchSource(host, "settings-ha-token-changed");
       host.settings.cachedHAHome = null;
-      host.localControlRevision += 1;
       if (host.settings.connectionMode === "homeAssistant") {
         host.devices = [];
         host.scenes = [];
@@ -1112,8 +1108,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
         host.cameraLive.closeCameraLiveView();
       }
-      host.localControlRevision += 1;
-      host.invalidateSourceControl();
+      switchSource(host, "settings-connection-mode");
       host.environmentReadings = [];
       host.homes = [];
       host.groupOwnerByMemberDid = new Map();
@@ -1303,7 +1298,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const requestedBaseURL = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
     const preset = inferAssistantPreset(requestedBaseURL);
     const requestedEndpoint = assistantEndpointIdentity(requestedBaseURL);
-    const capturedRevision = host.localControlRevision;
+    const capturedToken = host.sourceEpoch.capture();
     if (!presetSupportsEnvKeyImport(preset.id)) {
       const msg = tr3(
         "当前预设无需或不支持从环境变量自动导入密钥",
@@ -1326,7 +1321,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       const currentEndpoint = assistantEndpointIdentity(currentBaseURL);
       if (
         getSettingsSession(host) !== session ||
-        host.localControlRevision !== capturedRevision ||
+        !capturedToken.isCurrent() ||
         currentPreset.id !== preset.id ||
         currentEndpoint !== requestedEndpoint
       ) {

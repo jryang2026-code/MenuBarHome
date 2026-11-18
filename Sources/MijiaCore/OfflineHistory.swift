@@ -23,7 +23,7 @@ public final class OfflineHistory {
     public func record(devices: [SmartDevice], now: Date) {
         let today = calendar.startOfDay(for: now)
         var changed = trim(now: now)
-        for dev in devices where !dev.isOnline {
+        for dev in devices where !dev.isOnline && !dev.telemetryStale {
             if days[dev.id, default: []].insert(today).inserted { changed = true }
         }
         if changed { persist() }

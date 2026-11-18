@@ -1,17 +1,18 @@
-import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
+import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import type { HomeOption, LayoutPrefs } from "./panelPrefs.js";
+import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -217,7 +218,7 @@ export interface HostConnDiagSession {
   readonly addQr: AddAccountQrState;
 }
 
-export interface ConnectionsAndDiagHost {
+export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
   devices: SmartDevice[];
@@ -230,13 +231,11 @@ export interface ConnectionsAndDiagHost {
   assistantKeysByPreset: Record<string, string>;
   cloudValuesStale: boolean;
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+  /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
-  clearPendingHighRisk(): void;
   groupOwnerByMemberDid: Map<string, string>;
-  localControlRevision: number;
   replyBanner: ReplyBannerState | null;
   selectRoom(roomId: string | null, roomName?: string): void;
-  invalidateSourceControl(): void;
   refreshDevices(silent?: boolean): Promise<void>;
   refreshHADevices(silent?: boolean): Promise<void>;
   render(): void;
@@ -252,7 +251,6 @@ export interface ConnectionsAndDiagHost {
   readonly credentialVault?: CredentialVault;
   readonly transport?: HttpTransport;
   readonly specResolver?: MiotSpecResolver;
-  haConnectionError?: string | null;
   miSessionExpired?: boolean;
   homeTitle?: string;
   isHomeMenuOpen?: boolean;
@@ -371,7 +369,13 @@ export function resolveHostMiAccounts(host: ConnectionsAndDiagHost): MiAccount[]
   const pendingDelete = hasPendingMiVaultDeletion();
   if (pendingDelete || (!host.settings.miSession && !hasSecondaryMiAccountsInIndex())) {
     setHostMiAccounts(host, null);
-    if (!pendingDelete && storeAccounts.length > 0) void store.load();
+    if (!pendingDelete && storeAccounts.length > 0) {
+      void store.load()
+        .then(async (loaded) => {
+          await adoptRecoveredPrimarySession(host, store, loaded);
+        })
+        .catch(() => {});
+    }
     return [];
   }
   const multiStateAccounts = getHostMiAccountsState(host)?.accounts ?? [];
@@ -396,9 +400,14 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
   session.hydratingVault = true;
   try {
     const beforeIds = resolveHostMiAccounts(host).map((a) => a.id).join(",");
+    const beforeReadState = store.getAccountsReadState();
     const loaded = await store.load();
+    await adoptRecoveredPrimarySession(host, store, loaded);
     session.hydratedVaultOnce = true;
-    if (beforeIds !== loaded.map((a) => a.id).join(",") && isHostAttached(host)) {
+    if (
+      (beforeIds !== loaded.map((a) => a.id).join(",") || beforeReadState !== store.getAccountsReadState()) &&
+      isHostAttached(host)
+    ) {
       syncConnectionContextWatcher(host);
       host.render();
     }
@@ -423,11 +432,13 @@ export async function addOrUpdateMiAccountOnHost(
   const result = await store.upsertAccount(cleanSession);
   setHostMiAccounts(host, null);
 
-  const primary = result.accounts[0]?.session ?? cleanSession;
   setPendingMiVaultDeletion(false);
-  host.invalidateSourceControl();
-  host.settings.miSession = primary;
-  host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
+  switchSource(host, "mi-account-added");
+  if (result.primarySessionKnown) {
+    const primary = result.accounts[0]?.session ?? cleanSession;
+    host.settings.miSession = primary;
+    host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
+  }
   host.miSessionExpired = false;
   if (host.settings.connectionMode === "demo") {
     host.settings.connectionMode = "xiaomiCloud";
@@ -490,21 +501,26 @@ async function performSignOutSingleMiAccountOnHost(
     if (store.getAccounts().length === 0 && host.settings.miSession) {
       for (const item of resolveHostMiAccounts(host)) await store.upsertAccount(item.session);
     }
-    const beforeCount = store.getAccounts().length;
-    if (beforeCount === 0) return false;
+    const beforeIds = new Set(store.getAccounts().map((account) => account.id));
+    if (beforeIds.size === 0) return false;
     const removal = await store.removeAccount(accountId, host.settings.selectedHomeId);
     setHostMiAccounts(host, null);
-    if (removal.accounts.length === beforeCount) return false;
+    // Hidden-account recovery can replace the removed account with a discovered one, keeping the
+    // count unchanged; only identity proves the requested account is gone.
+    if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
+      return false;
+    }
 
-    host.localControlRevision += 1;
-    host.invalidateSourceControl();
+    switchSource(host, "mi-account-removed");
     host.clearPendingHighRisk();
     resetHostUnsupportedScanner(host);
 
     if (removal.resetSelectedHome) host.settings.selectedHomeId = null;
-    host.settings.miSession = removal.primarySession;
-    if (removal.primarySession) {
-      host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
+    if (removal.primarySessionKnown) {
+      host.settings.miSession = removal.primarySession;
+      if (removal.primarySession) {
+        host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
+      }
     }
 
     const removedIds = new Set(
@@ -574,7 +590,6 @@ async function performSignOutSingleMiAccountOnHost(
           host.selectRoom(null);
           if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
         }
-        if (host.credentialVault) await host.credentialVault.deleteMiSession();
         host.saveSettings();
         host.replyBanner = {
           text: tr3("已退出米家账号", "已登出米家帳號", "Signed out of Xiaomi Home", lang),
@@ -644,8 +659,7 @@ async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Prom
   }
   host.expandedDeviceId = null;
   host.waitingDeviceIds?.clear();
-  host.localControlRevision += 1;
-  host.invalidateSourceControl();
+  switchSource(host, "ha-disconnected");
   host.clearPendingHighRisk();
 
   host.settings.haToken = "";
@@ -1083,7 +1097,7 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
   if (host) {
     syncConnectionContextWatcher(host);
     const s = getHostConnDiagSession(host);
-    if (!s.hydratedVaultOnce && !s.hydratingVault && hasSecondaryMiAccountsInIndex()) {
+    if (!s.hydratedVaultOnce && !s.hydratingVault && (hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex())) {
       void ensureHostMiAccountsHydrated(host);
     }
   }
@@ -1114,6 +1128,11 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
   const isScanning = scanner?.isScanning ?? false;
   const scanError = scanner?.errorMessage ?? null;
   const lastScannedAtMs = scanner?.lastScannedAtMs ?? null;
+
+  const accountsPartial = host?.miAccountsStore?.getAccountsReadState() === "partial";
+  const accountIndexWarningHtml = accountsPartial
+    ? `<p class="cc-field-hint" data-mi-accounts-index-warning style="margin:4px 0 8px;color:#e67e22;">${esc(t("部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。"))}</p>`
+    : "";
 
   const accountCardsHtml =
     accounts.length === 0
@@ -1219,6 +1238,7 @@ export function renderConnectionsAndDiagSection(ctx: ConnectionsAndDiagViewConte
           <span class="cc-field-hint" style="margin:0;">${esc(tr3(`已登录 ${accounts.length} 个账号`, `已登入 ${accounts.length} 個帳號`, `${accounts.length} signed in`, lang))}</span>
         </div>
         ${accountCardsHtml}
+        ${accountIndexWarningHtml}
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
           <button type="button" class="cc-btn-secondary" id="btn-add-mi-account">${esc(tr3("＋ 添加另一个米家账号", "＋ 新增另一個米家帳號", "+ Add Another Xiaomi Account", lang))}</button>
         </div>

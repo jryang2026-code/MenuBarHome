@@ -16,7 +16,8 @@ import {
 import { setLanguage } from "../src/core/i18n.js";
 import type { HomeScene, SmartDevice } from "../src/core/models.js";
 import {
-  MI_SESSION_EXPIRED_STORAGE_KEY,
+  miSessionFingerprint,
+  miSessionRejectedStorageKey,
   persistMiSessionExpired,
 } from "../src/core/pollingPolicy.js";
 import { serializeMiSession } from "../src/core/secureStore.js";
@@ -434,7 +435,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
     app.settings.miSession = session;
     app.miSessionExpired = true;
     persistMiSessionExpired(session, true);
-    assert.ok(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY));
+    assert.ok(localStorage.getItem(miSessionRejectedStorageKey(miSessionFingerprint(session))));
     app.expandedDeviceId = "demo_light_1";
     app.waitingDeviceIds.add("demo_light_1");
     app.unresolvedRoomDids.add("did_orphan");
@@ -480,7 +481,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
     await click("#btn-save-settings");
     assert.equal(app.settings.miSession, null);
     assert.equal(app.miSessionExpired, false);
-    assert.equal(localStorage.getItem(MI_SESSION_EXPIRED_STORAGE_KEY), null);
+    assert.equal(localStorage.getItem(miSessionRejectedStorageKey(miSessionFingerprint(session))), null);
     assert.equal(app.expandedDeviceId, null);
     assert.equal(app.waitingDeviceIds.size, 0);
     assert.equal(app.unresolvedRoomDids.size, 0);

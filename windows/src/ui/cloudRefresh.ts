@@ -8,6 +8,7 @@ import { applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAlias
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
+import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import { environmentReadingPriority, type HomeBackend, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   MiAccountsStore,
+  hasCorruptMiAccountIndex,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
@@ -29,6 +31,7 @@ import {
   type MiAccount,
 } from "../core/miAccountsStore.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
+import { STALE, type EpochToken, type SyncRunToken } from "./sourceEpoch.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import type { HASnapshotLike } from "../core/automationEngine.js";
 import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
@@ -39,7 +42,6 @@ import { renderSliderDeck } from "./panelView.js";
 import { isWorkstationLocked } from "./transport.js";
 import {
   clearCachedXiaomiTopology,
-  clearPersistedMiSessionExpired,
   clearXiaomiRateLimitBackoff,
   isPersistedMiSessionExpired,
   isXiaomiRateLimitError,
@@ -85,8 +87,16 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (!isHostAttachedToActiveWindow(host)) return;
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
-    if (host.settings.connectionMode === "xiaomiCloud" && hasMultipleMiAccountsForHost(host)) {
-      return refreshMultiAccountXiaomiDevices(host, silent);
+    if (host.settings.connectionMode === "xiaomiCloud") {
+      // The store's first load of this window enumerates the credential slots; later loads read
+      // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
+      const storeToken = host.sourceEpoch.capture();
+      const store = getHostMiAccountsStore(host);
+      const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
+      if ((await storeToken.guard(adoptRecoveredPrimarySession(host, store, storeAccounts))) === STALE) return;
+      if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
+        return refreshMultiAccountXiaomiDevices(host, silent);
+      }
     }
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
@@ -142,10 +152,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
-    const stateRevisionAtStart = host.localControlRevision;
+    const stateToken = host.sourceEpoch.capture();
     const selectedHomeAtStart = host.settings.selectedHomeId;
     const sourceRevisionAtStart = host.sourceRevision;
-    const syncGen = ++host.syncGeneration;
+    const syncRun = host.sourceEpoch.claimSyncRun();
     let presentationChanged = false;
     host.isSyncingCloud = true;
     host.lastCloudRefreshAt = refreshStartedAt;
@@ -203,7 +213,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         const allRooms = discovery.rooms;
         const allDevices = discovery.devices;
         const nextHomes = homeOptions(allRooms);
-        if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+        if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
         if (homeRoomsError === null || nextHomes.length > 0) {
           host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
         }
@@ -245,14 +255,14 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
             ? await withSessionExpiredRetry(() => client.getProps(propKeys))
             : new Map<string, unknown>();
       } catch (error) {
-        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
+        if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
           host.markCloudValuesStale();
         }
         throw error;
       }
 
       const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
       if (allDevicesForCache !== null && allRoomsForCache !== null) {
         storeCachedXiaomiTopology(host, {
           sessionFingerprint: miSessionFingerprint(session),
@@ -267,8 +277,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         });
       }
       clearXiaomiRateLimitBackoff(host);
+      // The setter clears only this session's own rejection key, so other accounts' records survive.
       host.miSessionExpired = false;
-      clearPersistedMiSessionExpired();
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
@@ -314,7 +324,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } catch (err) {
-      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
+      if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
         host.markCloudValuesStale();
         appDiagnosticsLog.record({
           error: err,
@@ -344,7 +354,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } finally {
-      if (host.syncGeneration === syncGen) {
+      if (syncRun.isCurrent()) {
         host.isSyncingCloud = false;
         if (isHostAttachedToActiveWindow(host)) {
           const staleChanged = staleBefore !== host.cloudValuesStale;
@@ -370,8 +380,8 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
     if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.isSyncingCloud) return;
     const endpoint = host.settings.haBaseURL;
     const token = host.settings.haToken;
-    const revision = host.localControlRevision;
-    const syncGen = ++host.syncGeneration;
+    const stateToken = host.sourceEpoch.capture();
+    const syncRun = host.sourceEpoch.claimSyncRun();
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     let failed = false;
@@ -385,7 +395,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const home = await haClient.snapshot();
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
@@ -425,7 +435,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       if (presentationChanged || !hadValidCache) host.saveSettings();
       shouldUpdateView = !silent || presentationChanged;
     } catch (error) {
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localControlRevision !== revision || host.syncGeneration !== syncGen) return;
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
       failed = true;
       shouldUpdateView = true;
       appDiagnosticsLog.record({
@@ -435,7 +445,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       });
       host.haConnectionError = error instanceof Error ? error.message : String(error);
     } finally {
-      if (host.syncGeneration === syncGen) {
+      if (syncRun.isCurrent()) {
         host.isSyncingCloud = false;
         if (shouldUpdateView && isHostAttachedToActiveWindow(host)) {
           if (failed || host.devices.length === 0 || cloudPanelStructureFingerprint(host) !== previousStructure || !patchCloudPresentation(host)) host.queueBackgroundRender();
@@ -458,16 +468,16 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
 export function cloudSnapshotIsStale(
   host: MenuMijiaWindowsApp,
   session: MiSession,
-  revision: number,
-  syncGen?: number,
+  stateToken: EpochToken,
+  syncRun?: SyncRunToken,
   selectedHomeId?: string | null,
 ): boolean {
     return (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
-      host.localControlRevision !== revision ||
-      (syncGen !== undefined && host.syncGeneration !== syncGen) ||
+      !stateToken.isCurrent() ||
+      (syncRun !== undefined && !syncRun.isCurrent()) ||
       (selectedHomeId !== undefined && host.settings.selectedHomeId !== selectedHomeId)
     );
   }
@@ -770,7 +780,34 @@ export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMul
 
 export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
   if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
-  return hasSecondaryMiAccountsInIndex();
+  // A corrupt index cannot prove there is only one account; `store.load()` must run to rebuild it.
+  return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex();
+}
+
+/**
+ * Enumeration can promote a recovered secondary account into `mi_session` when no primary
+ * credential exists. The settings object must learn that session immediately, otherwise the next
+ * settings save persists `miSession: null` and deletes the recovered account's only credential.
+ */
+export async function adoptRecoveredPrimarySession(
+  host: { readonly settings: { miSession: MiSession | null; miCloudRegion: string } },
+  store: MiAccountsStore,
+  accounts: readonly MiAccount[],
+): Promise<void> {
+  const primary = accounts[0];
+  const adoptionBlocked = (): boolean => hasPendingMiVaultDeletion() || host.settings.miSession !== null;
+  if (!primary || adoptionBlocked() || !store.hasConfirmedPrimarySession()) {
+    return;
+  }
+  // The load may have raced a sign-out or another credential write. A confirmed mismatch means the
+  // promoted session is gone; an unavailable verification must not cost the just-promoted credential.
+  if ((await store.checkPrimarySession(primary.session)) === "stale") return;
+  // Revalidate after each await: a sign-out may have started or completed in the meantime.
+  if (adoptionBlocked()) return;
+  if ((await store.checkPrimarySession(primary.session)) === "stale") return;
+  if (adoptionBlocked()) return;
+  host.settings.miSession = primary.session;
+  host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }
 
 function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
@@ -825,24 +862,25 @@ export async function refreshMultiAccountXiaomiDevices(
   if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) {
     return;
   }
-  const stateRevisionAtStart = host.localControlRevision;
-  const sourceRevisionAtStart = host.sourceRevision;
+  // One token covers both the local-write and source levels: a source switch cascades down to
+  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
+  const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    host.localControlRevision !== stateRevisionAtStart ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
   }
-  const loadedFromStore = host.miAccountsOverride ?? (await getHostMiAccountsStore(host).load());
+  const store = getHostMiAccountsStore(host);
+  const loadedFromStore = host.miAccountsOverride ?? (await store.load());
+  await adoptRecoveredPrimarySession(host, store, loadedFromStore);
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    host.localControlRevision !== stateRevisionAtStart ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -855,7 +893,7 @@ export async function refreshMultiAccountXiaomiDevices(
         : [];
   if (accounts.length === 0) return;
 
-  const syncGen = ++host.syncGeneration;
+  const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
   const staleBefore = host.cloudValuesStale;
@@ -877,9 +915,8 @@ export async function refreshMultiAccountXiaomiDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
-      host.localControlRevision !== stateRevisionAtStart ||
-      host.sourceRevision !== sourceRevisionAtStart ||
-      host.syncGeneration !== syncGen
+      !stateToken.isCurrent() ||
+      !syncRun.isCurrent()
     ) {
       return;
     }
@@ -952,7 +989,7 @@ export async function refreshMultiAccountXiaomiDevices(
           };
     }
   } finally {
-    if (host.syncGeneration === syncGen) {
+    if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
       if (isHostAttachedToActiveWindow(host)) {
         const staleChanged = staleBefore !== host.cloudValuesStale;
@@ -1081,14 +1118,14 @@ export async function refreshDualSourceDevices(
   silent = false,
 ): Promise<void> {
   if (!isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
-  const revision = host.localControlRevision;
-  const sourceRevisionAtStart = host.sourceRevision;
+  // One token covers both the local-write and source levels: a source switch cascades down to
+  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
+  const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    host.localControlRevision !== revision ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -1097,16 +1134,14 @@ export async function refreshDualSourceDevices(
   const endpoint = host.settings.haBaseURL;
   const token = host.settings.haToken;
   const overrideAccounts = host.miAccountsOverride;
+  const store = getHostMiAccountsStore(host);
   const loadedAccounts =
-    overrideAccounts ??
-    (host.settings.miSession && !hasSecondaryMiAccountsInIndex()
-      ? [makeMiAccount(host.settings.miSession)]
-      : await getHostMiAccountsStore(host).load());
+    overrideAccounts ?? (await store.load().catch(() => []));
+  await adoptRecoveredPrimarySession(host, store, loadedAccounts);
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    host.localControlRevision !== revision ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -1119,7 +1154,7 @@ export async function refreshDualSourceDevices(
         : [];
   if (accounts.length === 0) return;
 
-  const syncGen = ++host.syncGeneration;
+  const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
   let presentationChanged = false;
@@ -1179,9 +1214,8 @@ export async function refreshDualSourceDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       !isDualSourceEnabled(host) ||
-      host.localControlRevision !== revision ||
-      host.sourceRevision !== sourceRevisionAtStart ||
-      host.syncGeneration !== syncGen
+      !stateToken.isCurrent() ||
+      !syncRun.isCurrent()
     ) {
       return;
     }
@@ -1224,7 +1258,7 @@ export async function refreshDualSourceDevices(
       };
     }
   } catch (error) {
-    if (!isHostAttachedToActiveWindow(host) || host.localControlRevision !== revision || host.syncGeneration !== syncGen) {
+    if (!isHostAttachedToActiveWindow(host) || !stateToken.isCurrent() || !syncRun.isCurrent()) {
       return;
     }
     failed = true;
@@ -1248,7 +1282,7 @@ export async function refreshDualSourceDevices(
       forbiddenLiterals: [endpoint, token],
     });
   } finally {
-    if (host.syncGeneration === syncGen) {
+    if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
       if (isHostAttachedToActiveWindow(host)) {
         if (!silent) {

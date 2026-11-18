@@ -252,7 +252,9 @@ public extension SmartDevice {
         case (.cover(var spec), .cover(let localSpec)):
             if lockedFields.contains(.coverPosition) {
                 spec.positionPercent = localSpec.positionPercent
-                spec.reportedPositionPercent = localSpec.reportedPositionPercent
+                // `reportedPositionPercent` stays the report's value: it is device truth, not the
+                // optimistic display, and freezing it made a later drag's hazard direction start
+                // from where the previous command began instead of where the motor actually is.
                 spec.motion = localSpec.motion
                 spec.motionIsInferred = localSpec.motionIsInferred
             }

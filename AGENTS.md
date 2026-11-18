@@ -24,7 +24,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 
 - **`git commit`（约 4s）**：自动跑 `bash scripts/check.sh --lint-only`（密钥扫描、机械 lint、工作流契约与文档链接、能力矩阵、云台型号表）。全量脚本自检加 `--script-tests`。
 - **推 `main` / 开 PR 前**：非 UI 改动跑 `bash scripts/check.sh --changed`；**macOS 界面改动**在本机跑 `bash scripts/check.sh`。像素基准是 GitHub 托管的 `macos-26-intel`（Xcode 26.6，zh_CN），由 CI 的 `macos-snapshots` 比对。本机默认跳过像素比对，汇总里的 `Snapshots` 跳过是预期结果。本机预览用 `bash scripts/check.sh --snapshots`（失败不阻断）。重录用 Actions 的 Record snapshots，Branch 填本仓库分支名。更换该镜像或 Xcode 后必须重录。未改视觉才贴 `no-snapshot-change`。确认没有其他非预期的 `⚠️ 部分通过：跳过 ...`。
-- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；Windows 隔离工作树跑前端检查用 `bash scripts/shared_windows_deps.sh run npm --prefix windows test`（勿手工反复 `ln -sfn` / `rm -rf windows/node_modules`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`、`scripts/repeat_test.sh <filter>`、`scripts/red-check.sh`。
+- **专项检查**：工作流改动跑 `actionlint .github/workflows/*.yml`；维护者 Mac 未装 `cargo`/`rustc`，`windows/src-tauri` 原生层测试由云端 CI `windows-rust-test` 承担（Windows 宿主机跑 `cargo test --locked --manifest-path windows/src-tauri/Cargo.toml`）；Windows 隔离工作树跑前端检查用 `bash scripts/shared_windows_deps.sh run npm --prefix windows test`（勿手工反复 `ln -sfn` / `rm -rf windows/node_modules`）；单测提速用 `node windows/scripts/test-file.mjs tests/<file>.test.ts`（支持 `--test-name-pattern <pattern>` 只跑匹配用例）、`scripts/repeat_test.sh <filter>`（支持 `--stress [workers]` 压测复跑）、`scripts/red-check.sh`。
 - **检索与跨端**：Windows 无 Swift 工具链时本机跑 `--lint-only`（或 `scripts/remote-swift-test.sh`）；本仓 Swift/Rust 无 LSP，引用检索用 `grep`。
 
 ## 领域约定与按需文档

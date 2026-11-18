@@ -30,7 +30,7 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 ## Pull requests & skill hooks
 
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines. UI snapshot pixels are compared by `macos-snapshots` on `macos-26-intel`. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
-- **Merge**: `gh pr merge <n> --squash --delete-branch`.
+- **Merge**: `bash scripts/merge-pr.sh <n> <head-sha>` (squash + watch the main CI run; with a plain `gh pr merge <n> --squash --delete-branch` you must watch main yourself).
 - **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `triage` reads this flag.)_
 - **When a skill says "publish to the issue tracker"**: create a GitHub issue with `gh issue create --label ready-for-agent`.
 - **When a skill says "fetch the relevant ticket"**: run `gh issue view <n> --comments`.

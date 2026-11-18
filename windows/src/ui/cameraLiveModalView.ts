@@ -236,7 +236,8 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
         ${
           ctrl.liveCameraShowingURLInput
             ? `<div class="cc-field" style="margin-bottom:10px;">
-                <input id="camera-stream-url-input" class="cc-input" type="text" value="${ctrl.host.escapeHtml(customURL)}" placeholder="http://127.0.0.1:<port>/api/stream.m3u8?src=camera" />
+                <input id="camera-stream-url-input" class="cc-input" type="text" value="${ctrl.host.escapeHtml(customURL)}" placeholder="http://192.168.1.10:1984/api/stream.m3u8?src=cam" />
+                <small id="camera-stream-url-hint" class="cc-field-hint" style="display:block;margin-top:6px;">${t("请填写局域网地址；本机回环地址（127.0.0.1）需先加入已授权服务地址，应用自带的 go2rtc 流不受影响")}</small>
                 <div style="display:flex;gap:6px;margin-top:6px;">
                   <button class="cc-btn-primary" id="btn-save-camera-url">${t("连接流地址")}</button>
                 </div>

@@ -8,6 +8,7 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import {
   classifyProactiveSuggestionSource,
   maybeRefreshProactiveInBackground,
@@ -117,7 +118,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
     assert.equal(tracker.summary, "关闭 客厅主灯");
     assert.equal(tracker.remainingMs(baseNow + 15), 25);
 
-    await waitFor(() => expiredCount === 1, 500);
+    await waitFor(() => expiredCount === 1);
     assert.equal(tracker.isAvailable, false);
     tracker.dispose();
   });
@@ -208,7 +209,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
     app.replyBanner = null;
     app.render();
     assert.ok(document.querySelector("#btn-header-undo"));
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assertMissing(document.querySelector("#btn-header-undo"));
   });
@@ -307,7 +308,7 @@ describe("Wave 2 — A12 Proactive Suggestion Source Icons, Confidence Badges & 
     });
 
     maybeRefreshProactiveInBackground(app);
-    await waitFor(() => app?.isRefreshingProactive === false, 1_000);
+    await waitFor(() => app?.isRefreshingProactive === false);
     assert.equal(renderCallsDuringGesture, 0, "proactive refresh must drop paint while pointerIsDown");
     assert.equal(app.pendingCloudRender, false, "dropped proactive paint must not queue pendingCloudRender");
   });
@@ -373,7 +374,7 @@ describe("Wave 2 — A12 Proactive Suggestion Source Icons, Confidence Badges & 
       };
     };
     maybeRefreshProactiveInBackground(app);
-    await waitFor(() => app?.isRefreshingProactive === false, 1_000);
+    await waitFor(() => app?.isRefreshingProactive === false);
     assert.ok(capturedRequestBody.length > 0, "background proactive request was sent");
     assert.equal(
       capturedRequestBody.includes(pinnedLight.id),
@@ -689,18 +690,15 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
 
     const tOpenA = performance.now();
     await click('[data-body-device="cam-a"]');
-    await waitFor(() => app?.cameraLive.liveCameraMode === "mjpeg", 1_000);
+    await waitFor(() => app?.cameraLive.liveCameraMode === "mjpeg");
     assert.ok(performance.now() - tOpenA < 850, "initial open skips same-session cooldown");
 
     const tSwitchB = performance.now();
     await click('[data-cameraswitch="cam-b"]');
-    await waitFor(
-      () =>
-        app?.cameraLive.activeLiveCameraId === "cam-b" &&
-        app.cameraLive.liveCameraStreamURL === "cam_mjpeg_cam-b" &&
-        app.cameraLive.liveCameraMode === "mjpeg",
-      1_000,
-    );
+    await waitFor(() =>
+      app?.cameraLive.activeLiveCameraId === "cam-b" &&
+      app.cameraLive.liveCameraStreamURL === "cam_mjpeg_cam-b" &&
+      app.cameraLive.liveCameraMode === "mjpeg");
     const switchElapsed = performance.now() - tSwitchB;
     assert.ok(
       switchElapsed < 850,

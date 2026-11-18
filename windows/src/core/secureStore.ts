@@ -15,6 +15,10 @@
 
 import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./assistant/provider.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
+import { clearPersistedMiSessionExpired,
+  clearPersistedMiSessionExpiredFor,
+  miSessionFingerprint,
+} from "./pollingPolicy.js";
 
 export const WIN32_CRED_MAX_BLOB_BYTES = 2560;
 
@@ -245,6 +249,37 @@ export async function secureStoreDelete(
   await invoke<void>("secure_store_delete", { name });
 }
 
+/**
+ * Lists the `mi_session_<slotId>` slots stored in the OS credential store (#228).
+ *
+ * Only slot ids are returned; the native side never hands out values and refuses any name outside
+ * the constrained `mi_session_*` whitelist. `null` means the native shell has no enumeration
+ * command or the scan failed, and must not be confused with an authoritative empty list: rebuilding
+ * the account index from a failed scan would drop every secondary account.
+ */
+export async function secureStoreListMiAccountSlots(
+  invoke: SecureInvoke = tauriInvoke
+): Promise<string[] | null> {
+  let value: unknown;
+  try {
+    value = await invoke<unknown>("secure_store_list_mi_account_slots", {});
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    try {
+      const slotId = normalizeMiCredentialSlotId(item);
+      if (!out.includes(slotId)) out.push(slotId);
+    } catch {
+      // A name the whitelist rejects cannot be a Xiaomi slot; ignore it.
+    }
+  }
+  return out.sort();
+}
+
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
   private opChain: Promise<void> = Promise.resolve();
@@ -259,6 +294,14 @@ export class CredentialVault {
 
   didLastMiAccountSlotsReadFail(): boolean {
     return this.lastAccountSlotsReadFailed;
+  }
+
+  /** Slot ids present in the credential store, or `null` when enumeration is unavailable (#228). */
+  async listMiAccountSlotIds(): Promise<string[] | null> {
+    return this.serialize(async () => {
+      const slots = await secureStoreListMiAccountSlots(this.invoke);
+      return slots === null ? null : [...slots].sort();
+    });
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
@@ -343,6 +386,9 @@ export class CredentialVault {
 
     async persist(credentials: CredentialSnapshot): Promise<void> {
     return this.serialize(async () => {
+      // Captured before the write: once `mi_session` holds the new token, the previous token is
+      // retired and its rejection marker can never belong to a live session again.
+      const previousPrimary = parseMiSession(this.known.get("mi_session") ?? null);
       const primarySerialized = credentials.miSession ? serializeMiSession(credentials.miSession) : "";
       if (primarySerialized !== "") {
         assertCredentialBlobWithinLimit(primarySerialized, "mi_session");
@@ -371,6 +417,21 @@ export class CredentialVault {
         ...keyWrites,
         ...accountSlotWrites,
       ]);
+      // `results[0]` is the `mi_session` write. The retirement follows that result alone: a failed
+      // sibling (or the legacy-key clear below) must not leave the replaced token's marker behind.
+      const primaryWrite = results[0];
+      const nextPrimary = credentials.miSession;
+      if (
+        primaryWrite?.status === "fulfilled" &&
+        previousPrimary &&
+        nextPrimary &&
+        miSessionFingerprint(previousPrimary) !== miSessionFingerprint(nextPrimary)
+      ) {
+        // The new primary is now the saved credential, so the previous token is retired for good.
+        // Drop only that one fingerprint's rejection key (and its in-memory fallback); every other
+        // session's marker is untouched.
+        clearPersistedMiSessionExpiredFor(previousPrimary);
+      }
       const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
       if (failure) throw failure.reason;
       if (credentials.assistantApiKeys !== undefined) {
@@ -470,7 +531,6 @@ export class CredentialVault {
     async deleteMiSession(extraSlotIds: readonly string[] = []): Promise<void> {
     return this.serialize(async () => {
       const indexKeys = ["menumijia.windows.miAccountsIndex.v1", "menumijia.miAccountsIndex.v1"] as const;
-      const expiredKeys = ["menumijia.windows.miAccountsExpired.v1", "menumijia.miAccountsExpired.v1"] as const;
       const slots = new Set<SecureCredentialName>(["mi_session"]);
       for (const key of this.known.keys()) {
         if (key.startsWith("mi_session_")) slots.add(key);
@@ -505,7 +565,8 @@ export class CredentialVault {
       try {
         if (typeof localStorage !== "undefined") {
           for (const k of indexKeys) localStorage.removeItem(k);
-          for (const k of expiredKeys) localStorage.removeItem(k);
+          // Wipes the per-fingerprint rejection keys and both v1 expiry keys (no sessions remain).
+          clearPersistedMiSessionExpired();
         }
       } catch {
       }

@@ -962,7 +962,7 @@ export async function applyCommand(
         : undefined,
     });
   }
-  host.localControlRevision += 1;
+  host.sourceEpoch.advance("localWrite");
   if (coverWrite) {
     const device = host.devices.find((item) => item.id === coverWrite.deviceId);
     if (device) restoreKindInPlace(device, coverWrite.priorDevice);

@@ -7,6 +7,7 @@ import type { Window } from "happy-dom";
 
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudError } from "../src/core/miCloud/session.js";
@@ -738,14 +739,14 @@ describe("A11 RunningBatch mid-flight undo & preemption (#2)", () => {
       "一键全关",
     );
     await setImmediate();
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     assert.equal(app.lastUndoAction, null);
     holdSourceSwitch.resolve(true);
     await staleBatchPromise;
     assert.equal(
       app.lastUndoAction,
       null,
-      "stale batch settling after invalidateSourceControl must never republish its undo action",
+      "stale batch settling after switchSource must never republish its undo action",
     );
 
     const lightOk = makeLight("l_ok", "客厅灯", { isOn: true });

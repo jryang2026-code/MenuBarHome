@@ -10,14 +10,35 @@ struct SafetyMonitorTests {
         UserDefaults(suiteName: "test.safetymonitor.\(UUID().uuidString)")!
     }
 
-    private func sensor(battery: Int, online: Bool = true) -> SmartDevice {
-        SmartDevice(id: "door", name: "门磁", roomId: "r", roomName: "玄关", model: "lumi.sensor", isOnline: online,
-                    kind: .sensor(SensorSpec(battery: battery)))
+    private func sensor(
+        battery: Int,
+        online: Bool = true,
+        stale: Bool = false,
+        observations: [SensorObservation] = []
+    ) -> SmartDevice {
+        SmartDevice(
+            id: "door",
+            name: "门磁",
+            roomId: "r",
+            roomName: "玄关",
+            model: "lumi.sensor",
+            isOnline: online,
+            kind: .sensor(SensorSpec(battery: battery, observations: observations)),
+            telemetryStale: stale
+        )
     }
 
-    private func plug(on: Bool, watts: Double) -> SmartDevice {
-        SmartDevice(id: "heater", name: "暖风机", roomId: "r", roomName: "书房", model: "cuco.plug", isOnline: true,
-                    kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: on, powerWatts: watts)))
+    private func plug(on: Bool, watts: Double, online: Bool = true, stale: Bool = false) -> SmartDevice {
+        SmartDevice(
+            id: "heater",
+            name: "暖风机",
+            roomId: "r",
+            roomName: "书房",
+            model: "cuco.plug",
+            isOnline: online,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: on, powerWatts: watts)),
+            telemetryStale: stale
+        )
     }
 
     @Test("Low battery alerts once per 24 h, and the cooldown survives a relaunch")
@@ -64,5 +85,68 @@ struct SafetyMonitorTests {
         let t0 = Date(timeIntervalSince1970: 4_000_000)
         _ = monitor.evaluate(devices: [plug(on: true, watts: 12)], favorites: [], sensorPolicy: Self.policy, now: t0)
         #expect(monitor.evaluate(devices: [plug(on: true, watts: 12)], favorites: [], sensorPolicy: Self.policy, now: t0 + 5 * 3600).isEmpty)
+    }
+
+    @Test("Stale telemetry suppresses false offline, battery, long-run, and sensor alerts while preserving tracking state")
+    func staleTelemetrySuppressesAlertsAndPreservesTracking() {
+        var monitor = SafetyMonitor(defaults: defaults())
+        let leakPolicy = SensorAlertPolicy(enabled: [.leak: true], onlyWhenAway: false, includesAway: false)
+        let t0 = Date(timeIntervalSince1970: 5_000_000)
+        let clearObs = [SensorObservation(sourceId: "door#leak", kind: .leak, alarming: false)]
+        let alarmObs = [SensorObservation(sourceId: "door#leak", kind: .leak, alarming: true)]
+
+        #expect(monitor.evaluate(
+            devices: [
+                sensor(battery: 80, online: true, stale: false, observations: clearObs),
+                plug(on: true, watts: 900, online: true, stale: false),
+            ],
+            favorites: ["door"],
+            sensorPolicy: leakPolicy,
+            now: t0
+        ).isEmpty)
+
+        #expect(monitor.evaluate(
+            devices: [
+                sensor(battery: 5, online: false, stale: true, observations: alarmObs),
+                plug(on: false, watts: 0, online: false, stale: true),
+            ],
+            favorites: ["door"],
+            sensorPolicy: leakPolicy,
+            now: t0 + 20 * 60
+        ).isEmpty)
+
+        let alertsAt46m = monitor.evaluate(
+            devices: [
+                sensor(battery: 80, online: false, stale: false, observations: alarmObs),
+                plug(on: true, watts: 900, online: true, stale: false),
+            ],
+            favorites: ["door"],
+            sensorPolicy: leakPolicy,
+            now: t0 + 46 * 60
+        )
+        #expect(Set(alertsAt46m.map(\.deviceId)) == ["door", "heater"])
+        #expect(alertsAt46m.contains { $0.id.hasPrefix("offline:door:") })
+        #expect(alertsAt46m.contains { $0.id == "longrun:heater" })
+        #expect(alertsAt46m.contains { $0.id.hasPrefix("sensor:leak:door#leak:") })
+
+        #expect(monitor.evaluate(
+            devices: [
+                sensor(battery: 80, online: false, stale: true, observations: clearObs),
+                plug(on: false, watts: 0, online: false, stale: true),
+            ],
+            favorites: ["door"],
+            sensorPolicy: leakPolicy,
+            now: t0 + 50 * 60
+        ).isEmpty)
+
+        #expect(monitor.evaluate(
+            devices: [
+                sensor(battery: 80, online: true, stale: false, observations: alarmObs),
+                plug(on: true, watts: 900, online: true, stale: false),
+            ],
+            favorites: ["door"],
+            sensorPolicy: leakPolicy,
+            now: t0 + 100 * 60
+        ).isEmpty)
     }
 }

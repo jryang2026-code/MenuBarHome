@@ -45,7 +45,11 @@ final class AutomationEngine {
     private let ruleStore: AutomationRuleStore
     private let deduper: AutomationTriggerDeduper
     private let injectedContextProvider: (any MacContextProviding)?
-    private let calendar: Calendar
+    /// Every time-of-day decision in this engine (trigger windows, calendar lead times) reads this
+    /// calendar. It is `Calendar.autoupdatingCurrent` in production, so a time-zone or DST change
+    /// made while the app runs moves the verdicts with it instead of freezing the launch zone;
+    /// tests inject a fixed calendar. Internal rather than private so a test can assert the default.
+    let calendar: Calendar
     private let environment: AutomationEnvironmentProbe
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "Automation")
     private weak var store: HomeStore?
@@ -87,7 +91,7 @@ final class AutomationEngine {
     init(
         defaults: UserDefaults = .standard,
         contextProvider: (any MacContextProviding)? = nil,
-        calendar: Calendar = .current,
+        calendar: Calendar = .autoupdatingCurrent,
         environment: AutomationEnvironmentProbe = .live
     ) {
         self.ruleStore = AutomationRuleStore(defaults: defaults)

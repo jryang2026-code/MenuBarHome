@@ -3,7 +3,7 @@ import os
 
 // MARK: - Cloud Records
 
-public struct MiDeviceRecord: Equatable, Sendable {
+public struct MiDeviceRecord: Codable, Equatable, Sendable {
     public var did: String
     public var name: String
     public var model: String
@@ -38,7 +38,7 @@ public struct MiDeviceRecord: Equatable, Sendable {
     public var miotDid: String { splitParentDid ?? did }
 }
 
-public struct MiRoom: Equatable, Sendable {
+public struct MiRoom: Codable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var dids: [String]

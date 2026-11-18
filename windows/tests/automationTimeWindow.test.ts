@@ -343,10 +343,11 @@ describe("automation time window", () => {
     const engine = new AutomationEngine(new MemoryKV());
     const rule = loadStored(storedRule({ id: "wifi-join", trigger: "wifiNetworkJoined", timeWindow: DAY }));
     const { host, commands } = trackingHost([makeLight()]);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 20));
+    // 显式可信读数：首轮建立基线（默认快照不可信，不会触发）。
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 20));
     assert.equal(commands.length, 0);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(8, 59, 40));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(9, 0, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(8, 59, 40));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(9, 0, 0));
     assert.equal(commands.length, 1);
   });
 
@@ -354,11 +355,11 @@ describe("automation time window", () => {
     const engine = new AutomationEngine(new MemoryKV());
     const rule = loadStored(storedRule({ id: "wifi-leave", trigger: "wifiNetworkLeft", timeWindow: DAY }));
     const { host, commands } = trackingHost([makeLight()]);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 0));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(8, 59, 20));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(8, 59, 20));
     assert.equal(commands.length, 0);
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home" }, [rule], at(8, 59, 40));
-    await dispatch(engine, host, { kind: "wifiChanged", ssid: null }, [rule], at(9, 0, 0));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: "Home", isAuthorized: true }, [rule], at(8, 59, 40));
+    await dispatch(engine, host, { kind: "wifiChanged", ssid: null, isAuthorized: true }, [rule], at(9, 0, 0));
     assert.equal(commands.length, 1);
   });
 
@@ -594,12 +595,6 @@ describe("automation time window settings", () => {
     sel.dispatchEvent(new window.Event("change", { bubbles: true }));
   }
 
-  function typeInput(selector: string, value: string): void {
-    const input = element<HTMLInputElement>(selector);
-    input.value = value;
-    input.dispatchEvent(new window.Event("input", { bubbles: true }));
-  }
-
   function toggleCheck(selector: string, checked: boolean): void {
     const input = element<HTMLInputElement>(selector);
     input.checked = checked;
@@ -694,21 +689,22 @@ describe("automation time window settings", () => {
     assert.match(element("#settings-auto-time-hint").textContent ?? "", /Start and end must differ/);
   });
 
-  it("keeps Save disabled when an equal-hour window is set and an SSID is typed", async () => {
+  it("keeps Save gated only by the time window now that the Wi-Fi condition editor is enabled", async () => {
     const app = createCloudApp();
     app.openSettingsSheet("system");
     toggleCheck("#settings-auto-time-window", true);
     selectValue("#settings-auto-time-start", "8");
     selectValue("#settings-auto-time-end", "8");
-    selectValue("#settings-auto-wifi-kind", "inAny");
+    assert.equal(element<HTMLSelectElement>("#settings-auto-wifi-kind").disabled, false);
+    assert.equal(document.querySelector("#settings-auto-wifi-unsupported-hint"), null);
+    assert.equal(document.querySelector("#settings-auto-wifi-ssids"), null);
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
-
-    typeInput("#settings-auto-wifi-ssids", "Home_5G");
-    assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, true);
-    await click("#btn-add-auto-rule");
-    assert.equal(new AutomationRuleStore().load().length, 0);
 
     selectValue("#settings-auto-time-end", "18");
     assert.equal(element<HTMLButtonElement>("#btn-add-auto-rule").disabled, false);
+    await click("#btn-add-auto-rule");
+    const saved = new AutomationRuleStore().load()[0];
+    assert.ok(saved);
+    assert.deepEqual(saved.conditions.wifi, { kind: "any" });
   });
 });

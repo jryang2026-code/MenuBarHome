@@ -26,7 +26,7 @@ import {
   miAccountSessionCredentialName, sanitizeSettingsForStorage, type SecureInvoke,
 } from "../src/core/secureStore.js";
 import {
-  MI_ACCOUNTS_EXPIRED_STORAGE_KEY, MI_ACCOUNTS_INDEX_STORAGE_KEY, MiAccountScope, MiAccountsStore,
+  MI_ACCOUNTS_INDEX_STORAGE_KEY, MiAccountScope, MiAccountsStore,
   executeMultiAccountMiotCommand, formatAccountTokenNotice, getAccountTokenStatus,
   hasSecondaryMiAccountsInIndex, makeMiAccount, markAccountSessionRejected, miAccountId, refreshMiAccountsConcurrently,
 } from "../src/core/miAccountsStore.js";
@@ -35,6 +35,10 @@ import {
   DualSourceCoordinator, DualSourceHomeProvider, PINNED_DEVICE_SOURCES_STORAGE_KEY, ROOM_IDENTITY_REGISTRY_STORAGE_KEY, RoomIdentityRegistry, commandTargetBackend,
   currentSourceMenuTitle, extractHADeviceIdentities, extractMiDeviceIdentities, makeDeviceSourceIdentity, offlineFallbackBadgeText,
 } from "../src/core/dualSourceProvider.js";
+import {
+  miSessionFingerprint,
+  miSessionRejectedStorageKey,
+} from "../src/core/pollingPolicy.js";
 import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
 import { homeProviderFor } from "../src/ui/commandDispatch.js";
 import {
@@ -174,6 +178,12 @@ function makeInMemoryInvoke(options: {
       deletes.push(name);
       data.delete(name);
       return null;
+    }
+    if (cmd === "secure_store_list_mi_account_slots") {
+      const slots = [...data.keys()]
+        .filter((key) => key.startsWith("mi_session_"))
+        .map((key) => key.slice("mi_session_".length));
+      return slots as unknown as T;
     }
     return null;
   };
@@ -322,7 +332,9 @@ describe("B6: secureStore multi-account slots & 2-phase credential migration gua
     const sgSlotKey = miAccountSessionCredentialName(r2.account.slotId);
     const famSlotKey = miAccountSessionCredentialName(r3.account.slotId);
     assert.equal(hasSecondaryMiAccountsInIndex(), true);
-    assert.ok(localStorage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY) !== null);
+    assert.ok(
+      localStorage.getItem(miSessionRejectedStorageKey(miSessionFingerprint(SESSION_SG_SECONDARY))) !== null,
+    );
 
     failOnDelete.add(sgSlotKey);
     await assert.rejects(() => store.clearAll(), /simulated delete failure/);
@@ -338,7 +350,10 @@ describe("B6: secureStore multi-account slots & 2-phase credential migration gua
     assert.equal(data.has(sgSlotKey), false);
     assert.equal(data.has(famSlotKey), false);
     assert.equal(localStorage.getItem(MI_ACCOUNTS_INDEX_STORAGE_KEY), null);
-    assert.equal(localStorage.getItem(MI_ACCOUNTS_EXPIRED_STORAGE_KEY), null);
+    assert.equal(
+      localStorage.getItem(miSessionRejectedStorageKey(miSessionFingerprint(SESSION_SG_SECONDARY))),
+      null,
+    );
     assert.equal(hasSecondaryMiAccountsInIndex(), false);
     assert.equal(store.getAccounts().length, 0, "stale in-memory cachedAccounts invalidated on external deleteMiSession");
     assert.deepEqual(await store.load(), []);

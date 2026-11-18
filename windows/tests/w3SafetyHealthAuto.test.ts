@@ -48,6 +48,7 @@ import {
   tickSafetyHealthAndAutomation,
 } from "../src/ui/activityStackView.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { startTimerLoop, type LifecycleScheduler } from "../src/ui/appLifecycle.js";
 
@@ -685,7 +686,7 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
     await click("[data-activity-toggle-expand]");
     assert.equal(center.isExpanded, true);
     app.settings.selectedHomeId = "home_parents_2";
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assert.equal(center.recentSafetyAlerts.length, 0);
     assert.equal(center.dismissedActivityIds.size, 0);
@@ -1071,7 +1072,7 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       identity: "http://homeassistant.local:8123|tok-cold",
       home: { rooms: [], devices: [structuredClone(offlinePlug)], scenes: [], environmentReadings: [] },
     };
-    app.sourceRevision += 1;
+    app.sourceEpoch.advance("source");
     app.devices = [structuredClone(offlinePlug)];
     const center = getHostActivityCenter(app, { storage: kv });
     const t0 = new Date(2026, 10, 8, 12, 0, 0).getTime();
@@ -1281,7 +1282,7 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     app.applyCommand = async (cmd) => {
       undoSent.push(cmd);
       app.settings.haBaseURL = "http://other-ha.local:8123";
-      app.invalidateSourceControl();
+      switchSource(app, "test-source-switch");
       return true;
     };
     const { executeAutomationCardUndo } = await import("../src/ui/activityStackView.js");
@@ -1499,7 +1500,7 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
       },
     };
     dbApp.devices = [doorbellCam];
-    dbApp.sourceRevision = 5;
+    dbApp.sourceEpoch.advance("source");
     await ingestHostHASnapshotForDoorbell(
       dbApp,
       { states: [{ entity_id: "event.front_door_doorbell", state: "2026-11-14T10:00:00Z", attributes: { device_id: "dev-db-1" } }], entities: [{ entity_id: "camera.front_door", device_id: "dev-db-1" }, { entity_id: "event.front_door_doorbell", device_id: "dev-db-1" }] },
@@ -1509,7 +1510,7 @@ describe("B1 + B5 PC Context Automation Engine, AwayArbitrator, 5m Undo & HA Doo
     window.__TAURI_INTERNALS__ = {
       invoke: (async (cmd: string) => {
         if (cmd === "is_workstation_locked") {
-          dbApp.sourceRevision = 6;
+          dbApp.sourceEpoch.advance("source");
           return false;
         }
         return undefined;
