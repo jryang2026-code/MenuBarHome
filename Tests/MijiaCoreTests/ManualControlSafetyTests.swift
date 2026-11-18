@@ -421,6 +421,129 @@ struct ManualControlSafetyTests {
         #expect(await mock.executedCommands.count == commandsAfterOff.count + 1)
     }
 
+    @Test("Locking the Mac while undoTurnAllOff waits on an in-flight batch rolls back optimistic restore and keeps undo retryable")
+    @MainActor
+    func screenLockDuringInFlightUndoBatchRollsBackAndKeepsUndoRetryable() async throws {
+        let onLight = SmartDevice(
+            id: "dev_light_lock",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let (store, mock) = try await makeStore([onLight])
+        store.toastAutoDismissInterval = nil
+        await mock.holdNextExecute()
+
+        let batch = store.turnAllOff()
+        store.pauseUndoBannerCountdown()
+        await waitUntil { await mock.executeStarted == 1 }
+
+        let undo = try #require(store.undoTurnAllOff())
+        #expect(store.devices.first?.isActiveOn == true, "Optimistically restored while waiting on the in-flight batch")
+
+        store.setScreenLocked(true)
+        await mock.releaseExecute()
+        await batch?.value
+        await undo.value
+
+        #expect(
+            await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)],
+            "No restore command may be sent after the Mac locks"
+        )
+        #expect(store.devices.first?.isActiveOn == false, "Optimistic restore must roll back when send is refused by screen lock")
+        #expect(store.optimisticLockUntil.isEmpty, "Failed undo must release its optimistic lock")
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        let rearmedBanner = try #require(store.undoBanner, "Refused undo must re-arm the banner for retry after unlock")
+        #expect(rearmedBanner.restoreCommands == [.setLightPower(entityId: "light.study", isOn: true)])
+
+        store.setScreenLocked(false)
+        let retry = try #require(store.undoTurnAllOff())
+        await retry.value
+        #expect(store.devices.first?.isActiveOn == true)
+        #expect(store.undoBanner == nil)
+        #expect(await mock.executedCommands == [
+            .setLightPower(entityId: "light.study", isOn: false),
+            .setLightPower(entityId: "light.study", isOn: true),
+        ])
+    }
+
+    @Test("Locking the Mac mid-voice-undo rolls back remaining devices, preserves undo entries, and retries after unlock")
+    @MainActor
+    func screenLockDuringVoiceUndoRollsBackAndKeepsVoiceUndoRetryable() async throws {
+        let studyLight = SmartDevice(
+            id: "dev_light_study",
+            name: "书房灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study", isOn: true))
+        )
+        let livingLight = SmartDevice(
+            id: "dev_light_living",
+            name: "客厅灯",
+            roomId: "living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let (store, mock) = try await makeStore([studyLight, livingLight])
+        store.toastAutoDismissInterval = nil
+        _ = await store.executeIntentPlan(
+            IntentPlan(
+                intents: [
+                    DeviceIntent(targetId: studyLight.id, operation: .power(false)),
+                    DeviceIntent(targetId: livingLight.id, operation: .power(false)),
+                ],
+                reply: "已关闭 2 盏灯",
+                source: .local
+            ),
+            recordedUtterance: "关灯",
+            origin: .userInitiated
+        )
+        store.pauseUndoBannerCountdown()
+        let startedBeforeUndo = await mock.executeStarted
+        await mock.holdNextExecute()
+
+        let voiceUndoTask = Task { @MainActor in
+            await store.runAssistantCommand("撤销")
+        }
+        await waitUntil { await mock.executeStarted > startedBeforeUndo }
+
+        store.setScreenLocked(true)
+        await mock.releaseExecute()
+        _ = await voiceUndoTask.value
+
+        // The first restore command was already in flight before lock; the second must be refused,
+        // rolled back, and kept in lastAssistantUndo (and undoBanner) for retry after unlocking.
+        let executedAfterLockedUndo = await mock.executedCommands
+        #expect(executedAfterLockedUndo.count == 3)
+        let firstRestoredDeviceId = executedAfterLockedUndo.last == .setLightPower(entityId: "light.living", isOn: true)
+            ? livingLight.id
+            : studyLight.id
+        let refusedDeviceId = firstRestoredDeviceId == livingLight.id ? studyLight.id : livingLight.id
+        let refusedEntityId = refusedDeviceId == livingLight.id ? "light.living" : "light.study"
+
+        #expect(store.devices.first(where: { $0.id == firstRestoredDeviceId })?.isActiveOn == true)
+        #expect(store.devices.first(where: { $0.id == refusedDeviceId })?.isActiveOn == false)
+        #expect(store.optimisticLockUntil[refusedDeviceId] == nil)
+        #expect(store.assistantState == .failed(store.screenLockBlockedMessage))
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        #expect(store.lastAssistantUndo?.restore == [.setLightPower(entityId: refusedEntityId, isOn: true)])
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: refusedEntityId, isOn: true)])
+
+        store.setScreenLocked(false)
+        _ = await store.runAssistantCommand("撤销")
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        #expect(store.lastAssistantUndo == nil)
+        #expect(await mock.executedCommands.count == 4)
+    }
+
     @Test("Speaker directive commands require confirmation and return false when cancelled while TTS succeeds directly")
     @MainActor
     func speakerDirectiveConfirmation() async throws {

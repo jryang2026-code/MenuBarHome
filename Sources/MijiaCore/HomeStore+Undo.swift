@@ -761,6 +761,7 @@ extension HomeStore {
         if confirmation.abortUndo {
             return nil
         }
+        let savedAssistantUndo = lastAssistantUndo
         lastAssistantUndo = nil
         undoTimerTask?.cancel()
         self.undoBanner = nil
@@ -870,10 +871,20 @@ extension HomeStore {
                     duration: banner.duration,
                     isAllOff: banner.isAllOff
                 )
+                if let savedAssistantUndo {
+                    lastAssistantUndo = (
+                        reply: savedAssistantUndo.reply,
+                        restore: outcome.failedCommands,
+                        previous: savedAssistantUndo.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                        at: assistantNow(),
+                        habitReceipt: outcome.habitReceipt
+                    )
+                }
             }
-            // The refused Mi commands stay in the banner; the persistent expiry toast already
-            // explains them, so the generic "did not respond" message would only replace it.
-            if !outcome.blockedByMiSession {
+            // The refused Mi commands or screen-locked restores stay in the banner; the expiry or
+            // lock toast already explains them, so the generic "did not respond" message would only
+            // replace it.
+            if !outcome.blockedByMiSession, !outcome.blockedByScreenLock {
                 let sep = L10n.isEnglish ? ", " : "、"
                 let list = outcome.failedNames.joined(separator: sep)
                 showToast(
@@ -998,6 +1009,8 @@ extension HomeStore {
         let habitReceipt: UserHabitMemory.RecordingReceipt?
         /// At least one restore was refused by the expired Mi session; its persistent toast is up.
         let blockedByMiSession: Bool
+        /// At least one restore was refused because the Mac locked before or during the send loop.
+        let blockedByScreenLock: Bool
 
         var succeeded: Bool { failedCommands.isEmpty }
     }
@@ -1012,18 +1025,28 @@ extension HomeStore {
         preUndoFacetsById: [String: [FacetControl]],
         habitReceipt: UserHabitMemory.RecordingReceipt?
     ) async -> UndoRunOutcome? {
-        // The undo entries already refused a locked screen before any state moved. This is the
-        // shared send path, so the check catches a lock that lands mid-undo (the batch wait can
-        // span the lock) without repeating the prompt in the normal path.
-        guard !rejectControlWhileLocked() else { return nil }
         var failedCommands: [DeviceCommand] = []
         var failedDeviceIds: Set<String> = []
         var failedNames: [String] = []
         var blockedByMiSession = false
+        var blockedByScreenLock = false
         for item in applicable {
             guard context == controlContextID else { return nil }
             if failedDeviceIds.contains(item.deviceId) {
                 failedCommands.append(item.command)
+                continue
+            }
+            // The undo entries already refused a locked screen before any state moved. Checking
+            // before each send catches a lock that lands while waiting on an in-flight batch or
+            // mid-restore, and treats remaining restores as retryable failures that roll back
+            // their optimistic rows and preserve the undo entry (#143).
+            if blockedByScreenLock || rejectControlWhileLocked() {
+                blockedByScreenLock = true
+                failedCommands.append(item.command)
+                failedDeviceIds.insert(item.deviceId)
+                if !failedNames.contains(item.deviceName) {
+                    failedNames.append(item.deviceName)
+                }
                 continue
             }
             do {
@@ -1049,7 +1072,8 @@ extension HomeStore {
                 failedDeviceIds: [],
                 failedNames: [],
                 habitReceipt: nil,
-                blockedByMiSession: false
+                blockedByMiSession: false,
+                blockedByScreenLock: false
             )
         }
         rollbackFailedUndoDevices(
@@ -1071,7 +1095,8 @@ extension HomeStore {
             failedDeviceIds: failedDeviceIds,
             failedNames: failedNames,
             habitReceipt: remainingReceipt,
-            blockedByMiSession: blockedByMiSession
+            blockedByMiSession: blockedByMiSession,
+            blockedByScreenLock: blockedByScreenLock
         )
     }
 

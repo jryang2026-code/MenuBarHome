@@ -529,6 +529,7 @@ extension HomeStore {
             setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
             return
         }
+        let savedBanner = undoBanner
         lastAssistantUndo = nil
         undoTimerTask?.cancel()
         undoBanner = nil
@@ -565,6 +566,21 @@ extension HomeStore {
                 at: assistantNow(),
                 habitReceipt: outcome.habitReceipt
             )
+            if let savedBanner {
+                scheduleUndoBanner(
+                    title: savedBanner.title,
+                    restoreCommands: outcome.failedCommands,
+                    previousDevices: savedBanner.previousDevices,
+                    deviceCount: outcome.failedDeviceIds.count,
+                    habitReceipt: outcome.habitReceipt,
+                    duration: savedBanner.duration,
+                    isAllOff: savedBanner.isAllOff
+                )
+            }
+        }
+        if outcome.blockedByScreenLock {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return
         }
         let sep = L10n.isEnglish ? ", " : "、"
         let list = outcome.failedNames.joined(separator: sep)

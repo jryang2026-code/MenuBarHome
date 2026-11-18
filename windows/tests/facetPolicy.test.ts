@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ManualControlPolicy, ModelActionPolicy } from "../src/core/assistant/actionPolicy.js";
-import { doesUndoStepActivateHighRiskDevice } from "../src/ui/activityStackView.js";
+import {
+  doesUndoStepActivateHighRiskDevice,
+  partitionUndoStepsByHighRiskConfirmation,
+} from "../src/ui/activityStackView.js";
+import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { IntentValidator } from "../src/core/assistant/intent.js";
 import { type ManualControlRules } from "../src/core/miCloud/facets.js";
@@ -772,6 +776,146 @@ describe("assistant device category heater rule (#143)", () => {
       ),
       false,
       "heater restored to off stays direct",
+    );
+  });
+
+  it("describes the actual restore direction in both undo confirmation paths when closing a garage door", () => {
+    const garage: SmartDevice = device(
+      {
+        kind: "cover",
+        entityId: "cover.garage",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+      { id: "did_garage", name: "车库门", model: "lumi.curtain.v1" },
+    );
+    const closeSteps = [
+      {
+        deviceId: garage.id,
+        commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 0 } as const],
+      },
+    ];
+
+    const checkLocale = (
+      interfaceLanguage: "zh-Hans" | "zh-Hant" | "en",
+      expectedDialog: { title: string; message: string; confirmTitle: string },
+      expectedArmed: string,
+    ) => {
+      const capturedPrompts: Array<{ title: string; message: string; confirmTitle: string; cancelTitle: string }> = [];
+      const hostWithHandler = {
+        devices: [garage],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage },
+        deviceFacets: {},
+        manualControlConfirmationHandler: (prompt: {
+          title: string;
+          message: string;
+          confirmTitle: string;
+          cancelTitle: string;
+        }) => {
+          capturedPrompts.push(prompt);
+          return true;
+        },
+      } as unknown as MenuMijiaWindowsApp;
+
+      partitionUndoStepsByHighRiskConfirmation(hostWithHandler, closeSteps, {
+        isArmed: false,
+        arm: () => {},
+        disarm: () => {},
+      });
+      assert.equal(capturedPrompts.length, 1);
+      assert.equal(capturedPrompts[0]?.title, expectedDialog.title);
+      assert.equal(capturedPrompts[0]?.message, expectedDialog.message);
+      assert.equal(capturedPrompts[0]?.confirmTitle, expectedDialog.confirmTitle);
+
+      const hostArmed = {
+        devices: [garage],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage },
+        deviceFacets: {},
+        manualControlConfirmationHandler: null,
+      } as unknown as MenuMijiaWindowsApp;
+      const armedResult = partitionUndoStepsByHighRiskConfirmation(hostArmed, closeSteps, {
+        isArmed: false,
+        arm: () => {},
+        disarm: () => {},
+      });
+      assert.equal(armedResult.armedPromptText, expectedArmed);
+    };
+
+    checkLocale(
+      "zh-Hans",
+      {
+        title: "确定要恢复关闭「车库门」吗？",
+        message: "撤销操作将关闭高风险设备「车库门」，请确认现场安全。",
+        confirmTitle: "恢复关闭",
+      },
+      "撤销将关闭高风险设备「车库门」，再点一次「撤销」确认执行",
+    );
+    checkLocale(
+      "zh-Hant",
+      {
+        title: "確定要恢復關閉「车库门」嗎？",
+        message: "撤銷操作將關閉高風險設備「车库门」，請確認現場安全。",
+        confirmTitle: "恢復關閉",
+      },
+      "撤銷將關閉高風險設備「车库门」，再點一次「撤銷」確認執行",
+    );
+    checkLocale(
+      "en",
+      {
+        title: 'Restore "车库门" to closed?',
+        message: 'Undoing will close high-risk device "车库门". Please confirm it is safe.',
+        confirmTitle: "Restore Closed",
+      },
+      'Undo will close high-risk device "车库门"; click Undo again to confirm',
+    );
+
+    // Select-option "Close" and MIoT property 0 also use the closing prompt, while opening uses the opening prompt,
+    // and a mixed batch (garage closing + heater turning on) uses direction-neutral state-restore copy.
+    for (const command of [
+      { kind: "setSelectOption", entityId: "cover.garage", option: "Close" } as const,
+      { kind: "setMiotProperty", entityId: "cover.garage", piid: 2, value: 0 } as const,
+    ]) {
+      const armedClose = partitionUndoStepsByHighRiskConfirmation(
+        {
+          devices: [garage],
+          layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+          settings: { interfaceLanguage: "zh-Hans" },
+          deviceFacets: {},
+          manualControlConfirmationHandler: null,
+        } as unknown as MenuMijiaWindowsApp,
+        [{ deviceId: garage.id, commands: [command] }],
+        { isArmed: false, arm: () => {}, disarm: () => {} },
+      );
+      assert.equal(armedClose.armedPromptText, "撤销将关闭高风险设备「车库门」，再点一次「撤销」确认执行");
+    }
+
+    const heaterDev = heater();
+    const mixedArmed = partitionUndoStepsByHighRiskConfirmation(
+      {
+        devices: [garage, heaterDev],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage: "zh-Hans" },
+        deviceFacets: {},
+        manualControlConfirmationHandler: null,
+      } as unknown as MenuMijiaWindowsApp,
+      [
+        { deviceId: garage.id, commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 0 }] },
+        { deviceId: heaterDev.id, commands: [{ kind: "setClimatePower", entityId: "miot:heater:2", isOn: true, resumeMode: "heat" }] },
+      ],
+      { isArmed: false, arm: () => {}, disarm: () => {} },
+    );
+    assert.equal(
+      mixedArmed.armedPromptText,
+      "撤销将恢复高风险设备「车库门、电暖器」之前的状态，再点一次「撤销」确认执行",
     );
   });
 

@@ -798,6 +798,133 @@ function facetRestoreNeedsConfirmation(
   return ManualControlPolicy.requiresConfirmation({ targetId: dev.id, operation: { kind: "power", isOn: true } }, devices);
 }
 
+type HighRiskUndoRestoreDirection = "open" | "close" | "restore";
+
+function classifyHighRiskUndoStepDirection(
+  step: { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
+  devices: readonly SmartDevice[],
+  kindSnapshots?: ReadonlyMap<string, SmartDevice["kind"]>,
+  facetsById?: Readonly<Record<string, readonly FacetControl[]>>,
+): HighRiskUndoRestoreDirection {
+  const dev = devices.find((d) => d.id === step.deviceId);
+  if (!dev) return "restore";
+  const facets = facetsById?.[dev.id] ?? [];
+  const directions = new Set<HighRiskUndoRestoreDirection>();
+  const coverRestoreNeedsConfirmation = (restoredOpen: boolean): boolean =>
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: dev.id, operation: { kind: "power", isOn: restoredOpen } },
+      devices,
+    );
+
+  for (const cmd of step.commands) {
+    if (facetRestoreNeedsConfirmation(dev, cmd, facets, devices)) {
+      if (cmd.kind === "setMiotProperty") {
+        if (dev.kind.kind === "cover" && typeof cmd.value === "number") {
+          directions.add(cmd.value > 0 ? "open" : "close");
+          continue;
+        }
+        if (dev.kind.kind === "cover" && typeof cmd.value === "string") {
+          const normalized = cmd.value.trim().toLowerCase();
+          if (cmd.value === dev.kind.closeDescription || normalized === "close") {
+            directions.add("close");
+            continue;
+          }
+          if (cmd.value === dev.kind.openDescription || normalized === "open") {
+            directions.add("open");
+            continue;
+          }
+        }
+        const control = facets.find(
+          (item) =>
+            item.target?.kind === "property" &&
+            item.target.entityId === cmd.entityId &&
+            item.target.piid === cmd.piid,
+        );
+        if (!control) {
+          directions.add("open");
+          continue;
+        }
+        if (
+          cmd.value === false ||
+          cmd.value === 0 ||
+          (typeof cmd.value === "string" && cmd.value.trim().toLowerCase() === "off")
+        ) {
+          directions.add("close");
+        } else if (cmd.value === true || cmd.value === 1) {
+          directions.add("open");
+        } else {
+          directions.add("restore");
+        }
+      }
+      continue;
+    }
+    switch (cmd.kind) {
+      case "setSwitch":
+        if (dev.kind.kind === "plug" && dev.kind.childLockEntityId === cmd.entityId) break;
+        if (dev.kind.kind === "appliance" && dev.kind.light?.entityId === cmd.entityId) break;
+        if (cmd.isOn) directions.add("open");
+        break;
+      case "setClimatePower":
+        if (cmd.isOn) directions.add("open");
+        break;
+      case "setClimateMode":
+        if (cmd.hvacMode.trim().toLowerCase() !== "off") directions.add("open");
+        break;
+      case "setSelectOption":
+        if (dev.kind.kind === "camera" || dev.kind.kind === "fridge") break;
+        if (dev.kind.kind === "cover") {
+          const restoredOpen = cmd.option === dev.kind.openDescription;
+          if (coverRestoreNeedsConfirmation(restoredOpen)) {
+            if (cmd.option === dev.kind.closeDescription) {
+              directions.add("close");
+            } else if (restoredOpen) {
+              directions.add("open");
+            } else {
+              directions.add("restore");
+            }
+          }
+          break;
+        }
+        if (cmd.option.trim().toLowerCase() !== "off") directions.add("open");
+        break;
+      case "setNumberValue":
+        if (dev.kind.kind === "cover" && coverRestoreNeedsConfirmation(cmd.value > 0)) {
+          directions.add(cmd.value > 0 ? "open" : "close");
+        }
+        break;
+      case "vacuumAction":
+        if (cmd.action === "start") directions.add("open");
+        break;
+      case "pressButton":
+        if (dev.kind.kind === "appliance" ? dev.kind.startAction?.entityId === cmd.entityId : true) {
+          directions.add("open");
+        }
+        break;
+      case "setMiotProperty":
+        if (dev.kind.kind === "cover" && typeof cmd.value === "number" && coverRestoreNeedsConfirmation(cmd.value > 0)) {
+          directions.add(cmd.value > 0 ? "open" : "close");
+        }
+        break;
+    }
+  }
+
+  const snapKind = kindSnapshots?.get(step.deviceId);
+  if (directions.size === 0 && snapKind && !isDeviceActiveOn(dev) && isDeviceActiveOn({ ...dev, kind: snapKind })) {
+    directions.add("open");
+  }
+  return mergeHighRiskUndoDirections(directions);
+}
+
+function mergeHighRiskUndoDirections(
+  directions: Iterable<HighRiskUndoRestoreDirection>,
+): HighRiskUndoRestoreDirection {
+  const unique = new Set(directions);
+  if (unique.size === 1) {
+    return [...unique][0]!;
+  }
+  return "restore";
+}
+
 export function partitionUndoStepsByHighRiskConfirmation<
   T extends { readonly deviceId: string; readonly commands: readonly DeviceCommand[] },
 >(
@@ -816,6 +943,12 @@ export function partitionUndoStepsByHighRiskConfirmation<
     options.disarm();
     return { approvedSteps: [...steps], skippedHighRiskSteps: [], abortedAllHighRisk: false };
   }
+  const directionForDevice = (deviceId: string): HighRiskUndoRestoreDirection =>
+    mergeHighRiskUndoDirections(
+      steps
+        .filter((s) => s.deviceId === deviceId && highRiskSet.has(s))
+        .map((s) => classifyHighRiskUndoStepDirection(s, aliased, options.kindSnapshots, host.deviceFacets)),
+    );
   const handler = host.manualControlConfirmationHandler;
   if (typeof handler === "function") {
     options.disarm();
@@ -831,12 +964,29 @@ export function partitionUndoStepsByHighRiskConfirmation<
       let allowed = decisions.get(step.deviceId);
       if (allowed === undefined) {
         const name = aliased.find((d) => d.id === step.deviceId)?.name ?? step.deviceId;
-        allowed = handler({
-          title: tr3("确定要恢复开启「{name}」吗？", "確定要恢復開啟「{name}」嗎？", 'Restore "{name}" to ON?', { name }, pref),
-          message: tr3("撤销操作将重新开启高风险设备「{name}」，请确认现场安全。", "撤銷操作將重新開啟高風險設備「{name}」，請確認現場安全。", 'Undoing will turn high-risk device "{name}" back on. Please confirm it is safe.', { name }, pref),
-          confirmTitle: tr3("恢复开启", "恢復開啟", "Restore ON", undefined, pref),
-          cancelTitle: tr3("跳过", "跳過", "Skip", undefined, pref),
-        });
+        const direction = directionForDevice(step.deviceId);
+        const prompt =
+          direction === "close"
+            ? {
+                title: tr3("确定要恢复关闭「{name}」吗？", "確定要恢復關閉「{name}」嗎？", 'Restore "{name}" to closed?', { name }, pref),
+                message: tr3("撤销操作将关闭高风险设备「{name}」，请确认现场安全。", "撤銷操作將關閉高風險設備「{name}」，請確認現場安全。", 'Undoing will close high-risk device "{name}". Please confirm it is safe.', { name }, pref),
+                confirmTitle: tr3("恢复关闭", "恢復關閉", "Restore Closed", undefined, pref),
+                cancelTitle: tr3("跳过", "跳過", "Skip", undefined, pref),
+              }
+            : direction === "open"
+              ? {
+                  title: tr3("确定要恢复开启「{name}」吗？", "確定要恢復開啟「{name}」嗎？", 'Restore "{name}" to ON?', { name }, pref),
+                  message: tr3("撤销操作将重新开启高风险设备「{name}」，请确认现场安全。", "撤銷操作將重新開啟高風險設備「{name}」，請確認現場安全。", 'Undoing will turn high-risk device "{name}" back on. Please confirm it is safe.', { name }, pref),
+                  confirmTitle: tr3("恢复开启", "恢復開啟", "Restore ON", undefined, pref),
+                  cancelTitle: tr3("跳过", "跳過", "Skip", undefined, pref),
+                }
+              : {
+                  title: tr3("确定要恢复「{name}」之前的状态吗？", "確定要恢復「{name}」之前的狀態嗎？", 'Restore "{name}" to its previous state?', { name }, pref),
+                  message: tr3("撤销操作将恢复高风险设备「{name}」之前的状态，请确认现场安全。", "撤銷操作將恢復高風險設備「{name}」之前的狀態，請確認現場安全。", 'Undoing will restore high-risk device "{name}" to its previous state. Please confirm it is safe.', { name }, pref),
+                  confirmTitle: tr3("确认恢复", "確認恢復", "Confirm Restore", undefined, pref),
+                  cancelTitle: tr3("跳过", "跳過", "Skip", undefined, pref),
+                };
+        allowed = handler(prompt);
         decisions.set(step.deviceId, allowed);
         if (!allowed) declinedNames.push(name);
       }
@@ -853,13 +1003,21 @@ export function partitionUndoStepsByHighRiskConfirmation<
   options.arm();
   const seenIds = new Set<string>();
   const highRiskNames: string[] = [];
+  const highRiskDirections: HighRiskUndoRestoreDirection[] = [];
   for (const step of steps) {
     if (!highRiskSet.has(step) || seenIds.has(step.deviceId)) continue;
     seenIds.add(step.deviceId);
     highRiskNames.push(aliased.find((d) => d.id === step.deviceId)?.name ?? step.deviceId);
+    highRiskDirections.push(directionForDevice(step.deviceId));
   }
   const names = highRiskNames.join(pref === "en" ? ", " : "、");
-  const armedPromptText = tr3("撤销将重新开启高风险设备「{names}」，再点一次「撤销」确认执行", "撤銷將重新開啟高風險設備「{names}」，再點一次「撤銷」確認執行", 'Undo will turn high-risk device "{names}" back on; click Undo again to confirm', { names }, pref);
+  const batchDirection = mergeHighRiskUndoDirections(highRiskDirections);
+  const armedPromptText =
+    batchDirection === "close"
+      ? tr3("撤销将关闭高风险设备「{names}」，再点一次「撤销」确认执行", "撤銷將關閉高風險設備「{names}」，再點一次「撤銷」確認執行", 'Undo will close high-risk device "{names}"; click Undo again to confirm', { names }, pref)
+      : batchDirection === "open"
+        ? tr3("撤销将重新开启高风险设备「{names}」，再点一次「撤销」确认执行", "撤銷將重新開啟高風險設備「{names}」，再點一次「撤銷」確認執行", 'Undo will turn high-risk device "{names}" back on; click Undo again to confirm', { names }, pref)
+        : tr3("撤销将恢复高风险设备「{names}」之前的状态，再点一次「撤销」确认执行", "撤銷將恢復高風險設備「{names}」之前的狀態，再點一次「撤銷」確認執行", 'Undo will restore high-risk device "{names}" to its previous state; click Undo again to confirm', { names }, pref);
   const approvedSteps = steps.filter((s) => !highRiskSet.has(s));
   const skippedHighRiskSteps = steps.filter((s) => highRiskSet.has(s));
   return { approvedSteps, skippedHighRiskSteps, abortedAllHighRisk: approvedSteps.length === 0, armedPromptText };
