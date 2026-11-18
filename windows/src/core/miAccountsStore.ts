@@ -1174,21 +1174,6 @@ export async function discoverMiAccountDevicesAndRooms(
   return { devices: discovered.devices, rooms: discovered.rooms };
 }
 
-export async function withSessionExpiredRetry<T>(
-  fn: () => Promise<T>,
-  beforeRetry?: () => void,
-): Promise<T> {
-  try {
-    return await fn();
-  } catch (error) {
-    if (error instanceof MiCloudError && error.kind === "sessionExpired") {
-      beforeRetry?.();
-      return await fn();
-    }
-    throw error;
-  }
-}
-
 export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOptions,
 ): Promise<{ readonly merged: MergedMiAccountsSnapshot;
   readonly children: Record<string, AccountChildSnapshot>;
@@ -1260,7 +1245,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
     }
 
     try { const client = clientFactory(account.session, transport);
-      const discovered = await withSessionExpiredRetry(() => discoverMiAccountDevicesAndRooms(client));
+      const discovered = await discoverMiAccountDevicesAndRooms(client);
       const rawSelection = MiAccountScope.scopedSelectionForAccount(effectiveSelectedHomeId,
         account.id,
         allAccountIds,
@@ -1282,7 +1267,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
 
       const propKeys = collectAccountMiotPropKeys(filtered.devices, specs);
       const values = propKeys.length > 0
-          ? await withSessionExpiredRetry(() => client.getProps(propKeys))
+          ? await client.getProps(propKeys)
           : new Map<string, unknown>();
 
       const rawHome = MiotSynthesizer.synthesize(filtered.devices,
@@ -1430,15 +1415,20 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
 
   for (const ownerId of owners) { const accountIdx = options.accounts.findIndex((acc) => acc.id === ownerId);
     if (accountIdx < 0) continue;
+    const account = options.accounts[accountIdx]!;
+    // A session the server already refused has no client-side refresh left: fail over to another
+    // owning account instead of spending a request that can only 401 again.
+    if (getAccountTokenStatus(account, Date.now(), options.storage).kind === "expired") {
+      sawExpired = true;
+      continue;
+    }
     if (attemptCount > 0) { options.beforeSend?.(); }
     attemptCount += 1;
-    const account = options.accounts[accountIdx]!;
     const client = clientFactory(account.session, options.transport);
     try {
-      await withSessionExpiredRetry(
-        () => (write.kind === "setProps" ? client.setProps(write.writes) : client.callAction(write.call)),
-        options.beforeSend,
-      );
+      // One attempt per account. Retrying this closure reused the same refused serviceToken, so a
+      // write could reach the device twice (#6); recovery is a re-scan, which replaces the session.
+      await (write.kind === "setProps" ? client.setProps(write.writes) : client.callAction(write.call));
       return { executedByAccountId: account.id };
     } catch (error) { if (error instanceof MiCloudError && error.kind === "sessionExpired") { sawExpired = true;
         markAccountSessionRejected(account.session, true, {
@@ -1509,18 +1499,23 @@ export class MultiAccountMiCloudProvider implements HomeProvider {
     for (const ownerId of new Set(candidateIds)) {
       const accountIdx = this.dependencies.accounts.findIndex((acc) => acc.id === ownerId);
       if (accountIdx < 0) continue;
+      const account = this.dependencies.accounts[accountIdx]!;
+      // The refused credential is not worth another request; a re-scan replaces the stored session.
+      if (getAccountTokenStatus(account, Date.now(), this.dependencies.storage).kind === "expired") {
+        sawExpired = true;
+        continue;
+      }
       if (attemptCount > 0) {
         options.beforeSend?.();
       }
       attemptCount += 1;
-      const account = this.dependencies.accounts[accountIdx]!;
       const client = new MiCloudClient(account.session, this.dependencies.transport);
       try {
         if (write.kind === "action") {
-          await withSessionExpiredRetry(() => client.action(write.call), options.beforeSend);
+          await client.action(write.call);
           return null;
         }
-        await withSessionExpiredRetry(() => client.setProps(write.writes), options.beforeSend);
+        await client.setProps(write.writes);
         if (!options.readBackPower) return null;
         const power = write.writes.find((w) => typeof w.value === "boolean");
         if (!power) return null;
