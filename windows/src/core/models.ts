@@ -761,6 +761,7 @@ export function joinsAllOffByDefault(device: SmartDevice): boolean {
 }
 
 export function joinsAllOff(device: SmartDevice, overrides: Readonly<Record<string, boolean>>): boolean {
+  if (device.kind.kind === "cover") return false;
   return overrides[device.id] ?? joinsAllOffByDefault(device);
 }
 
@@ -769,7 +770,9 @@ export function allOffTargets(
   visible: readonly SmartDevice[],
   overrides: Readonly<Record<string, boolean>>
 ): SmartDevice[] {
-  return visible.filter((d) => isDeviceActiveOn(d) && joinsAllOff(d, overrides) && deviceCanTogglePower(d));
+  return visible.filter(
+    (d) => d.kind.kind !== "cover" && isDeviceActiveOn(d) && joinsAllOff(d, overrides) && deviceCanTogglePower(d),
+  );
 }
 
 /** A timer that comes due more than this late (the PC slept, the app was frozen) waits for the user (#22). */

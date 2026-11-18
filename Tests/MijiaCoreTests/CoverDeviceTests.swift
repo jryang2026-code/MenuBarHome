@@ -72,6 +72,51 @@ struct CoverDeviceTests {
         #expect(store.devices.first { $0.id == Self.openCover.id }?.isActiveOn == true)
     }
 
+    @Test("Legacy allOffOverrides=true on garage door or window opener cover is ignored and cannot be re-written")
+    @MainActor
+    func legacyCoverOverrideIsIgnored() async throws {
+        let garageDoor = SmartDevice(
+            id: "garage_1", name: "车库门", roomId: "garage", roomName: "车库",
+            model: "fixture.garage", isOnline: true,
+            kind: .cover(CoverSpec(
+                entityId: "cover.garage_1",
+                subtype: .garageDoor,
+                positionPercent: 100,
+                positionWritable: true,
+                openDescription: "Open",
+                closeDescription: "Close",
+                pauseDescription: "Pause"
+            ))
+        )
+        let suite = "test.cover.legacy.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set([garageDoor.id: true, Self.openCover.id: true], forKey: ViewPreferenceKeys.allOffOverrides)
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light, garageDoor, Self.openCover]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        #expect(store.joinsAllOff(garageDoor) == false)
+        #expect(store.joinsAllOff(Self.openCover) == false)
+        #expect(store.allOffTargets.map(\.id) == [Self.light.id])
+
+        // Attempting to opt a cover in does not persist an override.
+        let cleanSuite = "test.cover.clean.\(UUID().uuidString)"
+        let cleanDefaults = try #require(UserDefaults(suiteName: cleanSuite))
+        defer { cleanDefaults.removePersistentDomain(forName: cleanSuite) }
+        let cleanStore = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light, garageDoor])), defaultsSuiteName: cleanSuite)
+        try await cleanStore.waitForTestSnapshot()
+        cleanStore.setJoinsAllOff(true, deviceId: garageDoor.id)
+        #expect(cleanStore.allOffOverrides[garageDoor.id] == nil)
+
+        let task = store.turnAllOff()
+        _ = await task?.value
+        #expect(store.devices.first { $0.id == Self.light.id }?.isActiveOn == false)
+        #expect(store.devices.first { $0.id == garageDoor.id }?.isActiveOn == true)
+        #expect(store.devices.first { $0.id == Self.openCover.id }?.isActiveOn == true)
+    }
+
     // MARK: - Home Assistant cover synthesis & controls (#280)
 
     private struct HASnapshotFixture: Decodable {
