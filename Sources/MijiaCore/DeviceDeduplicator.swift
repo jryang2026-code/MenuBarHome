@@ -389,6 +389,11 @@ public enum DeviceDeduplicator {
             if let preferred, !preferred.isEmpty { mergedFacets[cardID] = preferred }
         }
         home.deviceFacets = mergedFacets
+        for (sourceID, diag) in xiaomiCloud?.deviceTransportDiagnostics ?? [:] {
+            let cardID = miCanonicalIDs[sourceID] ?? sourceID
+            if mergedIDs.contains(cardID), routes[cardID]?.backend == .xiaomiCloud { home.deviceTransportDiagnostics[cardID] = diag }
+        }
+        home.localNetworkBlockedFeatures = (homeAssistant?.localNetworkBlockedFeatures ?? []).union(xiaomiCloud?.localNetworkBlockedFeatures ?? [])
         // Ownership arrives keyed by Mi source dids. A member or group paired with an HA card is
         // shown under the canonical id, so translate both endpoints before keeping the pair (#189).
         home.lightGroupOwners = (xiaomiCloud?.lightGroupOwners ?? [:]).reduce(into: [:]) { owners, entry in

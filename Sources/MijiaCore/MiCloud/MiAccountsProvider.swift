@@ -106,6 +106,8 @@ public actor MiAccountsProvider: HomeProvider {
     private var expiredAccounts: Set<String> = []
     /// did → owning accounts in account order; a did shared by two accounts keeps its first owner first.
     private var deviceOwners: [String: [String]] = [:]
+    private var localNetworkBlocksByAccount: [String: Set<LocalNetworkBlockedFeature>] = [:]
+    private var lastLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var lastStatus: ConnectionStatus?
     private var pollingContext = PollingContext()
     private var isShutDown = false
@@ -249,6 +251,7 @@ public actor MiAccountsProvider: HomeProvider {
                 snapshots.removeValue(forKey: entry.account.id)
                 statuses.removeValue(forKey: entry.account.id)
                 disconnectedStatuses.removeValue(forKey: entry.account.id)
+                localNetworkBlocksByAccount.removeValue(forKey: entry.account.id)
                 freshAccounts.remove(entry.account.id)
                 expiredAccounts.remove(entry.account.id)
                 removedChildIds.insert(entry.account.id)
@@ -274,6 +277,8 @@ public actor MiAccountsProvider: HomeProvider {
         guard continuation != nil, !isShutDown else { return }
         if accounts.isEmpty {
             rebuildDeviceOwners()
+            localNetworkBlocksByAccount.removeAll()
+            publishLocalNetworkPermission()
             let disconnected = ConnectionStatus.disconnected(MiCloudError.notLoggedIn.localizedDescription)
             if lastStatus != disconnected {
                 lastStatus = disconnected
@@ -398,12 +403,20 @@ public actor MiAccountsProvider: HomeProvider {
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
             }
-        case .sourceStatusesChanged, .localNetworkPermissionChanged:
+        case .sourceStatusesChanged:
             break
+        case .localNetworkPermissionChanged(let blocked):
+            localNetworkBlocksByAccount[accountId] = blocked
+            publishLocalNetworkPermission()
+            if !snapshots.isEmpty {
+                publishSnapshot()
+            }
         case .doorbellRang(let ring):
             continuation?.yield(.doorbellRang(ring))
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
+            localNetworkBlocksByAccount[accountId] = home.localNetworkBlockedFeatures
+            publishLocalNetworkPermission()
             if !expiredAccounts.contains(accountId), !home.devices.isEmpty {
                 if home.closesAwayGap {
                     disconnectedStatuses.removeValue(forKey: accountId)
@@ -443,6 +456,15 @@ public actor MiAccountsProvider: HomeProvider {
         guard aggregate != lastStatus else { return }
         lastStatus = aggregate
         continuation?.yield(.statusChanged(aggregate))
+    }
+
+    private func publishLocalNetworkPermission() {
+        let unioned = accounts.filter { !expiredAccounts.contains($0.id) }.reduce(into: Set<LocalNetworkBlockedFeature>()) {
+            if let f = localNetworkBlocksByAccount[$1.id] { $0.formUnion(f) }
+        }
+        guard unioned != lastLocalNetworkBlocks else { return }
+        lastLocalNetworkBlocks = unioned
+        continuation?.yield(.localNetworkPermissionChanged(unioned))
     }
 
     private func rebuildDeviceOwners() {
@@ -519,6 +541,7 @@ public actor MiAccountsProvider: HomeProvider {
         var identities: [String: DeviceSourceIdentity] = [:]
         var lightGroupOwners: [String: String] = [:]
         var facetsByDevice: [String: [FacetControl]] = [:]
+        var transportDiagnosticsByDevice: [String: DeviceTransportDiagnostics] = [:]
         var closesAwayGap = true
         for (account, home) in reported {
             let accountDisconnected = isDisconnected(account.id)
@@ -546,6 +569,7 @@ public actor MiAccountsProvider: HomeProvider {
                         } else {
                             facetsByDevice.removeValue(forKey: device.id)
                         }
+                        transportDiagnosticsByDevice[device.id] = home.deviceTransportDiagnostics[device.id]
                     }
                 } else {
                     deviceIndexById[device.id] = devices.count
@@ -559,6 +583,7 @@ public actor MiAccountsProvider: HomeProvider {
                     if let facets = home.deviceFacets[device.id] {
                         facetsByDevice[device.id] = facets
                     }
+                    transportDiagnosticsByDevice[device.id] = home.deviceTransportDiagnostics[device.id]
                 }
             }
         }
@@ -598,6 +623,8 @@ public actor MiAccountsProvider: HomeProvider {
         merged.accountStatuses = effectiveStatuses
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
+        merged.deviceTransportDiagnostics = transportDiagnosticsByDevice
+        merged.localNetworkBlockedFeatures = lastLocalNetworkBlocks
         merged.lightGroupOwners = lightGroupOwners.filter {
             deviceIds.contains($0.key) && deviceIds.contains($0.value)
         }

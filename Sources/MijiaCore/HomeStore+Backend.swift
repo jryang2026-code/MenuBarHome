@@ -113,6 +113,8 @@ extension HomeStore {
         hasReceivedInitialSnapshot = false
         connectedBackends = []
         deviceBackends = [:]
+        deviceTransportDiagnostics = [:]
+        localNetworkBlocks = []
         // The devices on screen belong to the previous connection until the next snapshot lands;
         // scheduling refuses that window instead of stamping a stale list with the new sources.
         listeningSnapshotGeneration = snapshotGeneration
@@ -226,17 +228,27 @@ extension HomeStore {
         switch event {
         case .statusChanged(let status):
             if connectionStatus != status { connectionStatus = status }
-            if case .disconnected = status {
+            if case .disconnected(let reason) = status {
                 connectedBackends = []
-            } else if case .connected = status, connectedBackends.isEmpty {
-                connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend]
+                if !hasMiSource, reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
+                    localNetworkBlocks.insert(.homeAssistant)
+                }
+            } else if case .connected = status {
+                if connectedBackends.isEmpty { connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend] }
+                if !hasMiSource { localNetworkBlocks.remove(.homeAssistant) }
             }
 
         case .sourceStatusesChanged(let statuses):
             if sourceStatuses != statuses { sourceStatuses = statuses }
+            if case .disconnected(let reason) = statuses[.homeAssistant],
+               reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
+                localNetworkBlocks.insert(.homeAssistant)
+            } else if case .connected = statuses[.homeAssistant] {
+                localNetworkBlocks.remove(.homeAssistant)
+            }
 
-        case .localNetworkPermissionChanged:
-            break
+        case .localNetworkPermissionChanged(let blocked):
+            if localNetworkBlocks != blocked { localNetworkBlocks = blocked }
 
         case .doorbellRang(let ring):
             handleDoorbellRing(ring)
@@ -277,6 +289,15 @@ extension HomeStore {
             if pairedDeviceIDs != snapshot.pairedDeviceIDs { pairedDeviceIDs = snapshot.pairedDeviceIDs }
             if lightGroupOwners != snapshot.lightGroupOwners { lightGroupOwners = snapshot.lightGroupOwners }
             if sourceStatuses != snapshot.sourceStatuses { sourceStatuses = snapshot.sourceStatuses }
+            if deviceTransportDiagnostics != snapshot.deviceTransportDiagnostics {
+                deviceTransportDiagnostics = snapshot.deviceTransportDiagnostics
+            }
+            var nextLocalNetworkBlocks = snapshot.localNetworkBlockedFeatures
+            if hasHASource, case .disconnected(let reason) = (snapshot.sourceStatuses[.homeAssistant] ?? sourceStatuses[.homeAssistant]),
+               reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
+                nextLocalNetworkBlocks.insert(.homeAssistant)
+            }
+            if localNetworkBlocks != nextLocalNetworkBlocks { localNetworkBlocks = nextLocalNetworkBlocks }
             var nextRooms = snapshot.rooms
             if var lgDev = latestLGDevice, lgConfig.isEnabled {
                 if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
@@ -916,6 +937,8 @@ extension HomeStore {
             invalidateUndoContext()
             self.devices = []
             self.deviceFacets = [:]
+            self.deviceTransportDiagnostics = [:]
+            self.localNetworkBlocks.remove(.xiaomiLAN)
             self.rooms = []
             self.environmentReadings = []
             self.scenes = []
@@ -970,6 +993,7 @@ extension HomeStore {
         hasHASource = false
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
+        localNetworkBlocks.remove(.homeAssistant)
         guard homeBackend != .demo,
               (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
         invalidateUndoContext()
@@ -978,6 +1002,7 @@ extension HomeStore {
         } else {
             devices = []
             deviceFacets = [:]
+            deviceTransportDiagnostics = [:]
             rooms = []
             environmentReadings = []
             scenes = []
@@ -1014,6 +1039,10 @@ extension HomeStore {
             for removedId in removedDeviceIds {
                 cancelFacetWrites(for: removedId)
                 deviceFacets.removeValue(forKey: removedId)
+                deviceTransportDiagnostics.removeValue(forKey: removedId)
+            }
+            if miAccounts.isEmpty {
+                localNetworkBlocks.remove(.xiaomiLAN)
             }
             environmentReadings.removeAll { removedDeviceIds.contains($0.id) }
             rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
@@ -1329,6 +1358,19 @@ extension HomeStore {
         isShowingMiReauth = false
     }
 
+    public var effectiveLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> {
+        guard homeBackend != .demo else { return [] }
+        var blocks = localNetworkBlocks
+        if !hasHASource {
+            blocks.remove(.homeAssistant)
+        } else if case .disconnected(let reason) = (sourceStatuses[.homeAssistant] ?? (hasMiSource ? .connecting : connectionStatus)),
+                  reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
+            blocks.insert(.homeAssistant)
+        }
+        if !hasMiSource { blocks.remove(.xiaomiLAN) }
+        return blocks
+    }
+
     /// The one connection verdict the footer, the settings badge and the menu-bar tooltip share.
     public var panelHealth: PanelHealth {
         PanelHealthResolver.resolve(PanelHealthInput(
@@ -1347,7 +1389,8 @@ extension HomeStore {
                 account.session.expiryState(at: Date()) != .expired
             },
             deviceValuesAreStale: deviceValuesAreStale,
-            connectionStatus: connectionStatus
+            connectionStatus: connectionStatus,
+            localNetworkBlocks: effectiveLocalNetworkBlocks
         ))
     }
 }
@@ -1380,6 +1423,7 @@ struct PanelHealthInput: Equatable, Sendable {
     var anotherMiAccountSignedIn: Bool
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
+    var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
 }
 
 /// Priority is the thing the user must deal with first.
@@ -1411,6 +1455,25 @@ enum PanelHealthResolver {
         }
         if !input.hasHASource && !input.hasMiSource {
             return .notConfigured
+        }
+        if !input.localNetworkBlocks.isEmpty {
+            let haBlocked = input.hasHASource && input.localNetworkBlocks.contains(.homeAssistant)
+            let miLANBlocked = input.hasMiSource && input.localNetworkBlocks.contains(.xiaomiLAN)
+            let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.connectionStatus.isConnected
+            let haWorking = input.hasHASource && !haBlocked && (input.haStatus.isConnected || (!input.hasMiSource && input.connectionStatus.isConnected))
+            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openConnectionSettings)
+            if haBlocked && miLANBlocked {
+                return miWorking ? .degraded(reason: L10n.tr("本地网络权限受阻，当前仅米家云端可用", "Local network access is blocked. Using Xiaomi Cloud fallback")) : blockedVerdict
+            }
+            if haBlocked {
+                return miWorking ? .degraded(reason: L10n.tr("Home Assistant 本地网络权限受阻，米家云端仍可用", "Home Assistant local network access is blocked. Xiaomi Cloud still works")) : blockedVerdict
+            }
+            if miLANBlocked {
+                return (miWorking || haWorking) ? .degraded(reason: L10n.tr("米家局域网直连权限受阻，已回退云端", "Xiaomi LAN access is blocked. Using cloud fallback")) : blockedVerdict
+            }
+            if input.localNetworkBlocks.contains(.lgWebOS) {
+                return (miWorking || haWorking) ? .degraded(reason: L10n.tr("电视本地网络权限受阻", "TV local network access is blocked")) : blockedVerdict
+            }
         }
         if input.miSessionShowsExpired, input.hasHASource,
            case .connected = input.connectionStatus, case .connected = input.haStatus {

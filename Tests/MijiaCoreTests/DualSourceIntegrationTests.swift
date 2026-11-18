@@ -894,4 +894,83 @@ struct DualSourceIntegrationTests {
         #expect(camCardDuringRetry.isOnline == true)
         #expect(camCardDuringRetry.telemetryStale == false)
     }
+
+    @MainActor
+    @Test("Dual-source remaps deviceTransportDiagnostics to canonicalID only for Xiaomi-driven cards and unmasks HA Local Network TCC block while Mi Cloud is connected")
+    func dualSourceTransportDiagnosticsRemapAndHATCCUnmasking() async throws {
+        let suite = "test.dual.tcc_and_diag.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let session = MiSession(
+            userId: "1001", cUserId: "c1", ssecurity: "s", serviceToken: "tok",
+            expiresAt: Date().addingTimeInterval(86_400)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults))
+        #expect(KeychainHelper.saveToken("ha-token", defaults: defaults))
+
+        let pairedHA = light(id: haID, name: "客厅灯", roomID: "ha-r1", roomName: "客厅", entityId: "light.living")
+        let pairedMi = light(id: did, name: "客厅灯", roomID: "mi-r1", roomName: "客厅", entityId: "miot:\(did):2")
+        let miOnlyDid = "mi-plug-99"
+        let miOnlyPlug = SmartDevice(
+            id: miOnlyDid,
+            name: "书房插座",
+            roomId: "mi-r2",
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:\(miOnlyDid):2", isOn: true))
+        )
+
+        let haHome = home(
+            [pairedHA],
+            identities: [haID: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅灯", roomName: "客厅", kindTag: .light)]
+        )
+        var miHome = home(
+            [pairedMi, miOnlyPlug],
+            identities: [
+                did: DeviceSourceIdentity(dids: [did], model: "yeelink.light.ceiling22", name: "客厅灯", roomName: "客厅", kindTag: .light),
+                miOnlyDid: DeviceSourceIdentity(dids: [miOnlyDid], model: "cuco.plug.v3", name: "书房插座", roomName: "书房", kindTag: .plug),
+            ]
+        )
+        miHome.deviceTransportDiagnostics = [
+            did: DeviceTransportDiagnostics(route: .lan, rttMs: 15, consecutiveFailures: 0, usedBroadcastRecovery: true),
+            miOnlyDid: DeviceTransportDiagnostics(route: .lan, rttMs: 20, consecutiveFailures: 0, usedBroadcastRecovery: false),
+        ]
+
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: miHome)
+        let store = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
+            defaultsSuiteName: suite
+        )
+        store.hasHASource = true
+
+        await waitUntil {
+            store.devices.count == 2 && store.deviceTransportDiagnostics[miOnlyDid]?.route == .lan
+        }
+
+        let pairedCardId = try #require(store.devices.first { $0.id != miOnlyDid }?.id)
+        #expect(store.deviceBackend(for: pairedCardId) == .homeAssistant)
+        #expect(store.deviceTransportDiagnostics[pairedCardId] == nil)
+        #expect(store.deviceTransportDiagnostics[miOnlyDid]?.rttMs == 20)
+
+        store.pinDeviceSource(pairedCardId, to: .xiaomiCloud)
+        await waitUntil {
+            store.deviceBackend(for: pairedCardId) == .xiaomiCloud
+                && store.deviceTransportDiagnostics[pairedCardId]?.route == .lan
+        }
+        #expect(store.deviceTransportDiagnostics[pairedCardId]?.usedBroadcastRecovery == true)
+
+        let tccError = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        let tccReason = HAWebSocketProvider.describeConnectionError(tccError, baseURLString: "http://192.168.1.10:8123")
+        await haMock.sendStatus(.disconnected(tccReason))
+        await waitUntil {
+            store.effectiveLocalNetworkBlocks.contains(.homeAssistant)
+        }
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"))
+        }
+    }
 }

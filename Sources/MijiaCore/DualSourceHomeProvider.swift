@@ -22,6 +22,9 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var miStatus: ConnectionStatus = .connecting
     private var haSnapshot: SynthesizedHome?
     private var miSnapshot: SynthesizedHome?
+    private var haLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    private var miLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    private var lastEmittedLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var lastStatus: ConnectionStatus?
 
     private var canonical: CanonicalDeviceRegistry
@@ -107,15 +110,18 @@ public actor DualSourceHomeProvider: HomeProvider {
         if backend == .homeAssistant, homeAssistant != nil {
             haSnapshot = nil
             haStatus = .connecting
+            haLocalNetworkBlocks = []
         } else if backend == .xiaomiCloud, xiaomiCloud != nil {
             miSnapshot = nil
             miStatus = .connecting
+            miLocalNetworkBlocks = []
         } else {
             return
         }
         guard started else { return }
         emitStatus(force: true)
         emitSourceStatuses()
+        emitLocalNetworkPermission()
         recompute()
     }
 
@@ -132,6 +138,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             homeAssistant = next
             haSnapshot = nil
             haStatus = .connecting
+            haLocalNetworkBlocks = []
         } else {
             miTask?.cancel()
             miTask = nil
@@ -139,6 +146,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             xiaomiCloud = next
             miSnapshot = nil
             miStatus = .connecting
+            miLocalNetworkBlocks = []
         }
         await previous?.shutdown()
         guard !isShutDown, started else { return }
@@ -148,6 +156,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         emitStatus(force: true)
         emitSourceStatuses()
+        emitLocalNetworkPermission()
         if previous != nil {
             recompute(allowEmpty: homeAssistant == nil && xiaomiCloud == nil)
         }
@@ -161,11 +170,17 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .statusChanged(let status):
             if backend == .homeAssistant {
                 haStatus = status
+                if case .connected = status { haLocalNetworkBlocks.remove(.homeAssistant) }
+                else if case .disconnected(let reason) = status,
+                        reason.contains("局域网连接被系统拦截") || reason.contains("Local network connection blocked by macOS") {
+                    haLocalNetworkBlocks.insert(.homeAssistant)
+                }
             } else if backend == .xiaomiCloud {
                 miStatus = status
             }
             emitStatus()
             emitSourceStatuses()
+            emitLocalNetworkPermission()
             recompute()
 
         case .sessionExpired(let session):
@@ -177,18 +192,27 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
             continuation?.yield(.doorbellRang(ring))
 
-        case .sourceStatusesChanged, .localNetworkPermissionChanged:
+        case .sourceStatusesChanged:
             break
+
+        case .localNetworkPermissionChanged(let blocked):
+            if backend == .homeAssistant { haLocalNetworkBlocks = blocked }
+            else if backend == .xiaomiCloud { miLocalNetworkBlocks = blocked }
+            emitLocalNetworkPermission()
+            recompute()
 
         case .snapshotUpdated(let home):
             if backend == .homeAssistant {
                 haStatus = .connected
                 haSnapshot = home
+                haLocalNetworkBlocks = home.localNetworkBlockedFeatures
             } else if backend == .xiaomiCloud {
                 miStatus = .connected
                 miSnapshot = home
+                miLocalNetworkBlocks = home.localNetworkBlockedFeatures
             }
             emitStatus()
+            emitLocalNetworkPermission()
             recompute()
         }
     }
@@ -280,7 +304,19 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         var home = result.home
         home.sourceStatuses = configuredSourceStatuses()
+        home.localNetworkBlockedFeatures = currentLocalNetworkBlocks()
         continuation?.yield(.snapshotUpdated(home))
+    }
+
+    private func currentLocalNetworkBlocks() -> Set<LocalNetworkBlockedFeature> {
+        (homeAssistant != nil ? haLocalNetworkBlocks : []).union(xiaomiCloud != nil ? miLocalNetworkBlocks : [])
+    }
+
+    private func emitLocalNetworkPermission() {
+        let next = currentLocalNetworkBlocks()
+        guard next != lastEmittedLocalNetworkBlocks else { return }
+        lastEmittedLocalNetworkBlocks = next
+        continuation?.yield(.localNetworkPermissionChanged(next))
     }
 
     private func configuredSourceStatuses() -> [HomeBackend: ConnectionStatus] {

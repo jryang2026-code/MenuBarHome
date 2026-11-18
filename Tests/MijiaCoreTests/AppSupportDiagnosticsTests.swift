@@ -266,5 +266,31 @@ struct AppSupportDiagnosticsTests {
         #expect(!report.contains("192.168."))
         #expect(!report.contains("eyJhbGciOi"))
         #expect(!report.contains("Bearer"))
+
+        let summary = DeviceTransportSummary.summarize(
+            [
+                "secret-did-101": DeviceTransportDiagnostics(route: .lan, rttMs: 15, consecutiveFailures: 0, usedBroadcastRecovery: true),
+                "secret-did-202": DeviceTransportDiagnostics(route: .cloud, rttMs: nil, consecutiveFailures: 1, usedBroadcastRecovery: false),
+                "secret-did-303": DeviceTransportDiagnostics(route: .cooldown, rttMs: nil, consecutiveFailures: 3, usedBroadcastRecovery: false),
+            ],
+            localNetworkBlocks: [.xiaomiLAN]
+        )
+        let withTransport = DiagnosticsReportBuilder.markdown(
+            DiagnosticsReportBuilder.Input(
+                appVersion: "1.3.0",
+                buildNumber: "100",
+                macOSVersion: "Version 15.0",
+                backendTitle: "Xiaomi Cloud Direct",
+                miCloudRegion: "cn",
+                deviceCount: 3,
+                onlineDeviceCount: 3,
+                hiddenDeviceCount: 0,
+                models: [.init(model: "yeelink.light.color4", count: 3)],
+                transportSummary: summary
+            )
+        )
+        #expect(withTransport.contains("15 ms"))
+        #expect(!withTransport.contains("secret-did"))
+        #expect(!withTransport.contains("192.168."))
     }
 }

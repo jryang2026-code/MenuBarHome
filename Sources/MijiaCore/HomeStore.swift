@@ -117,6 +117,8 @@ public final class HomeStore {
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
     /// while an optimistic write is locked.
     public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
+    public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
+    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
     public internal(set) var lightGroupOwners: [String: String] = [:]
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
