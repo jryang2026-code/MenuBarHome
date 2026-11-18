@@ -700,9 +700,10 @@ public final class HomeStore {
         if case .installing = updateState { return true }
         return false
     }
-    /// How long a relaunch may take before the update is treated as not landed. Longer than the
-    /// swap script's own 15 s wait for this process to exit. `nil` disables the watchdog (tests).
-    public var updateRelaunchWatchdogInterval: Duration? = .seconds(20)
+    /// How long a relaunch may take before checking whether the detached swap process is still running.
+    /// Longer than the swap script's nominal 15 s wait for this process to exit; the watchdog also
+    /// defers while the swap process is alive. `nil` disables the watchdog (tests).
+    public var updateRelaunchWatchdogInterval: Duration? = .seconds(30)
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
     public var lgConfig: LGWebOSConfig {
