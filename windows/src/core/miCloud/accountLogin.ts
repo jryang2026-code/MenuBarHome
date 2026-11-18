@@ -191,6 +191,9 @@ export class MiAccountLogin {
   }
 
   private async fetchServiceToken(initialLocation: string): Promise<{ token: string; expiresAt?: number }> {
+    if (!isTrustedXiaomiLoginRedirect(initialLocation)) {
+      throw new MiCloudError("badResponse", t("非小米登录跳转地址"));
+    }
     let url = initialLocation;
     for (let i = 0; i < 5; i++) {
       const resp = await this.transport({

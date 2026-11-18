@@ -1940,17 +1940,8 @@ struct LGWebOSSettingsSection: View {
                         Task {
                             let found = await store.discoverLGWebOSTVs(hostHint: hostDraft)
                             isScanning = false
-                            if let first = found.first {
-                                hostDraft = first.host
-                                store.showToast(L10n.tr(
-                                    "已发现：\(first.friendlyName) (\(first.host))",
-                                    "Found: \(first.friendlyName) (\(first.host))"
-                                ))
-                            } else {
-                                store.showToast(
-                                    L10n.tr("未扫描到开机状态的 LG 电视", "No powered-on LG TV found on LAN"),
-                                    isError: true
-                                )
+                            Self.handleDiscoveryResult(found, hostHint: hostDraft, store: store) {
+                                hostDraft = $0
                             }
                         }
                     }
@@ -2001,6 +1992,26 @@ struct LGWebOSSettingsSection: View {
         }
         .onChange(of: store.lgConfig.isEnabled) { _, newValue in
             isEnabled = newValue
+        }
+    }
+
+    static func handleDiscoveryResult(
+        _ found: [LGWebOSDiscoveredTV],
+        hostHint: String,
+        store: HomeStore,
+        applyHost: (String) -> Void
+    ) {
+        if let first = found.first {
+            applyHost(first.host)
+            store.showToast(L10n.tr(
+                "已发现：\(first.friendlyName) (\(first.host))",
+                "Found: \(first.friendlyName) (\(first.host))"
+            ))
+        } else {
+            store.showToast(
+                store.lgWebOSDiscoveryFailureMessage(hostHint: hostHint),
+                isError: true
+            )
         }
     }
 

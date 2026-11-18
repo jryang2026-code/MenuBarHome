@@ -919,18 +919,49 @@ public actor LGWebOSClient {
         #endif
     }
 
-    public static func discoverOnLAN(hostHint: String = LGWebOSConfig.defaultHost) async -> [LGWebOSDiscoveredTV] {
+    /// Canonical private LAN IPv4 or `.local` hostname permitted for unencrypted UPnP LAN discovery (#12).
+    public static func normalizedLANDiscoveryHost(_ rawHost: String) -> String? {
+        var host = rawHost
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        while host.hasSuffix(".") {
+            host.removeLast()
+        }
+        guard HADiscovery.isAllowedLANDiscoveryHost(host) else {
+            return nil
+        }
+        return host
+    }
+
+    /// Human-readable reason when LAN discovery finds no TV, explaining when a non-LAN `hostHint` was skipped (#12).
+    public static func discoveryFailureMessage(hostHint: String) -> String {
+        let trimmed = hostHint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, normalizedLANDiscoveryHost(trimmed) == nil {
+            return L10n.tr(
+                "未扫描到开机状态的 LG 电视（已跳过非局域网私网或 .local 地址 \(trimmed)）",
+                "No powered-on LG TV found on LAN (skipped non-LAN or non-.local host \(trimmed))"
+            )
+        }
+        return L10n.tr("未扫描到开机状态的 LG 电视", "No powered-on LG TV found on LAN")
+    }
+
+    public static func discoverOnLAN(
+        hostHint: String = LGWebOSConfig.defaultHost,
+        arpHostsProvider: (@Sendable () -> [String])? = nil,
+        probeHost: (@Sendable (String) async -> LGWebOSDiscoveredTV?)? = nil
+    ) async -> [LGWebOSDiscoveredTV] {
         var candidates: [String] = []
         var seen: Set<String> = []
-        let trimmedHint = hostHint.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedHint.isEmpty, seen.insert(trimmedHint).inserted {
-            candidates.append(trimmedHint)
+        if let safeHint = normalizedLANDiscoveryHost(hostHint), seen.insert(safeHint).inserted {
+            candidates.append(safeHint)
         }
         let arpHosts = await Task.detached(priority: .utility) {
-            HADiscovery.queryARPHosts()
+            arpHostsProvider?() ?? HADiscovery.queryARPHosts()
         }.value
-        for ip in arpHosts where seen.insert(ip).inserted {
-            candidates.append(ip)
+        for ip in arpHosts {
+            if let safeIP = normalizedLANDiscoveryHost(ip), seen.insert(safeIP).inserted {
+                candidates.append(safeIP)
+            }
         }
         guard !candidates.isEmpty else { return [] }
 
@@ -945,6 +976,10 @@ public actor LGWebOSClient {
         return await withTaskGroup(of: (Int, LGWebOSDiscoveredTV?).self) { group in
             for (idx, host) in candidates.enumerated() {
                 group.addTask {
+                    if let probeHost {
+                        let discovered = await probeHost(host)
+                        return (idx, discovered)
+                    }
                     guard let url = URL(string: "http://\(host):1869/") else { return (idx, nil) }
                     var req = URLRequest(url: url)
                     req.timeoutInterval = 0.9

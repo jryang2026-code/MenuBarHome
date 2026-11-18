@@ -576,10 +576,10 @@ struct CoreReleaseAuditTests {
                 return (
                     200,
                     [:],
-                    #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.example/sts?x=1"}"#
+                    #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?x=1"}"#
                 )
             }
-            return (200, ["Set-Cookie": "serviceToken=tok-keepalive; path=/; domain=.example"], "ok")
+            return (200, ["Set-Cookie": "serviceToken=tok-keepalive; path=/; domain=.mi.com"], "ok")
         }
         let ticket = QRLoginTicket(
             qrImageURL: URL(string: "https://qr.example/1")!,
