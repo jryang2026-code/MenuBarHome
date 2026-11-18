@@ -304,7 +304,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         // Suggestion-chip confirmation (natural command, bare category): marking answers it too.
         // The banner only carries `markSwitchLight` when every hazardous device is a wall switch,
         // so after the marks no intent still needs a confirmation; a stale pill that survived a
-        // replaced banner only marks and never executes.
+        // replaced banner only marks and never executes. A delayed chip («10分钟后…») keeps its
+        // delay: marking routes it through the same scheduler the confirm tap would use (#104).
         const chip = host.pendingSuggestions.find((s) => suggestionBaseId(s.id).startsWith("confirm:"));
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = chip
@@ -318,6 +319,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           text: t("已标记为灯，以后不再二次确认"),
           source: t("需要确认"),
         };
+        if (chip) {
+          const delaySpec = getSuggestionDelaySpec(chip);
+          if (delaySpec) {
+            host.pendingSuggestions = host.pendingSuggestions.filter((s) => s !== chip);
+            host.render();
+            confirmDelayedSuggestion(host, chip, delaySpec);
+            return;
+          }
+        }
         if (
           intents.length > 0 &&
           intents.every((intent) => !ManualControlPolicy.requiresConfirmation(intent, aliasedDevices))

@@ -16,6 +16,8 @@ import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { isSwitchMarkedAsLight, unmarkSwitchAsLight } from "../src/core/switchLightMarks.js";
+import { ModelActionPolicy, withSuggestionDelay } from "../src/core/assistant.js";
+import { withAliases } from "../src/ui/panelPrefs.js";
 import type { CameraLiveController } from "../src/ui/cameraLive.js";
 import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
@@ -5560,6 +5562,57 @@ describe("Manual control parity with macOS (#143)", () => {
       assert.equal(app.pendingHighRisk, null);
     } finally {
       unmarkSwitchAsLight("wall.typed");
+    }
+  });
+
+  it("marking a wall switch from a delayed chip confirmation keeps the delay (#104)", async () => {
+    const left: SmartDevice = {
+      ...plug(),
+      id: "wall.delay_left",
+      name: "左键",
+      model: "lumi.switch.b1nacn02",
+    };
+    const app = await startWithDevices([left]);
+    try {
+      // The UI never arms a delayed bare candidate today (an ambiguous delayed command asks to
+      // restate instead, `naturalCommand.ts` bare skip), but the banner contract allows a delayed
+      // confirm chip, and the mark pill must answer it with the same scheduler a tap would.
+      const aliased = withAliases(app.layout, app.devices);
+      const base = ModelActionPolicy.chips(
+        [{ targetId: left.id, operation: { kind: "power", isOn: true } }],
+        null,
+        "confirm:local",
+        aliased,
+        app.scenes,
+        true,
+      )[0]!;
+      app.pendingSuggestions = [
+        withSuggestionDelay(base, { seconds: 600, label: "10分钟后", command: "打开左键" }),
+      ];
+      app.replyBanner = {
+        text: "「打开左键」属于高风险设备，再点一次确认执行",
+        source: "需要确认",
+        hint: "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
+        markSwitchLight: left.id,
+      };
+      app.render();
+
+      const pill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
+      assert.ok(pill, "the delayed chip confirmation offers the mark pill");
+      assert.equal(pill!.dataset.markSwitchLight, left.id);
+
+      pill!.click();
+      await setImmediate();
+      await setImmediate();
+      assert.equal(isSwitchMarkedAsLight(left.id), true, "the pill persisted the mark");
+      const after = app.devices.find((device) => device.id === left.id)?.kind;
+      assert.ok(after?.kind === "plug" && !after.isOn, "the delayed switch did not run now");
+      const scheduled = app.scheduledCommands;
+      assert.equal(scheduled.length, 1, "the delay survived marking");
+      assert.equal(scheduled[0]!.delaySeconds, 600, "ten minutes, not now");
+      assert.match(document.body.textContent ?? "", /已设定 10 分钟后执行/);
+    } finally {
+      unmarkSwitchAsLight(left.id);
     }
   });
 
