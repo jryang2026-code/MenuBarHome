@@ -354,6 +354,9 @@ function writeCustomHomeTitle(host: ConnectionsAndDiagHost, rawTitle: string): s
   } catch {
   }
   host.saveSettings();
+  // The title is applied, so the render must not capture the typed text as an unsaved draft.
+  const titleInput = host.root.querySelector<HTMLInputElement>("#settings-custom-home-title");
+  if (titleInput) titleInput.value = titleInput.defaultValue;
   host.render();
   return normalized;
 }

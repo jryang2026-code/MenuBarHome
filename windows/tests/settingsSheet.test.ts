@@ -558,8 +558,15 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     assert.equal(app.settings.customHomeTitle, "我的温馨小家");
     const resetTitleBtn = panel("general").querySelector<HTMLButtonElement>("#btn-reset-custom-home-title");
     assert.ok(resetTitleBtn, "#btn-reset-custom-home-title appears when custom title is set");
+    type("#settings-custom-home-title", "还没保存的标题");
     await click("#btn-reset-custom-home-title");
     assert.equal(app.settings.customHomeTitle, "");
+    assert.equal(
+      panel("general").querySelector<HTMLInputElement>("#settings-custom-home-title")?.value,
+      "",
+      "resetting the title also discards the typed draft",
+    );
+    assert.equal(panel("general").querySelector("#btn-reset-custom-home-title"), null);
 
     // Search for 面板标题 lands on general tab and highlights dashboardTitle.
     await click('[data-settings-tab="connection"]');
