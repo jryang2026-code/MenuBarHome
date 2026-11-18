@@ -31,6 +31,7 @@ import {
   type MiAccount,
 } from "../core/miAccountsStore.js";
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
+import { STALE, type EpochToken, type SyncRunToken } from "./sourceEpoch.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import type { HASnapshotLike } from "../core/automationEngine.js";
 import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
@@ -89,11 +90,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (host.settings.connectionMode === "xiaomiCloud") {
       // The store's first load of this window enumerates the credential slots; later loads read
       // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
-      const revision = host.localRevision;
+      const storeToken = host.sourceEpoch.capture();
       const store = getHostMiAccountsStore(host);
       const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
-      await adoptRecoveredPrimarySession(host, store, storeAccounts);
-      if (host.localRevision !== revision) return;
+      if ((await storeToken.guard(adoptRecoveredPrimarySession(host, store, storeAccounts))) === STALE) return;
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -152,10 +152,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
-    const stateRevisionAtStart = host.localRevision;
+    const stateToken = host.sourceEpoch.capture();
     const selectedHomeAtStart = host.settings.selectedHomeId;
     const sourceRevisionAtStart = host.sourceRevision;
-    const syncGen = host.sourceEpoch.claimSyncRun();
+    const syncRun = host.sourceEpoch.claimSyncRun();
     let presentationChanged = false;
     host.isSyncingCloud = true;
     host.lastCloudRefreshAt = refreshStartedAt;
@@ -213,7 +213,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         const allRooms = discovery.rooms;
         const allDevices = discovery.devices;
         const nextHomes = homeOptions(allRooms);
-        if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+        if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
         if (homeRoomsError === null || nextHomes.length > 0) {
           host.homes = applyOrder(host.homes.map((home) => home.id), nextHomes);
         }
@@ -255,14 +255,14 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
             ? await withSessionExpiredRetry(() => client.getProps(propKeys))
             : new Map<string, unknown>();
       } catch (error) {
-        if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
+        if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
           host.markCloudValuesStale();
         }
         throw error;
       }
 
       const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
-      if (cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) return;
+      if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
       if (allDevicesForCache !== null && allRoomsForCache !== null) {
         storeCachedXiaomiTopology(host, {
           sessionFingerprint: miSessionFingerprint(session),
@@ -324,7 +324,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } catch (err) {
-      if (!cloudSnapshotIsStale(host, session, stateRevisionAtStart, syncGen, selectedHomeAtStart)) {
+      if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
         host.markCloudValuesStale();
         appDiagnosticsLog.record({
           error: err,
@@ -354,7 +354,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         };
       }
     } finally {
-      if (host.homeGeneration === syncGen) {
+      if (syncRun.isCurrent()) {
         host.isSyncingCloud = false;
         if (isHostAttachedToActiveWindow(host)) {
           const staleChanged = staleBefore !== host.cloudValuesStale;
@@ -380,8 +380,8 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
     if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.isSyncingCloud) return;
     const endpoint = host.settings.haBaseURL;
     const token = host.settings.haToken;
-    const revision = host.localRevision;
-    const syncGen = host.sourceEpoch.claimSyncRun();
+    const stateToken = host.sourceEpoch.capture();
+    const syncRun = host.sourceEpoch.claimSyncRun();
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     let failed = false;
@@ -395,7 +395,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const home = await haClient.snapshot();
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localRevision !== revision || host.homeGeneration !== syncGen) return;
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
@@ -435,7 +435,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       if (presentationChanged || !hadValidCache) host.saveSettings();
       shouldUpdateView = !silent || presentationChanged;
     } catch (error) {
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || host.localRevision !== revision || host.homeGeneration !== syncGen) return;
+      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
       failed = true;
       shouldUpdateView = true;
       appDiagnosticsLog.record({
@@ -445,7 +445,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       });
       host.haConnectionError = error instanceof Error ? error.message : String(error);
     } finally {
-      if (host.homeGeneration === syncGen) {
+      if (syncRun.isCurrent()) {
         host.isSyncingCloud = false;
         if (shouldUpdateView && isHostAttachedToActiveWindow(host)) {
           if (failed || host.devices.length === 0 || cloudPanelStructureFingerprint(host) !== previousStructure || !patchCloudPresentation(host)) host.queueBackgroundRender();
@@ -468,16 +468,16 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
 export function cloudSnapshotIsStale(
   host: MenuMijiaWindowsApp,
   session: MiSession,
-  revision: number,
-  syncGen?: number,
+  stateToken: EpochToken,
+  syncRun?: SyncRunToken,
   selectedHomeId?: string | null,
 ): boolean {
     return (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       host.settings.miSession !== session ||
-      host.localRevision !== revision ||
-      (syncGen !== undefined && host.homeGeneration !== syncGen) ||
+      !stateToken.isCurrent() ||
+      (syncRun !== undefined && !syncRun.isCurrent()) ||
       (selectedHomeId !== undefined && host.settings.selectedHomeId !== selectedHomeId)
     );
   }
@@ -862,14 +862,14 @@ export async function refreshMultiAccountXiaomiDevices(
   if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) {
     return;
   }
-  const stateRevisionAtStart = host.localRevision;
-  const sourceRevisionAtStart = host.sourceRevision;
+  // One token covers both the local-write and source levels: a source switch cascades down to
+  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
+  const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    host.localRevision !== stateRevisionAtStart ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -880,8 +880,7 @@ export async function refreshMultiAccountXiaomiDevices(
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
-    host.localRevision !== stateRevisionAtStart ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -894,7 +893,7 @@ export async function refreshMultiAccountXiaomiDevices(
         : [];
   if (accounts.length === 0) return;
 
-  const syncGen = host.sourceEpoch.claimSyncRun();
+  const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
   const staleBefore = host.cloudValuesStale;
@@ -916,9 +915,8 @@ export async function refreshMultiAccountXiaomiDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
-      host.localRevision !== stateRevisionAtStart ||
-      host.sourceRevision !== sourceRevisionAtStart ||
-      host.homeGeneration !== syncGen
+      !stateToken.isCurrent() ||
+      !syncRun.isCurrent()
     ) {
       return;
     }
@@ -991,7 +989,7 @@ export async function refreshMultiAccountXiaomiDevices(
           };
     }
   } finally {
-    if (host.homeGeneration === syncGen) {
+    if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
       if (isHostAttachedToActiveWindow(host)) {
         const staleChanged = staleBefore !== host.cloudValuesStale;
@@ -1120,14 +1118,14 @@ export async function refreshDualSourceDevices(
   silent = false,
 ): Promise<void> {
   if (!isHostAttachedToActiveWindow(host) || host.isSyncingCloud) return;
-  const revision = host.localRevision;
-  const sourceRevisionAtStart = host.sourceRevision;
+  // One token covers both the local-write and source levels: a source switch cascades down to
+  // `localWrite`, so a single `isCurrent()` at the strictest level detects every switch.
+  const stateToken = host.sourceEpoch.capture();
   if (silent && (await isWorkstationLocked())) return;
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    host.localRevision !== revision ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -1143,8 +1141,7 @@ export async function refreshDualSourceDevices(
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||
-    host.localRevision !== revision ||
-    host.sourceRevision !== sourceRevisionAtStart ||
+    !stateToken.isCurrent() ||
     host.isSyncingCloud
   ) {
     return;
@@ -1157,7 +1154,7 @@ export async function refreshDualSourceDevices(
         : [];
   if (accounts.length === 0) return;
 
-  const syncGen = host.sourceEpoch.claimSyncRun();
+  const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
   const previousStructure = cloudPanelStructureFingerprint(host);
   let presentationChanged = false;
@@ -1217,9 +1214,8 @@ export async function refreshDualSourceDevices(
     if (
       !isHostAttachedToActiveWindow(host) ||
       !isDualSourceEnabled(host) ||
-      host.localRevision !== revision ||
-      host.sourceRevision !== sourceRevisionAtStart ||
-      host.homeGeneration !== syncGen
+      !stateToken.isCurrent() ||
+      !syncRun.isCurrent()
     ) {
       return;
     }
@@ -1262,7 +1258,7 @@ export async function refreshDualSourceDevices(
       };
     }
   } catch (error) {
-    if (!isHostAttachedToActiveWindow(host) || host.localRevision !== revision || host.homeGeneration !== syncGen) {
+    if (!isHostAttachedToActiveWindow(host) || !stateToken.isCurrent() || !syncRun.isCurrent()) {
       return;
     }
     failed = true;
@@ -1286,7 +1282,7 @@ export async function refreshDualSourceDevices(
       forbiddenLiterals: [endpoint, token],
     });
   } finally {
-    if (host.homeGeneration === syncGen) {
+    if (syncRun.isCurrent()) {
       host.isSyncingCloud = false;
       if (isHostAttachedToActiveWindow(host)) {
         if (!silent) {

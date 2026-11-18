@@ -81,7 +81,7 @@ afterEach(async () => {
 });
 
 describe("sourceSwitch — QR login account adoption", () => {
-  it("cancels a cloud refresh that started under the old account (localRevision gate)", async () => {
+  it("cancels a cloud refresh that started under the old account (stale epoch-token gate)", async () => {
     let deviceListCalls = 0;
     const scanGate: { release?: () => void } = {};
     let releaseMiSessionGate: (() => void) | null = null;
@@ -96,7 +96,7 @@ describe("sourceSwitch — QR login account adoption", () => {
               miSessionReads += 1;
               if (miSessionReads === 2) {
                 // The constructor's initial refresh is now paused inside MiAccountsStore.load(),
-                // right before the `host.localRevision !== revision` gate in refreshDevices.
+                // right before the epoch-token staleness gate in refreshDevices.
                 return await new Promise<string | null>((resolve) => {
                   releaseMiSessionGate = () => resolve(JSON.stringify(OLD_SESSION));
                 });
@@ -199,7 +199,7 @@ describe("sourceSwitch — QR login account adoption", () => {
     // clears it): drop it so a surviving pre-login refresh would have to hit the cloud again.
     clearCachedXiaomiTopology(app);
 
-    // Now the pre-login refresh resumes with no other sync in flight: the localRevision gate must
+    // Now the pre-login refresh resumes with no other sync in flight: the epoch-token gate must
     // cancel it before any cloud request happens under the newly adopted account.
     releaseMiSessionGate();
     await flushAsync(8);
@@ -207,7 +207,7 @@ describe("sourceSwitch — QR login account adoption", () => {
     assert.equal(
       deviceListCalls,
       1,
-      "only the post-login refresh may talk to the cloud; the refresh that started under the old account must be cancelled at the localRevision gate",
+      "only the post-login refresh may talk to the cloud; the refresh that started under the old account must be cancelled at the staleness gate",
     );
     assert.equal(app.devices.length, 1, "the new account's refresh adopted its device");
   });
