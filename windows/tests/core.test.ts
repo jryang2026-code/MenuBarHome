@@ -1,6 +1,14 @@
 import { HomeAssistantClient, HomeAssistantSynthesizer, haServiceCall, homeAssistantCommand, homeAssistantIdentity, parseCachedHAHome } from "../src/core/homeAssistant.js";
 import { SIMP_CHARS, TRAD_CHARS } from "../src/core/assistant/chineseIntentTables.js";
 import { deviceCategory, isSwitchedLightDevice } from "../src/core/assistant/deviceCategory.js";
+import {
+  SWITCH_LIGHT_MARKS_STORAGE_KEY,
+  isSwitchMarkedAsLight,
+  markSwitchAsLight,
+  setSwitchLightMarkStorage,
+  switchLightMarkIds,
+  unmarkSwitchAsLight,
+} from "../src/core/switchLightMarks.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
 import {
@@ -2176,6 +2184,8 @@ interface ConfirmationFixtureRow {
   readonly device: ConfirmationFixtureDevice | null;
   readonly operation: DeviceIntent["operation"];
   readonly confirm: boolean;
+  /** #104: the row exercises `ManualControlPolicy` with this device marked as a light. */
+  readonly markedAsLight: boolean;
 }
 
 interface ConfirmationFixtureDecisionRow {
@@ -2304,11 +2314,15 @@ function parseConfirmationRows(raw: string): ConfirmationFixtureRow[] {
     if (entry.role !== "pin" && entry.role !== "new") throw new Error(`${id} role`);
     if (!Object.prototype.hasOwnProperty.call(entry, "device")) throw new Error(`${id} device`);
     if (typeof entry.confirm !== "boolean") throw new Error(`${id} confirm`);
+    if (entry.markedAsLight !== undefined && typeof entry.markedAsLight !== "boolean") {
+      throw new Error(`${id} markedAsLight`);
+    }
     return {
       id,
       device: entry.device === null ? null : parseConfirmationDevice(entry.device, id),
       operation: parseConfirmationOperation(entry.operation, id),
       confirm: entry.confirm,
+      markedAsLight: entry.markedAsLight === true,
     };
   });
 }
@@ -2575,12 +2589,23 @@ function smartDeviceFromConfirmation(device: ConfirmationFixtureDevice): SmartDe
 it("matches the shared confirmation table in confirmation_golden.json", () => {
   const raw = readFileSync(resolve(process.cwd(), "../Tests/Fixtures/confirmation_golden.json"), "utf8");
   const rows = parseConfirmationRows(raw);
-  assert.equal(rows.length, 90);
+  assert.equal(rows.length, 96);
   assert.equal(new Set(rows.map((row) => row.id)).size, rows.length);
   for (const row of rows) {
     if (row.device) assert.equal(row.device.id, row.id, row.id);
     const devices = row.device ? [smartDeviceFromConfirmation(row.device)] : [];
     const intent: DeviceIntent = { targetId: row.device?.id ?? "missing", operation: row.operation };
+    if (row.markedAsLight) {
+      // #104: `markedAsLight` rows exercise the manual policy's single decision point with the
+      // device marked as an ordinary light; the model hazard table is deliberately not asserted.
+      const marks = new Set(row.device ? [row.device.id] : []);
+      assert.equal(
+        ManualControlPolicy.requiresConfirmation(intent, devices, marks),
+        row.confirm,
+        row.id,
+      );
+      continue;
+    }
     assert.equal(ModelActionPolicy.needsConfirmation(intent, devices), row.confirm, row.id);
     if (row.device?.kind === "sensor") {
       assert.deepEqual(IntentValidator.sanitize([intent], devices, []), [], row.id);
@@ -2613,6 +2638,177 @@ it("matches the shared confirmation table in confirmation_golden.json", () => {
     const device = smartDeviceFromConfirmation(row.device);
     const facet = facetControlFromConfirmation(row.facet, device.id);
     assert.equal(ManualControlPolicy.facetRequiresConfirmation(facet, row.value, device), row.confirm, row.id);
+  }
+});
+
+it("marks a wall switch as a light at the single confirmation decision point; stale marks never widen (#104)", () => {
+  const wallPlugKind: Extract<SmartDevice["kind"], { kind: "plug" }> = {
+    kind: "plug",
+    switchEntityId: "switch.wall",
+    isOn: false,
+    powerWatts: null,
+    childLockEntityId: null,
+    isChildLocked: false,
+  };
+  const wall: SmartDevice = {
+    id: "sw_wall_mark",
+    name: "左键",
+    roomId: "hall",
+    roomName: "玄关",
+    model: "lumi.switch.b1nacn02",
+    isOnline: true,
+    kind: wallPlugKind,
+  };
+  assert.equal(ManualControlPolicy.wallSwitchMayControlLight(wall), true);
+  const marks = new Set([wall.id]);
+  const confirm = (devices: readonly SmartDevice[], marked: ReadonlySet<string>): boolean =>
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: devices[0]!.id, operation: { kind: "power", isOn: true } },
+      devices,
+      marked,
+    );
+
+  // Unmarked keeps the existing hazard; marked runs primary power directly, like a rename with 「灯」.
+  assert.equal(confirm([wall], new Set()), true);
+  assert.equal(confirm([wall], marks), false);
+
+  // Marks only affect primary power: auxiliary switch facets and non-power operations stay gated.
+  assert.equal(
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: wall.id, operation: { kind: "brightness", percent: 50 } },
+      [wall],
+      marks,
+    ),
+    false,
+  );
+  const auxSwitchFacet: FacetControl = {
+    id: "3.1",
+    kind: "toggle",
+    name: "on",
+    title: "右键",
+    serviceName: "switch",
+    unit: null,
+    scale: null,
+    value: false,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: true,
+    isHighValue: false,
+    target: { kind: "property", entityId: "miot:sw_wall_mark:3", piid: 1 },
+  };
+  const backing = new Map<string, string>();
+  setSwitchLightMarkStorage({
+    length: 0,
+    clear: () => void backing.clear(),
+    getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+    key: () => null,
+    removeItem: (key: string) => void backing.delete(key),
+    setItem: (key: string, value: string) => void backing.set(key, value),
+  });
+  try {
+    markSwitchAsLight(wall.id);
+    assert.equal(
+      ManualControlPolicy.facetRequiresConfirmation(auxSwitchFacet, true, wall),
+      true,
+      "marked wall switch still confirms auxiliary switch facets",
+    );
+  } finally {
+    setSwitchLightMarkStorage(undefined);
+  }
+
+  // Stale marks never widen: a real plug, a garage cover, a heater, a UV lamp and a momentary
+  // button entity keep asking even when their id carries an old mark.
+  const stale = new Set(["sw_plug_stale", "cover_garage_stale", "heater_stale", "sw_uv_stale", "sw_button_stale"]);
+  const socket: SmartDevice = {
+    ...wall,
+    id: "sw_plug_stale",
+    name: "书房插座",
+    model: "cuco.plug.v3",
+    kind: { ...wallPlugKind, switchEntityId: "switch.plug" },
+  };
+  const garage: SmartDevice = {
+    ...wall,
+    id: "cover_garage_stale",
+    name: "地下车库门",
+    model: "lumi.curtain.v1",
+    kind: {
+      kind: "cover",
+      entityId: "cover.garage",
+      subtype: "garage-door",
+      positionPercent: 0,
+      positionWritable: true,
+      openDescription: "Open",
+      closeDescription: "Close",
+      pauseDescription: "Pause",
+      batteryPercent: null,
+      faultText: null,
+      motion: "stopped",
+    },
+  };
+  const heater: SmartDevice = {
+    ...wall,
+    id: "heater_stale",
+    name: "次卧取暖器",
+    model: "zhimi.heater.za2",
+    kind: {
+      kind: "climate",
+      entityId: "climate.heater",
+      isOn: false,
+      hvacMode: "off",
+      availableModes: ["off", "heat"],
+      targetTemperature: 20,
+      currentTemperature: null,
+      minTemp: 16,
+      maxTemp: 30,
+      step: 1,
+      fanMode: null,
+      availableFanModes: [],
+    },
+  };
+  const uv: SmartDevice = { ...wall, id: "sw_uv_stale", name: "杀菌灯" };
+  const button: SmartDevice = {
+    ...wall,
+    id: "sw_button_stale",
+    kind: { ...wallPlugKind, switchEntityId: "button.left" },
+  };
+  assert.equal(ManualControlPolicy.wallSwitchMayControlLight(socket), false);
+  assert.equal(ManualControlPolicy.wallSwitchMayControlLight(uv), false);
+  assert.equal(ManualControlPolicy.wallSwitchMayControlLight(button), false);
+  for (const dev of [socket, garage, heater, uv, button]) {
+    assert.equal(confirm([dev], stale), true, `${dev.id} still asks with a stale mark`);
+  }
+});
+
+it("persists the switch-light mark per device id in an isolated storage (#104)", () => {
+  const backing = new Map<string, string>();
+  setSwitchLightMarkStorage({
+    length: 0,
+    clear: () => void backing.clear(),
+    getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+    key: () => null,
+    removeItem: (key: string) => void backing.delete(key),
+    setItem: (key: string, value: string) => void backing.set(key, value),
+  });
+  try {
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), false);
+    markSwitchAsLight("sw_persist");
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), true);
+    assert.equal(switchLightMarkIds().has("sw_persist"), true);
+
+    unmarkSwitchAsLight("sw_persist");
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), false);
+    // Unmarking a missing id keeps the storage valid JSON.
+    unmarkSwitchAsLight("sw_persist");
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), false);
+
+    // Corrupt storage degrades to "nothing is marked" instead of throwing.
+    backing.set(SWITCH_LIGHT_MARKS_STORAGE_KEY, "{not json");
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), false);
+    markSwitchAsLight("sw_persist");
+    assert.equal(isSwitchMarkedAsLight("sw_persist"), true);
+  } finally {
+    setSwitchLightMarkStorage(undefined);
   }
 });
 
@@ -2970,6 +3166,8 @@ it("shows a rename hint only for a default-named wall switch and does not change
     assert.equal(confirms(dev, true), true, `${dev.name} still confirms`);
     assert.equal(confirms(dev, false), false, `${dev.name} off stays direct`);
     assert.match(hintOf(dev) ?? "", /加上「灯」/);
+    assert.doesNotMatch(hintOf(dev) ?? "", /这是灯，以后不再询问/);
+    assert.match(ManualControlPolicy.wallSwitchMarkPromptHint(dev) ?? "", /这是灯，以后不再询问/);
   }
 
   const silent = [
@@ -2985,6 +3183,7 @@ it("shows a rename hint only for a default-named wall switch and does not change
   ];
   for (const dev of silent) {
     assert.equal(hintOf(dev), null, `${dev.name} (${dev.model}) has no rename hint`);
+    assert.equal(ManualControlPolicy.wallSwitchMarkPromptHint(dev), null, `${dev.name} (${dev.model}) has no mark prompt hint`);
     assert.equal(confirms(dev, true), dev.name !== "厨房灯", `${dev.name} confirmation unchanged`);
   }
 
@@ -3012,6 +3211,7 @@ it("shows a rename hint only for a default-named wall switch and does not change
   };
   assert.equal(confirms(heater, true), true);
   assert.equal(hintOf(heater), null);
+  assert.equal(ManualControlPolicy.wallSwitchMarkPromptHint(heater), null);
   assert.equal(
     ManualControlPolicy.wallSwitchLightHintForIntents(
       [
@@ -3031,9 +3231,6 @@ it("shows a rename hint only for a default-named wall switch and does not change
       const hint = hintOf(left) ?? "";
       const keywords = [...hint.matchAll(/[「“]([^」”]+)[」”]/g)].map((match) => match[1]!);
       assert.ok(keywords.length > 0, `${language} hint names a keyword: ${hint}`);
-      if (language === "zh-Hant") {
-        assert.deepEqual(keywords, ["燈"]);
-      }
       for (const keyword of keywords) {
         const renamed = { ...left, name: `${left.name} ${keyword}` };
         assert.equal(isSwitchedLightDevice(renamed), true, `${language} keyword ${keyword} is a light name`);

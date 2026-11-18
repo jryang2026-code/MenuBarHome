@@ -203,7 +203,7 @@ struct ToggleDeviceIntent: AppIntent {
             )
         }
         let isMomentary = current.isMomentaryButton
-        let task = store.togglePrimary(current)
+        let task = store.togglePrimary(current, offersSwitchLightMark: false)
         guard await task?.value == true else {
             return isMomentary
                 ? L10n.format("%@ 触发失败", "Failed to trigger %@", current.name)

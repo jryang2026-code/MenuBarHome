@@ -656,4 +656,245 @@ struct ModalConfirmationStateTests {
             .callMiotAction(entityId: "miot:feeder:2:1", arguments: [.number(3)])
         ])
     }
+
+    @Test("togglePrimary fails closed when a wall switch changes into a non-light high-risk device during modal")
+    func togglePrimaryFailsClosedWhenWallSwitchCategoryChangesDuringModal() async throws {
+        func wallSwitch(
+            name: String = "左键",
+            model: String = "lumi.switch.b1nacn02",
+            roomName: String = "玄关"
+        ) -> SmartDevice {
+            SmartDevice(
+                id: "wall-1",
+                name: name,
+                roomId: "hall",
+                roomName: roomName,
+                model: model,
+                isOnline: true,
+                kind: .plug(PlugSpec(switchEntityId: "switch.wall_1", isOn: false, powerWritable: true)),
+                accountId: "acc-1"
+            )
+        }
+
+        let mock = ScriptedProvider(snapshot: SynthesizedHome(devices: [wallSwitch()]))
+        let suiteName = "test.modal.wall.category.\(UUID().uuidString)"
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // 1. Wall switch becomes a UV lamp ("杀菌灯", no longer light-eligible) while modal is open.
+        store.manualControlConfirmationHandler = { _ in
+            store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [
+                wallSwitch(name: "杀菌灯")
+            ])))
+            return true
+        }
+        let initial = try #require(store.devices.first)
+        #expect(store.togglePrimary(initial) == nil)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // 2. Wall switch becomes a socket model ("cuco.plug.v3") while modal is open.
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [wallSwitch()])))
+        store.manualControlConfirmationHandler = { _ in
+            store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [
+                wallSwitch(name: "书房插座", model: "cuco.plug.v3")
+            ])))
+            return true
+        }
+        let restored = try #require(store.devices.first)
+        #expect(store.togglePrimary(restored) == nil)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // 3. Benign rename that stays a light-eligible wall switch ("左键" -> "玄关左键") still executes
+        //    and keeps the post-modal room/name fields.
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [wallSwitch()])))
+        store.manualControlConfirmationHandler = { _ in
+            store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [
+                wallSwitch(name: "玄关左键", roomName: "门厅")
+            ])))
+            return true
+        }
+        let benign = try #require(store.devices.first)
+        let task = try #require(store.togglePrimary(benign))
+        #expect(await task.value == true)
+        #expect(await mock.executedCommands == [.setSwitch(entityId: "switch.wall_1", isOn: true)])
+        #expect(store.devices.first?.name == "玄关左键")
+        #expect(store.devices.first?.roomName == "门厅")
+    }
+
+    @Test("Batch undo re-evaluates switch-light marks and device categories changed during another device's modal")
+    func batchUndoReevaluatesMarksAndCategoriesChangedDuringModal() async throws {
+        let wallBefore = SmartDevice(
+            id: "wall-before",
+            name: "玄关左键",
+            roomId: "hall",
+            roomName: "玄关",
+            model: "lumi.switch.b1nacn02",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall_before", isOn: true, powerWritable: true)),
+            accountId: "acc-1"
+        )
+        let heaterPlug = SmartDevice(
+            id: "plug-heater",
+            name: "取暖器插座",
+            roomId: "living",
+            roomName: "客厅",
+            model: "chuangmi.plug.212a01",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.heater_plug", isOn: true, powerWritable: true)),
+            accountId: "acc-1"
+        )
+        let wallAfter = SmartDevice(
+            id: "wall-after",
+            name: "走廊右键",
+            roomId: "hall",
+            roomName: "玄关",
+            model: "lumi.switch.b1nacn02",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall_after", isOn: true, powerWritable: true)),
+            accountId: "acc-1"
+        )
+
+        var home = SynthesizedHome(devices: [wallBefore, heaterPlug, wallAfter])
+        home.deviceBackends = [
+            wallBefore.id: .xiaomiCloud,
+            heaterPlug.id: .xiaomiCloud,
+            wallAfter.id: .xiaomiCloud,
+        ]
+        let mock = MockHomeProvider(snapshot: home)
+        let suiteName = "test.modal.undo.marks.\(UUID().uuidString)"
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        store.markSwitchAsLight(wallBefore.id)
+        store.markSwitchAsLight(wallAfter.id)
+        store.setJoinsAllOff(true, deviceId: wallBefore.id)
+        store.setJoinsAllOff(true, deviceId: heaterPlug.id)
+        store.setJoinsAllOff(true, deviceId: wallAfter.id)
+
+        _ = await store.turnAllOff()?.value
+        store.pauseUndoBannerCountdown()
+        let countAfterOff = await mock.executedCommands.count
+        #expect(countAfterOff == 3)
+
+        // While confirming `heaterPlug`'s undo, both marked switches are unmarked; user declines
+        // the newly-required prompts for the two switches while approving `heaterPlug`.
+        var promptedMessages: [String] = []
+        store.manualControlConfirmationHandler = { prompt in
+            promptedMessages.append(prompt.message)
+            if prompt.message.contains("取暖器插座") {
+                store.unmarkSwitchAsLight(wallBefore.id)
+                store.unmarkSwitchAsLight(wallAfter.id)
+                return true
+            }
+            return false
+        }
+
+        let undoTask = try #require(store.undoTurnAllOff())
+        await undoTask.value
+
+        let restoreCommands = Array((await mock.executedCommands).dropFirst(countAfterOff))
+        #expect(
+            restoreCommands == [.setSwitch(entityId: "switch.heater_plug", isOn: true)],
+            "switches unmarked during the modal must be re-checked and not restored without confirmation"
+        )
+        #expect(promptedMessages.contains { $0.contains("玄关左键") })
+        #expect(promptedMessages.contains { $0.contains("走廊右键") })
+    }
+
+    @Test("Assistant multi-intent confirmation re-checks earlier marked switches when marks or categories change during modal")
+    func assistantIntentsRecheckMarksChangedDuringModal() async throws {
+        let wall = SmartDevice(
+            id: "wall-assist",
+            name: "左键",
+            roomId: "hall",
+            roomName: "玄关",
+            model: "lumi.switch.b1nacn02",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall_assist", isOn: false, powerWritable: true)),
+            accountId: "acc-1"
+        )
+        let plug = SmartDevice(
+            id: "plug-assist",
+            name: "书房插座",
+            roomId: "study",
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.plug_assist", isOn: false, powerWritable: true)),
+            accountId: "acc-1"
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall, plug]))
+        let suiteName = "test.modal.assist.marks.\(UUID().uuidString)"
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        store.markSwitchAsLight(wall.id)
+
+        let suggestion = AssistantSuggestion(
+            id: "sug-1",
+            title: "打开两个开关",
+            intents: [
+                DeviceIntent(targetId: wall.id, operation: .power(true)),
+                DeviceIntent(targetId: plug.id, operation: .power(true)),
+            ]
+        )
+
+        store.manualControlConfirmationHandler = { prompt in
+            if prompt.message.contains("书房插座") {
+                // Unmark `wall` while `plug`'s confirmation modal is open; decline `wall` when re-asked.
+                store.unmarkSwitchAsLight(wall.id)
+                return true
+            }
+            return false
+        }
+
+        await store.applyAssistantSuggestion(suggestion)
+        #expect(
+            await mock.executedCommands == [.setSwitch(entityId: "switch.plug_assist", isOn: true)],
+            "earlier switch unmarked during a sibling intent's modal must not execute unconfirmed"
+        )
+    }
+
+    @Test("setFacetValue fails closed before optimistic write when reported start vanishes during modal")
+    func setFacetValueFailsClosedWhenPostModalHazardEscalates() async throws {
+        var home = SynthesizedHome(devices: [Self.waterHeater(cardTarget: 40)])
+        home.deviceFacets = ["wh": [Self.targetTemperatureSlider(value: .number(40))]]
+        home.deviceBackends = ["wh": .xiaomiCloud]
+        let mock = MockHomeProvider(snapshot: home)
+        let store = HomeStore(
+            provider: mock,
+            defaultsSuiteName: "test.modal.facet.escalate.\(UUID().uuidString)"
+        )
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // User approves `.warmer` (40 -> 50), but during the modal the water heater loses its
+        // reported temperature reading (`value = nil`), which requires `.unknownStartTemperature`.
+        store.manualControlConfirmationHandler = { _ in
+            var missingStartDevice = Self.waterHeater(cardTarget: 40)
+            if case .appliance(var spec) = missingStartDevice.kind {
+                spec.targetTemperature = nil
+                missingStartDevice.kind = .appliance(spec)
+            }
+            var nextHome = SynthesizedHome(devices: [missingStartDevice])
+            var unknownSlider = Self.targetTemperatureSlider(value: .number(40))
+            unknownSlider.value = nil
+            nextHome.deviceFacets = ["wh": [unknownSlider]]
+            nextHome.deviceBackends = ["wh": .xiaomiCloud]
+            store.handleProviderEvent(.snapshotUpdated(nextHome))
+            return true
+        }
+
+        store.setFacetValue("wh", controlId: "2.5", value: .number(50))
+        #expect(store.facetWrites.isEmpty)
+        #expect(store.undoBanner == nil)
+        #expect(store.deviceFacets["wh"]?.first(where: { $0.id == "2.5" })?.value == nil)
+        #expect(await mock.executedCommands.isEmpty)
+    }
 }

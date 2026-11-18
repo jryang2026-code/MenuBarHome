@@ -75,7 +75,7 @@ extension HomeStore {
     }
 
     @discardableResult
-    public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
+    public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
@@ -173,10 +173,11 @@ extension HomeStore {
         let modalContext = captureModalDeviceContext(for: initial)
         var didPresentModal = false
         if let promptOperation {
-            if ManualControlPolicy.requiresConfirmation(promptOperation, for: initial) {
+            let marks = SwitchLightMarks.load(defaults: userDefaults)
+            if ManualControlPolicy.requiresConfirmation(promptOperation, for: initial, markedLightIds: marks) {
                 didPresentModal = true
             }
-            guard allowManualControl(promptOperation, for: initial) else { return nil }
+            guard allowManualControl(promptOperation, for: initial, offersMarkAsLight: offersSwitchLightMark) else { return nil }
         }
 
         let current: SmartDevice
@@ -186,6 +187,15 @@ extension HomeStore {
                 requireOnline: true,
                 showOfflineToast: true
             ), resolved.isPrimaryToggleable else {
+                return nil
+            }
+            if let promptOperation,
+               rejectChangedPostModalHazard(
+                   promptOperation,
+                   on: resolved,
+                   captured: modalContext,
+                   didPresentModal: true
+               ) {
                 return nil
             }
             current = resolved
@@ -599,12 +609,11 @@ extension HomeStore {
               case .climate(let initialSpec) = initial.kind,
               initialSpec.temperatureWritable else { return }
         let nextTemp = max(initialSpec.minTemp, min(initialSpec.maxTemp, initialSpec.targetTemperature + delta))
-        let modalContext = captureModalDeviceContext(for: initial)
-        guard allowManualControl(.targetTemperature(nextTemp), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .climate(var s) = previous.kind,
+        guard let confirmed = confirmAndResolveManualControl(.targetTemperature(nextTemp), for: initial),
+              case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId,
               s.temperatureWritable else { return }
+        let previous = confirmed.device
         var updated = previous
         s.targetTemperature = nextTemp
         updated.kind = .climate(s)
@@ -624,11 +633,10 @@ extension HomeStore {
     public func setClimateMode(_ deviceId: String, mode: String) {
         guard let initial = controllableDevice(deviceId),
               case .climate(let initialSpec) = initial.kind else { return }
-        let modalContext = captureModalDeviceContext(for: initial)
-        guard allowManualControl(.hvacMode(mode), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .climate(var s) = previous.kind,
+        guard let confirmed = confirmAndResolveManualControl(.hvacMode(mode), for: initial),
+              case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId else { return }
+        let previous = confirmed.device
         let isOn = (mode != "off")
         var updated = previous
         s.hvacMode = mode
@@ -656,15 +664,26 @@ extension HomeStore {
               case .appliance(let initialSpec) = initial.kind,
               initialSpec.modeWritable, initialSpec.availableModes.contains(mode) else { return }
         let modalContext = captureModalDeviceContext(for: initial)
+        var didPresentModal = false
         // Picking a heat mode from standby starts the heater, so it takes the same confirmation
         // as the power button. Idle/off modes and appliances without heat stay direct (#4).
         if initialSpec.heats, !initialSpec.isOn, ApplianceSpec.modeStartsHeating(mode) {
+            didPresentModal = ManualControlPolicy.requiresConfirmation(.power(true), for: initial)
             guard allowManualControl(.power(true), for: initial) else { return }
         }
         guard let previous = resolvePostModalDevice(modalContext),
               case .appliance(var s) = previous.kind,
               s.modeEntityId == initialSpec.modeEntityId,
               s.modeWritable, s.availableModes.contains(mode) else { return }
+        if (didPresentModal || (s.heats && !s.isOn && ApplianceSpec.modeStartsHeating(mode))),
+           rejectChangedPostModalHazard(
+               .power(true),
+               on: previous,
+               captured: modalContext,
+               didPresentModal: didPresentModal
+           ) {
+            return
+        }
         var updated = previous
         s.currentMode = mode
         updated.kind = .appliance(s)
@@ -694,13 +713,12 @@ extension HomeStore {
         }
         let stepped = initialSpec.minTemp + units * step
         let nextTemp = max(initialSpec.minTemp, min(initialSpec.maxTemp, stepped))
-        let modalContext = captureModalDeviceContext(for: initial)
         guard nextTemp != target,
-              allowManualControl(.targetTemperature(nextTemp), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .appliance(var s) = previous.kind,
+              let confirmed = confirmAndResolveManualControl(.targetTemperature(nextTemp), for: initial),
+              case .appliance(var s) = confirmed.device.kind,
               s.temperatureEntityId == initialSpec.temperatureEntityId,
               s.temperatureWritable else { return }
+        let previous = confirmed.device
         var updated = previous
         s.targetTemperature = nextTemp
         updated.kind = .appliance(s)
@@ -760,15 +778,13 @@ extension HomeStore {
     public func runApplianceAction(_ deviceId: String, action: ApplianceAction) {
         guard let initial = controllableDevice(deviceId), case .appliance(let initialSpec) = initial.kind,
               initialSpec.startAction == action || initialSpec.pauseAction == action || initialSpec.stopAction == action else { return }
-        let modalContext = captureModalDeviceContext(for: initial)
         // Starting a cycle is the hazardous direction; pausing and stopping wind it down.
         let operation: IntentOperation = action.kind == .start ? .power(true) : .power(false)
-        guard allowManualControl(operation, for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .appliance(let s) = previous.kind,
+        guard let confirmed = confirmAndResolveManualControl(operation, for: initial),
+              case .appliance(let s) = confirmed.device.kind,
               s.startAction == action || s.pauseAction == action || s.stopAction == action else { return }
         // The program state is reported by the device; nothing is shown ahead of it.
-        commitManualWrite(from: previous, to: nil, command: .pressButton(entityId: action.entityId), lock: nil)
+        commitManualWrite(from: confirmed.device, to: nil, command: .pressButton(entityId: action.entityId), lock: nil)
     }
 
     public func setHumidifierMode(_ deviceId: String, mode: String) {
@@ -812,11 +828,10 @@ extension HomeStore {
     public func setClimateFanMode(_ deviceId: String, fanMode: String) {
         guard let initial = controllableDevice(deviceId),
               case .climate(let initialSpec) = initial.kind else { return }
-        let modalContext = captureModalDeviceContext(for: initial)
-        guard allowManualControl(.fanSpeed(fanMode), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .climate(var s) = previous.kind,
+        guard let confirmed = confirmAndResolveManualControl(.fanSpeed(fanMode), for: initial),
+              case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId else { return }
+        let previous = confirmed.device
         var updated = previous
         s.fanMode = fanMode
         updated.kind = .climate(s)
@@ -836,11 +851,11 @@ extension HomeStore {
     public func setClimateSwingMode(_ deviceId: String, swingMode: String) {
         guard let initial = controllableDevice(deviceId),
               case .climate(let initialSpec) = initial.kind else { return }
-        let modalContext = captureModalDeviceContext(for: initial)
-        guard allowManualControl(.oscillation(swingMode.caseInsensitiveCompare("off") != .orderedSame), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .climate(var s) = previous.kind,
+        let operation = IntentOperation.oscillation(swingMode.caseInsensitiveCompare("off") != .orderedSame)
+        guard let confirmed = confirmAndResolveManualControl(operation, for: initial),
+              case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId else { return }
+        let previous = confirmed.device
         var updated = previous
         s.swingMode = swingMode
         updated.kind = .climate(s)
@@ -918,10 +933,22 @@ extension HomeStore {
         let closing = checkSpec.closeDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         let pausing = checkSpec.pauseDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         let modalContext = captureModalDeviceContext(for: check)
-        if opening || closing {
-            guard allowManualControl(opening ? .power(true) : .power(false), for: check) else { return }
+        let motorOperation: IntentOperation? = (opening || closing) ? .power(opening) : nil
+        var didPresentModal = false
+        if let motorOperation {
+            didPresentModal = ManualControlPolicy.requiresConfirmation(motorOperation, for: check)
+            guard allowManualControl(motorOperation, for: check) else { return }
         }
-        guard resolvePostModalDevice(modalContext) != nil else { return }
+        guard let resolvedBeforeCancel = resolvePostModalDevice(modalContext) else { return }
+        if let motorOperation,
+           rejectChangedPostModalHazard(
+               motorOperation,
+               on: resolvedBeforeCancel,
+               captured: modalContext,
+               didPresentModal: didPresentModal
+           ) {
+            return
+        }
         cancelDebouncedWrites(for: deviceId, keys: ["\(deviceId).cover"])
         guard let previous = resolvePostModalDevice(modalContext),
               case .cover(var s) = previous.kind,
@@ -1063,7 +1090,9 @@ extension HomeStore {
             approval: approval,
             startPosition: startPosition
         )
-        if answeredPrompt, !Self.coverDragMaySend(coverDrag, from: previous, startPosition: startPosition) {
+        if answeredPrompt,
+           ManualControlHazardProfile(previous) != modalContext.hazardProfile
+               || !Self.coverDragMaySend(coverDrag, from: previous, startPosition: startPosition) {
             showControlFailure(ManualWriteNeedsCoverConfirmation(), device: previous, adjustment: true)
             return
         }
@@ -1191,8 +1220,9 @@ extension HomeStore {
         let key = facetWriteKey(deviceId, controlId)
         let prePromptPrevious = facetWrites[key]
         let prePromptOrigin = if let prePromptPrevious { prePromptPrevious.origin } else { control.value }
-        let tickApproval: FacetDragApproval?
+        var tickApproval: FacetDragApproval?
         var newlyApproved: FacetDragApproval?
+        let preModalFacetApproval: FacetDragApproval?
         var didPresentModal = false
         if control.kind == .slider {
             // Only a slider still waiting in its debounce may reuse an approval that this same
@@ -1210,6 +1240,7 @@ extension HomeStore {
                 fallbackControl: control
             )
             tickApproval = evaluation.approval
+            preModalFacetApproval = evaluation.approval
             if let required = evaluation.approval, !priorApprovals.contains(required) {
                 didPresentModal = ManualControlPolicy.confirmation(
                     facet: evaluation.control,
@@ -1226,6 +1257,11 @@ extension HomeStore {
         } else {
             // A toggle or select tapped again while an earlier write is pending is a new decision
             // (off -> on of a heater) and is judged on its own value.
+            preModalFacetApproval = ManualControlPolicy.facetConfirmationKind(
+                control,
+                value: value,
+                for: device
+            )
             didPresentModal = ManualControlPolicy.confirmation(
                 facet: control,
                 value: value,
@@ -1285,6 +1321,53 @@ extension HomeStore {
                 confirmedApprovals.insert(newlyApproved)
             }
         }
+        if didPresentModal {
+            let hazardStable = ManualControlHazardProfile(currentDevice) == modalContext.hazardProfile
+                && currentControl.serviceName == control.serviceName
+                && currentControl.name == control.name
+            if !hazardStable {
+                showControlFailure(
+                    ManualWriteNeedsFacetConfirmation(),
+                    device: currentDevice,
+                    adjustment: currentControl.kind == .slider
+                )
+                return
+            }
+            if currentControl.kind == .slider {
+                let postEvaluation = facetSliderEvaluation(
+                    deviceId: deviceId,
+                    controlId: controlId,
+                    origin: origin,
+                    value: value,
+                    fallbackDevice: currentDevice,
+                    fallbackControl: currentControl
+                )
+                if let postRequired = postEvaluation.approval,
+                   !confirmedApprovals.contains(postRequired) {
+                    showControlFailure(
+                        ManualWriteNeedsFacetConfirmation(),
+                        device: currentDevice,
+                        adjustment: true
+                    )
+                    return
+                }
+                tickApproval = postEvaluation.approval
+            } else {
+                let postRequired = ManualControlPolicy.facetConfirmationKind(
+                    currentControl,
+                    value: value,
+                    for: currentDevice
+                )
+                if let postRequired, postRequired != preModalFacetApproval {
+                    showControlFailure(
+                        ManualWriteNeedsFacetConfirmation(),
+                        device: currentDevice,
+                        adjustment: false
+                    )
+                    return
+                }
+            }
+        }
         let reusableBannerID: UUID? = if canReusePreviousBanner,
                                          let existingBannerID = previous?.bannerID,
                                          undoBanner?.id == existingBannerID {
@@ -1342,12 +1425,26 @@ extension HomeStore {
             return
         }
         let modalContext = captureModalDeviceContext(for: device)
+        let didPresentModal = ManualControlPolicy.confirmation(
+            facet: control,
+            value: nil,
+            portion: portion,
+            for: device
+        ) != nil
         guard allowManualControl(facet: control, value: nil, portion: portion, for: device),
               let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true),
               let currentControl = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
               facetWriteAllowed(currentControl),
               let currentTarget = currentControl.target,
               currentTarget == target else { return }
+        if didPresentModal,
+           ManualControlHazardProfile(currentDevice) != modalContext.hazardProfile
+               || currentControl.serviceName != control.serviceName
+               || currentControl.name != control.name
+               || currentControl.portionArgumentIndex != control.portionArgumentIndex {
+            showControlFailure(ManualWriteNeedsFacetConfirmation(), device: currentDevice, adjustment: false)
+            return
+        }
         let command: DeviceCommand
         switch currentTarget {
         case .action(let entityId):
@@ -1792,12 +1889,12 @@ extension HomeStore {
     public func performVacuumAction(_ deviceId: String, action: VacuumAction) {
         guard let initial = controllableDevice(deviceId),
               case .vacuum(let initialSpec) = initial.kind else { return }
-        let modalContext = captureModalDeviceContext(for: initial)
-        guard allowManualControl(action == .start ? .power(true) : .power(false), for: initial),
-              let previous = resolvePostModalDevice(modalContext),
-              case .vacuum(let currentSpec) = previous.kind,
+        let operation: IntentOperation = action == .start ? .power(true) : .power(false)
+        guard let confirmed = confirmAndResolveManualControl(operation, for: initial),
+              case .vacuum(let currentSpec) = confirmed.device.kind,
               currentSpec.entityId == initialSpec.entityId,
-              let change = Self.vacuumActionChange(previous, action: action) else { return }
+              let change = Self.vacuumActionChange(confirmed.device, action: action) else { return }
+        let previous = confirmed.device
         commitManualWrite(
             from: previous,
             to: change.updated,

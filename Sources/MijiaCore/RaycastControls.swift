@@ -176,15 +176,24 @@ extension HomeStore {
         return raycastControllable(device)
     }
 
-    /// The hazard confirmation, reporting a refusal the way Raycast shows it.
-    private func raycastConfirm(_ operation: IntentOperation, for device: SmartDevice) -> RaycastDirectResult? {
+    /// The hazard confirmation, reporting a refusal the way Raycast shows it and returning the
+    /// verified post-modal live device so callers never overwrite cloud updates from the modal spin.
+    private func raycastConfirm(
+        _ operation: IntentOperation,
+        for device: SmartDevice
+    ) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
         let preConfirmToastId = toastNotice?.id
-        guard allowManualControl(operation, for: device) else {
+        guard let resolved = confirmAndResolveManualControl(
+            operation,
+            for: device,
+            requireOnline: true,
+            showOfflineToast: true
+        ) else {
             let msg = (toastNotice?.id != preConfirmToastId ? toastNotice?.message : nil)
                 ?? L10n.format("已取消「%@」的操作", "Cancelled the action for \"%@\"", device.name)
-            return (true, msg, true)
+            return (nil, (true, msg, true))
         }
-        return nil
+        return (resolved.device, nil)
     }
 
     /// Shows `updated`, sends `commands`, and reports the outcome as a toast and a Raycast reply.
@@ -265,11 +274,17 @@ extension HomeStore {
     /// one, otherwise the open/close action word. An explicit power link therefore reaches the
     /// motor as open/close even while it is travelling; `raycastConfirm` keeps the hazard gate.
     private func executeCoverPosition(_ device: SmartDevice, percent: Int) async -> RaycastDirectResult {
-        guard case .cover(var spec) = device.kind else {
+        guard case .cover(let initialSpec) = device.kind else {
             return (false, "", false)
         }
         let clamped = max(0, min(100, percent))
-        if let refusal = raycastConfirm(clamped > 0 ? .power(true) : .power(false), for: device) { return refusal }
+        let confirmed = raycastConfirm(clamped > 0 ? .power(true) : .power(false), for: device)
+        if let refusal = confirmed.refusal { return refusal }
+        guard let current = confirmed.device,
+              case .cover(var spec) = current.kind,
+              spec.entityId == initialSpec.entityId else {
+            return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
+        }
         let command: DeviceCommand?
         if clamped == 100 {
             if !spec.positionWritable, let open = spec.openDescription {
@@ -297,26 +312,27 @@ extension HomeStore {
             command = nil
         }
         guard let cmd = command else {
-            return (true, L10n.format("%@ 不支持该位置调节", "%@ does not support that position", device.name), true)
+            return (true, L10n.format("%@ 不支持该位置调节", "%@ does not support that position", current.name), true)
         }
-        let origin = activeCoverOrigin(for: device.id, fallback: spec.positionPercent)
-        if let previous = spec.positionPercent, clamped != previous {
+        let latestPos = lastCoverPositions[current.id] ?? spec.reportedPositionPercent ?? spec.positionPercent
+        let origin = activeCoverOrigin(for: current.id, fallback: latestPos)
+        if let previous = latestPos, clamped != previous {
             spec.motion = clamped > previous ? .opening : .closing
             spec.motionIsInferred = false
-            coverCommandOrigins[device.id] = origin
+            coverCommandOrigins[current.id] = origin
         }
         spec.positionPercent = clamped
-        var updated = device
+        var updated = current
         updated.kind = .cover(spec)
         let success: String
         if clamped == 100 {
-            success = L10n.tr("已打开\(device.name)", "Opened \(device.name)")
+            success = L10n.tr("已打开\(current.name)", "Opened \(current.name)")
         } else if clamped == 0 {
-            success = L10n.tr("已关闭\(device.name)", "Closed \(device.name)")
+            success = L10n.tr("已关闭\(current.name)", "Closed \(current.name)")
         } else {
-            success = L10n.tr("已将\(device.name)开到 \(clamped)%", "Set \(device.name) to \(clamped)%")
+            success = L10n.tr("已将\(current.name)开到 \(clamped)%", "Set \(current.name) to \(clamped)%")
         }
-        return await raycastWrite(from: device, to: updated, commands: [cmd], lock: coverOptimisticLockDuration, success: success)
+        return await raycastWrite(from: current, to: updated, commands: [cmd], lock: coverOptimisticLockDuration, success: success)
     }
 
     private func executeDirectFanPercentage(at idx: Int, percent: Int) async -> RaycastDirectResult {
@@ -366,21 +382,28 @@ extension HomeStore {
     private func executeDirectVacuumAction(at idx: Int, action: VacuumAction) async -> RaycastDirectResult {
         let check = raycastControllable(at: idx)
         guard let device = check.device else { return check.refusal ?? (false, "", false) }
-        guard case .vacuum(let spec) = device.kind, spec.actionsWritable,
-              let change = Self.vacuumActionChange(device, action: action) else {
+        guard case .vacuum(let initialSpec) = device.kind, initialSpec.actionsWritable else {
             return (true, L10n.format("%@ 不支持该清扫动作", "%@ does not support that vacuum action", device.name), true)
         }
-        if let refusal = raycastConfirm(action == .start ? .power(true) : .power(false), for: device) { return refusal }
+        let confirmed = raycastConfirm(action == .start ? .power(true) : .power(false), for: device)
+        if let refusal = confirmed.refusal { return refusal }
+        guard let current = confirmed.device,
+              case .vacuum(let spec) = current.kind,
+              spec.entityId == initialSpec.entityId,
+              spec.actionsWritable,
+              let change = Self.vacuumActionChange(current, action: action) else {
+            return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
+        }
         let success: String
         switch action {
         case .start:
-            success = L10n.tr("已启动\(device.name)清扫", "Started \(device.name)")
+            success = L10n.tr("已启动\(current.name)清扫", "Started \(current.name)")
         case .pause:
-            success = L10n.tr("已暂停\(device.name)", "Paused \(device.name)")
+            success = L10n.tr("已暂停\(current.name)", "Paused \(current.name)")
         case .returnToBase:
-            success = L10n.tr("已让\(device.name)返回基站回充", "Sent \(device.name) back to dock")
+            success = L10n.tr("已让\(current.name)返回基站回充", "Sent \(current.name) back to dock")
         }
-        return await raycastWrite(from: device, to: change.updated, commands: [change.command], lock: .seconds(2.5), success: success)
+        return await raycastWrite(from: current, to: change.updated, commands: [change.command], lock: .seconds(2.5), success: success)
     }
 
     // MARK: - Parameterized Companion Controls
@@ -424,7 +447,7 @@ extension HomeStore {
             return (true, already, false)
         }
         let previousToastId = toastNotice?.id
-        guard let task = togglePrimary(device) else {
+        guard let task = togglePrimary(device, offersSwitchLightMark: false) else {
             let refusal = (toastNotice?.id != previousToastId ? toastNotice?.message : nil)
                 ?? L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
             return (true, primaryToggleFailureMessage(refusal, for: device), true)
@@ -454,33 +477,39 @@ extension HomeStore {
     public func executeRaycastBrightness(deviceId: String, percent: Int) async -> RaycastDirectResult {
         let check = raycastControllable(deviceId: deviceId)
         guard let device = check.device else { return check.refusal ?? (false, "", false) }
-        guard case .light(var spec) = device.kind else {
+        guard case .light(let initialSpec) = device.kind else {
             return (true, L10n.format("%@ 不是灯具", "%@ is not a light", device.name), true)
         }
         let clamped = max(0, min(100, percent))
-        if clamped > 0, !spec.brightnessWritable {
+        if clamped > 0, !initialSpec.brightnessWritable {
             return (true, L10n.format("%@ 不支持调光", "%@ does not support dimming", device.name), true)
         }
-        if clamped == 0, !spec.powerWritable {
+        if clamped == 0, !initialSpec.powerWritable {
             return (true, L10n.format("%@ 不支持关闭", "%@ cannot be turned off", device.name), true)
         }
-        if let refusal = raycastConfirm(clamped > 0 ? .brightness(clamped) : .power(false), for: device) { return refusal }
+        let confirmed = raycastConfirm(clamped > 0 ? .brightness(clamped) : .power(false), for: device)
+        if let refusal = confirmed.refusal { return refusal }
+        guard let current = confirmed.device,
+              case .light(var spec) = current.kind,
+              spec.entityId == initialSpec.entityId else {
+            return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
+        }
         spec.isOn = clamped > 0
         spec.brightnessPercent = clamped
-        var updated = device
+        var updated = current
         updated.kind = .light(spec)
-        if clamped > 0 { recordManualLightUse(device.id) }
+        if clamped > 0 { recordManualLightUse(current.id) }
         let commands: [DeviceCommand] = clamped > 0
             ? [.setLightBrightness(entityId: spec.entityId, percent: clamped)]
             : [.setLightPower(entityId: spec.entityId, isOn: false)]
         let habitIntents: [DeviceIntent] = clamped > 0
-            ? [.init(targetId: device.id, operation: .brightness(clamped))]
+            ? [.init(targetId: current.id, operation: .brightness(clamped))]
             : []
         let success = clamped > 0
-            ? L10n.tr("已将\(device.name)亮度调到 \(clamped)%", "Set \(device.name) brightness to \(clamped)%")
-            : L10n.tr("已关闭\(device.name)", "Turned off \(device.name)")
+            ? L10n.tr("已将\(current.name)亮度调到 \(clamped)%", "Set \(current.name) brightness to \(clamped)%")
+            : L10n.tr("已关闭\(current.name)", "Turned off \(current.name)")
         return await raycastWrite(
-            from: device, to: updated, commands: commands, lock: .seconds(2.5),
+            from: current, to: updated, commands: commands, lock: .seconds(2.5),
             habitIntents: habitIntents, success: success
         )
     }
@@ -489,26 +518,32 @@ extension HomeStore {
     public func executeRaycastColorTemp(deviceId: String, kelvin: Int) async -> RaycastDirectResult {
         let check = raycastControllable(deviceId: deviceId)
         guard let device = check.device else { return check.refusal ?? (false, "", false) }
-        guard case .light(var spec) = device.kind else {
+        guard case .light(let initialSpec) = device.kind else {
             return (true, L10n.format("%@ 不是灯具", "%@ is not a light", device.name), true)
         }
-        guard spec.colorWritable else {
+        guard initialSpec.colorWritable else {
             return (true, L10n.format("%@ 不支持调节色温", "%@ does not support colour temperature", device.name), true)
         }
-        let clamped = max(spec.minKelvin, min(spec.maxKelvin, kelvin))
-        if let refusal = raycastConfirm(.colorTemperature(clamped), for: device) { return refusal }
+        let clamped = max(initialSpec.minKelvin, min(initialSpec.maxKelvin, kelvin))
+        let confirmed = raycastConfirm(.colorTemperature(clamped), for: device)
+        if let refusal = confirmed.refusal { return refusal }
+        guard let current = confirmed.device,
+              case .light(var spec) = current.kind,
+              spec.entityId == initialSpec.entityId else {
+            return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
+        }
         spec.isOn = true
         spec.colorTempKelvin = clamped
         spec.currentEffect = nil
-        var updated = device
+        var updated = current
         updated.kind = .light(spec)
-        recordManualLightUse(device.id)
+        recordManualLightUse(current.id)
         return await raycastWrite(
-            from: device, to: updated,
+            from: current, to: updated,
             commands: [.setLightColorTemp(entityId: spec.entityId, kelvin: clamped)],
             lock: .seconds(2.5),
-            habitIntents: [.init(targetId: device.id, operation: .colorTemperature(clamped))],
-            success: L10n.tr("已将\(device.name)色温调到 \(clamped)K", "Set \(device.name) colour temperature to \(clamped)K")
+            habitIntents: [.init(targetId: current.id, operation: .colorTemperature(clamped))],
+            success: L10n.tr("已将\(current.name)色温调到 \(clamped)K", "Set \(current.name) colour temperature to \(clamped)K")
         )
     }
 
@@ -517,27 +552,34 @@ extension HomeStore {
     public func executeRaycastTemperature(deviceId: String, celsius: Double) async -> RaycastDirectResult {
         let check = raycastControllable(deviceId: deviceId)
         guard let device = check.device else { return check.refusal ?? (false, "", false) }
-        guard case .climate(var spec) = device.kind else {
+        guard case .climate(let initialSpec) = device.kind else {
             return (true, L10n.format("%@ 不是温控设备", "%@ is not a climate device", device.name), true)
         }
-        guard spec.temperatureWritable else {
+        guard initialSpec.temperatureWritable else {
             return (true, L10n.format("%@ 不支持设定温度", "%@ does not accept a target temperature", device.name), true)
         }
-        let target = Self.snappedTemperature(celsius, lowerBound: spec.minTemp, upperBound: spec.maxTemp, step: spec.step)
+        let target = Self.snappedTemperature(celsius, lowerBound: initialSpec.minTemp, upperBound: initialSpec.maxTemp, step: initialSpec.step)
         let targetText = IntentReply.formatTemperature(target)
-        if target == spec.targetTemperature {
+        if target == initialSpec.targetTemperature {
             return (true, L10n.tr("\(device.name) 的目标温度已经是 \(targetText)°C", "\(device.name) is already set to \(targetText) °C"), false)
         }
-        if let refusal = raycastConfirm(.targetTemperature(target), for: device) { return refusal }
+        let confirmed = raycastConfirm(.targetTemperature(target), for: device)
+        if let refusal = confirmed.refusal { return refusal }
+        guard let current = confirmed.device,
+              case .climate(var spec) = current.kind,
+              spec.entityId == initialSpec.entityId,
+              spec.temperatureWritable else {
+            return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
+        }
         spec.targetTemperature = target
-        var updated = device
+        var updated = current
         updated.kind = .climate(spec)
         return await raycastWrite(
-            from: device, to: updated,
+            from: current, to: updated,
             commands: [.setClimateTemperature(entityId: spec.entityId, temperature: target)],
             lock: .seconds(2.5),
-            habitIntents: [.init(targetId: device.id, operation: .targetTemperature(target))],
-            success: L10n.tr("已将\(device.name)设定为 \(targetText)°C", "Set \(device.name) to \(targetText) °C")
+            habitIntents: [.init(targetId: current.id, operation: .targetTemperature(target))],
+            success: L10n.tr("已将\(current.name)设定为 \(targetText)°C", "Set \(current.name) to \(targetText) °C")
         )
     }
 
@@ -553,18 +595,24 @@ extension HomeStore {
             return (true, L10n.format("%@ 不支持调节风速", "%@ does not support fan speed", device.name), true)
         }
         if let percent {
-            guard let change = Self.fanPercentageChange(device, percent: percent) else {
+            let initialEntityId = spec.entityId
+            let confirmed = raycastConfirm(.power(true), for: device)
+            if let refusal = confirmed.refusal { return refusal }
+            guard let current = confirmed.device,
+                  case .fan(let currentSpec) = current.kind,
+                  currentSpec.entityId == initialEntityId,
+                  currentSpec.speedWritable,
+                  let change = Self.fanPercentageChange(current, percent: percent) else {
                 return (true, L10n.format("%@ 不支持调节风速", "%@ does not support fan speed", device.name), true)
             }
-            if let refusal = raycastConfirm(.power(true), for: device) { return refusal }
             let clamped = max(1, min(100, percent))
             let habitIntents = change.favoritePreset.map {
-                [DeviceIntent(targetId: device.id, operation: .fanSpeed($0))]
+                [DeviceIntent(targetId: current.id, operation: .fanSpeed($0))]
             } ?? []
             return await raycastWrite(
-                from: device, to: change.updated, commands: [change.command], lock: .seconds(2.5),
+                from: current, to: change.updated, commands: [change.command], lock: .seconds(2.5),
                 habitIntents: habitIntents,
-                success: L10n.tr("已将\(device.name)风速调到 \(clamped)%", "Set \(device.name) fan speed to \(clamped)%")
+                success: L10n.tr("已将\(current.name)风速调到 \(clamped)%", "Set \(current.name) fan speed to \(clamped)%")
             )
         }
         guard let wanted = preset else {
