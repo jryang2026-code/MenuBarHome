@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { ManualControlPolicy, ModelActionPolicy } from "../src/core/assistant/actionPolicy.js";
-import { doesUndoStepActivateHighRiskDevice } from "../src/ui/activityStackView.js";
+import {
+  doesUndoStepActivateHighRiskDevice,
+  partitionUndoStepsByHighRiskConfirmation,
+} from "../src/ui/activityStackView.js";
+import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { IntentValidator } from "../src/core/assistant/intent.js";
 import { type ManualControlRules } from "../src/core/miCloud/facets.js";
@@ -631,6 +635,287 @@ describe("assistant device category heater rule (#143)", () => {
       ),
       true,
       "with no facet row a high-risk card is treated as one the property could turn back on",
+    );
+  });
+
+  it("judges a cover undo restore by its actual direction: a garage door closing restore also asks", () => {
+    const coverKind = (
+      subtype: "curtain" | "window-opener" | "garage-door",
+      id: string,
+    ): SmartDevice["kind"] => ({
+      kind: "cover",
+      entityId: `cover.${id}`,
+      subtype,
+      positionPercent: 100,
+      positionWritable: true,
+      openDescription: "Open",
+      closeDescription: "Close",
+      pauseDescription: "Pause",
+      batteryPercent: null,
+      faultText: null,
+      motion: "stopped",
+    });
+    const coverDevice = (
+      subtype: "curtain" | "window-opener" | "garage-door",
+      id: string,
+      name: string,
+    ): SmartDevice => device(coverKind(subtype, id), { id: `did_${id}`, name, model: "lumi.curtain.v1" });
+    const garage = coverDevice("garage-door", "garage", "车库门");
+    const curtain = coverDevice("curtain", "curtain", "客厅窗帘");
+    const opener = coverDevice("window-opener", "window", "阳台开窗器");
+    const devices = [garage, curtain, opener];
+
+    // Restoring a garage door to closed is itself hazardous, exactly like restoring it to open.
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: garage.id, commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 0 }] },
+        devices,
+      ),
+      true,
+      "garage restore to closed via position",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: garage.id, commands: [{ kind: "setSelectOption", entityId: "cover.garage", option: "Close" }] },
+        devices,
+      ),
+      true,
+      "garage restore to closed via the close word",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: garage.id, commands: [{ kind: "setMiotProperty", entityId: "cover.garage", piid: 2, value: 0 }] },
+        devices,
+      ),
+      true,
+      "garage restore to closed via the MIoT position backstop",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: garage.id, commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 100 }] },
+        devices,
+      ),
+      true,
+      "garage restore to open keeps asking",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: garage.id, commands: [{ kind: "setSelectOption", entityId: "cover.garage", option: "Open" }] },
+        devices,
+      ),
+      true,
+      "garage restore to open via the open word keeps asking",
+    );
+
+    // A curtain has no hazard in either direction.
+    for (const command of [
+      { kind: "setNumberValue", entityId: "cover.curtain", value: 0 },
+      { kind: "setNumberValue", entityId: "cover.curtain", value: 100 },
+      { kind: "setSelectOption", entityId: "cover.curtain", option: "Close" },
+    ] as const) {
+      assert.equal(doesUndoStepActivateHighRiskDevice({ deviceId: curtain.id, commands: [command] }, devices), false);
+    }
+
+    // A window opener keeps the open-only rule: closing it makes the home safer.
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: opener.id, commands: [{ kind: "setNumberValue", entityId: "cover.window", value: 100 }] },
+        devices,
+      ),
+      true,
+      "window opener restore to open asks",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: opener.id, commands: [{ kind: "setNumberValue", entityId: "cover.window", value: 0 }] },
+        devices,
+      ),
+      false,
+      "window opener restore to closed stays direct",
+    );
+
+    // De-escalating restores stay direct: a plug or a heater restored to off never asks.
+    const plugOn = device(
+      { kind: "plug", switchEntityId: "switch.plug", isOn: true, powerWatts: null, childLockEntityId: null, isChildLocked: false },
+      { id: "did_plug_lock", name: "书房插座", model: "cuco.plug.v3" },
+    );
+    const heaterOn: SmartDevice = {
+      id: "did_heater_lock",
+      name: "书房电暖器",
+      roomId: "study",
+      roomName: "书房",
+      model: "zhimi.heater.za2",
+      isOnline: true,
+      kind: {
+        kind: "climate",
+        entityId: "climate.heater",
+        isOn: true,
+        hvacMode: "heat",
+        availableModes: ["off", "heat"],
+        targetTemperature: 20,
+        currentTemperature: null,
+        minTemp: 18,
+        maxTemp: 28,
+        step: 1,
+        fanMode: null,
+        availableFanModes: [],
+      },
+    };
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: plugOn.id, commands: [{ kind: "setSwitch", entityId: "switch.plug", isOn: false }] },
+        [...devices, plugOn],
+      ),
+      false,
+      "plug restored to off stays direct",
+    );
+    assert.equal(
+      doesUndoStepActivateHighRiskDevice(
+        { deviceId: heaterOn.id, commands: [{ kind: "setClimatePower", entityId: "climate.heater", isOn: false, resumeMode: "heat" }] },
+        [...devices, heaterOn],
+      ),
+      false,
+      "heater restored to off stays direct",
+    );
+  });
+
+  it("describes the actual restore direction in both undo confirmation paths when closing a garage door", () => {
+    const garage: SmartDevice = device(
+      {
+        kind: "cover",
+        entityId: "cover.garage",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+      { id: "did_garage", name: "车库门", model: "lumi.curtain.v1" },
+    );
+    const closeSteps = [
+      {
+        deviceId: garage.id,
+        commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 0 } as const],
+      },
+    ];
+
+    const checkLocale = (
+      interfaceLanguage: "zh-Hans" | "zh-Hant" | "en",
+      expectedDialog: { title: string; message: string; confirmTitle: string },
+      expectedArmed: string,
+    ) => {
+      const capturedPrompts: Array<{ title: string; message: string; confirmTitle: string; cancelTitle: string }> = [];
+      const hostWithHandler = {
+        devices: [garage],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage },
+        deviceFacets: {},
+        manualControlConfirmationHandler: (prompt: {
+          title: string;
+          message: string;
+          confirmTitle: string;
+          cancelTitle: string;
+        }) => {
+          capturedPrompts.push(prompt);
+          return true;
+        },
+      } as unknown as MenuMijiaWindowsApp;
+
+      partitionUndoStepsByHighRiskConfirmation(hostWithHandler, closeSteps, {
+        isArmed: false,
+        arm: () => {},
+        disarm: () => {},
+      });
+      assert.equal(capturedPrompts.length, 1);
+      assert.equal(capturedPrompts[0]?.title, expectedDialog.title);
+      assert.equal(capturedPrompts[0]?.message, expectedDialog.message);
+      assert.equal(capturedPrompts[0]?.confirmTitle, expectedDialog.confirmTitle);
+
+      const hostArmed = {
+        devices: [garage],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage },
+        deviceFacets: {},
+        manualControlConfirmationHandler: null,
+      } as unknown as MenuMijiaWindowsApp;
+      const armedResult = partitionUndoStepsByHighRiskConfirmation(hostArmed, closeSteps, {
+        isArmed: false,
+        arm: () => {},
+        disarm: () => {},
+      });
+      assert.equal(armedResult.armedPromptText, expectedArmed);
+    };
+
+    checkLocale(
+      "zh-Hans",
+      {
+        title: "确定要恢复关闭「车库门」吗？",
+        message: "撤销操作将关闭高风险设备「车库门」，请确认现场安全。",
+        confirmTitle: "恢复关闭",
+      },
+      "撤销将关闭高风险设备「车库门」，再点一次「撤销」确认执行",
+    );
+    checkLocale(
+      "zh-Hant",
+      {
+        title: "確定要恢復關閉「车库门」嗎？",
+        message: "撤銷操作將關閉高風險設備「车库门」，請確認現場安全。",
+        confirmTitle: "恢復關閉",
+      },
+      "撤銷將關閉高風險設備「车库门」，再點一次「撤銷」確認執行",
+    );
+    checkLocale(
+      "en",
+      {
+        title: 'Restore "车库门" to closed?',
+        message: 'Undoing will close high-risk device "车库门". Please confirm it is safe.',
+        confirmTitle: "Restore Closed",
+      },
+      'Undo will close high-risk device "车库门"; click Undo again to confirm',
+    );
+
+    // Select-option "Close" and MIoT property 0 also use the closing prompt, while opening uses the opening prompt,
+    // and a mixed batch (garage closing + heater turning on) uses direction-neutral state-restore copy.
+    for (const command of [
+      { kind: "setSelectOption", entityId: "cover.garage", option: "Close" } as const,
+      { kind: "setMiotProperty", entityId: "cover.garage", piid: 2, value: 0 } as const,
+    ]) {
+      const armedClose = partitionUndoStepsByHighRiskConfirmation(
+        {
+          devices: [garage],
+          layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+          settings: { interfaceLanguage: "zh-Hans" },
+          deviceFacets: {},
+          manualControlConfirmationHandler: null,
+        } as unknown as MenuMijiaWindowsApp,
+        [{ deviceId: garage.id, commands: [command] }],
+        { isArmed: false, arm: () => {}, disarm: () => {} },
+      );
+      assert.equal(armedClose.armedPromptText, "撤销将关闭高风险设备「车库门」，再点一次「撤销」确认执行");
+    }
+
+    const heaterDev = heater();
+    const mixedArmed = partitionUndoStepsByHighRiskConfirmation(
+      {
+        devices: [garage, heaterDev],
+        layout: { aliases: {}, roomAliases: {}, hiddenDeviceIds: [], roomOrder: [], deviceOrder: {} },
+        settings: { interfaceLanguage: "zh-Hans" },
+        deviceFacets: {},
+        manualControlConfirmationHandler: null,
+      } as unknown as MenuMijiaWindowsApp,
+      [
+        { deviceId: garage.id, commands: [{ kind: "setNumberValue", entityId: "cover.garage", value: 0 }] },
+        { deviceId: heaterDev.id, commands: [{ kind: "setClimatePower", entityId: "miot:heater:2", isOn: true, resumeMode: "heat" }] },
+      ],
+      { isArmed: false, arm: () => {}, disarm: () => {} },
+    );
+    assert.equal(
+      mixedArmed.armedPromptText,
+      "撤销将恢复高风险设备「车库门、电暖器」之前的状态，再点一次「撤销」确认执行",
     );
   });
 
