@@ -519,17 +519,40 @@ async function performSignOutSingleMiAccountOnHost(
     resetHostUnsupportedScanner(host);
 
     const dualRoutesBeforeRemoval = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+    const isRouteOwnedByRemovedAccount = (route: DeviceMergeRoute | undefined, dev: SmartDevice): boolean => {
+      if (MiAccountScope.isOwned(dev.id, accountId) || dev.accountId === accountId) return true;
+      if (!route) return false;
+      if (
+        route.backend === "xiaomiCloud" &&
+        (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
+      ) {
+        return true;
+      }
+      if (
+        route.alternateBackend === "xiaomiCloud" &&
+        route.alternateDevice &&
+        (route.alternateDevice.accountId === accountId || MiAccountScope.isOwned(route.alternateDevice.id, accountId))
+      ) {
+        return true;
+      }
+      return false;
+    };
+    const hasHomeAssistantRepresentation = (route: DeviceMergeRoute | undefined, dev: SmartDevice): boolean => {
+      if (route) {
+        return (
+          route.backend === "homeAssistant" ||
+          (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null)
+        );
+      }
+      return wasDualSource && dev.sourceBackend === "homeAssistant";
+    };
     const removedIds = new Set(
       host.devices
         .filter((d) => {
-          if (MiAccountScope.isOwned(d.id, accountId) || d.accountId === accountId) return true;
           const route = dualRoutesBeforeRemoval?.[d.id];
-          if (!route) return false;
-          if (route.alternateBackend === "homeAssistant" && route.alternateDevice) return false;
-          return (
-            route.backend === "xiaomiCloud" &&
-            (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
-          );
+          if (!isRouteOwnedByRemovedAccount(route, d)) return false;
+          if (hasHomeAssistantRepresentation(route, d)) return false;
+          return true;
         })
         .map((d) => d.id),
     );
@@ -559,6 +582,31 @@ async function performSignOutSingleMiAccountOnHost(
       const nextFacets = { ...host.deviceFacets };
       for (const id of removedIds) delete nextFacets[id];
       host.deviceFacets = nextFacets;
+    }
+    if (wasDualSource) {
+      const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
+        if (dev.accountId !== accountId) return dev;
+        const { accountId: _removedId, accountLabel: _removedLabel, ...rest } = dev;
+        return rest;
+      };
+      host.devices = host.devices.map((d) => {
+        const route = dualRoutesBeforeRemoval?.[d.id];
+        if (!isRouteOwnedByRemovedAccount(route, d)) return d;
+        if (
+          route?.backend === "xiaomiCloud" &&
+          route.alternateBackend === "homeAssistant" &&
+          route.alternateDevice
+        ) {
+          return stripRemovedAccountMeta({
+            ...route.alternateDevice,
+            id: d.id,
+            roomId: d.roomId,
+            roomName: d.roomName,
+            sourceBackend: "homeAssistant",
+          });
+        }
+        return stripRemovedAccountMeta(d);
+      });
     }
 
     if (removal.accounts.length <= 1) {
@@ -710,10 +758,20 @@ export function finishAllMiAccountsSignedOutOnHost(
   host.miSessionExpired = false;
   host.cloudValuesStale = false;
 
-  const hasHA = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
+  const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
+  const hasHA = currentHAIdentity !== null;
   const dualCoordinator = wasDualSource ? host.dualSourceCoordinator : null;
-  const currentHASnapshot = dualCoordinator?.getLastHASnapshot?.() ?? null;
-  const lastMerged = dualCoordinator?.getLastMerged() ?? null;
+  const rawHASnapshot = dualCoordinator?.getLastHASnapshot?.() ?? null;
+  const matchesCurrentHASnapshot =
+    rawHASnapshot !== null &&
+    currentHAIdentity !== null &&
+    (rawHASnapshot.identity === undefined || rawHASnapshot.identity === currentHAIdentity);
+  const currentHASnapshot = matchesCurrentHASnapshot ? rawHASnapshot : null;
+  const snapshotIdentityMismatched =
+    rawHASnapshot !== null &&
+    rawHASnapshot.identity !== undefined &&
+    rawHASnapshot.identity !== currentHAIdentity;
+  const lastMerged = snapshotIdentityMismatched ? null : (dualCoordinator?.getLastMerged() ?? null);
   const dualRoutes = lastMerged?.routes;
   setHostDualSourceEnabled(host, false, { persist: true });
 
@@ -724,8 +782,7 @@ export function finishAllMiAccountsSignedOutOnHost(
       host.groupOwnerByMemberDid = new Map();
       host.selectRoom(null);
       const cache = host.settings.cachedHAHome;
-      const matchesCache =
-        cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
+      const matchesCache = cache?.identity === currentHAIdentity;
       const routeDerivedHA = dualRoutes ? buildHAStateFromDualRoutes(host, dualRoutes) : null;
       if (currentHASnapshot) {
         host.devices = structuredClone(currentHASnapshot.home.devices);
@@ -744,8 +801,9 @@ export function finishAllMiAccountsSignedOutOnHost(
         host.scenes = structuredClone(cache.home.scenes);
         host.environmentReadings = structuredClone(cache.home.environmentReadings);
         host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
-      } else if (dualRoutes) {
+      } else if (dualRoutes || snapshotIdentityMismatched) {
         host.devices = [];
+        host.scenes = [];
         host.environmentReadings = [];
         host.deviceFacets = {};
       } else {

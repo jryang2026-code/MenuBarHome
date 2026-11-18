@@ -13,6 +13,7 @@ import {
   getHostMiAccountsStore,
   isDualSourceEnabled,
   refreshDevices,
+  setHostDeviceSourcePin,
   setHostDualSourceEnabled,
   setHostHAInvokeOverride,
 } from "../src/ui/cloudRefresh.js";
@@ -1281,6 +1282,292 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     assert.equal(isDualSourceEnabled(app), false);
     assert.deepEqual(app.devices.map((d) => d.id), ["ha-cached-lamp"]);
     assert.deepEqual(app.scenes.map((s) => s.id), ["scene.cached_home"]);
+  });
+
+  it("keeps and demotes paired HA-backed cards when removing one of multiple Xiaomi accounts in dual-source mode", async () => {
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    let pauseSubsequentRefresh = false;
+    let resumeRefresh: () => void = () => {};
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (pauseSubsequentRefresh) {
+        await new Promise<void>((resolve) => {
+          resumeRefresh = resolve;
+        });
+      }
+      if (req.url.includes("miot-spec.org")) {
+        if (req.url.includes("chuangmi-v3")) {
+          return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+        }
+        return { status: 200, headers: {}, body: JSON.stringify(LIGHT_SPEC_RAW) };
+      }
+      const { userId, path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        if (userId === SESSION_CN_PRIMARY.userId) {
+          return okMi({
+            homelist: [
+              {
+                id: "h-cn",
+                name: "北京家",
+                roomlist: [{ id: "r-cn", name: "客厅", dids: ["11223344", "22334455", "33445566"] }],
+              },
+            ],
+          });
+        }
+        return okMi({
+          homelist: [
+            {
+              id: "h-sg",
+              name: "SG Home",
+              roomlist: [{ id: "r-sg", name: "Study", dids: ["77889900"] }],
+            },
+          ],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        if (userId === SESSION_CN_PRIMARY.userId) {
+          return okMi({
+            list: [
+              { did: "11223344", name: "客厅配对主灯", model: LIGHT_MODEL, isOnline: true },
+              { did: "22334455", name: "客厅配对插座", model: PLUG_MODEL, isOnline: true },
+              { did: "33445566", name: "纯米家玄关灯", model: LIGHT_MODEL, isOnline: true },
+            ],
+          });
+        }
+        return okMi({
+          list: [{ did: "77889900", name: "新加坡书房灯", model: LIGHT_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: p.piid === 1 ? true : 75 })));
+      }
+      return okMi({});
+    };
+
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      if (pauseSubsequentRefresh) {
+        await new Promise<void>((resolve) => {
+          resumeRefresh = resolve;
+        });
+      }
+      return {
+        areas: [{ area_id: "a1", name: "客厅" }],
+        devices: [
+          {
+            id: "ha-paired-lamp",
+            area_id: "a1",
+            name: "客厅配对主灯 HA",
+            model: LIGHT_MODEL,
+            identifiers: [["xiaomi_home", "cn_11223344"]],
+            connections: [],
+          },
+          {
+            id: "ha-paired-plug",
+            area_id: "a1",
+            name: "客厅配对插座 HA",
+            model: PLUG_MODEL,
+            identifiers: [["xiaomi_home", "cn_22334455"]],
+            connections: [],
+          },
+        ],
+        entities: [
+          { entity_id: "light.living_paired", device_id: "ha-paired-lamp", area_id: null, disabled_by: null, hidden_by: null },
+          { entity_id: "switch.living_paired_plug", device_id: "ha-paired-plug", area_id: null, disabled_by: null, hidden_by: null },
+        ],
+        states: [
+          {
+            entity_id: "light.living_paired",
+            state: "on",
+            attributes: { friendly_name: "客厅配对主灯 HA", supported_color_modes: ["brightness"], brightness: 200 },
+          },
+          {
+            entity_id: "switch.living_paired_plug",
+            state: "on",
+            attributes: { friendly_name: "客厅配对插座 HA" },
+          },
+        ],
+      } as unknown as T;
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: secure.invoke });
+    await settleUi(6);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await addOrUpdateMiAccountOnHost(app, SESSION_CN_PRIMARY, { triggerRefresh: false });
+    await addOrUpdateMiAccountOnHost(app, SESSION_SG_SECONDARY, { triggerRefresh: false });
+    await refreshDevices(app, false);
+
+    const cnAcc = makeMiAccount(SESSION_CN_PRIMARY);
+    const sgAcc = makeMiAccount(SESSION_SG_SECONDARY);
+
+    // Pin the paired plug to xiaomiCloud so we cover both HA-routed and Mi-routed (with HA alternate) paired cards.
+    const pairedPlugBefore = app.devices.find((d) => d.id === "ha-paired-plug")!;
+    assert.ok(pairedPlugBefore, "paired plug card present");
+    setHostDeviceSourcePin(app, pairedPlugBefore.id, "xiaomiCloud");
+
+    const pairedLampBefore = app.devices.find((d) => d.id === "ha-paired-lamp")!;
+    assert.ok(pairedLampBefore, "paired lamp card present");
+    assert.equal(pairedLampBefore.sourceBackend, "homeAssistant");
+    assert.equal(pairedLampBefore.accountId, cnAcc.id, "dual-source merge copies Xiaomi accountId onto HA-routed paired card");
+
+    const pairedPlugPinned = app.devices.find((d) => d.id === "ha-paired-plug")!;
+    assert.equal(pairedPlugPinned.sourceBackend, "xiaomiCloud");
+    assert.equal(pairedPlugPinned.accountId, cnAcc.id);
+
+    const pureMiBefore = app.devices.find((d) => d.name === "纯米家玄关灯")!;
+    assert.ok(pureMiBefore, "pure Xiaomi card for CN account present");
+    const sgMiBefore = app.devices.find((d) => d.name === "新加坡书房灯")!;
+    assert.ok(sgMiBefore, "Xiaomi card for SG account present");
+
+    // Pause the post-sign-out refresh so we inspect the synchronous immediate state right after removing CN account.
+    pauseSubsequentRefresh = true;
+    openConnectionsAndDiagModal(app, "accounts");
+    await settleUi(6);
+    app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${cnAcc.id}"]`)!.click();
+    await settleUi(8);
+
+    // Pure CN Xiaomi card must be removed immediately.
+    assert.equal(
+      app.devices.some((d) => d.id === pureMiBefore.id),
+      false,
+      "pure Xiaomi card owned by removed account must be deleted immediately",
+    );
+    // SG account's card must be untouched.
+    const sgAfter = app.devices.find((d) => d.id === sgMiBefore.id);
+    assert.ok(sgAfter, "other Xiaomi account's device must remain intact");
+    assert.equal(sgAfter.accountId, sgAcc.id);
+
+    // HA-routed paired card must remain and have its removed account's accountId stripped.
+    const lampAfter = app.devices.find((d) => d.id === "ha-paired-lamp");
+    assert.ok(lampAfter, "HA-routed paired card must not be dropped when its paired Xiaomi account signs out");
+    assert.equal(lampAfter.sourceBackend, "homeAssistant");
+    assert.equal(lampAfter.accountId, undefined, "removed Xiaomi accountId must be cleared from surviving HA card");
+
+    // Mi-routed paired card with HA alternate must immediately switch to its HA alternate instead of disappearing.
+    const plugAfter = app.devices.find((d) => d.id === "ha-paired-plug");
+    assert.ok(plugAfter, "Mi-routed paired card with HA alternate must switch back to HA, not disappear");
+    assert.equal(plugAfter.sourceBackend, "homeAssistant");
+    assert.equal(
+      plugAfter.kind.kind === "plug" ? plugAfter.kind.switchEntityId : "",
+      "switch.living_paired_plug",
+      "paired card must switch to HA alternate entity immediately",
+    );
+    assert.equal(plugAfter.accountId, undefined);
+
+    pauseSubsequentRefresh = false;
+    resumeRefresh();
+    await settleUi(20);
+  });
+
+  it("does not restore getLastHASnapshot() or dualRoutes when HA credentials changed to a different instance before Xiaomi sign-out", async () => {
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "token-instance-a",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [{ id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-plug-only"] }] }],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [{ did: "mi-plug-only", name: "米家专属插座", model: PLUG_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      return okMi({});
+    };
+
+    const instanceARaw = {
+      areas: [{ area_id: "a1", name: "实例A客厅" }],
+      devices: [
+        { id: "ha-instance-a-lamp", area_id: "a1", name: "旧实例A吸顶灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "light.instance_a", device_id: "ha-instance-a-lamp", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "light.instance_a", state: "on", attributes: { friendly_name: "旧实例A吸顶灯" } },
+        { entity_id: "scene.instance_a_scene", state: "scening", attributes: { friendly_name: "旧实例A场景" } },
+      ],
+    };
+
+    let failInstanceB = false;
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      if (failInstanceB) {
+        throw new Error("Instance B unreachable");
+      }
+      return instanceARaw as unknown as T;
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: secure.invoke });
+    await settleUi(6);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha-instance-a.example.test:8123";
+    app.settings.haToken = "token-instance-a";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    assert.ok(app.devices.some((d) => d.id === "ha-instance-a-lamp"));
+
+    // User switches HA settings to Instance B, and before a dual-source HA refresh succeeds for B, signs out Xiaomi.
+    app.settings.haBaseURL = "https://ha-instance-b.example.test:8123";
+    app.settings.haToken = "token-instance-b";
+    failInstanceB = true;
+
+    signOutXiaomiAccount(app);
+
+    // Synchronously and after failed refreshHADevices, Instance A's devices/scenes must NOT be displayed under Instance B.
+    assert.equal(
+      app.devices.some((d) => d.id === "ha-instance-a-lamp"),
+      false,
+      "stale HA snapshot from previous HA instance must not be restored when HA identity changed",
+    );
+    assert.equal(app.devices.length, 0);
+    assert.equal(app.scenes.length, 0);
+
+    await settleUi(10);
+    assert.equal(app.devices.some((d) => d.id === "ha-instance-a-lamp"), false);
+    assert.equal(app.devices.length, 0);
   });
 });
 

@@ -364,6 +364,7 @@ export class DeviceSourcePinStorage { private readonly box: DeviceSourcePinBox;
 }
 
 export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
+  readonly identity?: string | null;
   readonly identities?: Readonly<Record<string, DeviceSourceIdentity>>;
   readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
   readonly homes?: readonly AccountScopedHomeOption[];
