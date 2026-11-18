@@ -27,6 +27,7 @@ tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
 keyring = { version = "3", features = ["windows-native"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
+    "Win32_NetworkManagement_WiFi",
     "Win32_Networking_WinSock",
     "Win32_Security_Credentials",
     "Win32_System_Registry",
