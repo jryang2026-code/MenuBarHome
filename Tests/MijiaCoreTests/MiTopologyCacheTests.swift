@@ -149,4 +149,50 @@ struct MiTopologyCacheTests {
         _ = store.signOutAndRevokeAll()
         #expect(cache.load(for: sessionA) == nil)
     }
+
+    @Test("LANEndpointBinding preserves broadcast-discovered IP against unchanged stale cloud IP and resets when cloud IP or token changes")
+    func lanEndpointBindingReconciliation() {
+        var binding = MiCloudProvider.LANEndpointBinding(
+            cloudIP: "192.168.1.10",
+            discoveredIP: "192.168.1.88",
+            token: "00112233445566778899aabbccddeeff"
+        )
+        #expect(binding.effectiveIP == "192.168.1.88")
+        #expect(binding.usedBroadcastRecovery == true)
+
+        let resetOnStaleCloud = binding.reconcile(
+            newCloudIP: "192.168.1.10",
+            newToken: "00112233445566778899aabbccddeeff"
+        )
+        #expect(resetOnStaleCloud == false)
+        #expect(binding.effectiveIP == "192.168.1.88")
+        #expect(binding.usedBroadcastRecovery == true)
+
+        let resetOnCaughtUpCloud = binding.reconcile(
+            newCloudIP: "192.168.1.88",
+            newToken: "00112233445566778899aabbccddeeff"
+        )
+        #expect(resetOnCaughtUpCloud == false)
+        #expect(binding.discoveredIP == nil)
+        #expect(binding.effectiveIP == "192.168.1.88")
+        #expect(binding.usedBroadcastRecovery == false)
+
+        binding.discoveredIP = "192.168.1.99"
+        let resetOnNewCloudIP = binding.reconcile(
+            newCloudIP: "192.168.1.120",
+            newToken: "00112233445566778899aabbccddeeff"
+        )
+        #expect(resetOnNewCloudIP == true)
+        #expect(binding.discoveredIP == nil)
+        #expect(binding.effectiveIP == "192.168.1.120")
+
+        binding.discoveredIP = "192.168.1.130"
+        let resetOnNewToken = binding.reconcile(
+            newCloudIP: "192.168.1.120",
+            newToken: "112233445566778899aabbccddeeff00"
+        )
+        #expect(resetOnNewToken == true)
+        #expect(binding.discoveredIP == nil)
+        #expect(binding.token == "112233445566778899aabbccddeeff00")
+    }
 }

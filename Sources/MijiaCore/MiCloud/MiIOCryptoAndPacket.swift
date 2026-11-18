@@ -66,6 +66,10 @@ public struct MiIOPacketHeader: Equatable, Sendable {
     public var stamp: UInt32
     public var checksum: Data
 
+    public var deviceId64: UInt64 {
+        (UInt64(unknown) << 32) | UInt64(deviceId)
+    }
+
     public init(
         magic: UInt16 = MiIOPacket.magic,
         length: UInt16,
@@ -136,6 +140,13 @@ public enum MiIOPacket {
             stamp: stamp,
             checksum: checksum
         )
+    }
+
+    public static func helloChecksumMatches(_ packet: Data, token: Data) -> Bool? {
+        guard packet.count >= headerSize, token.count == 16, let header = try? decodeHeader(packet) else { return nil }
+        if header.checksum.allSatisfy({ $0 == 0xFF }) || header.checksum.allSatisfy({ $0 == 0x00 }) { return nil }
+        let base = packet.startIndex
+        return Data(Insecure.MD5.hash(data: packet[base..<(base + 16)] + token)) == header.checksum
     }
 
     public static func encode(
