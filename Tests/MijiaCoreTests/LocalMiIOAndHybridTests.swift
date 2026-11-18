@@ -2899,6 +2899,191 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.shutdown()
     }
+
+    @Test("refreshNow keeps localNetworkDenied active until a LAN probe succeeds and avoids cooldown trap on timeouts")
+    func refreshNowKeepsLocalNetworkDeniedUntilLANProbeSucceeds() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case denied
+            case timeout
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpMode = LockedBox(UDPMode.healthy)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            switch udpMode.withValue({ $0 }) {
+            case .denied:
+                throw MiIOError.localNetworkDenied
+            case .timeout:
+                throw MiIOError.timeout
+            case .healthy:
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0},{"did":"102","siid":2,"piid":1,"value":true,"code":0},{"did":"102","siid":2,"piid":2,"value":70,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in [] }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let ownWifi1 = MiDeviceRecord(did: "101", name: "Speaker Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let ownWifi2 = MiDeviceRecord(did: "102", name: "Desk Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi1, ownWifi2],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(55),
+                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(60),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan
+        })
+
+        // Enter localNetworkDenied state.
+        udpMode.withValue { $0 = .denied }
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN]
+                && $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
+                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked
+        })
+
+        // Refresh while still denied must NOT emit an intermediate [] permission event or clear snapshot flags.
+        let permsBeforeDeniedRefresh = await collector.localNetworkPermissions.count
+        let snapsBeforeDeniedRefresh = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeDeniedRefresh + 2 })
+        let permsDuringDeniedRefresh = await collector.localNetworkPermissions.dropFirst(permsBeforeDeniedRefresh)
+        let snapsDuringDeniedRefresh = await collector.snapshots.dropFirst(snapsBeforeDeniedRefresh)
+        #expect(!permsDuringDeniedRefresh.contains([]))
+        #expect(snapsDuringDeniedRefresh.allSatisfy { $0.localNetworkBlockedFeatures == [.xiaomiLAN] })
+
+        // Refresh when UDP probes fail as timeouts must keep localNetworkDenied active and avoid cooldown.
+        udpMode.withValue { $0 = .timeout }
+        let permsBeforeTimeoutRefresh = await collector.localNetworkPermissions.count
+        let snapsBeforeTimeoutRefresh = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeTimeoutRefresh + 2 })
+        let permsDuringTimeoutRefresh = await collector.localNetworkPermissions.dropFirst(permsBeforeTimeoutRefresh)
+        let snapsDuringTimeoutRefresh = await collector.snapshots.dropFirst(snapsBeforeTimeoutRefresh)
+        #expect(!permsDuringTimeoutRefresh.contains([]))
+        #expect(snapsDuringTimeoutRefresh.allSatisfy {
+            $0.localNetworkBlockedFeatures == [.xiaomiLAN]
+                && $0.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
+                && $0.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked
+        })
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "102").isCoolingDown == false)
+
+        // Grant permission inside the 30s cooldown window: refreshNow must immediately probe LAN and recover.
+        udpMode.withValue { $0 = .healthy }
+        clock.advance(by: 2)
+        let snapsBeforeRecovery = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeRecovery + 2 })
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan)
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true)
+        #expect(await collector.localNetworkPermissions.last == [])
+
+        await provider.shutdown()
+    }
+
+    @Test("Broadcast sweep localNetworkDenied does not leave devices trapped in cooldown on subsequent refreshNow")
+    func broadcastSweepLocalNetworkDeniedDoesNotTrapDeviceInCooldown() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case timeoutUnicastDeniedBroadcast
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpMode = LockedBox(UDPMode.healthy)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            switch udpMode.withValue({ $0 }) {
+            case .timeoutUnicastDeniedBroadcast:
+                throw MiIOError.timeout
+            case .healthy:
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            if udpMode.withValue({ $0 }) == .timeoutUnicastDeniedBroadcast {
+                throw MiIOError.localNetworkDenied
+            }
+            return []
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let ownWifi = MiDeviceRecord(did: "101", name: "Speaker Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(55)]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 1,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan })
+
+        udpMode.withValue { $0 = .timeoutUnicastDeniedBroadcast }
+        clock.advance(by: 2)
+        let snapsBeforeSweep = await collector.snapshots.count
+        _ = await provider.readBack(deviceId: "101")
+        #expect(await collector.wait { $0.snapshots.count > snapsBeforeSweep })
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked)
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+
+        // Grant permission while still inside the 30s cooldown window; refreshNow must immediately probe and recover.
+        udpMode.withValue { $0 = .healthy }
+        clock.advance(by: 2)
+        let snapsBeforeRecovery = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= snapsBeforeRecovery + 2 })
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true)
+        #expect(await collector.localNetworkPermissions.last == [])
+
+        await provider.shutdown()
+    }
 }
 
 func lightBrightness(_ device: SmartDevice?) -> Int? {

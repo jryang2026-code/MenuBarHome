@@ -263,7 +263,7 @@ public actor MiCloudProvider: HomeProvider {
             emitSnapshot(closesAwayGap: false)
         }
         lastBroadcastSweepAt = nil
-        resetLocalNetworkDeniedOnRefresh()
+        prepareLocalNetworkRetryOnRefresh()
         if (lastCloudError as? MiCloudError) != .http(429) {
             cloudRetryNotBefore = nil
         }
@@ -1008,8 +1008,16 @@ public actor MiCloudProvider: HomeProvider {
                 }
             }
 
+            if isLocalNetworkDenied {
+                for outcome in failedOutcomes {
+                    var state = lanHealthByDid[outcome.did] ?? LANHealthState()
+                    state.cooldownUntil = nil
+                    lanHealthByDid[outcome.did] = state
+                }
+            }
+
             var recoveredDids: Set<String> = []
-            if shouldSweep && canRunBroadcastSweep() {
+            if shouldSweep && !isLocalNetworkDenied && canRunBroadcastSweep() {
                 lastBroadcastSweepAt = now()
                 let candidates = failedOutcomes.compactMap { outcome -> MiIODeviceCandidate? in
                     guard (outcome.error as? MiIOError) != .localNetworkDenied else { return nil }
@@ -1040,7 +1048,12 @@ public actor MiCloudProvider: HomeProvider {
                         }
                     } catch is CancellationError { throw CancellationError() }
                     catch let error as MiIOError where error == .shutDown { throw error }
-                    catch let error as MiIOError where error == .localNetworkDenied { updateLocalNetworkDenied(true) }
+                    catch let error as MiIOError where error == .localNetworkDenied {
+                        for outcome in failedOutcomes {
+                            recordLANFailure(did: outcome.did, error: MiIOError.localNetworkDenied)
+                        }
+                        updateLocalNetworkDenied(true)
+                    }
                     catch { logger.debug("LAN broadcast sweep failed: \(error.localizedDescription, privacy: .public)") }
                 }
             }
@@ -1148,8 +1161,12 @@ public actor MiCloudProvider: HomeProvider {
         continuation?.yield(.localNetworkPermissionChanged(denied ? [.xiaomiLAN] : []))
     }
 
-    private func resetLocalNetworkDeniedOnRefresh() {
-        updateLocalNetworkDenied(false)
+    private func prepareLocalNetworkRetryOnRefresh() {
+        guard isLocalNetworkDenied else { return }
+        for (did, var state) in lanHealthByDid where state.cooldownUntil != nil {
+            state.cooldownUntil = nil
+            lanHealthByDid[did] = state
+        }
     }
 
     private func reconcileLANEndpoints(_ records: [MiDeviceRecord], seededDiscoveredIPs: [String: String] = [:]) {
@@ -1209,10 +1226,17 @@ public actor MiCloudProvider: HomeProvider {
     private func recordLANFailure(did: String, error: any Error) {
         var state = lanHealthByDid[did] ?? LANHealthState()
         let isDenied = (error as? MiIOError) == .localNetworkDenied
-        state.lastErrorWasLocalNetworkDenied = isDenied
         if isDenied {
+            state.lastErrorWasLocalNetworkDenied = true
+            state.cooldownUntil = nil
             updateLocalNetworkDenied(true)
+        } else if isLocalNetworkDenied {
+            // While Local Network permission is denied, a non-TCC probe failure (such as a timeout)
+            // has not proven LAN permission was restored. Keep the denied state intact and avoid
+            // entering cooldown so future polls and refreshNow can continue probing LAN.
+            state.cooldownUntil = nil
         } else {
+            state.lastErrorWasLocalNetworkDenied = false
             state.consecutiveFailures += 1
             if state.consecutiveFailures >= lanFailureThreshold {
                 state.cooldownUntil = now().addingTimeInterval(lanCooldownDuration)

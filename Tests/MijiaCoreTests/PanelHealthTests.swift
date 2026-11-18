@@ -894,6 +894,117 @@ struct PanelHealthTests {
         }
     }
 
+    @Test("HomeStore panelHealth never flashes ok during refreshNow while Xiaomi LAN stays blocked or times out")
+    func refreshNowNeverFlashesOKDuringLocalNetworkBlock() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case denied
+            case timeout
+        }
+        actor ModeBox {
+            var mode: UDPMode = .healthy
+            func set(_ next: UDPMode) { mode = next }
+            func get() -> UDPMode { mode }
+        }
+        let tokenHex = "00112233445566778899aabbccddeeff"
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let modeBox = ModeBox()
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            switch await modeBox.get() {
+            case .denied:
+                throw MiIOError.localNetworkDenied
+            case .timeout:
+                throw MiIOError.timeout
+            case .healthy:
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in [] }
+
+        let ownWifi = MiDeviceRecord(
+            did: "101", name: "LAN Bulb", model: "yeelink.light.color4",
+            isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false
+        )
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(50)]
+        )
+        let session = validSession()
+        let provider = MiCloudProvider(
+            sessionLoader: { session },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let store = try await makeStore(backend: .xiaomiCloud, session: session)
+        var observedHealths: [PanelHealth] = []
+        var snapshotCount = 0
+
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let pumpTask = Task { @MainActor in
+                for await event in provider.events() {
+                    store.handleProviderEvent(event)
+                    if case .snapshotUpdated = event {
+                        snapshotCount += 1
+                    }
+                    observedHealths.append(store.panelHealth)
+                }
+            }
+            defer { pumpTask.cancel() }
+
+            await waitUntil { snapshotCount > 0 && store.connectionStatus == .connected }
+            #expect(store.panelHealth == .ok)
+
+            // Enter denied state.
+            await modeBox.set(.denied)
+            await provider.refreshNow()
+            await waitUntil { store.localNetworkBlocks.contains(.xiaomiLAN) }
+            let degradedHealth = PanelHealth.degraded(reason: "米家局域网直连权限受阻，已回退云端")
+            #expect(store.panelHealth == degradedHealth)
+
+            // Refresh while still denied: panelHealth must stay degraded across every event.
+            let startDeniedIdx = observedHealths.count
+            let snapsBeforeDenied = snapshotCount
+            await provider.refreshNow()
+            await waitUntil { snapshotCount >= snapsBeforeDenied + 2 }
+            #expect(snapshotCount >= snapsBeforeDenied + 2)
+            let healthsDuringDeniedRefresh = Array(observedHealths.dropFirst(startDeniedIdx))
+            #expect(!healthsDuringDeniedRefresh.isEmpty)
+            #expect(healthsDuringDeniedRefresh.allSatisfy { $0 == degradedHealth })
+
+            // Refresh while UDP times out: panelHealth must stay degraded across every event.
+            await modeBox.set(.timeout)
+            let startTimeoutIdx = observedHealths.count
+            let snapsBeforeTimeout = snapshotCount
+            await provider.refreshNow()
+            await waitUntil { snapshotCount >= snapsBeforeTimeout + 2 }
+            #expect(snapshotCount >= snapsBeforeTimeout + 2)
+            let healthsDuringTimeoutRefresh = Array(observedHealths.dropFirst(startTimeoutIdx))
+            #expect(!healthsDuringTimeoutRefresh.isEmpty)
+            #expect(healthsDuringTimeoutRefresh.allSatisfy { $0 == degradedHealth })
+
+            // Grant permission: panelHealth recovers to .ok only after probe succeeds.
+            await modeBox.set(.healthy)
+            let snapsBeforeRecovery = snapshotCount
+            await provider.refreshNow()
+            await waitUntil { snapshotCount >= snapsBeforeRecovery + 2 && store.panelHealth == .ok }
+            #expect(store.panelHealth == .ok)
+        }
+
+        await provider.shutdown()
+    }
+
     private func health(_ store: HomeStore) -> PanelHealth {
         store.panelHealth
     }
