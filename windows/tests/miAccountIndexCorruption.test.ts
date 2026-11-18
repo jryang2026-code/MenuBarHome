@@ -616,6 +616,46 @@ describe("Mi account index corruption (#228)", () => {
     assert.equal(fixture.data.has("mi_session"), false);
   });
 
+  it("does not restore settings when a sign-out lands during the second adoption check", async () => {
+    setPendingMiVaultDeletion(false);
+    const storage = memoryStorage();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true });
+    await new CredentialVault(fixture.invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
+    let checking = false;
+    let reads = 0;
+    let started!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
+    const wrapped: SecureInvoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const result = await fixture.invoke<T>(cmd, args);
+      if (checking && cmd === "secure_store_get" && args["name"] === "mi_session") {
+        reads += 1;
+        if (reads === 2) {
+          started();
+          await gate;
+        }
+      }
+      return result;
+    };
+    const store = new MiAccountsStore(new CredentialVault(wrapped), storage);
+    const accounts = await store.load();
+    const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    checking = true;
+    const adoption = adoptRecoveredPrimarySession(host, store, accounts);
+    await entered;
+    // The credential is still stored, so the in-flight check remains non-stale; only the pending
+    // sign-out state can stop the assignment.
+    setPendingMiVaultDeletion(true);
+    finish();
+    await adoption;
+    setPendingMiVaultDeletion(false);
+    assert.equal(host.settings.miSession, null);
+    assert.equal(fixture.data.has("mi_session"), true);
+  });
+
   it("leaves a fresh install untouched and reports a complete read", async () => {
     const storage = memoryStorage();
     const { invoke } = makeCredentialFixture({ supportsSlotScan: true });
