@@ -954,30 +954,23 @@ public actor MiCloudProvider: HomeProvider {
         var shouldSweep = false
         if !lanKeysByDid.isEmpty {
             var remainingLANKeysByDid = lanKeysByDid
+            var probeOutcome: LANPollResult?
             if isLocalNetworkDenied, let probeDid = remainingLANKeysByDid.keys.sorted().first,
                let probeKeys = remainingLANKeysByDid[probeDid], let probeEndpoint = lanEndpoints[probeDid] {
                 do {
                     let resultValues = try await localClient.getProps(probeKeys, endpoint: probeEndpoint)
                     let rttMs = await localClient.lastRoundTripMs(for: probeDid)
-                    recordLANSuccess(did: probeDid, rttMs: rttMs)
-                    pollLanTransportSucceededDids.insert(probeDid)
-                    if !resultValues.isEmpty || probeKeys.isEmpty {
-                        pollLanSucceededDids.insert(probeDid)
-                    }
-                    if !resultValues.isEmpty { combined.merge(resultValues) { _, new in new } }
-                    lanAnsweredKeys.append(contentsOf: probeKeys)
-                    cloudKeys.append(contentsOf: probeKeys.filter { resultValues[$0] == nil })
+                    probeOutcome = LANPollResult(did: probeDid, values: resultValues, rttMs: rttMs, keys: probeKeys, error: nil)
                     remainingLANKeysByDid.removeValue(forKey: probeDid)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    recordLANFailure(did: probeDid, error: error)
-                    if isLocalNetworkDenied {
+                    if (error as? MiIOError) == .localNetworkDenied {
+                        recordLANFailure(did: probeDid, error: error)
                         for did in remainingLANKeysByDid.keys where did != probeDid {
                             var state = lanHealthByDid[did] ?? LANHealthState()
-                            if (error as? MiIOError) == .localNetworkDenied {
-                                state.lastErrorWasLocalNetworkDenied = true
-                            }
+                            state.lastErrorWasLocalNetworkDenied = true
+                            state.cooldownUntil = nil
                             lanHealthByDid[did] = state
                             lanSucceededDids.remove(did)
                             lanTransportSucceededDids.remove(did)
@@ -987,14 +980,13 @@ public actor MiCloudProvider: HomeProvider {
                         }
                         remainingLANKeysByDid.removeAll()
                     } else {
-                        failedOutcomes.append(LANPollResult(did: probeDid, values: nil, rttMs: nil, keys: probeKeys, error: error))
-                        if (lanHealthByDid[probeDid]?.consecutiveFailures ?? 0) >= lanFailureThreshold { shouldSweep = true }
+                        probeOutcome = LANPollResult(did: probeDid, values: nil, rttMs: nil, keys: probeKeys, error: error)
                         remainingLANKeysByDid.removeValue(forKey: probeDid)
                     }
                 }
             }
 
-            let lanResults = await withTaskGroup(of: LANPollResult.self) { group in
+            var lanResults = await withTaskGroup(of: LANPollResult.self) { group in
                 for (did, deviceKeys) in remainingLANKeysByDid {
                     guard let endpoint = lanEndpoints[did] else { continue }
                     group.addTask {
@@ -1011,12 +1003,27 @@ public actor MiCloudProvider: HomeProvider {
                 for await item in group { out.append(item) }
                 return out
             }
+            if let probeOutcome {
+                lanResults.insert(probeOutcome, at: 0)
+            }
 
             let batchSawLocalNetworkDenied = lanResults.contains { ($0.error as? MiIOError) == .localNetworkDenied }
+            let batchProvedPermissionGranted = !batchSawLocalNetworkDenied && lanResults.contains { outcome in
+                guard let err = outcome.error else { return outcome.values != nil }
+                return MiIOError.provesPacketCrossedPermissionBoundary(err)
+            }
+            if batchProvedPermissionGranted, isLocalNetworkDenied {
+                updateLocalNetworkDenied(false)
+            }
             for outcome in lanResults {
                 if let err = outcome.error {
                     if err is CancellationError { throw CancellationError() }
-                    recordLANFailure(did: outcome.did, error: err, allowClearingDenied: !batchSawLocalNetworkDenied)
+                    recordLANFailure(
+                        did: outcome.did,
+                        error: err,
+                        allowClearingDenied: !batchSawLocalNetworkDenied,
+                        batchSawLocalNetworkDenied: batchSawLocalNetworkDenied
+                    )
                     failedOutcomes.append(outcome)
                     if !batchSawLocalNetworkDenied,
                        (err as? MiIOError) != .localNetworkDenied,
@@ -1095,7 +1102,7 @@ public actor MiCloudProvider: HomeProvider {
                     )
                     if !discovered.isEmpty {
                         applyBroadcastRecoveredEndpoints(discovered)
-                        var retrySawLocalNetworkDenied = false
+                        var completedPostSendRetryDids: Set<String> = []
                         for candidate in candidates where discovered[candidate.did] != nil {
                             let did = candidate.did
                             guard let retryKeys = retryKeysByDid[did],
@@ -1103,7 +1110,8 @@ public actor MiCloudProvider: HomeProvider {
                                   let endpoint = lanEndpoint(for: record) else { continue }
                             do {
                                 let retryValues = try await localClient.getProps(retryKeys, endpoint: endpoint)
-                                recordLANSuccess(did: did, rttMs: await localClient.lastRoundTripMs(for: did), allowClearingDenied: !retrySawLocalNetworkDenied)
+                                completedPostSendRetryDids.insert(did)
+                                recordLANSuccess(did: did, rttMs: await localClient.lastRoundTripMs(for: did))
                                 pollLanTransportSucceededDids.insert(did)
                                 if !retryValues.isEmpty || retryKeys.isEmpty {
                                     pollLanSucceededDids.insert(did)
@@ -1115,9 +1123,16 @@ public actor MiCloudProvider: HomeProvider {
                             } catch is CancellationError { throw CancellationError() }
                             catch {
                                 if (error as? MiIOError) == .localNetworkDenied {
-                                    retrySawLocalNetworkDenied = true
+                                    for remaining in candidates where !completedPostSendRetryDids.contains(remaining.did) {
+                                        recordLANFailure(did: remaining.did, error: MiIOError.localNetworkDenied)
+                                    }
+                                    updateLocalNetworkDenied(true)
+                                    break
                                 }
-                                recordLANFailure(did: did, error: error, allowClearingDenied: !retrySawLocalNetworkDenied)
+                                if MiIOError.provesPacketCrossedPermissionBoundary(error) {
+                                    completedPostSendRetryDids.insert(did)
+                                }
+                                recordLANFailure(did: did, error: error)
                             }
                         }
                     }
@@ -1311,18 +1326,25 @@ public actor MiCloudProvider: HomeProvider {
         if allowClearingDenied, isLocalNetworkDenied { updateLocalNetworkDenied(false) }
     }
 
-    private func recordLANFailure(did: String, error: any Error, allowClearingDenied: Bool = true) {
+    private func recordLANFailure(
+        did: String,
+        error: any Error,
+        allowClearingDenied: Bool = true,
+        batchSawLocalNetworkDenied: Bool = false
+    ) {
         var state = lanHealthByDid[did] ?? LANHealthState()
+        let crossedPermissionBoundary = MiIOError.provesPacketCrossedPermissionBoundary(error)
         let isDenied = (error as? MiIOError) == .localNetworkDenied
+            || (batchSawLocalNetworkDenied && !crossedPermissionBoundary)
         if isDenied {
             state.lastErrorWasLocalNetworkDenied = true
             state.cooldownUntil = nil
             updateLocalNetworkDenied(true)
         } else {
-            if allowClearingDenied, isLocalNetworkDenied, MiIOError.provesPacketCrossedPermissionBoundary(error) {
+            if allowClearingDenied, isLocalNetworkDenied, crossedPermissionBoundary {
                 updateLocalNetworkDenied(false)
             }
-            if !isLocalNetworkDenied {
+            if !isLocalNetworkDenied || crossedPermissionBoundary {
                 state.lastErrorWasLocalNetworkDenied = false
             }
             state.consecutiveFailures += 1

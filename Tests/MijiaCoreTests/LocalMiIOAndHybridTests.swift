@@ -3462,6 +3462,204 @@ struct HybridProviderAndDoorbellTests {
 
         await haProvider.shutdown()
     }
+
+    @Test("Mixed-batch pre-send errors record as blocked without cooldown, broadcast retry stops on localNetworkDenied, and probe gate only skips on localNetworkDenied")
+    func lanSelfHealFollowUpsMixedBatchBroadcastBreakAndProbeGate() async throws {
+        enum Mode: Sendable {
+            case mixedDeniedPreSendAndTimeout
+            case probeDenied
+            case probeSendFailedOthersHealthyAndSweepHeals101
+            case probeTimeoutOthersHealthy
+            case timeoutThenBroadcastRetryDeniedOnFirst
+            case healthy
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let mode = LockedBox(Mode.mixedDeniedPreSendAndTimeout)
+        let hostAttempts = LockedBox<[String]>([])
+        let postDiscoveryRetryHosts = LockedBox<[String]>([])
+
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            hostAttempts.withValue { $0.append(host) }
+            let replyForHost: (String, UInt32) throws -> Data = { did, devId in
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: devId, stamp: 30) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(did)","siid":2,"piid":2,"value":77,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+            switch mode.withValue({ $0 }) {
+            case .mixedDeniedPreSendAndTimeout:
+                switch host {
+                case "192.168.1.50": throw MiIOError.localNetworkDenied
+                case "192.168.1.51": throw MiIOError.sendFailed
+                default: throw MiIOError.timeout
+                }
+            case .probeDenied:
+                throw MiIOError.localNetworkDenied
+            case .probeSendFailedOthersHealthyAndSweepHeals101:
+                switch host {
+                case "192.168.1.50": throw MiIOError.sendFailed
+                case "192.168.1.181": return try replyForHost("101", 101)
+                case "192.168.1.51": return try replyForHost("102", 102)
+                case "192.168.1.52": return try replyForHost("103", 103)
+                default: throw MiIOError.timeout
+                }
+            case .probeTimeoutOthersHealthy:
+                switch host {
+                case "192.168.1.181": throw MiIOError.timeout
+                case "192.168.1.51": return try replyForHost("102", 102)
+                case "192.168.1.52": return try replyForHost("103", 103)
+                default: throw MiIOError.timeout
+                }
+            case .timeoutThenBroadcastRetryDeniedOnFirst:
+                switch host {
+                case "192.168.1.191", "192.168.1.192", "192.168.1.193":
+                    let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                    let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                    let firstSiid = req["params"]?.arrayValue?.first?["siid"]?.intValue ?? 0
+                    if firstSiid == 1 {
+                        // Broadcast discovery verification probe succeeds for all 3 candidates.
+                        let reqId = req["id"]?.intValue ?? 0
+                        return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(#"{"id":\#(reqId),"result":[]}"#.utf8))
+                    }
+                    // Post-discovery retry getProps (siid == 2) fails with localNetworkDenied.
+                    postDiscoveryRetryHosts.withValue { $0.append(host) }
+                    throw MiIOError.localNetworkDenied
+                default:
+                    throw MiIOError.timeout
+                }
+            case .healthy:
+                switch host {
+                case "192.168.1.50", "192.168.1.181", "192.168.1.191": return try replyForHost("101", 101)
+                case "192.168.1.51", "192.168.1.192": return try replyForHost("102", 102)
+                default: return try replyForHost("103", 103)
+                }
+            }
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            switch mode.withValue({ $0 }) {
+            case .probeSendFailedOthersHealthyAndSweepHeals101:
+                return [MiIOBroadcastReply(sourceIP: "192.168.1.181", packet: makeHelloResponse(deviceId: 101, stamp: 40))]
+            case .timeoutThenBroadcastRetryDeniedOnFirst:
+                return [
+                    MiIOBroadcastReply(sourceIP: "192.168.1.191", packet: makeHelloResponse(deviceId: 101, stamp: 41)),
+                    MiIOBroadcastReply(sourceIP: "192.168.1.192", packet: makeHelloResponse(deviceId: 102, stamp: 42)),
+                    MiIOBroadcastReply(sourceIP: "192.168.1.193", packet: makeHelloResponse(deviceId: 103, stamp: 43)),
+                ]
+            default:
+                return []
+            }
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let d1 = MiDeviceRecord(did: "101", name: "Lamp 1", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let d2 = MiDeviceRecord(did: "102", name: "Lamp 2", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
+        let d3 = MiDeviceRecord(did: "103", name: "Lamp 3", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.52", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [d1, d2, d3],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102", "103"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(40),
+                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(40),
+                MiotPropKey(did: "103", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "103", siid: 2, piid: 2): .number(40),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        // 1. Mixed batch: 101 throws .localNetworkDenied, 102 throws pre-send .sendFailed, 103 throws post-send .timeout.
+        // 101 and 102 must both record as .localNetworkBlocked without entering cooldown; 103 must NOT be mislabeled as blocked.
+        #expect(await collector.wait { $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN] })
+        let snap1 = try #require(await collector.snapshots.last)
+        #expect(snap1.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked)
+        #expect(snap1.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked)
+        #expect(snap1.deviceTransportDiagnostics["103"]?.route == .cooldown)
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "102").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "102").consecutiveFailures == 0)
+        #expect(await provider.lanTransportState(for: "103").isCoolingDown == true)
+
+        // 3a. While denied, if probe (101) fails with .localNetworkDenied, remaining devices (102, 103) must be skipped (no request storm).
+        mode.withValue { $0 = .probeDenied }
+        hostAttempts.withValue { $0.removeAll() }
+        clock.advance(by: 2)
+        let beforeDeniedProbeSnaps = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeDeniedProbeSnaps + 2 })
+        #expect(hostAttempts.withValue { $0 } == ["192.168.1.50"])
+
+        // 3b. While denied, if probe (101) fails with pre-send .sendFailed (e.g. stale IP) after permission is restored,
+        // remaining devices (102, 103) must NOT be skipped; they prove permission crossed, clear denied state,
+        // and broadcast sweep runs in the same poll to heal 101 to .181!
+        mode.withValue { $0 = .probeSendFailedOthersHealthyAndSweepHeals101 }
+        hostAttempts.withValue { $0.removeAll() }
+        clock.advance(by: 35) // past 103's cooldown
+        let beforeHealSnaps = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeHealSnaps + 2 })
+        let snapAfterHeal = try #require(await collector.snapshots.last)
+        #expect(snapAfterHeal.localNetworkBlockedFeatures == [])
+        #expect(snapAfterHeal.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(snapAfterHeal.deviceTransportDiagnostics["102"]?.route == .lan)
+        #expect(snapAfterHeal.deviceTransportDiagnostics["103"]?.route == .lan)
+        #expect(await provider.lanTransportState(for: "101").effectiveIP == "192.168.1.181")
+
+        // 3c. Re-enter denied state, then probe (101) times out (.timeout): remaining devices (102, 103) must still run and succeed.
+        mode.withValue { $0 = .probeDenied }
+        clock.advance(by: 2)
+        let beforeReDenySnaps = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeReDenySnaps + 2 })
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
+
+        mode.withValue { $0 = .probeTimeoutOthersHealthy }
+        hostAttempts.withValue { $0.removeAll() }
+        clock.advance(by: 2)
+        let beforeTimeoutProbeSnaps = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeTimeoutProbeSnaps + 2 })
+        let snapAfterTimeoutProbe = try #require(await collector.snapshots.last)
+        #expect(snapAfterTimeoutProbe.localNetworkBlockedFeatures == [])
+        #expect(snapAfterTimeoutProbe.deviceTransportDiagnostics["102"]?.route == .lan)
+        #expect(snapAfterTimeoutProbe.deviceTransportDiagnostics["103"]?.route == .lan)
+
+        // 2. Broadcast discovery recovers 101/102/103 to .191/.192/.193, then the post-discovery retry loop
+        // hits .localNetworkDenied on the first candidate: it must break immediately without retrying the other two,
+        // and mark all remaining candidates as .localNetworkBlocked without cooldown!
+        mode.withValue { $0 = .timeoutThenBroadcastRetryDeniedOnFirst }
+        hostAttempts.withValue { $0.removeAll() }
+        postDiscoveryRetryHosts.withValue { $0.removeAll() }
+        clock.advance(by: 65) // allow broadcast sweep
+        let beforeRetryBreakSnaps = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeRetryBreakSnaps + 2 })
+        #expect(postDiscoveryRetryHosts.withValue { $0.count } == 1)
+        let snapAfterRetryBreak = try #require(await collector.snapshots.last)
+        #expect(snapAfterRetryBreak.localNetworkBlockedFeatures == [.xiaomiLAN])
+        #expect(snapAfterRetryBreak.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked)
+        #expect(snapAfterRetryBreak.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked)
+        #expect(snapAfterRetryBreak.deviceTransportDiagnostics["103"]?.route == .localNetworkBlocked)
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "102").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "103").isCoolingDown == false)
+
+        await provider.shutdown()
+    }
 }
 
 func lightBrightness(_ device: SmartDevice?) -> Int? {
