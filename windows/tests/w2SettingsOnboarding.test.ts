@@ -1003,4 +1003,102 @@ describe("Wave 2 · Habit Memory Per-Item Viewing & Single-Item Deletion", () =>
     assert.equal(app.settings.habitEntries.length, 0);
     assertMissing(document.querySelector("#btn-clear-habits"));
   });
+
+  it("omits cover devices from the Settings 'all off' checklist even with legacy true overrides", async () => {
+    const app = startDemoApp({
+      allOffOverrides: {
+        "cover.garage_door": true,
+        "cover.curtain": true,
+        "plug.router": true,
+      },
+    });
+    const garageDoor: SmartDevice = {
+      id: "cover.garage_door",
+      name: "车库门",
+      roomId: "garage",
+      roomName: "车库",
+      model: "fixture.garage",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.garage_door",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const curtain: SmartDevice = {
+      id: "cover.curtain",
+      name: "客厅窗帘",
+      roomId: "living",
+      roomName: "客厅",
+      model: "fixture.curtain",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.curtain",
+        subtype: "curtain",
+        positionPercent: 60,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const light: SmartDevice = {
+      id: "light.living",
+      name: "客厅灯",
+      roomId: "living",
+      roomName: "客厅",
+      model: "yeelink.light.lamp4",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.living",
+        isOn: true,
+        brightnessPercent: 80,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+    const plug: SmartDevice = {
+      id: "plug.router",
+      name: "路由器插座",
+      roomId: "living",
+      roomName: "客厅",
+      model: "cuco.plug.v3",
+      isOnline: true,
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.router",
+        isOn: true,
+        powerWatts: 12,
+        childLockEntityId: null,
+        isChildLocked: false,
+      },
+    };
+    app.devices = [garageDoor, curtain, light, plug];
+    app.render();
+
+    await click("#btn-settings");
+    await click('[data-settings-tab="system"]');
+
+    assertMissing(document.querySelector('[data-alloff-device="cover.garage_door"]'));
+    assertMissing(document.querySelector('[data-alloff-device="cover.curtain"]'));
+    assert.ok(document.querySelector('[data-alloff-device="light.living"]'));
+    assert.ok(document.querySelector('[data-alloff-device="plug.router"]'));
+    assert.equal(app.settings.allOffOverrides["cover.garage_door"], true, "legacy override is preserved on disk");
+  });
 });

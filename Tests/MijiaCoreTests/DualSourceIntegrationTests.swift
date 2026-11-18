@@ -762,6 +762,8 @@ struct DualSourceIntegrationTests {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 2
         }
+        let pairedLightID = try #require(store.devices.first { $0.id != unpairedMiDid }?.id)
+        #expect(pairedLightID == haID || pairedLightID == did)
 
         store.favoriteDeviceIds = []
         store.favoriteOrder = []
@@ -783,7 +785,7 @@ struct DualSourceIntegrationTests {
         #expect(retainedKettle.name == "吧台水壶")
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
-        let onlineLight = try #require(store.devices.first { $0.id == haID })
+        let onlineLight = try #require(store.devices.first { $0.id == pairedLightID })
         #expect(onlineLight.isOnline == true)
         #expect(onlineLight.telemetryStale == false)
 
@@ -795,6 +797,9 @@ struct DualSourceIntegrationTests {
         }
         #expect(store.devices.first(where: { $0.id == unpairedMiDid })?.name == "吧台水壶")
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
+        let recoveredLight = try #require(store.devices.first { $0.id == pairedLightID })
+        #expect(recoveredLight.isOnline == true)
+        #expect(recoveredLight.telemetryStale == false)
     }
 
     @MainActor
