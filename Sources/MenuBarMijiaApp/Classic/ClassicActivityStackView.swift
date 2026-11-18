@@ -4,7 +4,7 @@ import MijiaCore
 struct ClassicActivityStackView<Content: View>: View {
     let activities: [PanelActivity]
     var missedTimers: [ScheduledCommand] = []
-    var store: HomeStore? = nil
+    let store: HomeStore
     @Binding var isExpanded: Bool
     let expandedViewportHeight: CGFloat
     let dismiss: (PanelActivity) -> Void

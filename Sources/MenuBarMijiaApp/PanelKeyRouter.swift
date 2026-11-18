@@ -27,6 +27,7 @@ enum PanelKeyRouter {
         var isShowingMiReauth = false
         var isGrokBallStageExpanded = false
         var isShowingConnectionDetail = false
+        var isConnectionStatusFocused = false
         var hasActivePrompt = false
         var globalHotkeyEnabled = false
         var isRecordingHotkey = false
@@ -49,6 +50,8 @@ enum PanelKeyRouter {
         case dismissMiReauth
         case dismissGrokBallStage
         case dismissConnectionDetail
+        case focusConnectionStatus
+        case clearConnectionStatusFocus
         case dismissPrompt
         /// A repeat of the global shortcut leaked into the panel; hide it only on a fresh press
         /// when the shortcut is not registered system-wide.
@@ -82,8 +85,18 @@ enum PanelKeyRouter {
         if key.code == kVK_Escape, context.isGrokBallStageExpanded, context.isPanelWindow {
             return .dismissGrokBallStage
         }
-        if key.code == kVK_Escape, context.isShowingConnectionDetail, context.isPanelWindow {
-            return .dismissConnectionDetail
+        if context.isShowingConnectionDetail, context.isPanelWindow {
+            return key.code == kVK_Escape ? .dismissConnectionDetail : .passThrough
+        }
+        if context.isConnectionStatusFocused, context.isPanelWindow {
+            switch key.code {
+            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space:
+                return .passThrough
+            case kVK_Escape:
+                return .clearConnectionStatusFocus
+            default:
+                break
+            }
         }
         return nil
     }
@@ -135,6 +148,19 @@ enum PanelKeyRouter {
             }
         }
 
+        if context.isConnectionStatusFocused {
+            switch key.code {
+            case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space:
+                return .passThrough
+            case kVK_Escape:
+                return .clearConnectionStatusFocus
+            case kVK_Tab:
+                return .cycleRoom(key.shift ? -1 : 1)
+            default:
+                break
+            }
+        }
+
         let plain = !key.command && !key.option && !key.control
         if plain, key.characters == "/" { return .presentAssistant(voice: false) }
         if plain, context.voiceInputEnabled, key.characters?.lowercased() == "v" { return .presentAssistant(voice: true) }
@@ -144,8 +170,10 @@ enum PanelKeyRouter {
         case kVK_DownArrow: return .moveFocus(1)
         case kVK_LeftArrow: return .adjustFocusedDevice(-1)
         case kVK_RightArrow: return .adjustFocusedDevice(1)
-        case kVK_Space, kVK_Return: return .toggleFocusedDevice
-        case kVK_Tab: return .cycleRoom(key.shift ? -1 : 1)
+        case kVK_Space, kVK_Return, kVK_ANSI_KeypadEnter: return .toggleFocusedDevice
+        case kVK_Tab:
+            if context.hasFocusedDevice { return .focusConnectionStatus }
+            return .cycleRoom(key.shift ? -1 : 1)
         case kVK_Escape:
             if context.isShowingConnectionDetail { return .dismissConnectionDetail }
             if context.isShowingAssistantBar { return .dismissAssistantBar }

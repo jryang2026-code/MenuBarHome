@@ -350,12 +350,14 @@ public struct ControlCenterPanel: View {
                     .frame(maxHeight: .infinity)
             }
 
-            Divider()
-                .overlay(Color.primary.opacity(0.07))
+            if !isEditing {
+                Divider()
+                    .overlay(Color.primary.opacity(0.07))
 
-            footerBar
-                .padding(.horizontal, Self.columnInset + 2)
-                .padding(.vertical, 9)
+                footerBar
+                    .padding(.horizontal, Self.columnInset + 2)
+                    .padding(.vertical, 9)
+            }
         }
         .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.reveal, value: store.expandedDeviceId)

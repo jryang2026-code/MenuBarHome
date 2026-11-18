@@ -456,6 +456,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isShowingMiReauth: store.isShowingMiReauth,
             isGrokBallStageExpanded: store.isGrokBallStageExpanded,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
+            isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
             hasActivePrompt: LayoutUIState.shared.hasActivePrompt,
             globalHotkeyEnabled: store.enableGlobalHotkey,
             isRecordingHotkey: HotkeyRecorderController.shared.isRecording,
@@ -486,6 +487,11 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             store.dismissGrokBallStage()
         case .dismissConnectionDetail:
             PanelConnectionDetailState.shared.dismiss(restoreFocus: true)
+        case .focusConnectionStatus:
+            store.focusedDeviceId = nil
+            PanelConnectionDetailState.shared.focusStatusControl()
+        case .clearConnectionStatusFocus:
+            PanelConnectionDetailState.shared.clearStatusControlFocus()
         case .dismissPrompt:
             LayoutUIState.shared.dismissActivePrompt()
         case .globalHotkeyEcho(let hidePanel):
@@ -503,14 +509,14 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         case .presentAssistant(let voice):
             store.presentAssistantBar(startVoice: voice)
         case .moveFocus(let delta):
+            PanelConnectionDetailState.shared.clearStatusControlFocus()
             PanelQuickIndexState.shared.moveFocus(delta: delta, store: store)
         case .adjustFocusedDevice(let delta):
             store.adjustFocusedDevice(delta: delta)
         case .toggleFocusedDevice:
             PanelQuickIndexState.shared.toggleFocusedDevice(store: store)
         case .cycleRoom(let delta):
-            // #146: follow the same order the room strip shows, not the provider order.
-            store.cycleRoom(delta: delta, order: RoomPrefs.displayIds(order: RoomPrefs.storedOrder(), rooms: store.rooms))
+            cycleRoomOrConnectionStatus(delta: delta, store: store)
         case .dismissAssistantBar:
             SpeechInputController.shared.stop(andSubmit: false, store: store)
             store.dismissAssistantBar()
@@ -526,6 +532,42 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             PanelQuickIndexState.shared.select(digit, store: store)
         }
         return true
+    }
+
+    /// Cycles room pills in display order (#146) and includes the footer connection status control
+    /// as a Tab stop at the wrap boundary so keyboard users can reach connection status even without
+    /// focusing a device card first.
+    func cycleRoomOrConnectionStatus(delta: Int, store: HomeStore) {
+        let order = RoomPrefs.displayIds(order: RoomPrefs.storedOrder(), rooms: store.rooms)
+        let known = Set(store.rooms.map(\.id))
+        var seen = Set<String>()
+        let ids = order.filter { known.contains($0) && seen.insert($0).inserted }
+        let options: [String?] = [nil] + ids
+
+        if PanelConnectionDetailState.shared.isStatusControlFocused {
+            PanelConnectionDetailState.shared.clearStatusControlFocus()
+            if delta >= 0 {
+                store.selectRoom(options.first ?? nil)
+            } else {
+                store.selectRoom(options.last ?? nil)
+            }
+            return
+        }
+
+        guard options.count > 1 else {
+            PanelConnectionDetailState.shared.focusStatusControl()
+            return
+        }
+        let curIdx = options.firstIndex(where: { $0 == store.selectedRoomId }) ?? 0
+        if delta > 0, curIdx == options.count - 1 {
+            PanelConnectionDetailState.shared.focusStatusControl()
+            return
+        }
+        if delta < 0, curIdx == 0 {
+            PanelConnectionDetailState.shared.focusStatusControl()
+            return
+        }
+        store.cycleRoom(delta: delta, order: order)
     }
 
     private func performRoomOrder(_ action: RoomOrderKeyAction, store: HomeStore) {

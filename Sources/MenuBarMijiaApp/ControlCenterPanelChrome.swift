@@ -154,8 +154,20 @@ extension ControlCenterPanel {
     }
 
     private var panelMoreMenu: some View {
-        Menu {
-            statusFooterControl
+        let connectionStatus = PanelConnectionStatusPresentation.resolve(store: store)
+        return Menu {
+            Button {
+                PanelConnectionDetailState.shared.toggle()
+            } label: {
+                Label(connectionStatus.text, systemImage: connectionStatus.iconName)
+            }
+            if let actionTitle = connectionStatus.inlineActionTitle,
+               let inlineAction = connectionStatus.inlineAction,
+               inlineAction != .openDetail {
+                Button(actionTitle) {
+                    PanelConnectionStatusPresentation.performInline(inlineAction, store: store)
+                }
+            }
             Divider()
             Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
                 get: { store.isCompactGridMode },
@@ -731,17 +743,36 @@ extension ControlCenterPanel {
 final class PanelConnectionDetailState {
     static let shared = PanelConnectionDetailState()
     var isPresented = false
+    var isStatusControlFocused = false
     var restoreFocusTrigger = 0
+    var clearFocusTrigger = 0
 
     func toggle() {
         isPresented.toggle()
-        if !isPresented { restoreFocusTrigger &+= 1 }
+        if !isPresented {
+            isStatusControlFocused = true
+            restoreFocusTrigger &+= 1
+        }
     }
 
     func dismiss(restoreFocus: Bool = true) {
         guard isPresented else { return }
         isPresented = false
-        if restoreFocus { restoreFocusTrigger &+= 1 }
+        if restoreFocus {
+            isStatusControlFocused = true
+            restoreFocusTrigger &+= 1
+        }
+    }
+
+    func focusStatusControl() {
+        isStatusControlFocused = true
+        restoreFocusTrigger &+= 1
+    }
+
+    func clearStatusControlFocus() {
+        guard isStatusControlFocused else { return }
+        isStatusControlFocused = false
+        clearFocusTrigger &+= 1
     }
 }
 
@@ -862,7 +893,8 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             }
             return PanelConnectionStatusPresentation(
                 badge: .reauthRequired,
-                text: L10n.tr("米家登录已过期 · 重新扫码", "Xiaomi Home session expired · Re-scan"),
+                text: L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
+                inlineActionTitle: L10n.tr("重新扫码", "Re-scan"),
                 inlineAction: .presentMiReauth,
                 sources: sources
             )
@@ -870,6 +902,13 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
 
         if let miItem, let haItem {
             if !miItem.isOnline && haItem.isOnline {
+                if miItem.badge == .connecting {
+                    return PanelConnectionStatusPresentation(
+                        badge: .connecting,
+                        text: L10n.tr("正在连接米家…", "Connecting to Xiaomi Home…"),
+                        sources: sources
+                    )
+                }
                 return PanelConnectionStatusPresentation(
                     badge: .degraded,
                     text: L10n.tr("米家暂不可用，部分设备暂无数据", "Xiaomi Home unavailable; some devices have no data"),
@@ -879,6 +918,22 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
                 )
             }
             if miItem.isOnline && !haItem.isOnline {
+                if haItem.badge == .connecting {
+                    return PanelConnectionStatusPresentation(
+                        badge: .connecting,
+                        text: L10n.tr("正在连接 Home Assistant…", "Connecting to Home Assistant…"),
+                        sources: sources
+                    )
+                }
+                if case .declined = store.haPlaintextPrompt {
+                    return PanelConnectionStatusPresentation(
+                        badge: .reauthRequired,
+                        text: L10n.tr("未连接 Home Assistant（已拒绝明文 http）", "Home Assistant not connected (plaintext http declined)"),
+                        inlineActionTitle: L10n.tr("改用 https…", "Use https…"),
+                        inlineAction: .openConnectionSettings,
+                        sources: sources
+                    )
+                }
                 return PanelConnectionStatusPresentation(
                     badge: .degraded,
                     text: L10n.tr("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant unavailable; some devices have no data"),
@@ -946,6 +1001,15 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
                 return PanelConnectionStatusPresentation(
                     badge: .connecting,
                     text: L10n.tr("正在连接 Home Assistant…", "Connecting to Home Assistant…"),
+                    sources: sources
+                )
+            }
+            if case .declined = store.haPlaintextPrompt {
+                return PanelConnectionStatusPresentation(
+                    badge: .reauthRequired,
+                    text: L10n.tr("未连接 Home Assistant（已拒绝明文 http）", "Home Assistant not connected (plaintext http declined)"),
+                    inlineActionTitle: L10n.tr("改用 https…", "Use https…"),
+                    inlineAction: .openConnectionSettings,
                     sources: sources
                 )
             }
@@ -1067,11 +1131,7 @@ struct PanelConnectionStatusControl: View {
         let isMuted = status.badge == .online || status.badge == .demo
         HStack(spacing: 6) {
             Button {
-                if status.inlineAction == .presentMiReauth, status.inlineActionTitle == nil {
-                    PanelConnectionStatusPresentation.performInline(.presentMiReauth, store: store)
-                } else {
-                    detailState.toggle()
-                }
+                detailState.toggle()
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: status.iconName)
@@ -1103,7 +1163,11 @@ struct PanelConnectionStatusControl: View {
                     detailState.dismiss(restoreFocus: true)
                 }
             }
+            .onChange(of: isStatusButtonFocused) { _, focused in
+                detailState.isStatusControlFocused = focused
+            }
             .onChange(of: detailState.restoreFocusTrigger) { _, _ in isStatusButtonFocused = true }
+            .onChange(of: detailState.clearFocusTrigger) { _, _ in isStatusButtonFocused = false }
 
             if let actionTitle = status.inlineActionTitle, let inlineAction = status.inlineAction {
                 Button(actionTitle) {

@@ -5,7 +5,8 @@ import Testing
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
 
-@Suite("WP2a Panel Alerts and Footer Connection Status")
+extension PanelPresentationTests {
+@Suite("WP2a Panel Alerts and Footer Connection Status", .serialized)
 @MainActor
 struct PanelAlertsAndStatusTests {
     private static let fixedNow = Date(timeIntervalSince1970: 1_729_000_000)
@@ -80,8 +81,6 @@ struct PanelAlertsAndStatusTests {
         )
         let contact = recordedSafety(id: "sensor:contact:c1#contact", title: "大门门窗打开")
         let motion = recordedSafety(id: "sensor:motion:m1#motion", title: "玄关有人移动")
-        let lock = recordedSafety(id: "sensor:lock:lk1#lock", title: "门锁异常")
-        let vibration = recordedSafety(id: "sensor:vibration:v1#vibration", title: "窗户震动")
         let highPower = recordedSafety(
             id: "longrun:plug-1",
             title: "取暖器插座已开启超过 45 分钟",
@@ -99,16 +98,25 @@ struct PanelAlertsAndStatusTests {
         store.setSensorAlertEnabled(.motion, true)
         store.sensorAlertsOnlyWhenAway = false
 
-        let all = [smoke, gas, leak, doorbell, contact, motion, lock, vibration, highPower, longClimate, offline, battery]
+        // Pass non-urgent items before urgent items to verify urgent hazards (smoke/gas/leak) are ordered first in pinned.
+        let all = [contact, motion, highPower, longClimate, doorbell, smoke, gas, leak, offline, battery]
         let tiered = ActivityStackPolicy.partition(activities: all, store: store)
         #expect(tiered.pinned.map(\.id) == [
-            smoke.id, gas.id, leak.id, doorbell.id,
-            contact.id, motion.id, lock.id, vibration.id,
-            highPower.id, longClimate.id,
+            smoke.id, gas.id, leak.id,
+            contact.id, motion.id, highPower.id, longClimate.id, doorbell.id,
         ])
         #expect(tiered.ordinary.map(\.id) == [offline.id, battery.id])
 
-        // Turning on sensorAlertsOnlyWhenAway while Mac never went away demotes away-honoring contact/motion/vibration
+        // SensorAlertKind.parse parses only the 5 real kinds and returns nil for unknown prefixes.
+        #expect(SensorAlertKind.parse(fromAlertId: smoke.id) == .smoke)
+        #expect(SensorAlertKind.parse(fromAlertId: gas.id) == .gas)
+        #expect(SensorAlertKind.parse(fromAlertId: leak.id) == .leak)
+        #expect(SensorAlertKind.parse(fromAlertId: contact.id) == .contact)
+        #expect(SensorAlertKind.parse(fromAlertId: motion.id) == .motion)
+        #expect(SensorAlertKind.parse(fromAlertId: "sensor:lock:lk1#lock") == nil)
+        #expect(SensorAlertKind.parse(fromAlertId: "offline:light-1") == nil)
+
+        // Turning on sensorAlertsOnlyWhenAway while Mac never went away demotes away-honoring contact/motion
         // from pinned top cards while keeping smoke/gas/leak/doorbell/highPower/longClimate pinned.
         store.sensorAlertsOnlyWhenAway = true
         store.awayGap.includesAway = false
@@ -136,6 +144,98 @@ struct PanelAlertsAndStatusTests {
         let contactOffPinnedIds = tieredContactOff.pinned.map(\.id)
         #expect(!contactOffPinnedIds.contains(contact.id))
         #expect(contactOffPinnedIds.contains(motion.id))
+    }
+
+    @Test("Classic activity stack caps height at expandedViewportHeight when 6 pinned alerts + 2 missed timers are present and keeps intrinsic height when small")
+    func classicActivityStackBoundedHeight() {
+        _ = NSApplication.shared
+        let (store, suite) = makeIsolatedStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let pinnedAlerts = [
+            recordedSafety(id: "sensor:smoke:s1#smoke", title: "厨房烟雾告警"),
+            recordedSafety(id: "sensor:gas:g1#gas", title: "厨房燃气告警"),
+            recordedSafety(id: "sensor:leak:l1#leak", title: "卫生间浸水告警"),
+            recordedSafety(id: "longrun:plug-1", title: "取暖器插座已开启超过 45 分钟", turnOffCommand: .setSwitch(entityId: "switch.plug1", isOn: false)),
+            recordedSafety(id: "longrun:ac-1", title: "卧室空调已连续运行 4 小时", turnOffCommand: .setClimatePower(entityId: "climate.ac1", isOn: false, fallbackMode: "cool")),
+            recordedSafety(id: "longrun:kettle-1", title: "厨房电水壶持续高功率运行", turnOffCommand: .setSwitch(entityId: "switch.kettle1", isOn: false)),
+        ]
+        let missedTimers = [
+            ScheduledCommand(
+                id: UUID(),
+                reply: "关闭客厅吸顶灯",
+                fireDate: Self.fixedNow.addingTimeInterval(-120),
+                plan: IntentPlan(intents: [DeviceIntent(targetId: "d1", operation: .power(false))], reply: "关闭客厅吸顶灯", source: .local),
+                sourceScope: store.connectionScopeIdentifier
+            ),
+            ScheduledCommand(
+                id: UUID(),
+                reply: "关闭卧室空调",
+                fireDate: Self.fixedNow.addingTimeInterval(-60),
+                plan: IntentPlan(intents: [DeviceIntent(targetId: "d2", operation: .power(false))], reply: "关闭卧室空调", source: .local),
+                sourceScope: store.connectionScopeIdentifier
+            ),
+        ]
+
+        let compactCap: CGFloat = 230
+        let heavyStack = ClassicActivityStackView(
+            activities: pinnedAlerts,
+            missedTimers: missedTimers,
+            store: store,
+            isExpanded: .constant(false),
+            expandedViewportHeight: compactCap,
+            dismiss: { _ in },
+            clear: {},
+            label: { _ in "Alert" },
+            content: { activity in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(String(describing: activity.id)).font(.headline)
+                    Text("Detailed safety alert description line").font(.caption)
+                }
+                .padding(10)
+            }
+        )
+        .frame(width: 340)
+        let heavyHost = NSHostingView(rootView: heavyStack)
+        heavyHost.layoutSubtreeIfNeeded()
+        #expect(heavyHost.fittingSize.height == compactCap)
+
+        let singleStack = ClassicActivityStackView(
+            activities: [pinnedAlerts[0]],
+            missedTimers: [],
+            store: store,
+            isExpanded: .constant(false),
+            expandedViewportHeight: compactCap,
+            dismiss: { _ in },
+            clear: {},
+            label: { _ in "Alert" },
+            content: { _ in Text("Single Alert").padding(10) }
+        )
+        .frame(width: 340)
+        let singleHost = NSHostingView(rootView: singleStack)
+        singleHost.layoutSubtreeIfNeeded()
+        #expect(singleHost.fittingSize.height > 0)
+        #expect(singleHost.fittingSize.height < 100)
+
+        // Missed timers alone (with zero safety/notice activities) render in both Classic and Liquid Glass activity stacks.
+        for theme in PanelTheme.allCases {
+            let missedOnlyStack = ActivityStackView(
+                activities: [],
+                missedTimers: missedTimers,
+                store: store,
+                isExpanded: .constant(false),
+                expandedViewportHeight: theme == .classic ? compactCap : nil,
+                theme: theme,
+                dismiss: { _ in },
+                clear: {},
+                label: { _ in "" },
+                content: { _ in EmptyView() }
+            )
+            .frame(width: 340)
+            let missedOnlyHost = NSHostingView(rootView: missedOnlyStack)
+            missedOnlyHost.layoutSubtreeIfNeeded()
+            #expect(missedOnlyHost.fittingSize.height > 80)
+        }
     }
 
     @Test("Ordinary reminder capsule summary and one-click clear leave pinned cards and missed timers untouched")
@@ -254,6 +354,27 @@ struct PanelAlertsAndStatusTests {
             }
         }
 
+        // 3b. Dual-source with one online and the other still connecting must report connecting rather than false degraded "暂不可用"
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            store.connectionStatus = .connected
+            store.sourceStatuses = [.xiaomiCloud: .connecting, .homeAssistant: .connected]
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.badge == .connecting)
+                #expect(status.text == "正在连接米家…")
+            }
+
+            store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .connecting]
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.badge == .connecting)
+                #expect(status.text == "正在连接 Home Assistant…")
+            }
+        }
+
         // 4. Only LG TV online while Xiaomi is unavailable -> "米家暂不可用，LG 电视仍可控制"
         do {
             let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
@@ -333,7 +454,7 @@ struct PanelAlertsAndStatusTests {
             }
         }
 
-        // 7. Credential expired -> "米家登录已过期 · 重新扫码"
+        // 7. Credential expired -> "米家登录已过期" + inline action "重新扫码", while primary status button still opens detail popover
         do {
             let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
             defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
@@ -343,24 +464,57 @@ struct PanelAlertsAndStatusTests {
 
             L10n.$overrideLanguage.withValue(.zhHans) {
                 let status = PanelConnectionStatusPresentation.resolve(store: store)
-                #expect(status.text == "米家登录已过期 · 重新扫码")
+                #expect(status.text == "米家登录已过期")
+                #expect(status.inlineActionTitle == "重新扫码")
+                #expect(status.inlineAction == .presentMiReauth)
                 #expect(status.badge == .reauthRequired)
             }
             L10n.$overrideLanguage.withValue(.zhHant) {
                 let status = PanelConnectionStatusPresentation.resolve(store: store)
-                #expect(status.text == "米家登入已過期 · 重新掃碼")
+                #expect(status.text == "米家登入已過期")
+                #expect(status.inlineActionTitle == "重新掃碼")
             }
             L10n.$overrideLanguage.withValue(.en) {
                 let status = PanelConnectionStatusPresentation.resolve(store: store)
-                #expect(status.text == "Xiaomi Home session expired · Re-scan")
+                #expect(status.text == "Xiaomi Home session expired")
+                #expect(status.inlineActionTitle == "Re-scan")
+            }
+        }
+
+        // 8. HA plaintext http declined -> dedicated status text + inline action to open connection settings
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            store.haPlaintextPrompt = .declined("http://example.com:8123")
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "未连接 Home Assistant（已拒绝明文 http）")
+                #expect(status.inlineActionTitle == "改用 https…")
+                #expect(status.inlineAction == .openConnectionSettings)
+                #expect(status.badge == .reauthRequired)
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "未連接 Home Assistant（已拒絕明文 http）")
+                #expect(status.inlineActionTitle == "改用 https…")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Home Assistant not connected (plaintext http declined)")
+                #expect(status.inlineActionTitle == "Use https…")
             }
         }
     }
 
-    @Test("Connection status detail provides actual per-source online state, settings entry, and Esc focus restoration")
+    @Test("Connection status detail provides actual per-source online state, settings entry, and keyboard routing for Tab, Return, Space, and Esc")
     func statusDetailAndKeyboardEscapeRouting() {
         let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        defer {
+            PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
+            PanelConnectionDetailState.shared.clearStatusControlFocus()
+            UserDefaults.standard.removePersistentDomain(forName: suite)
+        }
         store.connectionStatus = .connected
         store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("502 Bad Gateway")]
 
@@ -371,14 +525,66 @@ struct PanelAlertsAndStatusTests {
             #expect(presentation.sources.first(where: { $0.id == "ha" })?.isOnline == false)
         }
 
-        // Esc closes connection status detail before collapsing device or hiding the panel.
-        let key = PanelKeyRouter.Key(code: kVK_Escape)
+        func route(_ key: PanelKeyRouter.Key, _ context: PanelKeyRouter.Context) -> PanelKeyRouter.Action {
+            PanelKeyRouter.beforeSearch(key, context) ?? PanelKeyRouter.afterSearch(key, context)
+        }
+
+        // 1. When a device card is focused, Tab moves focus to the footer connection status control while device card keys stay intact.
+        let deviceFocusedContext = PanelKeyRouter.Context(hasFocusedDevice: true)
+        #expect(route(PanelKeyRouter.Key(code: kVK_UpArrow), deviceFocusedContext) == .moveFocus(-1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_DownArrow), deviceFocusedContext) == .moveFocus(1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_LeftArrow), deviceFocusedContext) == .adjustFocusedDevice(-1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_RightArrow), deviceFocusedContext) == .adjustFocusedDevice(1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_Space, characters: " "), deviceFocusedContext) == .toggleFocusedDevice)
+        #expect(route(PanelKeyRouter.Key(code: kVK_Return), deviceFocusedContext) == .toggleFocusedDevice)
+        #expect(route(PanelKeyRouter.Key(code: kVK_Tab), deviceFocusedContext) == .focusConnectionStatus)
+
+        // 2. When the footer connection status control is focused, Return and Space pass through to activate it,
+        // Esc clears status focus, Tab cycles back to rooms, and ↑/↓ move back into device cards.
+        let statusFocusedContext = PanelKeyRouter.Context(isConnectionStatusFocused: true)
+        #expect(route(PanelKeyRouter.Key(code: kVK_Return), statusFocusedContext) == .passThrough)
+        #expect(route(PanelKeyRouter.Key(code: kVK_ANSI_KeypadEnter), statusFocusedContext) == .passThrough)
+        #expect(route(PanelKeyRouter.Key(code: kVK_Space, characters: " "), statusFocusedContext) == .passThrough)
+        #expect(route(PanelKeyRouter.Key(code: kVK_Escape), statusFocusedContext) == .clearConnectionStatusFocus)
+        #expect(route(PanelKeyRouter.Key(code: kVK_UpArrow), statusFocusedContext) == .moveFocus(-1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_DownArrow), statusFocusedContext) == .moveFocus(1))
+        #expect(route(PanelKeyRouter.Key(code: kVK_Tab), statusFocusedContext) == .cycleRoom(1))
+
+        // 3. Tab without device focus cycles through rooms and includes connection status at the wrap boundary.
+        store.rooms = [
+            RoomArea(id: "living", name: "客厅"),
+            RoomArea(id: "bed", name: "卧室"),
+        ]
+        store.selectRoom(nil)
+        PanelConnectionDetailState.shared.clearStatusControlFocus()
+
+        HotkeyAndNotificationManager.shared.cycleRoomOrConnectionStatus(delta: 1, store: store)
+        #expect(store.selectedRoomId == "living")
+        #expect(!PanelConnectionDetailState.shared.isStatusControlFocused)
+
+        HotkeyAndNotificationManager.shared.cycleRoomOrConnectionStatus(delta: 1, store: store)
+        #expect(store.selectedRoomId == "bed")
+        #expect(!PanelConnectionDetailState.shared.isStatusControlFocused)
+
+        HotkeyAndNotificationManager.shared.cycleRoomOrConnectionStatus(delta: 1, store: store)
+        #expect(PanelConnectionDetailState.shared.isStatusControlFocused)
+
+        HotkeyAndNotificationManager.shared.cycleRoomOrConnectionStatus(delta: 1, store: store)
+        #expect(!PanelConnectionDetailState.shared.isStatusControlFocused)
+        #expect(store.selectedRoomId == nil)
+
+        // 4. When connection detail popover is open, Esc closes it before search or device shortcuts,
+        // and Return, Space, Tab, and arrows pass through before search can swallow them.
         let contextWithDetail = PanelKeyRouter.Context(
             isShowingConnectionDetail: true,
             hasExpandedDevice: true,
             hasFocusedDevice: true
         )
-        let action = PanelKeyRouter.beforeSearch(key, contextWithDetail) ?? PanelKeyRouter.afterSearch(key, contextWithDetail)
-        #expect(action == .dismissConnectionDetail)
+        #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_Escape), contextWithDetail) == .dismissConnectionDetail)
+        #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_Return), contextWithDetail) == .passThrough)
+        #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_Space, characters: " "), contextWithDetail) == .passThrough)
+        #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_Tab), contextWithDetail) == .passThrough)
+        #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_DownArrow), contextWithDetail) == .passThrough)
     }
+}
 }

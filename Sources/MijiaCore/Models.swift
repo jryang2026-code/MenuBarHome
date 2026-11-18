@@ -462,6 +462,14 @@ public enum SensorAlertKind: String, CaseIterable, Hashable, Identifiable, Senda
 
     public var id: String { rawValue }
 
+    /// Parses `"sensor:\(kind.rawValue):..."` alert IDs produced by `SensorAlertEvaluation.alerts`.
+    public static func parse(fromAlertId id: String) -> SensorAlertKind? {
+        guard id.hasPrefix("sensor:") else { return nil }
+        let afterPrefix = id.dropFirst("sensor:".count)
+        guard let colonIndex = afterPrefix.firstIndex(of: ":") else { return nil }
+        return SensorAlertKind(rawValue: String(afterPrefix[..<colonIndex]))
+    }
+
     public var enabledByDefault: Bool {
         switch self {
         case .leak, .smoke, .gas: true
