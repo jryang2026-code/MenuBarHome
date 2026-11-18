@@ -2,7 +2,7 @@ import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import type { ExecuteOptions, HomeProvider } from "./homeProvider.js";
 import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference,
 } from "./i18n.js";
-import type { AccountScopedHomeOption, AccountScopedSmartDevice,
+import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
 import { parseMiotActionAddress, parseMiotAddress } from "./miCloud/spec.js";
 import type { MiDeviceRecord } from "./miCloudClient.js";
@@ -1109,11 +1109,130 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     };
   }
 
-    recompute(languagePreference?: LanguagePreference): DeviceMergeResult | null {
-    if (!this.lastHA && !this.lastMi) return null; return this.mergeCurrent(languagePreference); } 
-    async execute(command: DeviceCommand, executors: { readonly executeHA: (command: DeviceCommand) => Promise<void>;
-      readonly executeMi: (command: DeviceCommand) => Promise<void>;
-    }): Promise<HomeBackend> { const backend = commandTargetBackend(command);
+  recompute(languagePreference?: LanguagePreference): DeviceMergeResult | null {
+    if (!this.lastHA && !this.lastMi) return null;
+    return this.mergeCurrent(languagePreference);
+  }
+
+  removeXiaomiAccount(
+    accountId: string,
+    languagePreference?: LanguagePreference,
+  ): DeviceMergeResult | null {
+    if (!accountId || !this.lastMi) return null;
+
+    const removedDeviceIds = new Set<string>();
+    const isRemovedMiDevice = (id: string, devAccountId?: string): boolean =>
+      devAccountId === accountId || removedDeviceIds.has(id) || MiAccountScope.isOwned(id, accountId);
+
+    for (const dev of this.lastMi.home.devices) {
+      const scoped = dev as AccountScopedSmartDevice;
+      if (scoped.accountId === accountId || MiAccountScope.isOwned(scoped.id, accountId)) {
+        removedDeviceIds.add(scoped.id);
+      }
+    }
+    for (const route of Object.values(this.lastMerged?.routes ?? {})) {
+      if (
+        route.backend === "xiaomiCloud" &&
+        (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
+      ) {
+        removedDeviceIds.add(route.sourceDeviceId);
+        removedDeviceIds.add(route.sourceDevice.id);
+      }
+      if (
+        route.alternateBackend === "xiaomiCloud" &&
+        route.alternateDevice &&
+        (route.alternateDevice.accountId === accountId ||
+          MiAccountScope.isOwned(route.alternateDevice.id, accountId))
+      ) {
+        removedDeviceIds.add(route.alternateDevice.id);
+      }
+    }
+
+    const nextDevices = this.lastMi.home.devices.filter((dev) => {
+      const scoped = dev as AccountScopedSmartDevice;
+      return !isRemovedMiDevice(scoped.id, scoped.accountId);
+    });
+    const nextRooms = this.lastMi.home.rooms.filter((room) => !MiAccountScope.isOwned(room.id, accountId));
+    const nextReadings = this.lastMi.home.environmentReadings.filter(
+      (reading) => !isRemovedMiDevice(reading.id),
+    );
+    let nextDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
+    if (this.lastMi.home.deviceFacets) {
+      nextDeviceFacets = {};
+      for (const [id, controls] of Object.entries(this.lastMi.home.deviceFacets)) {
+        if (!isRemovedMiDevice(id)) nextDeviceFacets[id] = controls;
+      }
+    }
+    let nextIdentities: Record<string, DeviceSourceIdentity> | undefined;
+    if (this.lastMi.identities) {
+      nextIdentities = {};
+      for (const [id, identity] of Object.entries(this.lastMi.identities)) {
+        if (!isRemovedMiDevice(id)) nextIdentities[id] = identity;
+      }
+    }
+    let nextLightGroupOwners: Map<string, string> | undefined;
+    if (this.lastMi.lightGroupOwners) {
+      nextLightGroupOwners = new Map<string, string>();
+      const entries =
+        this.lastMi.lightGroupOwners instanceof Map
+          ? this.lastMi.lightGroupOwners.entries()
+          : Object.entries(this.lastMi.lightGroupOwners);
+      for (const [member, group] of entries) {
+        if (!isRemovedMiDevice(member) && !isRemovedMiDevice(group)) {
+          nextLightGroupOwners.set(member, group);
+        }
+      }
+    }
+    const nextHomes = this.lastMi.homes?.filter(
+      (home) => home.accountId !== accountId && !MiAccountScope.isOwned(home.id, accountId),
+    );
+    const hadAccountStatuses = this.lastMi.accountStatuses !== undefined;
+    let nextAccountStatuses: Record<string, ConnectionStatus> | undefined;
+    if (this.lastMi.accountStatuses) {
+      nextAccountStatuses = {};
+      for (const [id, status] of Object.entries(this.lastMi.accountStatuses)) {
+        if (id !== accountId) nextAccountStatuses[id] = status;
+      }
+    }
+
+    const noRemainingAccounts =
+      (!hadAccountStatuses || Object.keys(nextAccountStatuses ?? {}).length === 0) &&
+      nextDevices.length === 0 &&
+      (nextHomes?.length ?? 0) === 0;
+
+    if (noRemainingAccounts) {
+      this.lastMi = null;
+      this.sourceStatuses.xiaomiCloud = {
+        kind: "disconnected",
+        reason: "Signed out of Xiaomi account",
+      };
+    } else {
+      this.lastMi = {
+        ...this.lastMi,
+        home: {
+          rooms: nextRooms,
+          devices: nextDevices,
+          environmentReadings: nextReadings,
+          scenes: this.lastMi.home.scenes,
+          ...(nextDeviceFacets !== undefined ? { deviceFacets: nextDeviceFacets } : {}),
+        },
+        ...(nextIdentities !== undefined ? { identities: nextIdentities } : {}),
+        ...(nextLightGroupOwners !== undefined ? { lightGroupOwners: nextLightGroupOwners } : {}),
+        ...(nextHomes !== undefined ? { homes: nextHomes } : {}),
+        ...(nextAccountStatuses !== undefined ? { accountStatuses: nextAccountStatuses } : {}),
+      };
+    }
+
+    if (!this.lastHA && !this.lastMi) {
+      this.lastMerged = null;
+      return null;
+    }
+    return this.mergeCurrent(languagePreference);
+  }
+
+  async execute(command: DeviceCommand, executors: { readonly executeHA: (command: DeviceCommand) => Promise<void>;
+    readonly executeMi: (command: DeviceCommand) => Promise<void>;
+  }): Promise<HomeBackend> { const backend = commandTargetBackend(command);
     if (backend === "xiaomiCloud") { await executors.executeMi(command); } else { await executors.executeHA(command); }
     return backend; } private mergeCurrent(languagePreference?: LanguagePreference): DeviceMergeResult {
     const merged = DeviceDeduplicator.merge({

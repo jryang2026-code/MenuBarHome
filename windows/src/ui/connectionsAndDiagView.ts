@@ -3,15 +3,15 @@ import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, n
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
-import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
+import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
-import type { HomeOption, LayoutPrefs } from "./panelPrefs.js";
+import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
@@ -572,45 +572,94 @@ async function performSignOutSingleMiAccountOnHost(
         host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
       }
     }
-    if (host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || MiAccountScope.isOwned(host.expandedDeviceId, accountId))) {
-      host.expandedDeviceId = null;
-    }
-    if (removedIds.size > 0) {
-      for (const id of removedIds) host.waitingDeviceIds?.delete(id);
-      host.devices = host.devices.filter((d) => !removedIds.has(d.id));
-      host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
-      const nextFacets = { ...host.deviceFacets };
-      for (const id of removedIds) delete nextFacets[id];
-      host.deviceFacets = nextFacets;
-    }
-    if (wasDualSource) {
-      const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
-        if (dev.accountId !== accountId) return dev;
-        const { accountId: _removedId, accountLabel: _removedLabel, ...rest } = dev;
-        return rest;
-      };
-      host.devices = host.devices.map((d) => {
-        const route = dualRoutesBeforeRemoval?.[d.id];
-        if (!isRouteOwnedByRemovedAccount(route, d)) return d;
-        if (
-          route?.backend === "xiaomiCloud" &&
-          route.alternateBackend === "homeAssistant" &&
-          route.alternateDevice
-        ) {
-          return stripRemovedAccountMeta({
-            ...route.alternateDevice,
-            id: d.id,
-            roomId: d.roomId,
-            roomName: d.roomName,
-            sourceBackend: "homeAssistant",
-          });
+    const nextDual =
+      wasDualSource && removal.accounts.length > 0
+        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null)
+        : null;
+
+    if (host.waitingDeviceIds) {
+      for (const id of removedIds) host.waitingDeviceIds.delete(id);
+      if (nextDual) {
+        for (const d of host.devices) {
+          const prevRoute = dualRoutesBeforeRemoval?.[d.id];
+          const nextRoute = nextDual.routes[d.id];
+          if (
+            isRouteOwnedByRemovedAccount(prevRoute, d) ||
+            (prevRoute && (!nextRoute || nextRoute.backend !== prevRoute.backend))
+          ) {
+            host.waitingDeviceIds.delete(d.id);
+          }
         }
-        return stripRemovedAccountMeta(d);
-      });
+      }
+    }
+
+    if (nextDual) {
+      host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
+      host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
+      host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
+      host.deviceFacets = nextDual.home.deviceFacets ?? {};
+      host.scenes = [...nextDual.home.scenes];
+      const readingPriorityById = new Map(
+        host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]),
+      );
+      host.environmentReadings = applyOrder(
+        host.environmentReadings.map((r) => r.id),
+        nextDual.home.environmentReadings,
+      ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
+    } else {
+      if (removedIds.size > 0) {
+        host.devices = host.devices.filter((d) => !removedIds.has(d.id));
+        host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
+        const nextFacets = { ...host.deviceFacets };
+        for (const id of removedIds) delete nextFacets[id];
+        host.deviceFacets = nextFacets;
+      }
+      if (wasDualSource) {
+        const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
+          if (dev.accountId !== accountId) return dev;
+          const { accountId: _removedId, accountLabel: _removedLabel, ...rest } = dev;
+          return rest;
+        };
+        host.devices = host.devices.map((d) => {
+          const route = dualRoutesBeforeRemoval?.[d.id];
+          if (!isRouteOwnedByRemovedAccount(route, d)) return d;
+          if (
+            route?.backend === "xiaomiCloud" &&
+            route.alternateBackend === "homeAssistant" &&
+            route.alternateDevice
+          ) {
+            return stripRemovedAccountMeta({
+              ...route.alternateDevice,
+              id: d.id,
+              roomId: d.roomId,
+              roomName: d.roomName,
+              sourceBackend: "homeAssistant",
+            });
+          }
+          return stripRemovedAccountMeta(d);
+        });
+      }
+    }
+
+    if (
+      host.expandedDeviceId &&
+      (removedIds.has(host.expandedDeviceId) ||
+        MiAccountScope.isOwned(host.expandedDeviceId, accountId) ||
+        (nextDual !== null && !host.devices.some((d) => d.id === host.expandedDeviceId)))
+    ) {
+      host.expandedDeviceId = null;
     }
 
     if (removal.accounts.length <= 1) {
       host.multiAccountState = null;
+    } else if (host.multiAccountState) {
+      const nextChildren = { ...host.multiAccountState.children };
+      delete nextChildren[accountId];
+      host.multiAccountState = {
+        accounts: removal.accounts,
+        children: nextChildren,
+        merged: mergeMiAccountSnapshots(removal.accounts, nextChildren),
+      };
     }
 
     session.signingOutAccountIds.delete(accountId);
