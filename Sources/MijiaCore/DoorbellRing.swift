@@ -3,7 +3,8 @@ import Foundation
 /// One press of a doorbell, from a Home Assistant `event` entity with `device_class: doorbell` (#308).
 /// HA sets the entity's state to the event timestamp on every press.
 public struct DoorbellRing: Equatable, Sendable {
-    /// The card that owns the doorbell: the HA device id, translated to the merged card id in dual-source mode.
+    /// The card that owns the doorbell: the source-native device id, translated to the merged
+    /// card id in dual-source mode (both sides, #23).
     public var deviceId: String
     public var entityId: String
     public var firedAt: String
@@ -16,6 +17,26 @@ public struct DoorbellRing: Equatable, Sendable {
 
     /// Identifies this press; the same press is handled at most once.
     public var key: String { "\(entityId)@\(firedAt)" }
+
+    /// The press time, parsed from either source's ISO-8601 shape, or nil when the state text is
+    /// not a timestamp. HA writes milliseconds (or whole seconds, or Python's microseconds); the
+    /// Mi cloud writes milliseconds. Used to pair the two sources' reports of one press (#23).
+    var firedAtDate: Date? {
+        let text = firedAt.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty, text != "unknown", text != "unavailable" else { return nil }
+        Self.dateFormatterLock.lock()
+        defer { Self.dateFormatterLock.unlock() }
+        if let date = Self.fractionalFormatter.date(from: text) { return date }
+        return Self.wholeSecondFormatter.date(from: text)
+    }
+
+    private static let dateFormatterLock = NSLock()
+    nonisolated(unsafe) private static let fractionalFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+    nonisolated(unsafe) private static let wholeSecondFormatter: ISO8601DateFormatter = ISO8601DateFormatter()
 
     /// The press timestamp a doorbell event entity reports, or nil for `unknown`/`unavailable`.
     static func timestamp(_ state: HAEntityState) -> String? {
