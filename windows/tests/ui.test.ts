@@ -2929,7 +2929,7 @@ describe("Smart camera support and live view (#97)", () => {
         result = [{ did: "cam-1", siid: 2, piid: 1, code: 0, value: true }];
       } else if (url.includes("miotspec/action")) {
         actionCalls.push(url);
-        result = { url: "https://example.com/live.m3u8" };
+        result = { code: 0, url: "https://example.com/live.m3u8" };
       }
       return { status: 200, headers: {}, body: JSON.stringify({ code: 0, result }) };
     };
