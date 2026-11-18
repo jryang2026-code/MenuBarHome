@@ -1256,7 +1256,11 @@ extension HomeStore {
         guard homeBackend != .demo else { return [] }
         let hint = (hostHint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let effectiveHint = hint.isEmpty ? lgConfig.host : hint
-        return await LGWebOSClient.discoverOnLAN(hostHint: effectiveHint)
+        let found = await LGWebOSClient.discoverOnLAN(hostHint: effectiveHint)
+        if found.isEmpty, !effectiveHint.isEmpty, LGWebOSClient.normalizedLANDiscoveryHost(effectiveHint) == nil {
+            showToast(LGWebOSClient.discoveryFailureMessage(hostHint: effectiveHint), isError: true)
+        }
+        return found
     }
 
     /// Switches the visible Mi Home; nil shows every home's devices.

@@ -426,13 +426,13 @@ describe("MiAccountLogin", () => {
         return {
           status: 200,
           headers: {} as Record<string, string>,
-          body: '&&&START&&&{"userId":1234567890,"ssecurity":"c3M=","cUserId":"cu","passToken":"pt","location":"https://sts.example/sts?x=1"}',
+          body: '&&&START&&&{"userId":1234567890,"ssecurity":"c3M=","cUserId":"cu","passToken":"pt","location":"https://sts.api.io.mi.com/sts?x=1"}',
         };
       }
-      if (req.url.startsWith("https://sts.example")) {
+      if (req.url.startsWith("https://sts.api.io.mi.com")) {
         return {
           status: 200,
-          headers: { "Set-Cookie": "serviceToken=tok123; path=/; domain=.example" } as Record<string, string>,
+          headers: { "Set-Cookie": "serviceToken=tok123; path=/; domain=.mi.com" } as Record<string, string>,
           body: "ok",
         };
       }
@@ -3538,10 +3538,10 @@ describe("Xiaomi cloud regions (#37)", () => {
         return {
           status: 200,
           headers: {},
-          body: '&&&START&&&{"userId":1234567890,"ssecurity":"c3M=","cUserId":"cu","passToken":"pt","location":"https://sts.example/sts"}',
+          body: '&&&START&&&{"userId":1234567890,"ssecurity":"c3M=","cUserId":"cu","passToken":"pt","location":"https://sts.api.io.mi.com/sts"}',
         };
       }
-      if (req.url.startsWith("https://sts.example")) {
+      if (req.url.startsWith("https://sts.api.io.mi.com")) {
         return { status: 200, headers: { "Set-Cookie": "serviceToken=tok-de; path=/" } as Record<string, string>, body: "ok" };
       }
       return { status: 200, headers: {} as Record<string, string>, body: ticketBody };

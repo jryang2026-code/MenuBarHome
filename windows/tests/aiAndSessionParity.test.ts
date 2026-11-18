@@ -1273,5 +1273,29 @@ describe("Demo offline guard, credential error banner, mic pin guard & hover pau
       );
       assert.equal(seenUrls.length, 2);
     }
+
+    for (const badInitial of [
+      "https://evil.example/steal",
+      "http://sts.api.io.mi.com/sts",
+      "https://user@sts.api.io.mi.com/sts",
+    ]) {
+      const seenUrls: string[] = [];
+      const badInitialLogin = new MiAccountLogin(async (req): Promise<HttpResponse> => {
+        seenUrls.push(req.url);
+        if (req.url === "https://lp.example/poll") {
+          return {
+            status: 200,
+            headers: {},
+            body: `&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"${badInitial}"}`,
+          };
+        }
+        assert.fail(`Unexpected request to untrusted initial location ${req.url}`);
+      });
+      await assert.rejects(
+        () => badInitialLogin.waitForScan(ticket),
+        (err: unknown) => err instanceof MiCloudError && err.kind === "badResponse",
+      );
+      assert.equal(seenUrls.length, 1);
+    }
   });
 });

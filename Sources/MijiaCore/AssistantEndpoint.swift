@@ -62,8 +62,8 @@ public struct AssistantEndpoint: Equatable, Sendable {
     }
 
     /// Loopback, private LAN (RFC 1918), link-local, CGNAT/Tailscale (100.64.0.0/10), IPv6 ULA/link-local,
-    /// `.local`/`.lan`/`.home.arpa`/`.internal` names, or a dotless single-label host such as `homeassistant`
-    /// (not a two-letter or IDN country-code label, which can resolve publicly).
+    /// or `.local`/`.lan`/`.home.arpa`/`.internal` names. Dotless single-label hosts such as `homeassistant`
+    /// require explicit plaintext consent before credentials are sent over plain HTTP (#11).
     public var isLocalNetwork: Bool {
         if isLoopback || Self.localHostSuffixes.contains(where: { host.hasSuffix($0) }) {
             return true
@@ -81,16 +81,7 @@ public struct AssistantEndpoint: Equatable, Sendable {
             return host.hasPrefix("fc") || host.hasPrefix("fd")
                 || host.hasPrefix("fe8") || host.hasPrefix("fe9") || host.hasPrefix("fea") || host.hasPrefix("feb")
         }
-        return Self.isPrivateSingleLabel(host)
-    }
-
-    /// A dotless name such as `homeassistant` resolves through the router's search domain.
-    /// ICANN forbids dotless records only for generic TLDs; country-code TLDs (`ai`, `xn--p1ai`) may resolve
-    /// on their own to a public server, so those labels never count as local.
-    private static func isPrivateSingleLabel(_ host: String) -> Bool {
-        // Foundation may hand back an IDN label decoded (`рф`), so non-ASCII counts as IDN too.
-        guard !host.contains("."), !host.hasPrefix("xn--"), host.allSatisfy(\.isASCII) else { return false }
-        return !(host.count == 2 && host.allSatisfy { ("a"..."z").contains($0) })
+        return false
     }
 
     private static let localHostSuffixes = [".local", ".lan", ".home.arpa", ".internal"]

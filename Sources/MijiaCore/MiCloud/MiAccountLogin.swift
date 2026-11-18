@@ -213,6 +213,9 @@ public struct MiAccountLogin: Sendable {
     }
 
     private func fetchServiceToken(location: URL) async throws -> (token: String, expiresAt: Date?) {
+        guard Self.isTrustedXiaomiLoginRedirect(location) else {
+            throw MiLoginError.badResponse("非小米登录跳转地址")
+        }
         var url = location
         for _ in 0..<5 {
             var req = URLRequest(url: url)

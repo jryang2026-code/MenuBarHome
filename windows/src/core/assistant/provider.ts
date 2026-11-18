@@ -160,8 +160,8 @@ const LOCAL_HOST_SUFFIXES = [".local", ".lan", ".home.arpa", ".internal"] as con
 
 /**
  * Loopback, private LAN, link-local, CGNAT/Tailscale, IPv6 ULA/link-local,
- * `.local`/`.lan`/`.home.arpa`/`.internal` names, or a dotless single-label host such as `homeassistant`
- * (not a two-letter or IDN country-code label, which can resolve publicly).
+ * or `.local`/`.lan`/`.home.arpa`/`.internal` names. Dotless single-label hosts such as `homeassistant`
+ * require explicit plaintext consent before credentials are sent over plain HTTP (#11).
  */
 export function isLocalNetworkEndpoint(endpoint: AssistantEndpoint): boolean {
   const host = endpoint.host;
@@ -183,17 +183,7 @@ export function isLocalNetworkEndpoint(endpoint: AssistantEndpoint): boolean {
   if (host.includes(":")) {
     return /^(fc|fd|fe[89ab])/.test(host);
   }
-  return isPrivateSingleLabel(host);
-}
-
-/**
- * A dotless name such as `homeassistant` resolves through the router's search domain.
- * ICANN forbids dotless records only for generic TLDs; country-code TLDs (`ai`, `xn--p1ai`) may resolve
- * on their own to a public server, so those labels never count as local. Mirrors macOS `isPrivateSingleLabel`.
- */
-function isPrivateSingleLabel(host: string): boolean {
-  if (host.includes(".") || host.startsWith("xn--") || /[^\x00-\x7f]/.test(host)) return false;
-  return !/^[a-z]{2}$/.test(host);
+  return false;
 }
 
 /** API keys only travel over https, or over plain http that stays on the local network. */
