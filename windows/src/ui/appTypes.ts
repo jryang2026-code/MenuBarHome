@@ -119,6 +119,8 @@ export interface PersistedSettings {
   launchAtLogin: boolean;
   /** Blocks manual & external URL device control while the Windows workstation is locked. */
   blockControlWhileLocked: boolean;
+  /** 语音输入; missing on legacy settings means on, so upgrades keep the existing mic entry. */
+  voiceInputEnabled?: boolean;
   /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
   enableRaycastIntegration: boolean;
   /** Runs `menumijia://` links without the external-link confirmation prompt when on. */

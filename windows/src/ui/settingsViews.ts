@@ -10,6 +10,8 @@ import { trText } from "../core/quickActions.js";
 import {
   getUpdateProgressForSettings,
   hasPendingMiVaultDeletion,
+  isSpeechRecognitionSupported,
+  isVoiceInputEnabled,
   type UpdateDownloadProgress,
 } from "./speechGuard.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
@@ -460,15 +462,24 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
       }
     </div>
 
-    <div class="cc-field" data-settings-anchor="voiceControl">
-      <label>${ctx.escapeHtml(tr3("语音指令与麦克风", "語音指令與麥克風", "Voice Dictation & Microphone"))}</label>
-      <p class="cc-field-hint">${ctx.escapeHtml(
-        tr3(
-          "点击面板顶部麦克风按钮即可开始语音听写，自动跟随当前界面语言。",
-          "點擊面板頂部麥克風按鈕即可開始語音聽寫，自動跟隨目前介面語言。",
-          "Click the microphone icon at the top of the panel to dictate commands in your UI language.",
-        ),
-      )}</p>
+    <div class="cc-field cc-field-row" data-settings-anchor="voiceControl">
+      <div>
+        <label for="settings-voice-input">${t("语音输入")}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+          isSpeechRecognitionSupported()
+            ? tr3(
+                "打开后，面板顶部显示麦克风按钮，用当前界面语言听写。关闭后按钮隐藏，也不会启动识别。",
+                "開啟後，面板頂部顯示麥克風按鈕，用目前介面語言聽寫。關閉後按鈕隱藏，也不會啟動辨識。",
+                "When on, a microphone button appears at the top of the panel and dictates in your UI language. When off, the button is hidden and recognition never starts.",
+              )
+            : tr3(
+                "这台电脑不支持在线语音识别。开关会保留你的选择，但暂时只能用键盘和文字指令。",
+                "這台電腦不支援線上語音辨識。開關會保留你的選擇，但暫時只能用鍵盤和文字指令。",
+                "This PC does not support online speech recognition. Your choice is kept, but for now only the keyboard and typed commands work.",
+              ),
+        )}</p>
+      </div>
+      <input id="settings-voice-input" type="checkbox" ${isVoiceInputEnabled(ctx.settings) ? "checked" : ""} />
     </div>
 
     <div class="cc-field cc-field-row" data-settings-anchor="setupGuide">
