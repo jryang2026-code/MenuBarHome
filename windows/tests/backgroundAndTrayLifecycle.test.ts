@@ -159,10 +159,13 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   settings: {
     connectionMode: string;
     miSession: unknown;
+    assistantBaseURL: string;
+    cloudConsentEndpoints: string[];
   };
   activeSheet: string;
   isSyncingCloud: boolean;
   isPollingQR: boolean;
+  isRefreshingProactive: boolean;
   lastCloudRefreshAt: number | null;
   cloudValuesStale: boolean;
   haConnectionError: string | null;
@@ -177,6 +180,7 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   renderCalls: number;
   backgroundRenderCalls: number;
   panelVisible: boolean;
+  apiKeyFor(baseURL: string): string;
   isPanelVisible(): boolean;
   refreshDevices(silent?: boolean): Promise<void>;
   render(): void;
@@ -190,10 +194,13 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
     settings: {
       connectionMode: "xiaomiCloud",
       miSession: { userId: "123456", serviceToken: "tok", ssecurity: "sec", region: "cn" },
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      cloudConsentEndpoints: [],
     },
     activeSheet: "none",
     isSyncingCloud: false,
     isPollingQR: false,
+    isRefreshingProactive: false,
     lastCloudRefreshAt: null,
     cloudValuesStale: false,
     haConnectionError: null,
@@ -206,6 +213,9 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
     renderCalls: 0,
     backgroundRenderCalls: 0,
     panelVisible: true,
+    apiKeyFor() {
+      return "";
+    },
     isPanelVisible() {
       return host.panelVisible;
     },
@@ -445,7 +455,12 @@ describe("ResumeRecoveryController deterministic lifecycle hardening", () => {
     assert.deepEqual(cloudHost.refreshCalls, [true]);
 
     const haHost = createMockHost({
-      settings: { connectionMode: "homeAssistant", miSession: null },
+      settings: {
+        connectionMode: "homeAssistant",
+        miSession: null,
+        assistantBaseURL: "https://openrouter.ai/api/v1",
+        cloudConsentEndpoints: [],
+      },
       lastCloudRefreshAt: 9_800,
       cloudValuesStale: true,
     });
@@ -736,13 +751,10 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
     }
   });
 
-  it("mounts optional tick branches (proactive, cloud refresh, system context poll) only when consumers exist and unmounts cleanly without extra timers", async () => {
-    const {
-      shouldRunBackgroundDeviceRefreshBranch,
-      shouldRunProactiveTickBranch,
-      shouldRunSystemContextPollBranch,
-    } = await import("../src/ui/appLifecycle.js");
-    const { hasSystemSignalConsumers } = await import("../src/ui/systemContextPoll.js");
+  it("skips optional tick branches (proactive, cloud refresh, system context poll) without consumers, parses rules once per tick, and clears baseline on disable or stop", async () => {
+    const { canRefreshDevicesInBackground } = await import("../src/ui/appLifecycle.js");
+    const { proactiveHasConsumer } = await import("../src/ui/proactive.js");
+    const { systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
     const { createAutomationRule } = await import("../src/core/automationEngine.js");
     const { getHostActivityCenter } = await import("../src/ui/activityStackView.js");
 
@@ -795,11 +807,17 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
 
     const center = getHostActivityCenter(app);
     center.automationEngine.store.save([]);
+    const origLoad = center.automationEngine.store.load.bind(center.automationEngine.store);
+    let storeLoadCalls = 0;
+    center.automationEngine.store.load = () => {
+      storeLoadCalls += 1;
+      return origLoad();
+    };
 
     // 1) No optional consumers: demo mode, no AI key/consent, no power/display rules.
-    assert.equal(shouldRunProactiveTickBranch(app), false);
-    assert.equal(shouldRunSystemContextPollBranch(app), false);
-    assert.equal(hasSystemSignalConsumers([]), false);
+    assert.equal(proactiveHasConsumer(app), false);
+    assert.equal(canRefreshDevicesInBackground(app), false);
+    assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
 
     const stopLoop = startTimerLoop(app, { scheduler, intervalMs: 1000 });
     assert.equal(scheduler.activeIntervalCount, 1, "only the shared 1s interval is created");
@@ -826,7 +844,11 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       ranScheduled += 1;
     };
 
-    scheduler.advanceBy(3_000);
+    storeLoadCalls = 0;
+    scheduler.advanceBy(1_000);
+    assert.equal(storeLoadCalls, 1, "idle tick parses the automation rule store only once");
+
+    scheduler.advanceBy(2_000);
     await Promise.resolve();
     await Promise.resolve();
 
@@ -861,13 +883,15 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
     });
     center.automationEngine.store.save([powerRule]);
 
-    assert.equal(shouldRunProactiveTickBranch(app), true);
-    assert.equal(shouldRunSystemContextPollBranch(app), true);
-    assert.equal(hasSystemSignalConsumers([powerRule]), true);
+    assert.equal(proactiveHasConsumer(app), true);
+    assert.equal(canRefreshDevicesInBackground(app), true);
+    assert.deepEqual(systemSignalNeed([powerRule]), { power: true, externalDisplayCount: false });
 
+    // Poll-due tick must still parse rule store only once synchronously.
+    storeLoadCalls = 0;
     scheduler.advanceBy(1_000);
-    await Promise.resolve();
-    await Promise.resolve();
+    assert.equal(storeLoadCalls, 1, "poll-due tick parses the automation rule store only once");
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
 
     assert.equal(proactiveCalls, 1, "proactive branch runs once mounted");
     assert.equal(refreshCalls, 1, "cloud refresh branch runs once mounted");
@@ -880,6 +904,7 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       nativeCalls.includes("is_workstation_locked"),
       "must-run lock sampling runs when automation rules are enabled",
     );
+    assert.notEqual(center.systemSignalBaseline, null, "system poll populates baseline");
 
     // 3) Unmount optional consumers: disable power rule, switch back to unconsented cloud AI without key,
     // and open settings sheet so background device refresh unmounts while live snapshot stays active.
@@ -919,9 +944,8 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       return true;
     };
 
-    assert.equal(shouldRunProactiveTickBranch(app), false);
-    assert.equal(shouldRunSystemContextPollBranch(app), false);
-    assert.equal(shouldRunBackgroundDeviceRefreshBranch(app), false);
+    assert.equal(proactiveHasConsumer(app), false);
+    assert.equal(canRefreshDevicesInBackground(app), false);
 
     const prevProactiveCalls = proactiveCalls;
     const prevRefreshCalls = refreshCalls;
@@ -935,9 +959,10 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
 
     // Prime unlocked baseline on first tick (expiring manual undo at +500ms and evaluating lowBattery safety alert),
     // then flip to locked so the screenLocked automation rule fires after the 2s AwayArbitrator debounce.
+    storeLoadCalls = 0;
     scheduler.advanceBy(1_000);
-    await Promise.resolve();
-    await Promise.resolve();
+    assert.equal(storeLoadCalls, 1, "active non-poll rule tick parses the automation rule store only once");
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
     assert.equal(app.lastUndoAction, null, "must-run Undo expiry continues working after unmount");
     assert.ok(
       center.recentSafetyAlerts.some((entry) => entry.alert.category === "lowBattery"),
@@ -947,9 +972,7 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
 
     for (let step = 0; step < 15; step += 1) {
       scheduler.advanceBy(1_000);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
     }
 
     assert.equal(proactiveCalls, prevProactiveCalls, "proactive branch stops immediately after consumer unmounts");
@@ -959,12 +982,20 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       prevPowerCalls,
       "system context poll stops immediately after power rule disables",
     );
-    assert.equal(center.systemSignalBaseline, null, "unmounting systemContextPoll clears cached signal baseline");
-    assert.equal(center.lastSystemPollAtMs, 0, "unmounting systemContextPoll resets poll timestamp");
+    assert.equal(center.systemSignalBaseline, null, "disabling power/display rules clears cached signal baseline");
+    assert.equal(center.lastSystemPollAtMs, 0, "disabling power/display rules resets poll timestamp");
     assert.ok(appliedCommands >= 1, "must-run lock state & screenLocked automation rule still fire");
 
-    // 4) Dispose loop leaves zero timers.
+    // 4) Re-enable power rule to repopulate baseline, then verify stopping the timer clears baseline & timers.
+    center.automationEngine.store.save([powerRule]);
+    scheduler.advanceBy(1_000);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    assert.notEqual(center.systemSignalBaseline, null);
+    assert.ok(center.lastSystemPollAtMs > 0);
+
     stopLoop();
+    assert.equal(center.systemSignalBaseline, null, "stopping timer loop clears cached signal baseline");
+    assert.equal(center.lastSystemPollAtMs, 0, "stopping timer loop resets poll timestamp");
     Date.now = realDateNow;
     assert.equal(scheduler.activeIntervalCount, 0);
     assert.equal(scheduler.activeTimeoutCount, 0);

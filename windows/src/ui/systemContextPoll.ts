@@ -93,12 +93,6 @@ export function systemSignalNeed(rules: readonly SystemSignalRuleLike[]): System
   return { power, externalDisplayCount };
 }
 
-/** True when at least one enabled automation rule consumes sampled power or external-display signals. */
-export function hasSystemSignalConsumers(rules: readonly SystemSignalRuleLike[]): boolean {
-  const need = systemSignalNeed(rules);
-  return need.power || need.externalDisplayCount;
-}
-
 const EMPTY_BASELINE: SystemSignalBaseline = { power: null, externalDisplayCount: null };
 
 function resolvePower(

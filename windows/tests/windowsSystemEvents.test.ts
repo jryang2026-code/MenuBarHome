@@ -228,10 +228,9 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
     assert.equal(await readNativeSystemPower(), null);
   });
 
-  it("computes systemSignalNeed and hasSystemSignalConsumers only for enabled power/display rules", async () => {
-    const { hasSystemSignalConsumers, systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
+  it("computes systemSignalNeed only for enabled power/display rules", async () => {
+    const { systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
     assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
-    assert.equal(hasSystemSignalConsumers([]), false);
 
     const awayRule = createAutomationRule({ id: "r-away", trigger: "away", action: LIGHT_OFF_ACTION });
     const disabledPower = createAutomationRule({
@@ -244,7 +243,6 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
       power: false,
       externalDisplayCount: false,
     });
-    assert.equal(hasSystemSignalConsumers([awayRule, disabledPower]), false);
 
     const enabledPower = { ...disabledPower, isEnabled: true };
     const enabledDisplay = createAutomationRule({
@@ -256,7 +254,6 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
       power: true,
       externalDisplayCount: false,
     });
-    assert.equal(hasSystemSignalConsumers([awayRule, enabledPower]), true);
     assert.deepEqual(systemSignalNeed([enabledPower, enabledDisplay]), {
       power: true,
       externalDisplayCount: true,
@@ -393,18 +390,73 @@ describe("Windows power/display automation (pollSystemContextSignals)", () => {
     assert.deepEqual(stub.calls, ["system_power_status", "system_power_status"]);
   });
 
-  it("is kicked by the safety/automation tick in production", async () => {
-    const { app } = trackingApp([
-      createAutomationRule({ id: "rule-p", trigger: "powerConnected", action: LIGHT_OFF_ACTION }),
-    ]);
+  it("is kicked by the safety/automation tick in production, parses the rule store once per tick, and clears baseline when disabled", async () => {
+    const powerRule = createAutomationRule({ id: "rule-p", trigger: "powerConnected", action: LIGHT_OFF_ACTION });
+    const { app } = trackingApp([powerRule]);
     const stub = stubNative({
       power: { hasBattery: true, onExternalPower: true, batteryPercent: 70 },
       displays: 0,
     });
+    const center = getHostActivityCenter(app);
+    const origLoad = center.automationEngine.store.load.bind(center.automationEngine.store);
+    let storeLoadCalls = 0;
+    center.automationEngine.store.load = () => {
+      storeLoadCalls += 1;
+      return origLoad();
+    };
 
+    // Poll-due tick: must parse rule store only once synchronously across tick + poll + tick dispatch.
     tickSafetyHealthAndAutomation(app, t0);
+    assert.equal(storeLoadCalls, 1, "poll-due tick must parse the automation rule store only once");
     await flush();
     assert.ok(stub.calls.includes("system_power_status"));
+    assert.notEqual(center.systemSignalBaseline, null);
+    assert.equal(center.lastSystemPollAtMs, t0);
+
+    // Non-due tick: still parses rule store only once.
+    storeLoadCalls = 0;
+    tickSafetyHealthAndAutomation(app, t0 + 1_000);
+    assert.equal(storeLoadCalls, 1, "non-due tick must parse the automation rule store only once");
+    await flush();
+
+    // Disabling power/display consumers clears cached baseline & poll timestamp.
+    center.automationEngine.store.save([{ ...powerRule, isEnabled: false }]);
+    tickSafetyHealthAndAutomation(app, t0 + 2_000);
+    assert.equal(center.systemSignalBaseline, null);
+    assert.equal(center.lastSystemPollAtMs, 0);
+  });
+
+  it("discards an in-flight system poll result and resets baseline if rules are disabled before IPC returns", async () => {
+    const powerRule = createAutomationRule({ id: "rule-p", trigger: "powerConnected", action: LIGHT_OFF_ACTION });
+    const { app, sent } = trackingApp([powerRule]);
+    const center = getHostActivityCenter(app);
+    center.systemSignalBaseline = {
+      power: { onExternalPower: true, batteryPercent: 70 },
+      externalDisplayCount: null,
+    };
+    center.lastSystemPollAtMs = t0;
+
+    let resolvePower!: (value: unknown) => void;
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
+      invoke: (cmd: string) => {
+        if (cmd === "system_power_status") {
+          return new Promise((resolve) => {
+            resolvePower = resolve;
+          });
+        }
+        return Promise.resolve(false);
+      },
+    };
+
+    const pollPromise = pollSystemContextSignals(app, t0 + SYSTEM_CONTEXT_POLL_INTERVAL_MS);
+    // Disable all rules while the native IPC is still in flight.
+    center.automationEngine.store.save([{ ...powerRule, isEnabled: false }]);
+    resolvePower({ hasBattery: true, onExternalPower: false, batteryPercent: 68 });
+
+    assert.equal(await pollPromise, false);
+    assert.deepEqual(sent, [], "disabled rule must not fire from stale in-flight sample");
+    assert.equal(center.systemSignalBaseline, null, "in-flight cancellation resets baseline");
+    assert.equal(center.lastSystemPollAtMs, 0, "in-flight cancellation resets poll timestamp");
   });
 });
 

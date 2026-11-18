@@ -18,9 +18,7 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import {
   assistantEndpointIdentity,
-  endpointAllowsSendingSecrets,
   inferAssistantPreset,
-  isLocalAssistantEndpoint,
 } from "../core/assistant.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
@@ -40,10 +38,9 @@ import {
   notifyPanelWakeLifecycle,
   notifySystemSleep,
   notifySystemWake,
-  pollSystemContextSignals,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
-import { hasSystemSignalConsumers } from "./systemContextPoll.js";
+import { proactiveHasConsumer } from "./proactive.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
@@ -844,13 +841,10 @@ export class ResumeRecoveryController {
   }
 }
 
-export type OptionalTickBranchKind = "proactive" | "systemContextPoll" | "backgroundDeviceRefresh";
-
 interface HostLifecycleState {
   disposed: boolean;
   timerIntervalHandle: unknown | null;
   timerScheduler: LifecycleScheduler | null;
-  mountedOptionalBranches: Set<OptionalTickBranchKind>;
   keyDisposers: Array<() => void>;
   recoveryController: ResumeRecoveryController | null;
   recoveryDisposers: Array<() => void>;
@@ -865,7 +859,6 @@ function ensureLifecycleState(host: object): HostLifecycleState {
       disposed: false,
       timerIntervalHandle: null,
       timerScheduler: null,
-      mountedOptionalBranches: new Set<OptionalTickBranchKind>(),
       keyDisposers: [],
       recoveryController: null,
       recoveryDisposers: [],
@@ -885,23 +878,18 @@ function clearRecoveryListeners(state: HostLifecycleState): void {
   for (const stop of state.recoveryDisposers.splice(0)) stop();
 }
 
-function unmountSystemContextPollBranch(host: unknown): void {
-  if (!isFullPanelHost(host)) return;
-  const center = getHostActivityCenter(host);
-  center.systemSignalBaseline = null;
-  center.lastSystemPollAtMs = 0;
-}
-
 function clearTimerInterval(state: HostLifecycleState, host?: unknown): void {
-  if (state.timerIntervalHandle !== null && state.timerScheduler) {
+  const hadTimer = state.timerIntervalHandle !== null;
+  if (hadTimer && state.timerScheduler) {
     state.timerScheduler.clearInterval(state.timerIntervalHandle);
   }
-  if (state.mountedOptionalBranches.has("systemContextPoll") && host !== undefined) {
-    unmountSystemContextPollBranch(host);
-  }
-  state.mountedOptionalBranches.clear();
   state.timerIntervalHandle = null;
   state.timerScheduler = null;
+  if (hadTimer && isFullPanelHost(host)) {
+    const center = getHostActivityCenter(host);
+    center.systemSignalBaseline = null;
+    center.lastSystemPollAtMs = 0;
+  }
 }
 
 /** Idempotently cancels all tracked timers, debounce tasks, and global listeners for `host`. */
@@ -1149,73 +1137,6 @@ export function bindGlobalKeys(
   };
 }
 
-/**
- * Whether the optional background proactive-AI refresh branch has an active consumer and
- * credentials/consent ready to run. Reuses the existing `proactive.ts` preconditions so
- * ticks without a configured AI consumer do zero signature or context work.
- */
-export function shouldRunProactiveTickBranch(host: unknown): boolean {
-  if (!host || typeof host !== "object") return false;
-  const candidate = host as Partial<MenuMijiaWindowsApp>;
-  if (typeof candidate.maybeRefreshProactiveInBackground !== "function") return false;
-  const settings = candidate.settings;
-  if (!settings || settings.connectionMode === "demo") return false;
-  if (candidate.isRefreshingProactive) return false;
-  if (typeof settings.assistantBaseURL !== "string") {
-    return true;
-  }
-  const baseURL = settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
-  if (!endpointAllowsSendingSecrets(baseURL)) return false;
-  if (isLocalAssistantEndpoint(baseURL)) return true;
-  const apiKey = typeof candidate.apiKeyFor === "function" ? candidate.apiKeyFor(baseURL) : "";
-  if (!apiKey) return false;
-  const endpoint = assistantEndpointIdentity(baseURL);
-  const consented = Array.isArray(settings.cloudConsentEndpoints)
-    ? settings.cloudConsentEndpoints
-    : [];
-  return Boolean(endpoint && consented.includes(endpoint));
-}
-
-/**
- * Whether the optional Windows system-context poll branch (`system_power_status` /
- * `external_display_count`) has at least one enabled automation rule consuming it.
- */
-export function shouldRunSystemContextPollBranch(host: unknown): boolean {
-  if (!isFullPanelHost(host)) return false;
-  if (typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) return false;
-  const center = getHostActivityCenter(host);
-  const rules = center.automationEngine.store.load();
-  return hasSystemSignalConsumers(rules);
-}
-
-/**
- * Whether the optional background device-refresh branch has an active cloud/HA connection
- * eligible for background polling.
- */
-export function shouldRunBackgroundDeviceRefreshBranch(host: ResumeRecoveryHost): boolean {
-  return canRefreshDevicesInBackground(host);
-}
-
-function syncOptionalBranchMount(
-  state: HostLifecycleState,
-  kind: OptionalTickBranchKind,
-  shouldMount: boolean,
-  onUnmount?: () => void,
-): boolean {
-  const wasMounted = state.mountedOptionalBranches.has(kind);
-  if (shouldMount) {
-    if (!wasMounted) {
-      state.mountedOptionalBranches.add(kind);
-    }
-    return true;
-  }
-  if (wasMounted) {
-    state.mountedOptionalBranches.delete(kind);
-    onUnmount?.();
-  }
-  return false;
-}
-
 export function startTimerLoop(
   host: MenuMijiaWindowsApp,
   options: { readonly scheduler?: LifecycleScheduler; readonly intervalMs?: number } = {},
@@ -1237,7 +1158,7 @@ export function startTimerLoop(
       host.render();
     }
 
-    if (syncOptionalBranchMount(state, "proactive", shouldRunProactiveTickBranch(host))) {
+    if (proactiveHasConsumer(host)) {
       host.maybeRefreshProactiveInBackground();
     }
 
@@ -1250,18 +1171,7 @@ export function startTimerLoop(
       undoExpired = true;
     }
     const miExpiryChanged = didMiExpiryKindChange(host, now);
-    const activityChanged = tickSafetyHealthAndAutomation(host, now, { pollSystemContext: false });
-
-    if (
-      syncOptionalBranchMount(
-        state,
-        "systemContextPoll",
-        shouldRunSystemContextPollBranch(host),
-        () => unmountSystemContextPollBranch(host),
-      )
-    ) {
-      void pollSystemContextSignals(host, now);
-    }
+    const activityChanged = tickSafetyHealthAndAutomation(host, now);
 
     if (runWithScheduledTimerTickExemption(() => processScheduledCommands(host, now))) {
       host.render();
@@ -1270,11 +1180,7 @@ export function startTimerLoop(
     }
 
     if (
-      syncOptionalBranchMount(
-        state,
-        "backgroundDeviceRefresh",
-        shouldRunBackgroundDeviceRefreshBranch(host),
-      ) &&
+      canRefreshDevicesInBackground(host) &&
       cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible())
     ) {
       void host.refreshDevices(true);

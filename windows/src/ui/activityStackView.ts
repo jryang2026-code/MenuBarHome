@@ -1333,6 +1333,7 @@ export async function dispatchSystemContextEvent(
   host: MenuMijiaWindowsApp,
   event: SystemContextEvent,
   nowMs = Date.now(),
+  rules?: readonly AutomationRule[],
 ): Promise<RecordedAutomationRun[]> {
   const center = getHostActivityCenter(host);
   const runs = await center.automationEngine.dispatchEvent(host, event, {
@@ -1341,6 +1342,7 @@ export async function dispatchSystemContextEvent(
     displayDevices: aliasedHostDevices(host),
     observationsByDeviceId: center.observationsOverride ?? undefined,
     recordUndoKindSnapshots,
+    ...(rules ? { rules } : {}),
     onUndoRecorded: (run) => {
       center.dismissedActivityIds.delete(`auto:${run.id}`);
       center.recentAutomationRuns = [
@@ -1420,6 +1422,7 @@ export async function pollSystemContextSignals(
           batteryPercent: transition.power.batteryPercent,
         },
         nowMs,
+        latestRules,
       );
       fired = fired || runs.length > 0;
     }
@@ -1431,6 +1434,7 @@ export async function pollSystemContextSignals(
           externalDisplayCount: transition.externalDisplayCount,
         },
         nowMs,
+        latestRules,
       );
       fired = fired || runs.length > 0;
     }
@@ -1574,7 +1578,6 @@ async function pollAndDispatchWifi(
 export function tickSafetyHealthAndAutomation(
   host: unknown,
   nowMs = Date.now(),
-  options?: { readonly pollSystemContext?: boolean },
 ): boolean {
   if (!isFullPanelHost(host)) return false;
 
@@ -1698,18 +1701,19 @@ export function tickSafetyHealthAndAutomation(
   }
 
   // Power and external-display sampling runs on the macOS 10 s cadence only when enabled rules consume them.
-  if (options?.pollSystemContext !== false) {
-    const need = systemSignalNeed(enabledRules);
-    if (need.power || need.externalDisplayCount) {
-      void pollSystemContextSignals(host, nowMs, enabledRules);
-    }
+  const need = systemSignalNeed(enabledRules);
+  if (need.power || need.externalDisplayCount) {
+    void pollSystemContextSignals(host, nowMs, enabledRules);
+  } else if (center.systemSignalBaseline !== null || center.lastSystemPollAtMs !== 0) {
+    center.systemSignalBaseline = null;
+    center.lastSystemPollAtMs = 0;
   }
 
   if (
     (enabledRules.length > 0 && (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
     center.automationEngine.arbitrator.hasPendingLock
   ) {
-    void dispatchSystemContextEvent(host, { kind: "tick" }, nowMs);
+    void dispatchSystemContextEvent(host, { kind: "tick" }, nowMs, enabledRules);
   }
   center.lastEvaluatedAtMs = nowMs;
 
