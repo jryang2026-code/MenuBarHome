@@ -61,8 +61,17 @@ export interface LayoutGestureHost {
 }
 
   export function bindLayoutGestures(host: LayoutGestureHost): void {
-    let press: { id: string; x: number; y: number; timer: number; dimming: boolean; el: HTMLElement } | null = null;
+    let press: {
+      pointerId: number;
+      id: string;
+      x: number;
+      y: number;
+      timer: number;
+      dimming: boolean;
+      el: HTMLElement;
+    } | null = null;
     let resizing: {
+      pointerId: number;
       id: string;
       startX: number;
       startY: number;
@@ -74,6 +83,13 @@ export interface LayoutGestureHost {
       samples: Array<{ x: number; y: number; t: number }>;
     } | null = null;
     let suppressNextHandleClick = false;
+
+    const activePointerId = (): number | null => resizing?.pointerId ?? press?.pointerId ?? null;
+
+    const isInitiatorEvent = (e: PointerEvent): boolean => {
+      const currentId = activePointerId();
+      return currentId !== null && (e.pointerId ?? 0) === currentId;
+    };
 
     const endHandleGesture = (id: string): void => {
       const tile = host.root.querySelector<HTMLElement>(`[data-tile-id="${CSS.escape(id)}"]`);
@@ -126,23 +142,30 @@ export interface LayoutGestureHost {
 
     window.addEventListener(
       "pointerup",
-      () => {
+      (e) => {
+        if (activePointerId() !== null && !isInitiatorEvent(e)) return;
         host.pointerIsDown = false;
       },
       { capture: true },
     );
-    window.addEventListener("pointercancel", cancelGesture);
+    window.addEventListener("pointercancel", (e) => {
+      if (activePointerId() !== null && !isInitiatorEvent(e)) return;
+      cancelGesture();
+    });
     window.addEventListener("blur", cancelGesture);
 
     host.root.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== 0 || activePointerId() !== null) return;
+      const pointerId = e.pointerId ?? 0;
       suppressNextHandleClick = false;
-      const handleEl = (e.target as HTMLElement).closest<HTMLElement>(".cc-resize-handle");
+      const target = e.target as HTMLElement;
+      const handleEl = target.closest<HTMLElement>(".cc-resize-handle");
       if (handleEl && host.isEditingLayout) {
         const id = handleEl.dataset.resizeHandle ?? handleEl.dataset.cycleSize ?? "";
         const dev = host.devices.find((d) => d.id === id);
         if (dev) {
           resizing = {
+            pointerId,
             id: dev.id,
             startX: e.clientX,
             startY: e.clientY,
@@ -158,20 +181,22 @@ export interface LayoutGestureHost {
         }
         return;
       }
-      const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
-      if (!el || (e.target as HTMLElement).closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
+      const el = target.closest<HTMLElement>("[data-tile-id]");
+      if (!el || target.closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
       const id = el.dataset.tileId as string;
-      const timer = host.isEditingLayout
+      const currentPress = { pointerId, id, x: e.clientX, y: e.clientY, timer: 0, dimming: false, el };
+      currentPress.timer = host.isEditingLayout
         ? 0
         : window.setTimeout(() => {
-            if (!press || press.dimming) return;
-            beginDrag(id, el, press.x, press.y);
+            if (press !== currentPress || currentPress.dimming) return;
+            beginDrag(id, el, currentPress.x, currentPress.y);
             host.startEditing();
           }, 450);
-      press = { id, x: e.clientX, y: e.clientY, timer, dimming: false, el };
+      press = currentPress;
     });
 
     window.addEventListener("pointermove", (e) => {
+      if (!isInitiatorEvent(e)) return;
       if (resizing) {
         const dx = e.clientX - resizing.startX;
         const dy = e.clientY - resizing.startY;
@@ -268,7 +293,8 @@ export interface LayoutGestureHost {
       }
     });
 
-    window.addEventListener("pointerup", () => {
+    window.addEventListener("pointerup", (e) => {
+      if (!isInitiatorEvent(e)) return;
       if (resizing) {
         const { id, moved, didStep, startSize, samples, lastDx, lastDy } = resizing;
         resizing = null;

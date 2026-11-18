@@ -172,6 +172,10 @@ export function loadSettings(): LoadedSettings {
         launchAtLogin: typeof parsed.launchAtLogin === "boolean" ? parsed.launchAtLogin : false,
         blockControlWhileLocked:
           typeof parsed.blockControlWhileLocked === "boolean" ? parsed.blockControlWhileLocked : true,
+        // Only an explicit `false` turns voice off: older settings files have no key at all and
+        // must keep the mic entry they had before the switch existed.
+        voiceInputEnabled:
+          typeof parsed.voiceInputEnabled === "boolean" ? parsed.voiceInputEnabled : true,
         enableRaycastIntegration:
           typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
         allowDirectURLControl:
@@ -252,6 +256,7 @@ function buildDefaultSettings(): PersistedSettings {
     globalHotkey: DEFAULT_GLOBAL_SHORTCUT,
     launchAtLogin: false,
     blockControlWhileLocked: true,
+    voiceInputEnabled: true,
     enableRaycastIntegration: false,
     allowDirectURLControl: false,
     cameraStreamURLs: {},
