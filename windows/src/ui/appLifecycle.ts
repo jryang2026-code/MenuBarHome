@@ -1,7 +1,6 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { processScheduledCommands } from "./scheduledCommands.js";
-import { switchSource } from "./sourceSwitch.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
@@ -45,10 +44,13 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   clearAccountRateLimitBackoff,
+  hasSecondaryMiAccountsInIndex,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
   readAccountIndex,
 } from "../core/miAccountsStore.js";
-import { clearPersistedMiSessionExpired } from "../core/pollingPolicy.js";
+import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
+import { isDualSourceEnabled } from "./cloudRefresh.js";
+import { finishAllMiAccountsSignedOutOnHost } from "./connectionsAndDiagView.js";
 import {
   clearUpdateProgress,
   didMiExpiryKindChange,
@@ -279,32 +281,34 @@ export async function clearHostSessionAndDualSourceState(
 }
 
 export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
-    const retryOnly = !host.settings.miSession && host.settings.cachedXiaomiDevices.length === 0;
+    const hasMultiAccounts =
+      (host.miAccountsOverride != null && host.miAccountsOverride.length > 0) ||
+      (host.miAccountsStore?.getAccounts().length ?? 0) > 0 ||
+      hasSecondaryMiAccountsInIndex();
+    const retryOnly =
+      !host.settings.miSession &&
+      host.settings.cachedXiaomiDevices.length === 0 &&
+      !hasMultiAccounts &&
+      !isDualSourceEnabled(host);
     if (retryOnly && !hasPendingMiVaultDeletion()) {
       host.cameraLive.discardRetainedCloudSessions();
       return;
     }
     setPendingMiVaultDeletion(true);
     const wasXiaomiMode = host.settings.connectionMode === "xiaomiCloud";
-    if (!retryOnly && wasXiaomiMode) {
-      if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
-        host.cameraLive.closeCameraLiveView();
-      }
-      switchSource(host, "sign-out-xiaomi-account");
-      host.devices = [];
-      host.scenes = [];
-      host.environmentReadings = [];
-      host.homes = [];
-      host.groupOwnerByMemberDid = new Map();
-      host.deviceFacets = {};
-      host.expandedDeviceId = null;
-      host.waitingDeviceIds.clear();
-      host.selectRoom(null);
-    }
+    const wasDualSource = isDualSourceEnabled(host);
+    const { transitionedToHASingleSource } = !retryOnly
+      ? finishAllMiAccountsSignedOutOnHost(host, {
+          wasDualSource,
+          wasXiaomiMode,
+        })
+      : { transitionedToHASingleSource: false };
     host.cameraLive.discardRetainedCloudSessions();
     host.settings.miSession = null;
     host.settings.cachedXiaomiDevices = [];
     host.settings.selectedHomeId = null;
+    clearCachedXiaomiTopology(host);
+    clearXiaomiRateLimitBackoff(host);
     const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
     host.cloudValuesStale = false;
@@ -317,6 +321,9 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     };
     writeSettingsForStorage(host.settings);
     submitServiceEndpoints(host, false);
+    if (transitionedToHASingleSource) {
+      void host.refreshHADevices(false);
+    }
     void (async () => {
       try {
         await clearMultiPromise;

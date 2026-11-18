@@ -600,6 +600,410 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     assert.equal(app.root.querySelectorAll("[data-mi-account-card]").length, 0);
     assert.ok(app.root.querySelector("[data-mi-accounts-empty]"));
   });
+
+  it("stops Xiaomi camera bridge and restores HA single-source list on signOutXiaomiAccount in HA-primary dual-source mode (#33)", async () => {
+    const bridgeStoppedDids: string[] = [];
+    const cloudStopActions: Array<{ did: string; siid: number; aiid: number }> = [];
+    const CAMERA_SPEC_RAW = {
+      type: "urn:miot-spec-v2:device:camera:0000A01C:isa-hlc7:1",
+      services: [
+        {
+          iid: 2,
+          type: "urn:miot-spec-v2:service:camera-control:0000782F:isa-hlc7:1",
+          properties: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:property:on:00000006:isa-hlc7:1",
+              format: "bool",
+              access: ["read", "write"],
+            },
+          ],
+          actions: [],
+        },
+        {
+          iid: 9,
+          type: "urn:miot-spec-v2:service:p2p-stream:00007881:isa-hlc7:1",
+          properties: [],
+          actions: [
+            {
+              iid: 1,
+              type: "urn:miot-spec-v2:action:start-p2p-stream:00002839:isa-hlc7:1",
+              in: [],
+              out: [],
+            },
+            {
+              iid: 2,
+              type: "urn:miot-spec-v2:action:stop-stream:00002822:isa-hlc7:1",
+              in: [],
+              out: [],
+            },
+          ],
+        },
+      ],
+    };
+
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-cam-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        if (req.url.includes("isa-hlc7") || req.url.includes(CAMERA_MODEL)) {
+          return { status: 200, headers: {}, body: JSON.stringify(CAMERA_SPEC_RAW) };
+        }
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [
+            { id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-cam-paired", "mi-plug-only"] }] },
+          ],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [
+            {
+              did: "mi-cam-paired",
+              name: "玄关摄像机",
+              model: CAMERA_MODEL,
+              isOnline: true,
+              localip: "192.168.1.88",
+              spec_type: CAMERA_SPEC_RAW.type,
+            },
+            {
+              did: "mi-plug-only",
+              name: "米家专属插座",
+              model: PLUG_MODEL,
+              isOnline: true,
+              spec_type: PLUG_SPEC_RAW.type,
+            },
+          ],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      if (path === "miotspec/action") {
+        const params = (payload["params"] ?? {}) as { did?: string; siid?: number; aiid?: number };
+        if (params.did && params.siid === 9 && params.aiid === 2) {
+          cloudStopActions.push({ did: params.did, siid: params.siid, aiid: params.aiid });
+        }
+        return okMi({ code: 0, out: [] });
+      }
+      return okMi({});
+    };
+
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      return {
+        areas: [{ area_id: "a1", name: "玄关" }],
+        devices: [
+          {
+            id: "ha-dev-cam",
+            area_id: "a1",
+            name: "玄关摄像机 HA",
+            model: CAMERA_MODEL,
+            identifiers: [["xiaomi_home", "cn_mi-cam-paired"]],
+            connections: [],
+          },
+        ],
+        entities: [
+          { entity_id: "switch.entryway_ha", device_id: "ha-dev-cam", area_id: null, disabled_by: null, hidden_by: null },
+        ],
+        states: [
+          {
+            entity_id: "switch.entryway_ha",
+            state: "on",
+            attributes: { friendly_name: "玄关摄像机 HA" },
+          },
+        ],
+      } as unknown as T;
+    };
+
+    const tauriInvoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | null> => {
+      if (cmd === "stop_xiaomi_camera_bridge") {
+        bridgeStoppedDids.push(String(args["did"] ?? ""));
+        return null;
+      }
+      return secure.invoke<T>(cmd, args);
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: tauriInvoke });
+    (app as unknown as { specResolver: MiotSpecResolver }).specResolver = new MiotSpecResolver(transport, {
+      [CAMERA_MODEL]: parseMiotDeviceSpec(CAMERA_SPEC_RAW)!,
+      [PLUG_MODEL]: parseMiotDeviceSpec(PLUG_SPEC_RAW)!,
+    });
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-cam-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    assert.equal(app.devices.length, 2, "paired camera + Xiaomi-only plug in dual-source mode");
+    const pairedCam = app.devices.find((d) => d.kind.kind === "camera")!;
+    const miPlug = app.devices.find((d) => d.kind.kind === "plug")!;
+    assert.ok(pairedCam && miPlug);
+    assert.equal(pairedCam.sourceBackend, "xiaomiCloud", "paired camera routed to Xiaomi Cloud for live view");
+    assert.equal(pairedCam.kind.kind === "camera" ? pairedCam.kind.entityId : "", "miot:mi-cam-paired:2");
+
+    // Simulate active Xiaomi camera stream on the paired card (or hidden keep-alive).
+    const camAbort = new AbortController();
+    app.cameraLive.activeLiveCameraId = pairedCam.id;
+    app.cameraLive.liveCameraAbort = camAbort;
+    app.cameraLive.hideCameraLiveView();
+    assert.ok(app.cameraLive.liveCameraKeepAliveTimer !== null);
+    app.expandedDeviceId = miPlug.id;
+    app.waitingDeviceIds.add(miPlug.id);
+
+    cloudStopActions.length = 0;
+    bridgeStoppedDids.length = 0;
+
+    signOutXiaomiAccount(app);
+    await Promise.all([...app.cameraLive.pendingCameraReleases.values()]);
+    await settleUi(10);
+
+    assert.equal(app.settings.miSession, null);
+    assert.equal(isDualSourceEnabled(app), false, "dual-source disabled after signing out Xiaomi");
+    assert.equal(app.settings.connectionMode, "homeAssistant");
+    assert.equal(app.cameraLive.activeLiveCameraId, null, "Xiaomi-backed paired camera live view must close");
+    assert.equal(app.cameraLive.liveCameraKeepAliveTimer, null);
+    assert.equal(camAbort.signal.aborted, true);
+    assert.ok(bridgeStoppedDids.length > 0, "stop_xiaomi_camera_bridge must be invoked on Xiaomi sign-out");
+    assert.ok(cloudStopActions.some((a) => a.did === "mi-cam-paired"), "stop-stream must be sent for Xiaomi camera");
+    assert.equal(app.devices.length, 1, "Xiaomi-only plug removed immediately, only HA devices remain");
+    assert.equal(app.devices[0]?.id, pairedCam.id);
+    assert.equal(
+      app.devices[0]?.kind.kind === "camera" ? app.devices[0].kind.entityId : "",
+      "switch.entryway_ha",
+      "paired camera card immediately switches to HA entity",
+    );
+    assert.equal(app.homes.length, 0, "Xiaomi homes cleared when returning to HA single-source");
+    assert.equal(app.expandedDeviceId, null);
+  });
+
+  it("keeps HA-native live camera open when signing out Xiaomi in HA-primary dual-source mode (#33)", async () => {
+    const bridgeStoppedDids: string[] = [];
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-cam-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [{ id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-plug-only"] }] }],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [{ did: "mi-plug-only", name: "米家专属插座", model: PLUG_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      return okMi({});
+    };
+
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      return {
+        areas: [{ area_id: "a1", name: "院子" }],
+        devices: [
+          {
+            id: "ha-yard-cam",
+            area_id: "a1",
+            name: "院子 HA 摄像机",
+            model: "rtsp.cam.v1",
+            identifiers: [["rtsp", "yard_cam"]],
+            connections: [],
+          },
+        ],
+        entities: [
+          { entity_id: "camera.yard_ha", device_id: "ha-yard-cam", area_id: null, disabled_by: null, hidden_by: null },
+        ],
+        states: [
+          {
+            entity_id: "camera.yard_ha",
+            state: "streaming",
+            attributes: {
+              friendly_name: "院子 HA 摄像机",
+              entity_picture: "/api/camera_proxy/camera.yard_ha?token=abc",
+            },
+          },
+        ],
+      } as unknown as T;
+    };
+
+    const tauriInvoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | null> => {
+      if (cmd === "stop_xiaomi_camera_bridge") {
+        bridgeStoppedDids.push(String(args["did"] ?? ""));
+        return null;
+      }
+      return secure.invoke<T>(cmd, args);
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: tauriInvoke });
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-cam-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    assert.equal(app.devices.length, 2);
+    const haCam = app.devices.find((d) => d.kind.kind === "camera")!;
+    assert.ok(haCam);
+    assert.equal(haCam.sourceBackend, "homeAssistant");
+
+    const haAbort = new AbortController();
+    app.cameraLive.activeLiveCameraId = haCam.id;
+    app.cameraLive.liveCameraAbort = haAbort;
+
+    signOutXiaomiAccount(app);
+    await settleUi(10);
+
+    assert.equal(app.cameraLive.activeLiveCameraId, haCam.id, "HA-native camera live view must not be closed by Xiaomi sign-out");
+    assert.equal(haAbort.signal.aborted, false, "HA-native camera stream must not be aborted");
+    assert.equal(bridgeStoppedDids.length, 0, "stop_xiaomi_camera_bridge must not fire for HA-native camera");
+    assert.equal(app.devices.length, 1);
+    assert.equal(app.devices[0]?.id, haCam.id);
+  });
+
+  it("keeps HA-native live camera open when removing the last Xiaomi account in multi-account modal (#33)", async () => {
+    const bridgeStoppedDids: string[] = [];
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-cam-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [{ id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-plug-only"] }] }],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [{ did: "mi-plug-only", name: "米家专属插座", model: PLUG_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      return okMi({});
+    };
+
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      return {
+        areas: [{ area_id: "a1", name: "院子" }],
+        devices: [
+          {
+            id: "ha-yard-cam",
+            area_id: "a1",
+            name: "院子 HA 摄像机",
+            model: "rtsp.cam.v1",
+            identifiers: [["rtsp", "yard_cam"]],
+            connections: [],
+          },
+        ],
+        entities: [
+          { entity_id: "camera.yard_ha", device_id: "ha-yard-cam", area_id: null, disabled_by: null, hidden_by: null },
+        ],
+        states: [
+          {
+            entity_id: "camera.yard_ha",
+            state: "streaming",
+            attributes: {
+              friendly_name: "院子 HA 摄像机",
+              entity_picture: "/api/camera_proxy/camera.yard_ha?token=abc",
+            },
+          },
+        ],
+      } as unknown as T;
+    };
+
+    const tauriInvoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T | null> => {
+      if (cmd === "stop_xiaomi_camera_bridge") {
+        bridgeStoppedDids.push(String(args["did"] ?? ""));
+        return null;
+      }
+      return secure.invoke<T>(cmd, args);
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: tauriInvoke });
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-cam-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    const haCam = app.devices.find((d) => d.kind.kind === "camera")!;
+    assert.ok(haCam);
+
+    const haAbort = new AbortController();
+    app.cameraLive.activeLiveCameraId = haCam.id;
+    app.cameraLive.liveCameraAbort = haAbort;
+
+    openConnectionsAndDiagModal(app, "accounts");
+    await settleUi(6);
+    const cnAcc = makeMiAccount(SESSION_CN_PRIMARY);
+    const signOutBtn = app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${cnAcc.id}"]`)!;
+    assert.ok(signOutBtn);
+    signOutBtn.click();
+    await settleUi(20);
+
+    assert.equal(app.cameraLive.activeLiveCameraId, haCam.id, "HA-native camera live view must stay open on last account sign-out");
+    assert.equal(haAbort.signal.aborted, false);
+    assert.equal(bridgeStoppedDids.length, 0);
+    assert.equal(app.devices.length, 1);
+    assert.equal(app.devices[0]?.id, haCam.id);
+    assert.equal(app.homes.length, 0);
+  });
 });
 
 describe("W4 Home Assistant Independent Disconnect: fallback to Xiaomi or clean empty reset", () => {
