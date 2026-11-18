@@ -70,6 +70,7 @@ public enum HomePreferences {
     public static let hideGroupedLights = HomePreference.flag("hide_grouped_lights", default: true)
     public static let allowAdvancedFacetWrites = HomePreference.flag("allow_advanced_facet_writes", default: false)
     public static let enableGlobalHotkey = HomePreference.flag("enable_global_hotkey", default: true)
+    public static let enableVoiceInput = HomePreference.flag("enable_voice_input", default: true)
     public static let isCompactGridMode = HomePreference.flag("compact_grid_mode", default: true)
     public static let showQuickActionsBar = HomePreference.flag("show_quick_actions_bar", default: true)
     public static let enableGrokBall = HomePreference.flag("enable_grok_ball", default: false)

@@ -190,6 +190,7 @@ final class MenuBarPanelController: NSObject {
     private var observers: [any NSObjectProtocol] = []
     private var localMouseMonitor: Any?
     private var globalMouseMonitor: Any?
+    private var voiceInputObserverID: UUID?
     private var didInstall = false
 
     var isLabelTimerRunning: Bool {
@@ -210,7 +211,16 @@ final class MenuBarPanelController: NSObject {
     /// item never acquired a button window (which only happens when it was created too early), it is
     /// recreated once at `applicationDidFinishLaunching`.
     func install(with store: HomeStore) {
+        if let oldStore = self.store, let voiceInputObserverID {
+            oldStore.removeVoiceInputPreferenceObserver(voiceInputObserverID)
+            self.voiceInputObserverID = nil
+        }
         self.store = store
+        self.voiceInputObserverID = store.addVoiceInputPreferenceObserver { [weak self] enabled in
+            if !enabled {
+                self?.cancelHoldToTalkOnDisable()
+            }
+        }
         guard !didInstall else { return }
         didInstall = true
         lastSeenPreferences = WatchedPreferences(from: userDefaults)
@@ -260,6 +270,7 @@ final class MenuBarPanelController: NSObject {
         pendingContextMenu?.cancel()
         pendingContextMenu = nil
         stopPressTimer()
+        pressTriggered = false
         suppressReleaseUntil = 0
         suppressContextMenuUntil = 0
         suppressResignActiveHideUntil = 0
@@ -272,6 +283,10 @@ final class MenuBarPanelController: NSObject {
         grokBallSidecar?.tearDown()
         grokBallSidecar = nil
         store?.dismissGrokBallStage()
+        if let store, let voiceInputObserverID {
+            store.removeVoiceInputPreferenceObserver(voiceInputObserverID)
+        }
+        voiceInputObserverID = nil
         backdropWindow?.orderOut(nil)
         backdropWindow?.contentView = nil
         backdropWindow = nil
@@ -1065,6 +1080,13 @@ final class MenuBarPanelController: NSObject {
             )
             return
         }
+        guard store?.enableVoiceInput ?? true else {
+            traceStatusItem(
+                "handleStatusItemNativeLongPressEvent event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) guard=voiceInputDisabled"
+            )
+            restoreStatusItemHighlight()
+            return
+        }
         traceStatusItem(
             "handleStatusItemNativeLongPressEvent event=\(eventName) buttons=\(buttons) uptime=\(uptimeText) decision=primaryLongPress(finishImmediately=\((pressedMouseButtons & 0x1) == 0))"
         )
@@ -1146,6 +1168,7 @@ final class MenuBarPanelController: NSObject {
 
     @objc private func handlePressTick(_ timer: Timer) {
         if (NSEvent.pressedMouseButtons & 0x1) != 0 {
+            guard store?.enableVoiceInput ?? true else { return }
             guard !pressTriggered,
                   statusItemUptime() - pressStartedAt >= Self.holdThreshold else { return }
             // Keep ticking so the release still stops dictation.
@@ -1249,7 +1272,7 @@ final class MenuBarPanelController: NSObject {
     // MARK: - Hold to Talk
 
     func beginHoldToTalk() {
-        guard let store else { return }
+        guard let store, store.enableVoiceInput else { return }
         suppressStatusItemReopenUntil = 0
         resignActiveAwaitingMonitorMouseDown = false
         SpeechInputController.shared.startHoldToTalk(store: store)
@@ -1277,6 +1300,21 @@ final class MenuBarPanelController: NSObject {
             self.syncStatusItem()
             self.showPanel()
         }
+    }
+
+    func cancelHoldToTalkOnDisable() {
+        let wasTriggered = pressTriggered
+        pressTriggered = false
+        if wasTriggered {
+            pressAllowsToggle = false
+            stopPressTimer()
+        }
+        if let store {
+            SpeechInputController.shared.handleVoiceInputPreferenceChanged(enabled: false, store: store)
+        }
+        syncStatusItem()
+        updateLabelTimer()
+        restoreStatusItemHighlight()
     }
 
     // MARK: - Outside Click, Screens & Preferences
