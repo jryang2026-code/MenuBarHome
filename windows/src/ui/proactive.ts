@@ -192,25 +192,31 @@ export function renderProactiveInlinePill(host: MenuMijiaWindowsApp, item: Assis
   }</button>`;
 }
 
+export function proactiveHasConsumer(
+  host: Pick<MenuMijiaWindowsApp, "isRefreshingProactive" | "settings" | "apiKeyFor">,
+): boolean {
+  if (host.isRefreshingProactive || host.settings.connectionMode === "demo") return false;
+  const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
+  if (!endpointAllowsSendingSecrets(baseURL)) return false;
+  if (isLocalAssistantEndpoint(baseURL)) return true;
+  const apiKey = host.apiKeyFor(baseURL);
+  if (!apiKey) return false;
+  const endpoint = assistantEndpointIdentity(baseURL);
+  return Boolean(endpoint && host.settings.cloudConsentEndpoints.includes(endpoint));
+}
+
 /**
  * Silent background AI refresh for proactive suggestions (#113): fires only when the
  * time bucket or room climate changed, never blocks the panel, never asks for consent,
  * and keeps the previous cache when the request fails.
  */
 export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): void {
-  if (host.isRefreshingProactive || host.settings.connectionMode === "demo") return;
+  if (!proactiveHasConsumer(host)) return;
   if (host.proactiveRetryAfterMs !== null && Date.now() < host.proactiveRetryAfterMs) return;
   const signature = proactiveSignature(host);
   if (signature === host.aiProactiveSignature) return;
   const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
-  if (!endpointAllowsSendingSecrets(baseURL)) return;
   const apiKey = host.apiKeyFor(baseURL);
-  const isLoopback = isLocalAssistantEndpoint(baseURL);
-  if (!apiKey && !isLoopback) return;
-  if (!isLoopback) {
-    const endpoint = assistantEndpointIdentity(baseURL);
-    if (!endpoint || !host.settings.cloudConsentEndpoints.includes(endpoint)) return;
-  }
   const sourceRevision = host.sourceRevision;
   const selectedHomeId = host.settings.selectedHomeId;
   host.isRefreshingProactive = true;

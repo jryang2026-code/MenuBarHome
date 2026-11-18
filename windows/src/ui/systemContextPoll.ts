@@ -63,6 +63,36 @@ export function triggerUsesSystemSignal(trigger: AutomationTrigger, kind: System
   return kinds ? kinds.includes(kind) : false;
 }
 
+export interface SystemSignalRuleLike {
+  readonly trigger: AutomationTrigger;
+  readonly isEnabled?: boolean;
+}
+
+export interface SystemSignalNeed {
+  readonly power: boolean;
+  readonly externalDisplayCount: boolean;
+}
+
+/**
+ * Determines which native Windows system signals (`system_power_status`, `external_display_count`)
+ * have at least one enabled automation rule waiting for them.
+ */
+export function systemSignalNeed(rules: readonly SystemSignalRuleLike[]): SystemSignalNeed {
+  let power = false;
+  let externalDisplayCount = false;
+  for (const rule of rules) {
+    if (rule.isEnabled === false) continue;
+    if (!power && triggerUsesSystemSignal(rule.trigger, "powerChanged")) {
+      power = true;
+    }
+    if (!externalDisplayCount && triggerUsesSystemSignal(rule.trigger, "externalDisplayChanged")) {
+      externalDisplayCount = true;
+    }
+    if (power && externalDisplayCount) break;
+  }
+  return { power, externalDisplayCount };
+}
+
 const EMPTY_BASELINE: SystemSignalBaseline = { power: null, externalDisplayCount: null };
 
 function resolvePower(

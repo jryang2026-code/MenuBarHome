@@ -65,7 +65,7 @@ import {
   planSystemSignalTransition,
   readNativeSystemSignals,
   resolveSystemSignalBaseline,
-  triggerUsesSystemSignal,
+  systemSignalNeed,
   type SystemSignalBaseline,
 } from "./systemContextPoll.js";
 import { computeUndoAvailability, undoTrackerFor } from "./undoTracker.js";
@@ -1335,6 +1335,8 @@ export async function dispatchSystemContextEvent(
   nowMs = Date.now(),
 ): Promise<RecordedAutomationRun[]> {
   const center = getHostActivityCenter(host);
+  // The engine reads the rule store itself: a rule disabled a moment ago must not run, and a
+  // refused high-risk rule can only be switched off when no rule snapshot is supplied.
   const runs = await center.automationEngine.dispatchEvent(host, event, {
     nowMs,
     scope: center.scopeKey,
@@ -1378,8 +1380,7 @@ export async function pollSystemContextSignals(
     return false;
   }
   const rules = enabledRules ?? center.automationEngine.store.load().filter((r) => r.isEnabled);
-  const needsPower = rules.some((r) => triggerUsesSystemSignal(r.trigger, "powerChanged"));
-  const needsDisplay = rules.some((r) => triggerUsesSystemSignal(r.trigger, "externalDisplayChanged"));
+  const { power: needsPower, externalDisplayCount: needsDisplay } = systemSignalNeed(rules);
   if (!needsPower && !needsDisplay) return false;
 
   center.lastSystemPollAtMs = nowMs;
@@ -1390,6 +1391,13 @@ export async function pollSystemContextSignals(
       externalDisplayCount: needsDisplay,
     });
     if (!isFullPanelHost(host)) return false;
+    const latestRules = center.automationEngine.store.load().filter((r) => r.isEnabled);
+    const latestNeed = systemSignalNeed(latestRules);
+    if (!latestNeed.power && !latestNeed.externalDisplayCount) {
+      center.systemSignalBaseline = null;
+      center.lastSystemPollAtMs = 0;
+      return false;
+    }
     const previous = center.systemSignalBaseline;
     const transition = planSystemSignalTransition(previous, signals);
     const baseline = resolveSystemSignalBaseline(previous, signals);
@@ -1690,8 +1698,14 @@ export function tickSafetyHealthAndAutomation(
     }
   }
 
-  // Power and external-display sampling runs on the macOS 10 s cadence inside the 1 s tick.
-  void pollSystemContextSignals(host, nowMs, enabledRules);
+  // Power and external-display sampling runs on the macOS 10 s cadence only when enabled rules consume them.
+  const need = systemSignalNeed(enabledRules);
+  if (need.power || need.externalDisplayCount) {
+    void pollSystemContextSignals(host, nowMs, enabledRules);
+  } else if (center.systemSignalBaseline !== null || center.lastSystemPollAtMs !== 0) {
+    center.systemSignalBaseline = null;
+    center.lastSystemPollAtMs = 0;
+  }
 
   if (
     (enabledRules.length > 0 && (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
