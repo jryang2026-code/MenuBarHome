@@ -12,8 +12,9 @@ extension HomeStore {
         }
     }
 
-    /// Updates network reachability for debounced resume gating.
+    /// Updates network reachability for debounced resume gating and Local Network classification.
     public func setNetworkSatisfiedForResume(_ satisfied: Bool) {
+        knownNetworkSatisfied = satisfied
         guard isNetworkSatisfiedForResume != satisfied else { return }
         isNetworkSatisfiedForResume = satisfied
         guard let coordinator = debouncedResumeCoordinator else { return }

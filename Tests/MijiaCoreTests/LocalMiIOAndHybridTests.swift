@@ -869,6 +869,75 @@ struct LocalMiIOClientTests {
         await client.shutdown()
     }
 
+    @Test("Cold-start broadcast discovery recovers multiple non-numeric DIDs past crowded unrelated replies while bounding probe count and total duration and enforcing token verification")
+    func crowdedColdStartNonNumericDiscoveryAndBoundedBudget() async throws {
+        let tokenLumiHex = "00112233445566778899aabbccddeeff"
+        let tokenBltHex = "fedcba98765432100123456789abcdef"
+        let tokenLumi = try #require(MiIOPacket.validateToken(tokenLumiHex))
+        let tokenBlt = try #require(MiIOPacket.validateToken(tokenBltHex))
+        let wrongToken = Data(repeating: 0x5A, count: 16)
+
+        let transport = MockUDPTransport { packet, host, _ in
+            switch host {
+            case "192.168.1.180":
+                return try self.encodeRPCReply(packet, token: tokenLumi, resultOrError: #""result":[{"did":"lumi.curtain.v1","siid":1,"piid":1,"value":"aqara","code":0}]"#)
+            case "192.168.1.181":
+                return try self.encodeRPCReply(packet, token: tokenBlt, resultOrError: #""result":[{"did":"blt.3.sensor","siid":1,"piid":1,"value":"xiaomi","code":0}]"#)
+            case "192.168.1.182":
+                // Spoofed/wrong-token reply must never bind.
+                return try self.encodeRPCReply(packet, token: wrongToken, resultOrError: #""result":[{"did":"lumi.curtain.v1","siid":1,"piid":1,"value":"spoof","code":0}]"#)
+            default:
+                throw MiIOError.timeout
+            }
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            var replies: [MiIOBroadcastReply] = []
+            // 12 unrelated modern 0xFF-checksum devices precede the moved non-numeric devices.
+            for idx in 1...12 {
+                replies.append(MiIOBroadcastReply(sourceIP: "192.168.1.\(20 + idx)", packet: makeHelloResponse(deviceId: UInt32(1000 + idx), stamp: UInt32(50 + idx))))
+            }
+            replies.append(MiIOBroadcastReply(sourceIP: "192.168.1.182", packet: makeHelloResponse(deviceId: 0x0AAA_0003, stamp: 90)))
+            replies.append(MiIOBroadcastReply(sourceIP: "192.168.1.180", packet: makeHelloResponse(deviceId: 0x0AAA_0001, stamp: 91)))
+            replies.append(MiIOBroadcastReply(sourceIP: "192.168.1.181", packet: makeHelloResponse(deviceId: 0x0AAA_0002, stamp: 92)))
+            return replies
+        }
+
+        let client = LocalMiIOClient(transport: transport, handshakeTimeout: .milliseconds(80), maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenLumiHex),
+            MiIODeviceCandidate(did: "blt.3.sensor", token: tokenBltHex),
+        ])
+        #expect(discovered == [
+            "lumi.curtain.v1": "192.168.1.180",
+            "blt.3.sensor": "192.168.1.181",
+        ])
+        await client.shutdown()
+
+        // Also verify flood protection: 90 slow unresponsive replies must hit both probe-count cap and total-duration cap.
+        let floodProbes = LockedBox(0)
+        let floodTransport = MockUDPTransport { _, _, _ in
+            floodProbes.withValue { $0 += 1 }
+            try await Task.sleep(for: .milliseconds(120))
+            throw MiIOError.timeout
+        }
+        await floodTransport.setBroadcastHandler { _, _, _ in
+            (1...90).map { idx in
+                MiIOBroadcastReply(sourceIP: "10.0.1.\(idx)", packet: makeHelloResponse(deviceId: UInt32(5000 + idx), stamp: 10))
+            }
+        }
+        let floodClient = LocalMiIOClient(transport: floodTransport, handshakeTimeout: .milliseconds(500), maxRetries: 0)
+        let floodStart = ContinuousClock.now
+        let floodResult = try await floodClient.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: "lumi.flood.1", token: tokenLumiHex),
+            MiIODeviceCandidate(did: "blt.flood.2", token: tokenBltHex),
+        ])
+        let floodElapsed = ContinuousClock.now - floodStart
+        #expect(floodResult.isEmpty)
+        #expect(floodProbes.withValue { $0 } <= 64)
+        #expect(floodElapsed < .seconds(4))
+        await floodClient.shutdown()
+    }
+
     @Test("LocalNetworkDenied is non-retryable and bypasses ambiguousActionOutcome when occurring before packet send")
     func localNetworkDeniedFastFailAndPreSendActionBypass() async throws {
         let tokenData = try #require(MiIOPacket.validateToken(validTokenHex))
@@ -3079,6 +3148,319 @@ struct HybridProviderAndDoorbellTests {
         #expect(await collector.localNetworkPermissions.last == [])
 
         await provider.shutdown()
+    }
+
+    @Test("Manual refresh and system wake trigger broadcast discovery for devices in LAN cooldown while preserving sweep rate limit")
+    func refreshAndWakeSweepCoolingDownDevicesWithRateLimit() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let d1IP = LockedBox("192.168.1.40")
+        let d1OnlineOnLAN = LockedBox(false)
+        let lanBrightness = LockedBox(75)
+
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            guard d1OnlineOnLAN.withValue({ $0 }), host == d1IP.withValue({ $0 }) else {
+                throw MiIOError.timeout
+            }
+            if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 100) }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":\#(lanBrightness.withValue { $0 }),"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            guard d1OnlineOnLAN.withValue({ $0 }) else { return [] }
+            return [MiIOBroadcastReply(sourceIP: d1IP.withValue({ $0 }), packet: makeHelloResponse(deviceId: 101, stamp: 200))]
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let d1 = MiDeviceRecord(did: "101", name: "Study Lamp", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.40", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [d1],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(40)]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 300,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        // Initial poll: device fails unicast, runs cold-start sweep (#1), and enters 300s LAN cooldown.
+        #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+        #expect(await udpTransport.broadcastCalls == 1)
+
+        // Manual refresh at t=5 while device is still offline and cooling down triggers ONE sweep (#2),
+        // then repeated manual refreshes within broadcastSweepMinInterval (60s) stay rate-limited!
+        clock.advance(by: 5)
+        await provider.refreshNow()
+        #expect(await udpTransport.broadcastCalls == 2)
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+
+        clock.advance(by: 5)
+        await provider.refreshNow()
+        #expect(await udpTransport.broadcastCalls == 2)
+
+        // Once broadcastSweepMinInterval (60s) has elapsed, device is STILL inside 300s cooldown,
+        // and comes back on a new DHCP IP (.188). Manual refresh sweeps (#3) and heals inline!
+        d1IP.withValue { $0 = "192.168.1.188" }
+        d1OnlineOnLAN.withValue { $0 = true }
+        lanBrightness.withValue { $0 = 84 }
+        clock.advance(by: 60)
+        await provider.refreshNow()
+        #expect(await udpTransport.broadcastCalls == 3)
+        #expect(await collector.wait { lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 84 })
+        let healedAfterRefresh = await provider.lanTransportState(for: "101")
+        #expect(healedAfterRefresh.transportSucceeded && !healedAfterRefresh.isCoolingDown && healedAfterRefresh.effectiveIP == "192.168.1.188")
+
+        // Now test system wake: move device again so it enters 300s cooldown at t=140, then wake at t=145.
+        d1OnlineOnLAN.withValue { $0 = false }
+        clock.advance(by: 70)
+        _ = await provider.readBack(deviceId: "101")
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+        let broadcastsBeforeWake = await udpTransport.broadcastCalls
+
+        // Advance past manual-refresh rate limit from t=70 (now at t=145 -> 75s >= 60s), bring device online at .199,
+        // and transition systemActive false -> true: wake poll must sweep cooling-down device once and heal!
+        d1IP.withValue { $0 = "192.168.1.199" }
+        d1OnlineOnLAN.withValue { $0 = true }
+        lanBrightness.withValue { $0 = 91 }
+        clock.advance(by: 5)
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 91 })
+        #expect(await udpTransport.broadcastCalls == broadcastsBeforeWake + 1)
+        #expect(await provider.lanTransportState(for: "101").effectiveIP == "192.168.1.199")
+
+        await provider.shutdown()
+    }
+
+    @Test("Pre-send errors and mixed-denial batches keep Local Network blocked until a packet crosses the permission boundary")
+    func preSendAndMixedBatchErrorsDoNotClearLocalNetworkDenied() async throws {
+        enum Mode: Sendable {
+            case healthy
+            case denied
+            case preSendUnreachable
+            case preSendTransportUnavailable
+            case mixedDenialAndTimeout
+            case postSendTimeoutMovedIP
+        }
+        actor Gate {
+            private var opened = false
+            private var waiters: [CheckedContinuation<Void, Never>] = []
+            func open() {
+                opened = true
+                let list = waiters
+                waiters.removeAll()
+                for waiter in list { waiter.resume() }
+            }
+            func wait() async {
+                if opened { return }
+                await withCheckedContinuation { waiters.append($0) }
+            }
+        }
+
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let mode = LockedBox(Mode.denied)
+        let mixedGate = Gate()
+        let lanBrightness = LockedBox(72)
+
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            switch mode.withValue({ $0 }) {
+            case .denied:
+                throw MiIOError.localNetworkDenied
+            case .preSendUnreachable:
+                throw POSIXError(.ENETUNREACH)
+            case .preSendTransportUnavailable:
+                throw MiIOError.transportUnavailable
+            case .mixedDenialAndTimeout:
+                if host == "192.168.1.50" {
+                    await mixedGate.open()
+                    throw MiIOError.localNetworkDenied
+                }
+                await mixedGate.wait()
+                throw MiIOError.timeout
+            case .postSendTimeoutMovedIP:
+                guard host == "192.168.1.150" || host == "192.168.1.151" else {
+                    throw MiIOError.timeout
+                }
+                let devId: UInt32 = host == "192.168.1.150" ? 101 : 102
+                let didStr = host == "192.168.1.150" ? "101" : "102"
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: devId, stamp: 20) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let bri = lanBrightness.withValue { $0 }
+                let reply = #"{"id":\#(reqId),"result":[{"did":"\#(didStr)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(didStr)","siid":2,"piid":2,"value":\#(bri),"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            case .healthy:
+                let devId: UInt32 = host == "192.168.1.50" ? 101 : 102
+                let didStr = host == "192.168.1.50" ? "101" : "102"
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: devId, stamp: 10) }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+                let bri = lanBrightness.withValue { $0 }
+                let reply = #"{"id":\#(reqId),"result":[{"did":"\#(didStr)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(didStr)","siid":2,"piid":2,"value":\#(bri),"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+        }
+        await udpTransport.setBroadcastHandler { _, _, _ in
+            guard mode.withValue({ $0 }) == .postSendTimeoutMovedIP else { return [] }
+            return [
+                MiIOBroadcastReply(sourceIP: "192.168.1.150", packet: makeHelloResponse(deviceId: 101, stamp: 21)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.151", packet: makeHelloResponse(deviceId: 102, stamp: 22)),
+            ]
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let d1 = MiDeviceRecord(did: "101", name: "Lamp 1", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let d2 = MiDeviceRecord(did: "102", name: "Lamp 2", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [d1, d2],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(40),
+                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(40),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream { await collector.append(event) }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN] })
+
+        // Pre-send socket failure (ENETUNREACH) must NOT clear Local Network blocked state.
+        mode.withValue { $0 = .preSendUnreachable }
+        clock.advance(by: 65)
+        let beforePreSend1 = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforePreSend1 + 2 })
+        #expect(await collector.localNetworkPermissions.last == [.xiaomiLAN])
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
+
+        // Pre-send transportUnavailable must NOT clear Local Network blocked state either.
+        mode.withValue { $0 = .preSendTransportUnavailable }
+        clock.advance(by: 65)
+        let beforePreSend2 = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforePreSend2 + 2 })
+        #expect(await collector.localNetworkPermissions.last == [.xiaomiLAN])
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
+
+        // Healthy LAN poll crosses permission boundary and clears [.xiaomiLAN].
+        mode.withValue { $0 = .healthy }
+        clock.advance(by: 65)
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.last?.localNetworkBlockedFeatures == [] })
+        #expect(await collector.localNetworkPermissions.last == [])
+
+        #expect(MiIOError.provesPacketCrossedPermissionBoundary(MiIOError.sendFailed) == false)
+        #expect(MiIOError.provesPacketCrossedPermissionBoundary(MiIOError.transportUnavailable) == false)
+        #expect(MiIOError.provesPacketCrossedPermissionBoundary(MiIOError.timeout) == true)
+        #expect(MiIOError.provesPacketCrossedPermissionBoundary(MiIOError.handshakeFailed) == true)
+
+        // Mixed parallel poll: 101 fails with localNetworkDenied first, 102 finishes after with timeout.
+        // The batch denial must win and keep [.xiaomiLAN] active without clearing it!
+        mode.withValue { $0 = .mixedDenialAndTimeout }
+        clock.advance(by: 65)
+        let beforeMixed = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count >= beforeMixed + 2 })
+        #expect(await collector.localNetworkPermissions.last == [.xiaomiLAN])
+        #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
+
+        // Once permission is granted and devices moved IP, a real post-send timeout crosses the
+        // permission boundary, clears [.xiaomiLAN], and heals via broadcast sweep.
+        mode.withValue { $0 = .postSendTimeoutMovedIP }
+        lanBrightness.withValue { $0 = 88 }
+        clock.advance(by: 65)
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            $0.snapshots.last?.localNetworkBlockedFeatures == []
+                && lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 88
+        })
+        #expect(await collector.localNetworkPermissions.last == [])
+
+        await provider.shutdown()
+
+        // Also verify HAWebSocketProvider does not clear [.homeAssistant] on pre-send offline -1009,
+        // and clears it once a server frame (e.g. unauthorized) proves packets crossed the boundary.
+        let haMode = LockedBox(0) // 0 = EPERM, 1 = offline -1009, 2 = unauthorized
+        let haProvider = HAWebSocketProvider(
+            baseURLString: "http://192.168.1.50:8123",
+            token: "ha-tok",
+            allowsToken: { _ in true },
+            isNetworkSatisfied: { haMode.withValue({ $0 }) != 1 }
+        )
+        await haProvider.setTestSeams(
+            connectOverride: {
+                switch haMode.withValue({ $0 }) {
+                case 0:
+                    return .failedBeforeAuth(NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM)))
+                case 1:
+                    return .failedBeforeAuth(URLError(.notConnectedToInternet))
+                default:
+                    return .failedBeforeAuth(HomeProviderError.unauthorized)
+                }
+            },
+            reconnectSleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+        let haCollector = EventCollector()
+        let haStream = haProvider.events()
+        let haTask = Task {
+            for await event in haStream { await haCollector.append(event) }
+            await haCollector.finish()
+        }
+        defer { haTask.cancel() }
+
+        #expect(await haCollector.wait {
+            $0.localNetworkPermissions.last == [.homeAssistant]
+                && $0.statuses.filter { if case .disconnected = $0 { return true }; return false }.count >= 1
+        })
+
+        haMode.withValue { $0 = 1 }
+        await haProvider.refreshNow()
+        #expect(await haCollector.wait {
+            $0.statuses.filter { if case .disconnected = $0 { return true }; return false }.count >= 2
+        })
+        #expect(await haCollector.localNetworkPermissions.last == [.homeAssistant])
+
+        haMode.withValue { $0 = 2 }
+        await haProvider.refreshNow()
+        #expect(await haCollector.wait {
+            $0.statuses.filter { if case .disconnected = $0 { return true }; return false }.count >= 3
+        })
+        #expect(await haCollector.localNetworkPermissions.last == [])
+
+        await haProvider.shutdown()
     }
 }
 

@@ -708,7 +708,7 @@ extension HomeStore {
                     self?.askHAPlaintext(url)
                 }
             },
-            isNetworkSatisfied: { @MainActor [weak self] in self?.isNetworkSatisfiedForResume ?? true }
+            isNetworkSatisfied: { @MainActor [weak self] in self?.knownNetworkSatisfied == true }
         )
     }
 
@@ -1553,7 +1553,29 @@ extension HomeStore {
 
     /// The one connection verdict the footer, the settings badge and the menu-bar tooltip share.
     public var panelHealth: PanelHealth {
-        PanelHealthResolver.resolve(PanelHealthInput(
+        let now = Date()
+        let miStatus: ConnectionStatus = {
+            if let explicit = sourceStatuses[.xiaomiCloud] {
+                return explicit
+            }
+            if !hasHASource {
+                return connectionStatus
+            }
+            if !miAccountStatuses.isEmpty {
+                let activeIDs = Set(miAccounts.filter { $0.session.expiryState(at: now) != .expired }.map(\.id))
+                if activeIDs.contains(where: { miAccountStatuses[$0]?.isConnected == true }) {
+                    return .connected
+                }
+                for id in activeIDs {
+                    if case .disconnected(let reason) = miAccountStatuses[id] {
+                        return .disconnected(reason)
+                    }
+                }
+                return .connecting
+            }
+            return connectedBackends.contains(.xiaomiCloud) ? .connected : .connecting
+        }()
+        return PanelHealthResolver.resolve(PanelHealthInput(
             isDemo: homeBackend == .demo,
             hasHASource: hasHASource,
             hasMiSource: hasMiSource,
@@ -1565,8 +1587,9 @@ extension HomeStore {
             }(),
             haStatus: sourceStatuses[.homeAssistant]
                 ?? (connectedBackends.contains(.homeAssistant) ? .connected : .connecting),
+            miStatus: miStatus,
             anotherMiAccountSignedIn: miAccounts.contains { account in
-                account.session.expiryState(at: Date()) != .expired
+                account.session.expiryState(at: now) != .expired
             },
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus,
@@ -1600,6 +1623,9 @@ struct PanelHealthInput: Equatable, Sendable {
     /// Home Assistant's own connection state, not the merged aggregate: one healthy Mi account can
     /// keep the aggregate `.connected` while HA is offline.
     var haStatus: ConnectionStatus
+    /// Xiaomi Cloud's own connection state, so a connected HA instance does not mask an offline or
+    /// still-connecting Xiaomi Cloud source when reporting Local Network fallback.
+    var miStatus: ConnectionStatus
     var anotherMiAccountSignedIn: Bool
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
@@ -1639,7 +1665,7 @@ enum PanelHealthResolver {
         if !input.localNetworkBlocks.isEmpty {
             let haBlocked = input.hasHASource && input.localNetworkBlocks.contains(.homeAssistant)
             let miLANBlocked = input.hasMiSource && input.localNetworkBlocks.contains(.xiaomiLAN)
-            let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.connectionStatus.isConnected
+            let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.miStatus.isConnected && input.connectionStatus.isConnected
             let haWorking = input.hasHASource && !haBlocked && (input.haStatus.isConnected || (!input.hasMiSource && input.connectionStatus.isConnected))
             let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openConnectionSettings)
             if haBlocked && miLANBlocked {
@@ -1649,7 +1675,13 @@ enum PanelHealthResolver {
                 return miWorking ? .degraded(reason: L10n.tr("Home Assistant 本地网络权限受阻，米家云端仍可用", "Home Assistant local network access is blocked. Xiaomi Cloud still works")) : blockedVerdict
             }
             if miLANBlocked {
-                return (miWorking || haWorking) ? .degraded(reason: L10n.tr("米家局域网直连权限受阻，已回退云端", "Xiaomi LAN access is blocked. Using cloud fallback")) : blockedVerdict
+                if miWorking {
+                    return .degraded(reason: L10n.tr("米家局域网直连权限受阻，已回退云端", "Xiaomi LAN access is blocked. Using cloud fallback"))
+                }
+                if haWorking {
+                    return .degraded(reason: L10n.tr("米家局域网直连权限受阻，当前仅 Home Assistant 可用", "Xiaomi LAN access is blocked. Only Home Assistant is available"))
+                }
+                return blockedVerdict
             }
             if input.localNetworkBlocks.contains(.lgWebOS) {
                 return (miWorking || haWorking) ? .degraded(reason: L10n.tr("电视本地网络权限受阻", "TV local network access is blocked")) : blockedVerdict

@@ -20,8 +20,40 @@ public enum MiIOError: Error, Equatable, Sendable {
     case decryptionFailed
     case transportUnavailable
     case localNetworkDenied
+    case sendFailed
     case ambiguousActionOutcome
     case deviceError(code: Int, message: String)
+
+    /// Returns `true` only when `error` proves a packet crossed the macOS Local Network permission
+    /// boundary (outbound UDP send completed past TCC or a response packet arrived from the peer).
+    public static func provesPacketCrossedPermissionBoundary(_ error: any Error) -> Bool {
+        if error is MiCloudError {
+            return true
+        }
+        guard let miio = error as? MiIOError else {
+            return false
+        }
+        switch miio {
+        case .timeout,
+             .handshakeFailed,
+             .malformedPacket,
+             .checksumMismatch,
+             .decryptionFailed,
+             .unsupportedNonNumericDeviceId,
+             .deviceError:
+            return true
+        case .invalidToken,
+             .invalidAddress,
+             .payloadTooLarge,
+             .encryptionFailed,
+             .transportUnavailable,
+             .localNetworkDenied,
+             .sendFailed,
+             .ambiguousActionOutcome,
+             .shutDown:
+            return false
+        }
+    }
 }
 
 extension MiIOError: LocalizedError {
@@ -53,6 +85,8 @@ extension MiIOError: LocalizedError {
             return L10n.tr("当前平台不支持本地 UDP 传输", "Local UDP transport is unavailable on this platform")
         case .localNetworkDenied:
             return L10n.tr("本地网络权限被系统拦截，请在系统设置中允许访问局域网设备", "Local network access is blocked by macOS; allow Local Network permission in System Settings")
+        case .sendFailed:
+            return L10n.tr("局域网 UDP 数据包发送失败", "Failed to send local miIO UDP packet")
         case .ambiguousActionOutcome:
             return L10n.tr("局域网动作结果未确认，请检查设备状态后再试", "Local action outcome could not be confirmed; check device state before retrying")
         case .deviceError(let code, let message):
