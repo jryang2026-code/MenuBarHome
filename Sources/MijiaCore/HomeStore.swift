@@ -746,6 +746,8 @@ public final class HomeStore {
 
     public var lgConfig: LGWebOSConfig {
         didSet {
+            guard !suppressNextLGConfigDidSetSave else { return }
+            lgConfigSaveCallsInDidSetForTesting += 1
             lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
             if lgConfigSaveFailed {
                 showToast(Self.lgKeychainSaveErrorMessage, isError: true)
@@ -755,6 +757,10 @@ public final class HomeStore {
     /// Set by `lgConfig.didSet` when the Keychain refused the pairing key (#7); the pairing callback
     /// reads it to decide between "Paired" and an error, instead of claiming a pairing that was not stored.
     @ObservationIgnored var lgConfigSaveFailed = false
+    /// Prevents `lgConfig.didSet` from re-saving and potentially flipping `lgConfigSaveFailed` when the
+    /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
+    @ObservationIgnored var suppressNextLGConfigDidSetSave = false
+    @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).

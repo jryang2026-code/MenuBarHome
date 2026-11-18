@@ -82,7 +82,8 @@ extension HomeStore {
     }
 
     /// Applies a freshly registered LG pairing key. Returns false when the Keychain refused to store it,
-    /// so the caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
+    /// rolling the live client back to the persisted `lgConfig` so client and store never diverge and the
+    /// caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
     @discardableResult
     func applyLGClientKey(_ key: String) -> Bool {
         var updated = lgConfig
@@ -90,6 +91,10 @@ extension HomeStore {
         // Write before swapping the in-memory config so a refused write keeps the old pairing key.
         guard updated.save(to: userDefaults, vault: credentialVault) else {
             lgConfigSaveFailed = true
+            let persistedConfig = lgConfig
+            if let lgClient = lgWebOSClient {
+                Task { await lgClient.updateConfig(persistedConfig) }
+            }
             showToast(
                 L10n.tr(
                     "电视已确认配对，但配对密钥无法写入钥匙串；请授权钥匙串访问后重新配对",
@@ -99,8 +104,10 @@ extension HomeStore {
             )
             return false
         }
+        lgConfigSaveFailed = false
+        suppressNextLGConfigDidSetSave = true
+        defer { suppressNextLGConfigDidSetSave = false }
         lgConfig = updated
-        guard !lgConfigSaveFailed else { return false }
         showToast(L10n.tr("已成功配对 \(lgConfig.name)", "Paired with \(lgConfig.name)"))
         return true
     }
@@ -1242,8 +1249,10 @@ extension HomeStore {
         if newConfig.host != lgConfig.host || newConfig.isEnabled != lgConfig.isEnabled || newConfig.clientKey != lgConfig.clientKey {
             invalidateUndoContext()
         }
+        lgConfigSaveFailed = false
+        suppressNextLGConfigDidSetSave = true
         self.lgConfig = newConfig
-        guard !lgConfigSaveFailed else { return false }
+        suppressNextLGConfigDidSetSave = false
         if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
             latestLGDevice = nil
             lastReportedDevices.removeValue(forKey: LGWebOSProtocol.deviceId)
@@ -1320,8 +1329,10 @@ extension HomeStore {
                     self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
                     return false
                 }
+                self.lgConfigSaveFailed = false
+                self.suppressNextLGConfigDidSetSave = true
                 self.lgConfig = cleared
-                guard !self.lgConfigSaveFailed else { return false }
+                self.suppressNextLGConfigDidSetSave = false
                 await client.updateConfig(cleared)
                 self.showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
                 return true

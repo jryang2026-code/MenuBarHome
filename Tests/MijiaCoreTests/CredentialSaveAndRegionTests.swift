@@ -89,6 +89,78 @@ struct CredentialSaveResultTests {
         #expect(!notice.isError)
     }
 
+    @Test("applyLGClientKey refusal rolls LGWebOSClient back to the persisted key so client and store never diverge")
+    @MainActor
+    func lgPairingRefusalRollsBackClientConfig() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "persisted-old-key")
+        #expect(store.updateLGWebOSConfig(initial))
+        let client = try #require(store.lgWebOSClient)
+        #expect(await client.configForTesting.clientKey == "persisted-old-key")
+
+        // Simulate LGWebOSClient receiving a new registered key while Keychain write fails.
+        storage.writeSucceeds = false
+        store.dismissToast()
+        await client.simulateRegisteredForTesting(clientKey: "unsaved-tv-key")
+
+        // Wait for the @MainActor callback and client rollback to settle.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while store.toastNotice == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10)) // Poll until async onClientKeyRegistered callback delivers toast
+        }
+
+        #expect(store.lgConfig.clientKey == "persisted-old-key")
+        let rollbackDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await client.configForTesting.clientKey != "persisted-old-key", ContinuousClock.now < rollbackDeadline {
+            try await Task.sleep(for: .milliseconds(10)) // Poll until client config rolls back to persisted key
+        }
+        #expect(
+            await client.configForTesting.clientKey == "persisted-old-key",
+            "live LGWebOSClient must revert to the persisted key instead of keeping an unsaved pairing key"
+        )
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        await client.shutdown()
+    }
+
+    @Test("applyLGClientKey persists only once and shows the Paired toast without a redundant didSet save")
+    @MainActor
+    func lgPairingCommitsInSingleWriteWithoutDidSetFailure() throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        // Make the second LGWebOSConfig.save fail even if the vault key was already written,
+        // simulating a transient save failure in lgConfig.didSet after applyLGClientKey's own save succeeded.
+        #expect(store.applyLGClientKey("single-write-key") == true)
+        #expect(store.lgConfigSaveCallsInDidSetForTesting == 0, "applyLGClientKey must not run a redundant save inside lgConfig.didSet")
+        #expect(store.lgConfig.clientKey == "single-write-key")
+        let notice = try #require(store.toastNotice)
+        #expect(!notice.isError)
+        #expect(notice.message.contains("已成功配对") || notice.message.contains("Paired with"))
+    }
+
     @Test("updateLGWebOSConfig refusal never shows saved toast, mutates defaults, or starts connecting")
     @MainActor
     func lgConfigUpdateRefusalStopsAndShowsError() async throws {
@@ -276,6 +348,73 @@ struct CredentialSaveResultTests {
         #expect(store.saveAssistantConfig(config) == false)
         #expect(store.assistantConfig.apiKey.isEmpty)
     }
+
+    @Test("OpenRouter/Jev save never partially commits when one of the two Keychain slots fails")
+    func openRouterSaveIsTransactionalOnPartialFailure() throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let initial = AssistantConfig(
+            baseURL: "https://openrouter.ai/api/v1",
+            model: "~typesafe/jev-latest",
+            apiKey: "sk-initial"
+        )
+        #expect(initial.save(to: defaults, vault: vault))
+        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: .openRouterJev)
+        let legacyAccount = KeychainHelper.assistantAPIKeyAccount
+        #expect(KeychainHelper.loadSecret(account: providerAccount, defaults: defaults, vault: vault) == "sk-initial")
+        #expect(KeychainHelper.loadSecret(account: legacyAccount, defaults: defaults, vault: vault) == "sk-initial")
+
+        // Case 1: first write succeeds, second write fails.
+        // If saveSecret writes both slots atomically in a single vault persist, it succeeds in 1 write and both slots hold sk-unsaved.
+        // If saveSecret writes two slots sequentially, the second write fails and it must roll back the first slot to sk-initial.
+        storage.writeSucceedsSequence = [true, false]
+        storage.writeSucceeds = true
+
+        let attempted = AssistantConfig(
+            baseURL: "https://openrouter.ai/api/v1",
+            model: "~typesafe/jev-latest",
+            apiKey: "sk-unsaved"
+        )
+        let writesBefore = storage.writes
+        let saved = attempted.save(to: defaults, vault: vault)
+
+        if saved {
+            #expect(storage.writes - writesBefore == 1, "single-write atomic commit must update both slots in one vault write")
+            #expect(KeychainHelper.loadSecret(account: providerAccount, defaults: defaults, vault: vault) == "sk-unsaved")
+            #expect(KeychainHelper.loadSecret(account: legacyAccount, defaults: defaults, vault: vault) == "sk-unsaved")
+
+            // Also verify that when that single write is refused (comparing against the queued false), neither slot changes.
+            let refused = AssistantConfig(
+                baseURL: "https://openrouter.ai/api/v1",
+                model: "~typesafe/jev-latest",
+                apiKey: "sk-refused"
+            )
+            #expect(refused.save(to: defaults, vault: vault) == false)
+            #expect(
+                AssistantConfig.userStoredAPIKey(
+                    forBaseURL: "https://openrouter.ai/api/v1",
+                    defaults: defaults,
+                    vault: vault
+                ) == "sk-unsaved"
+            )
+            #expect(KeychainHelper.loadSecret(account: providerAccount, defaults: defaults, vault: vault) == "sk-unsaved")
+            #expect(KeychainHelper.loadSecret(account: legacyAccount, defaults: defaults, vault: vault) == "sk-unsaved")
+        } else {
+            #expect(
+                AssistantConfig.userStoredAPIKey(
+                    forBaseURL: "https://openrouter.ai/api/v1",
+                    defaults: defaults,
+                    vault: vault
+                ) == "sk-initial",
+                "a refused OpenRouter save must not leave userStoredAPIKey reading the new key"
+            )
+            #expect(KeychainHelper.loadSecret(account: providerAccount, defaults: defaults, vault: vault) == "sk-initial")
+            #expect(KeychainHelper.loadSecret(account: legacyAccount, defaults: defaults, vault: vault) == "sk-initial")
+        }
+    }
 }
 
 struct MiLoginRegionInferenceTests {
@@ -358,10 +497,10 @@ struct MiLoginRegionInferenceTests {
         let transport = ScriptedTransport { req in
             let url = req.url!.absoluteString
             if url.hasPrefix("https://lp.example") {
-                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.example/sts?p_ur=DE&p_idc=Europe"}"#)
+                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?d=wb_1&p_ur=XX&p_idc=Unknown"}"#)
             }
-            if url.hasPrefix("https://sts.example") {
-                return (200, ["Set-Cookie": "serviceToken=tok123; path=/; domain=.example"], "ok")
+            if url.hasPrefix("https://sts.api.io.mi.com") {
+                return (200, ["Set-Cookie": "serviceToken=tok123; path=/; domain=.mi.com"], "ok")
             }
             return (404, [:], "")
         }

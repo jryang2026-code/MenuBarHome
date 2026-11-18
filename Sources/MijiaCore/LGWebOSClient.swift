@@ -458,6 +458,16 @@ public actor LGWebOSClient {
         _ = replaceSession()
     }
 
+    func simulateRegisteredForTesting(clientKey: String) {
+        isConnected = true
+        isWaitingForPairing = false
+        if config.clientKey != clientKey {
+            config.clientKey = clientKey
+            onClientKeyRegistered(clientKey)
+        }
+        emitCurrentDevice()
+    }
+
     private var isConnected: Bool = false
     private var isWaitingForPairing: Bool = false
     private var isScreenOff: Bool = false

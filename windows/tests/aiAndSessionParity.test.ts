@@ -1345,15 +1345,15 @@ describe("Demo offline guard, credential error banner, mic pin guard & hover pau
         return {
           status: 200,
           headers: {},
-          body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.example/sts?p_ur=DE&p_idc=Europe"}',
+          body: '&&&START&&&{"userId":88,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?d=wb_1&p_ur=XX&p_idc=Unknown"}',
         };
       }
-      if (req.url.startsWith("https://sts.example/sts")) {
+      if (req.url.startsWith("https://sts.api.io.mi.com/sts")) {
         return { status: 200, headers: { "Set-Cookie": "serviceToken=tok-sg; Path=/" }, body: "ok" };
       }
       return { status: 404, headers: {}, body: "" };
     }, "sg");
     const kept = await unknownLocation.waitForScan(ticket);
-    assert.equal(kept.region, "sg", "an untrusted host keeps the picked region");
+    assert.equal(kept.region, "sg", "an unrecognized region hint keeps the picked region");
   });
 });
