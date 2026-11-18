@@ -2197,4 +2197,122 @@ struct GoldenCorpusTests {
         #expect(LocalIntentParser.parse("执行晚間", devices: [], scenes: [dupA, dupB]) == nil)
         #expect(LocalIntentParser.parse("执行晚间", devices: [], scenes: [dupA, dupB]) == nil)
     }
+
+    private struct CapabilitySelectionCorpus: Decodable {
+        struct Catalog: Decodable {
+            let devices: [CapabilityIndexedDevice], scenes: [SceneReference], deviceGroups: [DeviceGroupReference]
+        }
+        struct UpgradeCase: Decodable {
+            let id: String, evidence: CapabilityInstallEvidence, expectedMode: CapabilityInstallResolutionMode
+            let expectedPersistMigrationComplete: Bool, expectedRetryDiagnostic: String?, expectedSelection: CapabilitySelection
+        }
+        struct DeactivationCase: Decodable {
+            let id: String, current: CapabilitySelection, proposed: CapabilitySelection
+            let safetyPolicy: SafetyRetentionPolicy, references: CapabilityReferenceGraph
+            let expectedDisposition: DeactivationDisposition, expectedCascadedCapabilities: [CapabilityID]
+            let expectedItemsToPause: [AffectedReferenceItem], expectedSoftNotices: [CapabilitySoftNotice]
+            let expectedBlockingReasons: [CapabilityBlockingReason], expectedPreservedPreferenceDeviceIds: [String]
+            let expectedPartition: DeviceSetPartition, expectLeakAlertWhenSensorTriggers: Bool?
+        }
+        struct WriteGateCase: Decodable {
+            let id: String, targetKind: ControlTargetKind, targetId: String, candidateIds: [String]
+            let expectedGeneration: Int?, currentGeneration: Int?, selection: CapabilitySelection
+            let expectedAllowed: Bool, expectedWriteCount: Int, expectedRejectionCode: String?
+            let expectedZhMessage: String?, expectedEnMessage: String?
+            let expectedMayControlHiddenDevices: Bool, expectConfirmationFalseOnCroppedSet: Bool
+        }
+        struct PlanGateCase: Decodable {
+            struct Target: Decodable { let kind: ControlTargetKind, id: String }
+            let id: String, targets: [Target], selection: CapabilitySelection
+            let expectedAllowed: Bool, expectedWriteCount: Int, expectedRejectedTargetId: String?, expectedRejectionCode: String?
+        }
+        struct ResumeCase: Decodable {
+            let id: String, timer: TimerReference, fireAtEpochSeconds: Int, nowEpochSeconds: Int
+            let activeConnectionScopes: [String], selection: CapabilitySelection, expectedDisposition: PausedTimerResumeDisposition
+        }
+        let version: Int, catalog: Catalog, upgradeCases: [UpgradeCase], deactivationCases: [DeactivationCase]
+        let writeGateCases: [WriteGateCase], planGateCases: [PlanGateCase], pausedTimerResumeCases: [ResumeCase]
+    }
+
+    @Test("Shared capability selection and reference verdicts match capability_selection_golden.json")
+    func capabilitySelectionGoldenCorpus() throws {
+        let manifestURL = try Self.locateGoldenFixture("Shared/capability-manifest.json")
+        let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/capability_selection_golden.json")
+        let manifest = try CapabilityManifest.parse(from: Data(contentsOf: manifestURL))
+        let corpus = try JSONDecoder().decode(CapabilitySelectionCorpus.self, from: Data(contentsOf: fixtureURL))
+        #expect(corpus.version == 1)
+
+        for c in corpus.upgradeCases {
+            let actual = CapabilityReferenceEngine.resolveInstallSelection(evidence: c.evidence, manifest: manifest)
+            #expect(actual.mode == c.expectedMode, "\(c.id)")
+            #expect(actual.persistMigrationComplete == c.expectedPersistMigrationComplete, "\(c.id)")
+            #expect(actual.retryDiagnostic == c.expectedRetryDiagnostic, "\(c.id)")
+            #expect(actual.selection == c.expectedSelection, "\(c.id)")
+        }
+
+        let leakSmartDevice = SmartDevice(
+            id: "sensor.kitchen_leak", name: "厨房水浸传感器", roomId: "kitchen", roomName: "厨房",
+            model: "lumi.sensor_wleak.aq1", isOnline: true,
+            kind: .sensor(SensorSpec(observations: [SensorObservation(sourceId: "105.2.1", kind: .leak, alarming: true)]))
+        )
+        for c in corpus.deactivationCases {
+            let actual = CapabilityReferenceEngine.evaluateDeactivation(
+                current: c.current, proposed: c.proposed, manifest: manifest,
+                devices: corpus.catalog.devices, safetyPolicy: c.safetyPolicy, references: c.references
+            )
+            #expect(actual.disposition == c.expectedDisposition, "\(c.id)")
+            #expect(actual.cascadedCapabilities == c.expectedCascadedCapabilities, "\(c.id)")
+            #expect(actual.itemsToPause == c.expectedItemsToPause, "\(c.id)")
+            #expect(actual.softNotices == c.expectedSoftNotices, "\(c.id)")
+            #expect(actual.blockingReasons == c.expectedBlockingReasons, "\(c.id)")
+            #expect(actual.preservedPreferenceDeviceIds == c.expectedPreservedPreferenceDeviceIds, "\(c.id)")
+            #expect(actual.partition == c.expectedPartition, "\(c.id)")
+            if let expectLeak = c.expectLeakAlertWhenSensorTriggers {
+                let evalDevices = actual.partition.safetyEvaluationDeviceIds.contains(leakSmartDevice.id) ? [leakSmartDevice] : []
+                let policy = SensorAlertPolicy(enabled: [.leak: c.safetyPolicy.enabledSignals.contains(.leak)], onlyWhenAway: false, includesAway: true)
+                let alerts = SensorAlerts.evaluate(devices: evalDevices, ledger: [:], now: Date(timeIntervalSince1970: 1_700_000_000), calendar: Calendar(identifier: .gregorian), policy: policy).alerts
+                #expect((!alerts.isEmpty) == expectLeak, "\(c.id)")
+            }
+        }
+
+        for c in corpus.writeGateCases {
+            let v = CapabilityReferenceEngine.evaluateControlTargetGate(
+                targetKind: c.targetKind, targetId: c.targetId, candidateIds: c.candidateIds,
+                expectedGeneration: c.expectedGeneration, currentGeneration: c.currentGeneration,
+                selection: c.selection, devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+            )
+            #expect(v.allowed == c.expectedAllowed, "\(c.id)")
+            #expect(v.writeCount == c.expectedWriteCount, "\(c.id)")
+            #expect(v.rejectionReason?.code == c.expectedRejectionCode, "\(c.id)")
+            #expect(v.mayControlHiddenDevices == c.expectedMayControlHiddenDevices, "\(c.id)")
+            let zh = L10n.$overrideLanguage.withValue(.zhHans) { v.rejectionReason?.userMessage }
+            let en = L10n.$overrideLanguage.withValue(.en) { v.rejectionReason?.userMessage }
+            #expect(zh == c.expectedZhMessage, "\(c.id)")
+            #expect(en == c.expectedEnMessage, "\(c.id)")
+            if c.expectConfirmationFalseOnCroppedSet {
+                let intent = DeviceIntent(targetId: c.targetId, operation: .power(true))
+                #expect(ModelActionPolicy.needsConfirmation(intent, devices: []) == false, "\(c.id)")
+            }
+        }
+
+        for c in corpus.planGateCases {
+            let v = CapabilityReferenceEngine.evaluatePlanTargetsGate(
+                targets: c.targets.map { ($0.kind, $0.id) },
+                selection: c.selection, devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+            )
+            #expect(v.allowed == c.expectedAllowed, "\(c.id)")
+            #expect(v.writeCount == c.expectedWriteCount, "\(c.id)")
+            #expect(v.rejectedTargetId == c.expectedRejectedTargetId, "\(c.id)")
+            #expect(v.rejectionReason?.code == c.expectedRejectionCode, "\(c.id)")
+        }
+
+        for c in corpus.pausedTimerResumeCases {
+            let d = CapabilityReferenceEngine.revalidatePausedTimer(
+                timer: c.timer, fireAtEpochSeconds: c.fireAtEpochSeconds, nowEpochSeconds: c.nowEpochSeconds,
+                activeConnectionScopes: Set(c.activeConnectionScopes), selection: c.selection,
+                devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+            )
+            #expect(d == c.expectedDisposition, "\(c.id)")
+        }
+    }
 }

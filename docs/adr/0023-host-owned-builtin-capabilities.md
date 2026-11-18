@@ -41,4 +41,5 @@
 ## 相关
 
 - `Shared/capability-manifest.json`、`Sources/MijiaCore/CapabilityManifest.swift`、`windows/src/core/capabilityManifest.ts`、`scripts/check_capability_manifest.py`、`docs/capabilities.json`
-- `Tests/MijiaCoreTests/CapabilityManifestTests.swift`、`windows/tests/capabilityManifest.test.ts`
+- `Sources/MijiaCore/CapabilityReferenceVerdict.swift`、`windows/src/core/capabilityReferenceVerdict.ts`、`Tests/Fixtures/capability_selection_golden.json`
+- `Tests/MijiaCoreTests/CapabilityManifestTests.swift`、`Tests/MijiaCoreTests/GoldenCorpusTests.swift`、`windows/tests/capabilityManifest.test.ts`、`windows/tests/capabilityReferenceVerdict.test.ts`
