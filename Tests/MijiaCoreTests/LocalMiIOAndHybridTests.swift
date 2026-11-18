@@ -1,6 +1,14 @@
 import CryptoKit
 import Foundation
 import Testing
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
+#if canImport(Network)
+import Network
+#endif
 @testable import MijiaCore
 
 private actor MockUDPTransport: MiIOUDPTransport {
@@ -11,7 +19,9 @@ private actor MockUDPTransport: MiIOUDPTransport {
     }
 
     private var handler: @Sendable (Data, String, UInt16) async throws -> Data
+    private var broadcastHandler: @Sendable (Data, UInt16, Duration) async throws -> [MiIOBroadcastReply] = { _, _, _ in [] }
     private(set) var sends: [RecordedSend] = []
+    private(set) var broadcastCalls = 0
     private(set) var shutdownCount = 0
 
     init(handler: @escaping @Sendable (Data, String, UInt16) async throws -> Data) {
@@ -22,9 +32,20 @@ private actor MockUDPTransport: MiIOUDPTransport {
         self.handler = handler
     }
 
+    func setBroadcastHandler(
+        _ handler: @escaping @Sendable (Data, UInt16, Duration) async throws -> [MiIOBroadcastReply]
+    ) {
+        self.broadcastHandler = handler
+    }
+
     func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data {
         sends.append(RecordedSend(packet: packet, host: host, port: port))
         return try await handler(packet, host, port)
+    }
+
+    func probeBroadcast(_ packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
+        broadcastCalls += 1
+        return try await broadcastHandler(packet, port, timeout)
     }
 
     func shutdown() async {
@@ -262,12 +283,29 @@ private actor MirrorHTTPStub: MiHTTPTransport {
 }
 
 private func makeHelloResponse(deviceId: UInt32, stamp: UInt32) -> Data {
-    var packet = Data([0x21, 0x31, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00])
+    makeHelloResponse64(unknown: 0, deviceId: deviceId, stamp: stamp)
+}
+
+private func makeHelloResponse64(
+    unknown: UInt32,
+    deviceId: UInt32,
+    stamp: UInt32,
+    tokenForChecksum: Data? = nil
+) -> Data {
+    var packet = Data([0x21, 0x31, 0x00, 0x20])
+    var unkBE = unknown.bigEndian
     var didBE = deviceId.bigEndian
     var stampBE = stamp.bigEndian
+    packet.append(Data(bytes: &unkBE, count: 4))
     packet.append(Data(bytes: &didBE, count: 4))
     packet.append(Data(bytes: &stampBE, count: 4))
-    packet.append(Data(repeating: 0xFF, count: 16))
+    if let tokenForChecksum {
+        var md5In = packet
+        md5In.append(tokenForChecksum)
+        packet.append(Data(Insecure.MD5.hash(data: md5In)))
+    } else {
+        packet.append(Data(repeating: 0xFF, count: 16))
+    }
     return packet
 }
 
@@ -663,6 +701,242 @@ struct LocalMiIOClientTests {
         let wideSends = await wideSubnetTransport.sends
         #expect(wideSends.map { $0.host } == ["192.168.1.0", "172.16.0.255"])
         await wideSubnetClient.shutdown()
+    }
+
+    @Test("Broadcast discovery matches 64-bit DIDs, retained non-numeric hardware IDs across session evictions, and cold-start non-numeric responders with token verification")
+    func broadcastDiscovery64BitRetainedHardwareIDsAndTokenVerification() async throws {
+        let token1Hex = "00112233445566778899aabbccddeeff"
+        let token2Hex = "112233445566778899aabbccddeeff00"
+        let token3Hex = "2233445566778899aabbccddeeff0011"
+        let wrongTokenHex = "ffeeddccbbaa99887766554433221100"
+        let token1 = try #require(MiIOPacket.validateToken(token1Hex))
+        let token2 = try #require(MiIOPacket.validateToken(token2Hex))
+        let token3 = try #require(MiIOPacket.validateToken(token3Hex))
+        let wrongToken = try #require(MiIOPacket.validateToken(wrongTokenHex))
+
+        let did64Value: UInt64 = 1_099_511_628_211
+        let did64String = String(did64Value)
+        let did64Upper = UInt32(truncatingIfNeeded: did64Value >> 32)
+        let did64Lower = UInt32(truncatingIfNeeded: did64Value)
+
+        let maskedHello = makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 10)
+        #expect(MiIOPacket.helloChecksumMatches(maskedHello, token: token1) == nil)
+        let keyedHello = makeHelloResponse64(unknown: 0, deviceId: 0x0A0B_0C0D, stamp: 20, tokenForChecksum: token2)
+        #expect(MiIOPacket.helloChecksumMatches(keyedHello, token: token2) == true)
+        #expect(MiIOPacket.helloChecksumMatches(keyedHello, token: wrongToken) == false)
+
+        let lumiOldHostFails = LockedBox(false)
+        let transport = MockUDPTransport { packet, host, _ in
+            if host == "192.168.1.20" {
+                if lumiOldHostFails.withValue({ $0 }) {
+                    throw MiIOError.timeout
+                }
+                if packet == MiIOPacket.helloPacket {
+                    return makeHelloResponse(deviceId: 0x0A0B_0C0D, stamp: 50)
+                }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: token2)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"lumi.gateway.v3","siid":2,"piid":1,"value":true,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token2, payload: Data(reply.utf8))
+            }
+
+            if host == "192.168.1.99" {
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: wrongToken)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: wrongToken, payload: Data(reply.utf8), unknown: header.unknown)
+            }
+
+            if host == "192.168.1.101" {
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: token1)
+                #expect(header.unknown == did64Upper)
+                #expect(header.deviceId == did64Lower)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"error":{"code":-4004,"message":"prop unsupported"}}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token1, payload: Data(reply.utf8), unknown: header.unknown)
+            }
+
+            if host == "192.168.1.102" {
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: token2)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"lumi.gateway.v3","siid":1,"piid":1,"value":"ok","code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token2, payload: Data(reply.utf8))
+            }
+
+            if host == "192.168.1.103" {
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: token3)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let reply = #"{"id":\#(reqId),"result":[{"did":"blt.cold.start","siid":1,"piid":1,"value":1,"code":0}]}"#
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token3, payload: Data(reply.utf8))
+            }
+
+            throw MiIOError.timeout
+        }
+
+        let client = LocalMiIOClient(transport: transport, maxRetries: 1)
+
+        let lumiOldEndpoint = MiIODeviceEndpoint(did: "lumi.gateway.v3", ip: "192.168.1.20", token: token2Hex)
+        let initialLumi = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: lumiOldEndpoint)
+        #expect(initialLumi[MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)] == .bool(true))
+        #expect(await client.lastRoundTripMs(for: "lumi.gateway.v3") != nil)
+
+        lumiOldHostFails.withValue { $0 = true }
+        await #expect(throws: MiIOError.handshakeFailed) {
+            _ = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: lumiOldEndpoint)
+        }
+
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(
+                    sourceIP: "192.168.1.99",
+                    packet: makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 300)
+                ),
+                MiIOBroadcastReply(
+                    sourceIP: "192.168.1.101",
+                    packet: makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 301)
+                ),
+                MiIOBroadcastReply(
+                    sourceIP: "192.168.1.102",
+                    packet: makeHelloResponse(deviceId: 0x0A0B_0C0D, stamp: 400)
+                ),
+                MiIOBroadcastReply(
+                    sourceIP: "192.168.1.103",
+                    packet: makeHelloResponse(deviceId: 0x0F0E_0D0C, stamp: 500)
+                ),
+            ]
+        }
+
+        let discovered = try await client.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: did64String, token: token1Hex),
+            MiIODeviceCandidate(did: "lumi.gateway.v3", token: token2Hex),
+            MiIODeviceCandidate(did: "blt.cold.start", token: token3Hex),
+        ])
+
+        #expect(discovered[did64String] == "192.168.1.101")
+        #expect(discovered["lumi.gateway.v3"] == "192.168.1.102")
+        #expect(discovered["blt.cold.start"] == "192.168.1.103")
+
+        await client.shutdown()
+    }
+
+    @Test("LocalNetworkDenied is non-retryable and bypasses ambiguousActionOutcome when occurring before packet send")
+    func localNetworkDeniedFastFailAndPreSendActionBypass() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(validTokenHex))
+        let failWithDenied = LockedBox(true)
+        let sendAttempts = LockedBox(0)
+
+        let transport = MockUDPTransport { packet, _, _ in
+            sendAttempts.withValue { $0 += 1 }
+            if failWithDenied.withValue({ $0 }) {
+                throw MiIOError.localNetworkDenied
+            }
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x1234_5678, stamp: 90)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let reply = #"{"id":\#(reqId),"result":[{"did":"12345678","siid":2,"piid":1,"value":true,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let client = LocalMiIOClient(transport: transport, maxRetries: 2)
+
+        await #expect(throws: MiIOError.localNetworkDenied) {
+            _ = try await client.getProps([MiotPropKey(did: "12345678", siid: 2, piid: 1)], endpoint: testEndpoint)
+        }
+        #expect(sendAttempts.withValue { $0 } == 1)
+
+        await #expect(throws: MiIOError.localNetworkDenied) {
+            _ = try await client.callAction(
+                MiotActionCall(did: "12345678", siid: 2, aiid: 1, inputs: []),
+                endpoint: testEndpoint
+            )
+        }
+        #expect(sendAttempts.withValue { $0 } == 2)
+
+        failWithDenied.withValue { $0 = false }
+        _ = try await client.getProps([MiotPropKey(did: "12345678", siid: 2, piid: 1)], endpoint: testEndpoint)
+
+        failWithDenied.withValue { $0 = true }
+        let beforeCachedActionAttempts = sendAttempts.withValue { $0 }
+        await #expect(throws: MiIOError.localNetworkDenied) {
+            _ = try await client.callAction(
+                MiotActionCall(did: "12345678", siid: 2, aiid: 1, inputs: []),
+                endpoint: testEndpoint
+            )
+        }
+        #expect(sendAttempts.withValue { $0 } == beforeCachedActionAttempts + 1)
+
+        await client.shutdown()
+    }
+
+    @Test("LocalNetworkPermissionClassifier, RTT quantization, and Darwin broadcast subnet filters classify deterministically")
+    func permissionClassifierAndTransportDiagnosticsSummary() {
+        #expect(LocalNetworkPermissionClassifier.isDeniedPOSIXCode(EPERM) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedPOSIXCode(EACCES) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedPOSIXCode(EHOSTUNREACH) == false)
+        #expect(LocalNetworkPermissionClassifier.isDeniedDNSCode(-65570) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedDNSCode(-65555) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedDNSCode(0) == false)
+
+        #if canImport(Network)
+        #expect(LocalNetworkPermissionClassifier.isDeniedNWConnection(error: .posix(.EPERM), unsatisfiedReason: nil) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedNWConnection(error: .posix(.EACCES), unsatisfiedReason: nil) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedNWConnection(error: .dns(-65570), unsatisfiedReason: nil) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedNWConnection(error: nil, unsatisfiedReason: .localNetworkDenied) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedNWConnection(error: .posix(.ECONNREFUSED), unsatisfiedReason: nil) == false)
+        #endif
+
+        let urlOfflineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(urlOfflineErr, targetHost: "192.168.1.50", isGeneralNetworkSatisfied: true) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(urlOfflineErr, targetHost: "homeassistant.local", isGeneralNetworkSatisfied: true) == true)
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(urlOfflineErr, targetHost: "192.168.1.50", isGeneralNetworkSatisfied: false) == false)
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(urlOfflineErr, targetHost: "example.com", isGeneralNetworkSatisfied: true) == false)
+
+        let wrappedPosix = NSError(
+            domain: NSURLErrorDomain,
+            code: URLError.cannotConnectToHost.rawValue,
+            userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))]
+        )
+        #expect(LocalNetworkPermissionClassifier.isDeniedConnectionError(wrappedPosix, targetHost: "example.com", isGeneralNetworkSatisfied: false) == true)
+
+        #expect(DeviceTransportDiagnostics.quantizeRTT(1) == 1)
+        #expect(DeviceTransportDiagnostics.quantizeRTT(4) == 4)
+        #expect(DeviceTransportDiagnostics.quantizeRTT(17) == 15)
+        #expect(DeviceTransportDiagnostics.quantizeRTT(18) == 20)
+
+        let summary = DeviceTransportSummary.summarize(
+            [
+                "d1": DeviceTransportDiagnostics(route: .lan, rttMs: 10, consecutiveFailures: 0, usedBroadcastRecovery: true),
+                "d2": DeviceTransportDiagnostics(route: .lan, rttMs: 20, consecutiveFailures: 0, usedBroadcastRecovery: false),
+                "d3": DeviceTransportDiagnostics(route: .cloud, rttMs: nil, consecutiveFailures: 0, usedBroadcastRecovery: false),
+                "d4": DeviceTransportDiagnostics(route: .cooldown, rttMs: nil, consecutiveFailures: 3, usedBroadcastRecovery: false),
+            ],
+            localNetworkBlocks: []
+        )
+        #expect(summary?.lanDeviceCount == 2)
+        #expect(summary?.cloudDeviceCount == 1)
+        #expect(summary?.cooldownDeviceCount == 1)
+        #expect(summary?.broadcastRecoveredCount == 1)
+        #expect(summary?.medianLANRTTMs == 15)
+        #expect(summary?.isLocalNetworkBlocked == false)
+
+        #if canImport(Darwin)
+        #expect(DarwinBSDMiIOBroadcastScanner.directedBroadcastIP(address: "192.168.1.42", netmask: "255.255.255.0") == "192.168.1.255")
+        #expect(DarwinBSDMiIOBroadcastScanner.directedBroadcastIP(address: "192.168.2.15", netmask: "255.255.252.0") == "192.168.3.255")
+        let locals: Set<String> = ["192.168.2.15"]
+        let bcasts: Set<String> = ["255.255.255.255", "192.168.3.255"]
+        #expect(DarwinBSDMiIOBroadcastScanner.isValidBroadcastResponderIP("192.168.2.255", localIPs: locals, broadcastIPs: bcasts) == true)
+        #expect(DarwinBSDMiIOBroadcastScanner.isValidBroadcastResponderIP("192.168.3.255", localIPs: locals, broadcastIPs: bcasts) == false)
+        #expect(DarwinBSDMiIOBroadcastScanner.isValidBroadcastResponderIP("192.168.2.15", localIPs: locals, broadcastIPs: bcasts) == false)
+        #expect(DarwinBSDMiIOBroadcastScanner.isValidBroadcastResponderIP("255.255.255.255", localIPs: locals, broadcastIPs: bcasts) == false)
+        #endif
     }
 }
 
