@@ -144,6 +144,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "globalHotkey":
     case "voiceControl":
     case "setupGuide":
+    case "dashboardTitle":
       return "general";
     case "dataSource":
     case "demoMode":
@@ -154,7 +155,6 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "miMultiAccounts":
     case "haDisconnect":
     case "dualSourceFusion":
-    case "dashboardTitle":
     case "scanUnsupportedDevices":
     case "copyDiagnostics":
       return "connection";
@@ -193,8 +193,8 @@ interface RawAnchorSpec {
   readonly synonyms: readonly string[];
 }
 
-const SEC_GENERAL: readonly [string, string, string] = ["外观与面板", "外觀與面板", "Appearance & Panel"];
-const SEC_CONNECTION: readonly [string, string, string] = ["数据源", "資料來源", "Data Source"];
+const SEC_GENERAL: readonly [string, string, string] = ["常规", "常規", "General"];
+const SEC_CONNECTION: readonly [string, string, string] = ["家居连接", "家居連線", "Connections"];
 const SEC_ASSISTANT: readonly [string, string, string] = ["AI 与习惯", "AI 與習慣", "AI & Habits"];
 const SEC_SYSTEM: readonly [string, string, string] = ["全关与更新", "全關與更新", "All Off & Updates"];
 const SEC_SECURITY: readonly [string, string, string] = ["安全与权限", "安全與權限", "Security & Permissions"];
@@ -299,25 +299,25 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     anchor: "dataSource",
     section: SEC_CONNECTION,
     title: ["设备数据源", "裝置資料來源", "Device Data Source"],
-    synonyms: ["数据源", "資料來源", "连接方式", "后端", "切换数据源", "data source", "backend", "connection mode", "provider", "shujuyuan"],
+    synonyms: ["数据源", "資料來源", "家居连接", "家居連線", "连接方式", "后端", "切换数据源", "data source", "connections", "backend", "connection mode", "provider", "shujuyuan"],
   },
   {
     anchor: "demoMode",
     section: SEC_CONNECTION,
     title: ["演示设备预览", "示範裝置預覽", "Demo Mode Preview"],
-    synonyms: ["演示", "示範", "演示模式", "虚拟设备", "离线体验", "预览", "demo", "demo mode", "virtual", "preview", "sample", "yanshi"],
+    synonyms: ["演示", "示範", "示例家庭", "先逛逛示例家庭", "演示模式", "虚拟设备", "离线体验", "预览", "demo", "demo home", "demo mode", "virtual", "preview", "sample", "yanshi"],
   },
   {
     anchor: "haServerAddress",
     section: SEC_CONNECTION,
     title: ["Home Assistant 服务器地址", "Home Assistant 伺服器位址", "Home Assistant Server URL"],
-    synonyms: ["服务器", "地址", "局域网", "代理", "链接", "home assistant", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
+    synonyms: ["服务器", "地址", "填入常用地址", "填入常用位址", "默认地址", "局域网", "代理", "链接", "home assistant", "fill default address", "default address", "ha", "server", "url", "nabu casa", "8123", "websocket", "daili", "dizhi"],
   },
   {
     anchor: "haToken",
     section: SEC_CONNECTION,
     title: ["Home Assistant 访问令牌", "Home Assistant 存取權杖", "Home Assistant Access Token"],
-    synonyms: ["令牌", "访问令牌", "长期令牌", "权杖", "密钥", "token", "access token", "ha token", "long-lived", "credential", "key", "lingpai"],
+    synonyms: ["令牌", "专属连接钥匙", "專屬連線鑰匙", "连接钥匙", "访问令牌", "长期令牌", "权杖", "密钥", "token", "connection key", "personal connection key", "access token", "ha token", "long-lived", "credential", "key", "lingpai"],
   },
   {
     anchor: "miCloudRegion",
