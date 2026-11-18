@@ -29,7 +29,7 @@ enum SensorAlerts {
     ) -> (alerts: [SafetyAlert], ledger: [String: Bool]) {
         var ledger = ledger
         var alerts: [SafetyAlert] = []
-        for device in devices {
+        for device in devices where !device.telemetryStale {
             guard case .sensor(let spec) = device.kind else { continue }
             for observation in spec.observations {
                 let previous = ledger[observation.sourceId]

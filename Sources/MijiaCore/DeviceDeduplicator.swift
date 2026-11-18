@@ -123,7 +123,11 @@ public enum DeviceDeduplicator {
                 // MAC with every track, so none of them pairs 1:1 with the HA copy. That copy is
                 // still the same physical device and must not appear as an extra card beside them.
                 if let haIdentity = ha.identity,
-                   isAlreadyShownByMiTracks(haIdentity, in: miCandidates) {
+                   isAlreadyShownByMiTracks(
+                       haIdentity,
+                       in: miCandidates,
+                       requireFreshOnline: ha.device.isOnline && !ha.device.telemetryStale
+                   ) {
                     continue
                 }
                 draftCards.append(
@@ -788,12 +792,16 @@ public enum DeviceDeduplicator {
     /// tracks that share one did.
     private static func isAlreadyShownByMiTracks(
         _ haIdentity: DeviceSourceIdentity,
-        in miCandidates: [Candidate]
+        in miCandidates: [Candidate],
+        requireFreshOnline: Bool
     ) -> Bool {
-        let identities = miCandidates.compactMap(\.identity)
+        let eligible = requireFreshOnline
+            ? miCandidates.filter { $0.device.isOnline && !$0.device.telemetryStale }
+            : miCandidates
+        let identities = eligible.compactMap(\.identity)
         if identities.filter({ sharesDID(haIdentity, $0) }).count >= 2 { return true }
 
-        let tracks = miCandidates.filter { candidate in
+        let tracks = eligible.filter { candidate in
             guard let identity = candidate.identity, sharesMAC(haIdentity, identity),
                   case .cover(let spec) = candidate.device.kind else { return false }
             return spec.subtype == .curtain

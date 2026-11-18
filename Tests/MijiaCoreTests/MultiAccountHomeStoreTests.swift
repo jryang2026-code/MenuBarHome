@@ -388,6 +388,127 @@ struct MultiAccountHomeStoreTests {
 
         await provider.shutdown()
     }
+
+    @Test("Split-state connected primary account with stale cloud device yields snapshot and command routing to fresh secondary account")
+    func splitStateConnectedPrimaryWithStaleCloudDevicePrefersFreshSecondary() async throws {
+        let validTokenHex = "00112233445566778899aabbccddeeff"
+        let tokenData = try #require(MiIOPacket.validateToken(validTokenHex))
+        let hello = Data([
+            0x21, 0x31, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x65, 0x00, 0x00, 0x00, 0x32,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        ])
+        let udpTransport = SplitStateUDPTransport { packet in
+            if packet == MiIOPacket.helloPacket {
+                return hello
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":70,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let lanBulb = MiDeviceRecord(
+            did: "101",
+            name: "客厅灯",
+            model: "yeelink.light.ceiling22",
+            isOnline: true,
+            localIp: "192.168.1.50",
+            token: validTokenHex,
+            isShared: false
+        )
+        let sharedPlug = MiDeviceRecord(
+            did: "shared-plug",
+            name: "共享插座",
+            model: "cuco.plug.v3",
+            isOnline: true
+        )
+        let cnApi = FailoverStubMiCloudAPI(
+            devices: [lanBulb, sharedPlug],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["101", "shared-plug"], homeId: "h-cn", homeName: "家A")],
+            values: [
+                MiotFixtures.key("101", 2, 1): .bool(true),
+                MiotFixtures.key("101", 2, 2): .number(70),
+                MiotFixtures.key("shared-plug", 2, 1): .bool(true),
+            ]
+        )
+        let deApi = FailoverStubMiCloudAPI(
+            devices: [sharedPlug],
+            rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared-plug"], homeId: "h-de", homeName: "家B")],
+            values: [MiotFixtures.key("shared-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            localClientFactory: { LocalMiIOClient(transport: udpTransport, maxRetries: 0) },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let cnId = Self.cn.id
+        let deId = Self.de.id
+        #expect(await log.wait { events in
+            await events.snapshots.contains { $0.homes.count == 2 && $0.devices.count == 2 }
+        })
+        let initialPlug = try #require(await log.snapshots.last?.devices.first { $0.id == "shared-plug" })
+        #expect(initialPlug.accountId == cnId)
+        #expect(initialPlug.isOnline == true)
+        #expect(initialPlug.telemetryStale == false)
+
+        await cnApi.setGetPropsFailure(.http(503))
+        await provider.refreshNow()
+
+        #expect(await log.wait { events in
+            guard let snap = await events.snapshots.last,
+                  let plug = snap.devices.first(where: { $0.id == "shared-plug" }) else { return false }
+            return plug.accountId == deId && plug.isOnline && !plug.telemetryStale
+        })
+        let splitSnap = try #require(await log.snapshots.last)
+        #expect(splitSnap.accountStatuses[cnId] == .connected)
+        #expect(splitSnap.accountStatuses[deId] == .connected)
+        #expect(splitSnap.devices.map(\.id) == ["101", "shared-plug"])
+        let lanCard = try #require(splitSnap.devices.first { $0.id == "101" })
+        #expect(lanCard.accountId == cnId)
+        #expect(lanCard.isOnline == true)
+        #expect(lanCard.telemetryStale == false)
+
+        try await provider.execute(.setSwitch(entityId: "miot:shared-plug:2", isOn: false))
+        #expect(await cnApi.setPropsCalls.isEmpty)
+        #expect(await deApi.setPropsCalls == [
+            [MiotPropWrite(did: "shared-plug", siid: 2, piid: 1, value: .bool(false))]
+        ])
+
+        await cnApi.setGetPropsFailure(nil)
+        await provider.refreshNow()
+        #expect(await log.wait { events in
+            guard let snap = await events.snapshots.last,
+                  let plug = snap.devices.first(where: { $0.id == "shared-plug" }) else { return false }
+            return plug.accountId == cnId && plug.isOnline && !plug.telemetryStale
+        })
+
+        await provider.shutdown()
+    }
+}
+
+private actor SplitStateUDPTransport: MiIOUDPTransport {
+    private let handler: @Sendable (Data) throws -> Data
+
+    init(handler: @escaping @Sendable (Data) throws -> Data) {
+        self.handler = handler
+    }
+
+    func send(_ packet: Data, to host: String, port: UInt16, timeout: Duration) async throws -> Data {
+        try handler(packet)
+    }
+
+    func shutdown() async {}
 }
 
 private struct CustomModelSpecSource: MiotSpecSource {

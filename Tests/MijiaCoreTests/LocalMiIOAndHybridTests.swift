@@ -2210,6 +2210,153 @@ struct HybridProviderAndDoorbellTests {
 
         await provider2.shutdown()
     }
+
+    @Test("Cloud getProps 429 escalates backoff across successful deviceList refreshes and 100%-LAN recovery resets backoff")
+    func getProps429EscalatesBackoffAcrossSuccessfulDiscoveryAndLANRecoveryResetsBackoff() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let lanBrightness = LockedBox(60)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x8888_999C, stamp: 83)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let brVal = lanBrightness.withValue { $0 }
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":\#(brVal),"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let ownWifi = MiDeviceRecord(
+            did: "101",
+            name: "LAN Bulb",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.48",
+            token: tokenHex,
+            isShared: false
+        )
+        let cloudOnly = MiDeviceRecord(
+            did: "303",
+            name: "Cloud Light",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: nil,
+            token: nil,
+            isShared: false
+        )
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi, cloudOnly],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "303"])],
+            props: [
+                MiotPropKey(did: "303", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "303", siid: 2, piid: 2): .number(50),
+            ]
+        )
+        await api.setGetPropsError(MiCloudError.http(429))
+
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: localClient,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            deviceRefreshEveryPolls: 2,
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
+        #expect(await api.deviceListCalls == 1)
+        #expect(await api.getPropsCalls.count == 1)
+        #expect(await collector.snapshots.last?.closesAwayGap == false)
+
+        clock.advance(by: 60)
+        lanBrightness.withValue { $0 = 65 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 65
+        })
+        #expect(await api.deviceListCalls == 2)
+        #expect(await api.getPropsCalls.count == 2)
+        #expect(await collector.snapshots.last?.closesAwayGap == false)
+
+        clock.advance(by: 65)
+        lanBrightness.withValue { $0 = 70 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 70
+        })
+        #expect(await api.deviceListCalls == 2)
+        #expect(await api.getPropsCalls.count == 2)
+
+        clock.advance(by: 55)
+        lanBrightness.withValue { $0 = 75 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 75
+        })
+        #expect(await api.deviceListCalls == 3)
+        #expect(await api.getPropsCalls.count == 3)
+
+        await api.setTopology(devices: [ownWifi], rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])])
+        await api.setGetPropsError(nil)
+        clock.advance(by: 240)
+        lanBrightness.withValue { $0 = 80 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            guard let snap = $0.snapshots.last else { return false }
+            return lightBrightness(snap.devices.first { $0.id == "101" }) == 80 && snap.closesAwayGap
+        })
+        #expect(await api.deviceListCalls == 4)
+        #expect(await api.getPropsCalls.count == 3)
+
+        await api.setDiscoveryError(URLError(.timedOut))
+        lanBrightness.withValue { $0 = 85 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            guard let snap = $0.snapshots.last else { return false }
+            return lightBrightness(snap.devices.first { $0.id == "101" }) == 85 && !snap.closesAwayGap
+        })
+        #expect(await api.deviceListCalls == 5)
+
+        clock.advance(by: 3)
+        await api.setDiscoveryError(nil)
+        lanBrightness.withValue { $0 = 90 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            guard let snap = $0.snapshots.last else { return false }
+            return lightBrightness(snap.devices.first { $0.id == "101" }) == 90 && snap.closesAwayGap
+        })
+        #expect(await api.deviceListCalls == 6)
+
+        await provider.shutdown()
+    }
 }
 
 private func lightBrightness(_ device: SmartDevice?) -> Int? {

@@ -46,6 +46,7 @@ struct SafetyMonitor {
         longRunAlertedForSession.formIntersection(presentIds)
 
         for dev in devices {
+            if dev.telemetryStale { continue }
             // 1. Starred device offline transition check
             if favorites.contains(dev.id) {
                 if previousOnlineDeviceIds.contains(dev.id) && !dev.isOnline {
@@ -147,7 +148,9 @@ struct SafetyMonitor {
         }
         emitted.append(contentsOf: evaluated.alerts)
 
-        previousOnlineDeviceIds = Set(devices.filter(\.isOnline).map(\.id))
+        let stalePreserved = Set(devices.filter { $0.telemetryStale && previousOnlineDeviceIds.contains($0.id) }.map(\.id))
+        let freshOnline = Set(devices.filter { !$0.telemetryStale && $0.isOnline }.map(\.id))
+        previousOnlineDeviceIds = stalePreserved.union(freshOnline)
         return emitted
     }
 

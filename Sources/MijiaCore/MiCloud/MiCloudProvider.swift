@@ -463,7 +463,6 @@ public actor MiCloudProvider: HomeProvider {
             // room list surfaces as the error it is (#76, #67). An account with direct devices still
             // degrades to 全屋, which is what the room-less snapshot is for.
             if devices.isEmpty, let roomsError { throw roomsError }
-            clearCloudBackoff()
         } catch is CancellationError {
             throw CancellationError()
         } catch MiCloudError.sessionExpired {
@@ -732,12 +731,13 @@ public actor MiCloudProvider: HomeProvider {
         }
         if dids == nil,
            lanSucceededDids.isEmpty,
-           cloudRetryNotBefore != nil || !hasLiveTopologyRefresh,
+           !isCloudAllowed || !hasLiveTopologyRefresh,
            let lastCloudError {
             return (freshKeys, lastCloudError)
         }
         if dids == nil {
             if isCloudAllowed {
+                clearCloudBackoff()
                 try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
             }
             lastFullPollAt = .now

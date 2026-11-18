@@ -474,6 +474,27 @@ public actor MiAccountsProvider: HomeProvider {
         return true
     }
 
+    private static func deviceFreshnessRank(_ device: SmartDevice, accountDisconnected: Bool) -> Int {
+        if accountDisconnected { return 3 }
+        if device.telemetryStale { return 2 }
+        return device.isOnline ? 0 : 1
+    }
+
+    private func ownerFreshnessRank(accountId: String, key: String) -> Int {
+        let accountDisconnected = isDisconnected(accountId)
+        guard !accountDisconnected, let home = snapshots[accountId] else {
+            return 3
+        }
+        var bestRank = 2
+        for device in home.devices where device.id == key || device.miotCommandDids.contains(key) {
+            let rank = Self.deviceFreshnessRank(device, accountDisconnected: false)
+            if rank < bestRank {
+                bestRank = rank
+            }
+        }
+        return bestRank
+    }
+
     private func publishSnapshot() {
         let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
             + accounts.filter { isDisconnected($0.id) }
@@ -489,6 +510,9 @@ public actor MiAccountsProvider: HomeProvider {
         var homes: [HomeOption] = []
         var roomIds = Set<String>()
         var deviceIds = Set<String>()
+        var deviceIndexById: [String: Int] = [:]
+        var bestRankByDeviceId: [String: Int] = [:]
+        var winningAccountByDeviceId: [String: String] = [:]
         var readingIds = Set<String>()
         var sceneIds = Set<String>()
         var homeIds = Set<String>()
@@ -499,29 +523,63 @@ public actor MiAccountsProvider: HomeProvider {
         for (account, home) in reported {
             let accountDisconnected = isDisconnected(account.id)
             closesAwayGap = closesAwayGap && home.closesAwayGap
-            for rawDevice in home.devices where deviceIds.insert(rawDevice.id).inserted {
+            for rawDevice in home.devices {
                 var device = rawDevice
                 if accountDisconnected {
                     device.isOnline = false
                     device.telemetryStale = true
                 }
-                devices.append(device)
-                if let identity = home.deviceIdentities[device.id] {
-                    identities[device.id] = identity
-                }
-                if let facets = home.deviceFacets[device.id] {
-                    facetsByDevice[device.id] = facets
+                let rank = Self.deviceFreshnessRank(device, accountDisconnected: accountDisconnected)
+                if let existingIndex = deviceIndexById[device.id],
+                   let existingRank = bestRankByDeviceId[device.id] {
+                    if rank < existingRank {
+                        devices[existingIndex] = device
+                        bestRankByDeviceId[device.id] = rank
+                        winningAccountByDeviceId[device.id] = account.id
+                        if let identity = home.deviceIdentities[device.id] {
+                            identities[device.id] = identity
+                        } else {
+                            identities.removeValue(forKey: device.id)
+                        }
+                        if let facets = home.deviceFacets[device.id] {
+                            facetsByDevice[device.id] = facets
+                        } else {
+                            facetsByDevice.removeValue(forKey: device.id)
+                        }
+                    }
+                } else {
+                    deviceIndexById[device.id] = devices.count
+                    bestRankByDeviceId[device.id] = rank
+                    winningAccountByDeviceId[device.id] = account.id
+                    deviceIds.insert(device.id)
+                    devices.append(device)
+                    if let identity = home.deviceIdentities[device.id] {
+                        identities[device.id] = identity
+                    }
+                    if let facets = home.deviceFacets[device.id] {
+                        facetsByDevice[device.id] = facets
+                    }
                 }
             }
+        }
+        for (account, home) in reported {
+            let accountDisconnected = isDisconnected(account.id)
             for (id, identity) in home.deviceIdentities where identities[id] == nil {
                 identities[id] = identity
             }
-            for (memberDid, groupDid) in home.lightGroupOwners where lightGroupOwners[memberDid] == nil {
-                lightGroupOwners[memberDid] = groupDid
+            for (memberDid, groupDid) in home.lightGroupOwners {
+                if winningAccountByDeviceId[memberDid] == account.id || lightGroupOwners[memberDid] == nil {
+                    lightGroupOwners[memberDid] = groupDid
+                }
             }
             if !accountDisconnected {
-                for reading in home.environmentReadings where readingIds.insert(reading.id).inserted {
-                    readings.append(reading)
+                for reading in home.environmentReadings {
+                    if let winningAccount = winningAccountByDeviceId[reading.id], winningAccount != account.id {
+                        continue
+                    }
+                    if readingIds.insert(reading.id).inserted {
+                        readings.append(reading)
+                    }
                 }
             }
             for scene in home.scenes where sceneIds.insert(scene.id).inserted { scenes.append(scene) }
@@ -561,7 +619,14 @@ public actor MiAccountsProvider: HomeProvider {
 
     private func preferredOwners(for key: String) -> [String] {
         let raw = deviceOwners[key] ?? []
-        return raw.filter { !isDisconnected($0) } + raw.filter { isDisconnected($0) }
+        return raw.enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = ownerFreshnessRank(accountId: lhs.element, key: key)
+                let rhsRank = ownerFreshnessRank(accountId: rhs.element, key: key)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     // MARK: Commands & Device Calls
