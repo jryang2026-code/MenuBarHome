@@ -178,6 +178,20 @@ if run_pr 1 "没有检查时拒绝合并" "$PR" "$HEAD_SHA"; then
     merged_never "没有检查时未调用 gh pr merge"
 fi
 
+# 3c) 只有 Cursor 检查时仍算没有 CI 检查
+CURSOR_PENDING='{"__typename":"CheckRun","name":"Cursor Security Agent: Security Reviewer","status":"IN_PROGRESS","conclusion":null}'
+export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "[$CURSOR_PENDING]" "")"
+if run_pr 1 "只有 Cursor 检查时拒绝合并" "$PR" "$HEAD_SHA"; then
+    expect_in "只有 Cursor 检查时说明原因" "还没有任何检查登记"
+    merged_never "只有 Cursor 检查时未调用 gh pr merge"
+fi
+
+# 3d) 卡住的 Cursor 检查不挡合并
+export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "[$CURSOR_PENDING,${GREEN#[}" "")"
+if run_pr 0 "卡住的 Cursor 检查不挡合并" "$PR" "$HEAD_SHA"; then
+    expect_in "Cursor 卡住时仍按 head 合并" "--match-head-commit ${HEAD_SHA}" "$FAKE_GH_MERGE_LOG"
+fi
+
 # 4) happy path：squash 合并带 --match-head-commit，盯到 main CI 成功
 export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "$GREEN" "")"
 export FAKE_GH_RUN_STATUS_JSON='{"status":"completed","conclusion":"success"}'

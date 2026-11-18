@@ -6,6 +6,8 @@
 # Re-runnable: an already-merged PR whose head matches <head-sha> skips the merge
 # and only watches main. Refuses to merge unless every statusCheckRollup entry is
 # finished and SUCCESS/NEUTRAL/SKIPPED (Codex review state is not a gate here).
+# An unfinished `Cursor ...` check is ignored: those reviewers stall when their
+# quota runs out, and at least one other check must still be present.
 # Exit codes: 0 = main CI passed; 1 = refused or main CI failed; 124 = watch
 # timeout (the PR stays merged — keep watching with `gh run view <run-id>`).
 set -euo pipefail
@@ -114,18 +116,25 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
 checks = json.load(open(sys.argv[1], encoding="utf-8")).get("statusCheckRollup") or []
-bad = [] if checks else ["  （还没有任何检查登记）"]
+checks = [check for check in checks if isinstance(check, dict)]
+
+
+def check_name(check):
+    return check.get("name") or check.get("context") or "(未命名检查)"
+
+
+has_ci_check = any(not check_name(check).startswith("Cursor ") for check in checks)
+bad = [] if has_ci_check else ["  （还没有任何检查登记）"]
 for check in checks:
-    if not isinstance(check, dict):
-        continue
-    name = check.get("name") or check.get("context") or "(未命名检查)"
+    name = check_name(check)
     if check.get("status") is None and "state" in check:
         if check.get("state") != "SUCCESS":
             bad.append(f"  {name}: {check.get('state') or '未知状态'}")
         continue
     status = check.get("status") or "未开始"
     if status != "COMPLETED":
-        bad.append(f"  {name}: {status}")
+        if not name.startswith("Cursor "):
+            bad.append(f"  {name}: {status}")
     elif check.get("conclusion") not in ("SUCCESS", "NEUTRAL", "SKIPPED"):
         bad.append(f"  {name}: {check.get('conclusion') or '无结论'}")
 if bad:
