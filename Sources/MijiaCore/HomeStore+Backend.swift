@@ -483,7 +483,7 @@ extension HomeStore {
         return homeBackend.descriptor.primaryScopeIdentifier(self)
     }
 
-    /// The Home Assistant scope value, shaped like the `ha:` entry `syncSensorHistoryScope()` writes, so
+    /// The Home Assistant scope value, shaped like the `ha:` entry `syncHistoryConnectionScopes()` writes, so
     /// stored timer stamps stay comparable with history scopes and with entries written by older builds.
     var homeAssistantScopeIdentifier: String {
         "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"
@@ -503,9 +503,7 @@ extension HomeStore {
         return scopes
     }
 
-    /// Updates `sensorHistory.connectionScope` so sensors on different Home Assistant servers,
-    /// Xiaomi Cloud accounts, or Demo mode never share or overwrite each other's time series.
-    func syncSensorHistoryScope() {
+    func syncHistoryConnectionScopes() {
         let scope = connectionScopeIdentifier ?? "mi:signed-out"
         sensorHistory.setConnectionScope(scope)
         energyHistory.setConnectionScope(scope)

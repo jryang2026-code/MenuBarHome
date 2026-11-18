@@ -769,7 +769,6 @@ struct DualSourceIntegrationTests {
         store.applyDeviceAliases([unpairedMiDid: "吧台水壶"])
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
-        // Transient Xiaomi Cloud outage: unpaired Mi card stays on panel as offline+stale; paired card stays online on HA.
         await miMock.sendStatus(.disconnected("HTTP 429 Too Many Requests"))
         await waitUntil {
             guard store.connectedBackends == Set([.homeAssistant]),
@@ -788,7 +787,6 @@ struct DualSourceIntegrationTests {
         #expect(onlineLight.isOnline == true)
         #expect(onlineLight.telemetryStale == false)
 
-        // Reconnect Xiaomi Cloud -> unpaired card returns online and fresh.
         await miMock.updateSnapshot(miHome)
         await waitUntil {
             guard store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]),
@@ -810,8 +808,7 @@ struct DualSourceIntegrationTests {
         let sharedDid = "cam-did-1"
         let haCamId = "ha-cam-1"
 
-        // HA camera has no streamEntityId, so Mi Cloud camera normally wins via hasLiveView when acc1 is connected.
-        let haCam = SmartDevice(
+        let haCamWithoutStream = SmartDevice(
             id: haCamId,
             name: "玄关摄像机",
             roomId: "ha-entry",
@@ -844,7 +841,7 @@ struct DualSourceIntegrationTests {
         )
 
         let haHome = home(
-            [haCam],
+            [haCamWithoutStream],
             identities: [
                 haCamId: DeviceSourceIdentity(dids: [sharedDid], model: "chuangmi.camera.061a01", name: "玄关摄像机", roomName: "玄关", kindTag: .camera)
             ]
@@ -872,8 +869,6 @@ struct DualSourceIntegrationTests {
             store.devices.count == 2 && store.deviceBackend(for: haCamId) == .xiaomiCloud
         }
 
-        // Account 1 disconnects while Account 2 stays connected -> aggregate Mi remains .connected,
-        // but Account 1's paired camera fails over to HA.
         var miHomeAcc1Disconnected = miHomeBothConnected
         miHomeAcc1Disconnected.accountStatuses = [
             acc1Id: .disconnected("HTTP 502"),
@@ -887,5 +882,16 @@ struct DualSourceIntegrationTests {
         let camCard = try #require(store.devices.first { $0.id == haCamId })
         #expect(camCard.isOnline == true)
         #expect(camCard.telemetryStale == false)
+
+        var miHomeAcc1Retrying = miHomeBothConnected
+        miHomeAcc1Retrying.accountStatuses = [
+            acc1Id: .connecting,
+            acc2Id: .connected,
+        ]
+        await miMock.updateSnapshot(miHomeAcc1Retrying)
+        #expect(store.deviceBackend(for: haCamId) == .homeAssistant)
+        let camCardDuringRetry = try #require(store.devices.first { $0.id == haCamId })
+        #expect(camCardDuringRetry.isOnline == true)
+        #expect(camCardDuringRetry.telemetryStale == false)
     }
 }

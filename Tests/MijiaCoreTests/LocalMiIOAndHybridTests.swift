@@ -1737,7 +1737,7 @@ struct HybridProviderAndDoorbellTests {
             let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
 
             topologyCache.save(
-                CachedMiTopology(savedAt: clock.now(), devices: [ownWifi, bleSensor], rooms: rooms),
+                CachedMiTopology(savedAt: clock.now(), devices: [ownWifi, bleSensor], rooms: []),
                 for: stubSession
             )
 
@@ -1815,17 +1815,14 @@ struct HybridProviderAndDoorbellTests {
             #expect(bleDev?.isOnline == false)
             #expect(bleDev?.telemetryStale == true)
             #expect(coldSnap?.environmentReadings.isEmpty == true)
-            // Initial poll skipped api.getProps because discover scheduled cloud backoff.
             #expect(await api.getPropsCalls.isEmpty)
 
-            // Fast LAN execute + readBack work while Cloud is down.
             try await provider.execute(.setLightPower(entityId: "miot:101:2", isOn: false))
             #expect(await api.setPropsCalls.isEmpty)
             #expect(await provider.readBack(deviceId: "101") == .published)
             #expect(await collector.wait { $0.snapshots.last?.devices.first { $0.id == "101" }?.isActiveOn == false })
 
             if (outageError as? MiCloudError) == .http(429) {
-                // During HTTP 429 60s cooldown, refreshNow refreshes LAN without hammering Cloud.
                 let devCallsBefore = await api.deviceListCalls
                 clock.advance(by: 10)
                 lanBrightness.withValue { $0 = 85 }
@@ -1837,16 +1834,19 @@ struct HybridProviderAndDoorbellTests {
                 #expect(await api.getPropsCalls.isEmpty)
             }
 
-            // Advance past backoff window and restore Cloud -> BLE sensor becomes online + fresh.
             clock.advance(by: 65)
             await api.setDiscoveryError(nil)
             await api.setGetPropsError(nil)
-            await provider.refreshNow()
+            await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+            await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
 
             #expect(await collector.wait {
                 guard let snap = $0.snapshots.last,
                       let sensor = snap.devices.first(where: { $0.id == "ble-sensor-1" }) else { return false }
-                return sensor.isOnline && !sensor.telemetryStale && snap.closesAwayGap
+                return sensor.isOnline
+                    && !sensor.telemetryStale
+                    && snap.closesAwayGap
+                    && snap.rooms.map(\.name) == ["Bedroom"]
             })
 
             await provider.shutdown()
@@ -1854,7 +1854,76 @@ struct HybridProviderAndDoorbellTests {
         }
     }
 
-    @Test("Periodic refreshDeviceList failure on poll #N does not break active LAN polling")
+    @Test("Offline cold start with cached topology but zero online LAN keys reports disconnected")
+    func offlineColdStartWithNoOnlineLANKeysReportsDisconnected() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x7777_8888, stamp: 70)
+            }
+            let (header, _) = try MiIOPacket.decode(packet, token: tokenData)
+            let reply = #"{"id":1,"result":[]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let cacheDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MiOfflineEmptyKeys-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: cacheDir) }
+        let topologyCache = MiTopologyCache(directory: cacheDir)
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+
+        let offlineWifi = MiDeviceRecord(
+            did: "101",
+            name: "Offline Bulb",
+            model: "yeelink.light.color4",
+            isOnline: false,
+            localIp: "192.168.1.45",
+            token: tokenHex,
+            isShared: false
+        )
+        topologyCache.save(
+            CachedMiTopology(savedAt: clock.now(), devices: [offlineWifi], rooms: []),
+            for: stubSession
+        )
+
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let api = HybridMockCloudAPI(devices: [offlineWifi], rooms: [])
+        await api.setDiscoveryError(URLError(.notConnectedToInternet))
+
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: localClient,
+            topologyCache: topologyCache,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait {
+            $0.statuses.contains {
+                if case .disconnected = $0 { return true }
+                return false
+            }
+        })
+        #expect(await !collector.statuses.contains(.connected))
+
+        await provider.shutdown()
+    }
+
+    @Test("Periodic refreshDeviceList failure on poll #N does not break active LAN polling and recovers closesAwayGap on next poll")
     func periodicTopologyRefreshFailureKeepsLANConnected() async throws {
         let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
         let lanBrightness = LockedBox(70)
@@ -1909,17 +1978,26 @@ struct HybridProviderAndDoorbellTests {
 
         #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
 
-        // Trigger second loop poll via setPollingContext wake while WAN discovery throws timedOut.
         await api.setDiscoveryError(URLError(.timedOut))
         lanBrightness.withValue { $0 = 95 }
         await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
         await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
 
         #expect(await collector.wait {
-            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 95
+            guard let snap = $0.snapshots.last else { return false }
+            return lightBrightness(snap.devices.first { $0.id == "101" }) == 95 && !snap.closesAwayGap
         })
         #expect(await collector.statuses.last == .connected)
         #expect(await api.deviceListCalls >= 2)
+
+        clock.advance(by: 5)
+        await api.setDiscoveryError(nil)
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.closesAwayGap == true
+        })
 
         await provider.shutdown()
     }

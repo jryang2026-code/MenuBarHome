@@ -100,6 +100,7 @@ public actor MiAccountsProvider: HomeProvider {
     private var forwardTasks: [String: Task<Void, Never>] = [:]
     private var snapshots: [String: SynthesizedHome] = [:]
     private var statuses: [String: ConnectionStatus] = [:]
+    private var disconnectedStatuses: [String: ConnectionStatus] = [:]
     /// Accounts that delivered a post-poll snapshot (`closesAwayGap == true`) in the current wake cycle.
     private var freshAccounts: Set<String> = []
     private var expiredAccounts: Set<String> = []
@@ -191,6 +192,7 @@ public actor MiAccountsProvider: HomeProvider {
     private func startChild(for account: MiAccount) -> MiCloudProvider {
         if account.session.expiryState(at: Date()) == .expired {
             expiredAccounts.insert(account.id)
+            disconnectedStatuses[account.id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
         }
         let provider = MiCloudProvider(
             account: account,
@@ -246,6 +248,7 @@ public actor MiAccountsProvider: HomeProvider {
                 forwardTasks.removeValue(forKey: entry.account.id)?.cancel()
                 snapshots.removeValue(forKey: entry.account.id)
                 statuses.removeValue(forKey: entry.account.id)
+                disconnectedStatuses.removeValue(forKey: entry.account.id)
                 freshAccounts.remove(entry.account.id)
                 expiredAccounts.remove(entry.account.id)
                 removedChildIds.insert(entry.account.id)
@@ -376,12 +379,21 @@ public actor MiAccountsProvider: HomeProvider {
         switch event {
         case .statusChanged(let status):
             statuses[accountId] = status
+            switch status {
+            case .connected:
+                disconnectedStatuses.removeValue(forKey: accountId)
+            case .disconnected:
+                disconnectedStatuses[accountId] = status
+            case .connecting:
+                break
+            }
             publishStatus()
             if !snapshots.isEmpty {
                 publishSnapshot()
             }
         case .sessionExpired(let session):
             expiredAccounts.insert(accountId)
+            disconnectedStatuses[accountId] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
             continuation?.yield(.sessionExpired(session))
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
@@ -392,6 +404,16 @@ public actor MiAccountsProvider: HomeProvider {
             continuation?.yield(.doorbellRang(ring))
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
+            if !expiredAccounts.contains(accountId), !home.devices.isEmpty {
+                if home.closesAwayGap {
+                    disconnectedStatuses.removeValue(forKey: accountId)
+                    if case .connecting? = statuses[accountId] {
+                        statuses[accountId] = .connected
+                    }
+                } else if disconnectedStatuses[accountId] == nil, case .connecting? = statuses[accountId] {
+                    statuses[accountId] = .connected
+                }
+            }
             if home.closesAwayGap {
                 freshAccounts.insert(accountId)
             } else {
@@ -438,12 +460,13 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func isDisconnected(_ accountId: String) -> Bool {
+        if disconnectedStatuses[accountId] != nil { return true }
         if case .disconnected? = statuses[accountId] { return true }
         return false
     }
 
     private func isDisconnectedWithNoDevices(_ accountId: String) -> Bool {
-        guard case .disconnected = statuses[accountId],
+        guard isDisconnected(accountId),
               let home = snapshots[accountId],
               home.devices.isEmpty else {
             return false
@@ -451,7 +474,6 @@ public actor MiAccountsProvider: HomeProvider {
         return true
     }
 
-    /// Account order first, first occurrence per id: a did shared by two accounts reaches the panel once.
     private func publishSnapshot() {
         let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
             + accounts.filter { isDisconnected($0.id) }
@@ -511,7 +533,11 @@ public actor MiAccountsProvider: HomeProvider {
         }
         var merged = SynthesizedHome(rooms: rooms, devices: devices, environmentReadings: readings, scenes: scenes)
         merged.homes = homes
-        merged.accountStatuses = statuses
+        var effectiveStatuses = statuses
+        for (id, disconnectedStatus) in disconnectedStatuses {
+            effectiveStatuses[id] = disconnectedStatus
+        }
+        merged.accountStatuses = effectiveStatuses
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
         merged.lightGroupOwners = lightGroupOwners.filter {

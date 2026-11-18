@@ -67,7 +67,6 @@ struct MiTopologyCacheTests {
         #expect((fileMode & 0o777) == 0o600)
         #endif
 
-        // Wrong ssecurity returns nil without throwing.
         let wrongKeySession = MiSession(
             userId: sampleSession.userId,
             cUserId: sampleSession.cUserId,
@@ -77,13 +76,11 @@ struct MiTopologyCacheTests {
         )
         #expect(cache.load(for: wrongKeySession) == nil)
 
-        // Unknown schema version returns nil without throwing.
         var futureVersion = topology
         futureVersion.version = 99
         cache.save(futureVersion, for: sampleSession)
         #expect(cache.load(for: sampleSession) == nil)
 
-        // Restore valid payload, then flip a ciphertext byte -> returns nil.
         cache.save(topology, for: sampleSession)
         #expect(cache.load(for: sampleSession) == topology)
         var tampered = try Data(contentsOf: fileURL)
@@ -91,7 +88,6 @@ struct MiTopologyCacheTests {
         try tampered.write(to: fileURL)
         #expect(cache.load(for: sampleSession) == nil)
 
-        // Account removal and full directory removal.
         cache.save(topology, for: sampleSession)
         let accountID = MiAccount(session: sampleSession).id
         cache.remove(accountID: accountID)

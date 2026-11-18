@@ -496,14 +496,14 @@ public final class HomeStore {
     public var serverURLString: String {
         didSet {
             userDefaults.set(serverURLString, forKey: "ha_server_url")
-            syncSensorHistoryScope()
+            syncHistoryConnectionScopes()
         }
     }
 
     public internal(set) var homeBackend: HomeBackend {
         didSet {
             userDefaults.set(homeBackend.rawValue, forKey: "home_backend")
-            syncSensorHistoryScope()
+            syncHistoryConnectionScopes()
             if homeBackend == .demo { deviceValuesAreStale = false }
         }
     }
@@ -526,7 +526,7 @@ public final class HomeStore {
     var miSessionExpiryRevision: UInt64 = 0
     var miSessionExpiryTimerTask: Task<Void, Never>?
     var miSessionScopeIdentifier: String? {
-        didSet { syncSensorHistoryScope() }
+        didSet { syncHistoryConnectionScopes() }
     }
 
     /// Whether an HA token is saved. The chosen `homeBackend` no longer implies the only live source.
@@ -1053,7 +1053,7 @@ public final class HomeStore {
         if provider == nil, dualSource == nil, initialBackend != .demo {
             self.provider = makeLiveProvider()
         }
-        syncSensorHistoryScope()
+        syncHistoryConnectionScopes()
         scheduleMiSessionExpiryTransition()
         startListening()
         restoreScheduledCommands()

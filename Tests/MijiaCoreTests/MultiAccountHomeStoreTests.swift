@@ -227,20 +227,18 @@ struct MultiAccountHomeStoreTests {
         })
         #expect(await log.snapshots.last?.devices.first?.accountId == Self.cn.id)
 
-        // Primary account fails execute with HTTP 429 -> falls through to secondary account deApi.
         await cnApi.setSetPropsFailure(.http(429))
         try await provider.execute(.setSwitch(entityId: "miot:shared-plug:2", isOn: false))
         #expect(await cnApi.setPropsCalls.count == 1)
         #expect(await deApi.setPropsCalls.count == 1)
 
-        // Hardware deviceError must NOT fall through to the second account.
         await cnApi.setSetPropsFailure(.deviceError(code: -4004, message: "hardware fault"))
         await #expect(throws: MiCloudError.deviceError(code: -4004, message: "hardware fault")) {
             try await provider.execute(.setSwitch(entityId: "miot:shared-plug:2", isOn: true))
         }
         #expect(await deApi.setPropsCalls.count == 1)
 
-        // When primary account disconnects on poll, publishSnapshot promotes secondary account de to own shared-plug.
+        let cnId = Self.cn.id
         let deId = Self.de.id
         await cnApi.setGetPropsFailure(.http(503))
         await provider.refreshNow()
@@ -248,6 +246,39 @@ struct MultiAccountHomeStoreTests {
             guard let snap = await events.snapshots.last,
                   let dev = snap.devices.first(where: { $0.id == "shared-plug" }) else { return false }
             return dev.accountId == deId && dev.isOnline && !dev.telemetryStale
+        })
+        if case .disconnected? = await log.snapshots.last?.accountStatuses[cnId] {
+        } else {
+            Issue.record("Expected cn account status to remain disconnected")
+        }
+
+        let (cnRetryGate, cnRetryCont) = AsyncStream<Void>.makeStream()
+        await cnApi.setGetPropsHook {
+            var iter = cnRetryGate.makeAsyncIterator()
+            _ = await iter.next()
+        }
+        let refreshTask = Task { await provider.refreshNow() }
+        #expect(await log.wait { _ in await cnApi.getPropsCalls >= 3 })
+        let snapDuringRetry = try #require(await log.snapshots.last)
+        let devDuringRetry = try #require(snapDuringRetry.devices.first { $0.id == "shared-plug" })
+        #expect(devDuringRetry.accountId == deId)
+        #expect(devDuringRetry.isOnline == true)
+        #expect(devDuringRetry.telemetryStale == false)
+        if case .disconnected? = snapDuringRetry.accountStatuses[cnId] {
+        } else {
+            Issue.record("Expected cn account status to stay disconnected during retry")
+        }
+
+        await cnApi.setGetPropsHook(nil)
+        await cnApi.setGetPropsFailure(nil)
+        cnRetryCont.yield(())
+        cnRetryCont.finish()
+        await refreshTask.value
+
+        #expect(await log.wait { events in
+            guard let snap = await events.snapshots.last,
+                  let dev = snap.devices.first(where: { $0.id == "shared-plug" }) else { return false }
+            return dev.accountId == cnId && snap.accountStatuses[cnId] == .connected
         })
 
         await provider.shutdown()
@@ -260,6 +291,8 @@ private actor FailoverStubMiCloudAPI: MiCloudAPI {
     var values: [MiotPropKey: JSONValue]
     private var getPropsFailure: MiCloudError?
     private var setPropsFailure: MiCloudError?
+    private var getPropsHook: (@Sendable () async -> Void)?
+    private(set) var getPropsCalls = 0
     private(set) var setPropsCalls: [[MiotPropWrite]] = []
 
     init(devices: [MiDeviceRecord], rooms: [MiRoom], values: [MiotPropKey: JSONValue]) {
@@ -270,10 +303,13 @@ private actor FailoverStubMiCloudAPI: MiCloudAPI {
 
     func setGetPropsFailure(_ failure: MiCloudError?) { getPropsFailure = failure }
     func setSetPropsFailure(_ failure: MiCloudError?) { setPropsFailure = failure }
+    func setGetPropsHook(_ hook: (@Sendable () async -> Void)?) { getPropsHook = hook }
 
     func deviceList() async throws -> [MiDeviceRecord] { devices }
     func homeRooms() async throws -> [MiRoom] { rooms }
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue] {
+        getPropsCalls += 1
+        if let getPropsHook { await getPropsHook() }
         if let getPropsFailure { throw getPropsFailure }
         return values.filter { keys.contains($0.key) }
     }

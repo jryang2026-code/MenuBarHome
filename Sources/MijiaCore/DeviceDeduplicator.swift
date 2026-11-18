@@ -640,15 +640,14 @@ public enum DeviceDeduplicator {
             let accountDisconnected: Bool
             if backend == .xiaomiCloud,
                let accId = device.accountId,
-               case .disconnected? = home.accountStatuses[accId] {
+               let accStatus = home.accountStatuses[accId],
+               !accStatus.isConnected {
                 accountDisconnected = true
             } else {
                 accountDisconnected = false
             }
             if !isBackendConnected || accountDisconnected {
                 device.isOnline = false
-                device.telemetryStale = true
-            } else if device.telemetryStale {
                 device.telemetryStale = true
             }
             return Candidate(backend: backend, device: device, identity: home.deviceIdentities[device.id])

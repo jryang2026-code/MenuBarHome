@@ -192,7 +192,7 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
         // After switching homes, devices of a home never polled would flash as off; wait for their values.
-        if !devices.isEmpty, hasValuesForScope() {
+        if !devices.isEmpty, lastReportedConnected, hasValuesForScope() {
             emitSnapshot(closesAwayGap: false)
         }
         if (lastCloudError as? MiCloudError) != .http(429) {
@@ -256,24 +256,13 @@ public actor MiCloudProvider: HomeProvider {
                     try await waitForNextPoll()
                     guard !Task.isCancelled && !isShutDown else { return }
                     try await performTrackedPoll(api) {
-                        if isCloudAllowed && !hasLiveTopologyRefresh {
-                            do {
-                                try await refreshDeviceList(api, retryUnresolved: true)
-                                clearCloudBackoff()
-                            } catch is CancellationError {
-                                throw CancellationError()
-                            } catch MiCloudError.sessionExpired {
-                                throw MiCloudError.sessionExpired
-                            } catch {
-                                scheduleCloudBackoff(for: error)
-                                if lanSucceededDids.isEmpty {
-                                    throw error
-                                }
-                            }
+                        let refreshedTopologyInPoll = isCloudAllowed && (!hasLiveTopologyRefresh || cloudRetryNotBefore != nil)
+                        if refreshedTopologyInPoll {
+                            try await discover(api)
                         }
                         try await poll(api, dids: nil)
                         polls += 1
-                        if polls % deviceRefreshEveryPolls == 0 {
+                        if !refreshedTopologyInPoll, polls % deviceRefreshEveryPolls == 0 {
                             do {
                                 try await refreshDeviceList(api)
                                 clearCloudBackoff()
@@ -462,7 +451,6 @@ public actor MiCloudProvider: HomeProvider {
         do {
             // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
             let outcome = try await withSessionExpiryRetry { try await MiCloudDiscovery.rooms(api) }
-            // A failed room list keeps the rooms of the last good refresh; only a success replaces them.
             if outcome.error == nil {
                 if outcome.rooms != rooms { unresolvedRoomDids = [] }
                 rooms = outcome.rooms
@@ -734,6 +722,14 @@ public actor MiCloudProvider: HomeProvider {
                 emitSnapshot(closesAwayGap: false)
                 return (freshKeys, nil)
             }
+        } else if dids == nil {
+            lanSucceededDids = []
+        }
+        if dids == nil,
+           lanSucceededDids.isEmpty,
+           cloudRetryNotBefore != nil || !hasLiveTopologyRefresh,
+           let lastCloudError {
+            return (freshKeys, lastCloudError)
         }
         if dids == nil {
             if isCloudAllowed {

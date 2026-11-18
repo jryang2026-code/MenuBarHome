@@ -42,8 +42,6 @@ private struct EnergyHistoryBucket: Codable, Equatable, Sendable {
     var perDevice: [String: Double]
 }
 
-/// The single persisted payload: measured day buckets, which days were actually read, the last
-/// counter value seen per device (the baseline), each device's last sample time, and remembered names.
 private struct EnergyHistoryStored: Codable, Equatable, Sendable {
     var buckets: [EnergyHistoryBucket] = []
     var observedDays: [Date] = []
@@ -97,19 +95,23 @@ private struct EnergyHistoryStored: Codable, Equatable, Sendable {
 /// Rules that keep the numbers honest:
 /// - The first observation of a counter only records a baseline. Nothing before the app started
 ///   watching is backfilled, so "today" never claims energy that was consumed before recording began.
-/// - A reading must be finite and non-negative; `nil`, NaN, `.infinity` and negatives are ignored.
+/// - A reading must be finite, non-negative, and at most `maxEnergyCounterKwh`; `nil`, NaN,
+///   `.infinity`, negatives, stale snapshots, and single-step jumps above `maxSingleDeltaKwh`
+///   are ignored or rebase the baseline without recording a delta.
 /// - A delta is credited to the **earlier** of the two observation days. When a sample spans
 ///   midnight (the Mac was asleep, or the plug was offline) the whole delta lands on the earlier
 ///   day instead of being split or extrapolated, so today's figure never overstates what the counter
 ///   proved was consumed while the app was watching today. A gap longer than the retention window
 ///   is dropped rather than guessed.
-/// - A lower reading means the counter was reset or rolled back: the baseline is rebased and no
-///   negative consumption is recorded. Repeats and out-of-order samples (a timestamp not newer than
-///   the previous sample for that device) add nothing, so a duplicated snapshot cannot double count.
+/// - A lower reading or a counter source change means the counter was reset or switched: the
+///   baseline is rebased and no negative or cross-source delta is recorded. Repeats and out-of-order
+///   samples (a timestamp not newer than the previous sample for that device) add nothing, so a
+///   duplicated snapshot cannot double count.
 ///
-/// Everything lives in one `UserDefaults` payload, `clear()` removes all recorded samples *and* the
-/// baselines (so the next reading starts over instead of producing a jump), and the cleared state is
-/// persisted immediately, so relaunching cannot resurrect old data.
+/// Each `connectionScope` persists its own `UserDefaults` payload, `clear()` removes all recorded
+/// samples *and* the baselines for the active scope (so the next reading starts over instead of
+/// producing a jump), and the cleared state is persisted immediately, so relaunching cannot
+/// resurrect old data.
 @Observable
 @MainActor
 public final class EnergyHistory {
