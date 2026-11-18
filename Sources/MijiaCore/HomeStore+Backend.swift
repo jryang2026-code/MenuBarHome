@@ -261,9 +261,14 @@ extension HomeStore {
                 miAccountStatuses = snapshot.accountStatuses
             }
             let previousBackends = deviceBackends
-            let nextConnected: Set<HomeBackend> = snapshot.activeBackends.isEmpty
-                ? [homeBackend]
-                : snapshot.activeBackends
+            let nextConnected: Set<HomeBackend>
+            if !snapshot.sourceStatuses.isEmpty {
+                nextConnected = snapshot.activeBackends
+            } else if snapshot.activeBackends.isEmpty {
+                nextConnected = [homeBackend]
+            } else {
+                nextConnected = snapshot.activeBackends
+            }
             if connectedBackends != nextConnected { connectedBackends = nextConnected }
             if deviceBackends != snapshot.deviceBackends { deviceBackends = snapshot.deviceBackends }
             if pairedDeviceIDs != snapshot.pairedDeviceIDs { pairedDeviceIDs = snapshot.pairedDeviceIDs }

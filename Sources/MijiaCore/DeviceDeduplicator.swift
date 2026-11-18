@@ -43,13 +43,23 @@ public enum DeviceDeduplicator {
     public static func merge(
         homeAssistant: SynthesizedHome?,
         xiaomiCloud: SynthesizedHome?,
+        haConnected: Bool = true,
+        miConnected: Bool = true,
         canonical: CanonicalDeviceRegistry = CanonicalDeviceRegistry(),
         rooms: RoomIdentityRegistry = RoomIdentityRegistry(),
         knownPreferenceIDs: Set<String> = [],
         pinnedBackends: [String: HomeBackend] = [:]
     ) -> DeviceMergeResult {
-        var haCandidates = candidates(in: homeAssistant, backend: .homeAssistant)
-        let miCandidates = candidates(in: xiaomiCloud, backend: .xiaomiCloud)
+        var haCandidates = candidates(
+            in: homeAssistant,
+            backend: .homeAssistant,
+            isBackendConnected: haConnected
+        )
+        let miCandidates = candidates(
+            in: xiaomiCloud,
+            backend: .xiaomiCloud,
+            isBackendConnected: miConnected
+        )
         let haFallbackCounts = fallbackKeyCounts(in: haCandidates)
         let miFallbackCounts = fallbackKeyCounts(in: miCandidates)
 
@@ -341,8 +351,8 @@ public enum DeviceDeduplicator {
         home.closesAwayGap = (homeAssistant?.closesAwayGap ?? true) && (xiaomiCloud?.closesAwayGap ?? true)
         home.isInitialLoadComplete = (homeAssistant?.isInitialLoadComplete ?? true) && (xiaomiCloud?.isInitialLoadComplete ?? true)
         var activeBackends: Set<HomeBackend> = []
-        if homeAssistant != nil { activeBackends.insert(.homeAssistant) }
-        if xiaomiCloud != nil { activeBackends.insert(.xiaomiCloud) }
+        if homeAssistant != nil && haConnected { activeBackends.insert(.homeAssistant) }
+        if xiaomiCloud != nil && miConnected { activeBackends.insert(.xiaomiCloud) }
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends
         home.pairedDeviceIDs = pairedDeviceIDs
@@ -545,7 +555,8 @@ public enum DeviceDeduplicator {
 
         for (haIndex, miIndex) in pairing.miIndexForHA {
             let groupMiDevice = miCandidates[miIndex].device
-            guard groupMiDevice.id.hasPrefix("group."),
+            guard !groupMiDevice.telemetryStale,
+                  groupMiDevice.id.hasPrefix("group."),
                   let memberMiIDs = memberMiIDsByGroup[groupMiDevice.id],
                   !memberMiIDs.isEmpty else { continue }
 
@@ -554,7 +565,7 @@ public enum DeviceDeduplicator {
             for memberMiID in memberMiIDs {
                 guard let miMemberIdx = miIndexByID[memberMiID] else { continue }
                 let miMember = miCandidates[miMemberIdx].device
-                if case .light(let spec) = miMember.kind {
+                if !miMember.telemetryStale, case .light(let spec) = miMember.kind {
                     miLightMembers.append((miMember.isOnline, spec.isOn))
                 }
                 if let haMemberIdx = haIndexForMi[miMemberIdx],
@@ -618,16 +629,38 @@ public enum DeviceDeduplicator {
         let hadStaleCanonicalConflict: Bool
     }
 
-    private static func candidates(in home: SynthesizedHome?, backend: HomeBackend) -> [Candidate] {
+    private static func candidates(
+        in home: SynthesizedHome?,
+        backend: HomeBackend,
+        isBackendConnected: Bool
+    ) -> [Candidate] {
         guard let home else { return [] }
-        return home.devices.map { device in
-            Candidate(backend: backend, device: device, identity: home.deviceIdentities[device.id])
+        return home.devices.map { rawDevice in
+            var device = rawDevice
+            let accountDisconnected: Bool
+            if backend == .xiaomiCloud,
+               let accId = device.accountId,
+               case .disconnected? = home.accountStatuses[accId] {
+                accountDisconnected = true
+            } else {
+                accountDisconnected = false
+            }
+            if !isBackendConnected || accountDisconnected {
+                device.isOnline = false
+                device.telemetryStale = true
+            } else if device.telemetryStale {
+                device.telemetryStale = true
+            }
+            return Candidate(backend: backend, device: device, identity: home.deviceIdentities[device.id])
         }
     }
 
     private static func preferredCandidate(homeAssistant: Candidate, xiaomiCloud: Candidate) -> Candidate {
         let ha = homeAssistant.device
         let mi = xiaomiCloud.device
+        let haFreshOnline = ha.isOnline && !ha.telemetryStale
+        let miFreshOnline = mi.isOnline && !mi.telemetryStale
+        if haFreshOnline != miFreshOnline { return haFreshOnline ? homeAssistant : xiaomiCloud }
         if ha.isOnline != mi.isOnline { return ha.isOnline ? homeAssistant : xiaomiCloud }
         // The appliance shape carries the water heater's mode, fault and remaining time. When the
         // other source only knows it as a generic climate card, keep the appliance card.

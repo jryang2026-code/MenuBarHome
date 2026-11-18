@@ -190,4 +190,97 @@ struct MultiAccountHomeStoreTests {
         #expect(several.selectedMiHomeId == nil)
         #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)
     }
+
+    @Test("Shared did fails over to healthy secondary account on primary disconnect or HTTP 429, without retrying deviceError")
+    func sharedDidFailsOverToSecondaryAccountOnDisconnectAndHTTP429() async throws {
+        let sharedRecord = MiDeviceRecord(
+            did: "shared-plug",
+            name: "共享插座",
+            model: "cuco.plug.v3",
+            isOnline: true
+        )
+        let cnApi = FailoverStubMiCloudAPI(
+            devices: [sharedRecord],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["shared-plug"], homeId: "h-cn", homeName: "家A")],
+            values: [MiotFixtures.key("shared-plug", 2, 1): .bool(true)]
+        )
+        let deApi = FailoverStubMiCloudAPI(
+            devices: [sharedRecord],
+            rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared-plug"], homeId: "h-de", homeName: "家B")],
+            values: [MiotFixtures.key("shared-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: StubSpecSource(),
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in
+            await events.snapshots.contains { $0.homes.count == 2 && $0.devices.count == 1 }
+        })
+        #expect(await log.snapshots.last?.devices.first?.accountId == Self.cn.id)
+
+        // Primary account fails execute with HTTP 429 -> falls through to secondary account deApi.
+        await cnApi.setSetPropsFailure(.http(429))
+        try await provider.execute(.setSwitch(entityId: "miot:shared-plug:2", isOn: false))
+        #expect(await cnApi.setPropsCalls.count == 1)
+        #expect(await deApi.setPropsCalls.count == 1)
+
+        // Hardware deviceError must NOT fall through to the second account.
+        await cnApi.setSetPropsFailure(.deviceError(code: -4004, message: "hardware fault"))
+        await #expect(throws: MiCloudError.deviceError(code: -4004, message: "hardware fault")) {
+            try await provider.execute(.setSwitch(entityId: "miot:shared-plug:2", isOn: true))
+        }
+        #expect(await deApi.setPropsCalls.count == 1)
+
+        // When primary account disconnects on poll, publishSnapshot promotes secondary account de to own shared-plug.
+        let deId = Self.de.id
+        await cnApi.setGetPropsFailure(.http(503))
+        await provider.refreshNow()
+        #expect(await log.wait { events in
+            guard let snap = await events.snapshots.last,
+                  let dev = snap.devices.first(where: { $0.id == "shared-plug" }) else { return false }
+            return dev.accountId == deId && dev.isOnline && !dev.telemetryStale
+        })
+
+        await provider.shutdown()
+    }
+}
+
+private actor FailoverStubMiCloudAPI: MiCloudAPI {
+    var devices: [MiDeviceRecord]
+    var rooms: [MiRoom]
+    var values: [MiotPropKey: JSONValue]
+    private var getPropsFailure: MiCloudError?
+    private var setPropsFailure: MiCloudError?
+    private(set) var setPropsCalls: [[MiotPropWrite]] = []
+
+    init(devices: [MiDeviceRecord], rooms: [MiRoom], values: [MiotPropKey: JSONValue]) {
+        self.devices = devices
+        self.rooms = rooms
+        self.values = values
+    }
+
+    func setGetPropsFailure(_ failure: MiCloudError?) { getPropsFailure = failure }
+    func setSetPropsFailure(_ failure: MiCloudError?) { setPropsFailure = failure }
+
+    func deviceList() async throws -> [MiDeviceRecord] { devices }
+    func homeRooms() async throws -> [MiRoom] { rooms }
+    func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue] {
+        if let getPropsFailure { throw getPropsFailure }
+        return values.filter { keys.contains($0.key) }
+    }
+    func setProps(_ writes: [MiotPropWrite]) async throws {
+        setPropsCalls.append(writes)
+        if let setPropsFailure { throw setPropsFailure }
+        for w in writes { values[MiotPropKey(did: w.did, siid: w.siid, piid: w.piid)] = w.value }
+    }
+    func action(_ call: MiotActionCall) async throws {}
 }

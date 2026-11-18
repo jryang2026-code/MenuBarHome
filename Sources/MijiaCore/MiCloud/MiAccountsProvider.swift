@@ -453,7 +453,12 @@ public actor MiAccountsProvider: HomeProvider {
 
     /// Account order first, first occurrence per id: a did shared by two accounts reaches the panel once.
     private func publishSnapshot() {
-        let reported = accounts.compactMap { snapshots[$0.id] }
+        let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
+            + accounts.filter { isDisconnected($0.id) }
+        let reported = orderedAccounts.compactMap { account -> (account: MiAccount, home: SynthesizedHome)? in
+            guard let home = snapshots[account.id] else { return nil }
+            return (account, home)
+        }
         guard !reported.isEmpty else { return }
         var rooms: [RoomArea] = []
         var devices: [SmartDevice] = []
@@ -469,10 +474,15 @@ public actor MiAccountsProvider: HomeProvider {
         var lightGroupOwners: [String: String] = [:]
         var facetsByDevice: [String: [FacetControl]] = [:]
         var closesAwayGap = true
-        for home in reported {
+        for (account, home) in reported {
+            let accountDisconnected = isDisconnected(account.id)
             closesAwayGap = closesAwayGap && home.closesAwayGap
-            for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
-            for device in home.devices where deviceIds.insert(device.id).inserted {
+            for rawDevice in home.devices where deviceIds.insert(rawDevice.id).inserted {
+                var device = rawDevice
+                if accountDisconnected {
+                    device.isOnline = false
+                    device.telemetryStale = true
+                }
                 devices.append(device)
                 if let identity = home.deviceIdentities[device.id] {
                     identities[device.id] = identity
@@ -487,10 +497,16 @@ public actor MiAccountsProvider: HomeProvider {
             for (memberDid, groupDid) in home.lightGroupOwners where lightGroupOwners[memberDid] == nil {
                 lightGroupOwners[memberDid] = groupDid
             }
-            for reading in home.environmentReadings where readingIds.insert(reading.id).inserted {
-                readings.append(reading)
+            if !accountDisconnected {
+                for reading in home.environmentReadings where readingIds.insert(reading.id).inserted {
+                    readings.append(reading)
+                }
             }
             for scene in home.scenes where sceneIds.insert(scene.id).inserted { scenes.append(scene) }
+        }
+        for account in accounts {
+            guard let home = snapshots[account.id] else { continue }
+            for room in home.rooms where roomIds.insert(room.id).inserted { rooms.append(room) }
             for option in home.homes where homeIds.insert(option.id).inserted { homes.append(option) }
         }
         var merged = SynthesizedHome(rooms: rooms, devices: devices, environmentReadings: readings, scenes: scenes)
@@ -517,6 +533,11 @@ public actor MiAccountsProvider: HomeProvider {
         children.first { $0.account.id == accountId }?.provider
     }
 
+    private func preferredOwners(for key: String) -> [String] {
+        let raw = deviceOwners[key] ?? []
+        return raw.filter { !isDisconnected($0) } + raw.filter { isDisconnected($0) }
+    }
+
     // MARK: Commands & Device Calls
 
     public func execute(_ command: DeviceCommand) async throws {
@@ -524,25 +545,41 @@ public actor MiAccountsProvider: HomeProvider {
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
             throw MiotCommandError.invalidAddress(entityId)
         }
-        let owners = deviceOwners[did] ?? []
+        let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
-        var expired = false
+        var lastFallbackError: (any Error)?
         for ownerId in owners {
             guard let child = childProvider(for: ownerId) else { continue }
             do {
                 try await child.execute(command)
                 return
             } catch MiCloudError.sessionExpired {
-                expired = true
+                lastFallbackError = MiCloudError.sessionExpired
+            } catch MiCloudError.notLoggedIn {
+                if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                    lastFallbackError = MiCloudError.notLoggedIn
+                }
+            } catch let cloudErr as MiCloudError {
+                if case .http = cloudErr {
+                    if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                        lastFallbackError = cloudErr
+                    }
+                    continue
+                }
+                throw cloudErr
+            } catch let urlErr as URLError {
+                if (lastFallbackError as? MiCloudError) != .sessionExpired {
+                    lastFallbackError = urlErr
+                }
             } catch {
                 throw error
             }
         }
-        throw expired ? MiCloudError.sessionExpired : MiCloudError.notLoggedIn
+        throw lastFallbackError ?? MiCloudError.notLoggedIn
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
-        guard let ownerId = deviceOwners[deviceId]?.first,
+        guard let ownerId = preferredOwners(for: deviceId).first,
               let child = childProvider(for: ownerId) else { return .failed }
         return await child.readBack(deviceId: deviceId)
     }
@@ -552,7 +589,7 @@ public actor MiAccountsProvider: HomeProvider {
         window: SensorHistoryWindow,
         now: Date
     ) async -> [SensorHistorySample] {
-        guard let ownerId = deviceOwners[deviceId]?.first,
+        guard let ownerId = preferredOwners(for: deviceId).first,
               let child = childProvider(for: ownerId) else { return [] }
         return await child.fetchSensorHistory(deviceId: deviceId, window: window, now: now)
     }
@@ -570,7 +607,7 @@ public actor MiAccountsProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
-        let ownerId = deviceOwners[device.id]?.first ?? device.accountId
+        let ownerId = preferredOwners(for: device.id).first ?? device.accountId
         guard let ownerId, let child = childProvider(for: ownerId) else {
             throw HomeProviderError.serviceCallFailed(
                 501,
