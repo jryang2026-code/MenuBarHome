@@ -281,9 +281,17 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         if (!id) return;
         if (btn.closest(".cc-menu")) host.ctxMenu = null;
         markSwitchAsLight(id);
-        if (btn.closest(".cc-live-banner") && host.pendingHighRisk?.deviceId === id) {
-          // The pill lives inside the armed confirmation: marking also answers it, so the toggle
-          // the user already asked for runs directly instead of demanding a second tap.
+        if (!btn.closest(".cc-live-banner")) {
+          host.replyBanner = {
+            text: t("已标记为灯，以后不再二次确认"),
+            source: t("需要确认"),
+          };
+          host.render();
+          return;
+        }
+        if (host.pendingHighRisk?.deviceId === id) {
+          // The pill lives inside the armed two-tap confirmation: marking also answers it, so
+          // the toggle the user already asked for runs directly instead of demanding a second tap.
           host.clearPendingHighRisk();
           host.replyBanner = {
             text: t("已标记为灯，以后不再二次确认"),
@@ -293,10 +301,35 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           toggleDeviceForHost(host, id);
           return;
         }
+        // Suggestion-chip confirmation (natural command, bare category): marking answers it too.
+        // The banner only carries `markSwitchLight` when every hazardous device is a wall switch,
+        // so after the marks no intent still needs a confirmation; a stale pill that survived a
+        // replaced banner only marks and never executes.
+        const chip = host.pendingSuggestions.find((s) => suggestionBaseId(s.id).startsWith("confirm:"));
+        const aliasedDevices = withAliases(host.layout, host.devices);
+        const intents = chip
+          ? IntentValidator.sanitize(chip.intents, aliasedDevices, host.scenes)
+          : [];
+        for (const intent of intents) {
+          const device = aliasedDevices.find((d) => d.id === intent.targetId);
+          if (device && ManualControlPolicy.wallSwitchMayControlLight(device)) markSwitchAsLight(device.id);
+        }
         host.replyBanner = {
           text: t("已标记为灯，以后不再二次确认"),
           source: t("需要确认"),
         };
+        if (
+          intents.length > 0 &&
+          intents.every((intent) => !ManualControlPolicy.requiresConfirmation(intent, aliasedDevices))
+        ) {
+          if (chip) host.pendingSuggestions = host.pendingSuggestions.filter((s) => s !== chip);
+          void host.executeIntents(
+            intents,
+            IntentReply.describe(intents, aliasedDevices, host.scenes),
+            t("已确认"),
+            { recordHabits: true },
+          );
+        }
         host.render();
       });
     });
@@ -705,12 +738,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           const chips = ModelActionPolicy.chips(intents, null, "confirm:bare", aliasedDevices, host.scenes, true);
           host.pendingSuggestions = delaySpec ? chips.map((chip) => withSuggestionDelay(chip, delaySpec)) : chips;
           const hint = ManualControlPolicy.wallSwitchLightHintForIntents(intents, aliasedDevices);
+          // #104: the chip confirmation also offers the mark entry, so the hint stays actionable.
+          const markable = hint ? ManualControlPolicy.wallSwitchMarkableIdForIntents(intents, aliasedDevices) : null;
           host.replyBanner = {
             text: t("「{action}」属于高风险设备，再点一次确认执行", {
               action: IntentReply.describe(intents, aliasedDevices, host.scenes).replace(/^已/, ""),
             }),
             source: t("需要确认"),
             ...(hint ? { hint } : {}),
+            ...(markable ? { markSwitchLight: markable } : {}),
           };
           host.render();
           return;

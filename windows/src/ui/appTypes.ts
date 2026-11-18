@@ -150,6 +150,13 @@ export interface ReplyBannerState {
   readonly isError?: boolean;
   /** Wall-switch rename guidance under a high-risk confirmation. Absent for every other banner. */
   readonly hint?: string;
+  /**
+   * #104: a wall-switch device id that can be marked as an ordinary light straight from this
+   * banner. Set by the suggestion-chip confirmations (natural command, bare category) whose hint
+   * would otherwise promise a button this banner does not show; the two-tap tile flow arms
+   * `pendingHighRisk` instead and needs no field.
+   */
+  readonly markSwitchLight?: string;
 }
 
 /**

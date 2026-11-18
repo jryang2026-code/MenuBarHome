@@ -282,12 +282,15 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
       if (hazardous.length > 0) {
         host.pendingSuggestions = ModelActionPolicy.chips(sanitized, null, "confirm:local", aliasedDevices, host.scenes, true);
         const hint = ManualControlPolicy.wallSwitchLightHintForIntents(hazardous, aliasedDevices);
+        // #104: the chip confirmation also offers the mark entry, so the hint stays actionable.
+        const markable = hint ? ManualControlPolicy.wallSwitchMarkableIdForIntents(hazardous, aliasedDevices) : null;
         host.replyBanner = {
           text: t("「{action}」属于高风险设备，再点一次确认执行", {
             action: IntentReply.describe(hazardous, aliasedDevices, host.scenes).replace(/^已/, ""),
           }),
           source: t("需要确认"),
           ...(hint ? { hint } : {}),
+          ...(markable ? { markSwitchLight: markable } : {}),
         };
         host.render();
         return;

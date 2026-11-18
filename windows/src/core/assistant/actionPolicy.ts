@@ -456,6 +456,23 @@ export const ManualControlPolicy = {
   },
 
   /**
+   * #104: the wall-switch id a suggestion-chip banner should offer to mark as a light. Non-null
+   * only when the same intents would also show the hint (every hazardous device is an eligible
+   * wall switch), so the banner never promises a button it cannot act on.
+   */
+  wallSwitchMarkableIdForIntents(intents: readonly DeviceIntent[], devices: readonly SmartDevice[]): string | null {
+    const hazardous = intents.filter((intent) => this.requiresConfirmation(intent, devices));
+    if (hazardous.length === 0) return null;
+    let markable: string | null = null;
+    for (const intent of hazardous) {
+      const device = devices.find((item) => item.id === intent.targetId);
+      if (!device || !this.wallSwitchMayControlLight(device)) return null;
+      if (markable === null) markable = device.id;
+    }
+    return markable;
+  },
+
+  /**
    * True when a 更多设置 write needs a second tap, mirroring
    * `MijiaCore.ManualControlPolicy.facetRequiresConfirmation`. The whitelist controls availability;
    * confirmation follows the meaning of the write, so an off direction stays direct unless the

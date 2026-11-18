@@ -15,6 +15,7 @@ import { PANEL_HEIGHTS } from "../src/ui/panelPrefs.js";
 import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
+import { isSwitchMarkedAsLight, unmarkSwitchAsLight } from "../src/core/switchLightMarks.js";
 import type { CameraLiveController } from "../src/ui/cameraLive.js";
 import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
@@ -5524,6 +5525,42 @@ describe("Manual control parity with macOS (#143)", () => {
     await click('[data-toggle-device="heater"]');
     assert.match(document.body.textContent ?? "", /属于高风险设备，再点一次确认执行/);
     assert.equal(document.querySelector(".cc-feedback-hint"), null, "a heater confirmation has no rename hint");
+    assert.equal(document.querySelector("[data-mark-switch-light]"), null, "a heater confirmation offers no mark pill");
+  });
+
+  it("a typed command on a wall switch marks it as a light straight from the chip confirmation (#104)", async () => {
+    const wall: SmartDevice = {
+      ...plug(),
+      id: "wall.typed",
+      name: "左键",
+      model: "lumi.switch.b1nacn02",
+    };
+    try {
+      const app = await startWithDevices([wall, heater()]);
+
+      await command("打开左键");
+      assert.equal(app.pendingHighRisk, null, "a typed confirmation waits on the chip, not a second tile tap");
+      assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
+      // #104: the chip confirmation offers the same mark entry, so the hint stays actionable.
+      const pill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
+      assert.ok(pill, "the typed confirmation banner offers the mark pill");
+      assert.equal(pill!.dataset.markSwitchLight, "wall.typed");
+
+      pill!.click();
+      await setImmediate();
+      await setImmediate();
+      assert.equal(isSwitchMarkedAsLight("wall.typed"), true, "the pill persisted the mark");
+      assert.equal(
+        app.pendingSuggestions.filter((s) => s.id.startsWith("confirm:")).length,
+        0,
+        "marking consumed the confirmation chip",
+      );
+      const after = app.devices.find((device) => device.id === "wall.typed")?.kind;
+      assert.ok(after?.kind === "plug" && after.isOn, "marking also ran the confirmed switch");
+      assert.equal(app.pendingHighRisk, null);
+    } finally {
+      unmarkSwitchAsLight("wall.typed");
+    }
   });
 
   it("heater temperature, mode and fan writes each wait for a second tap", async () => {
