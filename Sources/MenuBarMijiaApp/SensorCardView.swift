@@ -29,12 +29,16 @@ struct SensorCardView: View {
 
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(device.name)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .lineLimit(1)
-            Text(L10n.tr("可能过期", "Possibly stale"))
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(device.name)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .lineLimit(1)
+                Text(L10n.tr("可能过期", "Possibly stale"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
             if let store, Self.showsStaleTransportReadout(device: device, store: store) {
                 DeviceTransportReadoutRow(
                     deviceId: device.id,
@@ -45,8 +49,8 @@ struct SensorCardView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: isCompact ? 72 : 120, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
+        // Kept separate so VoiceOver can read the channel state and reach its actions.
+        .accessibilityElement(children: .contain)
     }
 
     private var isExpanded: Bool {
