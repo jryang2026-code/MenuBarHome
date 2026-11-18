@@ -227,6 +227,41 @@ describe("Windows power/display sampling plan (systemContextPoll.ts)", () => {
     delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
     assert.equal(await readNativeSystemPower(), null);
   });
+
+  it("computes systemSignalNeed and hasSystemSignalConsumers only for enabled power/display rules", async () => {
+    const { hasSystemSignalConsumers, systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
+    assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
+    assert.equal(hasSystemSignalConsumers([]), false);
+
+    const awayRule = createAutomationRule({ id: "r-away", trigger: "away", action: LIGHT_OFF_ACTION });
+    const disabledPower = createAutomationRule({
+      id: "r-p-off",
+      trigger: "powerConnected",
+      action: LIGHT_OFF_ACTION,
+      isEnabled: false,
+    });
+    assert.deepEqual(systemSignalNeed([awayRule, disabledPower]), {
+      power: false,
+      externalDisplayCount: false,
+    });
+    assert.equal(hasSystemSignalConsumers([awayRule, disabledPower]), false);
+
+    const enabledPower = { ...disabledPower, isEnabled: true };
+    const enabledDisplay = createAutomationRule({
+      id: "r-d-on",
+      trigger: "externalDisplayConnected",
+      action: LIGHT_OFF_ACTION,
+    });
+    assert.deepEqual(systemSignalNeed([awayRule, enabledPower]), {
+      power: true,
+      externalDisplayCount: false,
+    });
+    assert.equal(hasSystemSignalConsumers([awayRule, enabledPower]), true);
+    assert.deepEqual(systemSignalNeed([enabledPower, enabledDisplay]), {
+      power: true,
+      externalDisplayCount: true,
+    });
+  });
 });
 
 describe("Windows power/display automation (pollSystemContextSignals)", () => {

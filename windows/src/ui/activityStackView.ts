@@ -64,7 +64,7 @@ import {
   planSystemSignalTransition,
   readNativeSystemSignals,
   resolveSystemSignalBaseline,
-  triggerUsesSystemSignal,
+  systemSignalNeed,
   type SystemSignalBaseline,
 } from "./systemContextPoll.js";
 import { computeUndoAvailability, undoTrackerFor } from "./undoTracker.js";
@@ -1280,8 +1280,7 @@ export async function pollSystemContextSignals(
     return false;
   }
   const rules = enabledRules ?? center.automationEngine.store.load().filter((r) => r.isEnabled);
-  const needsPower = rules.some((r) => triggerUsesSystemSignal(r.trigger, "powerChanged"));
-  const needsDisplay = rules.some((r) => triggerUsesSystemSignal(r.trigger, "externalDisplayChanged"));
+  const { power: needsPower, externalDisplayCount: needsDisplay } = systemSignalNeed(rules);
   if (!needsPower && !needsDisplay) return false;
 
   center.lastSystemPollAtMs = nowMs;
@@ -1292,6 +1291,13 @@ export async function pollSystemContextSignals(
       externalDisplayCount: needsDisplay,
     });
     if (!isFullPanelHost(host)) return false;
+    const latestRules = center.automationEngine.store.load().filter((r) => r.isEnabled);
+    const latestNeed = systemSignalNeed(latestRules);
+    if (!latestNeed.power && !latestNeed.externalDisplayCount) {
+      center.systemSignalBaseline = null;
+      center.lastSystemPollAtMs = 0;
+      return false;
+    }
     const previous = center.systemSignalBaseline;
     const transition = planSystemSignalTransition(previous, signals);
     const baseline = resolveSystemSignalBaseline(previous, signals);
@@ -1470,6 +1476,7 @@ async function pollAndDispatchWifi(
 export function tickSafetyHealthAndAutomation(
   host: unknown,
   nowMs = Date.now(),
+  options?: { readonly pollSystemContext?: boolean },
 ): boolean {
   if (!isFullPanelHost(host)) return false;
 
@@ -1592,8 +1599,13 @@ export function tickSafetyHealthAndAutomation(
     }
   }
 
-  // Power and external-display sampling runs on the macOS 10 s cadence inside the 1 s tick.
-  void pollSystemContextSignals(host, nowMs, enabledRules);
+  // Power and external-display sampling runs on the macOS 10 s cadence only when enabled rules consume them.
+  if (options?.pollSystemContext !== false) {
+    const need = systemSignalNeed(enabledRules);
+    if (need.power || need.externalDisplayCount) {
+      void pollSystemContextSignals(host, nowMs, enabledRules);
+    }
+  }
 
   if (
     (enabledRules.length > 0 && (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||
