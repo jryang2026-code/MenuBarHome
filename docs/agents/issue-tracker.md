@@ -15,7 +15,7 @@ Canonical GitHub issue triage labels in this repository:
 
 ## Repo helper scripts
 
-CI 失败先看 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。盘点未合并分支和工作树用 `bash scripts/pending-work.sh`。挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
+CI 失败先看 `bash scripts/ci_errors.sh <run-id>`（重跑成功后想看上一次失败加 `--attempt <n>`）。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」，失败用例会点名 `not ok <n> - <name>`。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。合并用 `bash scripts/merge-pr.sh <pr> <head-sha>`：校验 head 一致、检查全部 SUCCESS/NEUTRAL/SKIPPED 后 squash 合并，并后台盯合并提交在 main 上的 CI run（失败自动转 `ci_errors.sh`，超时退出 124 时 PR 已合并、继续盯即可）。盘点未合并分支和工作树用 `bash scripts/pending-work.sh`。挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
 
 ## Migrated issue numbers
 
@@ -30,7 +30,7 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 ## Pull requests & skill hooks
 
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines, without the snapshot comparison. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
-- **Merge**: `gh pr merge <n> --squash --delete-branch`.
+- **Merge**: `bash scripts/merge-pr.sh <n> <head-sha>` (squash + watch the main CI run; with a plain `gh pr merge <n> --squash --delete-branch` you must watch main yourself).
 - **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `triage` reads this flag.)_
 - **When a skill says "publish to the issue tracker"**: create a GitHub issue with `gh issue create --label ready-for-agent`.
 - **When a skill says "fetch the relevant ticket"**: run `gh issue view <n> --comments`.
