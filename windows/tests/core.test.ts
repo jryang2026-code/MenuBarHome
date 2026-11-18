@@ -97,6 +97,7 @@ import {
 } from "../src/core/models.js";
 import { applyCommand } from "../src/ui/commandDispatch.js";
 import { executeSingleCommand } from "../src/ui/intentExecution.js";
+import { SourceEpoch } from "../src/ui/sourceEpoch.js";
 import type { MenuMijiaWindowsApp } from "../src/ui/app.js";
 
 const Vectors = {
@@ -5113,7 +5114,7 @@ describe("Windows curtain control (#279)", () => {
       settings: { connectionMode: "demo", habitLearningEnabled: false },
       sourceRevision: 0,
       devices: [device],
-      localControlRevision: 0,
+      sourceEpoch: new SourceEpoch(),
       replyBanner: null as { text: string; source: string; isError?: boolean } | null,
       grokBballCelebrationUntil: 0,
       lastUndoAction: null as unknown,

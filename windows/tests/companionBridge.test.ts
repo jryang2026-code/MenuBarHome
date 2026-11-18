@@ -21,7 +21,7 @@ import {
   type RaycastSnapshot,
 } from "../src/core/raycastSnapshot.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
-import { invalidateSourceControl } from "../src/ui/proactive.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import {
   clearUndoHoverPause,
   enqueueIncomingOpenUrl,
@@ -793,7 +793,7 @@ describe("Queued external URLs: data-source switch, hidden panel & lock probes",
     );
     await flushAsync();
 
-    invalidateSourceControl(app);
+    switchSource(app, "test-source-switch");
     app.render();
     await firstRun;
     await secondRun;

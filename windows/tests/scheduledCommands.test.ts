@@ -8,6 +8,7 @@ import { ScheduledCommandStore, SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/co
 import { DelayPhrase, UndoPhrase } from "../src/core/assistant/intent.js";
 import type { DeviceIntent, ScheduledCommand } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { processScheduledCommands, scheduledCommandIdentity, scheduledCommandsReady } from "../src/ui/scheduledCommands.js";
 import { HomeAssistantSynthesizer, homeAssistantIdentity } from "../src/core/homeAssistant.js";
 
@@ -257,7 +258,7 @@ describe("Timer app wiring", () => {
     instance.scheduledCommands.push(makeTask("after-snapshot"));
     processScheduledCommands(instance);
     assert.deepEqual(calls, [[{ targetId: "study-light", operation: { kind: "power", isOn: false } }]]);
-    instance.invalidateSourceControl();
+    switchSource(instance, "test-source-switch");
     assert.equal(scheduledCommandsReady(instance), false);
     await instance.refreshHADevices();
     assert.equal(scheduledCommandsReady(instance), true);

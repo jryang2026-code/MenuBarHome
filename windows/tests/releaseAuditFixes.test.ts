@@ -5,6 +5,7 @@ import type { Window } from "happy-dom";
 
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { demoDevices } from "../src/ui/demo.js";
 import {
@@ -488,7 +489,7 @@ describe("Release audit fixes — UI, cloud refresh, camera & localization", () 
 
     app.toggleVoiceInput();
     const secondRec = lastInstance!;
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     secondRec.onresult?.({ results: [[{ transcript: "打开客厅灯" }]] });
     assert.deepEqual(handled, []);
   });
@@ -661,7 +662,7 @@ describe("Release audit fixes — UI, cloud refresh, camera & localization", () 
     await flushAsync();
     assert.ok(scanGate.release, "QR login is awaiting scan");
 
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.settings.connectionMode = "homeAssistant";
     scanGate.release();
     await qrPromise;

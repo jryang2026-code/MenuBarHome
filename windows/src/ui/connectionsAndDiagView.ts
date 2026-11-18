@@ -12,6 +12,7 @@ import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import type { HomeOption, LayoutPrefs } from "./panelPrefs.js";
+import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -217,7 +218,7 @@ export interface HostConnDiagSession {
   readonly addQr: AddAccountQrState;
 }
 
-export interface ConnectionsAndDiagHost {
+export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   readonly root: HTMLElement;
   readonly settings: PersistedSettings;
   devices: SmartDevice[];
@@ -230,13 +231,11 @@ export interface ConnectionsAndDiagHost {
   assistantKeysByPreset: Record<string, string>;
   cloudValuesStale: boolean;
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+  /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
-  clearPendingHighRisk(): void;
   groupOwnerByMemberDid: Map<string, string>;
-  localControlRevision: number;
   replyBanner: ReplyBannerState | null;
   selectRoom(roomId: string | null, roomName?: string): void;
-  invalidateSourceControl(): void;
   refreshDevices(silent?: boolean): Promise<void>;
   refreshHADevices(silent?: boolean): Promise<void>;
   render(): void;
@@ -252,7 +251,6 @@ export interface ConnectionsAndDiagHost {
   readonly credentialVault?: CredentialVault;
   readonly transport?: HttpTransport;
   readonly specResolver?: MiotSpecResolver;
-  haConnectionError?: string | null;
   miSessionExpired?: boolean;
   homeTitle?: string;
   isHomeMenuOpen?: boolean;
@@ -435,7 +433,7 @@ export async function addOrUpdateMiAccountOnHost(
   setHostMiAccounts(host, null);
 
   setPendingMiVaultDeletion(false);
-  host.invalidateSourceControl();
+  switchSource(host, "mi-account-added");
   if (result.primarySessionKnown) {
     const primary = result.accounts[0]?.session ?? cleanSession;
     host.settings.miSession = primary;
@@ -513,8 +511,7 @@ async function performSignOutSingleMiAccountOnHost(
       return false;
     }
 
-    host.localControlRevision += 1;
-    host.invalidateSourceControl();
+    switchSource(host, "mi-account-removed");
     host.clearPendingHighRisk();
     resetHostUnsupportedScanner(host);
 
@@ -662,8 +659,7 @@ async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Prom
   }
   host.expandedDeviceId = null;
   host.waitingDeviceIds?.clear();
-  host.localControlRevision += 1;
-  host.invalidateSourceControl();
+  switchSource(host, "ha-disconnected");
   host.clearPendingHighRisk();
 
   host.settings.haToken = "";

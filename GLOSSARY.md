@@ -148,6 +148,10 @@ _Avoid_: Ambiguous command（模糊指令）、Whole-home command（全屋指令
 带绝对 `fireDate`、`IntentPlan` 与创建时 `sourceScopes` 的本地延时任务（`assistant_scheduled_commands_v1`）；跨启动/睡眠超时转入 `missedScheduledCommands` 等待人工确认，绝不后台静默触发过期动作。
 _Avoid_: Background job（后台任务）、Cron（计划任务）
 
+**SourceEpoch（连接源代际）**：
+`windows/src/ui/sourceEpoch.ts` 中三级嵌套（`source` ⊃ `home` ⊃ `localWrite`）的连接源失效代际：`advance` 按层级向下级联（换源三级全动、换家庭动 home+localWrite、本地写只动 localWrite），异步工作用 `capture()` 取 `EpochToken` 后以 `isCurrent` / `guard`（返回 `STALE`）判弃；`ui/sourceSwitch.ts` 的 `switchSource` / `switchHome` 是仅有的换源/换家庭入口，云端同步接力用 `claimSyncRun` 只占 home 级。
+_Avoid_: 裸 revision 计数（手写自增 `sourceRevision` / `syncGeneration` / `localControlRevision`）、`invalidateSourceControl`
+
 **ActiveDevice（活跃开启设备）**：
 在线且正处于运行/开启状态的受控设备（不含冰箱、待机电视、纯传感器与打开状态的开合设备）。
 _Avoid_: Online device（在线设备）

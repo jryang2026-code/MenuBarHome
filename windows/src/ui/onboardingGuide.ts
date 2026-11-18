@@ -15,6 +15,7 @@ import { SF_ICONS } from "./appConstants.js";
 import type { ConnectionMode } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
+import { switchSource } from "./sourceSwitch.js";
 import { invokeTauriVoid } from "./transport.js";
 
 export type AssistantProviderPresetId = string;
@@ -218,9 +219,7 @@ export function clearOnboardingSession(host: object): void {
 }
 
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
-  readonly isPollingQR?: boolean;
   readonly qrStatusText?: string;
-  readonly qrTicket?: { readonly qrImageURL: string } | null;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
 }
@@ -286,8 +285,7 @@ function switchConnectionModeInOnboarding(host: OnboardingRenderViewHost, mode: 
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
   }
-  host.localControlRevision += 1;
-  host.invalidateSourceControl();
+  switchSource(host, "onboarding-connection-mode");
   host.environmentReadings = [];
   host.homes = [];
   host.groupOwnerByMemberDid = new Map();
@@ -687,9 +685,8 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       token !== host.settings.haToken ||
       prevIdentity !== nextIdentity;
     session.haURLDraft = endpoint;
-    host.invalidateSourceControl();
+    switchSource(host, "onboarding-ha-endpoint");
     host.settings.cachedHAHome = null;
-    host.localControlRevision += 1;
     if (identityChanged) {
       host.devices = [];
       host.scenes = [];
@@ -818,12 +815,12 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   sheet.querySelector("#btn-onboarding-import-env")?.addEventListener("click", () => {
     const requestedPreset = session.assistantDraft.selectedPreset;
     const requestedBaseURL = session.assistantDraft.baseURL.trim();
-    const capturedRevision = host.localControlRevision;
+    const capturedRevision = host.localRevision;
     void (async () => {
       const hit = await importAmbientAssistantKey(requestedPreset);
       if (
         onboardingSessionByHost.get(host) !== session ||
-        host.localControlRevision !== capturedRevision ||
+        host.localRevision !== capturedRevision ||
         session.assistantDraft.selectedPreset !== requestedPreset ||
         session.assistantDraft.baseURL.trim() !== requestedBaseURL
       ) {

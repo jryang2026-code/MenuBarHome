@@ -677,7 +677,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     await click("#btn-generate-copy-health-report");
     assert.ok(document.querySelector("#settings-health-report-preview"));
     app.settings.selectedHomeId = "home-other";
-    app.sourceRevision += 1;
+    app.sourceEpoch.advance("source");
     center.weeklyReportCard = null;
     app.render();
     assert.equal(document.querySelector("#settings-health-report-preview"), null);
@@ -1172,10 +1172,10 @@ describe("Wave 4 · Issue #133 Partial-Account Staleness Guard & PM2.5 Sensor Fa
     app.settings.haBaseURL = "http://192.168.1.10:8123";
     app.settings.haToken = "token-ha-dual";
     app.dualSourceEnabledOverride = true;
-    app.sourceRevision = 12;
+    app.sourceEpoch.advance("source");
     (app as unknown as { timerSnapshot: { identity: string; sourceRevision: number } }).timerSnapshot = {
       identity: "dual:test",
-      sourceRevision: 12,
+      sourceRevision: app.sourceRevision,
     };
 
     const accA = makeMiAccount({

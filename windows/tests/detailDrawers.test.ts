@@ -6,6 +6,7 @@ import type { Window } from "happy-dom";
 import { assertMissing } from "./dom.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { switchSource } from "../src/ui/sourceSwitch.js";
 import { homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import type { FacetControl, SmartDevice } from "../src/core/models.js";
 
@@ -717,7 +718,7 @@ describe("FeedAction, MoreSettings 2-Stage Folding, and Live Slider Readouts", (
     // Backend sourceRevision change resets MoreSettings.
     await click('[data-more-settings-toggle="purifier_1"]');
     assert.equal(element('[data-more-settings-toggle="purifier_1"]').getAttribute("aria-expanded"), "true");
-    app.invalidateSourceControl();
+    switchSource(app, "test-source-switch");
     app.render();
     assert.equal(element('[data-more-settings-toggle="purifier_1"]').getAttribute("aria-expanded"), "false");
 
