@@ -738,8 +738,22 @@ public final class HomeStore {
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
     public var lgConfig: LGWebOSConfig {
-        didSet { lgConfig.save(to: userDefaults) }
+        didSet {
+            lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
+            if lgConfigSaveFailed {
+                showToast(
+                    L10n.tr(
+                        "无法把电视配对密钥写入钥匙串，请授权钥匙串访问后重试",
+                        "Could not save the TV pairing key to Keychain; allow Keychain access and try again"
+                    ),
+                    isError: true
+                )
+            }
+        }
     }
+    /// Set by `lgConfig.didSet` when the Keychain refused the pairing key (#7); the pairing callback
+    /// reads it to decide between "Paired" and an error, instead of claiming a pairing that was not stored.
+    @ObservationIgnored var lgConfigSaveFailed = false
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
@@ -994,7 +1008,7 @@ public final class HomeStore {
             }
         }
         self.selectedMiHomeId = initialSelectedHomeId
-        self.lgConfig = LGWebOSConfig.load(from: ud)
+        self.lgConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
         self.homeName = HomePreferences.homeName.load(from: ud)
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
         let habitShareKey = "assistant_habit_share_enabled"

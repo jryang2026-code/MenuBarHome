@@ -311,18 +311,24 @@ public struct AssistantConfig: Equatable, Sendable {
         )
     }
 
-    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) {
+    /// Returns false when the Keychain refused the key (#7). A refusal leaves the previously saved
+    /// endpoint and key untouched, and the caller must keep the draft flagged and show the error.
+    @discardableResult
+    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
+        // Read the previous key before writing: it decides whether a hand-typed key replaces an
+        // imported one. The write itself goes first so a refusal leaves the endpoint alone.
+        let previousKey = Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults, vault: vault)
+        guard Self.saveSecret(trimmedKey, for: inferred, defaults: defaults, vault: vault) else { return false }
         // A key typed by hand replaces an imported one, so the "imported from" label no longer applies.
-        if Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults, vault: vault) != trimmedKey {
+        if previousKey != trimmedKey {
             defaults.removeObject(forKey: Self.importedKeySourceKey(for: inferred))
         }
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        Self.saveSecret(trimmedKey, for: inferred, defaults: defaults, vault: vault)
         if inferred == .custom {
             if trimmedKey.isEmpty {
                 defaults.removeObject(forKey: Self.customKeyEndpointKey)
@@ -330,19 +336,21 @@ public struct AssistantConfig: Equatable, Sendable {
                 defaults.set(AssistantEndpoint(trimmedBase)?.identity, forKey: Self.customKeyEndpointKey)
             }
         }
+        return true
     }
 
     /// Writes (or, with an empty key, deletes) the saved key for `preset`. The bundled OpenRouter/Jev preset also
     /// keeps the legacy `assistant_api_key` slot in sync because pre-v1.0.4 builds read the key from there.
-    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) {
-        KeychainHelper.saveSecret(
+    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
+        let stored = KeychainHelper.saveSecret(
             key,
             account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset),
             defaults: defaults, vault: vault
         )
         if preset == .openRouterJev {
-            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults, vault: vault)
+            return KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults, vault: vault) && stored
         }
+        return stored
     }
 
     @discardableResult
@@ -416,7 +424,7 @@ public struct AssistantConfig: Equatable, Sendable {
               let key = loadAmbientAPIKey(forBaseURL: baseURL, configURL: configURL) else {
             return nil
         }
-        saveSecret(key, for: preset, defaults: defaults, vault: vault)
+        guard saveSecret(key, for: preset, defaults: defaults, vault: vault) else { return nil }
         defaults.set(label, forKey: importedKeySourceKey(for: preset))
         return label
     }

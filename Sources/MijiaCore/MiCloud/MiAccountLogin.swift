@@ -160,12 +160,16 @@ public struct MiAccountLogin: Sendable {
             }
         }
         let serviceToken = try await fetchServiceToken(location: scanned!.location)
+        // The login response's `location` carries the account's data centre (`p_idc`) and country
+        // (`p_ur`). Using it prevents a cross-region scan from saving a session the chosen region's
+        // API will keep rejecting (#9). Unknown hosts or hints keep the selected region.
+        let resolvedRegion = Self.regionCode(fromLoginLocation: scanned!.location) ?? region
         return MiSession(
             userId: scanned!.userId,
             cUserId: scanned!.cUserId,
             ssecurity: scanned!.ssecurity,
             serviceToken: serviceToken.token,
-            region: region,
+            region: resolvedRegion,
             expiresAt: serviceToken.expiresAt
         )
     }
@@ -192,6 +196,54 @@ public struct MiAccountLogin: Sendable {
             location: location
         )
     }
+
+    /// Infers the account's cloud region from the `login` response's `location` URL (#9).
+    ///
+    /// Xiaomi puts the account's data centre in `p_idc` (`China`, `Europe`, `India`, `Russia`,
+    /// `Singapore`, `America`) and the country in `p_ur` (`CN`, `DE`, …). Only Xiaomi-owned HTTPS
+    /// hosts are trusted; an unknown domain, a missing hint or an unmapped value returns `nil`, so
+    /// the caller keeps the region the user picked instead of guessing.
+    public static func regionCode(fromLoginLocation location: URL) -> String? {
+        guard isTrustedXiaomiLoginRedirect(location),
+              let components = URLComponents(url: location.absoluteURL, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            guard let value = item.value?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !value.isEmpty else { continue }
+            query[item.name.lowercased()] = value
+        }
+        if let idc = query["p_idc"]?.lowercased(), let region = regionByDataCenter[idc] {
+            return region
+        }
+        if let country = query["p_ur"]?.uppercased(), let region = regionByCountryCode[country] {
+            return region
+        }
+        return nil
+    }
+
+    private static let regionByDataCenter: [String: String] = [
+        "china": "cn",
+        "europe": "de",
+        "india": "i2",
+        "russia": "ru",
+        "singapore": "sg",
+        "america": "us",
+        "north america": "us",
+        "united states": "us",
+        "usa": "us",
+    ]
+
+    /// Only the region codes this app models are accepted; any other country code is ambiguous.
+    private static let regionByCountryCode: [String: String] = [
+        "CN": "cn",
+        "DE": "de",
+        "IN": "i2",
+        "RU": "ru",
+        "SG": "sg",
+        "US": "us",
+    ]
 
     public static func isTrustedXiaomiLoginRedirect(_ url: URL) -> Bool {
         let raw = url.absoluteString

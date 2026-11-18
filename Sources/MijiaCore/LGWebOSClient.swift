@@ -71,7 +71,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         self.clientKey = clientKey
     }
 
-    public static func load(from defaults: UserDefaults) -> LGWebOSConfig {
+    public static func load(from defaults: UserDefaults, vault: CredentialVault? = nil) -> LGWebOSConfig {
         let enabled = defaults.object(forKey: "lg_webos_enabled") == nil
             ? false
             : defaults.bool(forKey: "lg_webos_enabled")
@@ -79,7 +79,7 @@ public struct LGWebOSConfig: Equatable, Sendable {
         let mac = defaults.string(forKey: "lg_webos_mac")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let name = defaults.string(forKey: "lg_webos_name")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let room = defaults.string(forKey: "lg_webos_room")?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let key = Self.loadClientKey(from: defaults)
+        let key = Self.loadClientKey(from: defaults, vault: vault)
 
         return LGWebOSConfig(
             isEnabled: enabled,
@@ -91,18 +91,24 @@ public struct LGWebOSConfig: Equatable, Sendable {
         )
     }
 
-    public func save(to defaults: UserDefaults) {
+    /// Returns false when the pairing key could not be stored (#7): the caller must report that to the
+    /// user instead of claiming the TV was paired.
+    @discardableResult
+    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
         defaults.set(isEnabled, forKey: "lg_webos_enabled")
         defaults.set(host, forKey: "lg_webos_host")
         defaults.set(macAddress, forKey: "lg_webos_mac")
         defaults.set(name, forKey: "lg_webos_name")
         defaults.set(roomName, forKey: "lg_webos_room")
-        Self.saveClientKey(clientKey, to: defaults)
+        return Self.saveClientKey(clientKey, to: defaults, vault: vault)
     }
 
     /// The pairing key is a credential, so `.standard` keeps it only in the Keychain (#16). Other suites (tests)
-    /// keep it inside the suite.
-    private static func loadClientKey(from defaults: UserDefaults) -> String {
+    /// keep it inside the suite unless an explicit vault is injected.
+    private static func loadClientKey(from defaults: UserDefaults, vault: CredentialVault?) -> String {
+        if let vault {
+            return KeychainHelper.readKeychainSecret(account: clientKeyAccount, vault: vault) ?? ""
+        }
         guard defaults === UserDefaults.standard else {
             return defaults.string(forKey: clientKeyDefaultsKey)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -119,7 +125,15 @@ public struct LGWebOSConfig: Equatable, Sendable {
         return KeychainHelper.readKeychainSecret(account: clientKeyAccount) ?? ""
     }
 
-    private static func saveClientKey(_ key: String, to defaults: UserDefaults) {
+    private static func saveClientKey(_ key: String, to defaults: UserDefaults, vault: CredentialVault?) -> Bool {
+        if let vault {
+            return KeychainHelper.saveSecret(
+                key,
+                account: clientKeyAccount,
+                defaults: defaults,
+                vault: vault
+            )
+        }
         guard defaults === UserDefaults.standard else {
             let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
@@ -127,10 +141,11 @@ public struct LGWebOSConfig: Equatable, Sendable {
             } else {
                 defaults.set(trimmed, forKey: clientKeyDefaultsKey)
             }
-            return
+            return true
         }
-        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return }
+        guard KeychainHelper.saveSecret(key, account: clientKeyAccount) else { return false }
         defaults.removeObject(forKey: clientKeyDefaultsKey)
+        return true
     }
 }
 

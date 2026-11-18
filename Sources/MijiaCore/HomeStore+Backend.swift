@@ -52,8 +52,9 @@ extension HomeStore {
             onClientKeyRegistered: { [weak self] key in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.lgConfig.clientKey = key
-                    self.showToast(L10n.tr("已成功配对 \(self.lgConfig.name)", "Paired with \(self.lgConfig.name)"))
+                    // The pairing only counts once the key is actually in the Keychain (#7);
+                    // `applyLGClientKey` owns both the success toast and the error.
+                    self.applyLGClientKey(key)
                 }
             },
             onSecurityFailure: { [weak self] message in
@@ -70,6 +71,30 @@ extension HomeStore {
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
         }
+    }
+
+    /// Applies a freshly registered LG pairing key. Returns false when the Keychain refused to store it,
+    /// so the caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
+    @discardableResult
+    func applyLGClientKey(_ key: String) -> Bool {
+        var updated = lgConfig
+        updated.clientKey = key
+        // Write before swapping the in-memory config so a refused write keeps the old pairing key.
+        guard updated.save(to: userDefaults, vault: credentialVault) else {
+            lgConfigSaveFailed = true
+            showToast(
+                L10n.tr(
+                    "电视已确认配对，但配对密钥无法写入钥匙串；请授权钥匙串访问后重新配对",
+                    "The TV confirmed pairing, but the key could not be saved to Keychain; allow access and pair again"
+                ),
+                isError: true
+            )
+            return false
+        }
+        lgConfig = updated
+        guard !lgConfigSaveFailed else { return false }
+        showToast(L10n.tr("已成功配对 \(lgConfig.name)", "Paired with \(lgConfig.name)"))
+        return true
     }
 
     func applyLGDeviceUpdate(_ dev: SmartDevice) {
@@ -900,9 +925,11 @@ extension HomeStore {
         self.miSessionExpiresAt = miAccounts.compactMap(\.session.expiresAt).min()
         self.isShowingMiReauth = false
         self.miSessionScopeIdentifier = miAccounts.first?.session.historyScopeIdentifier
+        let previousRegion = miCloudRegion
         if let region = MiCloudRegion(rawValue: session.region.lowercased()) {
             self.miCloudRegion = region
         }
+        let regionChanged = miCloudRegion != previousRegion
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
         if superseded { return }
@@ -915,7 +942,14 @@ extension HomeStore {
         self.completeOnboarding()
         rebuildLiveProvider()
         resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
-        showToast(L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))"))
+        showToast(
+            regionChanged
+                ? L10n.tr(
+                    "已登录米家账号 (\(session.maskedUserId))，已切换到账号地区 \(miCloudRegion.label)",
+                    "Signed in to Xiaomi Home (\(session.maskedUserId)); switched to the account's region \(miCloudRegion.label)"
+                )
+                : L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))")
+        )
     }
 
     /// Returns false when the Keychain/vault refused to delete the stored Mi session; the in-memory

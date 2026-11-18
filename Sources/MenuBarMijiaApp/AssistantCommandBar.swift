@@ -1070,10 +1070,16 @@ struct AssistantSettingsSection: View {
             store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
             return nil
         }
-        store.assistantConfig = cfg
-        // `AssistantConfig.save` does not report a refused Keychain write or delete, so read the key back
-        // before the draft counts as saved. A replacement that was not stored would be lost on leaving,
-        // and a clearing that was refused would leave the old key active (#148).
+        guard store.saveAssistantConfig(cfg) else {
+            store.showToast(
+                L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                isError: true
+            )
+            return nil
+        }
+        // `saveAssistantConfig` already reports a refused Keychain write; the read-back covers the
+        // custom-endpoint binding too, so a replacement that was not stored never counts as saved
+        // and a refused clear cannot leave the old key active (#148).
         if store.storedAssistantAPIKey(forBaseURL: cfg.baseURL).trimmingCharacters(in: .whitespacesAndNewlines)
             != cfg.apiKey.trimmingCharacters(in: .whitespacesAndNewlines) {
             store.showToast(
@@ -1331,7 +1337,10 @@ struct AssistantSettingsSection: View {
                         store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
                     } else {
                         store.showToast(
-                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            L10n.tr(
+                                "CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key，或无法写入钥匙串",
+                                "No \(selectedPreset.shortTitle) key in CodexBar or environment variables, or the Keychain refused the write"
+                            ),
                             isError: true
                         )
                     }

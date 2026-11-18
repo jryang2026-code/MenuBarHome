@@ -7,7 +7,14 @@ import Observation
 extension HomeStore {
     public var assistantConfig: AssistantConfig {
         get { AssistantConfig.load(from: userDefaults, vault: credentialVault) }
-        set { newValue.save(to: userDefaults, vault: credentialVault) }
+        set { _ = newValue.save(to: userDefaults, vault: credentialVault) }
+    }
+
+    /// Persists an AI configuration and reports whether the Keychain accepted the key (#7). The Settings
+    /// and onboarding forms use this instead of the silent setter so a refused write never looks saved.
+    @discardableResult
+    public func saveAssistantConfig(_ config: AssistantConfig) -> Bool {
+        config.save(to: userDefaults, vault: credentialVault)
     }
 
     public var userHabitMemory: UserHabitMemory {
@@ -229,7 +236,15 @@ extension HomeStore {
 
     /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
-        assistantConfig = draftConfig
+        guard saveAssistantConfig(draftConfig) else {
+            return (
+                false,
+                L10n.tr(
+                    "无法写入钥匙串，请授权钥匙串访问后重试",
+                    "Could not save to Keychain; allow Keychain access and try again"
+                )
+            )
+        }
         guard homeBackend != .demo else {
             return (false, L10n.tr("演示模式不联网，请切换数据源后测试连接", "Demo mode is offline; switch the data source to test this connection"))
         }
