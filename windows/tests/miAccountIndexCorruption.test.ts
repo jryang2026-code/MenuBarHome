@@ -586,13 +586,16 @@ describe("Mi account index corruption (#228)", () => {
     const fixture = makeCredentialFixture({ supportsSlotScan: true });
     await new CredentialVault(fixture.invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
     let checking = false;
-    const entered = Promise.withResolvers<void>();
-    const gate = Promise.withResolvers<void>();
+    // The project TS lib predates Promise.withResolvers.
+    let started!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const gate = new Promise<void>((resolve) => { finish = resolve; });
     const wrapped: SecureInvoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
       const result = await fixture.invoke<T>(cmd, args);
       if (checking && cmd === "secure_store_get" && args["name"] === "mi_session") {
-        entered.resolve();
-        await gate.promise;
+        started();
+        await gate;
       }
       return result;
     };
@@ -603,10 +606,10 @@ describe("Mi account index corruption (#228)", () => {
     };
     checking = true;
     const adoption = adoptRecoveredPrimarySession(host, store, accounts);
-    await entered.promise;
+    await entered;
     setPendingMiVaultDeletion(true);
     await new CredentialVault(fixture.invoke).deleteMiSession();
-    gate.resolve();
+    finish();
     await adoption;
     setPendingMiVaultDeletion(false);
     assert.equal(host.settings.miSession, null);
