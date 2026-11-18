@@ -26,6 +26,7 @@ enum PanelKeyRouter {
         var isPanelWindow = true
         var isShowingMiReauth = false
         var isGrokBallStageExpanded = false
+        var isShowingConnectionDetail = false
         var hasActivePrompt = false
         var globalHotkeyEnabled = false
         var isRecordingHotkey = false
@@ -47,6 +48,7 @@ enum PanelKeyRouter {
         case openSettings
         case dismissMiReauth
         case dismissGrokBallStage
+        case dismissConnectionDetail
         case dismissPrompt
         /// A repeat of the global shortcut leaked into the panel; hide it only on a fresh press
         /// when the shortcut is not registered system-wide.
@@ -79,6 +81,9 @@ enum PanelKeyRouter {
         }
         if key.code == kVK_Escape, context.isGrokBallStageExpanded, context.isPanelWindow {
             return .dismissGrokBallStage
+        }
+        if key.code == kVK_Escape, context.isShowingConnectionDetail, context.isPanelWindow {
+            return .dismissConnectionDetail
         }
         return nil
     }
@@ -142,6 +147,7 @@ enum PanelKeyRouter {
         case kVK_Space, kVK_Return: return .toggleFocusedDevice
         case kVK_Tab: return .cycleRoom(key.shift ? -1 : 1)
         case kVK_Escape:
+            if context.isShowingConnectionDetail { return .dismissConnectionDetail }
             if context.isShowingAssistantBar { return .dismissAssistantBar }
             if context.hasExpandedDevice { return .collapseExpandedDevice }
             if context.hasFocusedDevice { return .clearFocus }

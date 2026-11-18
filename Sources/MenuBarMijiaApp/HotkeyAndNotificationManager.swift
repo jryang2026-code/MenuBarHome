@@ -455,6 +455,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isPanelWindow: MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow),
             isShowingMiReauth: store.isShowingMiReauth,
             isGrokBallStageExpanded: store.isGrokBallStageExpanded,
+            isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             hasActivePrompt: LayoutUIState.shared.hasActivePrompt,
             globalHotkeyEnabled: store.enableGlobalHotkey,
             isRecordingHotkey: HotkeyRecorderController.shared.isRecording,
@@ -483,6 +484,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             store.dismissMiReauth()
         case .dismissGrokBallStage:
             store.dismissGrokBallStage()
+        case .dismissConnectionDetail:
+            PanelConnectionDetailState.shared.dismiss(restoreFocus: true)
         case .dismissPrompt:
             LayoutUIState.shared.dismissActivePrompt()
         case .globalHotkeyEcho(let hidePanel):

@@ -12,6 +12,10 @@ extension HomeStore {
         userDefaults.set(enabled, forKey: kind.defaultsKey)
     }
 
+    public var awayGapIncludesAway: Bool {
+        awayGap.includesAway
+    }
+
     public var menuBarShowsHazard: Bool {
         guard enableSafetyAlerts else { return false }
         for device in devices {

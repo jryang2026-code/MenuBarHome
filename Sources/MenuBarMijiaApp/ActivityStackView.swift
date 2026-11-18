@@ -1,32 +1,85 @@
 import SwiftUI
 import MijiaCore
 
-enum ActivityStackPolicy {
-    static func rendersExpanded(isExpanded: Bool, count: Int) -> Bool {
-        isExpanded && count > 1
-    }
+struct TieredPanelActivities: Equatable {
+    var pinned: [PanelActivity]
+    var ordinary: [PanelActivity]
+}
 
-    static func sanitizedExpansion(isExpanded: Bool, count: Int) -> Bool {
-        count > 1 ? isExpanded : false
-    }
+enum ActivityStackPolicy {
+    static func rendersExpanded(isExpanded: Bool, count: Int) -> Bool { isExpanded && count > 1 }
+    static func sanitizedExpansion(isExpanded: Bool, count: Int) -> Bool { count > 1 ? isExpanded : false }
 
     static func collapsedAccessibilitySummary(count: Int, firstLabel: String) -> String? {
         guard count > 1 else { return nil }
-        return L10n.tr(
-            "\(count) 条提醒，第 1 条：\(firstLabel)",
-            "\(count) notifications. First: \(firstLabel)"
-        )
+        return L10n.tr("\(count) 条提醒，第 1 条：\(firstLabel)", "\(count) notifications. First: \(firstLabel)")
+    }
+
+    @MainActor
+    static func partition(activities: [PanelActivity], store: HomeStore?) -> TieredPanelActivities {
+        var pinned: [PanelActivity] = []
+        var ordinary: [PanelActivity] = []
+        for activity in activities {
+            isPinned(activity, store: store) ? pinned.append(activity) : ordinary.append(activity)
+        }
+        return TieredPanelActivities(pinned: pinned, ordinary: ordinary)
+    }
+
+    @MainActor
+    static func isPinned(_ activity: PanelActivity, store: HomeStore?) -> Bool {
+        switch activity.kind {
+        case .notice, .doorbell:
+            return true
+        case .safety(let recorded):
+            let id = recorded.alert.id
+            if id.hasPrefix("sensor:smoke:") || id.hasPrefix("sensor:gas:") || id.hasPrefix("sensor:leak:")
+                || id.hasPrefix("longrun:") || recorded.alert.turnOffCommand != nil {
+                return true
+            }
+            if id.hasPrefix("sensor:contact:") {
+                return allowsPinningSensor(.contact, store: store)
+            }
+            if id.hasPrefix("sensor:motion:") {
+                return allowsPinningSensor(.motion, store: store)
+            }
+            if id.hasPrefix("sensor:lock:") || id.hasPrefix("sensor:vibration:") {
+                return allowsPinningAwayCondition(store: store)
+            }
+            return false
+        }
+    }
+
+    @MainActor
+    private static func allowsPinningSensor(_ kind: SensorAlertKind, store: HomeStore?) -> Bool {
+        guard let store else { return true }
+        return store.isSensorAlertEnabled(kind) && allowsPinningAwayCondition(store: store)
+    }
+
+    @MainActor
+    private static func allowsPinningAwayCondition(store: HomeStore?) -> Bool {
+        guard let store else { return true }
+        return !(store.sensorAlertsOnlyWhenAway && !store.awayGapIncludesAway)
+    }
+
+    static func ordinaryCapsuleSummary(labels: [String]) -> String {
+        guard let first = labels.first else { return "" }
+        guard labels.count > 1 else { return first }
+        return L10n.tr("\(first) 等 \(labels.count) 条提醒", "\(first) and \(labels.count - 1) more")
     }
 }
 
 /// Persistent activity surface; transient undo and toast state belongs to TransientStackView.
 struct ActivityStackView<Content: View>: View {
     let activities: [PanelActivity]
+    var missedTimers: [ScheduledCommand] = []
+    var store: HomeStore? = nil
     @Binding var isExpanded: Bool
-    var expandedViewportHeight: CGFloat?
+    var expandedViewportHeight: CGFloat? = nil
     var theme: PanelTheme = .liquidGlass
     let dismiss: (PanelActivity) -> Void
     let clear: () -> Void
+    var runMissedTimer: ((UUID) -> Void)? = nil
+    var dismissMissedTimer: ((UUID) -> Void)? = nil
     let label: (PanelActivity) -> String
     @ViewBuilder let content: (PanelActivity) -> Content
     @Environment(\.effectiveReduceMotion) private var reduceMotion
@@ -35,11 +88,153 @@ struct ActivityStackView<Content: View>: View {
     @State private var outgoing: CGFloat = 0
 
     private var animation: Animation { reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack }
-    private var shape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous)
-    }
+    private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: DesignTokens.Radius.module, style: .continuous) }
+    private var capsuleShape: Capsule { Capsule(style: .continuous) }
+    private var usesTieredLayout: Bool { store != nil || !missedTimers.isEmpty }
 
     var body: some View {
+        if usesTieredLayout { tieredBody } else { legacyStackBody }
+    }
+
+    // MARK: - Tiered WP2a Layout (Pinned Independent Cards + 32pt Ordinary Capsule)
+
+    @ViewBuilder
+    private var tieredBody: some View {
+        let tiered = ActivityStackPolicy.partition(activities: activities, store: store)
+        if !tiered.pinned.isEmpty || !missedTimers.isEmpty || !tiered.ordinary.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(tiered.pinned) { pinnedCard($0) }
+                ForEach(missedTimers) { missedTimerCard($0) }
+                if !tiered.ordinary.isEmpty { ordinaryReminderSection(tiered.ordinary) }
+            }
+            .animation(animation, value: activities.map(\.id))
+            .animation(animation, value: missedTimers.map(\.id))
+            .transaction { if reduceMotion { $0.disablesAnimations = false } }
+        }
+    }
+
+    private func pinnedCard(_ activity: PanelActivity) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            content(activity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if activity.isDismissible {
+                Button {
+                    withAnimation(animation) { dismiss(activity) }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
+                .padding(.trailing, 6)
+                .accessibilityLabel(Text(L10n.tr("清除", "Dismiss")))
+            }
+        }
+        .themedAdaptiveGlass(theme, in: shape)
+        .clipShape(shape)
+        .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
+        .accessibilityElement(children: .contain)
+        .accessibilityActions {
+            if activity.isDismissible {
+                Button(L10n.tr("清除", "Dismiss")) { dismiss(activity) }
+            }
+        }
+    }
+
+    private func missedTimerCard(_ entry: ScheduledCommand) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Label(
+                    L10n.tr("已错过的定时：\(entry.reply)", "Missed timer: \(entry.reply)"),
+                    systemImage: "exclamationmark.clock.fill"
+                )
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .foregroundStyle(.primary)
+                Spacer(minLength: 4)
+            }
+            HStack(spacing: 8) {
+                Button(L10n.tr("立即执行", "Run Now")) { runMissedTimer?(entry.id) }
+                    .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                Button(L10n.tr("忽略", "Dismiss")) {
+                    withAnimation(animation) { dismissMissedTimer?(entry.id) }
+                }
+                .themedPillButtonStyle(theme)
+                .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .themedAdaptiveGlass(theme, in: shape)
+        .clipShape(shape)
+        .shadow(color: .black.opacity(0.14), radius: 8, x: 0, y: 3)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func ordinaryReminderSection(_ ordinary: [PanelActivity]) -> some View {
+        let summaryText = ActivityStackPolicy.ordinaryCapsuleSummary(labels: ordinary.map(label))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Button {
+                    withAnimation(animation) { isExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                        Text(summaryText)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(.primary.opacity(0.88))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(isExpanded ? L10n.tr("收起", "Collapse") : L10n.tr("查看", "View"))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if ordinary.contains(where: \.isDismissible) {
+                    Button {
+                        withAnimation(animation) {
+                            for item in ordinary where item.isDismissible { dismiss(item) }
+                            isExpanded = false
+                        }
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 22, height: 22)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("收起普通提醒", "Dismiss notifications")))
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 32)
+            .themedAdaptiveGlass(theme, in: capsuleShape)
+            .clipShape(capsuleShape)
+            .accessibilityElement(children: .contain)
+
+            if isExpanded {
+                VStack(spacing: 6) {
+                    ForEach(ordinary) { pinnedCard($0) }
+                }
+                .transition(.opacity)
+            }
+        }
+    }
+
+    // MARK: - Legacy Generic Stack Fallback (Preserves Direct Unit Tests)
+
+    @ViewBuilder
+    private var legacyStackBody: some View {
         if let first = activities.first {
             VStack(alignment: .leading, spacing: 8) {
                 if activities.count > 1 { header }

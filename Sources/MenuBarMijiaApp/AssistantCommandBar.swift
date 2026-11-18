@@ -636,10 +636,6 @@ struct AssistantResponseArea: View {
                 cloudConsentRow(consent)
             }
 
-            if !store.missedScheduledCommands.isEmpty {
-                missedScheduledRow
-            }
-
             if !store.scheduledCommands.isEmpty {
                 scheduledRow
             }
