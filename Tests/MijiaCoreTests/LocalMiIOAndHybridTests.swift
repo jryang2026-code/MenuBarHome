@@ -1561,6 +1561,121 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.shutdown()
     }
+
+    @Test("Multi-key split Wi-Fi wall switch routes getProps, execute, and readBack over LAN in both unscoped and selected-home modes")
+    func splitWallSwitchRoutesOverLANWithAndWithoutSelectedHome() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let onProp = MiotProperty(
+            iid: 1,
+            type: "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1",
+            format: "bool",
+            access: ["read", "write", "notify"]
+        )
+        let wallSwitchSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:switch:0000A003:lemesh-sw2f12:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+                MiotService(iid: 3, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+            ]
+        )
+        let model = "lemesh.switch.sw2f12"
+        let parent = MiDeviceRecord(
+            did: "100",
+            name: "二键开关",
+            model: model,
+            isOnline: true,
+            localIp: "192.168.1.60",
+            token: tokenHex,
+            isShared: false
+        )
+        let key2 = MiDeviceRecord(did: "100.s2", name: "筒灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 2)
+        let key3 = MiDeviceRecord(did: "100.s3", name: "氛围灯", model: model, isOnline: true, splitParentDid: "100", splitSiid: 3)
+
+        for selectedHome in [nil, "h1"] as [String?] {
+            let key2On = LockedBox(false)
+            let key3On = LockedBox(true)
+            let udpTransport = MockUDPTransport { packet, _, _ in
+                if packet == MiIOPacket.helloPacket {
+                    return makeHelloResponse(deviceId: 0x5555_6666, stamp: 50)
+                }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let method = req["method"]?.stringValue ?? ""
+                let reply: String
+                if method == "set_properties" {
+                    let params = req["params"]?.arrayValue ?? []
+                    for item in params {
+                        if item["siid"]?.intValue == 2, let b = item["value"]?.boolValue {
+                            key2On.withValue { $0 = b }
+                        } else if item["siid"]?.intValue == 3, let b = item["value"]?.boolValue {
+                            key3On.withValue { $0 = b }
+                        }
+                    }
+                    reply = #"{"id":\#(reqId),"result":[{"did":"100","siid":2,"piid":1,"code":0}]}"#
+                } else {
+                    let v2 = key2On.withValue { $0 }
+                    let v3 = key3On.withValue { $0 }
+                    reply = #"{"id":\#(reqId),"result":[{"did":"100","siid":2,"piid":1,"value":\#(v2),"code":0},{"did":"100","siid":3,"piid":1,"value":\#(v3),"code":0}]}"#
+                }
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+
+            let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0)
+            let orderedDevices = selectedHome == nil ? [key2, key3, parent] : [parent, key2, key3]
+            let api = HybridMockCloudAPI(
+                devices: orderedDevices,
+                rooms: [
+                    MiRoom(
+                        id: "r1",
+                        name: "主卧",
+                        dids: ["100.s2", "100.s3"],
+                        homeId: "h1",
+                        homeName: "Home 1"
+                    )
+                ]
+            )
+            let provider = MiCloudProvider(
+                sessionLoader: { self.stubSession },
+                apiFactory: { _ in api },
+                specSource: HybridMockSpecSource(specs: [model: wallSwitchSpec]),
+                localClient: localClient,
+                pollInterval: .seconds(3600),
+                closedPollInterval: .seconds(3600),
+                selectedHomeLoader: { selectedHome }
+            )
+
+            let collector = EventCollector()
+            let stream = provider.events()
+            let task = Task {
+                for await event in stream {
+                    await collector.append(event)
+                }
+                await collector.finish()
+            }
+
+            #expect(await collector.wait { !$0.snapshots.isEmpty })
+            let initialSnap = await collector.snapshots.last
+            #expect(initialSnap?.devices.map(\.id).sorted() == ["100.s2", "100.s3"])
+            #expect(initialSnap?.devices.first { $0.id == "100.s2" }?.isActiveOn == false)
+            #expect(initialSnap?.devices.first { $0.id == "100.s3" }?.isActiveOn == true)
+            #expect(await api.getPropsCalls.isEmpty)
+
+            try await provider.execute(.setSwitch(entityId: "miot:100:2", isOn: true))
+            #expect(await api.setPropsCalls.isEmpty)
+
+            let rb = await provider.readBack(deviceId: "100.s2")
+            #expect(rb == .published)
+            if rb == .published {
+                #expect(await collector.wait { $0.snapshots.last?.devices.first { $0.id == "100.s2" }?.isActiveOn == true })
+            }
+            #expect(await api.getPropsCalls.isEmpty)
+            #expect(await api.setPropsCalls.isEmpty)
+
+            await provider.shutdown()
+            task.cancel()
+        }
+    }
 }
 
 private func lightBrightness(_ device: SmartDevice?) -> Int? {

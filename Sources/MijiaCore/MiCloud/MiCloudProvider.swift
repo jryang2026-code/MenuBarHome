@@ -623,7 +623,10 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         var recordByDid: [String: MiDeviceRecord] = [:]
-        for record in scopedDevices where recordByDid[record.miotDid] == nil {
+        for record in scopedDevices {
+            if let existing = recordByDid[record.miotDid], existing.splitParentDid == nil {
+                continue
+            }
             recordByDid[record.miotDid] = record
         }
 
@@ -984,7 +987,10 @@ public actor MiCloudProvider: HomeProvider {
         let entityId = command.targetEntityId
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
-        guard let record = devices.first(where: { $0.did == did }) ?? devices.first(where: { $0.miotDid == did }),
+        guard let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
+            ?? devices.first(where: { $0.did == did })
+            ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
+            ?? devices.first(where: { $0.miotDid == did }),
               let spec = specsByModel[record.model] else {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
