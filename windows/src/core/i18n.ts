@@ -128,6 +128,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "米家云端": ["米家云端", "Xiaomi Cloud"],
   "拖动卡片排序 · 点右下角圆弧手柄改大小": ["拖动卡片排序 · 点右下角圆弧手柄改大小", "Drag to reorder · drag or tap the corner handle to resize"],
   "语音控制": ["语音控制", "Voice control"],
+  "语音输入": ["语音输入", "Voice input"],
   "完成": ["完成", "Done"],
   "完成布局编辑": ["完成布局编辑", "Finish layout editing"],
   "全关": ["全关", "All off"],

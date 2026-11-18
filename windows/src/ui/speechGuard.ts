@@ -183,8 +183,50 @@ export function abortVoiceInput(host: MenuMijiaWindowsApp): void {
   }
 }
 
+/** 语音输入 is on unless the user explicitly turned it off; legacy settings have no key. */
+export function isVoiceInputEnabled(
+  settings: Pick<PersistedSettings, "voiceInputEnabled">,
+): boolean {
+  return settings.voiceInputEnabled !== false;
+}
+
+/** Whether this WebView exposes Web Speech at all; the switch stays honest either way. */
+export function isSpeechRecognitionSupported(): boolean {
+  return Boolean(window.SpeechRecognition ?? window.webkitSpeechRecognition);
+}
+
+/**
+ * Turns 语音输入 on or off. Turning it off aborts the live recognizer before the setting is
+ * written, so a result that lands afterwards sees a closed session and is dropped instead of
+ * submitting a command the user can no longer cancel.
+ */
+export function setVoiceInputEnabled(
+  host: MenuMijiaWindowsApp,
+  enabled: boolean,
+  options?: { readonly persistSettings?: boolean; readonly render?: boolean },
+): void {
+  const persistSettings = options?.persistSettings ?? true;
+  const shouldRender = options?.render ?? true;
+  host.settings.voiceInputEnabled = enabled;
+  if (!enabled) {
+    abortVoiceInput(host);
+  }
+  if (persistSettings) {
+    host.saveSettings();
+  }
+  if (shouldRender) {
+    host.render();
+  }
+}
+
 export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   const state = hostState(host);
+  if (!isVoiceInputEnabled(host.settings)) {
+    // The mic entry is hidden while off; this also covers a stale click from a panel rendered
+    // before the switch flipped, and makes sure nothing keeps running.
+    abortVoiceInput(host);
+    return;
+  }
   if (host.isListeningVoice) {
     abortVoiceInput(host);
     host.render();
@@ -219,6 +261,7 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   let hadError = false;
 
   recognition.onresult = (event) => {
+    if (!isVoiceInputEnabled(host.settings)) return;
     if (state.speechRecognition !== recognition || host.sourceRevision !== startedRevision) return;
     let finalTranscript = "";
     let interimTranscript = "";
@@ -267,7 +310,7 @@ export function toggleVoiceInput(host: MenuMijiaWindowsApp): void {
   recognition.onend = () => {
     if (state.speechRecognition !== recognition) return;
     const pending =
-      !submittedFinal && !hadError && host.sourceRevision === startedRevision
+      !submittedFinal && !hadError && isVoiceInputEnabled(host.settings) && host.sourceRevision === startedRevision
         ? latestInterim.trim()
         : "";
     latestInterim = "";
