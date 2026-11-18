@@ -9,6 +9,7 @@ mod credentials;
 mod network;
 mod placement;
 mod update;
+mod wifi;
 mod window;
 mod update_manifest;
 use camera::*;
@@ -23,6 +24,7 @@ use placement::{
     PanelAnchor, PanelPlacement, PlacementInput, Rect, TaskbarEdge, DRAG_SETTLE_MS,
 };
 use update::*;
+use wifi::wifi_current;
 use window::*;
 
 #[cfg(test)]
@@ -261,6 +263,7 @@ fn main() {
             get_launch_at_login,
             get_env_var,
             is_workstation_locked,
+            wifi_current,
             set_tray_tooltip, send_desktop_notification,
             write_raycast_snapshot,
             remove_raycast_snapshot,

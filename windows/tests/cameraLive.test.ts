@@ -598,6 +598,14 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     // Switch to custom HLS stream URL -> tears down hub subdid bridge AND consumes binding
     await click("#btn-toggle-camera-url");
     const urlInput = element<HTMLInputElement>("#camera-stream-url-input");
+    assert.equal(
+      urlInput.getAttribute("placeholder"),
+      "http://192.168.1.10:1984/api/stream.m3u8?src=cam",
+      "the example must be a LAN address; unapproved loopback URLs are rejected by the native layer",
+    );
+    const urlHint = element("#camera-stream-url-hint").textContent ?? "";
+    assert.match(urlHint, /127\.0\.0\.1/);
+    assert.match(urlHint, /go2rtc/);
     urlInput.value = "http://192.168.50.10:8080/live/cam.m3u8";
     await click("#btn-save-camera-url");
     await waitFor(() => ctx.hlsBridgeCalls.length === 1 && ctx.frameSrcs.includes("cam_mjpeg_cammwc11"));

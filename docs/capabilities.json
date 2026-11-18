@@ -83,7 +83,7 @@
       "en": "Mac Event Automation",
       "zh": "Mac 状态自动化",
       "macos": "supported",
-      "windows": "unsupported"
+      "windows": "partial"
     },
     {
       "id": "app-intents",
