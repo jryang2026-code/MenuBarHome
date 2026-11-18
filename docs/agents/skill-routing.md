@@ -1,0 +1,5 @@
+# 技能路由（pstack & Matt Pocock 工程套件）
+
+- **工程执行默认路由 `poteto-mode`**：涉及多文件修改、跨函数/模块签名调整、架构设计、根因未明的 Bug 或性能问题时，按当前宿主读取并执行 `poteto-mode`（本机 Antigravity / Codex 直接 `read_file` 读取 `~/.agents/skills/poteto-mode/SKILL.md` 与 `~/.agents/skill-catalog/pstack/docs/harness/antigravity.md`）；单文件明确小改或纯问答直接执行并在真实产物上验证。意图已明确时直入对应专项技能（`~/.agents/skill-catalog/pstack/skills/` 下的 `how`、`why`、`architect`、`arena`、`pstack-swarm`、`interrogate`、`pstack-tdd`、`no-comments`、`unslop`、`technical-writing`、`reflect`）。
+- **本机 Swarm 与 PR 盯梢路由**：多代理并行协作遵循 `~/.agents/skills/poteto-swarm/SKILL.md`（并发写者用 `workspace: "share"` + Carbon/Argon/Hydrogen 三层模型路由，`Monitor` 固定 `gemini-4-hydrogen-xhigh` 且仅多波次并发时启用）；PR/CI 等待优先跑后台阻塞脚本 `bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`，不用 LLM `schedule` 短周期轮询。Antigravity Cloud Linux 容器仍使用 `Workspace: "inherit"`、`Model: "inherit"`（见 [`cursor-cloud.md`](cursor-cloud.md)）。
+- **议题分拣、规划拆票与双轴审查**：使用已安装的 Matt Pocock 工程技能（`triage`、`wayfinder`、`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`diagnosing-bugs`、`code-review`、`retro`；Antigravity Cloud 镜像别名带 `mp-` 前缀），与 [`issue-tracker.md`](issue-tracker.md) 联动。

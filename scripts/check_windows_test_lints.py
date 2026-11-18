@@ -52,9 +52,10 @@ LEGACY_BLIND_SLEEP_CEILING: RatchetCeiling = {
     "windows/tests/ui.test.ts": 13,
 }
 
-LEGACY_SHORT_WAITFOR_CEILING: RatchetCeiling = {
-    "windows/tests/w2UndoGrokCam.test.ts": 1,
-}
+# 规则 B 的棘轮已归零：#237 的 scripts/check_windows_test_timeouts.py 用更严的
+# 2000 ms 下限接管了 waitFor 上限，并把最后 1 处历史遗留一并修掉。这里保持空表，
+# 规则本身继续兜底：任何新增的亚秒级 waitFor 仍会立即红灯。
+LEGACY_SHORT_WAITFOR_CEILING: RatchetCeiling = {}
 
 
 # ---------------------------------------------------------------------------

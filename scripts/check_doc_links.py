@@ -29,7 +29,7 @@ MD_LINK_RE = re.compile(
 HTML_LINK_RE = re.compile(r"""<(?:a\b[^>]*?\bhref|img\b[^>]*?\bsrc|source\b[^>]*?\bsrcset)\s*=\s*(['"])(.*?)\1""", re.IGNORECASE)
 LINE_FRAGMENT_RE = re.compile(r"^L([1-9][0-9]*)(?:-L?([1-9][0-9]*))?$")
 HISTORICAL_ADR_RE = re.compile(r"^docs/adr/[0-9]")
-AGENT_POLICY_DOCS = ("AGENTS.md", "docs/agents/issue-tracker.md")
+AGENT_POLICY_DOCS = ("AGENTS.md", "docs/agents/issue-tracker.md", "docs/agents/skill-routing.md")
 STALE_AGENT_REFS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\blookup_skill\b"), "已移除的跨宿主幻觉工具 lookup_skill（请改为直接读取对应 SKILL.md 路径）"),
     (
