@@ -71,6 +71,13 @@ struct DualSourceFallbackGraceTests {
         func backend(forCard cardID: String) -> HomeBackend? {
             latestHome?.deviceBackends[cardID]
         }
+
+        /// True once a merged snapshot reports the source as disconnected, so a test can gate its
+        /// clock advance on the drop actually being recorded (#25).
+        func sourceIsDisconnected(_ backend: HomeBackend) -> Bool {
+            if case .disconnected = latestHome?.sourceStatuses[backend] ?? .connecting { return true }
+            return false
+        }
     }
 
     private func makeRig(
@@ -158,7 +165,9 @@ struct DualSourceFallbackGraceTests {
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
 
         // The outage outlasts the window: the fallback to Mi cloud is adopted and the truly
-        // unavailable HA stream is closed explicitly.
+        // unavailable HA stream is closed explicitly. The clock only advances once a merged
+        // snapshot has recorded the drop, so the window cannot start at the advanced time.
+        await waitUntil { await rig.collector.sourceIsDisconnected(.homeAssistant) }
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
@@ -187,9 +196,11 @@ struct DualSourceFallbackGraceTests {
         #expect(await rig.miMock.stoppedCameraIDs.isEmpty)
 
         await rig.miMock.sendStatus(.disconnected("poll failed"))
+        await waitUntil { await rig.collector.sourceIsDisconnected(.xiaomiCloud) }
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
         #expect(await rig.miMock.stoppedCameraIDs.isEmpty, "A brief Mi blip must not kill the live view")
 
+        await waitUntil { await rig.collector.sourceIsDisconnected(.xiaomiCloud) }
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)

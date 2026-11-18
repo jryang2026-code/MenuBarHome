@@ -340,7 +340,14 @@ public actor DualSourceHomeProvider: HomeProvider {
         fallbackRecheckTask?.cancel()
         guard let deadline = earliestPendingFallbackDeadline(after: now) else { return }
         fallbackRecheckTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(max(0.1, now.distance(to: deadline))))
+            do {
+                try await Task.sleep(for: .seconds(max(0.1, now.distance(to: deadline))))
+            } catch {
+                // A newer recompute cancelled this deadline and owns rescheduling now. Waking
+                // here to merge again would ping-pong cancelled sleepers into a recompute loop.
+                return
+            }
+            guard !Task.isCancelled else { return }
             await self?.recompute()
         }
     }
