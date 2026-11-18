@@ -55,6 +55,7 @@ extension HomeStore {
     func invalidateUndoContext() {
         controlContextID = UUID()
         readBackTickets.reset()
+        releaseReadBackEcho()
         undoTimerTask?.cancel()
         undoBanner = nil
         lastAssistantUndo = nil
