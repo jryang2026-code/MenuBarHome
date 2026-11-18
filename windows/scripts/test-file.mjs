@@ -11,22 +11,68 @@ const usageText =
 // test file), so runner flags must come before the files when we spawn it.
 // Callers, however, pass them in any order -- `test-file.mjs a.test.ts
 // --test-name-pattern foo` is the natural thing to type. partitionTestFileArgs
-// regroups argv so every --test* flag lands after --test and before the files.
-const RUNNER_BOOLEAN_FLAGS = new Set(["--test", "--test-only", "--test-force-exit"]);
+// regroups argv so every runner flag lands after --test and before the files.
+
+// The only options that eat the next argv token are those that take a value
+// in the space-separated form. The list is taken from `node --help` (options
+// documented as `--opt=...`) rather than inferred from the flag name: plenty
+// of `--test*` / `--experimental-test*` flags are pure switches, and treating
+// those as value-taking would swallow a following <test-file>.
+//
+// Anything missing here -- including booleans like --test-only,
+// --test-force-exit, --test-update-snapshots, --experimental-test-coverage,
+// --experimental-test-module-mocks, --experimental-test-snapshots, and every
+// flag a future Node adds -- stays a single token, which is the safe default.
+// Value-taking options that are not listed must be written as --opt=value.
+const RUNNER_VALUE_OPTIONS = new Set([
+  // Test runner.
+  "--test-name-pattern",
+  "--test-skip-pattern",
+  "--test-reporter",
+  "--test-reporter-destination",
+  "--test-concurrency",
+  "--test-timeout",
+  "--test-global-setup",
+  "--test-isolation",
+  "--experimental-test-isolation",
+  "--test-rerun-failures",
+  "--test-shard",
+  "--test-random-seed",
+  "--test-coverage-branches",
+  "--test-coverage-functions",
+  "--test-coverage-lines",
+  "--test-coverage-include",
+  "--test-coverage-exclude",
+  "--experimental-test-tag-filter",
+  // Module loading and process startup.
+  "--import",
+  "--require",
+  "-r",
+  "--loader",
+  "--experimental-loader",
+  "--conditions",
+  "-C",
+  "--env-file",
+  "--env-file-if-exists",
+  "--input-type",
+  // Watch mode and runtime limits, which callers put in front of the files.
+  "--watch-path",
+  "--watch-kill-signal",
+  "--max-old-space-size",
+  "--max-semi-space-size",
+  "--stack-size",
+  "--title",
+  "--unhandled-rejections",
+]);
 
 function isRunnerOption(token) {
   return token.startsWith("-");
 }
 
 function takesValue(token) {
+  // --opt=value carries its own value, so it never consumes the next token.
   if (token.includes("=")) return false;
-  if (token.startsWith("--test") || token.startsWith("--experimental-test")) {
-    return !RUNNER_BOOLEAN_FLAGS.has(token);
-  }
-  // Unknown options pass through as single tokens; value-taking unknown
-  // options should use the --opt=val form so the value is never mistaken for
-  // a test file.
-  return false;
+  return RUNNER_VALUE_OPTIONS.has(token);
 }
 
 export function partitionTestFileArgs(argv) {
