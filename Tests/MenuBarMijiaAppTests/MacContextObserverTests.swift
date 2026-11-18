@@ -14,4 +14,27 @@ struct MacContextObserverTests {
             #expect((0...100).contains(percent))
         }
     }
+
+    @Test("Snapshot presence requires both an awake display and an unlocked on-console session")
+    func snapshotPresenceRequiresUnlockedSession() {
+        let unlockedSession: [String: Any] = [
+            "kCGSSessionOnConsoleKey": 1,
+            "kCGSessionLoginDoneKey": 1
+        ]
+        let lockedSession: [String: Any] = [
+            "CGSSessionScreenIsLocked": 1,
+            "kCGSSessionOnConsoleKey": 1,
+            "kCGSessionLoginDoneKey": 1
+        ]
+        let offConsoleSession: [String: Any] = [
+            "kCGSSessionOnConsoleKey": 0,
+            "kCGSessionLoginDoneKey": 1
+        ]
+
+        #expect(MacContextObserver.isUserPresent(displayIsAsleep: false, session: unlockedSession))
+        #expect(!MacContextObserver.isUserPresent(displayIsAsleep: true, session: unlockedSession))
+        #expect(!MacContextObserver.isUserPresent(displayIsAsleep: false, session: lockedSession))
+        #expect(!MacContextObserver.isUserPresent(displayIsAsleep: false, session: offConsoleSession))
+        #expect(!MacContextObserver.isUserPresent(displayIsAsleep: false, session: nil))
+    }
 }

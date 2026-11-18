@@ -70,12 +70,25 @@ struct AutomationContextEngineTests {
         return (defaults, suite)
     }
 
+    static let unlockedEnvironment = AutomationEnvironmentProbe(
+        isLidClosed: { false },
+        currentWiFi: { (ssid: nil, isAuthorized: true) },
+        isScreenLocked: { false }
+    )
+
+    static let lockedEnvironment = AutomationEnvironmentProbe(
+        isLidClosed: { false },
+        currentWiFi: { (ssid: nil, isAuthorized: true) },
+        isScreenLocked: { true }
+    )
+
     private func makeEngine(
         rules: [AutomationRule],
         defaults: UserDefaults,
         lightOn: Bool = true,
         scenes: [HomeScene] = [],
-        calendar: Calendar = .current
+        calendar: Calendar = .current,
+        environment: AutomationEnvironmentProbe = Self.unlockedEnvironment
     ) async throws -> (AutomationEngine, HomeStore, MockHomeProvider, FakeMacContextProvider) {
         AutomationRuleStore(defaults: defaults).save(rules)
         let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes)
@@ -83,7 +96,8 @@ struct AutomationContextEngineTests {
         let engine = AutomationEngine(
             defaults: defaults,
             contextProvider: provider,
-            calendar: calendar
+            calendar: calendar,
+            environment: environment
         )
         engine.attach(store: store)
         engine.startContextObservation()
@@ -462,5 +476,69 @@ struct AutomationContextEngineTests {
 
         await provider.emit(MacContextSnapshot(), at: nextNight)
         #expect(await mock.executedCommands.count == 2)
+    }
+
+    @Test("Late-night use stays suppressed when the app launches while locked and fires after unlock")
+    func lateNightRuleSuppressedWhenLaunchedLockedUntilUnlock() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let rule = AutomationRule(
+            trigger: .lateNightUsage,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            triggerOptions: AutomationTriggerOptions(lateNightStartHour: 23, lateNightEndHour: 6)
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let (engine, _, mock, provider) = try await makeEngine(
+            rules: [rule],
+            defaults: defaults,
+            calendar: calendar,
+            environment: Self.lockedEnvironment
+        )
+        let night = try #require(calendar.date(from: DateComponents(
+            year: 2026, month: 6, day: 15, hour: 23, minute: 30
+        )))
+
+        // Display lit on the lock screen at relaunch: must not count as present or burn the night cooldown.
+        await provider.emit(MacContextSnapshot(isUserPresent: true), at: night)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Unlocking restores presence so the next poll in the same night runs the rule.
+        await engine.handle(trigger: .back, at: night.addingTimeInterval(60))
+        await provider.emit(MacContextSnapshot(isUserPresent: true), at: night.addingTimeInterval(70))
+        #expect(await mock.executedCommands == [offCommand()])
+    }
+
+    @Test("Arbitrated screen lock and unlock signals immediately toggle presence for late-night rules")
+    func arbitratedScreenLockAndUnlockUpdatePresence() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let rule = AutomationRule(
+            trigger: .lateNightUsage,
+            action: .devices(ids: [Self.lightId], isOn: false),
+            triggerOptions: AutomationTriggerOptions(lateNightStartHour: 23, lateNightEndHour: 6)
+        )
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        // Next year keeps the lock debounce deadline in the future so the background sleep cannot race.
+        let year = calendar.component(.year, from: Date()) + 1
+        let (engine, _, mock, provider) = try await makeEngine(
+            rules: [rule],
+            defaults: defaults,
+            calendar: calendar,
+            environment: Self.unlockedEnvironment
+        )
+        let night = try #require(calendar.date(from: DateComponents(
+            year: year, month: 6, day: 15, hour: 23, minute: 30
+        )))
+
+        await engine.ingestAway(.screenLocked, at: night)
+        // Even before the 2 s lock debounce flushes, a poll arriving while locked must not fire.
+        await provider.emit(MacContextSnapshot(isUserPresent: true), at: night.addingTimeInterval(1))
+        #expect(await mock.executedCommands.isEmpty)
+
+        await engine.ingestAway(.screenUnlocked, at: night.addingTimeInterval(10))
+        await provider.emit(MacContextSnapshot(isUserPresent: true), at: night.addingTimeInterval(20))
+        #expect(await mock.executedCommands == [offCommand()])
     }
 }
