@@ -2202,6 +2202,9 @@ struct GoldenCorpusTests {
         struct Catalog: Decodable {
             let devices: [CapabilityIndexedDevice], scenes: [SceneReference], deviceGroups: [DeviceGroupReference]
         }
+        struct InvalidDeviceCase: Decodable {
+            let id: String, rawDevice: [String: JSONValue]
+        }
         struct UpgradeCase: Decodable {
             let id: String, evidence: CapabilityInstallEvidence, expectedMode: CapabilityInstallResolutionMode
             let expectedPersistMigrationComplete: Bool, expectedRetryDiagnostic: String?, expectedSelection: CapabilitySelection
@@ -2230,7 +2233,8 @@ struct GoldenCorpusTests {
             let id: String, timer: TimerReference, fireAtEpochSeconds: Int, nowEpochSeconds: Int
             let activeConnectionScopes: [String], selection: CapabilitySelection, expectedDisposition: PausedTimerResumeDisposition
         }
-        let version: Int, catalog: Catalog, upgradeCases: [UpgradeCase], deactivationCases: [DeactivationCase]
+        let version: Int, allCategories: [DeviceCategoryID], allFeatures: [FeatureID]
+        let catalog: Catalog, invalidDeviceCases: [InvalidDeviceCase], upgradeCases: [UpgradeCase], deactivationCases: [DeactivationCase]
         let writeGateCases: [WriteGateCase], planGateCases: [PlanGateCase], pausedTimerResumeCases: [ResumeCase]
     }
 
@@ -2241,6 +2245,26 @@ struct GoldenCorpusTests {
         let manifest = try CapabilityManifest.parse(from: Data(contentsOf: manifestURL))
         let corpus = try JSONDecoder().decode(CapabilitySelectionCorpus.self, from: Data(contentsOf: fixtureURL))
         #expect(corpus.version == 1)
+
+        let manifestCategories = manifest.entries.compactMap { entry -> DeviceCategoryID? in
+            if case .deviceCategory(let cat) = entry.id { return cat }
+            return nil
+        }.sorted { $0.rawValue < $1.rawValue }
+        let manifestFeatures = manifest.entries.compactMap { entry -> FeatureID? in
+            if case .feature(let feat) = entry.id { return feat }
+            return nil
+        }.sorted { $0.rawValue < $1.rawValue }
+        #expect(corpus.allCategories == manifestCategories)
+        #expect(Set(corpus.allCategories) == Set(DeviceCategoryID.allCases))
+        #expect(corpus.allFeatures == manifestFeatures)
+        #expect(Set(corpus.allFeatures) == Set(FeatureID.allCases))
+
+        for inv in corpus.invalidDeviceCases {
+            let rawData = try JSONEncoder().encode(inv.rawDevice)
+            #expect(throws: (any Error).self, "\(inv.id)") {
+                _ = try JSONDecoder().decode(CapabilityIndexedDevice.self, from: rawData)
+            }
+        }
 
         for c in corpus.upgradeCases {
             let actual = CapabilityReferenceEngine.resolveInstallSelection(evidence: c.evidence, manifest: manifest)
@@ -2310,7 +2334,7 @@ struct GoldenCorpusTests {
             let d = CapabilityReferenceEngine.revalidatePausedTimer(
                 timer: c.timer, fireAtEpochSeconds: c.fireAtEpochSeconds, nowEpochSeconds: c.nowEpochSeconds,
                 activeConnectionScopes: Set(c.activeConnectionScopes), selection: c.selection,
-                devices: corpus.catalog.devices, scenes: corpus.catalog.scenes
+                devices: corpus.catalog.devices, scenes: corpus.catalog.scenes, deviceGroups: corpus.catalog.deviceGroups
             )
             #expect(d == c.expectedDisposition, "\(c.id)")
         }

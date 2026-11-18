@@ -95,15 +95,48 @@ public struct CapabilityIndexedDevice: Codable, Equatable, Sendable {
     public let id: String, name: String, category: DeviceCategoryID, connection: ConnectionCapabilityID?, sourceScope: String
     public let isSourceAvailable: Bool, upstreamHiddenOrDisabled: Bool, participatesInAllOff: Bool
     public let safetySignals: Set<SafetySignalKind>, readKeys: [String], safetyReadKeys: [String]
+    private enum CodingKeys: String, CodingKey {
+        case id, name, category, connection, sourceScope
+        case isSourceAvailable, upstreamHiddenOrDisabled, participatesInAllOff
+        case safetySignals, readKeys, safetyReadKeys
+    }
     public init(
         id: String, name: String, category: DeviceCategoryID, connection: ConnectionCapabilityID?, sourceScope: String,
-        isSourceAvailable: Bool = true, upstreamHiddenOrDisabled: Bool = false, participatesInAllOff: Bool = false,
-        safetySignals: Set<SafetySignalKind> = [], readKeys: [String] = [], safetyReadKeys: [String] = []
+        isSourceAvailable: Bool, upstreamHiddenOrDisabled: Bool, participatesInAllOff: Bool,
+        safetySignals: Set<SafetySignalKind>, readKeys: [String], safetyReadKeys: [String]
     ) {
         self.id = id; self.name = name; self.category = category; self.connection = connection; self.sourceScope = sourceScope
         self.isSourceAvailable = isSourceAvailable; self.upstreamHiddenOrDisabled = upstreamHiddenOrDisabled
         self.participatesInAllOff = participatesInAllOff; self.safetySignals = safetySignals
         self.readKeys = readKeys; self.safetyReadKeys = safetyReadKeys
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        guard c.contains(.connection) else {
+            throw DecodingError.keyNotFound(CodingKeys.connection, .init(codingPath: c.codingPath, debugDescription: "Missing required key connection"))
+        }
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        category = try c.decode(DeviceCategoryID.self, forKey: .category)
+        connection = try c.decodeIfPresent(ConnectionCapabilityID.self, forKey: .connection)
+        sourceScope = try c.decode(String.self, forKey: .sourceScope)
+        isSourceAvailable = try c.decode(Bool.self, forKey: .isSourceAvailable)
+        upstreamHiddenOrDisabled = try c.decode(Bool.self, forKey: .upstreamHiddenOrDisabled)
+        participatesInAllOff = try c.decode(Bool.self, forKey: .participatesInAllOff)
+        safetySignals = try c.decode(Set<SafetySignalKind>.self, forKey: .safetySignals)
+        readKeys = try c.decode([String].self, forKey: .readKeys)
+        safetyReadKeys = try c.decode([String].self, forKey: .safetyReadKeys)
+        if id.isEmpty || name.isEmpty || sourceScope.isEmpty {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "Empty required string in CapabilityIndexedDevice"))
+        }
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(name, forKey: .name); try c.encode(category, forKey: .category)
+        if let connection { try c.encode(connection, forKey: .connection) } else { try c.encodeNil(forKey: .connection) }
+        try c.encode(sourceScope, forKey: .sourceScope); try c.encode(isSourceAvailable, forKey: .isSourceAvailable)
+        try c.encode(upstreamHiddenOrDisabled, forKey: .upstreamHiddenOrDisabled); try c.encode(participatesInAllOff, forKey: .participatesInAllOff)
+        try c.encode(safetySignals, forKey: .safetySignals); try c.encode(readKeys, forKey: .readKeys); try c.encode(safetyReadKeys, forKey: .safetyReadKeys)
     }
 }
 
@@ -128,9 +161,23 @@ public enum QuickActionReferenceKind: String, CaseIterable, Codable, Hashable, S
 }
 
 public struct TimerReference: Codable, Equatable, Sendable {
-    public let id: String, name: String, partition: TimerPartition, targetIds: [String], sourceScopes: [String], allTargetsLGLan: Bool
-    public init(id: String, name: String, partition: TimerPartition, targetIds: [String], sourceScopes: [String], allTargetsLGLan: Bool = false) {
-        self.id = id; self.name = name; self.partition = partition; self.targetIds = targetIds; self.sourceScopes = sourceScopes; self.allTargetsLGLan = allTargetsLGLan
+    public let id: String, name: String, partition: TimerPartition, targetIds: [String], sourceScopes: [String]
+    public let allTargetsLGLan: Bool, pausedCapabilities: [CapabilityID]
+    private enum CodingKeys: String, CodingKey { case id, name, partition, targetIds, sourceScopes, allTargetsLGLan, pausedCapabilities }
+    public init(
+        id: String, name: String, partition: TimerPartition, targetIds: [String],
+        sourceScopes: [String], allTargetsLGLan: Bool = false, pausedCapabilities: [CapabilityID] = []
+    ) {
+        self.id = id; self.name = name; self.partition = partition; self.targetIds = targetIds
+        self.sourceScopes = sourceScopes; self.allTargetsLGLan = allTargetsLGLan; self.pausedCapabilities = pausedCapabilities
+    }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id); name = try c.decode(String.self, forKey: .name)
+        partition = try c.decode(TimerPartition.self, forKey: .partition)
+        targetIds = try c.decode([String].self, forKey: .targetIds); sourceScopes = try c.decode([String].self, forKey: .sourceScopes)
+        allTargetsLGLan = try c.decodeIfPresent(Bool.self, forKey: .allTargetsLGLan) ?? false
+        pausedCapabilities = try c.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
     }
 }
 
@@ -165,7 +212,7 @@ public struct QuickActionReference: Codable, Equatable, Sendable {
 
 public struct SceneReference: Codable, Equatable, Sendable {
     public let id: String, name: String, connection: ConnectionCapabilityID?, sourceScope: String, isSourceAvailable: Bool
-    public init(id: String, name: String, connection: ConnectionCapabilityID?, sourceScope: String, isSourceAvailable: Bool = true) {
+    public init(id: String, name: String, connection: ConnectionCapabilityID?, sourceScope: String, isSourceAvailable: Bool) {
         self.id = id; self.name = name; self.connection = connection; self.sourceScope = sourceScope; self.isSourceAvailable = isSourceAvailable
     }
 }
@@ -248,13 +295,15 @@ public struct CapabilityDeactivationVerdict: Equatable, Sendable {
 public enum ControlTargetKind: String, CaseIterable, Codable, Hashable, Sendable { case device, scene }
 public enum ControlTargetRejectionReason: Equatable, Sendable {
     case categoryDisabled(DeviceCategoryID), deviceNotFound, sceneNotFound
-    case connectionDisabled(ConnectionCapabilityID?, scope: String), connectionUnavailable(ConnectionCapabilityID?, scope: String)
+    case connectionDisabled(ConnectionCapabilityID?, scope: String)
+    case connectionScopeDisabled(ConnectionCapabilityID?, scope: String)
+    case connectionUnavailable(ConnectionCapabilityID?, scope: String)
     case ambiguousTarget, staleGeneration
     public var code: String {
         switch self {
         case .categoryDisabled: "categoryDisabled"; case .deviceNotFound: "deviceNotFound"; case .sceneNotFound: "sceneNotFound"
-        case .connectionDisabled: "connectionDisabled"; case .connectionUnavailable: "connectionUnavailable"
-        case .ambiguousTarget: "ambiguousTarget"; case .staleGeneration: "staleGeneration"
+        case .connectionDisabled: "connectionDisabled"; case .connectionScopeDisabled: "connectionScopeDisabled"
+        case .connectionUnavailable: "connectionUnavailable"; case .ambiguousTarget: "ambiguousTarget"; case .staleGeneration: "staleGeneration"
         }
     }
     public var userMessage: String {
@@ -265,6 +314,9 @@ public enum ControlTargetRejectionReason: Equatable, Sendable {
         case .connectionDisabled(.xiaomiCloud, _): L10n.tr("米家已停用", "Xiaomi Home is turned off")
         case .connectionDisabled(.homeAssistant, _): L10n.tr("Home Assistant 已停用", "Home Assistant is turned off")
         case .connectionDisabled(nil, _): L10n.tr("该连接已停用", "This connection is turned off")
+        case .connectionScopeDisabled(.xiaomiCloud, _): L10n.tr("该米家账号已停用", "This Xiaomi account is turned off")
+        case .connectionScopeDisabled(.homeAssistant, _): L10n.tr("该 Home Assistant 连接已停用", "This Home Assistant connection is turned off")
+        case .connectionScopeDisabled(nil, _): L10n.tr("该连接来源已停用", "This connection source is turned off")
         case .connectionUnavailable(.xiaomiCloud, _): L10n.tr("米家暂不可用，部分设备暂无数据", "Xiaomi Home is temporarily unavailable")
         case .connectionUnavailable(.homeAssistant, _): L10n.tr("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant is temporarily unavailable")
         case .connectionUnavailable(nil, _): L10n.tr("该连接暂不可用", "This connection is temporarily unavailable")
@@ -288,6 +340,11 @@ public enum PausedTimerResumeDisposition: String, CaseIterable, Codable, Hashabl
 public enum CapabilityReferenceEngine {
     public static func connectionCapability(forScope scope: String) -> ConnectionCapabilityID? {
         scope.hasPrefix("mi:") ? .xiaomiCloud : (scope.hasPrefix("ha:") ? .homeAssistant : nil)
+    }
+
+    public static func timerScopesMatch(stampedScopes: [String], activeConnectionScopes: Set<String>) -> Bool {
+        guard stampedScopes.contains(where: activeConnectionScopes.contains) else { return false }
+        return activeConnectionScopes.filter { $0.hasPrefix("ha:") }.allSatisfy(stampedScopes.contains)
     }
 
     public static func resolveInstallSelection(evidence: CapabilityInstallEvidence, manifest: CapabilityManifest) -> CapabilityInstallResolution {
@@ -334,7 +391,6 @@ public enum CapabilityReferenceEngine {
         let beforePart = partitionDevices(devices: devices, selection: before, safetyPolicy: safetyPolicy)
         let afterPart = partitionDevices(devices: devices, selection: after, safetyPolicy: safetyPolicy)
         let beforeAvail = Set(beforePart.availableDeviceIds), afterAvail = Set(afterPart.availableDeviceIds)
-        let disabledScopes = before.enabledConnectionScopes.subtracting(after.enabledConnectionScopes)
         let disabledCats = before.enabledCategories.subtracting(after.enabledCategories)
         let disabledFeats = before.enabledFeatures.subtracting(after.enabledFeatures)
         let cascaded = reverseDependencyOrder(manifest: manifest).filter { before.contains($0) && !after.contains($0) }
@@ -367,16 +423,21 @@ public enum CapabilityReferenceEngine {
                         if sLost, let c = d.connection ?? connectionCapability(forScope: d.sourceScope) { hc.append(.connection(c)) }
                         if cLost { hc.append(.deviceCategory(d.category)) }
                     }
-                } else if let sc = sceneById[tid], before.isSourceEnabled(connection: sc.connection, scope: sc.sourceScope) && !after.isSourceEnabled(connection: sc.connection, scope: sc.sourceScope) {
-                    hs.append(sc.sourceScope); ht.append(tid)
-                    if let c = sc.connection ?? connectionCapability(forScope: sc.sourceScope) { hc.append(.connection(c)) }
-                } else if sceneById[tid] == nil && !disabledScopes.isDisjoint(with: scopes) {
-                    if scopes.filter({ after.enabledConnectionScopes.contains($0) }).isEmpty {
-                        hs.append(contentsOf: scopes); ht.append(tid)
-                        hc.append(contentsOf: scopes.compactMap(connectionCapability(forScope:)).map(CapabilityID.connection))
-                    } else {
-                        blocking.append(.init(kind: .unresolvedReferenceOwnership, referenceId: refId, detail: tid))
-                        return ([], [], [], true)
+                } else if let sc = sceneById[tid] {
+                    if before.isSourceEnabled(connection: sc.connection, scope: sc.sourceScope) && !after.isSourceEnabled(connection: sc.connection, scope: sc.sourceScope) {
+                        hs.append(sc.sourceScope); ht.append(tid)
+                        if let c = sc.connection ?? connectionCapability(forScope: sc.sourceScope) { hc.append(.connection(c)) }
+                    }
+                } else {
+                    let lostScopes = scopes.filter { before.isSourceEnabled(connection: nil, scope: $0) && !after.isSourceEnabled(connection: nil, scope: $0) }
+                    if !lostScopes.isEmpty {
+                        if scopes.filter({ after.isSourceEnabled(connection: nil, scope: $0) }).isEmpty {
+                            hs.append(contentsOf: lostScopes); ht.append(tid)
+                            hc.append(contentsOf: lostScopes.compactMap(connectionCapability(forScope:)).map(CapabilityID.connection))
+                        } else {
+                            blocking.append(.init(kind: .unresolvedReferenceOwnership, referenceId: refId, detail: tid))
+                            return ([], [], [], true)
+                        }
                     }
                 }
             }
@@ -394,8 +455,10 @@ public enum CapabilityReferenceEngine {
         for t in references.timers {
             let kind: AffectedReferenceKind = switch t.partition { case .waiting: .waitingTimer; case .missed: .missedTimer; case .foreign: .foreignTimer }
             if t.allTargetsLGLan {
-                let lostLG = expand(t.targetIds).filter { !afterAvail.contains($0) }
-                if !lostLG.isEmpty { addItem(kind, id: t.id, name: t.name, scopes: t.sourceScopes, targets: lostLG, caps: disabledCats.contains(.tv) ? [.deviceCategory(.tv)] : []) }
+                let lostLG = expand(t.targetIds).filter { (beforeAvail.contains($0) && !afterAvail.contains($0)) || (disabledCats.contains(.tv) && devById[$0] == nil) }
+                if !lostLG.isEmpty {
+                    addItem(kind, id: t.id, name: t.name, scopes: t.sourceScopes, targets: lostLG, caps: lostCaps(for: lostLG) + (disabledCats.contains(.tv) ? [.deviceCategory(.tv)] : []))
+                }
                 continue
             }
             let r = inspect(refId: t.id, rawIds: t.targetIds, scopes: t.sourceScopes)
@@ -422,8 +485,8 @@ public enum CapabilityReferenceEngine {
         }
         for qa in references.quickActions where qa.isEnabled {
             if !qa.targetIds.isEmpty {
-                let m = expand(qa.targetIds), prev = m.filter { beforeAvail.contains($0) }, rem = m.filter { afterAvail.contains($0) }
-                if !prev.isEmpty && rem.isEmpty { addItem(.quickAction, id: qa.id, name: qa.name, scopes: prev.compactMap { devById[$0]?.sourceScope }, targets: prev, caps: lostCaps(for: prev)) }
+                let res = inspect(refId: qa.id, rawIds: qa.targetIds, scopes: [])
+                if !res.blocked && !res.targets.isEmpty { addItem(.quickAction, id: qa.id, name: qa.name, scopes: res.scopes, targets: res.targets, caps: res.caps) }
             } else {
                 let cats = qa.kind.targetCategories
                 let prev = beforePart.availableDeviceIds.filter { devById[$0].map { cats.contains($0.category) } ?? false }
@@ -454,14 +517,23 @@ public enum CapabilityReferenceEngine {
     ) -> ControlTargetGateVerdict {
         if let exp = expectedGeneration, let cur = currentGeneration, exp != cur { return .init(allowed: false, writeCount: 0, rejectionReason: .staleGeneration, mayControlHiddenDevices: false) }
         if Set(candidateIds).count > 1 { return .init(allowed: false, writeCount: 0, rejectionReason: .ambiguousTarget, mayControlHiddenDevices: false) }
+        func sourceRejection(connection: ConnectionCapabilityID?, scope: String, isAvailable: Bool) -> ControlTargetRejectionReason? {
+            let conn = connection ?? connectionCapability(forScope: scope)
+            if let conn, !selection.enabledConnections.contains(conn) { return .connectionDisabled(conn, scope: scope) }
+            if !selection.isSourceEnabled(connection: conn, scope: scope) { return .connectionScopeDisabled(conn, scope: scope) }
+            return isAvailable ? nil : .connectionUnavailable(conn, scope: scope)
+        }
         switch targetKind {
         case .device:
             guard let dev = devices.first(where: { $0.id == targetId && !$0.upstreamHiddenOrDisabled }) else {
                 return .init(allowed: false, writeCount: 0, rejectionReason: .deviceNotFound, mayControlHiddenDevices: false)
             }
             let conn = dev.connection ?? connectionCapability(forScope: dev.sourceScope)
-            if !selection.isSourceEnabled(connection: conn, scope: dev.sourceScope) {
+            if let conn, !selection.enabledConnections.contains(conn) {
                 return .init(allowed: false, writeCount: 0, rejectionReason: .connectionDisabled(conn, scope: dev.sourceScope), mayControlHiddenDevices: false)
+            }
+            if !selection.isSourceEnabled(connection: conn, scope: dev.sourceScope) {
+                return .init(allowed: false, writeCount: 0, rejectionReason: .connectionScopeDisabled(conn, scope: dev.sourceScope), mayControlHiddenDevices: false)
             }
             if !selection.enabledCategories.contains(dev.category) {
                 return .init(allowed: false, writeCount: 0, rejectionReason: .categoryDisabled(dev.category), mayControlHiddenDevices: false)
@@ -474,12 +546,8 @@ public enum CapabilityReferenceEngine {
             guard let sc = scenes.first(where: { $0.id == targetId }) else {
                 return .init(allowed: false, writeCount: 0, rejectionReason: .sceneNotFound, mayControlHiddenDevices: false)
             }
-            let conn = sc.connection ?? connectionCapability(forScope: sc.sourceScope)
-            if !selection.isSourceEnabled(connection: conn, scope: sc.sourceScope) {
-                return .init(allowed: false, writeCount: 0, rejectionReason: .connectionDisabled(conn, scope: sc.sourceScope), mayControlHiddenDevices: false)
-            }
-            if !sc.isSourceAvailable {
-                return .init(allowed: false, writeCount: 0, rejectionReason: .connectionUnavailable(conn, scope: sc.sourceScope), mayControlHiddenDevices: false)
+            if let reason = sourceRejection(connection: sc.connection, scope: sc.sourceScope, isAvailable: sc.isSourceAvailable) {
+                return .init(allowed: false, writeCount: 0, rejectionReason: reason, mayControlHiddenDevices: false)
             }
             return .init(allowed: true, writeCount: 1, rejectionReason: nil, mayControlHiddenDevices: selection.hasDisabledDeviceCategories)
         }
@@ -499,13 +567,53 @@ public enum CapabilityReferenceEngine {
     public static func revalidatePausedTimer(
         timer: TimerReference, fireAtEpochSeconds: Int, nowEpochSeconds: Int,
         activeConnectionScopes: Set<String>, selection: CapabilitySelection,
-        devices: [CapabilityIndexedDevice], scenes: [SceneReference] = []
+        devices: [CapabilityIndexedDevice], scenes: [SceneReference] = [], deviceGroups: [DeviceGroupReference] = []
     ) -> PausedTimerResumeDisposition {
-        let stamped = Set(timer.sourceScopes)
-        if !timer.allTargetsLGLan && !activeConnectionScopes.filter({ $0.hasPrefix("ha:") }).isSubset(of: stamped) { return .partitionForeign }
-        let targets: [(kind: ControlTargetKind, id: String)] = timer.targetIds.map { tid in scenes.contains(where: { $0.id == tid }) ? (.scene, tid) : (.device, tid) }
-        guard evaluatePlanTargetsGate(targets: targets, selection: selection, devices: devices, scenes: scenes).allowed else { return .keepPaused }
-        if !timer.allTargetsLGLan && stamped.isDisjoint(with: activeConnectionScopes) { return .partitionForeign }
+        if !timer.allTargetsLGLan && !timerScopesMatch(stampedScopes: timer.sourceScopes, activeConnectionScopes: activeConnectionScopes) {
+            return .partitionForeign
+        }
+        if timer.allTargetsLGLan && !selection.enabledCategories.contains(.tv) { return .keepPaused }
+        let activeStamped = timer.sourceScopes.filter { activeConnectionScopes.contains($0) }
+        if !timer.allTargetsLGLan && !activeStamped.contains(where: { selection.isSourceEnabled(connection: nil, scope: $0) }) {
+            return .keepPaused
+        }
+        for cap in timer.pausedCapabilities {
+            switch cap {
+            case .deviceCategory, .feature:
+                if !selection.contains(cap) { return .keepPaused }
+            case .connection(let conn):
+                if !selection.enabledConnections.contains(conn) && activeStamped.contains(where: { connectionCapability(forScope: $0) == conn }) {
+                    return .keepPaused
+                }
+            }
+        }
+        let groupById = Dictionary(deviceGroups.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let sceneIds = Set(scenes.map(\.id))
+        var expandedIds: [String] = [], hasMissingTarget = false
+        for rawId in timer.targetIds {
+            if let group = groupById[rawId] {
+                if group.memberDeviceIds.isEmpty { hasMissingTarget = true } else { expandedIds.append(contentsOf: group.memberDeviceIds) }
+            } else {
+                expandedIds.append(rawId)
+            }
+        }
+        for tid in expandedIds {
+            let kind: ControlTargetKind = sceneIds.contains(tid) ? .scene : .device
+            let verdict = evaluateControlTargetGate(targetKind: kind, targetId: tid, selection: selection, devices: devices, scenes: scenes)
+            if !verdict.allowed {
+                if verdict.rejectionReason == .deviceNotFound || verdict.rejectionReason == .sceneNotFound {
+                    hasMissingTarget = true
+                } else {
+                    return .keepPaused
+                }
+            }
+        }
+        if hasMissingTarget {
+            if !timer.allTargetsLGLan && activeStamped.contains(where: { !selection.isSourceEnabled(connection: nil, scope: $0) }) {
+                return .keepPaused
+            }
+            return .moveToMissed
+        }
         return fireAtEpochSeconds <= nowEpochSeconds ? .moveToMissed : .armWaiting
     }
 

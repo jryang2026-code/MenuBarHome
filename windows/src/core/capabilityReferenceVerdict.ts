@@ -31,9 +31,9 @@ export interface CapabilityInstallResolution {
 export interface CapabilityIndexedDevice {
   readonly id: string; readonly name: string; readonly category: DeviceCategoryID;
   readonly connection: ConnectionCapabilityID | null; readonly sourceScope: string;
-  readonly isSourceAvailable?: boolean; readonly upstreamHiddenOrDisabled?: boolean;
-  readonly participatesInAllOff?: boolean; readonly safetySignals?: readonly SafetySignalKind[];
-  readonly readKeys?: readonly string[]; readonly safetyReadKeys?: readonly string[];
+  readonly isSourceAvailable: boolean; readonly upstreamHiddenOrDisabled: boolean;
+  readonly participatesInAllOff: boolean; readonly safetySignals: readonly SafetySignalKind[];
+  readonly readKeys: readonly string[]; readonly safetyReadKeys: readonly string[];
 }
 export interface SafetyRetentionPolicy { readonly enabledSignals: readonly SafetySignalKind[]; readonly starredDeviceIds?: readonly string[]; }
 export interface DeviceSetPartition {
@@ -49,7 +49,8 @@ export const QUICK_ACTION_TARGET_CATEGORIES = {
 
 export interface TimerReference {
   readonly id: string; readonly name: string; readonly partition: TimerPartition;
-  readonly targetIds: readonly string[]; readonly sourceScopes: readonly string[]; readonly allTargetsLGLan?: boolean;
+  readonly targetIds: readonly string[]; readonly sourceScopes: readonly string[];
+  readonly allTargetsLGLan?: boolean; readonly pausedCapabilities?: readonly CapabilityID[];
 }
 export type AutomationReferenceAction =
   | { readonly kind: "devices"; readonly targetIds: readonly string[] }
@@ -66,7 +67,7 @@ export interface QuickActionReference {
 }
 export interface SceneReference {
   readonly id: string; readonly name: string; readonly connection: ConnectionCapabilityID | null;
-  readonly sourceScope: string; readonly isSourceAvailable?: boolean;
+  readonly sourceScope: string; readonly isSourceAvailable: boolean;
 }
 export interface DeviceGroupReference { readonly id: string; readonly name: string; readonly memberDeviceIds: readonly string[]; }
 export interface PreferenceReferenceSet {
@@ -102,7 +103,7 @@ export interface CapabilityDeactivationVerdict {
 export type ControlTargetKind = "device" | "scene";
 export type ControlTargetRejectionCode =
   | "categoryDisabled" | "deviceNotFound" | "sceneNotFound"
-  | "connectionDisabled" | "connectionUnavailable" | "ambiguousTarget" | "staleGeneration";
+  | "connectionDisabled" | "connectionScopeDisabled" | "connectionUnavailable" | "ambiguousTarget" | "staleGeneration";
 export interface ControlTargetRejectionReason {
   readonly code: ControlTargetRejectionCode; readonly disabledCategory?: DeviceCategoryID;
   readonly connection?: ConnectionCapabilityID | null; readonly scope?: string;
@@ -118,8 +119,35 @@ export interface PlanTargetGateVerdict {
 export type PausedTimerResumeDisposition = "armWaiting" | "moveToMissed" | "keepPaused" | "partitionForeign";
 
 const sortedUnique = <T extends string>(items: Iterable<T>): T[] => [...new Set(items)].sort() as T[];
+const isNonEmptyStr = (v: unknown): v is string => typeof v === "string" && v.length > 0;
+const isStringArray = (v: unknown): v is readonly string[] => Array.isArray(v) && v.every((x) => typeof x === "string");
+
+export function isValidCapabilityIndexedDevice(raw: unknown): raw is CapabilityIndexedDevice {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return false;
+  const r = raw as Record<string, unknown>;
+  return (
+    isNonEmptyStr(r.id) && isNonEmptyStr(r.name) && isNonEmptyStr(r.sourceScope) &&
+    typeof r.category === "string" && (DEVICE_CATEGORY_IDS as readonly string[]).includes(r.category) &&
+    Object.hasOwn(r, "connection") && (r.connection === null || (typeof r.connection === "string" && (CONNECTION_CAPABILITY_IDS as readonly string[]).includes(r.connection))) &&
+    typeof r.isSourceAvailable === "boolean" && typeof r.upstreamHiddenOrDisabled === "boolean" && typeof r.participatesInAllOff === "boolean" &&
+    Array.isArray(r.safetySignals) && r.safetySignals.every((s) => typeof s === "string" && (SAFETY_SIGNAL_KINDS as readonly string[]).includes(s)) &&
+    isStringArray(r.readKeys) && isStringArray(r.safetyReadKeys)
+  );
+}
+
+export function parseCapabilityIndexedDevice(raw: unknown): CapabilityIndexedDevice {
+  if (!isValidCapabilityIndexedDevice(raw)) throw new TypeError("Invalid CapabilityIndexedDevice: missing or malformed required fields");
+  return raw;
+}
+
 export const connectionCapabilityForScope = (scope: string): ConnectionCapabilityID | null =>
   scope.startsWith("mi:") ? "xiaomi-cloud" : scope.startsWith("ha:") ? "home-assistant" : null;
+
+export function timerScopesMatch(stampedScopes: readonly string[], activeConnectionScopes: ReadonlySet<string>): boolean {
+  if (!stampedScopes.some((s) => activeConnectionScopes.has(s))) return false;
+  const stamped = new Set(stampedScopes);
+  return ![...activeConnectionScopes].some((s) => s.startsWith("ha:") && !stamped.has(s));
+}
 
 export function capabilitySoftNoticeMessage(kind: CapabilitySoftNoticeKind, preference?: LanguagePreference): string {
   switch (kind) {
@@ -139,6 +167,10 @@ export function controlTargetRejectionMessage(reason: ControlTargetRejectionReas
       if (reason.connection === "xiaomi-cloud") return tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, preference);
       if (reason.connection === "home-assistant") return tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, preference);
       return tr3("该连接已停用", "該連線已停用", "This connection is turned off", undefined, preference);
+    case "connectionScopeDisabled":
+      if (reason.connection === "xiaomi-cloud") return tr3("该米家账号已停用", "該米家帳號已停用", "This Xiaomi account is turned off", undefined, preference);
+      if (reason.connection === "home-assistant") return tr3("该 Home Assistant 连接已停用", "該 Home Assistant 連線已停用", "This Home Assistant connection is turned off", undefined, preference);
+      return tr3("该连接来源已停用", "該連線來源已停用", "This connection source is turned off", undefined, preference);
     case "connectionUnavailable":
       if (reason.connection === "xiaomi-cloud") return tr3("米家暂不可用，部分设备暂无数据", "米家暫不可用，部分裝置暫無資料", "Xiaomi Home is temporarily unavailable", undefined, preference);
       if (reason.connection === "home-assistant") return tr3("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant 暫不可用，部分裝置暫無資料", "Home Assistant is temporarily unavailable", undefined, preference);
@@ -201,14 +233,14 @@ export function partitionCapabilityDevices(devices: readonly CapabilityIndexedDe
   const cats = new Set(selection.enabledCategories), seen = new Set<string>(), keys = new Set<string>();
   const available: string[] = [], hiddenSafety: string[] = [], safetyEval: string[] = [];
   for (const d of devices) {
-    if (d.upstreamHiddenOrDisabled || !isSourceEnabled(selection, d.connection, d.sourceScope) || seen.has(d.id)) continue;
+    if (!isValidCapabilityIndexedDevice(d) || d.upstreamHiddenOrDisabled !== false || !isSourceEnabled(selection, d.connection, d.sourceScope) || seen.has(d.id)) continue;
     seen.add(d.id);
     if (cats.has(d.category)) {
       available.push(d.id); safetyEval.push(d.id);
-      for (const k of d.readKeys ?? []) keys.add(k);
-    } else if ((d.safetySignals ?? []).some((s) => (s === "starredOffline" ? sigs.has("starredOffline") && starred.has(d.id) : sigs.has(s)))) {
+      for (const k of d.readKeys) keys.add(k);
+    } else if (d.safetySignals.some((s) => (s === "starredOffline" ? sigs.has("starredOffline") && starred.has(d.id) : sigs.has(s)))) {
       hiddenSafety.push(d.id); safetyEval.push(d.id);
-      for (const k of d.safetyReadKeys && d.safetyReadKeys.length > 0 ? d.safetyReadKeys : (d.readKeys ?? [])) keys.add(k);
+      for (const k of d.safetyReadKeys.length > 0 ? d.safetyReadKeys : d.readKeys) keys.add(k);
     }
   }
   return { availableDeviceIds: available, hiddenSafetyRetainedDeviceIds: hiddenSafety, safetyEvaluationDeviceIds: safetyEval, readPlanKeys: sortedUnique(keys), showsHiddenSafetyNotice: hiddenSafety.length > 0 };
@@ -233,14 +265,13 @@ export function evaluateCapabilityDeactivation(
   const before = normalizeCapabilitySelection(current, manifest), after = normalizeCapabilitySelection(proposed, manifest);
   const beforePart = partitionCapabilityDevices(devices, before, safetyPolicy), afterPart = partitionCapabilityDevices(devices, after, safetyPolicy);
   const beforeAvail = new Set(beforePart.availableDeviceIds), afterAvail = new Set(afterPart.availableDeviceIds);
-  const disabledScopes = new Set(before.enabledConnectionScopes.filter((s) => !after.enabledConnectionScopes.includes(s)));
   const disabledCats = new Set(before.enabledCategories.filter((c) => !after.enabledCategories.includes(c)));
   const disabledFeats = new Set(before.enabledFeatures.filter((f) => !after.enabledFeatures.includes(f)));
   const cascaded = reverseDependencyOrder(manifest).filter((id) => selectionContains(before, id) && !selectionContains(after, id));
   const autoChildren = cascaded.filter((id) => selectionContains(proposed, id) && !selectionContains(after, id));
 
   const devById = new Map<string, CapabilityIndexedDevice>();
-  for (const d of devices) if (!d.upstreamHiddenOrDisabled && !devById.has(d.id)) devById.set(d.id, d);
+  for (const d of devices) if (isValidCapabilityIndexedDevice(d) && d.upstreamHiddenOrDisabled === false && !devById.has(d.id)) devById.set(d.id, d);
   const sceneById = new Map((references.scenes ?? []).map((s) => [s.id, s] as const));
   const groupById = new Map((references.deviceGroups ?? []).map((g) => [g.id, g] as const));
   const expand = (ids: readonly string[]): string[] => ids.flatMap((id) => groupById.get(id)?.memberDeviceIds ?? [id]);
@@ -284,13 +315,16 @@ export function evaluateCapabilityDeactivation(
           const conn = sc.connection ?? connectionCapabilityForScope(sc.sourceScope);
           if (conn) hc.push(conn);
         }
-      } else if (scopes.some((s) => disabledScopes.has(s))) {
-        if (scopes.filter((s) => after.enabledConnectionScopes.includes(s)).length === 0) {
-          hs.push(...scopes); ht.push(tid);
-          for (const s of scopes) { const c = connectionCapabilityForScope(s); if (c) hc.push(c); }
-        } else {
-          blocking.push({ kind: "unresolvedReferenceOwnership", referenceId: refId, detail: tid });
-          return { scopes: [] as string[], targets: [] as string[], caps: [] as CapabilityID[], blocked: true };
+      } else {
+        const lostScopes = scopes.filter((s) => isSourceEnabled(before, null, s) && !isSourceEnabled(after, null, s));
+        if (lostScopes.length > 0) {
+          if (scopes.filter((s) => isSourceEnabled(after, null, s)).length === 0) {
+            hs.push(...lostScopes); ht.push(tid);
+            for (const s of lostScopes) { const c = connectionCapabilityForScope(s); if (c) hc.push(c); }
+          } else {
+            blocking.push({ kind: "unresolvedReferenceOwnership", referenceId: refId, detail: tid });
+            return { scopes: [] as string[], targets: [] as string[], caps: [] as CapabilityID[], blocked: true };
+          }
         }
       }
     }
@@ -300,8 +334,8 @@ export function evaluateCapabilityDeactivation(
   for (const t of references.timers ?? []) {
     const kind: AffectedReferenceKind = t.partition === "waiting" ? "waitingTimer" : t.partition === "missed" ? "missedTimer" : "foreignTimer";
     if (t.allTargetsLGLan) {
-      const lostLG = expand(t.targetIds).filter((id) => !afterAvail.has(id));
-      if (lostLG.length > 0) addItem(kind, t.id, t.name, t.sourceScopes, lostLG, disabledCats.has("tv") ? ["tv"] : []);
+      const lostLG = expand(t.targetIds).filter((id) => (beforeAvail.has(id) && !afterAvail.has(id)) || (disabledCats.has("tv") && !devById.has(id)));
+      if (lostLG.length > 0) addItem(kind, t.id, t.name, t.sourceScopes, lostLG, [...lostCaps(lostLG), ...(disabledCats.has("tv") ? ["tv" as const] : [])]);
       continue;
     }
     const r = inspect(t.id, t.targetIds, t.sourceScopes);
@@ -327,8 +361,8 @@ export function evaluateCapabilityDeactivation(
   for (const qa of references.quickActions ?? []) {
     if (qa.isEnabled === false) continue;
     if (qa.targetIds && qa.targetIds.length > 0) {
-      const m = expand(qa.targetIds), prev = m.filter((id) => beforeAvail.has(id)), rem = m.filter((id) => afterAvail.has(id));
-      if (prev.length > 0 && rem.length === 0) addItem("quickAction", qa.id, qa.name, prev.map((id) => devById.get(id)!.sourceScope), prev, lostCaps(prev));
+      const res = inspect(qa.id, qa.targetIds, []);
+      if (!res.blocked && res.targets.length > 0) addItem("quickAction", qa.id, qa.name, res.scopes, res.targets, res.caps);
     } else {
       const cats = new Set<DeviceCategoryID>(QUICK_ACTION_TARGET_CATEGORIES[qa.kind]);
       const prev = beforePart.availableDeviceIds.filter((id) => devById.has(id) && cats.has(devById.get(id)!.category));
@@ -364,19 +398,21 @@ export function evaluateControlTargetGate(options: {
   }
   if (new Set(options.candidateIds ?? []).size > 1) return { allowed: false, writeCount: 0, rejectionReason: { code: "ambiguousTarget" }, mayControlHiddenDevices: false };
   if (options.targetKind === "device") {
-    const dev = options.devices.find((d) => d.id === options.targetId && !d.upstreamHiddenOrDisabled);
+    const dev = options.devices.find((d) => isValidCapabilityIndexedDevice(d) && d.id === options.targetId && d.upstreamHiddenOrDisabled === false);
     if (!dev) return { allowed: false, writeCount: 0, rejectionReason: { code: "deviceNotFound" }, mayControlHiddenDevices: false };
     const conn = dev.connection ?? connectionCapabilityForScope(dev.sourceScope);
-    if (!isSourceEnabled(options.selection, conn, dev.sourceScope)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionDisabled", connection: conn, scope: dev.sourceScope }, mayControlHiddenDevices: false };
+    if (conn && !options.selection.enabledConnections.includes(conn)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionDisabled", connection: conn, scope: dev.sourceScope }, mayControlHiddenDevices: false };
+    if (!isSourceEnabled(options.selection, conn, dev.sourceScope)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionScopeDisabled", connection: conn, scope: dev.sourceScope }, mayControlHiddenDevices: false };
     if (!options.selection.enabledCategories.includes(dev.category)) return { allowed: false, writeCount: 0, rejectionReason: { code: "categoryDisabled", disabledCategory: dev.category }, mayControlHiddenDevices: false };
-    if (dev.isSourceAvailable === false) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionUnavailable", connection: conn, scope: dev.sourceScope }, mayControlHiddenDevices: false };
+    if (dev.isSourceAvailable !== true) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionUnavailable", connection: conn, scope: dev.sourceScope }, mayControlHiddenDevices: false };
     return { allowed: true, writeCount: 1, rejectionReason: null, mayControlHiddenDevices: false };
   }
   const sc = (options.scenes ?? []).find((s) => s.id === options.targetId);
   if (!sc) return { allowed: false, writeCount: 0, rejectionReason: { code: "sceneNotFound" }, mayControlHiddenDevices: false };
   const conn = sc.connection ?? connectionCapabilityForScope(sc.sourceScope);
-  if (!isSourceEnabled(options.selection, conn, sc.sourceScope)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionDisabled", connection: conn, scope: sc.sourceScope }, mayControlHiddenDevices: false };
-  if (sc.isSourceAvailable === false) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionUnavailable", connection: conn, scope: sc.sourceScope }, mayControlHiddenDevices: false };
+  if (conn && !options.selection.enabledConnections.includes(conn)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionDisabled", connection: conn, scope: sc.sourceScope }, mayControlHiddenDevices: false };
+  if (!isSourceEnabled(options.selection, conn, sc.sourceScope)) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionScopeDisabled", connection: conn, scope: sc.sourceScope }, mayControlHiddenDevices: false };
+  if (sc.isSourceAvailable !== true) return { allowed: false, writeCount: 0, rejectionReason: { code: "connectionUnavailable", connection: conn, scope: sc.sourceScope }, mayControlHiddenDevices: false };
   return { allowed: true, writeCount: 1, rejectionReason: null, mayControlHiddenDevices: options.selection.enabledCategories.length < DEVICE_CATEGORY_IDS.length };
 }
 
@@ -396,13 +432,44 @@ export function revalidatePausedTimer(options: {
   readonly timer: TimerReference; readonly fireAtEpochSeconds: number; readonly nowEpochSeconds: number;
   readonly activeConnectionScopes: readonly string[]; readonly selection: CapabilitySelection;
   readonly devices: readonly CapabilityIndexedDevice[]; readonly scenes?: readonly SceneReference[];
+  readonly deviceGroups?: readonly DeviceGroupReference[];
 }): PausedTimerResumeDisposition {
-  const stamped = new Set(options.timer.sourceScopes), active = new Set(options.activeConnectionScopes);
-  if (!options.timer.allTargetsLGLan && [...active].some((s) => s.startsWith("ha:") && !stamped.has(s))) return "partitionForeign";
+  const active = new Set(options.activeConnectionScopes), lgOnly = Boolean(options.timer.allTargetsLGLan);
+  if (!lgOnly && !timerScopesMatch(options.timer.sourceScopes, active)) return "partitionForeign";
+  if (lgOnly && !options.selection.enabledCategories.includes("tv")) return "keepPaused";
+  const activeStamped = options.timer.sourceScopes.filter((s) => active.has(s));
+  if (!lgOnly && !activeStamped.some((s) => isSourceEnabled(options.selection, null, s))) return "keepPaused";
+  for (const cap of options.timer.pausedCapabilities ?? []) {
+    if (CAPABILITY_EXPECTED_KIND[cap] === "connection") {
+      const conn = cap as ConnectionCapabilityID;
+      if (!options.selection.enabledConnections.includes(conn) && activeStamped.some((s) => connectionCapabilityForScope(s) === conn)) return "keepPaused";
+    } else if (!selectionContains(options.selection, cap)) {
+      return "keepPaused";
+    }
+  }
+  const groupById = new Map((options.deviceGroups ?? []).map((g) => [g.id, g] as const));
   const scenes = options.scenes ?? [], sceneIds = new Set(scenes.map((s) => s.id));
-  const targets = options.timer.targetIds.map((id) => ({ kind: (sceneIds.has(id) ? "scene" : "device") as ControlTargetKind, id }));
-  if (!evaluatePlanTargetsGate({ targets, selection: options.selection, devices: options.devices, scenes }).allowed) return "keepPaused";
-  if (!options.timer.allTargetsLGLan && ![...stamped].some((s) => active.has(s))) return "partitionForeign";
+  const expandedIds: string[] = [];
+  let hasMissingTarget = false;
+  for (const rawId of options.timer.targetIds) {
+    const g = groupById.get(rawId);
+    if (g) {
+      if (g.memberDeviceIds.length === 0) hasMissingTarget = true;
+      else expandedIds.push(...g.memberDeviceIds);
+    } else expandedIds.push(rawId);
+  }
+  for (const tid of expandedIds) {
+    const kind: ControlTargetKind = sceneIds.has(tid) ? "scene" : "device";
+    const v = evaluateControlTargetGate({ targetKind: kind, targetId: tid, selection: options.selection, devices: options.devices, scenes });
+    if (!v.allowed) {
+      if (v.rejectionReason?.code === "deviceNotFound" || v.rejectionReason?.code === "sceneNotFound") hasMissingTarget = true;
+      else return "keepPaused";
+    }
+  }
+  if (hasMissingTarget) {
+    if (!lgOnly && activeStamped.some((s) => !isSourceEnabled(options.selection, null, s))) return "keepPaused";
+    return "moveToMissed";
+  }
   return options.fireAtEpochSeconds <= options.nowEpochSeconds ? "moveToMissed" : "armWaiting";
 }
 

@@ -3,10 +3,14 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import { ModelActionPolicy } from "../src/core/assistant.js";
-import { loadSharedCapabilityManifest, type CapabilityID } from "../src/core/capabilityManifest.js";
+import {
+  DEVICE_CATEGORY_IDS, FEATURE_IDS, loadSharedCapabilityManifest,
+  type CapabilityID, type DeviceCategoryID, type FeatureID,
+} from "../src/core/capabilityManifest.js";
 import {
   capabilitySoftNoticeMessage, controlTargetRejectionMessage, evaluateCapabilityDeactivation,
-  evaluateControlTargetGate, evaluatePlanTargetsGate, revalidatePausedTimer, resolveCapabilityInstallSelection,
+  evaluateControlTargetGate, evaluatePlanTargetsGate, parseCapabilityIndexedDevice, partitionCapabilityDevices,
+  revalidatePausedTimer, resolveCapabilityInstallSelection,
   type AffectedReferenceItem, type CapabilityBlockingReason, type CapabilityIndexedDevice,
   type CapabilityInstallEvidence, type CapabilityInstallResolutionMode, type CapabilityReferenceGraph,
   type CapabilitySelection, type CapabilitySoftNotice, type ControlTargetKind, type ControlTargetRejectionCode,
@@ -18,11 +22,17 @@ import { evaluateSensorAlerts } from "../src/core/safetyAndHealth.js";
 
 interface GoldenCorpus {
   readonly version: number;
+  readonly allCategories: readonly DeviceCategoryID[];
+  readonly allFeatures: readonly FeatureID[];
   readonly catalog: {
     readonly devices: readonly CapabilityIndexedDevice[];
     readonly scenes: readonly SceneReference[];
     readonly deviceGroups: readonly DeviceGroupReference[];
   };
+  readonly invalidDeviceCases: readonly {
+    readonly id: string;
+    readonly rawDevice: Record<string, unknown>;
+  }[];
   readonly upgradeCases: readonly {
     readonly id: string; readonly evidence: CapabilityInstallEvidence;
     readonly expectedMode: CapabilityInstallResolutionMode; readonly expectedPersistMigrationComplete: boolean;
@@ -65,6 +75,39 @@ describe("Shared capability selection and reference verdicts (P1b)", () => {
     const manifest = loadSharedCapabilityManifest();
     const corpus = loadGolden();
     assert.equal(corpus.version, 1);
+
+    const manifestCategories = manifest.entries.filter((e) => e.kind === "deviceCategory").map((e) => e.id).sort();
+    const manifestFeatures = manifest.entries.filter((e) => e.kind === "feature").map((e) => e.id).sort();
+    assert.deepEqual(corpus.allCategories, manifestCategories);
+    assert.deepEqual(corpus.allCategories, [...DEVICE_CATEGORY_IDS].sort());
+    assert.deepEqual(corpus.allFeatures, manifestFeatures);
+    assert.deepEqual(corpus.allFeatures, [...FEATURE_IDS].sort());
+
+    const permissiveSelection: CapabilitySelection = {
+      enabledConnections: ["xiaomi-cloud", "home-assistant"],
+      enabledConnectionScopes: ["mi:acctA", "ha:http://home.local:8123"],
+      enabledFeatures: [...corpus.allFeatures],
+      enabledCategories: [...corpus.allCategories],
+    };
+    for (const inv of corpus.invalidDeviceCases) {
+      assert.throws(() => parseCapabilityIndexedDevice(inv.rawDevice), TypeError, inv.id);
+      const casted = inv.rawDevice as unknown as CapabilityIndexedDevice;
+      const part = partitionCapabilityDevices([casted], permissiveSelection, { enabledSignals: ["leak", "smoke"] });
+      assert.deepEqual(part.availableDeviceIds, [], inv.id);
+      assert.deepEqual(part.hiddenSafetyRetainedDeviceIds, [], inv.id);
+      const gate = evaluateControlTargetGate({
+        targetKind: "device",
+        targetId: String(inv.rawDevice.id ?? ""),
+        selection: permissiveSelection,
+        devices: [casted],
+      });
+      assert.equal(gate.allowed, false, inv.id);
+      assert.equal(gate.rejectionReason?.code, "deviceNotFound", inv.id);
+    }
+
+    for (const c of corpus.catalog.devices) {
+      assert.deepEqual(parseCapabilityIndexedDevice(c), c, c.id);
+    }
 
     for (const c of corpus.upgradeCases) {
       const actual = resolveCapabilityInstallSelection(c.evidence, manifest);
@@ -133,7 +176,7 @@ describe("Shared capability selection and reference verdicts (P1b)", () => {
       const d = revalidatePausedTimer({
         timer: c.timer, fireAtEpochSeconds: c.fireAtEpochSeconds, nowEpochSeconds: c.nowEpochSeconds,
         activeConnectionScopes: c.activeConnectionScopes, selection: c.selection,
-        devices: corpus.catalog.devices, scenes: corpus.catalog.scenes,
+        devices: corpus.catalog.devices, scenes: corpus.catalog.scenes, deviceGroups: corpus.catalog.deviceGroups,
       });
       assert.equal(d, c.expectedDisposition, c.id);
     }
