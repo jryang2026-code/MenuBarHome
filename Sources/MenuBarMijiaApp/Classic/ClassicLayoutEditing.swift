@@ -52,6 +52,7 @@ struct ClassicCornerArcHandleShape: Shape {
 /// resizing (`half ↔ full ↔ panel`) and tap cycling (`half → full → panel → half`).
 struct ClassicLayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
+    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     let deviceId: String
@@ -150,18 +151,29 @@ struct ClassicLayoutEditable: ViewModifier {
         .zIndex(isDragging ? 10 : 0)
     }
 
+    private var isJiggling: Bool {
+        editing && isPanelVisible && !reduceMotion && !isDragging && !isResizing
+    }
+
+    @State private var jiggleDegrees: Double = 0
+
     /// Angle is computed from the clock each frame, so a card rebuilt mid-edit keeps jiggling
-    /// instead of freezing at the last animated angle.
-    @ViewBuilder
+    /// instead of freezing at the last animated angle. Keeping `TimelineView` in `.background`
+    /// preserves the card's structural identity while unmounting the clock completely when hidden.
     private func jiggling<V: View>(_ view: V) -> some View {
-        if editing && !reduceMotion && !isDragging && !isResizing {
-            TimelineView(.animation) { context in
-                let t = context.date.timeIntervalSinceReferenceDate
-                view.rotationEffect(.degrees(sin(t * 2 * .pi * 3.6 + phase) * 1.1))
+        view
+            .rotationEffect(.degrees(isJiggling ? jiggleDegrees : 0))
+            .background {
+                if isJiggling {
+                    TimelineView(.animation) { context in
+                        let t = context.date.timeIntervalSinceReferenceDate
+                        Color.clear
+                            .onChange(of: t, initial: true) { _, now in
+                                jiggleDegrees = sin(now * 2 * .pi * 3.6 + phase) * 1.1
+                            }
+                    }
+                }
             }
-        } else {
-            view
-        }
     }
 }
 
