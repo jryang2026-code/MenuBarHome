@@ -356,7 +356,7 @@ public struct ControlCenterPanel: View {
         // Typing, ⌘F, "/" and dictation all ask for the field; it unfolds before it takes focus.
         .onChange(of: search.focusRequest) { _, _ in revealSearch() }
         .onChange(of: store.assistantFocusRequest) { _, _ in revealSearch() }
-        .onChange(of: store.assistantVoiceRequest) { _, _ in revealSearch() }
+        .onChange(of: store.assistantVoiceRequest) { _, _ in if store.enableVoiceInput { revealSearch() } }
         .onChange(of: isSearchFieldFocused) { _, focused in if !focused { foldSearchIfIdle() } }
         .onChange(of: isDrawerHovered) { _, hovered in if !hovered, !isSearchFieldFocused { foldSearchIfIdle() } }
         // A device reached by keyboard, the status line or the assistant opens its stack first.
@@ -545,7 +545,7 @@ public struct ControlCenterPanel: View {
                     Color.clear
                         .frame(width: 20, height: 18)
                 }
-            } else {
+            } else if store.enableVoiceInput {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
                         store.presentAssistantBar(startVoice: true)
@@ -579,6 +579,7 @@ public struct ControlCenterPanel: View {
         .onChange(of: store.assistantFocusRequest) { _, _ in focusInput() }
         .onChange(of: store.assistantVoiceRequest) { _, newValue in
             lastHandledVoiceRequest = newValue
+            guard store.enableVoiceInput else { return }
             speech.toggle(store: store)
         }
         // Dictation lands in the same field; once the instruction ran the draft empties and so does it.
@@ -593,7 +594,11 @@ public struct ControlCenterPanel: View {
         .onAppear {
             if store.assistantVoiceRequest != lastHandledVoiceRequest {
                 lastHandledVoiceRequest = store.assistantVoiceRequest
-                Task { await speech.start(holdMode: false, store: store) }
+                if store.enableVoiceInput {
+                    Task { await speech.start(holdMode: false, store: store) }
+                } else {
+                    focusInput()
+                }
             } else {
                 // The field only mounts when someone asked for it, so it takes the caret at once.
                 focusInput()
@@ -617,6 +622,9 @@ public struct ControlCenterPanel: View {
         }
         if speech.isListening {
             return L10n.tr("正在聆听…说完自动执行", "Listening… runs when you stop")
+        }
+        if !store.enableVoiceInput {
+            return L10n.tr("搜索设备，或输入一句话", "Search devices, or type a command")
         }
         return L10n.tr("搜索设备，或直接说一句话", "Search devices, or say a command")
     }

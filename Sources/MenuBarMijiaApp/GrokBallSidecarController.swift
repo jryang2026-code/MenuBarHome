@@ -217,9 +217,17 @@ final class GrokBallSidecarController {
             _ = store.isGrokBallStageExpanded
             _ = store.showsFullOnboardingGuide
             _ = store.enableGrokBall
+            _ = store.enableVoiceInput
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self, !self.isTornDown else { return }
+                if !self.store.enableVoiceInput {
+                    self.holdTask?.cancel()
+                    self.holdTask = nil
+                    if case .voice = self.gesture {
+                        self.cancelGesture()
+                    }
+                }
                 self.synchronize()
                 self.observePresentation()
             }
@@ -274,12 +282,16 @@ final class GrokBallSidecarController {
                 panelWindow.makeKey()
             }
             holdTask?.cancel()
-            holdTask = Task { @MainActor [weak self] in
-                do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
-                guard let self, case .pressed = self.gesture else { return }
-                self.gesture = .voice
-                self.store.dismissGrokBallStage()
-                self.beginVoice()
+            if store.enableVoiceInput {
+                holdTask = Task { @MainActor [weak self] in
+                    do { try await Task.sleep(for: .milliseconds(500)) } catch { return }
+                    guard let self, self.store.enableVoiceInput, case .pressed = self.gesture else { return }
+                    self.gesture = .voice
+                    self.store.dismissGrokBallStage()
+                    self.beginVoice()
+                }
+            } else {
+                holdTask = nil
             }
             return true
         case .leftMouseDragged:
