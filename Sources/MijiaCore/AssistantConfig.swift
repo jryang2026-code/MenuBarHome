@@ -311,18 +311,24 @@ public struct AssistantConfig: Equatable, Sendable {
         )
     }
 
-    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) {
+    /// Returns false when the Keychain refused the key (#7). A refusal leaves the previously saved
+    /// endpoint and key untouched, and the caller must keep the draft flagged and show the error.
+    @discardableResult
+    public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
         let trimmedBase = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         let inferred = AssistantProviderPreset.infer(baseURL: trimmedBase)
+        // Read the previous key before writing: it decides whether a hand-typed key replaces an
+        // imported one. The write itself goes first so a refusal leaves the endpoint alone.
+        let previousKey = Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults, vault: vault)
+        guard Self.saveSecret(trimmedKey, for: inferred, defaults: defaults, vault: vault) else { return false }
         // A key typed by hand replaces an imported one, so the "imported from" label no longer applies.
-        if Self.userStoredAPIKey(forBaseURL: trimmedBase, defaults: defaults, vault: vault) != trimmedKey {
+        if previousKey != trimmedKey {
             defaults.removeObject(forKey: Self.importedKeySourceKey(for: inferred))
         }
         defaults.set(trimmedBase, forKey: Self.baseURLKey)
         defaults.set(trimmedModel, forKey: Self.modelKey)
-        Self.saveSecret(trimmedKey, for: inferred, defaults: defaults, vault: vault)
         if inferred == .custom {
             if trimmedKey.isEmpty {
                 defaults.removeObject(forKey: Self.customKeyEndpointKey)
@@ -330,36 +336,28 @@ public struct AssistantConfig: Equatable, Sendable {
                 defaults.set(AssistantEndpoint(trimmedBase)?.identity, forKey: Self.customKeyEndpointKey)
             }
         }
+        return true
     }
 
     /// Writes (or, with an empty key, deletes) the saved key for `preset`. The bundled OpenRouter/Jev preset also
     /// keeps the legacy `assistant_api_key` slot in sync because pre-v1.0.4 builds read the key from there.
-    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) {
-        KeychainHelper.saveSecret(
+    /// Both slots are committed in a single atomic vault write so a refusal never partially updates one slot.
+    private static func saveSecret(_ key: String, for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
+        let providerAccount = KeychainHelper.assistantProviderAPIKeyAccount(for: preset)
+        let accounts = preset == .openRouterJev
+            ? [providerAccount, KeychainHelper.assistantAPIKeyAccount]
+            : [providerAccount]
+        return KeychainHelper.saveSecret(
             key,
-            account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset),
-            defaults: defaults, vault: vault
+            accounts: accounts,
+            defaults: defaults,
+            vault: vault
         )
-        if preset == .openRouterJev {
-            KeychainHelper.saveSecret(key, account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults, vault: vault)
-        }
     }
 
     @discardableResult
     private static func clearSecret(for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
-        var complete = KeychainHelper.saveSecret(
-            "",
-            account: KeychainHelper.assistantProviderAPIKeyAccount(for: preset),
-            defaults: defaults, vault: vault
-        )
-        if preset == .openRouterJev {
-            complete = KeychainHelper.saveSecret(
-                "",
-                account: KeychainHelper.assistantAPIKeyAccount,
-                defaults: defaults, vault: vault
-            ) && complete
-        }
-        return complete
+        saveSecret("", for: preset, defaults: defaults, vault: vault)
     }
 
     /// Returns only the user's explicitly saved Keychain API key for the given endpoint (excluding ambient CodexBar/env keys).
@@ -416,7 +414,7 @@ public struct AssistantConfig: Equatable, Sendable {
               let key = loadAmbientAPIKey(forBaseURL: baseURL, configURL: configURL) else {
             return nil
         }
-        saveSecret(key, for: preset, defaults: defaults, vault: vault)
+        guard saveSecret(key, for: preset, defaults: defaults, vault: vault) else { return nil }
         defaults.set(label, forKey: importedKeySourceKey(for: preset))
         return label
     }
@@ -571,24 +569,41 @@ extension KeychainHelper {
     public static func saveSecret(
         _ value: String, account: String, defaults: UserDefaults = .standard, vault: CredentialVault? = nil
     ) -> Bool {
+        saveSecret(value, accounts: [account], defaults: defaults, vault: vault)
+    }
+
+    /// Atomically saves (or, with an empty value, deletes) the secret across every account in `accounts`
+    /// in a single vault commit so a refused write never leaves the slots out of sync.
+    @discardableResult
+    static func saveSecret(
+        _ value: String, accounts: [String], defaults: UserDefaults = .standard, vault: CredentialVault? = nil
+    ) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = trimmed.isEmpty ? nil : trimmed.data(using: .utf8)
+        let updates = Dictionary(uniqueKeysWithValues: accounts.map { ($0, data) })
         if let vault {
-            guard writeKeychainSecret(value, account: account, vault: vault) else { return false }
-            defaults.removeObject(forKey: secretFallbackKey(for: account))
+            guard vault.setAll(updates) else { return false }
+            for account in accounts {
+                defaults.removeObject(forKey: secretFallbackKey(for: account))
+            }
             return true
         }
         guard defaults === UserDefaults.standard else {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                defaults.removeObject(forKey: secretFallbackKey(for: account))
-            } else {
-                defaults.set(trimmed, forKey: secretFallbackKey(for: account))
+            for account in accounts {
+                if trimmed.isEmpty {
+                    defaults.removeObject(forKey: secretFallbackKey(for: account))
+                } else {
+                    defaults.set(trimmed, forKey: secretFallbackKey(for: account))
+                }
             }
             return true
         }
         // Credentials live only in the Keychain (#16); drop any plain-text copy left behind by ≤1.0.6 once the
         // Keychain accepted the new value, so a failed write never loses the old secret.
-        guard writeKeychainSecret(value, account: account, vault: vault ?? .shared) else { return false }
-        defaults.removeObject(forKey: secretFallbackKey(for: account))
+        guard (vault ?? .shared).setAll(updates) else { return false }
+        for account in accounts {
+            defaults.removeObject(forKey: secretFallbackKey(for: account))
+        }
         return true
     }
 }

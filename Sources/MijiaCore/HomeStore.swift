@@ -764,9 +764,30 @@ public final class HomeStore {
     public var updateRelaunchWatchdogInterval: Duration? = .seconds(30)
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
-    public var lgConfig: LGWebOSConfig {
-        didSet { lgConfig.save(to: userDefaults) }
+    static var lgKeychainSaveErrorMessage: String {
+        L10n.tr(
+            "无法把电视配对密钥写入钥匙串，请授权钥匙串访问后重试",
+            "Could not save the TV pairing key to Keychain; allow Keychain access and try again"
+        )
     }
+
+    public var lgConfig: LGWebOSConfig {
+        didSet {
+            guard !suppressNextLGConfigDidSetSave else { return }
+            lgConfigSaveCallsInDidSetForTesting += 1
+            lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
+            if lgConfigSaveFailed {
+                showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+            }
+        }
+    }
+    /// Set by `lgConfig.didSet` when the Keychain refused the pairing key (#7); the pairing callback
+    /// reads it to decide between "Paired" and an error, instead of claiming a pairing that was not stored.
+    @ObservationIgnored var lgConfigSaveFailed = false
+    /// Prevents `lgConfig.didSet` from re-saving and potentially flipping `lgConfigSaveFailed` when the
+    /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
+    @ObservationIgnored var suppressNextLGConfigDidSetSave = false
+    @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
@@ -1040,7 +1061,7 @@ public final class HomeStore {
             }
         }
         self.selectedMiHomeId = initialSelectedHomeId
-        self.lgConfig = LGWebOSConfig.load(from: ud)
+        self.lgConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
         self.homeName = HomePreferences.homeName.load(from: ud)
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
         let habitShareKey = "assistant_habit_share_enabled"

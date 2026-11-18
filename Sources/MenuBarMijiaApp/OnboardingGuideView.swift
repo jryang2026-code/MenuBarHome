@@ -733,7 +733,10 @@ public struct OnboardingGuideView: View {
                         store.showToast(L10n.tr("已从 \(label) 导入 \(selectedPreset.shortTitle) 的 Key", "Imported the \(selectedPreset.shortTitle) key from \(label)"))
                     } else {
                         store.showToast(
-                            L10n.tr("CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key", "No \(selectedPreset.shortTitle) key in CodexBar or environment variables"),
+                            L10n.tr(
+                                "CodexBar 和环境变量里都没有 \(selectedPreset.shortTitle) 的 Key，或无法写入钥匙串",
+                                "No \(selectedPreset.shortTitle) key in CodexBar or environment variables, or the Keychain refused the write"
+                            ),
                             isError: true
                         )
                     }
@@ -765,7 +768,15 @@ public struct OnboardingGuideView: View {
             }
             return nil
         }
-        store.assistantConfig = cfg
+        guard store.saveAssistantConfig(cfg) else {
+            if showErrorToast {
+                store.showToast(
+                    L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
+                    isError: true
+                )
+            }
+            return nil
+        }
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
