@@ -3,15 +3,16 @@ import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, n
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
-import type { DualSourceCoordinator } from "../core/dualSourceProvider.js";
-import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
+import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
-import type { HomeOption, LayoutPrefs } from "./panelPrefs.js";
+import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
@@ -246,6 +247,8 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
     readonly activeLiveCameraId: string | null;
     readonly liveCameraKeepAliveTimer: number | null;
     closeCameraLiveView(): void;
+    closeXiaomiCameraLiveView?(accountId?: string): void;
+    activeLiveCameraUsesXiaomiCloud?(accountId?: string): boolean;
     discardRetainedCloudSessions?(): void;
   };
   readonly credentialVault?: CredentialVault;
@@ -503,6 +506,7 @@ async function performSignOutSingleMiAccountOnHost(
     }
     const beforeIds = new Set(store.getAccounts().map((account) => account.id));
     if (beforeIds.size === 0) return false;
+    const wasDualSource = isDualSourceEnabled(host);
     const removal = await store.removeAccount(accountId, host.settings.selectedHomeId);
     setHostMiAccounts(host, null);
     // Hidden-account recovery can replace the removed account with a discovered one, keeping the
@@ -510,10 +514,58 @@ async function performSignOutSingleMiAccountOnHost(
     if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
       return false;
     }
+    clearAccountRateLimitBackoff(accountId);
 
     switchSource(host, "mi-account-removed");
     host.clearPendingHighRisk();
     resetHostUnsupportedScanner(host);
+
+    const dualRoutesBeforeRemoval = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+    const isRouteOwnedByRemovedAccount = (route: DeviceMergeRoute | undefined, dev: SmartDevice): boolean => {
+      if (MiAccountScope.isOwned(dev.id, accountId) || dev.accountId === accountId) return true;
+      if (!route) return false;
+      if (
+        route.backend === "xiaomiCloud" &&
+        (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
+      ) {
+        return true;
+      }
+      if (
+        route.alternateBackend === "xiaomiCloud" &&
+        route.alternateDevice &&
+        (route.alternateDevice.accountId === accountId || MiAccountScope.isOwned(route.alternateDevice.id, accountId))
+      ) {
+        return true;
+      }
+      return false;
+    };
+    const hasHomeAssistantRepresentation = (route: DeviceMergeRoute | undefined, dev: SmartDevice): boolean => {
+      if (route) {
+        return (
+          route.backend === "homeAssistant" ||
+          (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null)
+        );
+      }
+      return wasDualSource && dev.sourceBackend === "homeAssistant";
+    };
+    const removedIds = new Set(
+      host.devices
+        .filter((d) => {
+          const route = dualRoutesBeforeRemoval?.[d.id];
+          if (!isRouteOwnedByRemovedAccount(route, d)) return false;
+          if (hasHomeAssistantRepresentation(route, d)) return false;
+          return true;
+        })
+        .map((d) => d.id),
+    );
+    const activeCamId = host.cameraLive?.activeLiveCameraId;
+    if (activeCamId) {
+      if (host.cameraLive?.closeXiaomiCameraLiveView) {
+        host.cameraLive.closeXiaomiCameraLiveView(accountId);
+      } else if (removedIds.has(activeCamId) || MiAccountScope.isOwned(activeCamId, accountId)) {
+        host.cameraLive?.closeCameraLiveView();
+      }
+    }
 
     if (removal.resetSelectedHome) host.settings.selectedHomeId = null;
     if (removal.primarySessionKnown) {
@@ -522,52 +574,107 @@ async function performSignOutSingleMiAccountOnHost(
         host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
       }
     }
+    const nextDual =
+      wasDualSource && removal.accounts.length > 0
+        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null)
+        : null;
 
-    const removedIds = new Set(
-      host.devices
-        .filter((d) => MiAccountScope.isOwned(d.id, accountId) || d.accountId === accountId)
-        .map((d) => d.id),
-    );
-    const activeCamId = host.cameraLive?.activeLiveCameraId;
-    if (activeCamId && (removedIds.has(activeCamId) || MiAccountScope.isOwned(activeCamId, accountId))) {
-      host.cameraLive?.closeCameraLiveView();
+    if (host.waitingDeviceIds) {
+      for (const id of removedIds) host.waitingDeviceIds.delete(id);
+      if (nextDual) {
+        for (const d of host.devices) {
+          const prevRoute = dualRoutesBeforeRemoval?.[d.id];
+          const nextRoute = nextDual.routes[d.id];
+          if (
+            isRouteOwnedByRemovedAccount(prevRoute, d) ||
+            (prevRoute && (!nextRoute || nextRoute.backend !== prevRoute.backend))
+          ) {
+            host.waitingDeviceIds.delete(d.id);
+          }
+        }
+      }
     }
-    if (host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || MiAccountScope.isOwned(host.expandedDeviceId, accountId))) {
+
+    if (nextDual) {
+      host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
+      host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
+      host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
+      host.deviceFacets = nextDual.home.deviceFacets ?? {};
+      host.scenes = [...nextDual.home.scenes];
+      const readingPriorityById = new Map(
+        host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]),
+      );
+      host.environmentReadings = applyOrder(
+        host.environmentReadings.map((r) => r.id),
+        nextDual.home.environmentReadings,
+      ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
+    } else {
+      if (removedIds.size > 0) {
+        host.devices = host.devices.filter((d) => !removedIds.has(d.id));
+        host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
+        const nextFacets = { ...host.deviceFacets };
+        for (const id of removedIds) delete nextFacets[id];
+        host.deviceFacets = nextFacets;
+      }
+      if (wasDualSource) {
+        const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
+          if (dev.accountId !== accountId) return dev;
+          const { accountId: _removedId, accountLabel: _removedLabel, ...rest } = dev;
+          return rest;
+        };
+        host.devices = host.devices.map((d) => {
+          const route = dualRoutesBeforeRemoval?.[d.id];
+          if (!isRouteOwnedByRemovedAccount(route, d)) return d;
+          if (
+            route?.backend === "xiaomiCloud" &&
+            route.alternateBackend === "homeAssistant" &&
+            route.alternateDevice
+          ) {
+            return stripRemovedAccountMeta({
+              ...route.alternateDevice,
+              id: d.id,
+              roomId: d.roomId,
+              roomName: d.roomName,
+              sourceBackend: "homeAssistant",
+            });
+          }
+          return stripRemovedAccountMeta(d);
+        });
+      }
+    }
+
+    if (
+      host.expandedDeviceId &&
+      (removedIds.has(host.expandedDeviceId) ||
+        MiAccountScope.isOwned(host.expandedDeviceId, accountId) ||
+        (nextDual !== null && !host.devices.some((d) => d.id === host.expandedDeviceId)))
+    ) {
       host.expandedDeviceId = null;
-    }
-    if (removedIds.size > 0) {
-      for (const id of removedIds) host.waitingDeviceIds?.delete(id);
-      host.devices = host.devices.filter((d) => !removedIds.has(d.id));
-      host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
-      const nextFacets = { ...host.deviceFacets };
-      for (const id of removedIds) delete nextFacets[id];
-      host.deviceFacets = nextFacets;
     }
 
     if (removal.accounts.length <= 1) {
       host.multiAccountState = null;
+    } else if (host.multiAccountState) {
+      const nextChildren = { ...host.multiAccountState.children };
+      delete nextChildren[accountId];
+      host.multiAccountState = {
+        accounts: removal.accounts,
+        children: nextChildren,
+        merged: mergeMiAccountSnapshots(removal.accounts, nextChildren),
+      };
     }
 
     session.signingOutAccountIds.delete(accountId);
     const hasMoreQueuedSignOuts = session.signingOutAccountIds.size > 0;
 
     if (removal.accounts.length === 0) {
-      if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
-        host.cameraLive.closeCameraLiveView();
-      }
-      host.cameraLive?.discardRetainedCloudSessions?.();
-      host.expandedDeviceId = null;
-      host.waitingDeviceIds?.clear();
-      host.settings.cachedXiaomiDevices = [];
-      host.miSessionExpired = false;
-      host.cloudValuesStale = false;
-      const hasHA = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
-      const wasDual = isDualSourceEnabled(host);
-      setHostDualSourceEnabled(host, false, { persist: true });
-
-      if (hasHA && (wasDual || host.settings.connectionMode === "homeAssistant")) {
-        host.settings.connectionMode = "homeAssistant";
-        host.saveSettings();
+      const { transitionedToHASingleSource } = finishAllMiAccountsSignedOutOnHost(host, {
+        wasDualSource,
+        wasXiaomiMode: host.settings.connectionMode === "xiaomiCloud",
+        alreadySwitchedSource: true,
+      });
+      host.saveSettings();
+      if (transitionedToHASingleSource) {
         host.replyBanner = {
           text: tr3(
             "已退出最后一个米家账号，已保留 Home Assistant 连接",
@@ -580,17 +687,6 @@ async function performSignOutSingleMiAccountOnHost(
         host.render();
         await host.refreshHADevices(false);
       } else {
-        if (host.settings.connectionMode === "xiaomiCloud") {
-          host.devices = [];
-          host.scenes = [];
-          host.environmentReadings = [];
-          host.homes = [];
-          host.groupOwnerByMemberDid = new Map();
-          host.deviceFacets = {};
-          host.selectRoom(null);
-          if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
-        }
-        host.saveSettings();
         host.replyBanner = {
           text: tr3("已退出米家账号", "已登出米家帳號", "Signed out of Xiaomi Home", lang),
           source: tr3("多账号管理", "多帳號管理", "Accounts", lang),
@@ -629,6 +725,170 @@ async function performSignOutSingleMiAccountOnHost(
   } finally {
     session.signingOutAccountIds.delete(accountId);
   }
+}
+
+function buildHAStateFromDualRoutes(
+  host: ConnectionsAndDiagHost,
+  dualRoutes: Readonly<Record<string, DeviceMergeRoute>>,
+): {
+  readonly devices: SmartDevice[];
+  readonly environmentReadings: EnvironmentReading[];
+  readonly deviceFacets: Record<string, readonly FacetControl[]>;
+} {
+  const nextDevices: SmartDevice[] = [];
+  const keepIds = new Set<string>();
+  const seenIds = new Set<string>();
+  for (const dev of host.devices) {
+    seenIds.add(dev.id);
+    const route = dualRoutes[dev.id];
+    if (route?.backend === "homeAssistant") {
+      nextDevices.push({
+        ...route.sourceDevice,
+        id: dev.id,
+        roomId: dev.roomId,
+        roomName: dev.roomName,
+        sourceBackend: "homeAssistant",
+      });
+      keepIds.add(dev.id);
+    } else if (route?.alternateBackend === "homeAssistant" && route.alternateDevice) {
+      nextDevices.push({
+        ...route.alternateDevice,
+        id: dev.id,
+        roomId: dev.roomId,
+        roomName: dev.roomName,
+        sourceBackend: "homeAssistant",
+      });
+      keepIds.add(dev.id);
+    } else if (!route && dev.sourceBackend === "homeAssistant") {
+      nextDevices.push(dev);
+      keepIds.add(dev.id);
+    }
+  }
+  for (const [id, route] of Object.entries(dualRoutes)) {
+    if (seenIds.has(id)) continue;
+    if (route.backend === "homeAssistant") {
+      nextDevices.push({ ...route.sourceDevice, id, sourceBackend: "homeAssistant" });
+      keepIds.add(id);
+    } else if (route.alternateBackend === "homeAssistant" && route.alternateDevice) {
+      nextDevices.push({ ...route.alternateDevice, id, sourceBackend: "homeAssistant" });
+      keepIds.add(id);
+    }
+  }
+  const environmentReadings = host.environmentReadings.filter((r) => keepIds.has(r.id));
+  const deviceFacets: Record<string, readonly FacetControl[]> = {};
+  for (const [id, controls] of Object.entries(host.deviceFacets)) {
+    if (keepIds.has(id)) deviceFacets[id] = controls;
+  }
+  return { devices: nextDevices, environmentReadings, deviceFacets };
+}
+
+export function finishAllMiAccountsSignedOutOnHost(
+  host: ConnectionsAndDiagHost,
+  options: {
+    readonly wasDualSource: boolean;
+    readonly wasXiaomiMode: boolean;
+    readonly alreadySwitchedSource?: boolean;
+  },
+): { readonly transitionedToHASingleSource: boolean } {
+  const { wasDualSource, wasXiaomiMode, alreadySwitchedSource = false } = options;
+  if (wasDualSource || wasXiaomiMode) {
+    if (host.cameraLive?.closeXiaomiCameraLiveView) {
+      host.cameraLive.closeXiaomiCameraLiveView();
+    } else if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
+      host.cameraLive.closeCameraLiveView();
+    }
+    if (!alreadySwitchedSource) {
+      switchSource(host, "sign-out-xiaomi-account");
+    }
+    host.clearPendingHighRisk();
+    resetHostUnsupportedScanner(host);
+    host.waitingDeviceIds?.clear();
+  }
+  host.cameraLive?.discardRetainedCloudSessions?.();
+  host.settings.cachedXiaomiDevices = [];
+  host.miSessionExpired = false;
+  host.cloudValuesStale = false;
+  clearCachedXiaomiTopology(host);
+  clearXiaomiRateLimitBackoff(host);
+  clearAccountRateLimitBackoff();
+
+  const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
+  const hasHA = currentHAIdentity !== null;
+  const dualCoordinator = wasDualSource ? host.dualSourceCoordinator : null;
+  const rawHASnapshot = dualCoordinator?.getLastHASnapshot?.() ?? null;
+  const matchesCurrentHASnapshot =
+    rawHASnapshot !== null &&
+    currentHAIdentity !== null &&
+    (rawHASnapshot.identity === undefined || rawHASnapshot.identity === currentHAIdentity);
+  const currentHASnapshot = matchesCurrentHASnapshot ? rawHASnapshot : null;
+  const snapshotIdentityMismatched =
+    rawHASnapshot !== null &&
+    rawHASnapshot.identity !== undefined &&
+    rawHASnapshot.identity !== currentHAIdentity;
+  const lastMerged = snapshotIdentityMismatched ? null : (dualCoordinator?.getLastMerged() ?? null);
+  const dualRoutes = lastMerged?.routes;
+  setHostDualSourceEnabled(host, false, { persist: true });
+
+  if (hasHA && (wasDualSource || host.settings.connectionMode === "homeAssistant")) {
+    host.settings.connectionMode = "homeAssistant";
+    if (wasDualSource) {
+      host.homes = [];
+      host.groupOwnerByMemberDid = new Map();
+      host.selectRoom(null);
+      const cache = host.settings.cachedHAHome;
+      const matchesCache = cache?.identity === currentHAIdentity;
+      const routeDerivedHA = dualRoutes ? buildHAStateFromDualRoutes(host, dualRoutes) : null;
+      if (currentHASnapshot) {
+        host.devices = structuredClone(currentHASnapshot.home.devices);
+        host.scenes = structuredClone(currentHASnapshot.home.scenes);
+        host.environmentReadings = structuredClone(currentHASnapshot.home.environmentReadings);
+        host.deviceFacets = structuredClone(currentHASnapshot.home.deviceFacets ?? {});
+      } else if (routeDerivedHA && routeDerivedHA.devices.length > 0) {
+        host.devices = routeDerivedHA.devices;
+        if (lastMerged) {
+          host.scenes = structuredClone(lastMerged.home.scenes);
+        }
+        host.environmentReadings = routeDerivedHA.environmentReadings;
+        host.deviceFacets = routeDerivedHA.deviceFacets;
+      } else if (matchesCache && cache) {
+        host.devices = structuredClone(cache.home.devices);
+        host.scenes = structuredClone(cache.home.scenes);
+        host.environmentReadings = structuredClone(cache.home.environmentReadings);
+        host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
+      } else if (dualRoutes || snapshotIdentityMismatched) {
+        host.devices = [];
+        host.scenes = [];
+        host.environmentReadings = [];
+        host.deviceFacets = {};
+      } else {
+        host.devices = host.devices.filter((d) => d.sourceBackend !== "xiaomiCloud");
+        const keepIds = new Set(host.devices.map((d) => d.id));
+        host.environmentReadings = host.environmentReadings.filter((r) => keepIds.has(r.id));
+        const nextFacets: Record<string, readonly FacetControl[]> = {};
+        for (const [id, controls] of Object.entries(host.deviceFacets)) {
+          if (keepIds.has(id)) nextFacets[id] = controls;
+        }
+        host.deviceFacets = nextFacets;
+      }
+      if (host.expandedDeviceId && !host.devices.some((d) => d.id === host.expandedDeviceId)) {
+        host.expandedDeviceId = null;
+      }
+    }
+    return { transitionedToHASingleSource: wasDualSource };
+  }
+
+  if (wasXiaomiMode || wasDualSource) {
+    host.expandedDeviceId = null;
+    host.devices = [];
+    host.scenes = [];
+    host.environmentReadings = [];
+    host.homes = [];
+    host.groupOwnerByMemberDid = new Map();
+    host.deviceFacets = {};
+    host.selectRoom(null);
+    if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
+  }
+  return { transitionedToHASingleSource: false };
 }
 
 async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
