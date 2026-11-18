@@ -789,4 +789,57 @@ struct AppURLCommandTests {
         #expect(emptyPresets.isError)
         #expect(await provider.executedCommands.isEmpty)
     }
+
+    @Test("Direct fan preset succeeds when percentage speed is read-only but preset modes are writable (#263)")
+    @MainActor
+    func directFanPresetSucceedsWhenSpeedReadOnlyButPresetsWritable() async throws {
+        let suite = "test.raycast.fanpreset.readonlyspeed.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+
+        let readOnlySpeedFan = SmartDevice(
+            id: "dev_readonly_speed_fan",
+            name: "客厅风扇",
+            roomId: "living",
+            roomName: "客厅",
+            model: "zhimi.fan.za5",
+            isOnline: true,
+            kind: .fan(FanSpec(
+                entityId: "fan.readonly_speed",
+                isOn: false,
+                percentage: nil,
+                presetMode: "Auto",
+                availablePresetModes: ["Auto", "Sleep"],
+                speedWritable: false
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 0)],
+            devices: [readOnlySpeedFan]
+        ))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        // 1. Natural language preset command works despite speedWritable == false
+        let result = await store.executeRaycastDirectCommand("把客厅风扇设为睡眠模式")
+        #expect(result.handled)
+        #expect(!result.isError)
+        let commands = await provider.executedCommands
+        #expect(commands.last == .setFanPresetMode(entityId: "fan.readonly_speed", presetMode: "Sleep"))
+        if case .fan(let spec)? = store.devices.first(where: { $0.id == "dev_readonly_speed_fan" })?.kind {
+            #expect(spec.presetMode == "Sleep")
+            #expect(spec.isOn == true)
+        }
+
+        // 2. Setting percentage still correctly refuses when speedWritable == false
+        let percentResult = await store.executeRaycastDirectCommand("把客厅风扇风速调到 50%")
+        #expect(percentResult.handled)
+        #expect(percentResult.isError)
+
+        // 3. executeRaycastFan direct URL preset command also works despite speedWritable == false
+        let urlResult = await store.executeRaycastFan(deviceId: "dev_readonly_speed_fan", percent: nil, preset: "Auto")
+        #expect(!urlResult.isError)
+        let updatedCommands = await provider.executedCommands
+        #expect(updatedCommands.last == .setFanPresetMode(entityId: "fan.readonly_speed", presetMode: "Auto"))
+    }
 }
+
