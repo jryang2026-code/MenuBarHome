@@ -274,7 +274,8 @@ struct ManualControlPolicyTests {
             )
         }
 
-        let hintMark = "加上「灯」"
+        // #104: the hint now points at the in-prompt mark entry instead of a rename keyword.
+        let hintMark = "这是灯，以后不再询问"
         let wallSwitches = [
             makePlug(id: "left", name: "左键", model: "lumi.switch.b1nacn02"),
             makePlug(id: "middle", name: "中键", model: "lumi.switch.b2nacn02"),
@@ -346,7 +347,8 @@ struct ManualControlPolicyTests {
                 let keywords = Self.quotedKeywords(in: hint)
                 #expect(!keywords.isEmpty, "\(language.rawValue) hint names a keyword: \(hint)")
                 if language == .zhHant {
-                    #expect(keywords == ["燈"])
+                    // #104: the quoted text is now the mark entry's label, which names 「燈」.
+                    #expect(keywords == ["這是燈，以後不再詢問"])
                 }
                 for keyword in keywords {
                     var renamed = left
@@ -359,6 +361,173 @@ struct ManualControlPolicyTests {
                 }
             }
         }
+    }
+
+    // MARK: - «这其实是灯» marks (#104)
+
+    private static func wallSwitch(
+        id: String = "wall",
+        name: String = "左键",
+        model: String = "lumi.switch.b1nacn02",
+        switchEntityId: String? = nil,
+        powerWritable: Bool = true
+    ) -> SmartDevice {
+        SmartDevice(
+            id: id,
+            name: name,
+            roomId: "hall",
+            roomName: "玄关",
+            model: model,
+            isOnline: true,
+            kind: .plug(PlugSpec(
+                switchEntityId: switchEntityId ?? "switch.\(id)",
+                isOn: false,
+                powerWritable: powerWritable
+            ))
+        )
+    }
+
+    @Test("A wall switch marked as a light stops confirming; the mark never widens to other kinds (#104)")
+    func markedSwitchLightStopsConfirmation() throws {
+        let wall = Self.wallSwitch()
+        let marks: Set<String> = [wall.id]
+        #expect(ManualControlPolicy.wallSwitchMayControlLight(wall))
+
+        // The marked switch no longer asks, exactly like renaming it with 「灯」 would.
+        #expect(!ManualControlPolicy.requiresConfirmation(.power(true), for: wall, markedLightIds: marks))
+        #expect(ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: wall.id, operation: .power(true)),
+            devices: [wall],
+            markedLightIds: marks
+        ) == nil, "no prompt at all once marked")
+
+        // Unmarked, the existing hazard table still asks and offers the entry in the prompt.
+        let prompt = ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: wall.id, operation: .power(true)),
+            devices: [wall],
+            markedLightIds: []
+        )
+        let option = try #require(prompt?.markAsLight)
+        #expect(option.deviceId == wall.id)
+        #expect(!option.title.isEmpty)
+        // An already marked device never re-offers the entry.
+        #expect(ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: wall.id, operation: .power(true)),
+            devices: [wall],
+            markedLightIds: marks
+        ) == nil)
+
+        // Stale marks never widen: every other kind still asks (#104 review).
+        let stale: Set<String> = ["stale-plug", "stale-garage", "stale-heater", "stale-uv", "stale-button", "wall"]
+        let socket = SmartDevice(
+            id: "stale-plug", name: "书房插座", roomId: "study", roomName: "书房",
+            model: "cuco.plug.v3", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.plug", isOn: false, powerWritable: true))
+        )
+        let garage = SmartDevice(
+            id: "stale-garage", name: "地下车库门", roomId: "door", roomName: "门口",
+            model: "hmpace.wallswitch.v1", isOnline: true,
+            kind: .cover(CoverSpec(
+                entityId: "cover.garage", subtype: .garageDoor, positionPercent: 0,
+                positionWritable: true, openDescription: "Open", closeDescription: "Close",
+                pauseDescription: "Pause"
+            ))
+        )
+        let heater = SmartDevice(
+            id: "stale-heater", name: "电暖器", roomId: "study", roomName: "书房",
+            model: "zhimi.heater.za2", isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: "climate.heater", isOn: false, hvacMode: "off",
+                availableModes: ["off", "heat"], targetTemperature: 22, minTemp: 16, maxTemp: 30
+            ))
+        )
+        let uv = Self.wallSwitch(id: "stale-uv", name: "杀菌灯", model: "lumi.switch.b1nacn02")
+        let button = Self.wallSwitch(id: "stale-button", name: "左键", switchEntityId: "button.left")
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: socket, markedLightIds: stale))
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: garage, markedLightIds: stale))
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: heater, markedLightIds: stale))
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: uv, markedLightIds: stale))
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: button, markedLightIds: stale))
+        for dev in [socket, uv, button] {
+            #expect(ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: dev.id, operation: .power(true)),
+                devices: [dev],
+                markedLightIds: stale
+            )?.markAsLight == nil, "\(dev.name) never offers the mark entry")
+        }
+
+        // A Home Assistant auxiliary `switch.*` facet on the marked wall switch follows the mark.
+        let auxSwitch = FacetControl(
+            id: "switch.wall-aux", kind: .toggle, name: "on-power", title: "开关",
+            serviceName: "switch", value: .bool(true), isWritable: true,
+            writesByDefault: false, isHighValue: false,
+            target: .haProperty(entityId: "switch.wall_aux")
+        )
+        #expect(ManualControlPolicy.facetRequiresConfirmation(auxSwitch, value: .bool(true), for: wall))
+        #expect(!ManualControlPolicy.facetRequiresConfirmation(auxSwitch, value: .bool(true), for: wall, markedLightIds: marks))
+    }
+
+    @Test("Switch-light marks persist per device id and join the canonical-ID preference index (#104)")
+    func switchLightMarksPersistAndSurviveMerge() throws {
+        let suiteName = "test.switch-light-marks.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let wall = Self.wallSwitch(id: "canonical-wall")
+        #expect(!SwitchLightMarks.isMarked(wall.id, defaults: defaults))
+        #expect(ManualControlPolicy.requiresConfirmation(
+            .power(true), for: wall, markedLightIds: SwitchLightMarks.load(defaults: defaults)
+        ))
+
+        var ids = SwitchLightMarks.load(defaults: defaults)
+        ids.insert(wall.id)
+        SwitchLightMarks.save(ids, defaults: defaults)
+        #expect(SwitchLightMarks.load(defaults: defaults) == [wall.id])
+        #expect(SwitchLightMarks.isMarked(wall.id, defaults: defaults))
+        #expect(!ManualControlPolicy.requiresConfirmation(
+            .power(true), for: wall, markedLightIds: SwitchLightMarks.load(defaults: defaults)
+        ))
+
+        // The canonical-ID chooser reads this index, so a dual-source source handoff keeps the mark.
+        #expect(DevicePreferenceIndex.referencedIDs(defaults: defaults).contains(wall.id))
+    }
+
+    @Test("Marking a wall switch through the store stops its toggle confirmation entirely (#104)")
+    @MainActor
+    func storeMarkStopsTogglePrompt() async throws {
+        let wall = Self.wallSwitch(id: "wall-e2e")
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall], scenes: []))
+        let suiteName = "test.switch-light-store.\(UUID().uuidString)"
+        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.controlDebounceInterval = .milliseconds(10)
+        try await store.waitForTestSnapshot()
+        let device = try #require(store.devices.first { $0.id == wall.id })
+
+        var prompts: [ManualControlConfirmation] = []
+        store.manualControlConfirmationHandler = { prompt in
+            prompts.append(prompt)
+            return true
+        }
+
+        // Before the mark the toggle asks, and the prompt offers the «this is a light» entry.
+        _ = store.togglePrimary(device)
+        await waitUntil { await provider.executedCommands.count == 1 }
+        #expect(prompts.count == 1)
+        #expect(prompts.first?.markAsLight?.deviceId == wall.id)
+
+        // Marking through the store persists per device id; the next toggle runs directly.
+        store.markSwitchAsLight(wall.id)
+        #expect(store.isSwitchMarkedAsLight(wall.id))
+        _ = store.togglePrimary(device)
+        await waitUntil { await provider.executedCommands.count == 2 }
+        #expect(prompts.count == 1, "the marked wall switch no longer asks")
+
+        // Unmarking restores the confirmation.
+        store.unmarkSwitchAsLight(wall.id)
+        _ = store.togglePrimary(device)
+        await waitUntil { await provider.executedCommands.count == 3 }
+        #expect(prompts.count == 2)
     }
 
     /// Text inside 「」 or “”, the marks the hint uses around the word to add.

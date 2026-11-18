@@ -1540,7 +1540,7 @@ describe("Bare category opens (#274)", () => {
       const card = document.querySelector(".cc-feedback-hint")?.closest(".cc-feedback-card");
       assert.ok(card, "the rename hint is rendered");
       assert.match(card.textContent ?? "", /「打开左键」属于高风险设备，再点一次确认执行/);
-      assert.match(card.textContent ?? "", /加上「灯」/);
+      assert.match(card.textContent ?? "", /这是灯，以后不再询问/);
       assert.ok(card.querySelector("#btn-undo"), "the confirmation shares the card with the earlier undo");
       if (panelTheme === "classic") assert.equal(card.getAttribute("data-upper-card-id"), "undo:manual");
       assert.match(tile("wall.hall"), /已断电/, "the hint does not run the switch");
@@ -5513,7 +5513,9 @@ describe("Manual control parity with macOS (#143)", () => {
     const kind = app.devices.find((device) => device.id === "wall")?.kind;
     assert.ok(kind?.kind === "plug" && !kind.isOn, "the first tap still waits");
     assert.match(document.body.textContent ?? "", /属于高风险设备，再点一次确认执行/);
-    assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /加上「灯」/);
+    assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
+    // #104: the armed wall-switch confirmation offers the mark entry right in the banner.
+    assert.equal(document.querySelector("[data-mark-switch-light]")?.getAttribute("data-mark-switch-light"), "wall");
 
     await click('[data-toggle-device="wall"]');
     const after = app.devices.find((device) => device.id === "wall")?.kind;

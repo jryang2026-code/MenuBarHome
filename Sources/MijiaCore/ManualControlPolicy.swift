@@ -1,5 +1,17 @@
 import Foundation
 
+/// The «this is a light» entry a wall-switch confirmation offers (#104). Choosing it marks the
+/// device (persisted per device id) and executes the action in the same tap.
+public struct ManualControlConfirmationMark: Equatable, Sendable {
+    public let deviceId: String
+    public let title: String
+
+    public init(deviceId: String, title: String) {
+        self.deviceId = deviceId
+        self.title = title
+    }
+}
+
 /// A second-confirmation prompt for a manual control action on a high-risk device (#143).
 public struct ManualControlConfirmation: Equatable, Sendable {
     public let title: String
@@ -8,19 +20,44 @@ public struct ManualControlConfirmation: Equatable, Sendable {
     public let cancelTitle: String
     /// Extra guidance under the decision text. Nil unless this prompt is the wall-switch case (#104).
     public let hint: String?
+    /// #104: offered only when the device is the wall-switch shape the hint describes and the user
+    /// has not marked it yet. Nil everywhere else.
+    public let markAsLight: ManualControlConfirmationMark?
 
     public init(
         title: String,
         message: String,
         confirmTitle: String,
         cancelTitle: String,
-        hint: String? = nil
+        hint: String? = nil,
+        markAsLight: ManualControlConfirmationMark? = nil
     ) {
         self.title = title
         self.message = message
         self.confirmTitle = confirmTitle
         self.cancelTitle = cancelTitle
         self.hint = hint
+        self.markAsLight = markAsLight
+    }
+}
+
+/// #104: the user's per-device «这其实是灯» marks. Stored like every other per-device view
+/// preference under a canonical device id, so a dual-source merge keeps them, and read by the
+/// manual confirmation policy at its single decision point (`ManualControlPolicy`), never by a
+/// UI layer deciding to skip the gate.
+public enum SwitchLightMarks {
+    public static let storageKey = ViewPreferenceKeys.switchesMarkedAsLights
+
+    public static func load(defaults: UserDefaults = .standard) -> Set<String> {
+        Set(defaults.stringArray(forKey: storageKey) ?? [])
+    }
+
+    public static func save(_ ids: Set<String>, defaults: UserDefaults) {
+        defaults.set(ids.sorted(), forKey: storageKey)
+    }
+
+    public static func isMarked(_ deviceId: String, defaults: UserDefaults = .standard) -> Bool {
+        load(defaults: defaults).contains(deviceId)
     }
 }
 
@@ -30,26 +67,48 @@ public struct ManualControlConfirmation: Equatable, Sendable {
 public enum ManualControlPolicy {
     /// True when a manual operation needs a second confirmation. De-escalating actions (turning a
     /// plug, heater, or water heater off, stopping a vacuum) stay direct: making a home safer must
-    /// never require fighting a dialog.
-    public static func requiresConfirmation(_ intent: DeviceIntent, devices: [SmartDevice]) -> Bool {
+    /// never require fighting a dialog. A wall switch the user marked as an ordinary light (#104)
+    /// follows the mark here — the single decision point — so no caller can bypass the check.
+    public static func requiresConfirmation(
+        _ intent: DeviceIntent,
+        devices: [SmartDevice],
+        markedLightIds: Set<String>? = nil
+    ) -> Bool {
         guard let device = devices.first(where: { $0.id == intent.targetId }) else { return false }
-        return requiresConfirmation(intent.operation, for: device)
+        return requiresConfirmation(intent.operation, for: device, markedLightIds: markedLightIds)
     }
 
-    public static func requiresConfirmation(_ operation: IntentOperation, for device: SmartDevice) -> Bool {
+    public static func requiresConfirmation(
+        _ operation: IntentOperation,
+        for device: SmartDevice,
+        markedLightIds: Set<String>? = nil
+    ) -> Bool {
         // Closing a cover is not automatically de-escalating: a garage door closing is itself
         // hazardous, so every cover operation goes through the subtype hazard table.
         if operation.deescalatesHazard, !device.kind.isCover { return false }
+        if isMarkedSwitchLight(device, markedLightIds: markedLightIds ?? SwitchLightMarks.load()) { return false }
         return ModelActionPolicy.needsConfirmation(
             DeviceIntent(targetId: device.id, operation: operation),
             devices: [device]
         )
     }
 
+    /// #104: the mark never widens. It only silences a device the existing wall-switch rule already
+    /// considers light-like (the rename-hint shape); a stale id on a plug, cover, lock, heater or
+    /// UV lamp keeps its confirmation.
+    static func isMarkedSwitchLight(_ device: SmartDevice, markedLightIds: Set<String>) -> Bool {
+        markedLightIds.contains(device.id) && wallSwitchMayControlLight(device)
+    }
+
     /// The prompt text for a hazardous manual operation, or nil when the action is low risk.
-    public static func confirmation(_ intent: DeviceIntent, devices: [SmartDevice]) -> ManualControlConfirmation? {
+    public static func confirmation(
+        _ intent: DeviceIntent,
+        devices: [SmartDevice],
+        markedLightIds: Set<String>? = nil
+    ) -> ManualControlConfirmation? {
         guard let device = devices.first(where: { $0.id == intent.targetId }),
-              requiresConfirmation(intent.operation, for: device) else { return nil }
+              requiresConfirmation(intent.operation, for: device, markedLightIds: markedLightIds) else { return nil }
+        let marks = markedLightIds ?? SwitchLightMarks.load()
         return ManualControlConfirmation(
             title: L10n.tr("确认操作高风险设备？", "Control a high-risk device?"),
             message: L10n.format(
@@ -60,25 +119,46 @@ public enum ManualControlPolicy {
             ),
             confirmTitle: L10n.tr("确认执行", "Confirm"),
             cancelTitle: L10n.tr("取消", "Cancel"),
-            hint: wallSwitchLightHint(for: device)
+            hint: wallSwitchLightHint(for: device),
+            markAsLight: switchLightMarkOption(for: device, marks: marks)
         )
+    }
+
+    /// #104: the in-prompt «this is a light» entry, offered only while it would change something:
+    /// the device is the rename-hint wall-switch shape and the id is not marked yet.
+    private static func switchLightMarkOption(
+        for device: SmartDevice,
+        marks: Set<String>
+    ) -> ManualControlConfirmationMark? {
+        guard wallSwitchMayControlLight(device), !marks.contains(device.id) else { return nil }
+        return ManualControlConfirmationMark(
+            deviceId: device.id,
+            title: L10n.tr("这是灯，以后不再询问", "This is a light, don't ask again")
+        )
+    }
+
+    /// #104: the wall-switch shape the rename hint and the light mark both key on: a writable
+    /// `.plug` card on a switch model whose name is the only thing keeping it out of
+    /// `isSwitchedLight` (appending 「灯」 would make it a light).
+    public static func wallSwitchMayControlLight(_ device: SmartDevice) -> Bool {
+        guard case .plug(let spec) = device.kind,
+              spec.powerWritable,
+              !spec.switchEntityId.hasPrefix("button.") else { return false }
+        let model = device.model.lowercased()
+        guard model.contains(".switch."), !model.contains(".plug.") else { return false }
+        guard IntentDeviceCategory(device) == .plug else { return false }
+        var renamed = device
+        renamed.name = device.name + "灯"
+        return renamed.isSwitchedLight
     }
 
     /// Copy for an existing confirmation. Appending 「灯」 reuses `isSwitchedLight`, so the
     /// sentence is shown only when that rename would actually stop the dialog.
     public static func wallSwitchLightHint(for device: SmartDevice) -> String? {
-        guard case .plug(let spec) = device.kind,
-              spec.powerWritable,
-              !spec.switchEntityId.hasPrefix("button.") else { return nil }
-        let model = device.model.lowercased()
-        guard model.contains(".switch."), !model.contains(".plug.") else { return nil }
-        guard IntentDeviceCategory(device) == .plug else { return nil }
-        var renamed = device
-        renamed.name = device.name + "灯"
-        guard renamed.isSwitchedLight else { return nil }
+        guard wallSwitchMayControlLight(device) else { return nil }
         return L10n.tr(
-            "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
-            "If this switch actually controls an ordinary light, rename it in Xiaomi Home or set an alias here and include “light”. This confirmation will stop appearing."
+            "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
+            "If this switch actually controls an ordinary light, tap “This is a light, don't ask again” and this confirmation will stop appearing."
         )
     }
 
@@ -104,9 +184,10 @@ public enum ManualControlPolicy {
         facet: FacetControl,
         value: JSONValue?,
         portion: Int? = nil,
-        for device: SmartDevice
+        for device: SmartDevice,
+        markedLightIds: Set<String>? = nil
     ) -> ManualControlConfirmation? {
-        guard facetRequiresConfirmation(facet, value: value, for: device) else { return nil }
+        guard facetRequiresConfirmation(facet, value: value, for: device, markedLightIds: markedLightIds) else { return nil }
         if facet.portionArgumentIndex != nil {
             return feedingConfirmation(facet, portion: portion, for: device)
         }
@@ -177,7 +258,8 @@ public enum ManualControlPolicy {
         _ facet: FacetControl,
         value: JSONValue?,
         for device: SmartDevice,
-        rules: DeviceProfiles.ManualControlRules = currentRules
+        rules: DeviceProfiles.ManualControlRules = currentRules,
+        markedLightIds: Set<String>? = nil
     ) -> Bool {
         if facet.kind == .button { return true }
         if facet.target?.isAction == true { return true }
@@ -208,8 +290,9 @@ public enum ManualControlPolicy {
         // A Home Assistant auxiliary switch uses the `switch` domain with a device-specific object
         // id (`bath-heater-ptc`, `dual-plug-socket-2`), so it follows the power hazard table rather
         // than a MIoT property short name. This also keeps a heater switch's off direction direct.
+        // A wall switch marked as a light (#104) reads its mark here, like the power path does.
         if service == "switch", let isOn = value?.miotBool {
-            return requiresConfirmation(.power(isOn), for: device)
+            return requiresConfirmation(.power(isOn), for: device, markedLightIds: markedLightIds)
         }
 
         let category = IntentDeviceCategory(device)
@@ -227,7 +310,7 @@ public enum ManualControlPolicy {
         if isPower, let isOn = value?.miotBool {
             if heatingService { return isOn }
             if !device.kind.isGenericDevice {
-                return requiresConfirmation(.power(isOn), for: device)
+                return requiresConfirmation(.power(isOn), for: device, markedLightIds: markedLightIds)
             }
         }
 

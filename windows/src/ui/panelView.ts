@@ -15,6 +15,8 @@ import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
+import { ManualControlPolicy } from "../core/assistant.js";
+import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
@@ -565,6 +567,16 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
   if (!reply && !undo && !host.pendingCloudConsent) return "";
   const role = reply?.isError ? "alert" : "status";
   const hint = reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
+  // #104: the armed high-risk confirmation for a still-unmarked wall switch offers the «this is
+  // a light» mark inside the prompt itself; tapping it marks the device and re-runs the toggle.
+  const armed = host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > Date.now()
+    ? host.pendingHighRisk
+    : null;
+  const armedDevice = armed ? host.devices.find((d) => d.id === armed!.deviceId) : undefined;
+  const markAsLightPill =
+    armedDevice && !isSwitchMarkedAsLight(armedDevice.id) && ManualControlPolicy.wallSwitchMayControlLight(armedDevice)
+      ? `<button class="cc-inline-pill" data-mark-switch-light="${host.escapeHtml(armedDevice.id)}">${t("这是灯，以后不再询问")}</button>`
+      : "";
   return `<div class="win-notif-card cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
     <div class="cc-feedback-row">
       ${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}
@@ -573,6 +585,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
           ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
           : ""
       }
+      ${markAsLightPill}
       ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>

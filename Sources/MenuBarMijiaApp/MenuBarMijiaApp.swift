@@ -43,7 +43,14 @@ struct MenuBarMijiaApp: App {
 enum ManualControlConfirmationPresenter {
     static func present(_ prompt: ManualControlConfirmation) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
-        return makeAlert(prompt).runModal() == .alertSecondButtonReturn
+        let answer = makeAlert(prompt).runModal()
+        // #104: the third button both marks the wall switch as an ordinary light (persisted) and
+        // executes the action in the same tap, so answering the dialog never costs the toggle.
+        if answer == .alertThirdButtonReturn, let mark = prompt.markAsLight {
+            HomeStore.shared.markSwitchAsLight(mark.deviceId)
+            return true
+        }
+        return answer == .alertSecondButtonReturn
     }
 
     /// The alert `present` runs, built separately so a snapshot can render it without a modal loop.
@@ -57,6 +64,9 @@ enum ManualControlConfirmationPresenter {
         }
         alert.addButton(withTitle: prompt.cancelTitle)
         alert.addButton(withTitle: prompt.confirmTitle)
+        if let mark = prompt.markAsLight {
+            alert.addButton(withTitle: mark.title)
+        }
         return alert
     }
 

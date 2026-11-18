@@ -297,6 +297,30 @@ public struct DeviceCardView: View {
                 Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
             }
 
+            // #104: only a wall switch the existing rule already considers light-like offers the
+            // «this is a light» mark; a marked one offers the undo entry instead.
+            if ManualControlPolicy.wallSwitchMayControlLight(device) {
+                if store.isSwitchMarkedAsLight(device.id) {
+                    Button {
+                        store.unmarkSwitchAsLight(device.id)
+                    } label: {
+                        Label(
+                            L10n.tr("撤销『这是灯』标记", "Undo “this is a light”"),
+                            systemImage: "lightbulb.slash"
+                        )
+                    }
+                } else {
+                    Button {
+                        store.markSwitchAsLight(device.id)
+                    } label: {
+                        Label(
+                            L10n.tr("这是灯，以后不再询问", "This is a light, don't ask again"),
+                            systemImage: "lightbulb"
+                        )
+                    }
+                }
+            }
+
             Button {
                 LayoutUIState.shared.isEditingLayoutRequested = true
             } label: {

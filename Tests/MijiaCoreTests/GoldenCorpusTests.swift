@@ -1812,9 +1812,11 @@ struct GoldenCorpusTests {
         let device: ConfirmationDevice?
         let operation: ConfirmationOperation
         let confirm: Bool
+        /// #104: the row exercises `ManualControlPolicy` with this device marked as a light.
+        let markedAsLight: Bool
 
         private enum CodingKeys: String, CodingKey {
-            case id, role, device, operation, confirm
+            case id, role, device, operation, confirm, markedAsLight
         }
 
         init(from decoder: Decoder) throws {
@@ -1838,6 +1840,7 @@ struct GoldenCorpusTests {
             device = try container.decodeIfPresent(ConfirmationDevice.self, forKey: .device)
             operation = try container.decode(ConfirmationOperation.self, forKey: .operation)
             confirm = try container.decode(Bool.self, forKey: .confirm)
+            markedAsLight = try container.decodeIfPresent(Bool.self, forKey: .markedAsLight) ?? false
         }
     }
 
@@ -2049,7 +2052,7 @@ struct GoldenCorpusTests {
     func confirmationGoldenCorpus() throws {
         let fixtureURL = try Self.locateGoldenFixture("Tests/Fixtures/confirmation_golden.json")
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
-        #expect(corpus.rows.count == 90)
+        #expect(corpus.rows.count == 96)
         #expect(corpus.decisionRows.count == 4)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)
@@ -2059,6 +2062,17 @@ struct GoldenCorpusTests {
             }
             let devices = row.device.map { [$0.toSmartDevice()] } ?? []
             let intent = DeviceIntent(targetId: row.device?.id ?? "missing", operation: row.operation.intentOperation)
+            if row.markedAsLight {
+                // #104: a row with `markedAsLight` exercises the manual policy's single decision
+                // point with the device marked as an ordinary light; the model hazard table is not
+                // asserted because the mark deliberately does not touch the AI path.
+                let marks: Set<String> = row.device.map { [$0.id] } ?? []
+                #expect(
+                    ManualControlPolicy.requiresConfirmation(intent, devices: devices, markedLightIds: marks)
+                        == row.confirm, "\(row.id)"
+                )
+                continue
+            }
             #expect(ModelActionPolicy.needsConfirmation(intent, devices: devices) == row.confirm, "\(row.id)")
             if let device = row.device, case .sensor = device.kind {
                 #expect(IntentValidator.sanitize([intent], devices: devices, scenes: []).isEmpty, "\(row.id)")

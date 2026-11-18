@@ -31,6 +31,7 @@ import { facetWriteEnabled, selectedPortionForControl } from "./facetViews.js";
 import { facetTitle, facetValue } from "../core/miotFacetText.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { normalizeSearch } from "../core/panelSearch.js";
+import { markSwitchAsLight, unmarkSwitchAsLight } from "../core/switchLightMarks.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
@@ -272,6 +273,45 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
     host.root.querySelectorAll<HTMLElement>("[data-rename-device]").forEach((btn) => {
       btn.addEventListener("click", () => host.openPrompt({ kind: "renameDevice", deviceId: btn.dataset.renameDevice ?? "" }));
+    });
+    // #104: marking and unmarking a wall switch as an ordinary light, from the device menu.
+    host.root.querySelectorAll<HTMLElement>("[data-mark-switch-light]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.markSwitchLight ?? "";
+        if (!id) return;
+        if (btn.closest(".cc-menu")) host.ctxMenu = null;
+        markSwitchAsLight(id);
+        if (btn.closest(".cc-live-banner") && host.pendingHighRisk?.deviceId === id) {
+          // The pill lives inside the armed confirmation: marking also answers it, so the toggle
+          // the user already asked for runs directly instead of demanding a second tap.
+          host.clearPendingHighRisk();
+          host.replyBanner = {
+            text: t("已标记为灯，以后不再二次确认"),
+            source: t("需要确认"),
+          };
+          host.render();
+          toggleDeviceForHost(host, id);
+          return;
+        }
+        host.replyBanner = {
+          text: t("已标记为灯，以后不再二次确认"),
+          source: t("需要确认"),
+        };
+        host.render();
+      });
+    });
+    host.root.querySelectorAll<HTMLElement>("[data-unmark-switch-light]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = btn.dataset.unmarkSwitchLight ?? "";
+        if (!id) return;
+        host.ctxMenu = null;
+        unmarkSwitchAsLight(id);
+        host.replyBanner = {
+          text: t("已撤销标记，恢复二次确认"),
+          source: t("需要确认"),
+        };
+        host.render();
+      });
     });
     host.root.querySelector("[data-start-editing]")?.addEventListener("click", () => {
       host.ctxMenu = null;

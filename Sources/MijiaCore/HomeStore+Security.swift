@@ -31,11 +31,14 @@ extension HomeStore {
     }
 
     /// Gate for a manual operation on a device. Low-risk actions pass; a hazardous action asks the
-    /// installed presenter once and runs only when approved.
+    /// installed presenter once and runs only when approved. The wall-switch light marks (#104)
+    /// ride the store's own defaults suite so a suite-scoped test sees the same behaviour the
+    /// production store (`.standard`) gives every other caller of the policy.
     func allowManualControl(_ operation: IntentOperation, for device: SmartDevice) -> Bool {
         guard let prompt = ManualControlPolicy.confirmation(
             DeviceIntent(targetId: device.id, operation: operation),
-            devices: devices
+            devices: devices,
+            markedLightIds: SwitchLightMarks.load(defaults: userDefaults)
         ) else { return true }
         return presentManualControlConfirmation(prompt, for: device)
     }
@@ -45,7 +48,8 @@ extension HomeStore {
             facet: facet,
             value: value,
             portion: portion,
-            for: device
+            for: device,
+            markedLightIds: SwitchLightMarks.load(defaults: userDefaults)
         ) else { return true }
         return presentManualControlConfirmation(prompt, for: device)
     }

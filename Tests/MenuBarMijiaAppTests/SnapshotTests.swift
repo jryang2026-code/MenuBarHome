@@ -2026,6 +2026,10 @@ struct SnapshotTests {
                 Text(prompt.cancelTitle)
                 Text(prompt.confirmTitle).fontWeight(.semibold)
             }
+            if let mark = prompt.markAsLight {
+                // #104: the alert's third button, the «this is a light» mark entry.
+                Text(mark.title).foregroundColor(.orange)
+            }
         }
         .padding(16)
         .frame(width: 320, height: 180, alignment: .topLeading)

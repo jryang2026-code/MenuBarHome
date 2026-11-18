@@ -281,10 +281,14 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "需要 API Key": ["需要 API Key", "API key needed"],
   "需要确认": ["需要确认", "Confirmation needed"],
   "「{action}」属于高风险设备，再点一次确认执行": ["「{action}」属于高风险设备，再点一次确认执行", "「{action}」is a high-risk device. Tap again to confirm."],
-  "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。": [
-    "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
-    "If this switch actually controls an ordinary light, rename it in Xiaomi Home or set an alias here and include “light”. This confirmation will stop appearing.",
+  "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。": [
+    "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
+    "If this switch actually controls an ordinary light, tap “This is a light, don't ask again” and this confirmation will stop appearing.",
   ],
+  "这是灯，以后不再询问": ["这是灯，以后不再询问", "This is a light, don't ask again"],
+  "撤销『这是灯』标记": ["撤销『这是灯』标记", "Undo “this is a light”"],
+  "已标记为灯，以后不再二次确认": ["已标记为灯，以后不再二次确认", "Marked as a light. It will not ask again"],
+  "已撤销标记，恢复二次确认": ["已撤销标记，恢复二次确认", "Mark removed. The confirmation is back"],
   "「{action}」属于高风险设备，确认后执行": ["「{action}」属于高风险设备，确认后执行", "「{action}」is a high-risk device. Confirm to run it."],
   "设为 {temp}？": ["设为 {temp}？", "Set to {temp}?"],
   "确认执行": ["确认执行", "Confirm"],

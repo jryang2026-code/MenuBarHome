@@ -52,6 +52,35 @@ struct ManualControlConfirmationPresenterTests {
         let alert = ManualControlConfirmationPresenter.makeAlert(prompt)
         #expect(alert.informativeText == prompt.message)
         #expect((alert.accessoryView as? NSTextField)?.stringValue == hint)
-        #expect(alert.buttons.map(\.title) == [prompt.cancelTitle, prompt.confirmTitle])
+        // #104: the wall-switch prompt carries the «this is a light» mark entry as a third button.
+        let mark = try #require(prompt.markAsLight)
+        #expect(mark.deviceId == wall.id)
+        #expect(alert.buttons.map(\.title) == [prompt.cancelTitle, prompt.confirmTitle, mark.title])
+    }
+
+    @Test("A marked wall switch never offers the mark entry, other prompts keep two buttons (#104)")
+    func markedSwitchPromptKeepsTwoButtons() throws {
+        let wall = SmartDevice(
+            id: "wall-marked", name: "左键", roomId: "hall", roomName: "玄关",
+            model: "lumi.switch.b1nacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall", isOn: false, powerWritable: true))
+        )
+        let marked = ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: wall.id, operation: .power(true)),
+            devices: [wall],
+            markedLightIds: [wall.id]
+        )
+        #expect(marked == nil, "the marked wall switch asks nothing at all")
+
+        let plug = SmartDevice(
+            id: "plug", name: "书房插座", roomId: "study", roomName: "书房",
+            model: "cuco.plug.v3", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.plug", isOn: false, powerWritable: true))
+        )
+        let plugPrompt = try #require(ManualControlPolicy.confirmation(
+            DeviceIntent(targetId: plug.id, operation: .power(true)),
+            devices: [plug]
+        ))
+        #expect(plugPrompt.markAsLight == nil, "a real plug never offers the mark entry")
     }
 }
