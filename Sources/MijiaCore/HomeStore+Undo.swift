@@ -78,8 +78,10 @@ extension HomeStore {
         debounceTasks.removeAll()
         debouncedWrites.removeAll()
         manualWriteSessions.removeAll()
-        // The cover drag answer belongs to the slot that asked for it (§13).
+        // The cover drag answer and reported facet/device baselines belong to the connection that recorded them (§13).
         confirmedCoverDragAnswers.removeAll()
+        lastReportedDevices.removeAll()
+        lastReportedFacets.removeAll()
         // A persistent toast carries an action for the connection that raised it (the expired Mi
         // session's Scan button). Reaching demo mode or another account leaves it a dead button,
         // so it must end with the context that created it (§13). A suspended prompt is dropped too,
@@ -1090,7 +1092,9 @@ extension HomeStore {
                     if let value = Self.facetValue(for: command, control: facets[index]) {
                         facets[index].value = value
                     }
-                    deviceFacets[device.id] = facets
+                    withOptimisticFacetMutation {
+                        deviceFacets[device.id] = facets
+                    }
                     lockedControlIds.insert(controlId)
                     rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
                 } else {
@@ -1127,7 +1131,9 @@ extension HomeStore {
                     let controlId = facets[index].id
                     cancelFacetWrite(deviceId: device.id, controlId: controlId)
                     facets[index].value = value
-                    deviceFacets[device.id] = facets
+                    withOptimisticFacetMutation {
+                        deviceFacets[device.id] = facets
+                    }
                     lockedControlIds.insert(controlId)
                     rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
                 } else {
@@ -1242,7 +1248,9 @@ extension HomeStore {
                 revert(write)
                 continue
             }
-            deviceFacets[failedId] = preUndoFacetsById[failedId]
+            withOptimisticFacetMutation {
+                deviceFacets[failedId] = preUndoFacetsById[failedId]
+            }
             revert(write)
         }
     }

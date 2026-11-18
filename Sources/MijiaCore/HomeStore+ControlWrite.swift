@@ -79,6 +79,11 @@ struct ManualWriteSuperseded: Error {}
 /// device's report; the toast asks for a fresh drag.
 struct ManualWriteNeedsCoverConfirmation: Error {}
 
+/// A facet slider drag whose reported state changed while it waited in its debounce, so the
+/// confirmation (or lack of one) the drag carried no longer covers the command. Nothing was sent
+/// and the facet falls back to the device's report; the toast asks for a fresh confirmation.
+struct ManualWriteNeedsFacetConfirmation: Error {}
+
 /// What a debounced patch may do once its wait is over: send, or why it must not.
 private enum ManualWriteSendDecision {
     case send
@@ -1051,7 +1056,9 @@ extension HomeStore {
               let index = deviceFacets[device.id]?.firstIndex(where: { $0.id == control.id }) else {
             return
         }
-        deviceFacets[device.id]?[index].value = .bool(spec.isOn)
+        withOptimisticFacetMutation {
+            deviceFacets[device.id]?[index].value = .bool(spec.isOn)
+        }
     }
 
     // MARK: Card controls
