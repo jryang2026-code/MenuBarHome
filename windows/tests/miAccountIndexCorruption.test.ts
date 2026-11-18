@@ -9,6 +9,7 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { renderConnectionsAndDiagSection } from "../src/ui/connectionsAndDiagView.js";
 import { adoptRecoveredPrimarySession, hasMultipleMiAccountsForHost } from "../src/ui/cloudRefresh.js";
 import { clearHostSessionAndDualSourceState } from "../src/ui/appLifecycle.js";
+import { setPendingMiVaultDeletion } from "../src/ui/speechGuard.js";
 import type { MiSession } from "../src/core/miCloudClient.js";
 import {
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
@@ -522,6 +523,94 @@ describe("Mi account index corruption (#228)", () => {
     const removal = await store.removeAccount(miAccountId(SESSION_PRIMARY));
     assert.equal(removal.primarySessionKnown, true);
     assert.equal(fixture.data.has("mi_session"), false, "removal still clears the unread primary");
+  });
+
+  it("does not overwrite an unread primary when updating the first recovered secondary", async () => {
+    const storage = memoryStorage();
+    const failOnGet = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnGet });
+    await seedStore(new MiAccountsStore(new CredentialVault(fixture.invoke), storage), [SESSION_PRIMARY, SESSION_SG]);
+    failOnGet.add("mi_session");
+
+    const cold = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await cold.load();
+    assert.equal(cold.hasConfirmedPrimarySession(), false);
+    assert.equal(cold.getAccounts()[0]?.id, miAccountId(SESSION_SG));
+
+    await cold.upsertAccount({ ...SESSION_SG, serviceToken: "renewed" });
+    failOnGet.clear();
+    assert.equal(
+      (await new CredentialVault(fixture.invoke).loadPrimaryMiSession())?.userId,
+      SESSION_PRIMARY.userId,
+      "the unread primary is not overwritten by the recovered secondary",
+    );
+    assert.equal(fixture.data.has(slotName(SESSION_SG)), true, "the update lands in the secondary slot");
+  });
+
+  it("does not overwrite an unread primary when adding a first account to an empty cache", async () => {
+    const storage = memoryStorage();
+    const failOnGet = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: false, failOnGet });
+    await seedStore(new MiAccountsStore(new CredentialVault(fixture.invoke), storage), [SESSION_PRIMARY]);
+    storage.removeItem(MI_ACCOUNTS_INDEX_STORAGE_KEY);
+    failOnGet.add("mi_session");
+
+    const cold = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    assert.deepEqual(await cold.load(), []);
+    const added = await cold.upsertAccount(SESSION_FAMILY);
+    assert.equal(added.primarySessionKnown, false);
+    failOnGet.clear();
+    assert.equal(
+      (await new CredentialVault(fixture.invoke).loadPrimaryMiSession())?.userId,
+      SESSION_PRIMARY.userId,
+    );
+    assert.equal(fixture.data.has(slotName(SESSION_FAMILY)), true);
+  });
+
+  it("retains cached accounts and partial state when a later load cannot read a slot", async () => {
+    const storage = memoryStorage();
+    const failOnGet = new Set<string>();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true, failOnGet });
+    const store = new MiAccountsStore(new CredentialVault(fixture.invoke), storage);
+    await seedStore(store, [SESSION_PRIMARY, SESSION_SG]);
+
+    failOnGet.add(slotName(SESSION_SG));
+    const loaded = await store.load();
+    assert.ok(loaded.some((account) => account.id === miAccountId(SESSION_SG)));
+    assert.equal(store.getAccountsReadState(), "partial");
+  });
+
+  it("does not restore settings when a sign-out lands during the adoption check", async () => {
+    setPendingMiVaultDeletion(false);
+    const storage = memoryStorage();
+    const fixture = makeCredentialFixture({ supportsSlotScan: true });
+    await new CredentialVault(fixture.invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
+    let checking = false;
+    const entered = Promise.withResolvers<void>();
+    const gate = Promise.withResolvers<void>();
+    const wrapped: SecureInvoke = async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const result = await fixture.invoke<T>(cmd, args);
+      if (checking && cmd === "secure_store_get" && args["name"] === "mi_session") {
+        entered.resolve();
+        await gate.promise;
+      }
+      return result;
+    };
+    const store = new MiAccountsStore(new CredentialVault(wrapped), storage);
+    const accounts = await store.load();
+    const host: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    checking = true;
+    const adoption = adoptRecoveredPrimarySession(host, store, accounts);
+    await entered.promise;
+    setPendingMiVaultDeletion(true);
+    await new CredentialVault(fixture.invoke).deleteMiSession();
+    gate.resolve();
+    await adoption;
+    setPendingMiVaultDeletion(false);
+    assert.equal(host.settings.miSession, null);
+    assert.equal(fixture.data.has("mi_session"), false);
   });
 
   it("leaves a fresh install untouched and reports a complete read", async () => {

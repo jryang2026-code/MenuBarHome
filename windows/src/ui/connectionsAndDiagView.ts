@@ -434,11 +434,13 @@ export async function addOrUpdateMiAccountOnHost(
   const result = await store.upsertAccount(cleanSession);
   setHostMiAccounts(host, null);
 
-  const primary = result.accounts[0]?.session ?? cleanSession;
   setPendingMiVaultDeletion(false);
   host.invalidateSourceControl();
-  host.settings.miSession = primary;
-  host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
+  if (result.primarySessionKnown) {
+    const primary = result.accounts[0]?.session ?? cleanSession;
+    host.settings.miSession = primary;
+    host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
+  }
   host.miSessionExpired = false;
   if (host.settings.connectionMode === "demo") {
     host.settings.connectionMode = "xiaomiCloud";

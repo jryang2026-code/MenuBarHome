@@ -346,6 +346,8 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
   private firstLoadDone = false;
   private accountsReadState: MiAccountsReadState = "complete";
   private primaryConfirmed = false;
+  /** The last load's `mi_session` read failed; a cached first account is not its owner. */
+  private lastPrimaryReadFailed = false;
   /** Slot sessions from the last successful enumeration; used to clear leftovers on sign-out. */
   private enumeratedSessions: Readonly<Record<string, MiSession>> | null = null;
   private opQueue: Promise<unknown> = Promise.resolve();
@@ -463,33 +465,41 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       if (session) pushAccount(makeMiAccount(session));
     }
 
-    if (shouldEnumerate) {
-      // An enumerated slot that reads as null, invalid content or a failed IPC call is not proof
-      // the account is gone; keep its in-memory copy. A slot missing from the scan is dropped.
-      for (const cached of this.cachedAccounts) { if (seenIds.has(cached.id)) continue;
-        if (loadedSlots[cached.slotId] !== undefined) continue;
-        const slotEnumerated = scannedSlotIds !== null && scannedSlotIds.includes(cached.slotId);
-        if (!slotsReadFailed && !slotEnumerated) continue;
-        pushAccount(cached);
-      }
+    // The vault cannot distinguish "missing" from "unreadable": a slot that is not in `loadedSlots`
+    // may have thrown, returned null or held invalid content. Keep the in-memory account in every
+    // such case, independent of whether this load enumerated (#228).
+    for (const cached of this.cachedAccounts) { if (seenIds.has(cached.id)) continue;
+      if (loadedSlots[cached.slotId] !== undefined) continue;
+      pushAccount(cached);
     }
 
-    if (!primaryAccount && !primaryReadFailed && ordered.length > 0) { const promoted = ordered[0]!;
-      await this.vault.savePrimaryMiSession(promoted.session);
-      await this.vault.deleteMiAccountSlot(promoted.slotId).catch(() => {});
+    const promoted = !primaryAccount && !primaryReadFailed && ordered.length > 0;
+    if (promoted) { const first = ordered[0]!;
+      await this.vault.savePrimaryMiSession(first.session);
+      await this.vault.deleteMiAccountSlot(first.slotId).catch(() => {});
     }
     // A transient read failure must not revoke ownership already established for the retained
     // cached primary; otherwise removing it would skip clearing `mi_session`.
     const retainedCachedPrimary = !primaryAccount && primaryReadFailed && this.cachedAccounts.length > 0;
     this.primaryConfirmed = Boolean(primaryAccount)
-      || (!primaryReadFailed && ordered.length > 0)
+      || promoted
       || (retainedCachedPrimary && this.primaryConfirmed);
+    this.lastPrimaryReadFailed = primaryReadFailed && !promoted;
 
     if (scannedSlotIds !== null) this.enumeratedSessions = { ...loadedSlots };
     const unreadScannedSlots = scannedSlotIds !== null
       ? scannedSlotIds.filter((slotId) => loadedSlots[slotId] === undefined)
       : [];
-    this.accountsReadState = unreadScannedSlots.length > 0 || (indexUnreadable && scannedSlotIds === null)
+    // Index/cache slots count too: the vault cannot distinguish missing from unreadable, so any
+    // known slot without a parsed session keeps its cached account and marks the read partial.
+    const primarySlotId = primaryAccount?.slotId
+      ?? (primaryReadFailed && this.primaryConfirmed ? this.cachedAccounts[0]?.slotId : undefined);
+    const unreadKnownSlots = slotIds.filter((slotId) =>
+      slotId !== primarySlotId && loadedSlots[slotId] === undefined);
+    this.accountsReadState = slotsReadFailed
+      || unreadKnownSlots.length > 0
+      || unreadScannedSlots.length > 0
+      || (indexUnreadable && scannedSlotIds === null)
       ? "partial"
       : "complete";
     this.firstLoadDone = true;
@@ -510,6 +520,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     async upsertAccount(rawSession: MiSession): Promise<{ readonly accounts: MiAccount[];
     readonly account: MiAccount;
     readonly added: boolean;
+    readonly primarySessionKnown: boolean;
   }> { const parsed = parseMiSession(rawSession);
     if (!parsed) { throw new Error("Invalid Xiaomi session");
     }
@@ -529,17 +540,24 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       const existingIdx = this.cachedAccounts.findIndex((item) => item.id === account.id);
       if (existingIdx === 0) { const previousSession = this.cachedAccounts[0]!.session;
         const prevFp = miSessionFingerprint(previousSession);
-        await this.vault.savePrimaryMiSession(account.session);
-        this.primaryConfirmed = true;
+        const ownsPrimary = this.primaryConfirmed;
+        if (ownsPrimary) {
+          await this.vault.savePrimaryMiSession(account.session);
+          this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
+        } else {
+          // The first cached account is a recovered secondary; never overwrite an unread primary.
+          await this.vault.saveMiAccountSlot(account.slotId, account.session);
+        }
         if (prevFp !== miSessionFingerprint(account.session)) { clearPersistedMiSessionExpiredFor(previousSession, this.storage);
           markAccountSessionRejected(account.session, false, {
-            isPrimary: true,
+            isPrimary: ownsPrimary,
             storage: this.storage,
           });
         }
         this.cachedAccounts = [account, ...this.cachedAccounts.slice(1)];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: false };
+        return { accounts: [...this.cachedAccounts], account, added: false, primarySessionKnown: this.primaryConfirmed };
       }
 
       if (existingIdx > 0) { const previousSession = this.cachedAccounts[existingIdx]!.session;
@@ -555,18 +573,27 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
         next[existingIdx] = account;
         this.cachedAccounts = next;
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: false };
+        return { accounts: [...this.cachedAccounts], account, added: false, primarySessionKnown: this.primaryConfirmed };
       }
 
-      if (this.cachedAccounts.length === 0) { await this.vault.savePrimaryMiSession(account.session);
-        this.primaryConfirmed = true;
+      if (this.cachedAccounts.length === 0) {
+        // If `mi_session` could not be read, a new login must not overwrite it; write a slot and
+        // leave the unread primary intact for a later load.
+        const ownsPrimary = !this.lastPrimaryReadFailed;
+        if (ownsPrimary) {
+          await this.vault.savePrimaryMiSession(account.session);
+          this.primaryConfirmed = true;
+          this.lastPrimaryReadFailed = false;
+        } else {
+          await this.vault.saveMiAccountSlot(account.slotId, account.session);
+        }
         markAccountSessionRejected(account.session, false, {
-          isPrimary: true,
+          isPrimary: ownsPrimary,
           storage: this.storage,
         });
         this.cachedAccounts = [account];
         this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-        return { accounts: [...this.cachedAccounts], account, added: true };
+        return { accounts: [...this.cachedAccounts], account, added: true, primarySessionKnown: this.primaryConfirmed };
       }
 
       await this.vault.saveMiAccountSlot(account.slotId, account.session);
@@ -576,7 +603,7 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
       });
       this.cachedAccounts = [...this.cachedAccounts, account];
       this.lastWroteIndexToStorage = writeAccountIndex(this.storage, this.cachedAccounts);
-      return { accounts: [...this.cachedAccounts], account, added: true };
+      return { accounts: [...this.cachedAccounts], account, added: true, primarySessionKnown: this.primaryConfirmed };
     });
   }
 
