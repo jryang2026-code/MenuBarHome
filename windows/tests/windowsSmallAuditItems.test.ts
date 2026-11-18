@@ -7,7 +7,12 @@ import type { Window } from "happy-dom";
 import { setLanguage } from "../src/core/i18n.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
-import { enqueueIncomingOpenUrl } from "../src/ui/speechGuard.js";
+import { onOpenURL, type AppURLCommandHost } from "../src/core/appUrlCommand.js";
+import {
+  enqueueIncomingOpenUrl,
+  getActiveRaycastBridgeTokenForHost,
+  getLatestRaycastSnapshotForHost,
+} from "../src/ui/speechGuard.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 
 let dom: Window;
@@ -183,33 +188,191 @@ describe("Audit #32: bindAllOffControl scoped in RenderEventScope", () => {
 });
 
 describe("Audit #34: focusDeviceFromUrl respects Settings unsaved changes protection", () => {
-  it("shows unsaved confirmation and keeps draft when Settings has unsaved edits", async () => {
-    const app = startDemoApp();
+  it("shows unsaved confirmation, keeps draft, reveals panel, and reports incomplete status when Settings has unsaved edits", async () => {
+    let revealCalls = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (name: string) => {
+          if (name === "show_panel_for_url") revealCalls += 1;
+          return null;
+        },
+      },
+    });
+
+    const app = startDemoApp({ enableRaycastIntegration: true });
     await click("#btn-settings");
     await click('[data-settings-tab="connection"]');
     type("#settings-ha-url", "http://unsaved-ha.local:8123");
 
-    await enqueueIncomingOpenUrl(app, "menumijia://focus?device=light.living_ceiling");
+    await enqueueIncomingOpenUrl(
+      app,
+      "menumijia://focus?device=light.living_ceiling&id=req_focus_unsaved",
+    );
     await flushAsync();
 
     assert.equal(app.activeSheet, "settings", "Settings sheet must stay open when unsaved changes exist");
     assert.equal(element("#settings-unsaved-confirm").hidden, false, "Unsaved confirmation bar must be shown");
     assert.equal(field("#settings-ha-url").value, "http://unsaved-ha.local:8123", "Draft input must not be lost");
     assert.equal(app.expandedDeviceId, null, "Must not expand target device while Settings remains open");
+    assert.equal(revealCalls, 1, "Must still reveal panel so user sees the unsaved confirmation bar");
+    assert.equal(app.replyBanner?.isError, true, "Reply banner must indicate focus did not complete");
+    assert.match(app.replyBanner?.text ?? "", /未保存/, "Reply banner must explain unsaved settings");
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /已定位/, "Must not falsely claim device was focused");
+
+    const fb = getLatestRaycastSnapshotForHost(app).lastCommandFeedback;
+    assert.equal(fb?.requestId, "req_focus_unsaved");
+    assert.equal(fb?.command, "focus:light.living_ceiling");
+    assert.equal(fb?.isError, true, "Raycast feedback must mark blocked focus as error");
+    assert.match(fb?.message ?? "", /未保存/);
+    assert.doesNotMatch(fb?.message ?? "", /已定位/);
+  });
+
+  it("blocks high-risk confirmation paths (both panel arming and modal prompt) when Settings has unsaved edits", async () => {
+    let revealCalls = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (name: string) => {
+          if (name === "show_panel_for_url") revealCalls += 1;
+          return null;
+        },
+      },
+    });
+
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: true });
+    app.devices.push({
+      id: "plug.heater",
+      name: "卧室取暖器",
+      roomId: "bedroom",
+      roomName: "主卧",
+      model: "zhimi.heater.ma2",
+      isOnline: true,
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.plug.heater",
+        isOn: false,
+        powerWatts: 0,
+        childLockEntityId: null,
+        isChildLocked: false,
+      },
+    });
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    let appliedCount = 0;
+    app.applyCommand = async () => {
+      appliedCount += 1;
+      return true;
+    };
+
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    type("#settings-ha-url", "http://unsaved-ha.local:8123");
+
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=plug.heater&on=true&id=req_hr_unsaved&token=${token}`,
+    );
+    await flushAsync();
+
+    assert.equal(app.activeSheet, "settings");
+    assert.equal(element("#settings-unsaved-confirm").hidden, false);
+    assert.equal(app.pendingHighRisk, null, "Must not arm pendingHighRisk while Settings blocks close");
+    assert.equal(appliedCount, 0, "Must not send high-risk device command");
+    assert.equal(revealCalls, 1, "Must still reveal panel so user sees unsaved confirmation bar");
+    assert.equal(app.replyBanner?.isError, true);
+    assert.match(app.replyBanner?.text ?? "", /未保存/);
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /请在面板中确认/);
+
+    const fb = getLatestRaycastSnapshotForHost(app).lastCommandFeedback;
+    assert.equal(fb?.requestId, "req_hr_unsaved");
+    assert.equal(fb?.isError, true);
+    assert.match(fb?.message ?? "", /未保存/);
+    assert.doesNotMatch(fb?.message ?? "", /请在面板中确认/);
+
+    // Also verify the openExternalUrlConfirmPrompt high-risk branch (~line 668) stops when focusDeviceFromUrl returns false.
+    let modalCalls = 0;
+    let modalRevealCalls = 0;
+    let singleExecCalls = 0;
+    const recordedFbs: Array<{ message: string; isError: boolean }> = [];
+    const toastResults: Array<{ message: string; isError: boolean }> = [];
+    const mockHost: AppURLCommandHost = {
+      devices: app.devices,
+      scenes: [],
+      sourceRevision: 1,
+      settings: {
+        enableRaycastIntegration: true,
+        allowDirectURLControl: true,
+        blockControlWhileLocked: false,
+      },
+      layout: { aliases: {} },
+      pendingHighRisk: null,
+      replyBanner: null,
+      pendingConsent: null,
+      expandedDeviceId: null,
+      getActiveRaycastBridgeToken: () => token,
+      isControlBlockedByScreenLock: async () => false,
+      requestExternalUrlConfirmation: async () => true,
+      openExternalUrlConfirmPrompt: async () => {
+        modalCalls += 1;
+        return true;
+      },
+      revealPanelForExternalUrl: async () => {
+        modalRevealCalls += 1;
+      },
+      setPendingHighRisk: () => {},
+      clearPendingHighRisk: () => {},
+      showExternalToast: (message, isError) => {
+        toastResults.push({ message, isError });
+      },
+      recordRaycastCommandFeedback: (entry) => {
+        recordedFbs.push({ message: entry.message, isError: entry.isError });
+      },
+      executeSingleCommand: async () => {
+        singleExecCalls += 1;
+      },
+      applyCommand: async () => {
+        singleExecCalls += 1;
+        return true;
+      },
+      handleNaturalCommand: async () => {},
+      executeBuiltInSceneFromUrl: async () => ({ message: "ok", isError: false }),
+      focusDeviceFromUrl: () => false,
+    };
+
+    await onOpenURL(
+      `menumijia://power?device=plug.heater&on=true&id=req_hr_modal_blocked&token=${token}`,
+      mockHost,
+    );
+    assert.equal(modalCalls, 0, "Must not open high-risk modal prompt when focusDeviceFromUrl is blocked");
+    assert.equal(singleExecCalls, 0, "Must not execute high-risk command when focusDeviceFromUrl is blocked");
+    assert.equal(modalRevealCalls, 1, "Must still reveal panel when focusDeviceFromUrl is blocked");
+    assert.equal(toastResults.at(-1)?.isError, true);
+    assert.match(toastResults.at(-1)?.message ?? "", /未保存/);
+    assert.equal(recordedFbs.at(-1)?.isError, true);
+    assert.match(recordedFbs.at(-1)?.message ?? "", /未保存/);
   });
 
   it("closes Settings and focuses the device normally when there are no unsaved edits", async () => {
-    const app = startDemoApp();
+    const app = startDemoApp({ enableRaycastIntegration: true });
     await click("#btn-settings");
     assert.equal(app.activeSheet, "settings");
 
-    await enqueueIncomingOpenUrl(app, "menumijia://focus?device=light.living_ceiling");
+    await enqueueIncomingOpenUrl(
+      app,
+      "menumijia://focus?device=light.living_ceiling&id=req_focus_clean",
+    );
     await flushAsync();
 
     assert.equal(app.activeSheet, "none");
     assert.equal(document.querySelector("#settings-unsaved-confirm"), null);
     assert.equal(app.expandedDeviceId, "light.living_ceiling");
     assert.equal(app.panelSearch.selectedDeviceId, "light.living_ceiling");
+    assert.equal(Boolean(app.replyBanner?.isError), false);
+    assert.match(app.replyBanner?.text ?? "", /已定位到/);
+    const fb = getLatestRaycastSnapshotForHost(app).lastCommandFeedback;
+    assert.equal(fb?.requestId, "req_focus_clean");
+    assert.equal(fb?.isError, false);
+    assert.match(fb?.message ?? "", /已定位到/);
   });
 });
 

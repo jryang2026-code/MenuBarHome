@@ -448,13 +448,20 @@ export interface AppURLCommandHost {
   executeBuiltInSceneFromUrl(
     scene: BuiltInURLSceneId,
   ): Promise<{ readonly message: string; readonly isError: boolean }>;
-  focusDeviceFromUrl(deviceId: string): void;
+  focusDeviceFromUrl(deviceId: string): boolean;
   /** False for cards the panel hides (e.g. offline devices while "hide offline" is on). */
   isDeviceVisibleInPanel?(deviceId: string): boolean;
 }
 
 export function screenLockBlockedMessage(): string {
   return trText( "屏幕已锁定，已拦截设备控制指令", "Workstation is locked; device control was blocked");
+}
+
+export function unsavedSettingsBlockedMessage(): string {
+  return trText(
+    "偏好设置有未保存的修改，请先处理未保存修改后再试",
+    "Settings has unsaved changes; please save or discard them first",
+  );
 }
 
 function displayNameFor(device: SmartDevice, host: AppURLCommandHost): string {
@@ -665,7 +672,10 @@ async function runIntentOnDevice(
   if (requiresHighRiskArm(effectiveDev, options.riskIntent ?? intent, firstCommand, aliasedDevices)) {
     if ( options.bridgeContext?.isTrustedBridge && typeof host.openExternalUrlConfirmPrompt === "function" ) {
       const revisionBeforePrompt = host.sourceRevision;
-      host.focusDeviceFromUrl(dev.id);
+      if (!host.focusDeviceFromUrl(dev.id)) {
+        await host.revealPanelForExternalUrl();
+        return { message: unsavedSettingsBlockedMessage(), isError: true };
+      }
       await host.revealPanelForExternalUrl();
       const confirmed = await host.openExternalUrlConfirmPrompt({ device: effectiveDev, description: labelForHighRisk, actionLabel: labelForHighRisk, summary, commandLabel: options.bridgeContext.commandLabel, intent, command: firstCommand, ...(options.bridgeContext.requestId ? { requestId: options.bridgeContext.requestId } : {}), sourceRevision: revisionBeforePrompt});
       if (!confirmed || host.sourceRevision !== revisionBeforePrompt) {
@@ -691,9 +701,12 @@ async function runIntentOnDevice(
       dev = latestDev;
       host.clearPendingHighRisk();
     } else {
+      if (!host.focusDeviceFromUrl(dev.id)) {
+        await host.revealPanelForExternalUrl();
+        return { message: unsavedSettingsBlockedMessage(), isError: true };
+      }
       const actionKey = JSON.stringify(firstCommand);
       host.setPendingHighRisk({ deviceId: dev.id, actionKey, expiresAtMs: Date.now() + 8000, sourceRevision: host.sourceRevision, confirm: { command: firstCommand, summary, intent, promptLabel: labelForHighRisk }});
-      host.focusDeviceFromUrl(dev.id);
       const promptMsg = trText( "「{action}」属于高风险设备，请在面板中确认", '"{action}" is high-risk; confirm in the panel', { action: labelForHighRisk });
       host.showExternalToast(promptMsg, false);
       await host.revealPanelForExternalUrl();
@@ -1166,7 +1179,11 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
         );
         return;
       }
-      host.focusDeviceFromUrl(resolved.device.id);
+      if (!host.focusDeviceFromUrl(resolved.device.id)) {
+        finish(unsavedSettingsBlockedMessage(), true);
+        await host.revealPanelForExternalUrl();
+        return;
+      }
       finish(trText("已定位到 {name}", "Focused {name}", { name }), false);
       await host.revealPanelForExternalUrl();
       return;

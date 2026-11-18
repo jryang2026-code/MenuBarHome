@@ -1165,10 +1165,10 @@ function createUrlCommandHostAdapter(
       return true;
     },
 
-    focusDeviceFromUrl(deviceId: string): void {
-      if (!revisionStillMatches()) return;
+    focusDeviceFromUrl(deviceId: string): boolean {
+      if (!revisionStillMatches()) return false;
       if (host.activeSheet === "settings") {
-        if (!host.requestCloseSettingsSheet()) return;
+        if (!host.requestCloseSettingsSheet()) return false;
       } else {
         host.activeSheet = "none";
       }
@@ -1193,6 +1193,7 @@ function createUrlCommandHostAdapter(
         `[data-tile-id="${escapedId}"]`,
       );
       card?.scrollIntoView?.({ block: "nearest" });
+      return true;
     },
   };
 }
