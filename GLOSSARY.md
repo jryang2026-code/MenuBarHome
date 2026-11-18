@@ -30,6 +30,10 @@ _Avoid_: Plugin（插件）、Registry（注册表）
 `Shared/capability-manifest.json` 声明连接（`ConnectionCapabilityID`）、功能（`FeatureID`）、设备类型（`DeviceCategoryID`）稳定 ID、种类、硬依赖、新装默认、启动策略、平台可用性与 `docs/capabilities.json` 映射的纯数据契约（ADR-0023），由双端封闭枚举/字面量联合穷尽解析，不含持久状态、凭据秘密或设备危险等级。
 _Avoid_: Plugin manifest（插件清单）、Dynamic registry（动态注册表）
 
+**CapabilityDeactivationVerdict（能力停用引用判决）**：
+宿主在停用连接、功能或设备类型前由 `CapabilityReferenceEngine`（Windows：`capabilityReferenceVerdict.ts`）输出的纯函数判决契约（`allowed` / `requiresPauseConfirmation` / `blocked`），汇总受影响定时/自动化/快捷动作、软提示、安全保留集（`hiddenSafetyRetainedDeviceIds`）与宿主写入门（`ControlTargetGateVerdict`），由双端共读 `Tests/Fixtures/capability_selection_golden.json` 校验。
+_Avoid_: Silent drop（静默丢弃）、Filter-only disable（仅过滤隐藏）
+
 **RaycastSnapshot（伴生快照）**：
 写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读状态与 `lastCommandFeedback`，供 `raycast/`、`scripts/mijia` 与 `scripts/mijia-mcp` 检索使用，隔离真实凭据，受 `currentSchemaVersion` 契约保护。
 _Avoid_: 缓存文件、数据库

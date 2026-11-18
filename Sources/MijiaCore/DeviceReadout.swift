@@ -22,9 +22,10 @@ public enum DeviceReadoutDecider {
 
 extension HomeStore {
     public func readout(for deviceId: String) -> DeviceReadout {
-        DeviceReadoutDecider.readout(
+        let deviceTelemetryStale = devices.first(where: { $0.id == deviceId })?.telemetryStale ?? false
+        return DeviceReadoutDecider.readout(
             isWaiting: waitingDeviceIds.contains(deviceId),
-            valuesAreStale: deviceValuesAreStale
+            valuesAreStale: deviceValuesAreStale || deviceTelemetryStale
         )
     }
 

@@ -99,7 +99,7 @@ struct DualSourceDoorbellTests {
                 latestHome = home
             case .doorbellRang(let ring):
                 rings.append(ring)
-            case .statusChanged, .sessionExpired, .sourceStatusesChanged:
+            case .statusChanged, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged:
                 break
             }
         }

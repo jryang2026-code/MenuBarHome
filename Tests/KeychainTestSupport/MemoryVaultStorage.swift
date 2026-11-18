@@ -8,6 +8,7 @@ public final class MemoryVaultStorage: @unchecked Sendable {
     private var blob: Data?
     private var _readResult: CredentialVault.Storage.ReadResult?
     private var _writeSucceeds = true
+    private var _writeSucceedsSequence: [Bool] = []
     private var _reads = 0
     private var _writes = 0
 
@@ -21,6 +22,11 @@ public final class MemoryVaultStorage: @unchecked Sendable {
     public var writeSucceeds: Bool {
         get { locked { _writeSucceeds } }
         set { locked { _writeSucceeds = newValue } }
+    }
+    /// Optional per-call write outcome queue; when non-empty, each `storage.write` consumes the first element.
+    public var writeSucceedsSequence: [Bool] {
+        get { locked { _writeSucceedsSequence } }
+        set { locked { _writeSucceedsSequence = newValue } }
     }
     public var reads: Int { locked { _reads } }
     public var writes: Int { locked { _writes } }
@@ -39,7 +45,10 @@ public final class MemoryVaultStorage: @unchecked Sendable {
             write: { [self] data in
                 locked {
                     _writes += 1
-                    guard _writeSucceeds else { return false }
+                    let allowed = _writeSucceedsSequence.isEmpty
+                        ? _writeSucceeds
+                        : _writeSucceedsSequence.removeFirst()
+                    guard allowed else { return false }
                     blob = data
                     return true
                 }

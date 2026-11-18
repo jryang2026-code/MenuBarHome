@@ -1,0 +1,1153 @@
+{
+  "version": 1,
+  "allCategories": [
+    "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+    "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+  ],
+  "allFeatures": [
+    "ai-assistant", "camera-live", "companion-integration", "event-automation",
+    "grokball", "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
+  ],
+  "catalog": {
+    "devices": [
+      {
+        "id": "light.study_desk", "name": "书房台灯", "category": "light",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["101.2.1", "101.2.2"], "safetyReadKeys": []
+      },
+      {
+        "id": "light.living_main", "name": "客厅吸顶灯", "category": "light",
+        "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["light.living_main"], "safetyReadKeys": []
+      },
+      {
+        "id": "plug.heater_outlet", "name": "取暖器插座", "category": "plug",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": ["longRunningPlug", "highPower"],
+        "readKeys": ["102.2.1", "102.3.1", "102.3.2"], "safetyReadKeys": ["102.2.1", "102.3.2"]
+      },
+      {
+        "id": "plug.ha_offline", "name": "阳台插座", "category": "plug",
+        "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123",
+        "isSourceAvailable": false, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": [], "readKeys": ["switch.balcony"], "safetyReadKeys": []
+      },
+      {
+        "id": "climate.bedroom_ac", "name": "主卧空调", "category": "climate",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": ["longRunningClimate"],
+        "readKeys": ["103.2.1", "103.2.2", "103.3.1"], "safetyReadKeys": ["103.2.1"]
+      },
+      {
+        "id": "camera.entry_cam", "name": "玄关摄像机", "category": "camera",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": ["doorbell"], "readKeys": ["104.2.1"], "safetyReadKeys": ["104.2.1"]
+      },
+      {
+        "id": "sensor.kitchen_leak", "name": "厨房水浸传感器", "category": "sensor",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": ["leak", "lowBattery"],
+        "readKeys": ["105.2.1", "105.3.1"], "safetyReadKeys": ["105.2.1"]
+      },
+      {
+        "id": "sensor.study_th", "name": "书房温湿度计", "category": "sensor",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": [], "readKeys": ["106.2.1", "106.2.2"], "safetyReadKeys": []
+      },
+      {
+        "id": "sensor.acctb_smoke", "name": "父母家烟感", "category": "sensor",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctB",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": false,
+        "safetySignals": ["smoke"], "readKeys": ["201.2.1"], "safetyReadKeys": ["201.2.1"]
+      },
+      {
+        "id": "sensor.ha_hidden_leak", "name": "HA已禁用漏水实体", "category": "sensor",
+        "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": true, "participatesInAllOff": false,
+        "safetySignals": ["leak"], "readKeys": ["binary_sensor.hidden_leak"], "safetyReadKeys": ["binary_sensor.hidden_leak"]
+      },
+      {
+        "id": "tv.lg_oled", "name": "客厅 LG 电视", "category": "tv",
+        "connection": null, "sourceScope": "lg:oled",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["lg:oled:power"], "safetyReadKeys": []
+      }
+    ],
+    "scenes": [
+      { "id": "scene.ha_movie", "name": "观影模式", "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123", "isSourceAvailable": true },
+      { "id": "scene.mi_sleep", "name": "晚安场景", "connection": "xiaomi-cloud", "sourceScope": "mi:acctA", "isSourceAvailable": true },
+      { "id": "scene.ha_offline", "name": "离线脚本", "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123", "isSourceAvailable": false }
+    ],
+    "deviceGroups": [
+      { "id": "group.all_lights", "name": "全屋灯组", "memberDeviceIds": ["light.study_desk", "light.living_main"] },
+      { "id": "group.study_mix", "name": "书房灯插组", "memberDeviceIds": ["light.study_desk", "plug.heater_outlet"] }
+    ]
+  },
+  "invalidDeviceCases": [
+    {
+      "id": "missing_is_source_available",
+      "rawDevice": {
+        "id": "light.missing_avail", "name": "缺可用字段灯", "category": "light",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["101.2.1"], "safetyReadKeys": []
+      }
+    },
+    {
+      "id": "missing_upstream_hidden_or_disabled",
+      "rawDevice": {
+        "id": "light.missing_hidden", "name": "缺上游隐藏字段灯", "category": "light",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["101.2.1"], "safetyReadKeys": []
+      }
+    },
+    {
+      "id": "missing_connection_key",
+      "rawDevice": {
+        "id": "tv.missing_conn", "name": "缺连接键电视", "category": "tv",
+        "sourceScope": "lg:oled", "isSourceAvailable": true,
+        "upstreamHiddenOrDisabled": false, "participatesInAllOff": true,
+        "safetySignals": [], "readKeys": ["lg:oled:power"], "safetyReadKeys": []
+      }
+    },
+    {
+      "id": "missing_safety_and_read_arrays",
+      "rawDevice": {
+        "id": "sensor.missing_arrays", "name": "缺数组字段传感器", "category": "sensor",
+        "connection": "xiaomi-cloud", "sourceScope": "mi:acctA",
+        "isSourceAvailable": true, "upstreamHiddenOrDisabled": false
+      }
+    }
+  ],
+  "upgradeCases": [
+    {
+      "id": "fresh_install_defaults",
+      "evidence": {
+        "hasLegacySettingsOrOnboarding": false,
+        "configuredConnectionScopes": [],
+        "hasPersistedLocalData": false,
+        "legacyFeatureFlags": {}
+      },
+      "expectedMode": "freshInstall",
+      "expectedPersistMigrationComplete": true,
+      "expectedRetryDiagnostic": null,
+      "expectedSelection": {
+        "enabledConnections": [],
+        "enabledConnectionScopes": [],
+        "enabledFeatures": ["camera-live", "event-automation", "plug-energy", "proactive-suggestions", "sensor-history"],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      }
+    },
+    {
+      "id": "legacy_upgrade_unchanged",
+      "evidence": {
+        "hasLegacySettingsOrOnboarding": true,
+        "configuredConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "hasPersistedLocalData": true,
+        "legacyFeatureFlags": { "grokball": false }
+      },
+      "expectedMode": "legacyPreserved",
+      "expectedPersistMigrationComplete": true,
+      "expectedRetryDiagnostic": null,
+      "expectedSelection": {
+        "enabledConnections": ["home-assistant", "xiaomi-cloud"],
+        "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+        "enabledFeatures": [
+          "ai-assistant", "camera-live", "companion-integration", "event-automation",
+          "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
+        ],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      }
+    },
+    {
+      "id": "uncertain_vault_read_falls_back_to_legacy_without_sealing_migration",
+      "evidence": {
+        "hasLegacySettingsOrOnboarding": false,
+        "configuredConnectionScopes": ["mi:acctA"],
+        "hasPersistedLocalData": false,
+        "legacyFeatureFlags": {},
+        "identityReadFailure": "keychain_interaction_not_allowed"
+      },
+      "expectedMode": "uncertainFallback",
+      "expectedPersistMigrationComplete": false,
+      "expectedRetryDiagnostic": "keychain_interaction_not_allowed",
+      "expectedSelection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [
+          "ai-assistant", "camera-live", "companion-integration", "event-automation",
+          "grokball", "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
+        ],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      }
+    },
+    {
+      "id": "explicit_selection_normalizes_camera_live_dependency",
+      "evidence": {
+        "explicitSelection": {
+          "enabledConnections": ["xiaomi-cloud"],
+          "enabledConnectionScopes": ["mi:acctA"],
+          "enabledFeatures": ["camera-live", "sensor-history"],
+          "enabledCategories": ["light", "plug"]
+        },
+        "hasLegacySettingsOrOnboarding": true,
+        "configuredConnectionScopes": ["mi:acctA"],
+        "hasPersistedLocalData": true,
+        "legacyFeatureFlags": {}
+      },
+      "expectedMode": "explicit",
+      "expectedPersistMigrationComplete": true,
+      "expectedRetryDiagnostic": null,
+      "expectedSelection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": ["sensor-history"],
+        "enabledCategories": ["light", "plug"]
+      }
+    }
+  ],
+  "deactivationCases": [
+    {
+      "id": "disable_light_requires_pause_confirmation_keeps_manual_scenes_and_preserves_preferences",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["event-automation", "camera-live", "sensor-history", "plug-energy"],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["event-automation", "camera-live", "sensor-history", "plug-energy"],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      },
+      "safetyPolicy": { "enabledSignals": ["leak"], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.study_off", "name": "10分钟后关书房灯", "partition": "waiting", "targetIds": ["light.study_desk"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false },
+          { "id": "timer.group_missed", "name": "全屋灯组定时", "partition": "missed", "targetIds": ["group.all_lights"], "sourceScopes": ["mi:acctA", "ha:http://home.local:8123"], "allTargetsLGLan": false }
+        ],
+        "automations": [
+          { "id": "rule.night_lights", "name": "夜间关灯", "isEnabled": true, "action": { "kind": "quickAction", "quickAction": "lightsOff" }, "sourceScopes": ["mi:acctA"] },
+          { "id": "rule.disabled_light", "name": "已停用规则", "isEnabled": false, "action": { "kind": "devices", "targetIds": ["light.study_desk"] }, "sourceScopes": ["mi:acctA"] }
+        ],
+        "quickActions": [
+          { "id": "qa.lights_off", "name": "全屋关灯", "kind": "lightsOff", "targetIds": [], "isEnabled": true }
+        ],
+        "scenes": [
+          { "id": "scene.ha_movie", "name": "观影模式", "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123", "isSourceAvailable": true },
+          { "id": "scene.mi_sleep", "name": "晚安场景", "connection": "xiaomi-cloud", "sourceScope": "mi:acctA", "isSourceAvailable": true }
+        ],
+        "deviceGroups": [
+          { "id": "group.all_lights", "name": "全屋灯组", "memberDeviceIds": ["light.study_desk", "light.living_main"] }
+        ],
+        "preferences": {
+          "favoriteDeviceIds": ["light.study_desk", "plug.heater_outlet"],
+          "aliasDeviceIds": ["light.living_main"],
+          "customOrderDeviceIds": ["light.study_desk"],
+          "menuBarTargetDeviceIds": [],
+          "pinnedSourceDeviceIds": ["light.living_main"],
+          "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 2,
+        "currentGeneration": 2
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": ["light"],
+      "expectedItemsToPause": [
+        { "kind": "waitingTimer", "id": "timer.study_off", "name": "10分钟后关书房灯", "connectionScopes": ["mi:acctA"], "affectedTargetIds": ["light.study_desk"], "affectedCapabilities": ["light"] },
+        { "kind": "missedTimer", "id": "timer.group_missed", "name": "全屋灯组定时", "connectionScopes": ["ha:http://home.local:8123", "mi:acctA"], "affectedTargetIds": ["light.living_main", "light.study_desk"], "affectedCapabilities": ["light"] },
+        { "kind": "automationRule", "id": "rule.night_lights", "name": "夜间关灯", "connectionScopes": ["ha:http://home.local:8123", "mi:acctA"], "affectedTargetIds": ["light.living_main", "light.study_desk"], "affectedCapabilities": ["light"] },
+        { "kind": "quickAction", "id": "qa.lights_off", "name": "全屋关灯", "connectionScopes": ["ha:http://home.local:8123", "mi:acctA"], "affectedTargetIds": ["light.living_main", "light.study_desk"], "affectedCapabilities": ["light"] }
+      ],
+      "expectedSoftNotices": [
+        { "kind": "manualScenesMayControlHiddenDevices", "affectedIds": ["scene.ha_movie", "scene.mi_sleep"] },
+        { "kind": "preferencesPreserved", "affectedIds": ["light.living_main", "light.study_desk"] }
+      ],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": ["light.living_main", "light.study_desk"],
+      "expectedPartition": {
+        "availableDeviceIds": ["plug.heater_outlet", "plug.ha_offline", "climate.bedroom_ac", "camera.entry_cam", "sensor.kitchen_leak", "sensor.study_th", "tv.lg_oled"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["plug.heater_outlet", "plug.ha_offline", "climate.bedroom_ac", "camera.entry_cam", "sensor.kitchen_leak", "sensor.study_th", "tv.lg_oled"],
+        "readPlanKeys": ["102.2.1", "102.3.1", "102.3.2", "103.2.1", "103.2.2", "103.3.1", "104.2.1", "105.2.1", "105.3.1", "106.2.1", "106.2.2", "lg:oled:power", "switch.balcony"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "lights_and_switches_preset_retains_leak_sensor_read_when_leak_alert_enabled",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["camera-live", "sensor-history", "plug-energy"],
+        "enabledCategories": [
+          "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",
+          "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"
+        ]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["camera-live", "sensor-history", "plug-energy"],
+        "enabledCategories": ["light", "plug"]
+      },
+      "safetyPolicy": { "enabledSignals": ["leak"], "starredDeviceIds": [] },
+      "references": {
+        "timers": [], "automations": [], "quickActions": [],
+        "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": ["sensor.kitchen_leak"], "aliasDeviceIds": ["climate.bedroom_ac"],
+          "customOrderDeviceIds": [], "menuBarTargetDeviceIds": ["sensor.study_th"],
+          "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": ["camera.entry_cam"]
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "allowed",
+      "expectedCascadedCapabilities": [
+        "generic", "valve", "sensor", "tv", "speaker", "vacuum",
+        "fridge", "appliance", "cover", "fan", "climate", "camera-live", "camera"
+      ],
+      "expectedItemsToPause": [],
+      "expectedSoftNotices": [
+        { "kind": "preferencesPreserved", "affectedIds": ["camera.entry_cam", "climate.bedroom_ac", "sensor.kitchen_leak", "sensor.study_th"] },
+        { "kind": "safetyReadsRetained", "affectedIds": ["sensor.kitchen_leak"] },
+        { "kind": "dependentCapabilitiesCascaded", "affectedIds": ["camera-live"] }
+      ],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": ["camera.entry_cam", "climate.bedroom_ac", "sensor.kitchen_leak", "sensor.study_th"],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk", "light.living_main", "plug.heater_outlet", "plug.ha_offline"],
+        "hiddenSafetyRetainedDeviceIds": ["sensor.kitchen_leak"],
+        "safetyEvaluationDeviceIds": ["light.study_desk", "light.living_main", "plug.heater_outlet", "plug.ha_offline", "sensor.kitchen_leak"],
+        "readPlanKeys": ["101.2.1", "101.2.2", "102.2.1", "102.3.1", "102.3.2", "105.2.1", "light.living_main", "switch.balcony"],
+        "showsHiddenSafetyNotice": true
+      },
+      "expectLeakAlertWhenSensorTriggers": true
+    },
+    {
+      "id": "lights_and_switches_preset_stops_sensor_reads_when_leak_alert_disabled",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["sensor-history", "plug-energy"],
+        "enabledCategories": ["light", "plug", "sensor"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["sensor-history", "plug-energy"],
+        "enabledCategories": ["light", "plug"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [], "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "allowed",
+      "expectedCascadedCapabilities": ["sensor"],
+      "expectedItemsToPause": [],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk", "light.living_main", "plug.heater_outlet", "plug.ha_offline"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk", "light.living_main", "plug.heater_outlet", "plug.ha_offline"],
+        "readPlanKeys": ["101.2.1", "101.2.2", "102.2.1", "102.3.1", "102.3.2", "light.living_main", "switch.balcony"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": false
+    },
+    {
+      "id": "disable_ha_connection_pauses_scene_automation_and_dynamic_all_off_but_keeps_lg_lan_timer",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": ["event-automation"],
+        "enabledCategories": ["light", "tv"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": ["event-automation"],
+        "enabledCategories": ["light", "tv"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.foreign_ha", "name": "HA异源定时", "partition": "foreign", "targetIds": ["light.living_main"], "sourceScopes": ["ha:http://home.local:8123"], "allTargetsLGLan": false },
+          { "id": "timer.lg_sleep", "name": "电视睡眠关机", "partition": "waiting", "targetIds": ["tv.lg_oled"], "sourceScopes": ["ha:http://home.local:8123"], "allTargetsLGLan": true }
+        ],
+        "automations": [
+          { "id": "rule.movie_scene", "name": "连上家庭Wi-Fi开观影", "isEnabled": true, "action": { "kind": "scene", "sceneId": "scene.ha_movie" }, "sourceScopes": ["ha:http://home.local:8123"] },
+          { "id": "rule.leave_all_off", "name": "离家全关", "isEnabled": true, "action": { "kind": "dynamicAllOff" }, "sourceScopes": ["mi:acctA", "ha:http://home.local:8123"] }
+        ],
+        "quickActions": [
+          { "id": "qa.lights_off", "name": "全屋关灯", "kind": "lightsOff", "targetIds": [], "isEnabled": true }
+        ],
+        "scenes": [
+          { "id": "scene.ha_movie", "name": "观影模式", "connection": "home-assistant", "sourceScope": "ha:http://home.local:8123", "isSourceAvailable": true },
+          { "id": "scene.mi_sleep", "name": "晚安场景", "connection": "xiaomi-cloud", "sourceScope": "mi:acctA", "isSourceAvailable": true }
+        ],
+        "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 5,
+        "currentGeneration": 5
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": ["home-assistant"],
+      "expectedItemsToPause": [
+        { "kind": "foreignTimer", "id": "timer.foreign_ha", "name": "HA异源定时", "connectionScopes": ["ha:http://home.local:8123"], "affectedTargetIds": ["light.living_main"], "affectedCapabilities": ["home-assistant"] },
+        { "kind": "automationRule", "id": "rule.movie_scene", "name": "连上家庭Wi-Fi开观影", "connectionScopes": ["ha:http://home.local:8123"], "affectedTargetIds": ["scene.ha_movie"], "affectedCapabilities": ["home-assistant"] },
+        { "kind": "automationRule", "id": "rule.leave_all_off", "name": "离家全关", "connectionScopes": ["ha:http://home.local:8123"], "affectedTargetIds": ["light.living_main"], "affectedCapabilities": ["home-assistant"] }
+      ],
+      "expectedSoftNotices": [
+        { "kind": "manualScenesMayControlHiddenDevices", "affectedIds": ["scene.mi_sleep"] }
+      ],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk", "tv.lg_oled"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk", "tv.lg_oled"],
+        "readPlanKeys": ["101.2.1", "101.2.2", "lg:oled:power"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "disable_single_mi_account_keeps_xiaomi_cloud_enabled_and_pauses_only_that_account",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA", "mi:acctB"],
+        "enabledFeatures": ["event-automation"],
+        "enabledCategories": ["light", "sensor"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": ["event-automation"],
+        "enabledCategories": ["light", "sensor"]
+      },
+      "safetyPolicy": { "enabledSignals": ["smoke"], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.accta_desk", "name": "书房灯定时", "partition": "waiting", "targetIds": ["light.study_desk"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false },
+          { "id": "timer.acctb_check", "name": "父母家设备定时", "partition": "waiting", "targetIds": ["sensor.acctb_smoke"], "sourceScopes": ["mi:acctB"], "allTargetsLGLan": false }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": [],
+      "expectedItemsToPause": [
+        { "kind": "waitingTimer", "id": "timer.acctb_check", "name": "父母家设备定时", "connectionScopes": ["mi:acctB"], "affectedTargetIds": ["sensor.acctb_smoke"], "affectedCapabilities": ["xiaomi-cloud"] }
+      ],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk", "sensor.kitchen_leak", "sensor.study_th"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk", "sensor.kitchen_leak", "sensor.study_th"],
+        "readPlanKeys": ["101.2.1", "101.2.2", "105.2.1", "105.3.1", "106.2.1", "106.2.2"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "unresolved_multisource_ownership_and_stale_generation_block_deactivation",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA", "mi:acctB"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.unindexed_target", "name": "未知归属定时", "partition": "waiting", "targetIds": ["light.unloaded_999"], "sourceScopes": ["mi:acctA", "mi:acctB"], "allTargetsLGLan": false }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": ["automation_rules_v1"],
+        "expectedGeneration": 3,
+        "currentGeneration": 4
+      },
+      "expectedDisposition": "blocked",
+      "expectedCascadedCapabilities": [],
+      "expectedItemsToPause": [],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [
+        { "kind": "stalePreviewGeneration", "referenceId": "generation", "detail": "3!=4" },
+        { "kind": "corruptedReferenceStore", "referenceId": "automation_rules_v1", "detail": "automation_rules_v1" },
+        { "kind": "unresolvedReferenceOwnership", "referenceId": "timer.unindexed_target", "detail": "light.unloaded_999" }
+      ],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk"],
+        "readPlanKeys": ["101.2.1", "101.2.2"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "disable_plug_requires_pause_for_mixed_explicit_group_quick_action",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [],
+        "automations": [],
+        "quickActions": [
+          { "id": "qa.study_mix", "name": "书房灯插同关", "kind": "deviceGroup", "targetIds": ["group.study_mix"], "isEnabled": true }
+        ],
+        "scenes": [],
+        "deviceGroups": [
+          { "id": "group.study_mix", "name": "书房灯插组", "memberDeviceIds": ["light.study_desk", "plug.heater_outlet"] }
+        ],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": ["plug"],
+      "expectedItemsToPause": [
+        { "kind": "quickAction", "id": "qa.study_mix", "name": "书房灯插同关", "connectionScopes": ["mi:acctA"], "affectedTargetIds": ["plug.heater_outlet"], "affectedCapabilities": ["plug"] }
+      ],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk"],
+        "readPlanKeys": ["101.2.1", "101.2.2"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "disable_connection_with_retained_scope_pauses_unindexed_single_source_timer",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "proposed": {
+        "enabledConnections": [],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.unindexed_mi", "name": "未缓存米家定时", "partition": "waiting", "targetIds": ["light.unloaded_mi"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": ["xiaomi-cloud"],
+      "expectedItemsToPause": [
+        { "kind": "waitingTimer", "id": "timer.unindexed_mi", "name": "未缓存米家定时", "connectionScopes": ["mi:acctA"], "affectedTargetIds": ["light.unloaded_mi"], "affectedCapabilities": ["xiaomi-cloud"] }
+      ],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": [],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": [],
+        "readPlanKeys": [],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "disable_connection_with_retained_scope_blocks_unindexed_cross_source_timer",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.unindexed_cross", "name": "跨平台未缓存定时", "partition": "waiting", "targetIds": ["light.unloaded_cross"], "sourceScopes": ["mi:acctA", "ha:http://home.local:8123"], "allTargetsLGLan": false }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "blocked",
+      "expectedCascadedCapabilities": ["home-assistant"],
+      "expectedItemsToPause": [],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [
+        { "kind": "unresolvedReferenceOwnership", "referenceId": "timer.unindexed_cross", "detail": "light.unloaded_cross" }
+      ],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk"],
+        "readPlanKeys": ["101.2.1", "101.2.2"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "preexisting_missing_lg_target_ignored_when_unrelated_capability_disabled",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": ["camera-live"],
+        "enabledCategories": ["camera", "tv"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["camera", "tv"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.lg_stale", "name": "旧LG电视定时", "partition": "waiting", "targetIds": ["tv.lg_missing"], "sourceScopes": [], "allTargetsLGLan": true }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "allowed",
+      "expectedCascadedCapabilities": ["camera-live"],
+      "expectedItemsToPause": [],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["camera.entry_cam", "tv.lg_oled"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["camera.entry_cam", "tv.lg_oled"],
+        "readPlanKeys": ["104.2.1", "lg:oled:power"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    },
+    {
+      "id": "preexisting_missing_lg_target_paused_when_tv_category_disabled",
+      "current": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "tv"]
+      },
+      "proposed": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "safetyPolicy": { "enabledSignals": [], "starredDeviceIds": [] },
+      "references": {
+        "timers": [
+          { "id": "timer.lg_stale", "name": "旧LG电视定时", "partition": "waiting", "targetIds": ["tv.lg_missing"], "sourceScopes": [], "allTargetsLGLan": true }
+        ],
+        "automations": [], "quickActions": [], "scenes": [], "deviceGroups": [],
+        "preferences": {
+          "favoriteDeviceIds": [], "aliasDeviceIds": [], "customOrderDeviceIds": [],
+          "menuBarTargetDeviceIds": [], "pinnedSourceDeviceIds": [], "cameraPreferenceDeviceIds": []
+        },
+        "corruptedStoreReasons": [],
+        "expectedGeneration": 1,
+        "currentGeneration": 1
+      },
+      "expectedDisposition": "requiresPauseConfirmation",
+      "expectedCascadedCapabilities": ["tv"],
+      "expectedItemsToPause": [
+        { "kind": "waitingTimer", "id": "timer.lg_stale", "name": "旧LG电视定时", "connectionScopes": [], "affectedTargetIds": ["tv.lg_missing"], "affectedCapabilities": ["tv"] }
+      ],
+      "expectedSoftNotices": [],
+      "expectedBlockingReasons": [],
+      "expectedPreservedPreferenceDeviceIds": [],
+      "expectedPartition": {
+        "availableDeviceIds": ["light.study_desk"],
+        "hiddenSafetyRetainedDeviceIds": [],
+        "safetyEvaluationDeviceIds": ["light.study_desk"],
+        "readPlanKeys": ["101.2.1", "101.2.2"],
+        "showsHiddenSafetyNotice": false
+      },
+      "expectLeakAlertWhenSensorTriggers": null
+    }
+  ],
+  "writeGateCases": [
+    {
+      "id": "reject_disabled_category_explicitly_before_confirmation",
+      "targetKind": "device",
+      "targetId": "climate.bedroom_ac",
+      "candidateIds": ["climate.bedroom_ac"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "categoryDisabled",
+      "expectedZhMessage": "该设备类型已关闭",
+      "expectedEnMessage": "This device category is turned off",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": true
+    },
+    {
+      "id": "reject_safety_retained_hidden_sensor_as_category_disabled",
+      "targetKind": "device",
+      "targetId": "sensor.kitchen_leak",
+      "candidateIds": ["sensor.kitchen_leak"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "categoryDisabled",
+      "expectedZhMessage": "该设备类型已关闭",
+      "expectedEnMessage": "This device category is turned off",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_nonexistent_device_as_device_not_found",
+      "targetKind": "device",
+      "targetId": "light.nonexistent_404",
+      "candidateIds": [],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "deviceNotFound",
+      "expectedZhMessage": "设备不存在",
+      "expectedEnMessage": "Device not found",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_upstream_hidden_entity_as_device_not_found",
+      "targetKind": "device",
+      "targetId": "sensor.ha_hidden_leak",
+      "candidateIds": [],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug", "sensor"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "deviceNotFound",
+      "expectedZhMessage": "设备不存在",
+      "expectedEnMessage": "Device not found",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_disabled_connection_names_platform",
+      "targetKind": "device",
+      "targetId": "light.study_desk",
+      "candidateIds": ["light.study_desk"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["home-assistant"],
+        "enabledConnectionScopes": ["ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "connectionDisabled",
+      "expectedZhMessage": "米家已停用",
+      "expectedEnMessage": "Xiaomi Home is turned off",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_disabled_mi_account_names_account_not_platform",
+      "targetKind": "device",
+      "targetId": "sensor.acctb_smoke",
+      "candidateIds": ["sensor.acctb_smoke"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["sensor"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "connectionScopeDisabled",
+      "expectedZhMessage": "该米家账号已停用",
+      "expectedEnMessage": "This Xiaomi account is turned off",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_unavailable_connection_names_platform",
+      "targetKind": "device",
+      "targetId": "plug.ha_offline",
+      "candidateIds": ["plug.ha_offline"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "connectionUnavailable",
+      "expectedZhMessage": "Home Assistant 暂不可用，部分设备暂无数据",
+      "expectedEnMessage": "Home Assistant is temporarily unavailable",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_ambiguous_target_across_sources",
+      "targetKind": "device",
+      "targetId": "light.study_desk",
+      "candidateIds": ["light.study_desk", "light.living_main"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "ambiguousTarget",
+      "expectedZhMessage": "目标存在重名或跨源冲突，请明确指定设备",
+      "expectedEnMessage": "Target is ambiguous across devices or sources",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "reject_stale_generation_with_zero_writes",
+      "targetKind": "device",
+      "targetId": "light.study_desk",
+      "candidateIds": ["light.study_desk"],
+      "expectedGeneration": 4,
+      "currentGeneration": 5,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectionCode": "staleGeneration",
+      "expectedZhMessage": "状态已变化，请刷新后重试",
+      "expectedEnMessage": "State changed; refresh and try again",
+      "expectedMayControlHiddenDevices": false,
+      "expectConfirmationFalseOnCroppedSet": false
+    },
+    {
+      "id": "allow_manual_scene_with_hidden_device_notice",
+      "targetKind": "scene",
+      "targetId": "scene.ha_movie",
+      "candidateIds": ["scene.ha_movie"],
+      "expectedGeneration": 1,
+      "currentGeneration": 1,
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": true,
+      "expectedWriteCount": 1,
+      "expectedRejectionCode": null,
+      "expectedZhMessage": null,
+      "expectedEnMessage": null,
+      "expectedMayControlHiddenDevices": true,
+      "expectConfirmationFalseOnCroppedSet": false
+    }
+  ],
+  "planGateCases": [
+    {
+      "id": "reject_entire_plan_with_zero_writes_when_any_target_disabled",
+      "targets": [
+        { "kind": "device", "id": "light.study_desk" },
+        { "kind": "device", "id": "climate.bedroom_ac" }
+      ],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": false,
+      "expectedWriteCount": 0,
+      "expectedRejectedTargetId": "climate.bedroom_ac",
+      "expectedRejectionCode": "categoryDisabled"
+    },
+    {
+      "id": "allow_plan_when_all_targets_available",
+      "targets": [
+        { "kind": "device", "id": "light.study_desk" },
+        { "kind": "scene", "id": "scene.ha_movie" }
+      ],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light", "plug"]
+      },
+      "expectedAllowed": true,
+      "expectedWriteCount": 2,
+      "expectedRejectedTargetId": null,
+      "expectedRejectionCode": null
+    }
+  ],
+  "pausedTimerResumeCases": [
+    {
+      "id": "re_enabled_future_timer_arms_waiting",
+      "timer": { "id": "timer.ac_cool", "name": "开主卧空调", "partition": "waiting", "targetIds": ["climate.bedroom_ac"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["climate", "light"]
+      },
+      "expectedDisposition": "armWaiting"
+    },
+    {
+      "id": "re_enabled_expired_timer_moves_to_missed_for_confirmation",
+      "timer": { "id": "timer.ac_cool", "name": "开主卧空调", "partition": "waiting", "targetIds": ["climate.bedroom_ac"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false },
+      "fireAtEpochSeconds": 1200,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["climate", "light"]
+      },
+      "expectedDisposition": "moveToMissed"
+    },
+    {
+      "id": "still_disabled_target_keeps_timer_paused",
+      "timer": { "id": "timer.ac_cool", "name": "开主卧空调", "partition": "waiting", "targetIds": ["climate.bedroom_ac"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "keepPaused"
+    },
+    {
+      "id": "changed_ha_server_scope_partitions_foreign",
+      "timer": { "id": "timer.ha_light", "name": "关客厅灯", "partition": "waiting", "targetIds": ["light.living_main"], "sourceScopes": ["ha:http://home.local:8123"], "allTargetsLGLan": false },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["ha:http://other-ha.local:8123", "mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123", "ha:http://other-ha.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "partitionForeign"
+    },
+    {
+      "id": "re_enabled_group_timer_expands_device_group_and_arms_waiting",
+      "timer": { "id": "timer.group_lights", "name": "全屋关灯定时", "partition": "waiting", "targetIds": ["group.all_lights"], "sourceScopes": ["mi:acctA", "ha:http://home.local:8123"], "allTargetsLGLan": false, "pausedCapabilities": ["light"] },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+        "enabledConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "armWaiting"
+    },
+    {
+      "id": "partially_disabled_cross_source_group_timer_stays_paused",
+      "timer": { "id": "timer.group_lights", "name": "全屋关灯定时", "partition": "waiting", "targetIds": ["group.all_lights"], "sourceScopes": ["mi:acctA", "ha:http://home.local:8123"], "allTargetsLGLan": false, "pausedCapabilities": ["home-assistant"] },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "keepPaused"
+    },
+    {
+      "id": "missing_target_timer_stays_paused_while_category_still_disabled",
+      "timer": { "id": "timer.removed_ac", "name": "已删空调定时", "partition": "waiting", "targetIds": ["climate.removed_ac"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false, "pausedCapabilities": ["climate"] },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "keepPaused"
+    },
+    {
+      "id": "missing_target_timer_moves_to_missed_when_category_reenabled",
+      "timer": { "id": "timer.removed_ac", "name": "已删空调定时", "partition": "waiting", "targetIds": ["climate.removed_ac"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false, "pausedCapabilities": ["climate"] },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctA"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctA"],
+        "enabledFeatures": [],
+        "enabledCategories": ["climate", "light"]
+      },
+      "expectedDisposition": "moveToMissed"
+    },
+    {
+      "id": "switched_mi_account_partitions_foreign_before_missing_target_check",
+      "timer": { "id": "timer.accta_missing", "name": "旧账号缺目标定时", "partition": "waiting", "targetIds": ["light.accta_only"], "sourceScopes": ["mi:acctA"], "allTargetsLGLan": false, "pausedCapabilities": ["light"] },
+      "fireAtEpochSeconds": 2000,
+      "nowEpochSeconds": 1500,
+      "activeConnectionScopes": ["mi:acctB"],
+      "selection": {
+        "enabledConnections": ["xiaomi-cloud"],
+        "enabledConnectionScopes": ["mi:acctB"],
+        "enabledFeatures": [],
+        "enabledCategories": ["light"]
+      },
+      "expectedDisposition": "partitionForeign"
+    }
+  ]
+}

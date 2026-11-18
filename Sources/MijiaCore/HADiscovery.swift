@@ -636,6 +636,11 @@ public enum HADiscovery {
         return isPrivateLANIPv4(host)
     }
 
+    public static func isLocalNetworkBlockedError(_ error: any Error, urlString: String, isGeneralNetworkSatisfied: Bool = true) -> Bool {
+        let host = URL(string: HAWebSocketProvider.normalizeBaseURL(urlString))?.host?.lowercased()
+        return LocalNetworkPermissionClassifier.isDeniedConnectionError(error, targetHost: host, isGeneralNetworkSatisfied: isGeneralNetworkSatisfied)
+    }
+
     public static func isPrivateLANIPv4(_ ip: String) -> Bool {
         let parts = ip.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
