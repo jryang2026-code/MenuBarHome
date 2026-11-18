@@ -832,7 +832,7 @@ public final class HomeStore {
     struct DebouncedWriteState {
         let token: UUID
         let deviceId: String
-        let origin: SmartDevice
+        var origin: SmartDevice
         /// The revision this drag owns and the fields it changed, kept so a patch that can no
         /// longer be sent can put back exactly what it showed.
         let revision: UInt64

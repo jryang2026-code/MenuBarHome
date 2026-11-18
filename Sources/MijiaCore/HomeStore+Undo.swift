@@ -762,12 +762,21 @@ extension HomeStore {
         let takenOverDeviceIds = batch.map { running in
             Set(running.writes.filter { !ownsRow($0.value) }.keys)
         } ?? []
+        let contextBeforeModal = controlContextID
         let confirmation = confirmUndoTargets(
             banner.restoreCommands,
             previousDevices: banner.previousDevices,
             excludingDeviceIds: takenOverDeviceIds
         )
         if confirmation.abortUndo {
+            return nil
+        }
+        guard controlContextID == contextBeforeModal,
+              undoBanner?.id == banner.id,
+              !rejectControlWhileLocked() else {
+            return nil
+        }
+        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             return nil
         }
         let savedAssistantUndo = lastAssistantUndo?.actionId == banner.actionId ? lastAssistantUndo : nil
@@ -945,6 +954,7 @@ extension HomeStore {
     ) -> UndoConfirmationFilterResult {
         var approvedDeviceIds: Set<String> = []
         var declinedDeviceIds: Set<String> = []
+        var contextInvalidatedDeviceIds: Set<String> = []
         var checkedHighRiskDeviceIds: Set<String> = []
 
         /// One prompt per device: whichever restore speaks for that device first decides, and a
@@ -956,7 +966,16 @@ extension HomeStore {
                 return
             }
             guard checkedHighRiskDeviceIds.insert(device.id).inserted else { return }
-            if ask() { approvedDeviceIds.insert(device.id) } else { declinedDeviceIds.insert(device.id) }
+            let captured = captureModalDeviceContext(for: device)
+            if ask() {
+                if matchesModalDeviceContext(captured) {
+                    approvedDeviceIds.insert(device.id)
+                } else {
+                    contextInvalidatedDeviceIds.insert(device.id)
+                }
+            } else {
+                declinedDeviceIds.insert(device.id)
+            }
         }
 
         for command in commands {
@@ -965,7 +984,8 @@ extension HomeStore {
                    deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
                }), device.isOnline,
                let control = deviceFacets[device.id]?.first(where: { $0.target == target }),
-               !declinedDeviceIds.contains(device.id) {
+               !declinedDeviceIds.contains(device.id),
+               !contextInvalidatedDeviceIds.contains(device.id) {
                 // The facet row carries the meaning of the restore: an auxiliary switch turned back
                 // on, a mode restored away from off or a hotter setpoint is as hazardous as the tap
                 // that made the change. A row that cannot decode the restored value falls back to
@@ -985,7 +1005,9 @@ extension HomeStore {
                 let did = MiotAddress.parse(entityId)?.did
                 let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
                 if let device = owners.count == 1 ? owners.first : nil, device.isOnline,
-                   !excludingDeviceIds.contains(device.id), !declinedDeviceIds.contains(device.id) {
+                   !excludingDeviceIds.contains(device.id),
+                   !declinedDeviceIds.contains(device.id),
+                   !contextInvalidatedDeviceIds.contains(device.id) {
                     // No facet row explains this restore, so only the device-level hazard can speak:
                     // a high-risk card is treated as one the restore could turn back on.
                     settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device)) {
@@ -1005,7 +1027,9 @@ extension HomeStore {
             } else {
                 resolved = nil
             }
-            guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
+            guard let (device, restored) = resolved,
+                  !declinedDeviceIds.contains(device.id),
+                  !contextInvalidatedDeviceIds.contains(device.id) else { continue }
             // The restore direction is the restored state's, not an assumed "back on": a garage
             // door returning to closed is as hazardous as one returning to open (a cover keeps the
             // off direction in the subtype hazard table), while a plug or heater restore that ends
@@ -1019,9 +1043,12 @@ extension HomeStore {
         // on it is refused: its commands are excluded, and if no other device is left there is
         // nothing to send. Aborting keeps the banner and the voice entry retryable instead of
         // clearing them and reporting "the device state changed".
-        let abortUndo = !declinedDeviceIds.isEmpty && approvedDeviceIds.subtracting(declinedDeviceIds).isEmpty
+        let validApproved = approvedDeviceIds
+            .subtracting(declinedDeviceIds)
+            .subtracting(contextInvalidatedDeviceIds)
+        let abortUndo = (!declinedDeviceIds.isEmpty || !contextInvalidatedDeviceIds.isEmpty) && validApproved.isEmpty
         return UndoConfirmationFilterResult(
-            excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds),
+            excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds).union(contextInvalidatedDeviceIds),
             abortUndo: abortUndo
         )
     }

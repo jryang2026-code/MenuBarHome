@@ -1,7 +1,68 @@
 import Foundation
 
+/// Snapshot of a device's control identity before presenting a confirmation modal.
+///
+/// `NSAlert.runModal()` spins the main run loop synchronously, so provider snapshots, dual-source
+/// failovers, account changes, session expiry or screen lock can run before confirmation returns.
+struct ModalDeviceContext: Sendable {
+    let controlContextID: UUID
+    let deviceId: String
+    let backend: HomeBackend
+    let accountId: String?
+    let lgServed: Bool
+}
+
 // Manual-control safety: the screen-lock guard and the high-risk confirmation gate (#143).
 extension HomeStore {
+    func captureModalDeviceContext(for device: SmartDevice) -> ModalDeviceContext {
+        ModalDeviceContext(
+            controlContextID: controlContextID,
+            deviceId: device.id,
+            backend: deviceBackend(for: device.id),
+            accountId: device.accountId,
+            lgServed: lgClientServes(device)
+        )
+    }
+
+    /// Re-reads the live device after a confirmation gate and verifies that its home context and
+    /// backing source are unchanged, session/lock gates still allow control, and online state holds.
+    func resolvePostModalDevice(
+        _ captured: ModalDeviceContext,
+        requireOnline: Bool = false,
+        showOfflineToast: Bool = false
+    ) -> SmartDevice? {
+        guard controlContextID == captured.controlContextID,
+              let current = devices.first(where: { $0.id == captured.deviceId }),
+              deviceBackend(for: captured.deviceId) == captured.backend,
+              current.accountId == captured.accountId,
+              lgClientServes(current) == captured.lgServed else {
+            return nil
+        }
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(current)) else { return nil }
+        guard !rejectControlWhileLocked() else { return nil }
+        if requireOnline, !current.isOnline {
+            if showOfflineToast {
+                showToast(
+                    L10n.tr("\(current.name) 当前离线（可能断电）", "\(current.name) is offline (unplugged)"),
+                    isError: true
+                )
+            }
+            return nil
+        }
+        return current
+    }
+
+    /// True while `deviceId` still exists on the exact control context and source captured in `captured`.
+    func matchesModalDeviceContext(_ captured: ModalDeviceContext) -> Bool {
+        guard controlContextID == captured.controlContextID,
+              let current = devices.first(where: { $0.id == captured.deviceId }) else {
+            return false
+        }
+        return deviceBackend(for: captured.deviceId) == captured.backend
+            && current.accountId == captured.accountId
+            && lgClientServes(current) == captured.lgServed
+    }
+
     /// Shown wherever a user-initiated control is refused because the Mac is locked.
     public var screenLockBlockedMessage: String {
         L10n.tr(
