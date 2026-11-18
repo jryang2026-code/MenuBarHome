@@ -86,6 +86,7 @@ public actor MiAccountsProvider: HomeProvider {
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
     private let localClientFactory: @Sendable () -> LocalMiIOClient?
+    private let topologyCache: MiTopologyCache?
     private let pollInterval: Duration
     private let closedPollInterval: Duration
     private let deviceRefreshEveryPolls: Int
@@ -120,6 +121,7 @@ public actor MiAccountsProvider: HomeProvider {
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
         localClientFactory: @escaping @Sendable () -> LocalMiIOClient? = { LocalMiIOClient() },
+        topologyCache: MiTopologyCache? = nil,
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
         closedPollInterval: Duration = PollingPolicy.panelClosedInterval,
         deviceRefreshEveryPolls: Int = 20,
@@ -138,6 +140,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.specSource = specSource
         self.cameraBridge = cameraBridge
         self.localClientFactory = localClientFactory
+        self.topologyCache = topologyCache
         self.pollInterval = pollInterval
         self.closedPollInterval = closedPollInterval
         self.deviceRefreshEveryPolls = deviceRefreshEveryPolls
@@ -195,6 +198,7 @@ public actor MiAccountsProvider: HomeProvider {
             specSource: specSource,
             cameraBridge: cameraBridge,
             localClient: localClientFactory(),
+            topologyCache: topologyCache,
             pollInterval: pollInterval,
             closedPollInterval: closedPollInterval,
             deviceRefreshEveryPolls: deviceRefreshEveryPolls,

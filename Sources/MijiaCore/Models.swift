@@ -1318,6 +1318,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     public var accountId: String?
     /// `12****89` style owner label, so the panel can tell same-named devices apart.
     public var accountLabel: String?
+    public var telemetryStale: Bool
 
     public init(
         id: String,
@@ -1329,7 +1330,8 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         kind: DeviceKind,
         isSharedHome: Bool = false,
         accountId: String? = nil,
-        accountLabel: String? = nil
+        accountLabel: String? = nil,
+        telemetryStale: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -1341,6 +1343,7 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         self.isSharedHome = isSharedHome
         self.accountId = accountId
         self.accountLabel = accountLabel
+        self.telemetryStale = telemetryStale
     }
 
     /// Whether this device can be toggled on/off with a single primary click

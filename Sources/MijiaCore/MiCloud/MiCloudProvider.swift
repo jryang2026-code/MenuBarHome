@@ -14,6 +14,7 @@ public actor MiCloudProvider: HomeProvider {
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
     private let localClient: LocalMiIOClient?
+    private let topologyCache: MiTopologyCache?
     private let lanFailureThreshold: Int
     private let lanCooldownDuration: TimeInterval
     private let now: @Sendable () -> Date
@@ -49,6 +50,13 @@ public actor MiCloudProvider: HomeProvider {
     private var sharedHomeDids: Set<String> = []
     private var doorbellBaselineTime: [String: Date] = [:]
     private var lastDoorbellTimestamp: [String: Date] = [:]
+    private var lastSavedTopology: CachedMiTopology?
+    private var cloudRetryNotBefore: Date?
+    private var cloudBackoffSeconds: Double = 2
+    private var lastCloudError: (any Error)?
+    private var lanSucceededDids: Set<String> = []
+    private var everObservedPropDids: Set<String> = []
+    private var hasLiveTopologyRefresh = false
 
     private var devices: [MiDeviceRecord] = []
     private var rooms: [MiRoom] = []
@@ -85,6 +93,7 @@ public actor MiCloudProvider: HomeProvider {
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
         localClient: LocalMiIOClient? = LocalMiIOClient(),
+        topologyCache: MiTopologyCache? = nil,
         lanFailureThreshold: Int = 3,
         lanCooldownDuration: TimeInterval = 30,
         now: @escaping @Sendable () -> Date = { Date() },
@@ -101,6 +110,7 @@ public actor MiCloudProvider: HomeProvider {
         self.specSource = specSource
         self.cameraBridge = cameraBridge
         self.localClient = localClient
+        self.topologyCache = topologyCache
         self.lanFailureThreshold = max(1, lanFailureThreshold)
         self.lanCooldownDuration = max(0, lanCooldownDuration)
         self.now = now
@@ -185,6 +195,9 @@ public actor MiCloudProvider: HomeProvider {
         if !devices.isEmpty, hasValuesForScope() {
             emitSnapshot(closesAwayGap: false)
         }
+        if (lastCloudError as? MiCloudError) != .http(429) {
+            cloudRetryNotBefore = nil
+        }
         do {
             try await performTrackedPoll(api) {
                 try await discover(api)
@@ -216,6 +229,7 @@ public actor MiCloudProvider: HomeProvider {
         // The declaration is already stored, so a relaunch only reports it; no cloud call, no event.
         if session.expiryState(at: Date()) == .expired {
             api = nil
+            topologyCache?.remove(accountID: MiAccount(session: session).id)
             continuation?.yield(.statusChanged(.disconnected(MiCloudError.sessionExpired.localizedDescription)))
             devices = []
             rooms = []
@@ -242,10 +256,38 @@ public actor MiCloudProvider: HomeProvider {
                     try await waitForNextPoll()
                     guard !Task.isCancelled && !isShutDown else { return }
                     try await performTrackedPoll(api) {
+                        if isCloudAllowed && !hasLiveTopologyRefresh {
+                            do {
+                                try await refreshDeviceList(api, retryUnresolved: true)
+                                clearCloudBackoff()
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch MiCloudError.sessionExpired {
+                                throw MiCloudError.sessionExpired
+                            } catch {
+                                scheduleCloudBackoff(for: error)
+                                if lanSucceededDids.isEmpty {
+                                    throw error
+                                }
+                            }
+                        }
                         try await poll(api, dids: nil)
                         polls += 1
                         if polls % deviceRefreshEveryPolls == 0 {
-                            try await refreshDeviceList(api)
+                            do {
+                                try await refreshDeviceList(api)
+                                clearCloudBackoff()
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch MiCloudError.sessionExpired {
+                                throw MiCloudError.sessionExpired
+                            } catch {
+                                scheduleCloudBackoff(for: error)
+                                if lanSucceededDids.isEmpty {
+                                    throw error
+                                }
+                                emitSnapshot(closesAwayGap: false)
+                            }
                         }
                     }
                     reportConnected()
@@ -355,12 +397,42 @@ public actor MiCloudProvider: HomeProvider {
     /// Drops the cached home so an expired account stops contributing devices to the merged panel.
     private func clearExpiredSnapshot() {
         api = nil
+        if let session {
+            topologyCache?.remove(accountID: MiAccount(session: session).id)
+        }
+        lastSavedTopology = nil
+        lanSucceededDids.removeAll()
+        everObservedPropDids.removeAll()
+        cloudRetryNotBefore = nil
+        lastCloudError = nil
+        hasLiveTopologyRefresh = false
         guard account != nil else { return }
         devices = []
         rooms = []
         sharedHomeDids.removeAll()
         values = [:]
         emitSnapshot()
+    }
+
+    private var isCloudAllowed: Bool {
+        guard let retryAt = cloudRetryNotBefore else { return true }
+        return now() >= retryAt
+    }
+
+    private func scheduleCloudBackoff(for error: any Error) {
+        let throttled = (error as? MiCloudError) == .http(429)
+        if throttled {
+            cloudBackoffSeconds = max(cloudBackoffSeconds, 60)
+        }
+        cloudRetryNotBefore = now().addingTimeInterval(cloudBackoffSeconds)
+        lastCloudError = error
+        cloudBackoffSeconds = min(cloudBackoffSeconds * 2, throttled ? 900 : 60)
+    }
+
+    private func clearCloudBackoff() {
+        cloudRetryNotBefore = nil
+        cloudBackoffSeconds = 2
+        lastCloudError = nil
     }
 
     private func report(_ error: any Error) {
@@ -384,21 +456,51 @@ public actor MiCloudProvider: HomeProvider {
     // MARK: Discovery & Polling
 
     private func discover(_ api: any MiCloudAPI) async throws {
-        // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
-        let outcome = try await withSessionExpiryRetry { try await MiCloudDiscovery.rooms(api) }
-        // A failed room list keeps the rooms of the last good refresh; only a success replaces them.
-        if outcome.error == nil {
-            if outcome.rooms != rooms { unresolvedRoomDids = [] }
-            rooms = outcome.rooms
+        if !devices.isEmpty && !isCloudAllowed {
+            return
         }
-        let roomsError = outcome.error
-        logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
-        try await refreshDeviceList(api, retryUnresolved: true)
-        // An account whose only devices live in a home shared with it has an empty device list until
-        // `homeRooms()` names that home. Reporting connected + empty hides that failure, so a broken
-        // room list surfaces as the error it is (#76, #67). An account with direct devices still
-        // degrades to 全屋, which is what the room-less snapshot is for.
-        if devices.isEmpty, let roomsError { throw roomsError }
+        do {
+            // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
+            let outcome = try await withSessionExpiryRetry { try await MiCloudDiscovery.rooms(api) }
+            // A failed room list keeps the rooms of the last good refresh; only a success replaces them.
+            if outcome.error == nil {
+                if outcome.rooms != rooms { unresolvedRoomDids = [] }
+                rooms = outcome.rooms
+            }
+            let roomsError = outcome.error
+            logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
+            try await refreshDeviceList(api, retryUnresolved: true)
+            // An account whose only devices live in a home shared with it has an empty device list until
+            // `homeRooms()` names that home. Reporting connected + empty hides that failure, so a broken
+            // room list surfaces as the error it is (#76, #67). An account with direct devices still
+            // degrades to 全屋, which is what the room-less snapshot is for.
+            if devices.isEmpty, let roomsError { throw roomsError }
+            clearCloudBackoff()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch MiCloudError.sessionExpired {
+            throw MiCloudError.sessionExpired
+        } catch {
+            if devices.isEmpty,
+               localClient != nil,
+               let session,
+               let cached = topologyCache?.load(for: session),
+               !cached.devices.isEmpty {
+                devices = cached.devices
+                rooms = cached.rooms
+                groupMembersByGroup = cached.groupMembersByGroup
+                lastSavedTopology = cached
+                reconcileLANEndpoints(devices)
+                await loadMissingSpecs()
+                scheduleCloudBackoff(for: error)
+                return
+            }
+            if !devices.isEmpty, !lanSucceededDids.isEmpty {
+                scheduleCloudBackoff(for: error)
+                return
+            }
+            throw error
+        }
     }
 
     /// Room dids the by-did lookup returned nothing for (IR remotes, removed devices); the periodic
@@ -421,6 +523,22 @@ public actor MiCloudProvider: HomeProvider {
         devices = outcome.devices
         reconcileLANEndpoints(devices)
         try await refreshGroupMembers(api)
+        if let topologyCache, let session, !devices.isEmpty {
+            let unchanged = lastSavedTopology?.devices == devices
+                && lastSavedTopology?.rooms == rooms
+                && lastSavedTopology?.groupMembersByGroup == groupMembersByGroup
+            if !unchanged {
+                let snapshot = CachedMiTopology(
+                    savedAt: now(),
+                    devices: devices,
+                    rooms: rooms,
+                    groupMembersByGroup: groupMembersByGroup
+                )
+                topologyCache.save(snapshot, for: session)
+                lastSavedTopology = snapshot
+            }
+        }
+        hasLiveTopologyRefresh = true
         await loadMissingSpecs()
 
         var unsupported: Set<String> = []
@@ -557,6 +675,7 @@ public actor MiCloudProvider: HomeProvider {
     private struct HybridPropReadOutcome {
         let values: [MiotPropKey: JSONValue]
         let completedKeys: [MiotPropKey]
+        let lanSucceededDids: Set<String>
         let cloudError: (any Error)?
     }
 
@@ -583,21 +702,43 @@ public actor MiCloudProvider: HomeProvider {
         var freshKeys: Set<MiotPropKey> = []
         if !keys.isEmpty {
             let outcome = try await fetchPropsHybrid(api: api, keys: keys, scopedDevices: scopedDevices)
+            if dids == nil {
+                lanSucceededDids = outcome.lanSucceededDids
+            } else if let dids {
+                lanSucceededDids.subtract(dids)
+                lanSucceededDids.formUnion(outcome.lanSucceededDids)
+            }
             freshKeys = Set(outcome.values.keys)
+            everObservedPropDids.formUnion(outcome.values.keys.map(\.did))
             // getProps omits items with a non-zero code. A missing door-state must not keep the
             // previous locked/unlocked claim while the device list still says online (#149).
             let requestedLocks = doorStateKeys(requested: outcome.completedKeys)
             let clearedCachedLock = requestedLocks.contains { outcome.values[$0] == nil && values[$0] != nil }
             Self.applyPropRead(&values, fresh: outcome.values, requestedLockKeys: requestedLocks)
             if let cloudError = outcome.cloudError {
-                if !outcome.values.isEmpty || clearedCachedLock {
-                    emitSnapshot(closesAwayGap: false)
+                if lanSucceededDids.isEmpty {
+                    if !outcome.values.isEmpty || clearedCachedLock {
+                        emitSnapshot(closesAwayGap: false)
+                    }
+                    return (freshKeys, cloudError)
                 }
-                return (freshKeys, cloudError)
+                if dids == nil {
+                    lastFullPollAt = .now
+                    if wakePollPending {
+                        wakePollPending = false
+                        lastWakePollAt = .now
+                    }
+                    pollRequested = false
+                    pollsSinceContextChange += 1
+                }
+                emitSnapshot(closesAwayGap: false)
+                return (freshKeys, nil)
             }
         }
         if dids == nil {
-            try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
+            if isCloudAllowed {
+                try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
+            }
             lastFullPollAt = .now
             if wakePollPending {
                 wakePollPending = false
@@ -606,7 +747,7 @@ public actor MiCloudProvider: HomeProvider {
             pollRequested = false
             pollsSinceContextChange += 1
         }
-        emitSnapshot(closesAwayGap: dids == nil)
+        emitSnapshot(closesAwayGap: dids == nil && cloudRetryNotBefore == nil)
         return (freshKeys, nil)
     }
 
@@ -615,11 +756,31 @@ public actor MiCloudProvider: HomeProvider {
         keys: [MiotPropKey],
         scopedDevices: [MiDeviceRecord]
     ) async throws -> HybridPropReadOutcome {
+        let cloudAllowed = isCloudAllowed
         guard let localClient else {
-            let cloudValues = try await withSessionExpiryRetry {
-                try await api.getProps(keys)
+            if !cloudAllowed, let lastCloudError {
+                throw lastCloudError
             }
-            return HybridPropReadOutcome(values: cloudValues, completedKeys: keys, cloudError: nil)
+            do {
+                let cloudValues = try await withSessionExpiryRetry {
+                    try await api.getProps(keys)
+                }
+                clearCloudBackoff()
+                everObservedPropDids.formUnion(cloudValues.keys.map(\.did))
+                return HybridPropReadOutcome(
+                    values: cloudValues,
+                    completedKeys: keys,
+                    lanSucceededDids: [],
+                    cloudError: nil
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                scheduleCloudBackoff(for: error)
+                throw error
+            }
         }
 
         var recordByDid: [String: MiDeviceRecord] = [:]
@@ -645,6 +806,7 @@ public actor MiCloudProvider: HomeProvider {
 
         var combined: [MiotPropKey: JSONValue] = [:]
         var lanAnsweredKeys: [MiotPropKey] = []
+        var pollLanSucceededDids: Set<String> = []
         if !lanKeysByDid.isEmpty {
             struct LANPollResult: Sendable {
                 let did: String
@@ -678,6 +840,7 @@ public actor MiCloudProvider: HomeProvider {
                     let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
                     if !resultValues.isEmpty || outcome.keys.isEmpty {
                         recordLANSuccess(did: outcome.did)
+                        pollLanSucceededDids.insert(outcome.did)
                         combined.merge(resultValues) { _, new in new }
                     }
                     // Even an all-nonzero reply completed the read attempt; keep its keys in
@@ -691,27 +854,49 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         if !cloudKeys.isEmpty {
-            do {
-                let cloudValues = try await withSessionExpiryRetry {
-                    try await api.getProps(cloudKeys)
+            if cloudAllowed {
+                do {
+                    let cloudValues = try await withSessionExpiryRetry {
+                        try await api.getProps(cloudKeys)
+                    }
+                    clearCloudBackoff()
+                    combined.merge(cloudValues) { _, new in new }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch MiCloudError.sessionExpired {
+                    throw MiCloudError.sessionExpired
+                } catch {
+                    scheduleCloudBackoff(for: error)
+                    if combined.isEmpty && lanAnsweredKeys.isEmpty && pollLanSucceededDids.isEmpty {
+                        throw error
+                    }
+                    return HybridPropReadOutcome(
+                        values: combined,
+                        completedKeys: lanAnsweredKeys,
+                        lanSucceededDids: pollLanSucceededDids,
+                        cloudError: error
+                    )
                 }
-                combined.merge(cloudValues) { _, new in new }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch MiCloudError.sessionExpired {
-                throw MiCloudError.sessionExpired
-            } catch {
-                if combined.isEmpty && lanAnsweredKeys.isEmpty {
-                    throw error
+            } else {
+                if combined.isEmpty && lanAnsweredKeys.isEmpty && pollLanSucceededDids.isEmpty {
+                    if let lastCloudError {
+                        throw lastCloudError
+                    }
                 }
                 return HybridPropReadOutcome(
                     values: combined,
                     completedKeys: lanAnsweredKeys,
-                    cloudError: error
+                    lanSucceededDids: pollLanSucceededDids,
+                    cloudError: lastCloudError
                 )
             }
         }
-        return HybridPropReadOutcome(values: combined, completedKeys: keys, cloudError: nil)
+        return HybridPropReadOutcome(
+            values: combined,
+            completedKeys: keys,
+            lanSucceededDids: pollLanSucceededDids,
+            cloudError: nil
+        )
     }
 
     // MARK: - Hybrid LAN Eligibility & Cooldown
@@ -920,13 +1105,42 @@ public actor MiCloudProvider: HomeProvider {
 
     private func emitSnapshot(closesAwayGap: Bool = true) {
         let (visibleDevices, visibleRooms) = scopedDevicesAndRooms()
-        var home = MiotSynthesizer.synthesize(devices: visibleDevices, rooms: visibleRooms, specs: specsByModel, values: values)
+        let cloudBackingOff = cloudRetryNotBefore != nil
+        let synthDevices: [MiDeviceRecord]
+        if cloudBackingOff {
+            synthDevices = visibleDevices.map { record in
+                guard !lanSucceededDids.contains(record.miotDid),
+                      !everObservedPropDids.contains(record.miotDid) else {
+                    return record
+                }
+                var copy = record
+                copy.isOnline = false
+                return copy
+            }
+        } else {
+            synthDevices = visibleDevices
+        }
+        var home = MiotSynthesizer.synthesize(
+            devices: synthDevices,
+            rooms: visibleRooms,
+            specs: specsByModel,
+            values: values
+        )
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
         DeviceSynthesizer.reconcileLightGroups(&home)
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
+            if cloudBackingOff {
+                let recordMiotDid = visibleDevices.first(where: { $0.did == home.devices[i].id })?.miotDid
+                let candidateDids = ([recordMiotDid].compactMap { $0 })
+                    + home.devices[i].miotCommandDids
+                    + [home.devices[i].id]
+                if !candidateDids.contains(where: { lanSucceededDids.contains($0) }) {
+                    home.devices[i].telemetryStale = true
+                }
+            }
             guard case .light(var spec) = home.devices[i].kind,
                   home.devices[i].id.hasPrefix("group.") || effectsUnsupported.contains(home.devices[i].id) else { continue }
             spec.availableEffects = []

@@ -894,6 +894,7 @@ extension HomeStore {
     @discardableResult
     public func logoutMiAccount() -> Bool {
         let cleared = MiSessionStore.clear(defaults: userDefaults, vault: credentialVault)
+        topologyCache?.removeAll()
         miAccounts = []
         miAccountStatuses = [:]
         self.miSessionMaskedUserId = nil
@@ -925,6 +926,7 @@ extension HomeStore {
     @discardableResult
     public func signOutAndRevokeAll() -> Bool {
         invalidateUndoContext()
+        topologyCache?.removeAll()
         var complete = true
         if !logoutMiAccount() { complete = false }
         if !disconnectHomeAssistant() { complete = false }
@@ -987,6 +989,7 @@ extension HomeStore {
             )
             return
         }
+        topologyCache?.remove(accountID: id)
         invalidateUndoContext()
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
         miAccountStatuses.removeValue(forKey: id)

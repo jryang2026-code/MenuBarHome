@@ -315,6 +315,7 @@ public final class HomeStore {
     /// Credential storage shared by the store and its views. An explicit vault takes precedence
     /// over suite storage; nil uses the Keychain for standard defaults and isolated suite storage otherwise.
     @ObservationIgnored public internal(set) var credentialVault: CredentialVault?
+    @ObservationIgnored let topologyCache: MiTopologyCache?
 
     public var sensorAlertsOnlyWhenAway: Bool {
         didSet { HomePreferences.sensorAlertsOnlyWhenAway.save(sensorAlertsOnlyWhenAway, to: userDefaults) }
@@ -891,11 +892,13 @@ public final class HomeStore {
         dualSource: (homeAssistant: any HomeProvider, xiaomiCloud: any HomeProvider)? = nil,
         defaultsSuiteName: String? = nil,
         updater: AppUpdater? = nil,
-        credentialVault: CredentialVault? = nil
+        credentialVault: CredentialVault? = nil,
+        topologyCache: MiTopologyCache? = nil
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
+        self.topologyCache = topologyCache ?? (ud === UserDefaults.standard ? .shared : nil)
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
@@ -1067,10 +1070,15 @@ public final class HomeStore {
 
     /// One `MiCloudProvider` per account behind a single `HomeProvider`, so a second sign-in merges
     /// into the panel instead of replacing the first account.
-    private static func makeMiAccountsProvider(accounts: [MiAccount], defaults: UserDefaults) -> MiAccountsProvider {
+    private static func makeMiAccountsProvider(
+        accounts: [MiAccount],
+        defaults: UserDefaults,
+        topologyCache: MiTopologyCache?
+    ) -> MiAccountsProvider {
         nonisolated(unsafe) let ud = defaults
         return MiAccountsProvider(
             accounts: accounts,
+            topologyCache: topologyCache,
             selectedHomeLoader: { ud.string(forKey: MiCloudProvider.selectedHomeKey) },
             clearSelectedHome: { ud.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
         )
@@ -1081,7 +1089,11 @@ public final class HomeStore {
     func makeMiAccountsProvider() -> MiAccountsProvider {
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
         activeMiProviderAccounts = miAccounts
-        return Self.makeMiAccountsProvider(accounts: miAccounts, defaults: userDefaults)
+        return Self.makeMiAccountsProvider(
+            accounts: miAccounts,
+            defaults: userDefaults,
+            topologyCache: topologyCache
+        )
     }
 
     /// Re-resolves `effectiveLanguage` and pushes it to `L10n`; also called from the language

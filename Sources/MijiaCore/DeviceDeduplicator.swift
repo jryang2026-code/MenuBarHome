@@ -305,7 +305,8 @@ public enum DeviceDeduplicator {
                     kind: merged.kind,
                     isSharedHome: merged.isSharedHome,
                     accountId: merged.accountId,
-                    accountLabel: merged.accountLabel
+                    accountLabel: merged.accountLabel,
+                    telemetryStale: merged.telemetryStale
                 )
             )
             routes[canonicalID] = DeviceMergeRoute(
@@ -677,7 +678,8 @@ public enum DeviceDeduplicator {
             kind: winner.kind,
             isSharedHome: winner.isSharedHome,
             accountId: accountId,
-            accountLabel: accountLabel
+            accountLabel: accountLabel,
+            telemetryStale: winner.telemetryStale
         )
     }
 

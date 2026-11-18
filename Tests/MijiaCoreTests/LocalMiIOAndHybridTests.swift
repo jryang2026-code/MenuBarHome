@@ -39,7 +39,10 @@ private actor HybridMockCloudAPI: MiCloudAPI {
     var homeDevicesByHomeId: [String: [MiDeviceRecord]]
     var doorbellLatest: [String: Date] = [:]
     var getPropsError: (any Error)?
+    var discoveryError: (any Error)?
 
+    private(set) var deviceListCalls = 0
+    private(set) var homeRoomsCalls = 0
     private(set) var getPropsCalls: [[MiotPropKey]] = []
     private(set) var setPropsCalls: [[MiotPropWrite]] = []
     private(set) var actionCalls: [MiotActionCall] = []
@@ -71,8 +74,21 @@ private actor HybridMockCloudAPI: MiCloudAPI {
         getPropsError = error
     }
 
-    func deviceList() async throws -> [MiDeviceRecord] { devicesList }
-    func homeRooms() async throws -> [MiRoom] { roomsList }
+    func setDiscoveryError(_ error: (any Error)?) {
+        discoveryError = error
+    }
+
+    func deviceList() async throws -> [MiDeviceRecord] {
+        deviceListCalls += 1
+        if let discoveryError { throw discoveryError }
+        return devicesList
+    }
+
+    func homeRooms() async throws -> [MiRoom] {
+        homeRoomsCalls += 1
+        if let discoveryError { throw discoveryError }
+        return roomsList
+    }
     func homeDevices(homeId: String, ownerUid: String) async throws -> [MiDeviceRecord] {
         homeDevicesByHomeId[homeId] ?? []
     }
@@ -1476,12 +1492,14 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.refreshNow()
         #expect(await collector.wait { state in
-            guard let last = state.statuses.last, case .disconnected = last else { return false }
-            return lightBrightness(state.snapshots.last?.devices.first { $0.id == "101" }) == 92
+            lightBrightness(state.snapshots.last?.devices.first { $0.id == "101" }) == 92
         })
+        #expect(await collector.statuses.last == .connected)
         let partialSnap = await collector.snapshots.last
         #expect(lightBrightness(partialSnap?.devices.first { $0.id == "101" }) == 92)
+        #expect(partialSnap?.devices.first { $0.id == "101" }?.telemetryStale == false)
         #expect(lightBrightness(partialSnap?.devices.first { $0.id == "303" }) == 25)
+        #expect(partialSnap?.devices.first { $0.id == "303" }?.telemetryStale == true)
         #expect(partialSnap?.closesAwayGap == false)
 
         // Partial LAN readBack succeeds for device 101's answered power key even when missing piid 2 causes cloud fallback to throw.
@@ -1675,6 +1693,235 @@ struct HybridProviderAndDoorbellTests {
             await provider.shutdown()
             task.cancel()
         }
+    }
+
+    @Test("Offline cold-start from encrypted MiTopologyCache under URLError and HTTP 429 keeps LAN alive, marks BLE sensor offline+stale, and recovers when WAN returns")
+    func offlineColdStartFromTopologyCacheAndRecovery() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let htSensorSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:temperature-humidity-sensor:0000A00A:lumi-v1:1",
+            services: [
+                MiotService(
+                    iid: 2,
+                    type: "urn:miot-spec-v2:service:temperature-humidity-sensor:00007814:lumi-v1:1",
+                    properties: [
+                        MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:temperature:00000020:lumi-v1:1", format: "float", access: ["read", "notify"]),
+                        MiotProperty(iid: 2, type: "urn:miot-spec-v2:property:relative-humidity:0000000C:lumi-v1:1", format: "uint8", access: ["read", "notify"]),
+                    ]
+                )
+            ]
+        )
+
+        let ownWifi = MiDeviceRecord(
+            did: "101",
+            name: "Desk Light",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.45",
+            token: tokenHex,
+            isShared: false
+        )
+        let bleSensor = MiDeviceRecord(
+            did: "ble-sensor-1",
+            name: "Bedroom Sensor",
+            model: "lumi.sensor_ht.v1",
+            isOnline: true
+        )
+        let rooms = [MiRoom(id: "r1", name: "Bedroom", dids: ["101", "ble-sensor-1"])]
+
+        for outageError in [URLError(.notConnectedToInternet) as any Error, MiCloudError.http(429) as any Error] {
+            let cacheDir = FileManager.default.temporaryDirectory
+                .appendingPathComponent("MiOfflineColdStart-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: cacheDir) }
+            let topologyCache = MiTopologyCache(directory: cacheDir)
+            let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+
+            topologyCache.save(
+                CachedMiTopology(savedAt: clock.now(), devices: [ownWifi, bleSensor], rooms: rooms),
+                for: stubSession
+            )
+
+            let lanOn = LockedBox(true)
+            let lanBrightness = LockedBox(80)
+            let udpTransport = MockUDPTransport { packet, _, _ in
+                if packet == MiIOPacket.helloPacket {
+                    return makeHelloResponse(deviceId: 0x7777_8888, stamp: 70)
+                }
+                let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+                let reqId = req["id"]?.intValue ?? 0
+                let method = req["method"]?.stringValue ?? ""
+                let reply: String
+                if method == "set_properties" {
+                    let params = req["params"]?.arrayValue ?? []
+                    for item in params {
+                        if item["siid"]?.intValue == 2, item["piid"]?.intValue == 1, let b = item["value"]?.boolValue {
+                            lanOn.withValue { $0 = b }
+                        }
+                    }
+                    reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"code":0}]}"#
+                } else {
+                    let onVal = lanOn.withValue { $0 }
+                    let brVal = lanBrightness.withValue { $0 }
+                    reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":\#(onVal),"code":0},{"did":"101","siid":2,"piid":2,"value":\#(brVal),"code":0}]}"#
+                }
+                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+            }
+
+            let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+            let api = HybridMockCloudAPI(
+                devices: [ownWifi, bleSensor],
+                rooms: rooms,
+                props: [
+                    MiotPropKey(did: "ble-sensor-1", siid: 2, piid: 1): .number(24.5),
+                    MiotPropKey(did: "ble-sensor-1", siid: 2, piid: 2): .number(55),
+                ]
+            )
+            await api.setDiscoveryError(outageError)
+            await api.setGetPropsError(outageError)
+
+            let provider = MiCloudProvider(
+                sessionLoader: { self.stubSession },
+                apiFactory: { _ in api },
+                specSource: HybridMockSpecSource(specs: [
+                    "yeelink.light.color4": lightSpec(),
+                    "lumi.sensor_ht.v1": htSensorSpec,
+                ]),
+                localClient: localClient,
+                topologyCache: topologyCache,
+                now: { clock.now() },
+                pollInterval: .seconds(3600),
+                closedPollInterval: .seconds(3600),
+                selectedHomeLoader: { nil }
+            )
+
+            let collector = EventCollector()
+            let stream = provider.events()
+            let task = Task {
+                for await event in stream {
+                    await collector.append(event)
+                }
+                await collector.finish()
+            }
+
+            #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
+            let coldSnap = await collector.snapshots.last
+            #expect(coldSnap?.closesAwayGap == false)
+            let lanDev = coldSnap?.devices.first { $0.id == "101" }
+            let bleDev = coldSnap?.devices.first { $0.id == "ble-sensor-1" }
+            #expect(lanDev?.isOnline == true)
+            #expect(lanDev?.telemetryStale == false)
+            #expect(lightBrightness(lanDev) == 80)
+            #expect(bleDev?.isOnline == false)
+            #expect(bleDev?.telemetryStale == true)
+            #expect(coldSnap?.environmentReadings.isEmpty == true)
+            // Initial poll skipped api.getProps because discover scheduled cloud backoff.
+            #expect(await api.getPropsCalls.isEmpty)
+
+            // Fast LAN execute + readBack work while Cloud is down.
+            try await provider.execute(.setLightPower(entityId: "miot:101:2", isOn: false))
+            #expect(await api.setPropsCalls.isEmpty)
+            #expect(await provider.readBack(deviceId: "101") == .published)
+            #expect(await collector.wait { $0.snapshots.last?.devices.first { $0.id == "101" }?.isActiveOn == false })
+
+            if (outageError as? MiCloudError) == .http(429) {
+                // During HTTP 429 60s cooldown, refreshNow refreshes LAN without hammering Cloud.
+                let devCallsBefore = await api.deviceListCalls
+                clock.advance(by: 10)
+                lanBrightness.withValue { $0 = 85 }
+                await provider.refreshNow()
+                #expect(await collector.wait {
+                    lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 85
+                })
+                #expect(await api.deviceListCalls == devCallsBefore)
+                #expect(await api.getPropsCalls.isEmpty)
+            }
+
+            // Advance past backoff window and restore Cloud -> BLE sensor becomes online + fresh.
+            clock.advance(by: 65)
+            await api.setDiscoveryError(nil)
+            await api.setGetPropsError(nil)
+            await provider.refreshNow()
+
+            #expect(await collector.wait {
+                guard let snap = $0.snapshots.last,
+                      let sensor = snap.devices.first(where: { $0.id == "ble-sensor-1" }) else { return false }
+                return sensor.isOnline && !sensor.telemetryStale && snap.closesAwayGap
+            })
+
+            await provider.shutdown()
+            task.cancel()
+        }
+    }
+
+    @Test("Periodic refreshDeviceList failure on poll #N does not break active LAN polling")
+    func periodicTopologyRefreshFailureKeepsLANConnected() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let lanBrightness = LockedBox(70)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 0x8888_9999, stamp: 80)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let brVal = lanBrightness.withValue { $0 }
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":\#(brVal),"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let ownWifi = MiDeviceRecord(
+            did: "101",
+            name: "LAN Bulb",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.48",
+            token: tokenHex,
+            isShared: false
+        )
+        let api = HybridMockCloudAPI(
+            devices: [ownWifi],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: localClient,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            deviceRefreshEveryPolls: 2,
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
+
+        // Trigger second loop poll via setPollingContext wake while WAN discovery throws timedOut.
+        await api.setDiscoveryError(URLError(.timedOut))
+        lanBrightness.withValue { $0 = 95 }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+
+        #expect(await collector.wait {
+            lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 95
+        })
+        #expect(await collector.statuses.last == .connected)
+        #expect(await api.deviceListCalls >= 2)
+
+        await provider.shutdown()
     }
 }
 
