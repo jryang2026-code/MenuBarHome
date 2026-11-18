@@ -24,6 +24,19 @@ public struct ManualControlConfirmation: Equatable, Sendable {
     }
 }
 
+/// Which hazard confirmation a facet write requires, or nil when the write is direct.
+///
+/// Kept more specific than a Bool so a continuous slider drag can reuse only an approval that
+/// actually covers the tick or the re-evaluated pre-send command: cooling never covers warming,
+/// and a known-start warming answer does not cover a missing reported start.
+enum FacetDragApproval: Sendable, Equatable, Hashable {
+    case write
+    case power(Bool)
+    case nonOffMode
+    case warmer
+    case unknownStartTemperature
+}
+
 /// Safety rules for controls the user triggers directly (card tap, detail drawer, URL, App Intent,
 /// assistant). The hazard table itself stays in `ModelActionPolicy`, so manual and AI actions cannot
 /// drift apart (#143).
@@ -179,8 +192,17 @@ public enum ManualControlPolicy {
         for device: SmartDevice,
         rules: DeviceProfiles.ManualControlRules = currentRules
     ) -> Bool {
-        if facet.kind == .button { return true }
-        if facet.target?.isAction == true { return true }
+        facetConfirmationKind(facet, value: value, for: device, rules: rules) != nil
+    }
+
+    static func facetConfirmationKind(
+        _ facet: FacetControl,
+        value: JSONValue?,
+        for device: SmartDevice,
+        rules: DeviceProfiles.ManualControlRules = currentRules
+    ) -> FacetDragApproval? {
+        if facet.kind == .button { return .write }
+        if facet.target?.isAction == true { return .write }
         let service = facet.serviceName.lowercased()
         let name = facet.name.lowercased()
         let tokens = Set(name.split(separator: "-").map(String.init))
@@ -188,12 +210,12 @@ public enum ManualControlPolicy {
         let isTargetTemperature = name == "target-temperature" || name.hasSuffix("-target-temperature")
         let isPower = ["on", "power", "power-switch"].contains(name) || name.hasSuffix("-power")
         let coverServices = ["curtain", "window-opener", "airer", "clothes-airer", "garage-door"]
-        if isMode, device.kind.isCover || coverServices.contains(service) { return true }
+        if isMode, device.kind.isCover || coverServices.contains(service) { return .write }
 
         let deviceType = genericDeviceType(device)
         // Locks, valves, security, routers, disposers and sterilizers keep every write behind a
         // confirmation even after advanced writes are enabled (#6 review).
-        if strictlyHighRisk(deviceType: deviceType, service: service, rules: rules) { return true }
+        if strictlyHighRisk(deviceType: deviceType, service: service, rules: rules) { return .write }
 
         // Indicator, sound and child-lock controls never move the appliance's main function.
         let lowRiskServices = Set(rules.lowRiskServices)
@@ -203,13 +225,13 @@ public enum ManualControlPolicy {
             || name.contains("child-lock")
             || name.contains("physical-controls-locked")
             || name.contains("auto-off")
-        if lowRiskServices.contains(service) || lowRiskHA { return false }
+        if lowRiskServices.contains(service) || lowRiskHA { return nil }
 
         // A Home Assistant auxiliary switch uses the `switch` domain with a device-specific object
         // id (`bath-heater-ptc`, `dual-plug-socket-2`), so it follows the power hazard table rather
         // than a MIoT property short name. This also keeps a heater switch's off direction direct.
         if service == "switch", let isOn = value?.miotBool {
-            return requiresConfirmation(.power(isOn), for: device)
+            return requiresConfirmation(.power(isOn), for: device) ? .power(isOn) : nil
         }
 
         let category = IntentDeviceCategory(device)
@@ -218,16 +240,18 @@ public enum ManualControlPolicy {
         } ?? value?.stringValue
 
         if category == .heater {
-            if isPower, let isOn = value?.miotBool { return isOn }
-            if isMode { return selectedMode?.caseInsensitiveCompare("off") != .orderedSame }
-            return true
+            if isPower, let isOn = value?.miotBool { return isOn ? .power(true) : nil }
+            if isMode {
+                return selectedMode?.caseInsensitiveCompare("off") != .orderedSame ? .nonOffMode : nil
+            }
+            return .write
         }
 
         let heatingService = rules.heatingService.contains(service)
         if isPower, let isOn = value?.miotBool {
-            if heatingService { return isOn }
+            if heatingService { return isOn ? .power(true) : nil }
             if !device.kind.isGenericDevice {
-                return requiresConfirmation(.power(isOn), for: device)
+                return requiresConfirmation(.power(isOn), for: device) ? .power(isOn) : nil
             }
         }
 
@@ -239,12 +263,18 @@ public enum ManualControlPolicy {
         }
         if isTargetTemperature, let requested = value?.doubleValue,
            heatingService || waterHeater {
-            if let current = facet.value?.doubleValue { return requested > current }
-            if heatingService { return true }
-            return requiresConfirmation(.targetTemperature(requested), for: device)
+            if let current = facet.value?.doubleValue {
+                return requested > current ? .warmer : nil
+            }
+            if heatingService { return .unknownStartTemperature }
+            if case .appliance(let spec) = device.kind, spec.targetTemperature == nil {
+                return .unknownStartTemperature
+            }
+            guard requiresConfirmation(.targetTemperature(requested), for: device) else { return nil }
+            return .warmer
         }
         if isMode, heatingService || waterHeater {
-            return selectedMode?.caseInsensitiveCompare("off") != .orderedSame
+            return selectedMode?.caseInsensitiveCompare("off") != .orderedSame ? .nonOffMode : nil
         }
 
         // Data-driven high-risk types and services (#6). Generic facets outside the low-risk
@@ -257,9 +287,12 @@ public enum ManualControlPolicy {
         if highRisk {
             let isOff = (isPower && value?.miotBool == false)
                 || (isMode && selectedMode?.caseInsensitiveCompare("off") == .orderedSame)
-            return !isOff
+            guard !isOff else { return nil }
+            if isPower { return .power(true) }
+            if isMode { return .nonOffMode }
+            return .write
         }
-        return false
+        return nil
     }
 
     /// The MIoT device type of a generic card, or an empty string for a dedicated card.

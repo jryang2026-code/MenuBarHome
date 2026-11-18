@@ -1442,5 +1442,244 @@
       "askWhenUnsure": true,
       "expectAutoRun": true
     }
+  ],
+  "facetRows": [
+    {
+      "id": "waterheater-cardless-facet-unknown-start-zero",
+      "device": {
+        "id": "waterheater-cardless-facet-unknown-start-zero",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-cardless-facet-unknown-start-45",
+      "device": {
+        "id": "waterheater-cardless-facet-unknown-start-45",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 45,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-cardless-facet-empty-string-start-zero",
+      "device": {
+        "id": "waterheater-cardless-facet-empty-string-start-zero",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": "",
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-card-known-facet-unknown-start-zero",
+      "device": {
+        "id": "waterheater-card-known-facet-unknown-start-zero",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": 40
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": false
+    },
+    {
+      "id": "waterheater-card-known-facet-unknown-start-warmer",
+      "device": {
+        "id": "waterheater-card-known-facet-unknown-start-warmer",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": 40
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 45,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-heating-service-facet-unknown-start-zero",
+      "device": {
+        "id": "waterheater-heating-service-facet-unknown-start-zero",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": 45
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "water-heater",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-cardless-facet-known-start-cooler-zero",
+      "device": {
+        "id": "waterheater-cardless-facet-known-start-cooler-zero",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": 40,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": false
+    },
+    {
+      "id": "waterheater-cardless-facet-known-start-equal",
+      "device": {
+        "id": "waterheater-cardless-facet-known-start-equal",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": 40,
+        "writesByDefault": true
+      },
+      "value": 40,
+      "confirm": false
+    },
+    {
+      "id": "waterheater-cardless-facet-known-start-warmer",
+      "device": {
+        "id": "waterheater-cardless-facet-known-start-warmer",
+        "name": "热水器",
+        "model": "viomi.waterheater.e1",
+        "kind": "appliance",
+        "heats": true,
+        "targetTemperature": null
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": 40,
+        "writesByDefault": true
+      },
+      "value": 45,
+      "confirm": true
+    },
+    {
+      "id": "waterheater-climate-facet-unknown-start-zero",
+      "device": {
+        "id": "waterheater-climate-facet-unknown-start-zero",
+        "name": "厨房热水器",
+        "model": "viomi.wh.e1",
+        "kind": "climate",
+        "targetTemperature": 45
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "number",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": false
+    },
+    {
+      "id": "waterheater-climate-heating-service-unknown-start-zero",
+      "device": {
+        "id": "waterheater-climate-heating-service-unknown-start-zero",
+        "name": "厨房热水器",
+        "model": "viomi.wh.e1",
+        "kind": "climate",
+        "targetTemperature": 45
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "water-heater",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": true
+    },
+    {
+      "id": "heater-facet-unknown-start-zero",
+      "device": {
+        "id": "heater-facet-unknown-start-zero",
+        "name": "次卧取暖器",
+        "model": "zhimi.heater.za2",
+        "kind": "climate",
+        "targetTemperature": 20
+      },
+      "facet": {
+        "kind": "slider",
+        "name": "target-temperature",
+        "serviceName": "heater",
+        "value": null,
+        "writesByDefault": true
+      },
+      "value": 0,
+      "confirm": true
+    }
   ]
 }
