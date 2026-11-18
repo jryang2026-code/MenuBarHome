@@ -638,4 +638,119 @@ struct CoverDragTakeoverTests {
         #expect(sent == [.setNumberValue(entityId: "cover.opener", value: 100)])
         #expect(prompts == 1, "the answer already covered this direction")
     }
+
+    @Test("A known-direction answer does not carry into an unknown start")
+    @MainActor
+    func knownAnswerDoesNotCarryIntoUnknownStart() async throws {
+        let garage = Self.cover(
+            id: "garage", name: "车库门", subtype: .garageDoor, position: 0, reported: 0
+        )
+        let (store, mock, gate) = try await makeStore([garage])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return prompts == 1
+        }
+
+        // The first tick is approved as an opening.
+        store.setCoverPosition(garage.id, percent: 100)
+        #expect(prompts == 1)
+        await waitUntil { gate.waiting == 1 }
+
+        // The report loses the position while this drag is still accumulating.
+        let beforeMissing = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(id: "garage", name: "车库门", subtype: .garageDoor, position: nil, reported: nil)
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeMissing }
+        #expect(store.lastCoverPositions[garage.id] == nil)
+
+        // The next tick needs the unknown-start answer, not the opening answer it inherited.
+        store.setCoverPosition(garage.id, percent: 20)
+        #expect(prompts == 2, "an unknown start needs its own confirmation kind")
+
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        let sent = await mock.executedCommands
+        #expect(
+            sent.allSatisfy { $0 != .setNumberValue(entityId: "cover.garage", value: 20) },
+            "the refused unknown-start tick never reaches the provider"
+        )
+        #expect(
+            sent.isEmpty,
+            "the first opening approval also fails closed once its start becomes unknown"
+        )
+    }
+
+    @Test("An unknown-start answer does not carry into a known opening")
+    @MainActor
+    func unknownAnswerDoesNotCarryIntoKnownOpening() async throws {
+        let opener = Self.cover(
+            id: "opener", name: "阳台窗", subtype: .windowOpener, position: nil, reported: nil
+        )
+        let (store, mock, gate) = try await makeStore([opener])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return prompts == 1
+        }
+
+        // The first tick is approved for an unknown start.
+        store.setCoverPosition(opener.id, percent: 100)
+        #expect(prompts == 1)
+        await waitUntil { gate.waiting == 1 }
+
+        // A real report arrives, so the pending drag now starts from a known 0% and opens.
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [
+            Self.cover(
+                id: "opener", name: "阳台窗", subtype: .windowOpener,
+                position: 0, reported: 0, motion: .opening
+            )
+        ]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+
+        // The next tick needs an opening answer, not the unknown-start answer it inherited.
+        store.setCoverPosition(opener.id, percent: 20)
+        #expect(prompts == 2, "a known opening needs its own confirmation kind")
+
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        let sent = await mock.executedCommands
+        #expect(
+            sent.allSatisfy { $0 != .setNumberValue(entityId: "cover.opener", value: 20) },
+            "the refused opening tick never reaches the provider"
+        )
+        #expect(
+            sent.isEmpty,
+            "the unknown-start approval also fails closed once its start becomes a known opening"
+        )
+    }
+
+    @Test("Same-kind ticks inside one drag reuse the single answer")
+    @MainActor
+    func sameKindTicksReuseOneAnswer() async throws {
+        let opener = Self.cover(
+            id: "opener", name: "阳台窗", subtype: .windowOpener, position: 0, reported: 0
+        )
+        let (store, mock, gate) = try await makeStore([opener])
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            return true
+        }
+
+        store.setCoverPosition(opener.id, percent: 80)
+        #expect(prompts == 1)
+        store.setCoverPosition(opener.id, percent: 90)
+        #expect(prompts == 1, "the same opening kind reuses the answer")
+
+        await waitUntil { gate.waiting == 1 }
+        let exits = store.manualWriteExits
+        gate.release()
+        await waitUntil { store.manualWriteExits > exits }
+        #expect(await mock.executedCommands == [.setNumberValue(entityId: "cover.opener", value: 90)])
+    }
 }

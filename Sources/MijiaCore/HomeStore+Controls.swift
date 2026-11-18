@@ -862,8 +862,17 @@ extension HomeStore {
             : Self.coverDragDirection(from: startPosition, to: clamped)
         let displayDirection = Self.coverDragDirection(from: s.positionPercent, to: clamped)
         let promptDirection = travelDirection ?? displayDirection
-        let confirmedDrag = promptDirection.map {
-            continuesConfirmedCoverDrag(key, deviceId: deviceId, opens: $0)
+        let promptApproval: CoverDragApproval?
+        if startIsUnknown {
+            // The answer covers a write from an unknown position; it is not an opening approval.
+            promptApproval = .unknownStart
+        } else if let promptDirection {
+            promptApproval = promptDirection ? .opening : .closing
+        } else {
+            promptApproval = nil
+        }
+        let confirmedDrag = promptApproval.map {
+            continuesConfirmedCoverDrag(key, deviceId: deviceId, approval: $0)
         } ?? false
         var answeredPrompt = false
         if let promptDirection, !confirmedDrag,
@@ -950,22 +959,27 @@ extension HomeStore {
             }
         )
         // Each commit mints a new slot token, so keep the recorded one current for as long as this
-        // drag stays answered in the same direction (or was just answered now). A tick the other
-        // way is a new hazard and asks on its own.
-        if let promptDirection, answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
-            confirmedCoverDragAnswers[key] = (token, promptDirection)
+        // drag needs the same confirmation kind. A start that becomes known or unknown, or a tick
+        // the other way, is a new hazard decision and asks on its own.
+        if let promptApproval, answeredPrompt || confirmedDrag, let token = debouncedWrites[key]?.token {
+            confirmedCoverDragAnswers[key] = (token, promptApproval)
         }
     }
 
     /// True while the slider is still accumulating the drag whose hazard prompt was answered for
-    /// this direction: the debounce slot still holds that answer's token and its patch has not been
-    /// sent. A slot that went out, a replaced one, or a tick the other way starts a new decision, so
-    /// neither a reversed drag nor a second one during the command's flight inherits the answer.
-    private func continuesConfirmedCoverDrag(_ key: String, deviceId: String, opens: Bool) -> Bool {
+    /// this confirmation kind: the debounce slot still holds that answer's token and its patch has
+    /// not been sent. A slot that went out, a replaced one, a tick the other way, or a start that
+    /// became known/unknown starts a new decision, so neither a reversal nor a second drag during
+    /// the command's flight inherits the answer.
+    private func continuesConfirmedCoverDrag(
+        _ key: String,
+        deviceId: String,
+        approval: CoverDragApproval
+    ) -> Bool {
         guard let slot = debouncedWrites[key],
               let answer = confirmedCoverDragAnswers[key],
               answer.token == slot.token,
-              answer.opens == opens else { return false }
+              answer.approval == approval else { return false }
         return manualWriteSessions[deviceId]?.patches.contains {
             $0.slotKey == key && $0.phase == .debouncing
         } == true
