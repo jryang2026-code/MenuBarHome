@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import MijiaCore
 
-private actor MockUDPTransport: MiIOUDPTransport {
+actor MockUDPTransport: MiIOUDPTransport {
     struct RecordedSend: Sendable {
         let packet: Data
         let host: String
@@ -43,7 +43,7 @@ private actor MockUDPTransport: MiIOUDPTransport {
     }
 }
 
-private actor HybridMockCloudAPI: MiCloudAPI {
+actor HybridMockCloudAPI: MiCloudAPI {
     var devicesList: [MiDeviceRecord]
     var roomsList: [MiRoom]
     var propsByKey: [MiotPropKey: JSONValue]
@@ -144,14 +144,14 @@ private actor HybridMockCloudAPI: MiCloudAPI {
     }
 }
 
-private struct HybridMockSpecSource: MiotSpecSource {
+struct HybridMockSpecSource: MiotSpecSource {
     let specs: [String: MiotDeviceSpec]
     func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
         specs[model]
     }
 }
 
-private final class MutableClock: @unchecked Sendable {
+final class MutableClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
 
@@ -172,7 +172,7 @@ private final class MutableClock: @unchecked Sendable {
     }
 }
 
-private actor EventCollector {
+actor EventCollector {
     struct State: Sendable {
         var snapshots: [SynthesizedHome] = []
         var doorbellRings: [DoorbellRing] = []
@@ -272,11 +272,11 @@ private actor MirrorHTTPStub: MiHTTPTransport {
     }
 }
 
-private func makeHelloResponse(deviceId: UInt32, stamp: UInt32) -> Data {
+func makeHelloResponse(deviceId: UInt32, stamp: UInt32) -> Data {
     makeHelloResponse64(unknown: 0, deviceId: deviceId, stamp: stamp)
 }
 
-private func makeHelloResponse64(
+func makeHelloResponse64(
     unknown: UInt32,
     deviceId: UInt32,
     stamp: UInt32,
@@ -297,7 +297,7 @@ private func makeHelloResponse64(
     return packet
 }
 
-private func lightSpec() -> MiotDeviceSpec {
+func lightSpec() -> MiotDeviceSpec {
     MiotDeviceSpec(
         type: "urn:miot-spec-v2:device:light:0000A001:yeelink-color4:1",
         services: [
@@ -691,67 +691,44 @@ struct LocalMiIOClientTests {
         await wideSubnetClient.shutdown()
     }
 
+    private func encodeRPCReply(_ packet: Data, token: Data, resultOrError: String, checkHeader: ((MiIOPacketHeader) -> Void)? = nil) throws -> Data {
+        let (header, plaintext) = try MiIOPacket.decode(packet, token: token)
+        checkHeader?(header)
+        let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+        let reply = #"{"id":\#(req["id"]?.intValue ?? 0),\#(resultOrError)}"#
+        return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token, payload: Data(reply.utf8), unknown: header.unknown)
+    }
+
     @Test("Broadcast discovery matches 64-bit DIDs, retained non-numeric hardware IDs across session evictions, and cold-start non-numeric responders with token verification")
     func broadcastDiscovery64BitRetainedHardwareIDsAndTokenVerification() async throws {
-        let token1Hex = "00112233445566778899aabbccddeeff"
-        let token2Hex = "112233445566778899aabbccddeeff00"
-        let token3Hex = "2233445566778899aabbccddeeff0011"
-        let wrongTokenHex = "ffeeddccbbaa99887766554433221100"
-        let token1 = try #require(MiIOPacket.validateToken(token1Hex))
-        let token2 = try #require(MiIOPacket.validateToken(token2Hex))
-        let token3 = try #require(MiIOPacket.validateToken(token3Hex))
-        let wrongToken = try #require(MiIOPacket.validateToken(wrongTokenHex))
+        let (token1Hex, token2Hex, token3Hex, wrongTokenHex) = ("00112233445566778899aabbccddeeff", "112233445566778899aabbccddeeff00", "2233445566778899aabbccddeeff0011", "ffeeddccbbaa99887766554433221100")
+        let token1 = try #require(MiIOPacket.validateToken(token1Hex)), token2 = try #require(MiIOPacket.validateToken(token2Hex))
+        let token3 = try #require(MiIOPacket.validateToken(token3Hex)), wrongToken = try #require(MiIOPacket.validateToken(wrongTokenHex))
+        let did64Value: UInt64 = 1_099_511_628_211, did64String = String(did64Value)
+        let did64Upper = UInt32(truncatingIfNeeded: did64Value >> 32), did64Lower = UInt32(truncatingIfNeeded: did64Value)
 
-        let did64Value: UInt64 = 1_099_511_628_211
-        let did64String = String(did64Value)
-        let did64Upper = UInt32(truncatingIfNeeded: did64Value >> 32)
-        let did64Lower = UInt32(truncatingIfNeeded: did64Value)
-
-        let maskedHello = makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 10)
-        #expect(MiIOPacket.helloChecksumMatches(maskedHello, token: token1) == nil)
+        #expect(MiIOPacket.helloChecksumMatches(makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 10), token: token1) == nil)
         let keyedHello = makeHelloResponse64(unknown: 0, deviceId: 0x0A0B_0C0D, stamp: 20, tokenForChecksum: token2)
         #expect(MiIOPacket.helloChecksumMatches(keyedHello, token: token2) == true)
         #expect(MiIOPacket.helloChecksumMatches(keyedHello, token: wrongToken) == false)
 
         let lumiOldHostFails = LockedBox(false)
         let transport = MockUDPTransport { packet, host, _ in
-            if host == "192.168.1.20" {
+            switch host {
+            case "192.168.1.20":
                 if lumiOldHostFails.withValue({ $0 }) { throw MiIOError.timeout }
                 if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 0x0A0B_0C0D, stamp: 50) }
-                let (header, plaintext) = try MiIOPacket.decode(packet, token: token2)
-                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-                let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"lumi.gateway.v3","siid":2,"piid":1,"value":true,"code":0}]}"#
-                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token2, payload: Data(reply.utf8))
+                return try self.encodeRPCReply(packet, token: token2, resultOrError: #""result":[{"did":"lumi.gateway.v3","siid":2,"piid":1,"value":true,"code":0}]"#)
+            case "192.168.1.99": return try self.encodeRPCReply(packet, token: wrongToken, resultOrError: #""result":[]"#)
+            case "192.168.1.101":
+                return try self.encodeRPCReply(packet, token: token1, resultOrError: #""error":{"code":-4004,"message":"prop unsupported"}"#) { h in
+                    #expect(h.unknown == did64Upper); #expect(h.deviceId == did64Lower)
+                }
+            case "192.168.1.102": return try self.encodeRPCReply(packet, token: token2, resultOrError: #""result":[{"did":"lumi.gateway.v3","siid":1,"piid":1,"value":"ok","code":0}]"#)
+            case "192.168.1.103": return try self.encodeRPCReply(packet, token: token3, resultOrError: #""result":[{"did":"blt.cold.start","siid":1,"piid":1,"value":1,"code":0}]"#)
+            default: throw MiIOError.timeout
             }
-            if host == "192.168.1.99" {
-                let (header, plaintext) = try MiIOPacket.decode(packet, token: wrongToken)
-                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-                let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[]}"#
-                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: wrongToken, payload: Data(reply.utf8), unknown: header.unknown)
-            }
-            if host == "192.168.1.101" {
-                let (header, plaintext) = try MiIOPacket.decode(packet, token: token1)
-                #expect(header.unknown == did64Upper)
-                #expect(header.deviceId == did64Lower)
-                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-                let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"error":{"code":-4004,"message":"prop unsupported"}}"#
-                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token1, payload: Data(reply.utf8), unknown: header.unknown)
-            }
-            if host == "192.168.1.102" {
-                let (header, plaintext) = try MiIOPacket.decode(packet, token: token2)
-                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-                let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"lumi.gateway.v3","siid":1,"piid":1,"value":"ok","code":0}]}"#
-                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token2, payload: Data(reply.utf8))
-            }
-            if host == "192.168.1.103" {
-                let (header, plaintext) = try MiIOPacket.decode(packet, token: token3)
-                let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-                let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"blt.cold.start","siid":1,"piid":1,"value":1,"code":0}]}"#
-                return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: token3, payload: Data(reply.utf8))
-            }
-            throw MiIOError.timeout
         }
-
         let client = LocalMiIOClient(transport: transport, maxRetries: 1)
         let lumiOldEndpoint = MiIODeviceEndpoint(did: "lumi.gateway.v3", ip: "192.168.1.20", token: token2Hex)
         let initialLumi = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: lumiOldEndpoint)
@@ -762,7 +739,6 @@ struct LocalMiIOClientTests {
         await #expect(throws: MiIOError.handshakeFailed) {
             _ = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: lumiOldEndpoint)
         }
-
         await transport.setBroadcastHandler { _, _, _ in
             [
                 MiIOBroadcastReply(sourceIP: "192.168.1.99", packet: makeHelloResponse64(unknown: did64Upper, deviceId: did64Lower, stamp: 300)),
@@ -771,15 +747,113 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.103", packet: makeHelloResponse(deviceId: 0x0F0E_0D0C, stamp: 500)),
             ]
         }
-
         let discovered = try await client.discoverEndpoints(for: [
             MiIODeviceCandidate(did: did64String, token: token1Hex),
             MiIODeviceCandidate(did: "lumi.gateway.v3", token: token2Hex),
             MiIODeviceCandidate(did: "blt.cold.start", token: token3Hex),
         ])
-        #expect(discovered[did64String] == "192.168.1.101")
-        #expect(discovered["lumi.gateway.v3"] == "192.168.1.102")
-        #expect(discovered["blt.cold.start"] == "192.168.1.103")
+        #expect(discovered == [did64String: "192.168.1.101", "lumi.gateway.v3": "192.168.1.102", "blt.cold.start": "192.168.1.103"])
+        await client.shutdown()
+    }
+
+    @Test("Unauthenticated HELLO from a reassigned stale IP does not poison retained hardware IDs before encrypted auth succeeds")
+    func unauthenticatedHelloDoesNotPoisonHardwareIdentity() async throws {
+        let (tokenKnownHex, tokenColdHex, tokenStrangerHex) = ("112233445566778899aabbccddeeff00", "2233445566778899aabbccddeeff0011", "ffeeddccbbaa99887766554433221100")
+        let tokenKnown = try #require(MiIOPacket.validateToken(tokenKnownHex)), tokenCold = try #require(MiIOPacket.validateToken(tokenColdHex))
+        let tokenStranger = try #require(MiIOPacket.validateToken(tokenStrangerHex))
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000)), staleHostReassigned = LockedBox(false)
+        let transport = MockUDPTransport { packet, host, _ in
+            switch host {
+            case "192.168.1.20":
+                if staleHostReassigned.withValue({ $0 }) {
+                    if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 0xDEAD_BEEF, stamp: 60) }
+                    return try MiIOPacket.encode(deviceId: 0xDEAD_BEEF, stamp: 61, token: tokenStranger, payload: Data(#"{"id":1,"result":[]}"#.utf8))
+                }
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 0x0A0B_0C0D, stamp: 50) }
+                return try self.encodeRPCReply(packet, token: tokenKnown, resultOrError: #""result":[{"did":"lumi.gateway.v3","siid":2,"piid":1,"value":true,"code":0}]"#)
+            case "192.168.1.21":
+                if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 0xCAFE_BABE, stamp: 70) }
+                throw MiIOError.timeout
+            case "192.168.1.102": return try self.encodeRPCReply(packet, token: tokenKnown, resultOrError: #""result":[{"did":"lumi.gateway.v3","siid":1,"piid":1,"value":"ok","code":0}]"#)
+            case "192.168.1.103": return try self.encodeRPCReply(packet, token: tokenCold, resultOrError: #""result":[{"did":"blt.cold.reassigned","siid":1,"piid":1,"value":1,"code":0}]"#)
+            default: throw MiIOError.timeout
+            }
+        }
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0, handshakeTTL: 10, now: { clock.now() })
+        _ = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: MiIODeviceEndpoint(did: "lumi.gateway.v3", ip: "192.168.1.20", token: tokenKnownHex))
+        clock.advance(by: 20); staleHostReassigned.withValue { $0 = true }
+        await #expect(throws: MiIOError.checksumMismatch) {
+            _ = try await client.getProps([MiotPropKey(did: "lumi.gateway.v3", siid: 2, piid: 1)], endpoint: MiIODeviceEndpoint(did: "lumi.gateway.v3", ip: "192.168.1.20", token: tokenKnownHex))
+        }
+        await #expect(throws: MiIOError.timeout) {
+            _ = try await client.getProps([MiotPropKey(did: "blt.cold.reassigned", siid: 2, piid: 1)], endpoint: MiIODeviceEndpoint(did: "blt.cold.reassigned", ip: "192.168.1.21", token: tokenColdHex))
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.20", packet: makeHelloResponse(deviceId: 0xDEAD_BEEF, stamp: 80)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.21", packet: makeHelloResponse(deviceId: 0xCAFE_BABE, stamp: 81)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.102", packet: makeHelloResponse(deviceId: 0x0A0B_0C0D, stamp: 82)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.103", packet: makeHelloResponse(deviceId: 0x0F0E_0D0C, stamp: 83)),
+            ]
+        }
+        let discovered = try await client.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: "lumi.gateway.v3", token: tokenKnownHex),
+            MiIODeviceCandidate(did: "blt.cold.reassigned", token: tokenColdHex),
+        ])
+        #expect(discovered == ["lumi.gateway.v3": "192.168.1.102", "blt.cold.reassigned": "192.168.1.103"])
+        await client.shutdown()
+    }
+
+    @Test("64-bit numeric DIDs match unknown=0 or 0xFFFFFFFF low-32-bit HELLO replies only after encrypted token probe disambiguates collisions")
+    func broadcastDiscovery64BitLow32TruncationAndCollisionSafety() async throws {
+        let (tokenAHex, tokenBHex, tokenUnmatchedHex, tokenStrangerHex) = ("00112233445566778899aabbccddeeff", "112233445566778899aabbccddeeff00", "2233445566778899aabbccddeeff0011", "ffeeddccbbaa99887766554433221100")
+        let tokenA = try #require(MiIOPacket.validateToken(tokenAHex)), tokenB = try #require(MiIOPacket.validateToken(tokenBHex))
+        let tokenStranger = try #require(MiIOPacket.validateToken(tokenStrangerHex))
+        let sharedLow32: UInt32 = 0x0000_01B3
+        let didA = String((UInt64(2) << 32) | UInt64(sharedLow32)), didB = String((UInt64(5) << 32) | UInt64(sharedLow32)), didUnmatched = String((UInt64(9) << 32) | UInt64(sharedLow32))
+        let transport = MockUDPTransport { packet, host, _ in
+            let hostToken: Data = switch host {
+            case "192.168.1.90": tokenStranger
+            case "192.168.1.91": tokenB
+            case "192.168.1.92": tokenA
+            default: throw MiIOError.timeout
+            }
+            return try self.encodeRPCReply(packet, token: hostToken, resultOrError: #""result":[]"#)
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.90", packet: makeHelloResponse64(unknown: 0, deviceId: sharedLow32, stamp: 10)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.91", packet: makeHelloResponse64(unknown: 0, deviceId: sharedLow32, stamp: 11)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.92", packet: makeHelloResponse64(unknown: UInt32.max, deviceId: sharedLow32, stamp: 12)),
+            ]
+        }
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: didA, token: tokenAHex), MiIODeviceCandidate(did: didB, token: tokenBHex), MiIODeviceCandidate(did: didUnmatched, token: tokenUnmatchedHex),
+        ])
+        #expect(discovered == [didA: "192.168.1.92", didB: "192.168.1.91"])
+        await client.shutdown()
+    }
+
+    @Test("Legacy HELLO with plaintext token checksum is not rejected early and still requires encrypted probe to bind")
+    func legacyPlaintextTokenHelloAllowedToEncryptedProbe() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(validTokenHex))
+        let legacyHello = Data(makeHelloResponse(deviceId: 501, stamp: 77).prefix(16)) + tokenData
+        #expect(MiIOPacket.helloChecksumMatches(legacyHello, token: tokenData) == nil)
+        #expect(MiIOPacket.helloChecksumMatches(legacyHello, token: Data(repeating: 0xAA, count: 16)) == false)
+        let transport = MockUDPTransport { packet, host, _ in
+            guard host == "192.168.1.95" else { throw MiIOError.timeout }
+            return try self.encodeRPCReply(packet, token: tokenData, resultOrError: #""result":[]"#)
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.94", packet: Data(makeHelloResponse(deviceId: 502, stamp: 77).prefix(16)) + tokenData),
+                MiIOBroadcastReply(sourceIP: "192.168.1.95", packet: legacyHello),
+            ]
+        }
+        let client = LocalMiIOClient(transport: transport, maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(for: [MiIODeviceCandidate(did: "501", token: validTokenHex), MiIODeviceCandidate(did: "502", token: validTokenHex)])
+        #expect(discovered == ["501": "192.168.1.95"])
         await client.shutdown()
     }
 
@@ -2492,186 +2566,106 @@ struct HybridProviderAndDoorbellTests {
 
     @Test("DHCP IP change triggers rate-limited broadcast self-heal with inline same-poll retry, persists effectiveIP to MiTopologyCache, and preserves override against stale cloud localIp")
     func dhcpIPChangeBroadcastRecoveryInlineRetryAndStaleCloudProtection() async throws {
-        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
-        let token2Hex = "112233445566778899aabbccddeeff00"
-        let activeIP = LockedBox("192.168.1.40")
-        let lanBrightness = LockedBox(70)
-        let d2ShouldFail = LockedBox(false)
-
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex)), token2Hex = "112233445566778899aabbccddeeff00"
+        let activeIP = LockedBox("192.168.1.40"), lanBrightness = LockedBox(70), d2ShouldFail = LockedBox(false)
         let udpTransport = MockUDPTransport { packet, host, _ in
             if host == "192.168.1.41", d2ShouldFail.withValue({ $0 }) { throw MiIOError.timeout }
             guard host == activeIP.withValue({ $0 }) else { throw MiIOError.timeout }
             if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 100) }
             let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
             let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-            let brVal = lanBrightness.withValue { $0 }
-            let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":\#(brVal),"code":0}]}"#
+            let reply = #"{"id":\#(req["id"]?.intValue ?? 0),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":\#(lanBrightness.withValue { $0 }),"code":0}]}"#
             return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
         }
-        await udpTransport.setBroadcastHandler { _, _, _ in
-            [MiIOBroadcastReply(sourceIP: activeIP.withValue({ $0 }), packet: makeHelloResponse(deviceId: 101, stamp: 200))]
-        }
+        await udpTransport.setBroadcastHandler { _, _, _ in [MiIOBroadcastReply(sourceIP: activeIP.withValue({ $0 }), packet: makeHelloResponse(deviceId: 101, stamp: 200))] }
 
         let cacheDir = FileManager.default.temporaryDirectory.appendingPathComponent("MiBroadcastSelfHeal-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: cacheDir) }
-        let topologyCache = MiTopologyCache(directory: cacheDir)
-        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
-        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
-
+        let topologyCache = MiTopologyCache(directory: cacheDir), clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
         let d1 = MiDeviceRecord(did: "101", name: "Lamp 1", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.40", token: tokenHex, isShared: false)
         let d2 = MiDeviceRecord(did: "102", name: "Lamp 2", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.41", token: token2Hex, isShared: false)
-        let api = HybridMockCloudAPI(
-            devices: [d1, d2],
-            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
-            props: [MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(50)]
-        )
-
+        let api = HybridMockCloudAPI(devices: [d1, d2], rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])], props: [MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(50)])
         let provider = MiCloudProvider(
-            sessionLoader: { self.stubSession }, apiFactory: { _ in api },
-            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
-            localClient: localClient, topologyCache: topologyCache,
-            lanFailureThreshold: 1, lanCooldownDuration: 30, broadcastSweepMinInterval: 60,
-            now: { clock.now() }, pollInterval: .seconds(3600), closedPollInterval: .seconds(3600),
-            deviceRefreshEveryPolls: 1, selectedHomeLoader: { nil }
+            sessionLoader: { self.stubSession }, apiFactory: { _ in api }, specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }), topologyCache: topologyCache,
+            lanFailureThreshold: 1, lanCooldownDuration: 30, broadcastSweepMinInterval: 60, now: { clock.now() },
+            pollInterval: .seconds(3600), closedPollInterval: .seconds(3600), deviceRefreshEveryPolls: 1, selectedHomeLoader: { nil }
         )
-
         let collector = EventCollector()
-        let stream = provider.events()
-        let task = Task {
-            for await event in stream { await collector.append(event) }
-            await collector.finish()
-        }
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
         defer { task.cancel() }
 
         #expect(await collector.wait { $0.statuses.last == .connected && !$0.snapshots.isEmpty })
-        let initialD1 = await provider.lanTransportState(for: "101")
-        let initialD2 = await provider.lanTransportState(for: "102")
-        #expect(initialD1.transportSucceeded == true)
-        #expect(initialD1.usedBroadcastRecovery == false)
-        #expect(initialD2.isCoolingDown == true)
-        #expect(await udpTransport.broadcastCalls == 1)
+        let initialD1 = await provider.lanTransportState(for: "101"), initialD2 = await provider.lanTransportState(for: "102")
+        #expect(initialD1.transportSucceeded && !initialD1.usedBroadcastRecovery && initialD2.isCoolingDown); #expect(await udpTransport.broadcastCalls == 1)
 
-        d2ShouldFail.withValue { $0 = true }
-        activeIP.withValue { $0 = "192.168.1.88" }
-        lanBrightness.withValue { $0 = 88 }
-        clock.advance(by: 5)
+        d2ShouldFail.withValue { $0 = true }; activeIP.withValue { $0 = "192.168.1.88" }; lanBrightness.withValue { $0 = 88 }; clock.advance(by: 5)
         _ = await provider.readBack(deviceId: "101")
-        #expect(await udpTransport.broadcastCalls == 1)
-        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+        #expect(await udpTransport.broadcastCalls == 1); #expect(await provider.lanTransportState(for: "101").isCoolingDown)
 
         clock.advance(by: 65)
-        #expect(await provider.readBack(deviceId: "101") == .published)
-        #expect(await udpTransport.broadcastCalls == 2)
+        #expect(await provider.readBack(deviceId: "101") == .published); #expect(await udpTransport.broadcastCalls == 2)
         #expect(await collector.wait { lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 88 })
-
         let recoveredD1 = await provider.lanTransportState(for: "101")
-        #expect(recoveredD1.transportSucceeded == true)
-        #expect(recoveredD1.isCoolingDown == false)
-        #expect(recoveredD1.usedBroadcastRecovery == true)
-        #expect(recoveredD1.lastRTTMs != nil)
-        #expect(recoveredD1.effectiveIP == "192.168.1.88")
-        #expect(topologyCache.load(for: stubSession)?.devices.first { $0.did == "101" }?.localIp == "192.168.1.88")
+        #expect(recoveredD1.transportSucceeded && !recoveredD1.isCoolingDown && recoveredD1.usedBroadcastRecovery && recoveredD1.lastRTTMs != nil && recoveredD1.effectiveIP == "192.168.1.88")
+        #expect(topologyCache.load(for: stubSession)?.devices.first { $0.did == "101" }?.localIp == "192.168.1.40")
+        #expect(topologyCache.load(for: stubSession)?.discoveredLANIPsByDid["101"] == "192.168.1.88")
 
         let broadcastsAfterHeal = await udpTransport.broadcastCalls
-        clock.advance(by: 10)
-        lanBrightness.withValue { $0 = 92 }
-        await provider.refreshNow()
+        clock.advance(by: 10); lanBrightness.withValue { $0 = 92 }; await provider.refreshNow()
         #expect(await collector.wait { lightBrightness($0.snapshots.last?.devices.first { $0.id == "101" }) == 92 })
         #expect(await udpTransport.broadcastCalls == broadcastsAfterHeal + 1)
-        #expect(topologyCache.load(for: stubSession)?.devices.first { $0.did == "101" }?.localIp == "192.168.1.88")
-
+        #expect(topologyCache.load(for: stubSession)?.devices.first { $0.did == "101" }?.localIp == "192.168.1.40")
+        #expect(topologyCache.load(for: stubSession)?.discoveredLANIPsByDid["101"] == "192.168.1.88")
         await provider.shutdown()
     }
 
     @Test("All-nonzero LAN reply during cloud failure records LAN transport health but leaves telemetryStale true")
     func allNonzeroLANReplyDuringCloudFailurePreservesLANRouteWithoutValidatingStaleTelemetry() async throws {
         let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
-        let secondDeviceFailTimeout = LockedBox(false)
-        let secondDeviceAllNonzero = LockedBox(false)
-        let firstDeviceAllNonzero = LockedBox(false)
-
+        let secondDeviceFailTimeout = LockedBox(false), secondDeviceAllNonzero = LockedBox(false), firstDeviceAllNonzero = LockedBox(false)
         let udpTransport = MockUDPTransport { packet, host, _ in
             if host == "192.168.1.51", secondDeviceFailTimeout.withValue({ $0 }) { throw MiIOError.timeout }
-            if packet == MiIOPacket.helloPacket {
-                return makeHelloResponse(deviceId: (host == "192.168.1.51") ? 102 : 101, stamp: 10)
-            }
+            if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: (host == "192.168.1.51") ? 102 : 101, stamp: 10) }
             let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
-            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
-            let reqId = req["id"]?.intValue ?? 0
+            let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
             let did = (host == "192.168.1.51") ? "102" : "101"
             let allNonzero = (did == "102") ? secondDeviceAllNonzero.withValue({ $0 }) : firstDeviceAllNonzero.withValue({ $0 })
-            let reply: String
-            if allNonzero {
-                reply = #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"code":-4004},{"did":"\#(did)","siid":2,"piid":2,"code":-4004}]}"#
-            } else {
-                let br = (did == "102") ? 45 : 65
-                reply = #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(did)","siid":2,"piid":2,"value":\#(br),"code":0}]}"#
-            }
+            let br = (did == "102") ? 45 : 65
+            let reply = allNonzero
+                ? #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"code":-4004},{"did":"\#(did)","siid":2,"piid":2,"code":-4004}]}"#
+                : #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(did)","siid":2,"piid":2,"value":\#(br),"code":0}]}"#
             return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
         }
-
         let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
-        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
         let bulb1 = MiDeviceRecord(did: "101", name: "Healthy Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
         let bulb2 = MiDeviceRecord(did: "102", name: "Error Code Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
-        let api = HybridMockCloudAPI(
-            devices: [bulb1, bulb2],
-            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
-            props: [
-                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(65),
-                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(45),
-            ]
-        )
-        let provider = MiCloudProvider(
-            sessionLoader: { self.stubSession }, apiFactory: { _ in api },
-            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
-            localClient: localClient, lanFailureThreshold: 3, now: { clock.now() },
-            pollInterval: .seconds(3600), closedPollInterval: .seconds(3600), selectedHomeLoader: { nil }
-        )
-
+        let api = HybridMockCloudAPI(devices: [bulb1, bulb2], rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])], props: [MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(65), MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(45)])
+        let provider = MiCloudProvider(sessionLoader: { self.stubSession }, apiFactory: { _ in api }, specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]), localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }), lanFailureThreshold: 3, now: { clock.now() }, pollInterval: .seconds(3600), closedPollInterval: .seconds(3600), selectedHomeLoader: { nil })
         let collector = EventCollector()
-        let stream = provider.events()
-        let task = Task {
-            for await event in stream { await collector.append(event) }
-            await collector.finish()
-        }
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
         defer { task.cancel() }
 
         #expect(await collector.wait { $0.snapshots.last?.devices.count == 2 })
-
-        secondDeviceFailTimeout.withValue { $0 = true }
-        _ = await provider.readBack(deviceId: "102")
+        secondDeviceFailTimeout.withValue { $0 = true }; _ = await provider.readBack(deviceId: "102")
         #expect(await provider.lanTransportState(for: "102").consecutiveFailures == 1)
 
-        secondDeviceFailTimeout.withValue { $0 = false }
-        secondDeviceAllNonzero.withValue { $0 = true }
-        await api.setGetPropsError(MiCloudError.http(429))
-        await provider.refreshNow()
-
-        #expect(await collector.wait {
-            guard let snap = $0.snapshots.last, let second = snap.devices.first(where: { $0.id == "102" }) else { return false }
-            return !snap.closesAwayGap && second.telemetryStale
-        })
+        secondDeviceFailTimeout.withValue { $0 = false }; secondDeviceAllNonzero.withValue { $0 = true }
+        await api.setGetPropsError(MiCloudError.http(429)); await provider.refreshNow()
+        #expect(await collector.wait { ($0.snapshots.last?.closesAwayGap == false) && ($0.snapshots.last?.devices.first { $0.id == "102" }?.telemetryStale == true) })
         let snap = try #require(await collector.snapshots.last)
         #expect(try #require(snap.devices.first { $0.id == "101" }).telemetryStale == false)
         #expect(try #require(snap.devices.first { $0.id == "102" }).telemetryStale == true)
         let secondState = await provider.lanTransportState(for: "102")
-        #expect(secondState.transportSucceeded == true)
-        #expect(secondState.consecutiveFailures == 0)
+        #expect(secondState.transportSucceeded && secondState.consecutiveFailures == 0)
 
-        firstDeviceAllNonzero.withValue { $0 = true }
-        clock.advance(by: 65)
-        await provider.refreshNow()
-        #expect(await collector.wait {
-            if case .disconnected = $0.statuses.last { return true }
-            return false
-        })
-
+        firstDeviceAllNonzero.withValue { $0 = true }; clock.advance(by: 65); await provider.refreshNow()
+        #expect(await collector.wait { if case .disconnected = $0.statuses.last { return true }; return false })
         await provider.shutdown()
     }
 }
 
-private func lightBrightness(_ device: SmartDevice?) -> Int? {
+func lightBrightness(_ device: SmartDevice?) -> Int? {
     guard case .light(let spec) = device?.kind else { return nil }
     return spec.brightnessPercent
 }

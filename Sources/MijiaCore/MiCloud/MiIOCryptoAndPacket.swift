@@ -144,7 +144,7 @@ public enum MiIOPacket {
 
     public static func helloChecksumMatches(_ packet: Data, token: Data) -> Bool? {
         guard packet.count >= headerSize, token.count == 16, let header = try? decodeHeader(packet) else { return nil }
-        if header.checksum.allSatisfy({ $0 == 0xFF }) || header.checksum.allSatisfy({ $0 == 0x00 }) { return nil }
+        if header.checksum.allSatisfy({ $0 == 0xFF }) || header.checksum.allSatisfy({ $0 == 0x00 }) || header.checksum == token { return nil }
         let base = packet.startIndex
         return Data(Insecure.MD5.hash(data: packet[base..<(base + 16)] + token)) == header.checksum
     }

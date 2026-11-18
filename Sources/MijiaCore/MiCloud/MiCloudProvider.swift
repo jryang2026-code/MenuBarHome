@@ -40,10 +40,14 @@ public actor MiCloudProvider: HomeProvider {
                 return true
             }
             if newCloudIP == cloudIP { return false }
+            if newCloudIP.isEmpty {
+                if discoveredIP == nil { cloudIP = "" }
+                return false
+            }
             cloudIP = newCloudIP
             if discoveredIP == newCloudIP { discoveredIP = nil; return false }
-            if !newCloudIP.isEmpty { discoveredIP = nil; return true }
-            return false
+            discoveredIP = nil
+            return true
         }
     }
 
@@ -78,6 +82,7 @@ public actor MiCloudProvider: HomeProvider {
     private var cameraBridgeBindings: [String: (did: String, subdid: String?)] = [:]
     private var lanHealthByDid: [String: LANHealthState] = [:]
     private var lanBindingsByDid: [String: LANEndpointBinding] = [:]
+    private var didSeedLANBindingsFromCache = false
     private var lastBroadcastSweepAt: Date?
     private var sharedHomeDids: Set<String> = []
     private var doorbellBaselineTime: [String: Date] = [:]
@@ -440,6 +445,9 @@ public actor MiCloudProvider: HomeProvider {
             topologyCache?.remove(accountID: MiAccount(session: session).id)
         }
         lastSavedTopology = nil
+        lanBindingsByDid.removeAll()
+        lanHealthByDid.removeAll()
+        didSeedLANBindingsFromCache = false
         lanSucceededDids.removeAll()
         lanTransportSucceededDids.removeAll()
         everObservedPropDids.removeAll()
@@ -528,7 +536,8 @@ public actor MiCloudProvider: HomeProvider {
                 rooms = cached.rooms
                 groupMembersByGroup = cached.groupMembersByGroup
                 lastSavedTopology = cached
-                reconcileLANEndpoints(devices)
+                didSeedLANBindingsFromCache = true
+                reconcileLANEndpoints(devices, seededDiscoveredIPs: cached.discoveredLANIPsByDid)
                 await loadMissingSpecs()
                 scheduleCloudBackoff(for: error)
                 return
@@ -559,29 +568,16 @@ public actor MiCloudProvider: HomeProvider {
         unresolvedRoomDids = outcome.unresolvedRoomDids
         rooms = outcome.rooms
         devices = outcome.devices
-        reconcileLANEndpoints(devices)
-        try await refreshGroupMembers(api)
-        if let topologyCache, let session {
-            if devices.isEmpty {
-                topologyCache.remove(accountID: MiAccount(session: session).id)
-                lastSavedTopology = nil
-            } else {
-                let persistedDevices = devicesWithEffectiveLANIPs()
-                let unchanged = lastSavedTopology?.devices == persistedDevices
-                    && lastSavedTopology?.rooms == rooms
-                    && lastSavedTopology?.groupMembersByGroup == groupMembersByGroup
-                if !unchanged {
-                    let snapshot = CachedMiTopology(
-                        savedAt: now(),
-                        devices: persistedDevices,
-                        rooms: rooms,
-                        groupMembersByGroup: groupMembersByGroup
-                    )
-                    topologyCache.save(snapshot, for: session)
-                    lastSavedTopology = snapshot
-                }
+        if !didSeedLANBindingsFromCache {
+            didSeedLANBindingsFromCache = true
+            if let session, let cached = topologyCache?.load(for: session) {
+                lastSavedTopology = cached
+                reconcileLANEndpoints(cached.devices, seededDiscoveredIPs: cached.discoveredLANIPsByDid)
             }
         }
+        reconcileLANEndpoints(devices)
+        try await refreshGroupMembers(api)
+        persistTopologyIfNeeded()
         hasLiveTopologyRefresh = true
         await loadMissingSpecs()
 
@@ -1005,11 +1001,26 @@ public actor MiCloudProvider: HomeProvider {
 
     // MARK: - Hybrid LAN Eligibility & Cooldown
 
-    private func devicesWithEffectiveLANIPs() -> [MiDeviceRecord] {
-        devices.map { record in
-            guard let effective = lanBindingsByDid[record.miotDid]?.effectiveIP, !effective.isEmpty else { return record }
-            var copy = record; copy.localIp = effective; return copy
+    private func persistTopologyIfNeeded() {
+        guard let topologyCache, let session else { return }
+        if devices.isEmpty {
+            topologyCache.remove(accountID: MiAccount(session: session).id)
+            lastSavedTopology = nil
+            return
         }
+        var discoveredIPs: [String: String] = [:]
+        for record in devices where record.splitParentDid == nil {
+            let did = record.miotDid
+            if let b = lanBindingsByDid[did], b.usedBroadcastRecovery, let ip = b.discoveredIP, LocalMiIOClient.isPrivateRFC1918IPv4(ip) {
+                discoveredIPs[did] = ip
+            }
+        }
+        guard lastSavedTopology?.devices != devices || lastSavedTopology?.rooms != rooms
+            || lastSavedTopology?.groupMembersByGroup != groupMembersByGroup
+            || lastSavedTopology?.discoveredLANIPsByDid != discoveredIPs else { return }
+        let snapshot = CachedMiTopology(savedAt: now(), devices: devices, rooms: rooms, groupMembersByGroup: groupMembersByGroup, discoveredLANIPsByDid: discoveredIPs)
+        topologyCache.save(snapshot, for: session)
+        lastSavedTopology = snapshot
     }
 
     private func canRunBroadcastSweep() -> Bool {
@@ -1026,17 +1037,16 @@ public actor MiCloudProvider: HomeProvider {
             }
             lanHealthByDid[did] = LANHealthState()
         }
-        if let topologyCache, let session, !devices.isEmpty {
-            let persisted = devicesWithEffectiveLANIPs()
-            if lastSavedTopology?.devices != persisted || lastSavedTopology?.rooms != rooms || lastSavedTopology?.groupMembersByGroup != groupMembersByGroup {
-                let snapshot = CachedMiTopology(savedAt: now(), devices: persisted, rooms: rooms, groupMembersByGroup: groupMembersByGroup)
-                topologyCache.save(snapshot, for: session); lastSavedTopology = snapshot
-            }
-        }
+        persistTopologyIfNeeded()
     }
 
-    private func reconcileLANEndpoints(_ records: [MiDeviceRecord]) {
+    private func reconcileLANEndpoints(_ records: [MiDeviceRecord], seededDiscoveredIPs: [String: String] = [:]) {
         sharedHomeDids = Set(rooms.lazy.filter(\.isSharedHome).flatMap(\.dids))
+        let activeDids = Set(records.map(\.miotDid))
+        for did in Array(lanBindingsByDid.keys) where !activeDids.contains(did) {
+            lanBindingsByDid.removeValue(forKey: did)
+            lanHealthByDid.removeValue(forKey: did)
+        }
         for record in records where record.splitParentDid == nil {
             let did = record.miotDid
             let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -1044,11 +1054,14 @@ public actor MiCloudProvider: HomeProvider {
             guard !token.isEmpty else {
                 lanBindingsByDid.removeValue(forKey: did); lanHealthByDid.removeValue(forKey: did); continue
             }
+            let seeded = seededDiscoveredIPs[did]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let validSeeded = (seeded.map(LocalMiIOClient.isPrivateRFC1918IPv4) == true && seeded != ip) ? seeded : nil
             if var binding = lanBindingsByDid[did] {
                 if binding.reconcile(newCloudIP: ip, newToken: token) { lanHealthByDid.removeValue(forKey: did) }
+                if let validSeeded, binding.discoveredIP == nil { binding.discoveredIP = validSeeded }
                 lanBindingsByDid[did] = binding
             } else {
-                lanBindingsByDid[did] = LANEndpointBinding(cloudIP: ip, discoveredIP: nil, token: token)
+                lanBindingsByDid[did] = LANEndpointBinding(cloudIP: ip, discoveredIP: validSeeded, token: token)
             }
         }
     }

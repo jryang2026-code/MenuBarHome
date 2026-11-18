@@ -464,7 +464,7 @@ public actor LocalMiIOClient {
                 guard !claimedIPs.contains(r.sourceIP) else { return false }
                 if let known = knownHardwareIdsByDid[candidate.did], known.matches(r.header) { return true }
                 guard let did64 = UInt64(candidate.did) else { return false }
-                return r.header.deviceId64 == did64 || ((r.header.unknown == 0 || r.header.unknown == UInt32.max) && UInt32(exactly: did64) == r.header.deviceId)
+                return r.header.deviceId64 == did64 || ((r.header.unknown == 0 || r.header.unknown == UInt32.max) && UInt32(truncatingIfNeeded: did64) == r.header.deviceId)
             }
             for reply in matching {
                 try Task.checkCancellation()
@@ -729,7 +729,6 @@ public actor LocalMiIOClient {
         } else {
             throw MiIOError.unsupportedNonNumericDeviceId
         }
-        knownHardwareIdsByDid[did] = HardwareDeviceID(unknown: resolvedUnknown, deviceId: deviceId32)
         let session = DeviceSession(
             ip: host,
             tokenData: tokenData,
@@ -766,11 +765,11 @@ public actor LocalMiIOClient {
                 )
             } catch {
                 lastError = error
+                // Drop any unauthenticated or stale session before deciding whether to retry.
+                sessions.removeValue(forKey: did)
                 guard Self.isRetryable(error), attempt < maxRetries else {
                     throw error
                 }
-                // Clear cached session so the retry re-handshakes and refreshes stamp skew.
-                sessions.removeValue(forKey: did)
                 logger.notice("Retrying local miIO \(method, privacy: .public) for \(did, privacy: .public) after error: \(error.localizedDescription, privacy: .public)")
             }
         }
@@ -839,6 +838,9 @@ public actor LocalMiIOClient {
                 throw MiIOError.ambiguousActionOutcome
             }
             throw MiIOError.malformedPacket
+        }
+        if !isShutDown {
+            knownHardwareIdsByDid[did] = HardwareDeviceID(unknown: session.unknown, deviceId: session.deviceId32)
         }
         if let errObj = json["error"], case .object = errObj {
             let code = errObj["code"]?.intValue ?? -1
