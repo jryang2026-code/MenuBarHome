@@ -177,7 +177,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
             continuation?.yield(.doorbellRang(ring))
 
-        case .sourceStatusesChanged:
+        case .sourceStatusesChanged, .localNetworkPermissionChanged:
             break
 
         case .snapshotUpdated(let home):

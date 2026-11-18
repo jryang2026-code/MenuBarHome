@@ -235,6 +235,9 @@ extension HomeStore {
         case .sourceStatusesChanged(let statuses):
             if sourceStatuses != statuses { sourceStatuses = statuses }
 
+        case .localNetworkPermissionChanged:
+            break
+
         case .doorbellRang(let ring):
             handleDoorbellRing(ring)
 

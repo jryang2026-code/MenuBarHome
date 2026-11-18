@@ -247,6 +247,8 @@ public struct SynthesizedHome: Equatable, Sendable {
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Empty on backends without MIoT
     /// specs. Values travel with the snapshot so the drawer never queries the provider directly.
     public var deviceFacets: [String: [FacetControl]] = [:]
+    public var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
+    public var localNetworkBlockedFeatures: Set<LocalNetworkBlockedFeature> = []
 
     public init(
         rooms: [RoomArea] = [],

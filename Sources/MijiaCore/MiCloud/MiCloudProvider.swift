@@ -17,6 +17,7 @@ public actor MiCloudProvider: HomeProvider {
     private let topologyCache: MiTopologyCache?
     private let lanFailureThreshold: Int
     private let lanCooldownDuration: TimeInterval
+    private let broadcastSweepMinInterval: TimeInterval
     private let now: @Sendable () -> Date
     /// Poll interval while the panel is open; see `PollingPolicy` for the rest (#26).
     private let pollInterval: Duration
@@ -26,9 +27,31 @@ public actor MiCloudProvider: HomeProvider {
     private let cameraSessionReleaseDelay: Duration
     private let selectedHomeLoader: @Sendable () -> String?
 
+    struct LANEndpointBinding: Equatable, Sendable {
+        var cloudIP: String
+        var discoveredIP: String?
+        var token: String
+        var effectiveIP: String { (discoveredIP?.isEmpty == false) ? discoveredIP! : cloudIP }
+        var usedBroadcastRecovery: Bool { (discoveredIP?.isEmpty == false) ? discoveredIP != cloudIP : false }
+
+        mutating func reconcile(newCloudIP: String, newToken: String) -> Bool {
+            if newToken != token {
+                cloudIP = newCloudIP; discoveredIP = nil; token = newToken
+                return true
+            }
+            if newCloudIP == cloudIP { return false }
+            cloudIP = newCloudIP
+            if discoveredIP == newCloudIP { discoveredIP = nil; return false }
+            if !newCloudIP.isEmpty { discoveredIP = nil; return true }
+            return false
+        }
+    }
+
     private struct LANHealthState: Sendable {
         var consecutiveFailures: Int = 0
         var cooldownUntil: Date?
+        var lastRTTMs: Int?
+        var lastErrorWasLocalNetworkDenied: Bool = false
     }
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
@@ -46,7 +69,9 @@ public actor MiCloudProvider: HomeProvider {
     /// Teardown keeps that pair after the hub later looks offline.
     private var cameraBridgeBindings: [String: (did: String, subdid: String?)] = [:]
     private var lanHealthByDid: [String: LANHealthState] = [:]
-    private var knownLANEndpointsByDid: [String: (ip: String, token: String)] = [:]
+    private var lanBindingsByDid: [String: LANEndpointBinding] = [:]
+    private var lastBroadcastSweepAt: Date?
+    private var isLocalNetworkDenied = false
     private var sharedHomeDids: Set<String> = []
     private var doorbellBaselineTime: [String: Date] = [:]
     private var lastDoorbellTimestamp: [String: Date] = [:]
@@ -96,6 +121,7 @@ public actor MiCloudProvider: HomeProvider {
         topologyCache: MiTopologyCache? = nil,
         lanFailureThreshold: Int = 3,
         lanCooldownDuration: TimeInterval = 30,
+        broadcastSweepMinInterval: TimeInterval = 60,
         now: @escaping @Sendable () -> Date = { Date() },
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
         closedPollInterval: Duration = PollingPolicy.panelClosedInterval,
@@ -113,6 +139,7 @@ public actor MiCloudProvider: HomeProvider {
         self.topologyCache = topologyCache
         self.lanFailureThreshold = max(1, lanFailureThreshold)
         self.lanCooldownDuration = max(0, lanCooldownDuration)
+        self.broadcastSweepMinInterval = max(0, broadcastSweepMinInterval)
         self.now = now
         self.pollInterval = pollInterval
         self.closedPollInterval = closedPollInterval
@@ -195,6 +222,8 @@ public actor MiCloudProvider: HomeProvider {
         if !devices.isEmpty, lastReportedConnected, hasValuesForScope() {
             emitSnapshot(closesAwayGap: false)
         }
+        lastBroadcastSweepAt = nil
+        resetLocalNetworkDeniedOnRefresh()
         if (lastCloudError as? MiCloudError) != .http(429) {
             cloudRetryNotBefore = nil
         }
@@ -336,6 +365,7 @@ public actor MiCloudProvider: HomeProvider {
         if context.systemActive && !pollingContext.systemActive {
             pollRequested = true
             wakePollPending = true
+            lastBroadcastSweepAt = nil
         } else if !context.systemActive {
             wakePollPending = false
             lastWakePollAt = nil
@@ -515,13 +545,14 @@ public actor MiCloudProvider: HomeProvider {
                 topologyCache.remove(accountID: MiAccount(session: session).id)
                 lastSavedTopology = nil
             } else {
-                let unchanged = lastSavedTopology?.devices == devices
+                let persistedDevices = devicesWithEffectiveLANIPs()
+                let unchanged = lastSavedTopology?.devices == persistedDevices
                     && lastSavedTopology?.rooms == rooms
                     && lastSavedTopology?.groupMembersByGroup == groupMembersByGroup
                 if !unchanged {
                     let snapshot = CachedMiTopology(
                         savedAt: now(),
-                        devices: devices,
+                        devices: persistedDevices,
                         rooms: rooms,
                         groupMembersByGroup: groupMembersByGroup
                     )
@@ -812,6 +843,7 @@ public actor MiCloudProvider: HomeProvider {
             struct LANPollResult: Sendable {
                 let did: String
                 let values: [MiotPropKey: JSONValue]?
+                let rttMs: Int?
                 let keys: [MiotPropKey]
                 let error: (any Error)?
             }
@@ -821,9 +853,10 @@ public actor MiCloudProvider: HomeProvider {
                     group.addTask {
                         do {
                             let result = try await localClient.getProps(deviceKeys, endpoint: endpoint)
-                            return LANPollResult(did: did, values: result, keys: deviceKeys, error: nil)
+                            let rttMs = await localClient.lastRoundTripMs(for: did)
+                            return LANPollResult(did: did, values: result, rttMs: rttMs, keys: deviceKeys, error: nil)
                         } catch {
-                            return LANPollResult(did: did, values: nil, keys: deviceKeys, error: error)
+                            return LANPollResult(did: did, values: nil, rttMs: nil, keys: deviceKeys, error: error)
                         }
                     }
                 }
@@ -832,18 +865,19 @@ public actor MiCloudProvider: HomeProvider {
                 return out
             }
 
+            var failedOutcomes: [LANPollResult] = [], shouldSweep = false
             for outcome in lanResults {
                 if let err = outcome.error {
                     if err is CancellationError { throw CancellationError() }
                     recordLANFailure(did: outcome.did, error: err)
-                    cloudKeys.append(contentsOf: outcome.keys)
+                    failedOutcomes.append(outcome)
+                    if (err as? MiIOError) != .localNetworkDenied,
+                       (lanHealthByDid[outcome.did]?.consecutiveFailures ?? 0) >= lanFailureThreshold { shouldSweep = true }
                 } else if let resultValues = outcome.values {
                     let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
-                    if !resultValues.isEmpty || outcome.keys.isEmpty {
-                        recordLANSuccess(did: outcome.did)
-                        pollLanSucceededDids.insert(outcome.did)
-                        combined.merge(resultValues) { _, new in new }
-                    }
+                    recordLANSuccess(did: outcome.did, rttMs: outcome.rttMs)
+                    pollLanSucceededDids.insert(outcome.did)
+                    if !resultValues.isEmpty { combined.merge(resultValues) { _, new in new } }
                     // Even an all-nonzero reply completed the read attempt; keep its keys in
                     // completedKeys so failed cloud fallback still clears stale door-state claims.
                     lanAnsweredKeys.append(contentsOf: outcome.keys)
@@ -852,6 +886,39 @@ public actor MiCloudProvider: HomeProvider {
                     }
                 }
             }
+
+            var recoveredDids: Set<String> = []
+            if shouldSweep && canRunBroadcastSweep() {
+                lastBroadcastSweepAt = now()
+                let candidates = failedOutcomes.compactMap { outcome -> MiIODeviceCandidate? in
+                    guard (outcome.error as? MiIOError) != .localNetworkDenied else { return nil }
+                    let token = lanBindingsByDid[outcome.did]?.token ?? recordByDid[outcome.did]?.token ?? ""
+                    return MiIOPacket.validateToken(token) != nil ? MiIODeviceCandidate(did: outcome.did, token: token) : nil
+                }
+                if !candidates.isEmpty {
+                    do {
+                        let discovered = try await localClient.discoverEndpoints(for: candidates)
+                        if !discovered.isEmpty {
+                            applyBroadcastRecoveredEndpoints(discovered)
+                            for outcome in failedOutcomes where discovered[outcome.did] != nil {
+                                guard let record = recordByDid[outcome.did], let endpoint = lanEndpoint(for: record) else { continue }
+                                do {
+                                    let retryValues = try await localClient.getProps(outcome.keys, endpoint: endpoint)
+                                    recordLANSuccess(did: outcome.did, rttMs: await localClient.lastRoundTripMs(for: outcome.did))
+                                    pollLanSucceededDids.insert(outcome.did); recoveredDids.insert(outcome.did)
+                                    if !retryValues.isEmpty { combined.merge(retryValues) { _, new in new } }
+                                    lanAnsweredKeys.append(contentsOf: outcome.keys)
+                                    cloudKeys.append(contentsOf: outcome.keys.filter { retryValues[$0] == nil })
+                                } catch is CancellationError { throw CancellationError() }
+                                catch { recordLANFailure(did: outcome.did, error: error) }
+                            }
+                        }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch let error as MiIOError where error == .localNetworkDenied { updateLocalNetworkDenied(true) }
+                    catch {}
+                }
+            }
+            for outcome in failedOutcomes where !recoveredDids.contains(outcome.did) { cloudKeys.append(contentsOf: outcome.keys) }
         }
 
         if !cloudKeys.isEmpty {
@@ -902,24 +969,69 @@ public actor MiCloudProvider: HomeProvider {
 
     // MARK: - Hybrid LAN Eligibility & Cooldown
 
+    private func devicesWithEffectiveLANIPs() -> [MiDeviceRecord] {
+        devices.map { record in
+            guard let effective = lanBindingsByDid[record.miotDid]?.effectiveIP, !effective.isEmpty else { return record }
+            var copy = record; copy.localIp = effective; return copy
+        }
+    }
+
+    private func canRunBroadcastSweep() -> Bool {
+        lastBroadcastSweepAt.map { now().timeIntervalSince($0) >= broadcastSweepMinInterval } ?? true
+    }
+
+    private func applyBroadcastRecoveredEndpoints(_ discovered: [String: String]) {
+        for (did, newIP) in discovered where LocalMiIOClient.isPrivateRFC1918IPv4(newIP) {
+            if var binding = lanBindingsByDid[did] {
+                binding.discoveredIP = newIP; lanBindingsByDid[did] = binding
+            } else if let record = devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil }) ?? devices.first(where: { $0.miotDid == did }),
+                      let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines), !token.isEmpty {
+                lanBindingsByDid[did] = LANEndpointBinding(cloudIP: record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "", discoveredIP: newIP, token: token)
+            }
+            lanHealthByDid[did] = LANHealthState()
+        }
+        if let topologyCache, let session, !devices.isEmpty {
+            let persisted = devicesWithEffectiveLANIPs()
+            if lastSavedTopology?.devices != persisted || lastSavedTopology?.rooms != rooms || lastSavedTopology?.groupMembersByGroup != groupMembersByGroup {
+                let snapshot = CachedMiTopology(savedAt: now(), devices: persisted, rooms: rooms, groupMembersByGroup: groupMembersByGroup)
+                topologyCache.save(snapshot, for: session); lastSavedTopology = snapshot
+            }
+        }
+    }
+
+    private func updateLocalNetworkDenied(_ denied: Bool) {
+        guard isLocalNetworkDenied != denied else { return }
+        isLocalNetworkDenied = denied
+        continuation?.yield(.localNetworkPermissionChanged(denied ? [.xiaomiLAN] : []))
+    }
+
+    private func resetLocalNetworkDeniedOnRefresh() {
+        for (did, var state) in lanHealthByDid where state.lastErrorWasLocalNetworkDenied {
+            state.cooldownUntil = nil; state.lastErrorWasLocalNetworkDenied = false; lanHealthByDid[did] = state
+        }
+        updateLocalNetworkDenied(false)
+    }
+
     private func reconcileLANEndpoints(_ records: [MiDeviceRecord]) {
         sharedHomeDids = Set(rooms.lazy.filter(\.isSharedHome).flatMap(\.dids))
         for record in records where record.splitParentDid == nil {
             let did = record.miotDid
             let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if let prev = knownLANEndpointsByDid[did], (prev.ip != ip || prev.token != token) {
-                lanHealthByDid.removeValue(forKey: did)
+            guard !token.isEmpty else {
+                lanBindingsByDid.removeValue(forKey: did); lanHealthByDid.removeValue(forKey: did); continue
             }
-            if !ip.isEmpty && !token.isEmpty {
-                knownLANEndpointsByDid[did] = (ip: ip, token: token)
+            if var binding = lanBindingsByDid[did] {
+                if binding.reconcile(newCloudIP: ip, newToken: token) { lanHealthByDid.removeValue(forKey: did) }
+                lanBindingsByDid[did] = binding
             } else {
-                knownLANEndpointsByDid.removeValue(forKey: did)
+                lanBindingsByDid[did] = LANEndpointBinding(cloudIP: ip, discoveredIP: nil, token: token)
             }
         }
     }
 
     private func lanEndpoint(for record: MiDeviceRecord) -> MiIODeviceEndpoint? {
+        let binding = lanBindingsByDid[record.miotDid]
         guard localClient != nil,
               record.isOnline,
               !record.isShared,
@@ -927,9 +1039,9 @@ public actor MiCloudProvider: HomeProvider {
               !sharedHomeDids.contains(record.miotDid),
               record.splitParentDid == nil,
               !record.did.hasPrefix("group."),
-              let ip = record.localIp?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let ip = (binding?.effectiveIP ?? record.localIp)?.trimmingCharacters(in: .whitespacesAndNewlines),
               LocalMiIOClient.isPrivateRFC1918IPv4(ip),
-              let token = record.token?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let token = (binding?.token ?? record.token)?.trimmingCharacters(in: .whitespacesAndNewlines),
               MiIOPacket.validateToken(token) != nil else {
             return nil
         }
@@ -939,18 +1051,25 @@ public actor MiCloudProvider: HomeProvider {
         return MiIODeviceEndpoint(did: record.miotDid, ip: ip, token: token)
     }
 
-    private func recordLANSuccess(did: String) {
-        lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil)
+    private func recordLANSuccess(did: String, rttMs: Int? = nil) {
+        let quantized = rttMs.map(DeviceTransportDiagnostics.quantizeRTT) ?? lanHealthByDid[did]?.lastRTTMs
+        lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil, lastRTTMs: quantized, lastErrorWasLocalNetworkDenied: false)
+        lanSucceededDids.insert(did)
+        if isLocalNetworkDenied { updateLocalNetworkDenied(false) }
     }
 
     private func recordLANFailure(did: String, error: any Error) {
         var state = lanHealthByDid[did] ?? LANHealthState()
         state.consecutiveFailures += 1
+        let isDenied = (error as? MiIOError) == .localNetworkDenied
+        state.lastErrorWasLocalNetworkDenied = isDenied
+        if isDenied { updateLocalNetworkDenied(true) }
         if state.consecutiveFailures >= lanFailureThreshold {
             state.cooldownUntil = now().addingTimeInterval(lanCooldownDuration)
             logger.notice("LAN cooldown activated for \(did, privacy: .public) after \(state.consecutiveFailures, privacy: .public) failures: \(error.localizedDescription, privacy: .public)")
         }
         lanHealthByDid[did] = state
+        lanSucceededDids.remove(did)
     }
 
     // MARK: - MIoT Doorbell Event Bridging
@@ -1130,14 +1249,27 @@ public actor MiCloudProvider: HomeProvider {
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
+        home.localNetworkBlockedFeatures = isLocalNetworkDenied ? [.xiaomiLAN] : []
         DeviceSynthesizer.reconcileLightGroups(&home)
+        let currentNow = now()
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
+            let recordMiotDid = visibleDevices.first(where: { $0.did == home.devices[i].id })?.miotDid
+            let candidateDids = ([recordMiotDid].compactMap { $0 })
+                + home.devices[i].miotCommandDids
+                + [home.devices[i].id]
+            let primaryMiotDid = recordMiotDid ?? home.devices[i].miotCommandDids.first ?? home.devices[i].id
+            let health = lanHealthByDid[primaryMiotDid]
+            let route: DeviceTransportRoute = if health?.lastErrorWasLocalNetworkDenied == true { .localNetworkBlocked }
+                else if let cooldownUntil = health?.cooldownUntil, currentNow < cooldownUntil { .cooldown }
+                else if candidateDids.contains(where: { lanSucceededDids.contains($0) }) { .lan }
+                else { .cloud }
+            home.deviceTransportDiagnostics[home.devices[i].id] = DeviceTransportDiagnostics(
+                route: route, rttMs: route == .lan ? health?.lastRTTMs : nil,
+                consecutiveFailures: health?.consecutiveFailures ?? 0,
+                usedBroadcastRecovery: lanBindingsByDid[primaryMiotDid]?.usedBroadcastRecovery ?? false
+            )
             if cloudBackingOff {
-                let recordMiotDid = visibleDevices.first(where: { $0.did == home.devices[i].id })?.miotDid
-                let candidateDids = ([recordMiotDid].compactMap { $0 })
-                    + home.devices[i].miotCommandDids
-                    + [home.devices[i].id]
                 if !candidateDids.contains(where: { lanSucceededDids.contains($0) }) {
                     home.devices[i].telemetryStale = true
                 }
@@ -1238,7 +1370,8 @@ public actor MiCloudProvider: HomeProvider {
                 case .action(let call):
                     _ = try await localClient.callAction(call, endpoint: endpoint)
                 }
-                recordLANSuccess(did: record.miotDid)
+                let rttMs = await localClient.lastRoundTripMs(for: record.miotDid)
+                recordLANSuccess(did: record.miotDid, rttMs: rttMs)
                 executedViaLAN = true
             } catch MiCloudError.deviceError(let code, let message) {
                 if case .setLightEffect = command, code == Self.propertyUnsupportedCode {

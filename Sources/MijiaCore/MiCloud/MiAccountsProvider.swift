@@ -398,7 +398,7 @@ public actor MiAccountsProvider: HomeProvider {
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
             }
-        case .sourceStatusesChanged:
+        case .sourceStatusesChanged, .localNetworkPermissionChanged:
             break
         case .doorbellRang(let ring):
             continuation?.yield(.doorbellRang(ring))

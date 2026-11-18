@@ -42,6 +42,7 @@ public enum HomeProviderEvent: Sendable {
     /// Per-source states for a composite provider, emitted even when no snapshot is available
     /// (for example while both sources are reconnecting) so the panel footer cannot go stale (#111).
     case sourceStatusesChanged([HomeBackend: ConnectionStatus])
+    case localNetworkPermissionChanged(Set<LocalNetworkBlockedFeature>)
     /// The cloud rejected the session; the store persists it as the session's end (#181).
     case sessionExpired(MiSession)
     /// A Home Assistant doorbell was pressed (#308).
