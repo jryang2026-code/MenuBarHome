@@ -16,6 +16,10 @@ private struct ReduceTransparencyOverrideKey: EnvironmentKey {
     static let defaultValue: Bool? = nil
 }
 
+private struct PanelVisibleKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
 public extension EnvironmentValues {
     var reduceMotionOverride: Bool? {
         get { self[ReduceMotionOverrideKey.self] }
@@ -33,6 +37,16 @@ public extension EnvironmentValues {
 
     var effectiveReduceTransparency: Bool {
         reduceTransparencyOverride ?? accessibilityReduceTransparency
+    }
+
+    /// True while the control-center window is on screen.
+    ///
+    /// Defaults to `true` so standalone previews, unit views, and `SnapshotTests` render live
+    /// chrome; `MenuBarPanelController` flips it to `false` once `panel.orderOut(nil)` hides the
+    /// kept-alive hosting tree.
+    var isPanelVisible: Bool {
+        get { self[PanelVisibleKey.self] }
+        set { self[PanelVisibleKey.self] = newValue }
     }
 }
 
