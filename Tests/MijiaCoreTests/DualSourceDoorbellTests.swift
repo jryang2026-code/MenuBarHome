@@ -288,6 +288,234 @@ struct DualSourceDoorbellTests {
         #expect(rings.contains { $0.deviceId == "770099" }, "the unpaired Mi device keeps its own did")
     }
 
+    private static let baseDate = ISO8601DateFormatter().date(from: "2026-11-18T08:00:00Z")!
+
+    private static func timestamp(offsetSeconds: TimeInterval) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: baseDate.addingTimeInterval(offsetSeconds))
+    }
+
+    @Test("A delayed Mi report for an earlier press still matches history after a newer HA press")
+    func delayedMiReportMatchesHistoryAfterNewerPress() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        // HA reports two presses at t=0 and t=3 before an in-flight Mi poll returns t=0.4.
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 3))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 3.25))
+        )
+        await settleAfterRings(rig)
+
+        let rings = await rig.collector.rings
+        #expect(rings.count == 2, "two physical presses must prompt twice even when Mi's first report arrives after HA's second")
+        #expect(rings.allSatisfy { $0.deviceId == Self.haID })
+    }
+
+    @Test("A delayed HA report for an earlier press still matches history after a newer Mi press")
+    func delayedHAReportMatchesMiHistoryAfterNewerPress() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 3.25))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 3))
+        )
+        await settleAfterRings(rig)
+
+        let rings = await rig.collector.rings
+        #expect(rings.count == 2)
+        #expect(rings.allSatisfy { $0.deviceId == Self.haID })
+    }
+
+    @Test("A genuine second press within the window still rings after the first press was paired")
+    func genuineSecondPressWithinWindowStillRingsAfterFirstPressPaired() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        // Second press 1.5s later arrives on Mi first (e.g. HA missed or lagged), then HA.
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 1.5))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 1.6))
+        )
+        await settleAfterRings(rig)
+
+        let rings = await rig.collector.rings
+        #expect(rings.count == 2, "pairing press 1 must not swallow a genuine fast second press on the other source")
+    }
+
+    @Test("A fast double-press reported by both sources rings twice without leaking extras")
+    func fastDoublePressAcrossBothSourcesRingsTwice() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 1.5))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 1.8))
+        )
+        await settleAfterRings(rig)
+
+        #expect((await rig.collector.rings).count == 2)
+    }
+
+    @Test("A fast second press reported only by the other source is not swallowed once press 1 is paired")
+    func unmatchedSecondPressWithinWindowOnOtherSourceStillRings() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        // Press 1 pairs HA and Mi (consuming HA's entry).
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        // Press 2 occurs 1.5s later, within 2s of press 1, and only Mi reports it.
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 1.5))
+        )
+        await settleAfterRings(rig)
+
+        #expect((await rig.collector.rings).count == 2)
+    }
+
+    @Test("Per-source history is bounded: oldest presses evict while newer ones still match")
+    func historyIsBoundedByPerSourceLimit() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        let totalPresses = DualSourceHomeProvider.crossSourceDoorbellHistoryLimit + 2
+        for index in 0..<totalPresses {
+            await rig.haMock.sendDoorbellRing(
+                DoorbellRing(
+                    deviceId: Self.haID,
+                    entityId: Self.haRingEntity,
+                    firedAt: Self.timestamp(offsetSeconds: TimeInterval(index * 3))
+                )
+            )
+        }
+        await settleAfterRings(rig)
+
+        #expect((await rig.collector.rings).count == totalPresses)
+        let retainedCount = await rig.provider.doorbellPressHistoryCountForTesting(
+            cardID: Self.haID,
+            backend: .homeAssistant
+        )
+        #expect(retainedCount == DualSourceHomeProvider.crossSourceDoorbellHistoryLimit)
+
+        // Press 0 was evicted by the cap, so a delayed Mi report for press 0 is no longer suppressed;
+        // press 2 is still within the cap and must still match and suppress.
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(
+                deviceId: Self.did,
+                entityId: Self.miRingEntity,
+                firedAt: Self.timestamp(offsetSeconds: 2 * 3 + 0.4)
+            )
+        )
+        await settleAfterRings(rig)
+        #expect((await rig.collector.rings).count == totalPresses, "retained press still suppresses delayed Mi report")
+
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(
+                deviceId: Self.did,
+                entityId: Self.miRingEntity,
+                firedAt: Self.timestamp(offsetSeconds: 0.4)
+            )
+        )
+        await settleAfterRings(rig)
+        #expect((await rig.collector.rings).count == totalPresses + 1, "evicted oldest press is no longer in history")
+    }
+
+    @Test("Old unmatched presses expire after the retention window and stale delayed reports do not linger")
+    func historyExpiresOldUnmatchedPresses() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.haID, entityId: Self.haRingEntity, firedAt: Self.timestamp(offsetSeconds: 0))
+        )
+        await rig.haMock.sendDoorbellRing(
+            DoorbellRing(
+                deviceId: Self.haID,
+                entityId: Self.haRingEntity,
+                firedAt: Self.timestamp(offsetSeconds: DualSourceHomeProvider.crossSourceDoorbellHistoryRetention + 5)
+            )
+        )
+        await settleAfterRings(rig)
+
+        let haCount = await rig.provider.doorbellPressHistoryCountForTesting(
+            cardID: Self.haID,
+            backend: .homeAssistant
+        )
+        #expect(haCount == 1, "press at t=0 expired once a press past the retention horizon arrived")
+
+        // A severely delayed Mi report for t=0.4 falls past retention and must neither match nor linger.
+        await rig.miMock.sendDoorbellRing(
+            DoorbellRing(deviceId: Self.did, entityId: Self.miRingEntity, firedAt: Self.timestamp(offsetSeconds: 0.4))
+        )
+        await settleAfterRings(rig)
+
+        let miCount = await rig.provider.doorbellPressHistoryCountForTesting(
+            cardID: Self.haID,
+            backend: .xiaomiCloud
+        )
+        #expect(miCount == 0, "an already-expired delayed report is pruned instead of lingering")
+    }
+
+    @Test("Tracked card count is capped so history never grows unboundedly across cards")
+    func trackedCardCountIsBounded() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel(); Task { await rig.provider.shutdown() } }
+
+        let totalCards = DualSourceHomeProvider.crossSourceDoorbellCardLimit + 10
+        for index in 0..<totalCards {
+            await rig.miMock.sendDoorbellRing(
+                DoorbellRing(
+                    deviceId: "unpaired-\(index)",
+                    entityId: "miot-event:unpaired-\(index):6:1",
+                    firedAt: Self.timestamp(offsetSeconds: TimeInterval(index))
+                )
+            )
+        }
+        await settleAfterRings(rig)
+
+        let trackedCards = await rig.provider.doorbellTrackedCardCountForTesting
+        #expect(trackedCards == DualSourceHomeProvider.crossSourceDoorbellCardLimit)
+    }
+
     // MARK: - Store level (the popup itself)
 
     @MainActor
