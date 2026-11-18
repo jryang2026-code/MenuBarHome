@@ -262,7 +262,7 @@ public actor MiCloudProvider: HomeProvider {
                         }
                         try await poll(api, dids: nil)
                         polls += 1
-                        if !refreshedTopologyInPoll, polls % deviceRefreshEveryPolls == 0 {
+                        if !refreshedTopologyInPoll, isCloudAllowed, polls % deviceRefreshEveryPolls == 0 {
                             do {
                                 try await refreshDeviceList(api)
                                 clearCloudBackoff()
@@ -511,19 +511,24 @@ public actor MiCloudProvider: HomeProvider {
         devices = outcome.devices
         reconcileLANEndpoints(devices)
         try await refreshGroupMembers(api)
-        if let topologyCache, let session, !devices.isEmpty {
-            let unchanged = lastSavedTopology?.devices == devices
-                && lastSavedTopology?.rooms == rooms
-                && lastSavedTopology?.groupMembersByGroup == groupMembersByGroup
-            if !unchanged {
-                let snapshot = CachedMiTopology(
-                    savedAt: now(),
-                    devices: devices,
-                    rooms: rooms,
-                    groupMembersByGroup: groupMembersByGroup
-                )
-                topologyCache.save(snapshot, for: session)
-                lastSavedTopology = snapshot
+        if let topologyCache, let session {
+            if devices.isEmpty {
+                topologyCache.remove(accountID: MiAccount(session: session).id)
+                lastSavedTopology = nil
+            } else {
+                let unchanged = lastSavedTopology?.devices == devices
+                    && lastSavedTopology?.rooms == rooms
+                    && lastSavedTopology?.groupMembersByGroup == groupMembersByGroup
+                if !unchanged {
+                    let snapshot = CachedMiTopology(
+                        savedAt: now(),
+                        devices: devices,
+                        rooms: rooms,
+                        groupMembersByGroup: groupMembersByGroup
+                    )
+                    topologyCache.save(snapshot, for: session)
+                    lastSavedTopology = snapshot
+                }
             }
         }
         hasLiveTopologyRefresh = true
@@ -1192,6 +1197,25 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     // MARK: Commands
+
+    func mapsToAction(_ command: DeviceCommand) -> Bool {
+        let entityId = command.targetEntityId
+        guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
+              let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.did == did })
+                  ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.miotDid == did }),
+              let spec = specsByModel[record.model],
+              let write = try? MiotCommandMapper.map(command, spec: spec) else {
+            return !command.isIdempotentForAccountFallback
+        }
+        switch write {
+        case .action:
+            return true
+        case .setProps:
+            return false
+        }
+    }
 
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId

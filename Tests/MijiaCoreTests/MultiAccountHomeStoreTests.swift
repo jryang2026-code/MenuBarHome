@@ -283,17 +283,131 @@ struct MultiAccountHomeStoreTests {
 
         await provider.shutdown()
     }
+
+    @Test("Non-idempotent commands do not replay across accounts on ambiguous timeout or 5xx, but fail over on pre-transmit errors and 429")
+    func nonIdempotentCommandAccountFallbackSafety() async throws {
+        let sharedRecord = MiDeviceRecord(
+            did: "shared-speaker-plug",
+            name: "共享播报插座",
+            model: "cuco.plug.v3",
+            isOnline: true
+        )
+        var spec = try #require(MiotFixtures.specs["cuco.plug.v3"])
+        spec.services.append(
+            MiotService(
+                iid: 98,
+                type: "urn:miot-spec-v2:service:cooker:0000780B:cuco-v3:1",
+                properties: [],
+                actions: [
+                    MiotAction(iid: 1, type: "urn:miot-spec-v2:action:start-cook:00002806:cuco-v3:1", description: "Start Cook", inputProperties: [])
+                ]
+            )
+        )
+        spec.services.append(
+            MiotService(
+                iid: 99,
+                type: "urn:miot-spec-v2:service:intelligent-speaker:0000789B:cuco-v3:1",
+                properties: [
+                    MiotProperty(iid: 1, type: "urn:miot-spec-v2:property:text-content:000000FA:cuco-v3:1", format: "string", access: [])
+                ],
+                actions: [
+                    MiotAction(iid: 3, type: "urn:miot-spec-v2:action:play-text:00002841:cuco-v3:1", description: "Play Text", inputProperties: [1])
+                ]
+            )
+        )
+        let cnApi = FailoverStubMiCloudAPI(
+            devices: [sharedRecord],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["shared-speaker-plug"], homeId: "h-cn", homeName: "家A")],
+            values: [MiotFixtures.key("shared-speaker-plug", 2, 1): .bool(true)]
+        )
+        let deApi = FailoverStubMiCloudAPI(
+            devices: [sharedRecord],
+            rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared-speaker-plug"], homeId: "h-de", homeName: "家B")],
+            values: [MiotFixtures.key("shared-speaker-plug", 2, 1): .bool(true)]
+        )
+        let provider = MiAccountsProvider(
+            accounts: [Self.cn, Self.de],
+            apiFactory: { $0.region == "de" ? deApi : cnApi },
+            specSource: CustomModelSpecSource(specs: ["cuco.plug.v3": spec]),
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in
+            await events.snapshots.contains { $0.homes.count == 2 && $0.devices.count == 1 }
+        })
+
+        let ttsCommand = DeviceCommand.sendNotifyMessage(entityId: "miot-action:shared-speaker-plug:99:3", message: "你好")
+
+        await cnApi.setActionFailure(URLError(.timedOut))
+        do {
+            try await provider.execute(ttsCommand)
+            Issue.record("Expected URLError.timedOut to be thrown without replaying")
+        } catch let err as URLError {
+            #expect(err.code == .timedOut)
+        }
+        #expect(await cnApi.actionCalls.count == 1)
+        #expect(await deApi.actionCalls.isEmpty)
+
+        await cnApi.setActionFailure(MiCloudError.http(504))
+        await #expect(throws: MiCloudError.http(504)) {
+            try await provider.execute(ttsCommand)
+        }
+        #expect(await cnApi.actionCalls.count == 2)
+        #expect(await deApi.actionCalls.isEmpty)
+
+        await cnApi.setActionFailure(URLError(.notConnectedToInternet))
+        try await provider.execute(ttsCommand)
+        #expect(await cnApi.actionCalls.count == 3)
+        #expect(await deApi.actionCalls.count == 1)
+
+        await cnApi.setActionFailure(MiCloudError.http(429))
+        try await provider.execute(ttsCommand)
+        #expect(await cnApi.actionCalls.count == 4)
+        #expect(await deApi.actionCalls.count == 2)
+
+        await cnApi.setActionFailure(URLError(.timedOut))
+        do {
+            try await provider.execute(.setSwitch(entityId: "miot:shared-speaker-plug:98", isOn: true))
+            Issue.record("Expected action-mapped setSwitch to throw URLError.timedOut without replaying")
+        } catch let err as URLError {
+            #expect(err.code == .timedOut)
+        }
+        #expect(await cnApi.actionCalls.count == 5)
+        #expect(await deApi.actionCalls.count == 2)
+
+        await cnApi.setSetPropsURLError(URLError(.timedOut))
+        try await provider.execute(.setSwitch(entityId: "miot:shared-speaker-plug:2", isOn: false))
+        #expect(await cnApi.setPropsCalls.count == 1)
+        #expect(await deApi.setPropsCalls.count == 1)
+
+        await provider.shutdown()
+    }
+}
+
+private struct CustomModelSpecSource: MiotSpecSource {
+    let specs: [String: MiotDeviceSpec]
+    func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+        specs[model] ?? MiotFixtures.specs[model]
+    }
 }
 
 private actor FailoverStubMiCloudAPI: MiCloudAPI {
     var devices: [MiDeviceRecord]
     var rooms: [MiRoom]
     var values: [MiotPropKey: JSONValue]
-    private var getPropsFailure: MiCloudError?
-    private var setPropsFailure: MiCloudError?
+    private var getPropsFailure: (any Error)?
+    private var setPropsFailure: (any Error)?
+    private var actionFailure: (any Error)?
     private var getPropsHook: (@Sendable () async -> Void)?
     private(set) var getPropsCalls = 0
     private(set) var setPropsCalls: [[MiotPropWrite]] = []
+    private(set) var actionCalls: [MiotActionCall] = []
 
     init(devices: [MiDeviceRecord], rooms: [MiRoom], values: [MiotPropKey: JSONValue]) {
         self.devices = devices
@@ -303,6 +417,8 @@ private actor FailoverStubMiCloudAPI: MiCloudAPI {
 
     func setGetPropsFailure(_ failure: MiCloudError?) { getPropsFailure = failure }
     func setSetPropsFailure(_ failure: MiCloudError?) { setPropsFailure = failure }
+    func setSetPropsURLError(_ failure: URLError?) { setPropsFailure = failure }
+    func setActionFailure(_ failure: (any Error)?) { actionFailure = failure }
     func setGetPropsHook(_ hook: (@Sendable () async -> Void)?) { getPropsHook = hook }
 
     func deviceList() async throws -> [MiDeviceRecord] { devices }
@@ -318,5 +434,8 @@ private actor FailoverStubMiCloudAPI: MiCloudAPI {
         if let setPropsFailure { throw setPropsFailure }
         for w in writes { values[MiotPropKey(did: w.did, siid: w.siid, piid: w.piid)] = w.value }
     }
-    func action(_ call: MiotActionCall) async throws {}
+    func action(_ call: MiotActionCall) async throws {
+        actionCalls.append(call)
+        if let actionFailure { throw actionFailure }
+    }
 }

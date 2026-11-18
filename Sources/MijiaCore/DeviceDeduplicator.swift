@@ -270,12 +270,11 @@ public enum DeviceDeduplicator {
             if let pinned = pinnedBackends[canonicalID],
                let other = card.other,
                let pinnedCandidate = [card.winner, other].first(where: {
-                   $0.backend == pinned && ($0.device.isOnline || !card.winner.device.isOnline)
+                   let winnerFresh = card.winner.device.isOnline && !card.winner.device.telemetryStale
+                   let candidateFresh = $0.device.isOnline && !$0.device.telemetryStale
+                   return $0.backend == pinned && (candidateFresh || (!winnerFresh && ($0.device.isOnline || !card.winner.device.isOnline)))
                }),
                pinnedCandidate.backend != card.winner.backend {
-                // A pin wins whenever that source is online, or when both sources are offline so a
-                // user pin never stays stuck on an unwanted backend; an online source still takes over
-                // when the pinned source is offline (#111).
                 card.other = card.winner
                 card.winner = pinnedCandidate
             }

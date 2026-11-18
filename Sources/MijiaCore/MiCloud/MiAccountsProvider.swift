@@ -566,6 +566,26 @@ public actor MiAccountsProvider: HomeProvider {
 
     // MARK: Commands & Device Calls
 
+    private static func isPreTransmitURLError(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .notConnectedToInternet,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .cannotConnectToHost,
+             .dataNotAllowed,
+             .internationalRoamingOff,
+             .secureConnectionFailed,
+             .serverCertificateUntrusted,
+             .serverCertificateHasBadDate,
+             .serverCertificateNotYetValid,
+             .serverCertificateHasUnknownRoot,
+             .clientCertificateRejected:
+            return true
+        default:
+            return false
+        }
+    }
+
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
@@ -576,6 +596,12 @@ public actor MiAccountsProvider: HomeProvider {
         var lastFallbackError: (any Error)?
         for ownerId in owners {
             guard let child = childProvider(for: ownerId) else { continue }
+            let nonIdempotent: Bool
+            if !command.isIdempotentForAccountFallback {
+                nonIdempotent = true
+            } else {
+                nonIdempotent = await child.mapsToAction(command)
+            }
             do {
                 try await child.execute(command)
                 return
@@ -586,7 +612,10 @@ public actor MiAccountsProvider: HomeProvider {
                     lastFallbackError = MiCloudError.notLoggedIn
                 }
             } catch let cloudErr as MiCloudError {
-                if case .http = cloudErr {
+                if case .http(let status) = cloudErr {
+                    guard !nonIdempotent || (400..<500).contains(status) else {
+                        throw cloudErr
+                    }
                     if (lastFallbackError as? MiCloudError) != .sessionExpired {
                         lastFallbackError = cloudErr
                     }
@@ -594,6 +623,9 @@ public actor MiAccountsProvider: HomeProvider {
                 }
                 throw cloudErr
             } catch let urlErr as URLError {
+                guard !nonIdempotent || Self.isPreTransmitURLError(urlErr.code) else {
+                    throw urlErr
+                }
                 if (lastFallbackError as? MiCloudError) != .sessionExpired {
                     lastFallbackError = urlErr
                 }

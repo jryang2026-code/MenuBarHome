@@ -1705,6 +1705,19 @@ public enum DeviceCommand: Equatable, Sendable {
     /// Generic MIoT action from a 更多设置 button. Feeding actions carry their input values in
     /// spec order (#7); a no-argument action sends an empty list.
     case callMiotAction(entityId: String, arguments: [JSONValue])
+
+    var isIdempotentForAccountFallback: Bool {
+        switch self {
+        case .pressButton, .sendNotifyMessage, .vacuumAction, .callMiotAction, .activateScene:
+            return false
+        case .setLightPower, .setLightBrightness, .setLightColorTemp, .setLightEffect,
+             .setClimatePower, .setClimateMode, .setClimateTemperature, .setClimateFanMode, .setClimateSwingMode,
+             .setFanPower, .setFanPercentage, .setFanPresetMode, .setFanOscillating,
+             .setSwitch, .setSelectOption, .setNumberValue, .setHumidity,
+             .mediaSetVolume, .mediaSelectSource, .setMiotProperty:
+            return true
+        }
+    }
 }
 
 public enum VacuumAction: String, Equatable, Sendable {
