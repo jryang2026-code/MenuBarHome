@@ -449,10 +449,12 @@ public actor LGWebOSClient {
 
     var configForTesting: LGWebOSConfig { config }
     var hasActiveSessionForTesting: Bool { session != nil }
+    var hasConnectionLoopForTesting: Bool { loopTask != nil }
     var isConnectedForTesting: Bool { isConnected }
     var isShutDownForTesting: Bool { isShutDown }
     private(set) var createdSessionCountForTesting: Int = 0
     private(set) var invalidatedSessionCountForTesting: Int = 0
+    private(set) var stopCallCountForTesting: Int = 0
 
     func prepareSessionForTesting() {
         _ = replaceSession()
@@ -554,6 +556,7 @@ public actor LGWebOSClient {
     }
 
     public func stop() {
+        stopCallCountForTesting += 1
         loopTask?.cancel()
         loopTask = nil
         activeWebSocket?.cancel(with: .goingAway, reason: nil)
@@ -584,15 +587,31 @@ public actor LGWebOSClient {
         }
     }
 
-    /// Stops any active connection and discards the pinned TLS certificate without clearing
-    /// `config.clientKey` or reconnecting; the caller commits the Keychain clear first and
-    /// calls `updateConfig` only if persistence succeeded.
-    func resetTrust() throws {
-        guard !isShutDown else { return }
-        stop()
-        guard trustStore.reset(host: config.host) else {
+    func trustStoreSharesVault(_ vault: CredentialVault) -> Bool {
+        trustStore.sharesVault(vault)
+    }
+
+    /// Persists discarding the pinned TLS certificate (and, when `clearingPairingKeyInVault` shares
+    /// the trust store's `CredentialVault`, the pairing key in the same atomic commit) before
+    /// stopping any active connection. Any failure leaves the certificate pin, pairing key, and
+    /// live connection intact. Returns `true` when the pairing key was cleared atomically.
+    @discardableResult
+    func resetTrust(expectedHost: String? = nil, clearingPairingKeyInVault pairingVault: CredentialVault? = nil) throws -> Bool {
+        guard !isShutDown else {
             throw LGCertificateTrust.Failure.unavailable
         }
+        if let expectedHost, config.host != expectedHost {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        let clearsKeyAtomically = pairingVault.map { trustStore.sharesVault($0) } ?? false
+        let extraUpdates: [String: Data?] = clearsKeyAtomically
+            ? [LGWebOSConfig.clientKeyAccount: nil]
+            : [:]
+        guard trustStore.reset(host: config.host, additionalVaultUpdates: extraUpdates) else {
+            throw LGCertificateTrust.Failure.unavailable
+        }
+        stop()
+        return clearsKeyAtomically
     }
 
     // MARK: - Command Execution

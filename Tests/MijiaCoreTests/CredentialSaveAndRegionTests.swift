@@ -302,6 +302,173 @@ struct CredentialSaveResultTests {
         await client.shutdown()
     }
 
+    @Test("resetLGWebOSTrustAndPair refusal preserves the pinned TLS certificate, pairing key, and active client connection")
+    @MainActor
+    func lgResetTrustRefusalPreservesCertificateKeyAndConnection() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
+        #expect(store.updateLGWebOSConfig(initial))
+        let client = try #require(store.lgWebOSClient)
+
+        let originalCert = Data("original-lg-tv-certificate".utf8)
+        let replacementCert = Data("replacement-lg-tv-certificate".utf8)
+        let trust = LGCertificateTrust(vault: vault)
+        #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
+
+        let loopDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await !client.hasConnectionLoopForTesting, ContinuousClock.now < loopDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        await client.simulateRegisteredForTesting(clientKey: "saved-key")
+        let baselineStops = await client.stopCallCountForTesting
+        #expect(await client.hasConnectionLoopForTesting)
+        #expect(await client.isConnectedForTesting)
+
+        // When Keychain writes are refused, neither the certificate pin nor the pairing key may be cleared,
+        // and the active client connection must remain intact.
+        storage.writeSucceeds = false
+        store.dismissToast()
+        let resetResult = await store.resetLGWebOSTrustAndPair()?.value
+
+        #expect(resetResult == false)
+        #expect(store.lgConfig.clientKey == "saved-key")
+        #expect(LGWebOSConfig.load(from: defaults, vault: vault).clientKey == "saved-key")
+        #expect(await client.configForTesting.clientKey == "saved-key")
+        #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"),
+                "failed trust reset must keep the original pinned certificate")
+        #expect(!trust.accepts(certificate: replacementCert, host: "192.0.2.10"),
+                "failed trust reset must continue rejecting an untrusted replacement certificate")
+        #expect(await client.hasConnectionLoopForTesting,
+                "failed trust reset must keep the connection loop running")
+        #expect(await client.stopCallCountForTesting == baselineStops,
+                "failed trust reset must not stop or tear down the live client")
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        #expect(!notice.message.contains("旧电视身份已清除"))
+        #expect(!notice.message.contains("Saved TV identity cleared"))
+
+        // Once Keychain writes work again, retrying clears both the pairing key and the certificate pin.
+        storage.writeSucceeds = true
+        store.dismissToast()
+        let retryResult = await store.resetLGWebOSTrustAndPair()?.value
+        #expect(retryResult == true)
+        #expect(store.lgConfig.clientKey.isEmpty)
+        #expect(LGWebOSConfig.load(from: defaults, vault: vault).clientKey.isEmpty)
+        #expect(await client.configForTesting.clientKey.isEmpty)
+        #expect(trust.accepts(certificate: replacementCert, host: "192.0.2.10"),
+                "successful trust reset must allow trusting the new TV certificate")
+        await client.shutdown()
+    }
+
+    @Test("LGWebOSClient.resetTrust keeps the active session intact when clearing trust fails")
+    func lgClientResetTrustFailureDoesNotStopClient() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let trust = LGCertificateTrust(vault: vault)
+        let originalCert = Data("original-lg-cert".utf8)
+        let replacementCert = Data("replacement-lg-cert".utf8)
+        #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
+
+        let client = LGWebOSClient(
+            config: LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key"),
+            trustStore: trust,
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        await client.prepareSessionForTesting()
+        let baselineInvalidations = await client.invalidatedSessionCountForTesting
+        let baselineStops = await client.stopCallCountForTesting
+        #expect(await client.hasActiveSessionForTesting)
+
+        storage.writeSucceeds = false
+        await #expect(throws: LGCertificateTrust.Failure.self) {
+            try await client.resetTrust()
+        }
+        #expect(await client.hasActiveSessionForTesting, "resetTrust failure must not invalidate the live session")
+        #expect(await client.invalidatedSessionCountForTesting == baselineInvalidations)
+        #expect(await client.stopCallCountForTesting == baselineStops)
+        #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
+        #expect(!trust.accepts(certificate: replacementCert, host: "192.0.2.10"))
+        await client.shutdown()
+    }
+
+    @Test("resetLGWebOSTrustAndPair never splits certificate trust and pairing key when only one write succeeds")
+    @MainActor
+    func lgResetTrustPartialWriteNeverSplitsCertAndKey() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
+        #expect(store.updateLGWebOSConfig(initial))
+        let client = try #require(store.lgWebOSClient)
+
+        let originalCert = Data("original-lg-tv-certificate".utf8)
+        let replacementCert = Data("replacement-lg-tv-certificate".utf8)
+        let trust = LGCertificateTrust(vault: vault)
+        #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
+
+        let loopDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while await !client.hasConnectionLoopForTesting, ContinuousClock.now < loopDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let baselineStops = await client.stopCallCountForTesting
+
+        // Simulate a write sequence where a first Keychain write succeeds and a second fails.
+        // An atomic reset either commits both together (returning true) or fails cleanly keeping both.
+        let writesBeforeReset = storage.writes
+        storage.writeSucceeds = false
+        storage.writeSucceedsSequence = [true, false]
+        store.dismissToast()
+        let resetResult = await store.resetLGWebOSTrustAndPair()?.value
+
+        if resetResult == true {
+            #expect(storage.writes == writesBeforeReset + 1, "reset must clear cert pin and pairing key in a single atomic vault write")
+            #expect(storage.storedItems?.isEmpty == true, "both pairing key and certificate pin must be cleared together")
+            #expect(store.lgConfig.clientKey.isEmpty)
+            #expect(LGWebOSConfig.load(from: defaults, vault: vault).clientKey.isEmpty)
+            #expect(await client.configForTesting.clientKey.isEmpty)
+            storage.writeSucceedsSequence = []
+            storage.writeSucceeds = true
+            #expect(trust.accepts(certificate: replacementCert, host: "192.0.2.10"))
+            let notice = try #require(store.toastNotice)
+            #expect(!notice.isError)
+        } else {
+            #expect(store.lgConfig.clientKey == "saved-key")
+            #expect(LGWebOSConfig.load(from: defaults, vault: vault).clientKey == "saved-key")
+            #expect(await client.configForTesting.clientKey == "saved-key")
+            #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
+            #expect(!trust.accepts(certificate: replacementCert, host: "192.0.2.10"))
+            #expect(await client.hasConnectionLoopForTesting)
+            #expect(await client.stopCallCountForTesting == baselineStops)
+            let notice = try #require(store.toastNotice)
+            #expect(notice.isError)
+        }
+        await client.shutdown()
+    }
+
     @Test("AssistantConfig.save reports a refused Keychain write and leaves the saved endpoint alone")
     func assistantConfigSaveReportsFailure() throws {
         let storage = MemoryVaultStorage()

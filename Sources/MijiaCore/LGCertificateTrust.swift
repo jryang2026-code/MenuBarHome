@@ -76,15 +76,43 @@ final class LGCertificateTrust: @unchecked Sendable {
         return failures[Self.normalizedHost(host)]
     }
 
+    private var activeVault: CredentialVault? {
+        if let vault { return vault }
+        if defaults == nil { return .shared }
+        return nil
+    }
+
+    func sharesVault(_ candidate: CredentialVault?) -> Bool {
+        guard let candidate, let activeVault else { return false }
+        return activeVault === candidate
+    }
+
     /// Only a user-confirmed re-pair may discard the old identity.
+    /// When `additionalVaultUpdates` is non-empty and this store is backed by a `CredentialVault`,
+    /// all updates and the certificate deletion commit in one atomic `CredentialVault.setAll` write.
     @discardableResult
-    func reset(host: String) -> Bool {
+    func reset(host: String, additionalVaultUpdates: [String: Data?] = [:]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
         let host = Self.normalizedHost(host)
         let account = Self.account(for: host)
         do {
-            guard save("", account: account), try load(account) == nil else { return false }
+            if let activeVault, !additionalVaultUpdates.isEmpty {
+                var updates = additionalVaultUpdates
+                // Use `updateValue` rather than `updates[account] = nil` so the `[String: Data?]`
+                // dictionary keeps the `(account, nil)` deletion entry instead of dropping the key.
+                updates.updateValue(nil, forKey: account)
+                guard activeVault.setAll(updates), try load(account) == nil else {
+                    failures[host] = .unavailable
+                    return false
+                }
+                failures.removeValue(forKey: host)
+                return true
+            }
+            guard save("", account: account), try load(account) == nil else {
+                failures[host] = .unavailable
+                return false
+            }
             failures.removeValue(forKey: host)
             return true
         } catch {
