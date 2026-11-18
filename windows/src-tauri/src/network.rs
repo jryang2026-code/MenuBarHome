@@ -381,11 +381,7 @@ pub(crate) fn is_local_network_host(host: &str) -> bool {
         let first = ip.segments()[0];
         return ip.is_loopback() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80;
     }
-    if host == "localhost" || LOCAL_HOST_SUFFIXES.iter().any(|suffix| host.ends_with(suffix)) {
-        return true;
-    }
-    let two_letter_tld = host.len() == 2 && host.bytes().all(|byte| byte.is_ascii_lowercase());
-    !host.contains('.') && !host.starts_with("xn--") && host.is_ascii() && !two_letter_tld
+    host == "localhost" || LOCAL_HOST_SUFFIXES.iter().any(|suffix| host.ends_with(suffix))
 }
 
 fn origin_is_local_network(origin: &str) -> bool {

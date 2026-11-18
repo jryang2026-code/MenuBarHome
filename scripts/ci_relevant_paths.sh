@@ -155,8 +155,8 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             macos=true
             ;;
-        # Shared golden corpora pin both the Swift and TypeScript implementations.
-        Tests/Fixtures/*)
+        # Shared capability manifest and golden corpora pin both Swift and TypeScript implementations.
+        Shared/*|Tests/Fixtures/*)
             code=true
             macos=true
             windows=true

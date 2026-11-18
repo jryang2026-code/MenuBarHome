@@ -26,6 +26,10 @@ _Avoid_: Server type（服务器类型）、Mode（模式）
 `Sources/MijiaCore/HomeBackendDescriptor.swift` 为每个 `HomeBackend` 枚举值建立的集中描述表条目（`HomeBackend.descriptor`，含显示名、是否已配置、主/全量连接源标识、provider 工厂）与唯一生效后端计算（`HomeBackendDescriptor.activeBackends` / `HomeStore.activeBackends`，ADR-0020）；由穷尽 `switch` 承载，不是运行时插件扩展点。
 _Avoid_: Plugin（插件）、Registry（注册表）
 
+**CapabilityManifest（内置能力清单）**：
+`Shared/capability-manifest.json` 声明连接（`ConnectionCapabilityID`）、功能（`FeatureID`）、设备类型（`DeviceCategoryID`）稳定 ID、种类、硬依赖、新装默认、启动策略、平台可用性与 `docs/capabilities.json` 映射的纯数据契约（ADR-0023），由双端封闭枚举/字面量联合穷尽解析，不含持久状态、凭据秘密或设备危险等级。
+_Avoid_: Plugin manifest（插件清单）、Dynamic registry（动态注册表）
+
 **RaycastSnapshot（伴生快照）**：
 写到 `~/Library/Application Support/MenuBarMijia/raycast-snapshot.json`（`0600`）的只读状态与 `lastCommandFeedback`，供 `raycast/`、`scripts/mijia` 与 `scripts/mijia-mcp` 检索使用，隔离真实凭据，受 `currentSchemaVersion` 契约保护。
 _Avoid_: 缓存文件、数据库

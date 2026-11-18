@@ -1175,7 +1175,11 @@ export async function refreshDualSourceDevices(
       fetchHA: async (): Promise<DualSourceInputSnapshot> => {
         const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
         haRawSnapshot = res.rawSnapshot;
-        return { home: res.home, identities: res.identities };
+        return {
+          home: res.home,
+          identity: homeAssistantIdentity(endpoint, token),
+          identities: res.identities,
+        };
       },
       fetchMi: async (): Promise<DualSourceInputSnapshot> => {
         const { merged, children } = await refreshMiAccountsConcurrently({

@@ -156,4 +156,38 @@ struct MacOSUIDedupeAndPolishTests {
         #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: curtain) == false)
         #expect(ClassicDeviceCardView.showsAllOffMenuOption(for: generic) == false)
     }
+
+    @Test("LGWebOSSettingsSection scan caller preserves rejected-host explanation toast when no TV is found")
+    func lgScanCallerPreservesRejectedHostExplanation() async throws {
+        let suite = "test.lg.settings.scan.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        var hostDraft = "8.8.8.8"
+        LGWebOSSettingsSection.handleDiscoveryResult([], hostHint: hostDraft, store: store) {
+            hostDraft = $0
+        }
+        #expect(hostDraft == "8.8.8.8")
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == LGWebOSClient.discoveryFailureMessage(hostHint: "8.8.8.8"))
+        #expect(store.toastNotice?.message.contains("8.8.8.8") == true)
+
+        LGWebOSSettingsSection.handleDiscoveryResult([], hostHint: "192.168.1.50", store: store) {
+            hostDraft = $0
+        }
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == LGWebOSClient.discoveryFailureMessage(hostHint: "192.168.1.50"))
+        #expect(store.toastNotice?.message.contains("192.168.1.50") == false)
+
+        let tv = LGWebOSDiscoveredTV(host: "192.168.1.55", friendlyName: "LG C2 电视")
+        LGWebOSSettingsSection.handleDiscoveryResult([tv], hostHint: "8.8.8.8", store: store) {
+            hostDraft = $0
+        }
+        #expect(hostDraft == "192.168.1.55")
+        #expect(store.toastNotice?.isError == false)
+        #expect(store.toastNotice?.message.contains("192.168.1.55") == true)
+    }
 }

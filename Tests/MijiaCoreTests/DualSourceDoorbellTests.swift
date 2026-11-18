@@ -89,23 +89,32 @@ struct DualSourceDoorbellTests {
         private(set) var snapshotCount = 0
         private(set) var lastDeviceCount = 0
         private(set) var rings: [DoorbellRing] = []
+        private(set) var latestHome: SynthesizedHome?
 
         func append(_ event: HomeProviderEvent) {
             switch event {
             case .snapshotUpdated(let home):
                 snapshotCount += 1
                 lastDeviceCount = home.devices.count
+                latestHome = home
             case .doorbellRang(let ring):
                 rings.append(ring)
             case .statusChanged, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged:
                 break
             }
         }
+
+        func hasBothMarkers(ha: String, mi: String) -> Bool {
+            guard let home = latestHome else { return false }
+            return home.scenes.contains { $0.id == ha } && home.homes.contains { $0.id == mi }
+        }
     }
 
     private struct DualRig {
         let haMock: MockHomeProvider
         let miMock: MockHomeProvider
+        let haBaseHome: SynthesizedHome
+        let miBaseHome: SynthesizedHome
         let provider: DualSourceHomeProvider
         let collector: DoorbellEventCollector
         let pump: Task<Void, Never>
@@ -116,12 +125,10 @@ struct DualSourceDoorbellTests {
         miDevices: [SmartDevice]? = nil,
         expectedDeviceCount: Int = 1
     ) async -> DualRig {
-        let haMock = MockHomeProvider(
-            snapshot: haDevices.map { home($0, identityID: Self.haID) } ?? haHome
-        )
-        let miMock = MockHomeProvider(
-            snapshot: miDevices.map { home($0, identityID: Self.did) } ?? miHome
-        )
+        let haBase = haDevices.map { home($0, identityID: Self.haID) } ?? haHome
+        let miBase = miDevices.map { home($0, identityID: Self.did) } ?? miHome
+        let haMock = MockHomeProvider(snapshot: haBase)
+        let miMock = MockHomeProvider(snapshot: miBase)
         let provider = DualSourceHomeProvider(homeAssistant: haMock, xiaomiCloud: miMock)
         let collector = DoorbellEventCollector()
         let pump = Task {
@@ -129,9 +136,19 @@ struct DualSourceDoorbellTests {
                 await collector.append(event)
             }
         }
+        let rig = DualRig(
+            haMock: haMock,
+            miMock: miMock,
+            haBaseHome: haBase,
+            miBaseHome: miBase,
+            provider: provider,
+            collector: collector,
+            pump: pump
+        )
+        await settleAfterRings(rig)
         let settled = await pollUntil { await collector.lastDeviceCount == expectedDeviceCount }
         #expect(settled, "dual provider never published the merged card")
-        return DualRig(haMock: haMock, miMock: miMock, provider: provider, collector: collector, pump: pump)
+        return rig
     }
 
     /// The deadline is the only bound: no fixed yield counts, no product timers.
@@ -147,21 +164,31 @@ struct DualSourceDoorbellTests {
         return await condition()
     }
 
-    /// Both mocks re-deliver their snapshot after the rings. Each source's event stream is FIFO,
-    /// so once both markers have passed through the provider, both rings were already handled
-    /// and the collected rings are final.
+    /// Both mocks re-deliver their snapshot with distinct marker content after the rings.
+    /// Each source's event stream is FIFO, so once both markers have passed through the
+    /// provider and merged into the collector's latest snapshot, both rings were already
+    /// handled and the collected rings are final.
     private func settleAfterRings(_ rig: DualRig) async {
-        let baseline = await rig.collector.snapshotCount
-        await rig.haMock.updateSnapshot(
-            home([camera(id: Self.haID, entity: "switch.door_cam_power")], identityID: Self.haID)
-        )
-        await rig.miMock.updateSnapshot(
-            home(
-                [camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")],
-                identityID: Self.did
-            )
-        )
-        let settled = await pollUntil { await rig.collector.snapshotCount >= baseline + 2 }
+        let token = UUID().uuidString
+        let haMarker = "ha-marker-\(token)"
+        let miMarker = "mi-marker-\(token)"
+
+        var haWithMarker = rig.haBaseHome
+        haWithMarker.scenes = [
+            HomeScene(id: haMarker, name: "marker", entityId: "scene.\(haMarker)")
+        ]
+
+        var miWithMarker = rig.miBaseHome
+        miWithMarker.homes = [
+            HomeOption(id: miMarker, name: "marker", deviceCount: 0)
+        ]
+
+        await rig.haMock.updateSnapshot(haWithMarker)
+        await rig.miMock.updateSnapshot(miWithMarker)
+
+        let settled = await pollUntil {
+            await rig.collector.hasBothMarkers(ha: haMarker, mi: miMarker)
+        }
         #expect(settled, "snapshot markers never reached the collector")
     }
 
@@ -530,7 +557,12 @@ struct DualSourceDoorbellTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
-        await waitUntil { store.devices.count == 1 && store.devices.first?.isOnline == true }
+        await waitUntil {
+            store.devices.count == 1 &&
+            store.devices.first?.id == Self.haID &&
+            store.deviceBackends[Self.haID] == .xiaomiCloud &&
+            store.devices.first?.isOnline == true
+        }
         store.doorbellAutoPopup = true
         store.doorbellChime = true
         let popups = PopupLog()
@@ -544,10 +576,20 @@ struct DualSourceDoorbellTests {
         )
         await waitUntil { store.recentDoorbellRings.count == 1 && popups.items.count == 1 }
 
-        let generationBeforeMarkers = store.snapshotGeneration
-        await haMock.updateSnapshot(haHome)
-        await miMock.updateSnapshot(miHome)
-        await waitUntil { store.snapshotGeneration >= generationBeforeMarkers + 2 }
+        let token = UUID().uuidString
+        let haMarker = "ha-marker-\(token)"
+        let miMarker = "mi-marker-\(token)"
+        var haWithMarker = haHome
+        haWithMarker.scenes = [HomeScene(id: haMarker, name: "marker", entityId: "scene.\(haMarker)")]
+        var miWithMarker = miHome
+        miWithMarker.homes = [HomeOption(id: miMarker, name: "marker", deviceCount: 0)]
+
+        await haMock.updateSnapshot(haWithMarker)
+        await miMock.updateSnapshot(miWithMarker)
+        await waitUntil {
+            store.scenes.contains { $0.id == haMarker } &&
+            store.homes.contains { $0.id == miMarker }
+        }
 
         #expect(popups.items == [DoorbellResponse(cameraDeviceId: Self.haID, playsChime: true, dismissAfter: .seconds(60))])
         #expect(store.recentDoorbellRings.count == 1)

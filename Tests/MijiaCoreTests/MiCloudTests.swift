@@ -107,10 +107,10 @@ struct MiAccountLoginTests {
             let url = req.url!.absoluteString
             if url.hasPrefix("https://lp.example") {
                 if polls.increment() == 1 { throw URLError(.timedOut) }
-                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.example/sts?x=1"}"#)
+                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"https://sts.api.io.mi.com/sts?x=1"}"#)
             }
-            if url.hasPrefix("https://sts.example") {
-                return (200, ["Set-Cookie": "serviceToken=tok123; path=/; domain=.example"], "ok")
+            if url.hasPrefix("https://sts.api.io.mi.com") {
+                return (200, ["Set-Cookie": "serviceToken=tok123; path=/; domain=.mi.com"], "ok")
             }
             return (404, [:], "")
         }
@@ -179,6 +179,25 @@ struct MiAccountLoginTests {
                 _ = try await MiAccountLogin(transport: badTransport, redirectlessTransport: badTransport).waitForScan(ticket)
             }
             #expect(badTransport.requests.count == 2)
+        }
+
+        for untrustedInitial in [
+            "https://evil.example/steal",
+            "http://sts.api.io.mi.com/sts",
+            "https://user@sts.api.io.mi.com/sts",
+        ] {
+            let badInitialTransport = ScriptedTransport { req in
+                let url = req.url!.absoluteString
+                if url == "https://lp.example/poll" {
+                    return (200, [:], #"&&&START&&&{"userId":7,"ssecurity":"c3M=","cUserId":"c","passToken":"p","location":"\#(untrustedInitial)"}"#)
+                }
+                Issue.record("Unexpected request to untrusted initial location \(url)")
+                return (200, ["Set-Cookie": "serviceToken=leaked"], "ok")
+            }
+            await #expect(throws: MiLoginError.badResponse("非小米登录跳转地址")) {
+                _ = try await MiAccountLogin(transport: badInitialTransport, redirectlessTransport: badInitialTransport).waitForScan(ticket)
+            }
+            #expect(badInitialTransport.requests.count == 1)
         }
     }
 

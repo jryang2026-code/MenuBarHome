@@ -1141,6 +1141,121 @@ describe("B7: Home Assistant + Xiaomi Cloud dual-source parallel fusion, 3-tier 
       ["一路灯", "二路灯"],
     );
   });
+
+  it("prunes a removed Xiaomi account immediately via DualSourceCoordinator.removeXiaomiAccount without disturbing remaining Xiaomi accounts", async () => {
+    const acc1Id = "cn:100200300";
+    const acc2Id = "sg:550066007";
+    const coord = new DualSourceCoordinator(localStorage);
+
+    const haLamp1 = makeLightDevice({ id: "ha-lamp-1", name: "主灯1", roomId: "r1", roomName: "客厅", entityId: "light.main_1" });
+    const haLamp2 = makeLightDevice({ id: "ha-lamp-2", name: "主灯2", roomId: "r2", roomName: "书房", entityId: "light.study_2" });
+
+    const miLamp1 = {
+      ...makeLightDevice({ id: `${acc1Id}/11112222`, name: "主灯1", roomId: `${acc1Id}/mr1`, roomName: "客厅", entityId: "miot:11112222:2" }),
+      accountId: acc1Id,
+      accountLabel: "100***00 · 中国大陆",
+    };
+    const miOnly1 = {
+      ...makeLightDevice({ id: `${acc1Id}/33334444`, name: "纯米家1", roomId: `${acc1Id}/mr1`, roomName: "客厅", entityId: "miot:33334444:2" }),
+      accountId: acc1Id,
+      accountLabel: "100***00 · 中国大陆",
+    };
+    const miLamp2 = {
+      ...makeLightDevice({ id: `${acc2Id}/55556666`, name: "主灯2", roomId: `${acc2Id}/mr2`, roomName: "书房", entityId: "miot:55556666:2" }),
+      accountId: acc2Id,
+      accountLabel: "550***07 · 新加坡",
+    };
+
+    const id1 = makeDeviceSourceIdentity({ dids: ["11112222"], model: LIGHT_MODEL, name: "主灯1", roomName: "客厅", kindTag: "light" });
+    const idOnly1 = makeDeviceSourceIdentity({ dids: ["33334444"], model: LIGHT_MODEL, name: "纯米家1", roomName: "客厅", kindTag: "light" });
+    const id2 = makeDeviceSourceIdentity({ dids: ["55556666"], model: LIGHT_MODEL, name: "主灯2", roomName: "书房", kindTag: "light" });
+
+    const outcome = await coord.refreshParallel({
+      fetchHA: async () => ({
+        home: { devices: [haLamp1, haLamp2], rooms: [{ id: "r1", name: "客厅", deviceCount: 1 }, { id: "r2", name: "书房", deviceCount: 1 }], environmentReadings: [], scenes: [] },
+        identities: { "ha-lamp-1": id1, "ha-lamp-2": id2 },
+      }),
+      fetchMi: async () => ({
+        home: {
+          devices: [miLamp1, miOnly1, miLamp2],
+          rooms: [{ id: `${acc1Id}/mr1`, name: "客厅", deviceCount: 2 }, { id: `${acc2Id}/mr2`, name: "书房", deviceCount: 1 }],
+          environmentReadings: [],
+          scenes: [],
+          deviceFacets: {
+            [`${acc1Id}/11112222`]: [{
+              id: "2.2",
+              kind: "slider",
+              name: "brightness",
+              title: "亮度",
+              serviceName: "light",
+              unit: "%",
+              scale: null,
+              value: 80,
+              options: [],
+              range: { min: 1, max: 100, step: 1 },
+              isWritable: true,
+              writesByDefault: true,
+              isHighValue: false,
+              target: { kind: "property", entityId: "miot:11112222:2", piid: 2 },
+            }],
+            [`${acc2Id}/55556666`]: [{
+              id: "2.2",
+              kind: "slider",
+              name: "brightness",
+              title: "亮度",
+              serviceName: "light",
+              unit: "%",
+              scale: null,
+              value: 60,
+              options: [],
+              range: { min: 1, max: 100, step: 1 },
+              isWritable: true,
+              writesByDefault: true,
+              isHighValue: false,
+              target: { kind: "property", entityId: "miot:55556666:2", piid: 2 },
+            }],
+          },
+        },
+        identities: {
+          [`${acc1Id}/11112222`]: id1,
+          [`${acc1Id}/33334444`]: idOnly1,
+          [`${acc2Id}/55556666`]: id2,
+        },
+        homes: [
+          { id: `${acc1Id}/h1`, name: "北京家", deviceCount: 2, accountId: acc1Id },
+          { id: `${acc2Id}/h2`, name: "SG Home", deviceCount: 1, accountId: acc2Id },
+        ],
+        accountStatuses: {
+          [acc1Id]: { kind: "connected" },
+          [acc2Id]: { kind: "connected" },
+        },
+      }),
+    });
+
+    coord.pinStorage.pin("ha-lamp-1", "xiaomiCloud");
+    coord.pinStorage.pin("ha-lamp-2", "xiaomiCloud");
+    assert.equal(coord.getLastMerged()?.routes["ha-lamp-1"]?.backend, "xiaomiCloud");
+    assert.equal(coord.getLastMerged()?.routes["ha-lamp-2"]?.backend, "xiaomiCloud");
+    assert.equal(outcome.merged.homes.length, 2);
+
+    const afterRemoveAcc1 = coord.removeXiaomiAccount(acc1Id);
+    assert.ok(afterRemoveAcc1);
+    assert.equal(afterRemoveAcc1.routes["ha-lamp-1"]?.backend, "homeAssistant");
+    assert.equal(afterRemoveAcc1.deviceBackends["ha-lamp-1"], "homeAssistant");
+    assert.equal(afterRemoveAcc1.routes["ha-lamp-1"]?.alternateDevice, null);
+    assert.equal(afterRemoveAcc1.home.deviceFacets?.["ha-lamp-1"], undefined);
+    assert.equal(afterRemoveAcc1.routes[`${acc1Id}/33334444`], undefined);
+    assert.equal(afterRemoveAcc1.routes["ha-lamp-2"]?.backend, "xiaomiCloud");
+    assert.equal(afterRemoveAcc1.deviceBackends["ha-lamp-2"], "xiaomiCloud");
+    assert.equal(afterRemoveAcc1.home.deviceFacets?.["ha-lamp-2"]?.[0]?.target?.entityId, "miot:55556666:2");
+    assert.deepEqual(afterRemoveAcc1.homes.map((h) => h.id), [`${acc2Id}/h2`]);
+    assert.deepEqual(Object.keys(afterRemoveAcc1.accountStatuses), [acc2Id]);
+
+    const afterRemoveAcc2 = coord.removeXiaomiAccount(acc2Id);
+    assert.ok(afterRemoveAcc2);
+    assert.equal(afterRemoveAcc2.routes["ha-lamp-2"]?.backend, "homeAssistant");
+    assert.equal(afterRemoveAcc2.activeBackends.has("xiaomiCloud"), false);
+  });
 });
 
 describe("B9: Multi-account unsupported device scanner & zero-leak Markdown diagnostics exporter (ADR-0015)", () => {
