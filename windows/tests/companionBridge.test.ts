@@ -21,6 +21,10 @@ import {
   type RaycastSnapshot,
 } from "../src/core/raycastSnapshot.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
+import {
+  isSwitchMarkedAsLight,
+  setSwitchLightMarkStorage,
+} from "../src/core/switchLightMarks.js";
 import { switchSource } from "../src/ui/sourceSwitch.js";
 import {
   clearUndoHoverPause,
@@ -93,6 +97,11 @@ async function flushAsync(): Promise<void> {
   await setImmediate();
   await setImmediate();
   await setImmediate();
+}
+
+/** Reads the armed confirmation's device without inheriting earlier null narrowing. */
+function pendingHighRiskDeviceId(app: MenuMijiaWindowsApp): string | null {
+  return app.pendingHighRisk?.deviceId ?? null;
 }
 
 function startDemoApp(extraSettings: Record<string, unknown> = {}): MenuMijiaWindowsApp {
@@ -448,6 +457,113 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
       false,
       "aliased switched light toggled off directly from panel",
     );
+  });
+
+  it("marks a wall switch as a light from the confirmation banner and the device menu (#104)", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true, allowDirectURLControl: true });
+    await flushAsync();
+    const backing = new Map<string, string>();
+    setSwitchLightMarkStorage({
+      length: 0,
+      clear: () => void backing.clear(),
+      getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+      key: () => null,
+      removeItem: (key: string) => void backing.delete(key),
+      setItem: (key: string, value: string) => void backing.set(key, value),
+    });
+    try {
+      const wallSwitch: SmartDevice = {
+        id: "sw_mark_left",
+        name: "左键",
+        roomId: "kitchen",
+        roomName: "厨房",
+        model: "lumi.switch.b1nacn02",
+        isOnline: true,
+        kind: {
+          kind: "plug",
+          switchEntityId: "switch.kitchen_mark_left",
+          isOn: false,
+          powerWatts: null,
+          childLockEntityId: null,
+          isChildLocked: false,
+        },
+      };
+      app.devices.push(wallSwitch);
+      app.render();
+      await flushAsync();
+      assert.equal(
+        getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id)?.capabilities.isHighRisk,
+        true,
+        "unmarked wall switch starts high risk in Raycast snapshot",
+      );
+
+      // 0) External URL confirmation never offers the mark-as-light pill.
+      await enqueueIncomingOpenUrl(
+        app,
+        `menumijia://power?device=${encodeURIComponent(wallSwitch.id)}&on=true`,
+      );
+      await flushAsync();
+      assert.equal(pendingHighRiskDeviceId(app), wallSwitch.id, "external URL arms high risk");
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null, "URL confirmation offers no mark pill");
+      app.clearPendingHighRisk();
+      app.render();
+
+      // 1) Unmarked: the manual primary-power toggle arms confirmation and offers the mark pill.
+      const toggleBtn = document.querySelector<HTMLElement>(`[data-toggle-device="${wallSwitch.id}"]`);
+      assert.ok(toggleBtn, "toggle button rendered for the wall switch");
+      toggleBtn.click();
+      await flushAsync();
+      assert.equal(app.pendingHighRisk?.deviceId, wallSwitch.id, "unmarked wall switch arms high risk");
+      const markPill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
+      assert.ok(markPill, "confirmation banner offers the mark-as-light pill");
+      assert.equal(markPill!.dataset.markSwitchLight, wallSwitch.id);
+
+      // 2) Tapping the pill marks the device, executes once, and refreshes the Raycast snapshot.
+      markPill!.click();
+      await flushAsync();
+      assert.equal(isSwitchMarkedAsLight(wallSwitch.id), true, "pill persisted the mark");
+      assert.equal(
+        (app.devices.find((d) => d.id === wallSwitch.id)?.kind as { isOn: boolean }).isOn,
+        true,
+        "marking also turned the light on",
+      );
+      assert.equal(app.pendingHighRisk, null);
+      const snapAfterMark = getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id);
+      assert.ok(snapAfterMark, "marked wall switch present in Raycast snapshot");
+      assert.equal(snapAfterMark!.capabilities.isHighRisk, false, "Raycast snapshot immediately clears high risk");
+
+      // 3) The marked switch toggles directly afterwards.
+      toggleBtn.click();
+      await flushAsync();
+      assert.equal(app.pendingHighRisk, null, "marked wall switch never arms again");
+      assert.equal(
+        (app.devices.find((d) => d.id === wallSwitch.id)?.kind as { isOn: boolean }).isOn,
+        false,
+        "marked wall switch toggled off directly",
+      );
+
+      // 4) The device menu offers only the undo entry, and unmarking restores both confirmation and Raycast high-risk metadata.
+      app.ctxMenu = { x: 20, y: 20, deviceId: wallSwitch.id };
+      app.render();
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+      const undoItem = document.querySelector<HTMLElement>("[data-unmark-switch-light]");
+      assert.ok(undoItem, "device menu offers the unmark entry for a marked switch");
+      assert.equal(undoItem!.dataset.unmarkSwitchLight, wallSwitch.id);
+      undoItem!.click();
+      await flushAsync();
+      assert.equal(isSwitchMarkedAsLight(wallSwitch.id), false);
+      assert.equal(
+        getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id)?.capabilities.isHighRisk,
+        true,
+        "unmarking restores high risk in Raycast snapshot",
+      );
+      toggleBtn.click();
+      await flushAsync();
+      // A helper read dodges the earlier `pendingHighRisk === null` narrowing.
+      assert.equal(pendingHighRiskDeviceId(app), wallSwitch.id, "unmarked switch asks again");
+    } finally {
+      setSwitchLightMarkStorage(undefined);
+    }
   });
 
   it("focuses a device without confirmation via menumijia://focus", async () => {

@@ -327,7 +327,7 @@ final class URLCommandHandler {
                 return
             }
             let previousToastId = store.toastNotice?.id
-            guard let task = store.togglePrimary(device) else {
+            guard let task = store.togglePrimary(device, offersSwitchLightMark: false) else {
                 let cancellationOrRejection = (store.toastNotice?.id != previousToastId)
                     ? store.toastNotice?.message
                     : nil

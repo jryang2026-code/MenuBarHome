@@ -241,6 +241,18 @@ public struct ClassicDeviceCardView: View {
                 Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
             }
 
+            if ManualControlPolicy.wallSwitchMayControlLight(device),
+               store.isSwitchMarkedAsLight(device.id) {
+                Button {
+                    store.unmarkSwitchAsLight(device.id)
+                } label: {
+                    Label(
+                        L10n.tr("撤销『这是灯』标记", "Undo “this is a light”"),
+                        systemImage: "lightbulb.slash"
+                    )
+                }
+            }
+
             Button {
                 LayoutUIState.shared.isEditingLayoutRequested = true
             } label: {
