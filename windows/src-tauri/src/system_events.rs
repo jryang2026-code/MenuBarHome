@@ -144,10 +144,10 @@ fn read_external_display_count() -> Option<u32> {
 
     let mut path_count: u32 = 0;
     let mut mode_count: u32 = 0;
-    if unsafe {
+    let size_status = unsafe {
         GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
-    } != 0
-    {
+    };
+    if size_status != 0 {
         return None;
     }
     // A live topology change between the size query and the read (plugging a monitor in) makes
@@ -219,7 +219,7 @@ unsafe extern "system" fn on_power_broadcast(
         PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PBT_APMSUSPEND, PBT_POWERSETTINGCHANGE,
     };
 
-    let Some(context) = unsafe { (context as *const PowerNotifyContext).as_ref() } else {
+    let Some(context) = (unsafe { (context as *const PowerNotifyContext).as_ref() }) else {
         return 0;
     };
     match kind {
