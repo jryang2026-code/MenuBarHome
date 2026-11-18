@@ -113,8 +113,9 @@ import sys
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
 
-bad = []
-for check in json.load(open(sys.argv[1], encoding="utf-8")).get("statusCheckRollup") or []:
+checks = json.load(open(sys.argv[1], encoding="utf-8")).get("statusCheckRollup") or []
+bad = [] if checks else ["  （还没有任何检查登记）"]
+for check in checks:
     if not isinstance(check, dict):
         continue
     name = check.get("name") or check.get("context") or "(未命名检查)"
@@ -193,9 +194,10 @@ echo "👀 盯 main CI run ${run_id}（每 ${interval_sec}s 查一次，最多 $
 start_epoch="$(monotonic_now)"
 while true; do
     if gh run view "$run_id" --json status,conclusion >"$tmp/run.json" 2>/dev/null; then
-        if [ "$(json_field "$tmp/run.json" 'doc.get("status") or ""')" = "COMPLETED" ]; then
+        # `gh run` reports lowercase values, unlike the uppercase statusCheckRollup.
+        if [ "$(json_field "$tmp/run.json" 'doc.get("status") or ""')" = "completed" ]; then
             run_conclusion="$(json_field "$tmp/run.json" 'doc.get("conclusion") or ""')"
-            if [ "$run_conclusion" = "SUCCESS" ]; then
+            if [ "$run_conclusion" = "success" ]; then
                 echo "✅ 合并提交 ${merge_commit} 的 main CI 已通过（run ${run_id}）。"
                 exit 0
             fi

@@ -96,7 +96,7 @@ FAILED_LOG="$workdir/failed.log"
 
 export FAKE_GH_LOG="$workdir/gh.log" FAKE_GH_MERGE_LOG="$workdir/merge.log"
 export FAKE_GH_MERGE_OID="$MERGE_OID" FAKE_GH_RUN_LIST_JSON="$RUN_LIST" FAKE_GH_RUN_JOBS_JSON="$RUN_JOBS_JSON"
-export FAKE_GH_LOG_FAILED_FILE="$FAILED_LOG" FAKE_GH_RUN_STATUS_JSON='{"status":"COMPLETED","conclusion":"SUCCESS"}'
+export FAKE_GH_LOG_FAILED_FILE="$FAILED_LOG" FAKE_GH_RUN_STATUS_JSON='{"status":"completed","conclusion":"success"}'
 export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "$GREEN" "")"
 
 failures=0
@@ -171,9 +171,16 @@ if run_pr 1 "CLOSED 状态拒绝合并" "$PR" "$HEAD_SHA"; then
     merged_never "CLOSED 状态时未调用 gh pr merge"
 fi
 
+# 3b) 还没有任何检查登记时拒绝合并
+export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "[]" "")"
+if run_pr 1 "没有检查时拒绝合并" "$PR" "$HEAD_SHA"; then
+    expect_in "没有检查时说明原因" "还没有任何检查登记"
+    merged_never "没有检查时未调用 gh pr merge"
+fi
+
 # 4) happy path：squash 合并带 --match-head-commit，盯到 main CI 成功
 export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "$GREEN" "")"
-export FAKE_GH_RUN_STATUS_JSON='{"status":"COMPLETED","conclusion":"SUCCESS"}'
+export FAKE_GH_RUN_STATUS_JSON='{"status":"completed","conclusion":"success"}'
 if run_pr 0 "happy path 合并并盯到 CI 成功" "$PR" "$HEAD_SHA"; then
     expect_in "happy path 用 --squash --match-head-commit 合并" "--squash --match-head-commit $HEAD_SHA" "$FAKE_GH_MERGE_LOG"
     expect_in "happy path 成功行带合并提交与 run id" "${MERGE_OID} 的 main CI 已通过（run ${RUN_ID}）"
@@ -188,7 +195,7 @@ fi
 
 # 6) main CI 失败：退出 1，提示停止合并，并调用 ci_errors.sh
 export FAKE_GH_PR_JSON="$(pr_json OPEN "$HEAD_SHA" "$GREEN" "")"
-export FAKE_GH_RUN_STATUS_JSON='{"status":"COMPLETED","conclusion":"FAILURE"}'
+export FAKE_GH_RUN_STATUS_JSON='{"status":"completed","conclusion":"failure"}'
 if run_pr 1 "main CI 失败退出 1" "$PR" "$HEAD_SHA"; then
     expect_in "失败行要求停止合并先修 main" "先修 main"
     expect_in "失败行提示 ci_errors.sh" "bash scripts/ci_errors.sh ${RUN_ID}"
@@ -197,7 +204,7 @@ if run_pr 1 "main CI 失败退出 1" "$PR" "$HEAD_SHA"; then
 fi
 
 # 7) 等待超时：退出 124，说明 PR 已合并而非合并失败
-export FAKE_GH_RUN_STATUS_JSON='{"status":"IN_PROGRESS","conclusion":null}'
+export FAKE_GH_RUN_STATUS_JSON='{"status":"in_progress","conclusion":null}'
 if run_pr 124 "盯 main CI 超时退出 124" --timeout 2 --interval 1 "$PR" "$HEAD_SHA"; then
     expect_in "超时行带 run id" "run ${RUN_ID} 还没结束"
     expect_in "超时说明 PR 已合并" "PR 已合并"
