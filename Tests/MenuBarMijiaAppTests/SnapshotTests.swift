@@ -1999,10 +1999,13 @@ struct SnapshotTests {
         let prompt = try #require(L10n.$overrideLanguage.withValue(.zhHans) {
             ManualControlPolicy.confirmation(
                 DeviceIntent(targetId: wall.id, operation: .power(true)),
-                devices: [wall]
+                devices: [wall],
+                markedLightIds: [],
+                offersMarkAsLight: true
             )
         })
         #expect(prompt.hint != nil)
+        #expect(prompt.markAsLight != nil)
 
         // The real dialog is NSAlert. Its nib asks IconServices for a file icon, and on
         // macos-26-intel that synchronous XPC does not return (three compare runs, same stack).

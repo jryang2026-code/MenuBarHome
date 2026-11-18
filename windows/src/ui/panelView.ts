@@ -3,7 +3,12 @@ import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
-import { bindActivityStackAfterRender, renderActivityStack, renderClassicUnifiedUpperStack } from "./activityStackView.js";
+import {
+  bindActivityStackAfterRender,
+  primaryPowerSwitchLightMarkDevice,
+  renderActivityStack,
+  renderClassicUnifiedUpperStack,
+} from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
@@ -16,7 +21,6 @@ import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 import { ManualControlPolicy } from "../core/assistant.js";
-import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
@@ -570,21 +574,13 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
   const undo = host.undoButtonVisible();
   if (!reply && !undo && !host.pendingCloudConsent) return "";
   const role = reply?.isError ? "alert" : "status";
-  const hint = reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
-  // #104: the armed two-tap confirmation and the suggestion-chip confirmation both offer the
-  // «this is a light» mark inside the prompt itself; tapping it marks the device and runs.
-  const armed = host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > Date.now()
-    ? host.pendingHighRisk
-    : null;
-  const armedDevice = armed ? host.devices.find((d) => d.id === armed!.deviceId) : undefined;
-  const bannerMarkId = reply?.markSwitchLight ?? null;
-  const bannerDevice = bannerMarkId !== null ? host.devices.find((d) => d.id === bannerMarkId) : undefined;
-  const markAsLightDevice =
-    (armedDevice && !isSwitchMarkedAsLight(armedDevice.id) && ManualControlPolicy.wallSwitchMayControlLight(armedDevice))
-      ? armedDevice
-      : (bannerDevice && !isSwitchMarkedAsLight(bannerDevice.id) && ManualControlPolicy.wallSwitchMayControlLight(bannerDevice))
-        ? bannerDevice
-        : null;
+  // #104: only the armed primary-power confirmation offers «这是灯，以后不再询问»; every other
+  // confirmation keeps the rename hint so no copy points to a button that is not rendered.
+  const markAsLightDevice = primaryPowerSwitchLightMarkDevice(host);
+  const hintText = markAsLightDevice
+    ? ManualControlPolicy.wallSwitchMarkPromptHint(markAsLightDevice)
+    : reply?.hint;
+  const hint = hintText ? `<p class="cc-feedback-hint">${host.escapeHtml(hintText)}</p>` : "";
   const markAsLightPill = markAsLightDevice
     ? `<button class="cc-inline-pill" data-mark-switch-light="${host.escapeHtml(markAsLightDevice.id)}">${t("这是灯，以后不再询问")}</button>`
     : "";

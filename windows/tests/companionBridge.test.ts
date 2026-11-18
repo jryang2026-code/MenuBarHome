@@ -491,9 +491,24 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
       app.devices.push(wallSwitch);
       app.render();
       await flushAsync();
+      assert.equal(
+        getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id)?.capabilities.isHighRisk,
+        true,
+        "unmarked wall switch starts high risk in Raycast snapshot",
+      );
 
-      // 1) Unmarked: the manual toggle arms the high-risk confirmation, and the banner offers the
-      //    «this is a light» pill right inside that prompt.
+      // 0) External URL confirmation never offers the mark-as-light pill.
+      await enqueueIncomingOpenUrl(
+        app,
+        `menumijia://power?device=${encodeURIComponent(wallSwitch.id)}&on=true`,
+      );
+      await flushAsync();
+      assert.equal(pendingHighRiskDeviceId(app), wallSwitch.id, "external URL arms high risk");
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null, "URL confirmation offers no mark pill");
+      app.clearPendingHighRisk();
+      app.render();
+
+      // 1) Unmarked: the manual primary-power toggle arms confirmation and offers the mark pill.
       const toggleBtn = document.querySelector<HTMLElement>(`[data-toggle-device="${wallSwitch.id}"]`);
       assert.ok(toggleBtn, "toggle button rendered for the wall switch");
       toggleBtn.click();
@@ -503,7 +518,7 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
       assert.ok(markPill, "confirmation banner offers the mark-as-light pill");
       assert.equal(markPill!.dataset.markSwitchLight, wallSwitch.id);
 
-      // 2) Tapping the pill marks the device and executes the toggle directly, no second tap.
+      // 2) Tapping the pill marks the device, executes once, and refreshes the Raycast snapshot.
       markPill!.click();
       await flushAsync();
       assert.equal(isSwitchMarkedAsLight(wallSwitch.id), true, "pill persisted the mark");
@@ -513,8 +528,11 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
         "marking also turned the light on",
       );
       assert.equal(app.pendingHighRisk, null);
+      const snapAfterMark = getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id);
+      assert.ok(snapAfterMark, "marked wall switch present in Raycast snapshot");
+      assert.equal(snapAfterMark!.capabilities.isHighRisk, false, "Raycast snapshot immediately clears high risk");
 
-      // 3) The marked switch toggles directly afterwards, and the snapshot stops calling it high risk.
+      // 3) The marked switch toggles directly afterwards.
       toggleBtn.click();
       await flushAsync();
       assert.equal(app.pendingHighRisk, null, "marked wall switch never arms again");
@@ -523,19 +541,22 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
         false,
         "marked wall switch toggled off directly",
       );
-      const snapItem = getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id);
-      assert.ok(snapItem, "marked wall switch present in Raycast snapshot");
-      assert.equal(snapItem!.capabilities.isHighRisk, false, "Raycast snapshot stops calling it high risk");
 
-      // 4) The device menu offers the undo entry, and unmarking restores the confirmation.
+      // 4) The device menu offers only the undo entry, and unmarking restores both confirmation and Raycast high-risk metadata.
       app.ctxMenu = { x: 20, y: 20, deviceId: wallSwitch.id };
       app.render();
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
       const undoItem = document.querySelector<HTMLElement>("[data-unmark-switch-light]");
       assert.ok(undoItem, "device menu offers the unmark entry for a marked switch");
       assert.equal(undoItem!.dataset.unmarkSwitchLight, wallSwitch.id);
       undoItem!.click();
       await flushAsync();
       assert.equal(isSwitchMarkedAsLight(wallSwitch.id), false);
+      assert.equal(
+        getLatestRaycastSnapshotForHost(app).devices.find((d) => d.id === wallSwitch.id)?.capabilities.isHighRisk,
+        true,
+        "unmarking restores high risk in Raycast snapshot",
+      );
       toggleBtn.click();
       await flushAsync();
       // A helper read dodges the earlier `pendingHighRisk === null` narrowing.

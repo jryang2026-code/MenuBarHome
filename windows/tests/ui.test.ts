@@ -16,8 +16,6 @@ import { cloudFixture } from "./cloudFixture.js";
 import { MiCloudClient, MiotSynthesizer, inferFallbackSpec, parseMiotDeviceSpec } from "../src/core/miCloudClient.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { isSwitchMarkedAsLight, unmarkSwitchAsLight } from "../src/core/switchLightMarks.js";
-import { ModelActionPolicy, withSuggestionDelay } from "../src/core/assistant.js";
-import { withAliases } from "../src/ui/panelPrefs.js";
 import type { CameraLiveController } from "../src/ui/cameraLive.js";
 import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
@@ -1543,7 +1541,9 @@ describe("Bare category opens (#274)", () => {
       const card = document.querySelector(".cc-feedback-hint")?.closest(".cc-feedback-card");
       assert.ok(card, "the rename hint is rendered");
       assert.match(card.textContent ?? "", /「打开左键」属于高风险设备，再点一次确认执行/);
-      assert.match(card.textContent ?? "", /这是灯，以后不再询问/);
+      assert.match(card.textContent ?? "", /加上「灯」/);
+      assert.doesNotMatch(card.textContent ?? "", /这是灯，以后不再询问/);
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null, "typed confirmation never offers the mark pill");
       assert.ok(card.querySelector("#btn-undo"), "the confirmation shares the card with the earlier undo");
       if (panelTheme === "classic") assert.equal(card.getAttribute("data-upper-card-id"), "undo:manual");
       assert.match(tile("wall.hall"), /已断电/, "the hint does not run the switch");
@@ -5451,10 +5451,14 @@ describe("Manual control parity with macOS (#143)", () => {
     },
   });
 
-  async function startWithDevices(devices: SmartDevice[]): Promise<MenuMijiaWindowsApp> {
+  async function startWithDevices(
+    devices: SmartDevice[],
+    options: { panelTheme?: "classic" | "fluent" } = {},
+  ): Promise<MenuMijiaWindowsApp> {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      ...(options.panelTheme ? { panelTheme: options.panelTheme } : {}),
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
@@ -5530,89 +5534,195 @@ describe("Manual control parity with macOS (#143)", () => {
     assert.equal(document.querySelector("[data-mark-switch-light]"), null, "a heater confirmation offers no mark pill");
   });
 
-  it("a typed command on a wall switch marks it as a light straight from the chip confirmation (#104)", async () => {
+  for (const panelTheme of ["fluent", "classic"] as const) {
+    it(`marks a wall switch from primary-power confirmation once and never on cancel (#104, ${panelTheme})`, async () => {
+      const wall: SmartDevice = {
+        ...plug(),
+        id: `wall.primary.${panelTheme}`,
+        name: "左键",
+        model: "lumi.switch.b1nacn02",
+      };
+      const studyLight: SmartDevice = {
+        ...lightWithFacets(),
+        id: "light.study",
+        name: "书房台灯",
+        kind: {
+          ...(lightWithFacets().kind as Extract<SmartDevice["kind"], { kind: "light" }>),
+          isOn: false,
+        },
+      };
+      try {
+        const app = await startWithDevices(
+          [studyLight, wall],
+          { panelTheme },
+        );
+        // Seed an undo card so Classic theme exercises the stacked banner priority too.
+        await command("打开书房台灯");
+        assert.ok(app.lastUndoAction);
+
+        // 1) Cancelling primary-power confirmation via Escape never writes the mark or leaves a
+        //    dangling button-prompt hint.
+        await click(`[data-toggle-device="${wall.id}"]`);
+        assert.equal(app.pendingHighRisk?.deviceId, wall.id);
+        assert.equal(
+          document.querySelector<HTMLElement>("[data-mark-switch-light]")?.dataset.markSwitchLight,
+          wall.id,
+          `${panelTheme} surfaces the mark pill on the top primary-power banner`,
+        );
+        document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        await setImmediate();
+        assert.equal(app.pendingHighRisk, null);
+        assert.equal(isSwitchMarkedAsLight(wall.id), false, "cancelling never persists the mark");
+        assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+        assert.doesNotMatch(
+          document.querySelector(".cc-feedback-hint")?.textContent ?? "",
+          /这是灯，以后不再询问/,
+          "dismissed banner never points at a removed mark button",
+        );
+
+        // 2) Detail/expanded card primary-power confirmation offers the same mark pill and runs
+        //    the underlying command at most once even if clicked twice.
+        app.deviceFacets = {
+          [wall.id]: [{
+            ...facetControl(wall.id),
+            id: "3.1",
+            name: "indicator-light",
+            title: "指示灯",
+            serviceName: "indicator-light",
+          }],
+        };
+        app.expandedDeviceId = wall.id;
+        app.render();
+
+        let primaryExecutions = 0;
+        const origExec = app.executeSingleCommand.bind(app);
+        app.executeSingleCommand = async (...args) => {
+          primaryExecutions += 1;
+          return origExec(...args);
+        };
+
+        await click(`[data-toggle-device="${wall.id}"]`);
+        const pill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
+        assert.ok(pill, `${panelTheme} detail primary-power confirmation offers the mark pill`);
+        pill!.click();
+        pill!.click();
+        await setImmediate();
+        await setImmediate();
+
+        assert.equal(isSwitchMarkedAsLight(wall.id), true, "mark persisted");
+        assert.equal(primaryExecutions, 1, "primary power executed once");
+        const afterOn = app.devices.find((d) => d.id === wall.id)?.kind;
+        assert.ok(afterOn?.kind === "plug" && afterOn.isOn);
+        assert.equal(app.pendingHighRisk, null);
+
+        // Subsequent off + on primary-power taps run directly without confirmation.
+        await click(`[data-toggle-device="${wall.id}"]`);
+        await click(`[data-toggle-device="${wall.id}"]`);
+        assert.equal(app.pendingHighRisk, null);
+        assert.equal(primaryExecutions, 3);
+      } finally {
+        unmarkSwitchAsLight(wall.id);
+      }
+    });
+  }
+
+  it("typed, delayed, context-menu, and auxiliary-switch flows never offer the mark pill (#104)", async () => {
     const wall: SmartDevice = {
       ...plug(),
-      id: "wall.typed",
+      id: "wall.non_primary",
       name: "左键",
-      model: "lumi.switch.b1nacn02",
+      model: "lumi.switch.b2nacn02",
     };
     try {
       const app = await startWithDevices([wall, heater()]);
+      app.deviceFacets = {
+        [wall.id]: [{
+          ...facetControl(wall.id),
+          id: "3.1",
+          title: "右键",
+          value: false,
+          target: { kind: "property", entityId: "miot:wall.non_primary:3", piid: 1 },
+        }],
+      };
+      app.expandedDeviceId = wall.id;
+      app.render();
 
+      // Context menu on an unmarked wall switch never offers a mark entry.
+      app.ctxMenu = { x: 16, y: 16, deviceId: wall.id };
+      app.render();
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+      assert.equal(document.querySelector("[data-unmark-switch-light]"), null);
+      app.ctxMenu = null;
+      app.render();
+
+      // Typed natural command keeps confirmation + rename hint, without a mark pill.
       await command("打开左键");
-      assert.equal(app.pendingHighRisk, null, "a typed confirmation waits on the chip, not a second tile tap");
-      assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
-      // #104: the chip confirmation offers the same mark entry, so the hint stays actionable.
-      const pill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
-      assert.ok(pill, "the typed confirmation banner offers the mark pill");
-      assert.equal(pill!.dataset.markSwitchLight, "wall.typed");
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+      assert.match(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /加上「灯」/);
+      assert.doesNotMatch(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
 
-      pill!.click();
+      // Delayed natural command keeps confirmation + rename hint, without a mark pill.
+      await command("10分钟后打开左键");
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+      assert.doesNotMatch(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
+
+      // Auxiliary switch facet arms high-risk without offering the mark pill.
+      await click(`[data-facet-toggle="${wall.id}|3.1"]`);
+      assert.equal(app.pendingHighRisk?.deviceId, wall.id);
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
+      assert.doesNotMatch(document.querySelector(".cc-feedback-hint")?.textContent ?? "", /这是灯，以后不再询问/);
+      app.clearPendingHighRisk();
+      app.render();
+
+      // Even after marking primary power as a light, the auxiliary switch facet still confirms.
+      await click(`[data-toggle-device="${wall.id}"]`);
+      element("[data-mark-switch-light]").click();
       await setImmediate();
       await setImmediate();
-      assert.equal(isSwitchMarkedAsLight("wall.typed"), true, "the pill persisted the mark");
-      assert.equal(
-        app.pendingSuggestions.filter((s) => s.id.startsWith("confirm:")).length,
-        0,
-        "marking consumed the confirmation chip",
-      );
-      const after = app.devices.find((device) => device.id === "wall.typed")?.kind;
-      assert.ok(after?.kind === "plug" && after.isOn, "marking also ran the confirmed switch");
-      assert.equal(app.pendingHighRisk, null);
+      assert.equal(isSwitchMarkedAsLight(wall.id), true);
+
+      await click(`[data-facet-toggle="${wall.id}|3.1"]`);
+      assert.equal(app.pendingHighRisk?.deviceId, wall.id, "auxiliary switch still requires confirmation");
+      assert.equal(document.querySelector("[data-mark-switch-light]"), null);
     } finally {
-      unmarkSwitchAsLight("wall.typed");
+      unmarkSwitchAsLight(wall.id);
     }
   });
 
-  it("marking a wall switch from a delayed chip confirmation keeps the delay (#104)", async () => {
-    const left: SmartDevice = {
+  it("evaluates primary-power mark and context-menu undo eligibility against aliased device names (#104)", async () => {
+    const wall: SmartDevice = {
       ...plug(),
-      id: "wall.delay_left",
-      name: "左键",
+      id: "wall.aliased",
+      name: "厨房灯",
       model: "lumi.switch.b1nacn02",
     };
-    const app = await startWithDevices([left]);
     try {
-      // The UI never arms a delayed bare candidate today (an ambiguous delayed command asks to
-      // restate instead, `naturalCommand.ts` bare skip), but the banner contract allows a delayed
-      // confirm chip, and the mark pill must answer it with the same scheduler a tap would.
-      const aliased = withAliases(app.layout, app.devices);
-      const base = ModelActionPolicy.chips(
-        [{ targetId: left.id, operation: { kind: "power", isOn: true } }],
-        null,
-        "confirm:local",
-        aliased,
-        app.scenes,
-        true,
-      )[0]!;
-      app.pendingSuggestions = [
-        withSuggestionDelay(base, { seconds: 600, label: "10分钟后", command: "打开左键" }),
-      ];
-      app.replyBanner = {
-        text: "「打开左键」属于高风险设备，再点一次确认执行",
-        source: "需要确认",
-        hint: "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
-        markSwitchLight: left.id,
-      };
+      const app = await startWithDevices([wall]);
+      app.layout.aliases[wall.id] = "玄关左键";
       app.render();
 
+      await click(`[data-toggle-device="${wall.id}"]`);
+      assert.equal(app.pendingHighRisk?.deviceId, wall.id, "non-light alias requires confirmation");
       const pill = document.querySelector<HTMLElement>("[data-mark-switch-light]");
-      assert.ok(pill, "the delayed chip confirmation offers the mark pill");
-      assert.equal(pill!.dataset.markSwitchLight, left.id);
-
+      assert.ok(pill, "non-light alias is eligible for the primary-power mark pill");
       pill!.click();
       await setImmediate();
       await setImmediate();
-      assert.equal(isSwitchMarkedAsLight(left.id), true, "the pill persisted the mark");
-      const after = app.devices.find((device) => device.id === left.id)?.kind;
-      assert.ok(after?.kind === "plug" && !after.isOn, "the delayed switch did not run now");
-      const scheduled = app.scheduledCommands;
-      assert.equal(scheduled.length, 1, "the delay survived marking");
-      assert.equal(scheduled[0]!.delaySeconds, 600, "ten minutes, not now");
-      assert.match(document.body.textContent ?? "", /已设定 10 分钟后执行/);
+      assert.equal(isSwitchMarkedAsLight(wall.id), true);
+
+      app.ctxMenu = { x: 20, y: 20, deviceId: wall.id };
+      app.render();
+      assert.ok(document.querySelector("[data-unmark-switch-light]"), "non-light alias exposes undo in context menu");
+
+      app.layout.aliases[wall.id] = "玄关吸顶灯";
+      app.render();
+      assert.equal(
+        document.querySelector("[data-unmark-switch-light]"),
+        null,
+        "light alias already counts as a light without needing the mark undo item",
+      );
     } finally {
-      unmarkSwitchAsLight(left.id);
+      unmarkSwitchAsLight(wall.id);
     }
   });
 

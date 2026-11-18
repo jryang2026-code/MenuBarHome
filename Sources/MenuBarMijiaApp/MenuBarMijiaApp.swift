@@ -44,10 +44,18 @@ enum ManualControlConfirmationPresenter {
     static func present(_ prompt: ManualControlConfirmation) -> Bool {
         NSApp.activate(ignoringOtherApps: true)
         let answer = makeAlert(prompt).runModal()
+        return applyModalResponse(answer, for: prompt, in: HomeStore.shared)
+    }
+
+    static func applyModalResponse(
+        _ answer: NSApplication.ModalResponse,
+        for prompt: ManualControlConfirmation,
+        in store: HomeStore
+    ) -> Bool {
         // #104: the third button both marks the wall switch as an ordinary light (persisted) and
         // executes the action in the same tap, so answering the dialog never costs the toggle.
         if answer == .alertThirdButtonReturn, let mark = prompt.markAsLight {
-            HomeStore.shared.markSwitchAsLight(mark.deviceId)
+            store.markSwitchAsLight(mark.deviceId)
             return true
         }
         return answer == .alertSecondButtonReturn

@@ -34,11 +34,18 @@ extension HomeStore {
     /// installed presenter once and runs only when approved. The wall-switch light marks (#104)
     /// ride the store's own defaults suite so a suite-scoped test sees the same behaviour the
     /// production store (`.standard`) gives every other caller of the policy.
-    func allowManualControl(_ operation: IntentOperation, for device: SmartDevice) -> Bool {
+    func allowManualControl(
+        _ operation: IntentOperation,
+        for device: SmartDevice,
+        offersMarkAsLight: Bool = false,
+        ignoresSwitchLightMark: Bool = false
+    ) -> Bool {
+        let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
         guard let prompt = ManualControlPolicy.confirmation(
             DeviceIntent(targetId: device.id, operation: operation),
             devices: devices,
-            markedLightIds: SwitchLightMarks.load(defaults: userDefaults)
+            markedLightIds: marks,
+            offersMarkAsLight: offersMarkAsLight && !ignoresSwitchLightMark
         ) else { return true }
         return presentManualControlConfirmation(prompt, for: device)
     }
@@ -48,8 +55,7 @@ extension HomeStore {
             facet: facet,
             value: value,
             portion: portion,
-            for: device,
-            markedLightIds: SwitchLightMarks.load(defaults: userDefaults)
+            for: device
         ) else { return true }
         return presentManualControlConfirmation(prompt, for: device)
     }

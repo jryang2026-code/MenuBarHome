@@ -2668,9 +2668,54 @@ it("marks a wall switch as a light at the single confirmation decision point; st
       marked,
     );
 
-  // Unmarked keeps the existing hazard; marked runs directly, like a rename with 「灯」.
+  // Unmarked keeps the existing hazard; marked runs primary power directly, like a rename with 「灯」.
   assert.equal(confirm([wall], new Set()), true);
   assert.equal(confirm([wall], marks), false);
+
+  // Marks only affect primary power: auxiliary switch facets and non-power operations stay gated.
+  assert.equal(
+    ManualControlPolicy.requiresConfirmation(
+      { targetId: wall.id, operation: { kind: "brightness", percent: 50 } },
+      [wall],
+      marks,
+    ),
+    false,
+  );
+  const auxSwitchFacet: FacetControl = {
+    id: "3.1",
+    kind: "toggle",
+    name: "on",
+    title: "右键",
+    serviceName: "switch",
+    unit: null,
+    scale: null,
+    value: false,
+    options: [],
+    range: null,
+    isWritable: true,
+    writesByDefault: true,
+    isHighValue: false,
+    target: { kind: "property", entityId: "miot:sw_wall_mark:3", piid: 1 },
+  };
+  const backing = new Map<string, string>();
+  setSwitchLightMarkStorage({
+    length: 0,
+    clear: () => void backing.clear(),
+    getItem: (key: string) => (backing.has(key) ? backing.get(key)! : null),
+    key: () => null,
+    removeItem: (key: string) => void backing.delete(key),
+    setItem: (key: string, value: string) => void backing.set(key, value),
+  });
+  try {
+    markSwitchAsLight(wall.id);
+    assert.equal(
+      ManualControlPolicy.facetRequiresConfirmation(auxSwitchFacet, true, wall),
+      true,
+      "marked wall switch still confirms auxiliary switch facets",
+    );
+  } finally {
+    setSwitchLightMarkStorage(undefined);
+  }
 
   // Stale marks never widen: a real plug, a garage cover, a heater, a UV lamp and a momentary
   // button entity keep asking even when their id carries an old mark.
@@ -3120,8 +3165,9 @@ it("shows a rename hint only for a default-named wall switch and does not change
   for (const dev of walls) {
     assert.equal(confirms(dev, true), true, `${dev.name} still confirms`);
     assert.equal(confirms(dev, false), false, `${dev.name} off stays direct`);
-    // #104: the hint now points at the in-prompt mark entry instead of a rename keyword.
-    assert.match(hintOf(dev) ?? "", /这是灯，以后不再询问/);
+    assert.match(hintOf(dev) ?? "", /加上「灯」/);
+    assert.doesNotMatch(hintOf(dev) ?? "", /这是灯，以后不再询问/);
+    assert.match(ManualControlPolicy.wallSwitchMarkPromptHint(dev) ?? "", /这是灯，以后不再询问/);
   }
 
   const silent = [
@@ -3137,6 +3183,7 @@ it("shows a rename hint only for a default-named wall switch and does not change
   ];
   for (const dev of silent) {
     assert.equal(hintOf(dev), null, `${dev.name} (${dev.model}) has no rename hint`);
+    assert.equal(ManualControlPolicy.wallSwitchMarkPromptHint(dev), null, `${dev.name} (${dev.model}) has no mark prompt hint`);
     assert.equal(confirms(dev, true), dev.name !== "厨房灯", `${dev.name} confirmation unchanged`);
   }
 
@@ -3164,6 +3211,7 @@ it("shows a rename hint only for a default-named wall switch and does not change
   };
   assert.equal(confirms(heater, true), true);
   assert.equal(hintOf(heater), null);
+  assert.equal(ManualControlPolicy.wallSwitchMarkPromptHint(heater), null);
   assert.equal(
     ManualControlPolicy.wallSwitchLightHintForIntents(
       [
@@ -3183,10 +3231,6 @@ it("shows a rename hint only for a default-named wall switch and does not change
       const hint = hintOf(left) ?? "";
       const keywords = [...hint.matchAll(/[「“]([^」”]+)[」”]/g)].map((match) => match[1]!);
       assert.ok(keywords.length > 0, `${language} hint names a keyword: ${hint}`);
-      if (language === "zh-Hant") {
-        // #104: the quoted text is now the mark entry's label, which names 「燈」.
-        assert.deepEqual(keywords, ["這是燈，以後不再詢問"]);
-      }
       for (const keyword of keywords) {
         const renamed = { ...left, name: `${left.name} ${keyword}` };
         assert.equal(isSwitchedLightDevice(renamed), true, `${language} keyword ${keyword} is a light name`);

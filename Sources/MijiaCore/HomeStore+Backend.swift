@@ -587,14 +587,15 @@ extension HomeStore {
         var ids = SwitchLightMarks.load(defaults: userDefaults)
         guard ids.insert(deviceId).inserted else { return }
         SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
     }
 
-    /// Restores the confirmation for a marked wall switch, from the device menu or wherever the
-    /// mark was set (#104).
+    /// Restores the confirmation for a marked wall switch, from the device menu (#104).
     public func unmarkSwitchAsLight(_ deviceId: String) {
         var ids = SwitchLightMarks.load(defaults: userDefaults)
         guard ids.remove(deviceId) != nil else { return }
         SwitchLightMarks.save(ids, defaults: userDefaults)
+        scheduleRaycastSnapshotExport()
     }
 
     func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {

@@ -274,8 +274,10 @@ struct ManualControlPolicyTests {
             )
         }
 
-        // #104: the hint now points at the in-prompt mark entry instead of a rename keyword.
-        let hintMark = "这是灯，以后不再询问"
+        // #104: non-card confirmations show the rename hint (`加上「灯」`) with no mark button, while
+        // card primary-power confirmations (`offersMarkAsLight: true`) offer «这是灯，以后不再询问».
+        let renameHintMark = "加上「灯」"
+        let promptButtonMark = "这是灯，以后不再询问"
         let wallSwitches = [
             makePlug(id: "left", name: "左键", model: "lumi.switch.b1nacn02"),
             makePlug(id: "middle", name: "中键", model: "lumi.switch.b2nacn02"),
@@ -283,14 +285,26 @@ struct ManualControlPolicyTests {
             makePlug(id: "channel", name: "一路开关", model: "090615.switch.09dh1"),
         ]
         for dev in wallSwitches {
-            #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: dev), "\(dev.name) still confirms")
-            #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: dev), "\(dev.name) off stays direct")
-            let prompt = ManualControlPolicy.confirmation(
+            #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: dev, markedLightIds: []), "\(dev.name) still confirms")
+            #expect(!ManualControlPolicy.requiresConfirmation(.power(false), for: dev, markedLightIds: []), "\(dev.name) off stays direct")
+            let nonCardPrompt = ManualControlPolicy.confirmation(
                 DeviceIntent(targetId: dev.id, operation: .power(true)),
-                devices: [dev]
+                devices: [dev],
+                markedLightIds: []
             )
-            #expect(prompt?.hint?.contains(hintMark) == true, "\(dev.name) hint")
-            #expect(prompt?.message.contains(hintMark) == false, "hint stays out of the decision message")
+            #expect(nonCardPrompt?.markAsLight == nil, "\(dev.name) non-card prompt omits mark button")
+            #expect(nonCardPrompt?.hint?.contains(renameHintMark) == true, "\(dev.name) rename hint")
+            #expect(nonCardPrompt?.hint?.contains(promptButtonMark) == false, "non-card prompt never names missing button")
+            #expect(nonCardPrompt?.message.contains(renameHintMark) == false, "hint stays out of the decision message")
+
+            let cardPrompt = ManualControlPolicy.confirmation(
+                DeviceIntent(targetId: dev.id, operation: .power(true)),
+                devices: [dev],
+                markedLightIds: [],
+                offersMarkAsLight: true
+            )
+            #expect(cardPrompt?.markAsLight?.deviceId == dev.id)
+            #expect(cardPrompt?.hint?.contains(promptButtonMark) == true, "\(dev.name) primary-power mark hint")
         }
 
         let silent = [
@@ -305,12 +319,15 @@ struct ManualControlPolicyTests {
             makePlug(id: "already", name: "厨房灯", model: "lumi.switch.b1nacn02"),
         ]
         for dev in silent {
-            let on = ManualControlPolicy.requiresConfirmation(.power(true), for: dev)
+            let on = ManualControlPolicy.requiresConfirmation(.power(true), for: dev, markedLightIds: [])
             let prompt = ManualControlPolicy.confirmation(
                 DeviceIntent(targetId: dev.id, operation: .power(true)),
-                devices: [dev]
+                devices: [dev],
+                markedLightIds: [],
+                offersMarkAsLight: true
             )
-            #expect(prompt?.hint == nil, "\(dev.name) (\(dev.model)) has no rename hint")
+            #expect(prompt?.hint == nil, "\(dev.name) (\(dev.model)) has no wall-switch hint")
+            #expect(prompt?.markAsLight == nil, "\(dev.name) (\(dev.model)) has no mark button")
             #expect((prompt != nil) == on, "\(dev.name) confirmation follows the existing decision")
         }
 
@@ -322,15 +339,17 @@ struct ManualControlPolicyTests {
                 availableModes: ["off", "heat"], targetTemperature: 22, minTemp: 16, maxTemp: 30
             ))
         )
-        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: heater))
+        #expect(ManualControlPolicy.requiresConfirmation(.power(true), for: heater, markedLightIds: []))
         #expect(ManualControlPolicy.confirmation(
             DeviceIntent(targetId: heater.id, operation: .power(true)),
-            devices: [heater]
+            devices: [heater],
+            markedLightIds: [],
+            offersMarkAsLight: true
         )?.hint == nil)
 
     }
 
-    @Test("Every language's hint recommends a name keyword that really stops the confirmation (#104)")
+    @Test("Every language's rename hint recommends a name keyword that really stops the confirmation (#104)")
     func wallSwitchLightHintKeywordIsRecognizedInEveryLanguage() {
         let left = SmartDevice(
             id: "left", name: "左键", roomId: "hall", roomName: "玄关",
@@ -342,20 +361,20 @@ struct ManualControlPolicyTests {
             L10n.$overrideLanguage.withValue(language) {
                 let hint = ManualControlPolicy.confirmation(
                     DeviceIntent(targetId: left.id, operation: .power(true)),
-                    devices: [left]
+                    devices: [left],
+                    markedLightIds: []
                 )?.hint ?? ""
                 let keywords = Self.quotedKeywords(in: hint)
                 #expect(!keywords.isEmpty, "\(language.rawValue) hint names a keyword: \(hint)")
                 if language == .zhHant {
-                    // #104: the quoted text is now the mark entry's label, which names 「燈」.
-                    #expect(keywords == ["這是燈，以後不再詢問"])
+                    #expect(keywords == ["燈"])
                 }
                 for keyword in keywords {
                     var renamed = left
                     renamed.name = "\(left.name) \(keyword)"
                     #expect(renamed.isSwitchedLight, "\(language.rawValue) keyword \(keyword) is a light name")
                     #expect(
-                        !ManualControlPolicy.requiresConfirmation(.power(true), for: renamed),
+                        !ManualControlPolicy.requiresConfirmation(.power(true), for: renamed, markedLightIds: []),
                         "\(language.rawValue) keyword \(keyword) stops the confirmation"
                     )
                 }
@@ -387,35 +406,38 @@ struct ManualControlPolicyTests {
         )
     }
 
-    @Test("A wall switch marked as a light stops confirming; the mark never widens to other kinds (#104)")
+    @Test("A wall switch marked as a light stops confirming primary power only; auxiliary switches and other kinds stay guarded (#104)")
     func markedSwitchLightStopsConfirmation() throws {
         let wall = Self.wallSwitch()
         let marks: Set<String> = [wall.id]
         #expect(ManualControlPolicy.wallSwitchMayControlLight(wall))
 
-        // The marked switch no longer asks, exactly like renaming it with 「灯」 would.
+        // The marked switch no longer asks on primary power.
         #expect(!ManualControlPolicy.requiresConfirmation(.power(true), for: wall, markedLightIds: marks))
         #expect(ManualControlPolicy.confirmation(
             DeviceIntent(targetId: wall.id, operation: .power(true)),
             devices: [wall],
-            markedLightIds: marks
+            markedLightIds: marks,
+            offersMarkAsLight: true
         ) == nil, "no prompt at all once marked")
 
-        // Unmarked, the existing hazard table still asks and offers the entry in the prompt.
+        // Unmarked, primary power offers the mark entry while non-card confirmations omit it.
         let prompt = ManualControlPolicy.confirmation(
             DeviceIntent(targetId: wall.id, operation: .power(true)),
             devices: [wall],
-            markedLightIds: []
+            markedLightIds: [],
+            offersMarkAsLight: true
         )
         let option = try #require(prompt?.markAsLight)
         #expect(option.deviceId == wall.id)
         #expect(!option.title.isEmpty)
-        // An already marked device never re-offers the entry.
-        #expect(ManualControlPolicy.confirmation(
+        let externalPrompt = ManualControlPolicy.confirmation(
             DeviceIntent(targetId: wall.id, operation: .power(true)),
             devices: [wall],
-            markedLightIds: marks
-        ) == nil)
+            markedLightIds: [],
+            offersMarkAsLight: false
+        )
+        #expect(externalPrompt?.markAsLight == nil)
 
         // Stale marks never widen: every other kind still asks (#104 review).
         let stale: Set<String> = ["stale-plug", "stale-garage", "stale-heater", "stale-uv", "stale-button", "wall"]
@@ -452,11 +474,13 @@ struct ManualControlPolicyTests {
             #expect(ManualControlPolicy.confirmation(
                 DeviceIntent(targetId: dev.id, operation: .power(true)),
                 devices: [dev],
-                markedLightIds: stale
+                markedLightIds: stale,
+                offersMarkAsLight: true
             )?.markAsLight == nil, "\(dev.name) never offers the mark entry")
         }
 
-        // A Home Assistant auxiliary `switch.*` facet on the marked wall switch follows the mark.
+        // Auxiliary `switch.*` and `更多设置` facets are NOT primary power: marking never silences them
+        // or offers a mark button on their confirmation.
         let auxSwitch = FacetControl(
             id: "switch.wall-aux", kind: .toggle, name: "on-power", title: "开关",
             serviceName: "switch", value: .bool(true), isWritable: true,
@@ -464,7 +488,10 @@ struct ManualControlPolicyTests {
             target: .haProperty(entityId: "switch.wall_aux")
         )
         #expect(ManualControlPolicy.facetRequiresConfirmation(auxSwitch, value: .bool(true), for: wall))
-        #expect(!ManualControlPolicy.facetRequiresConfirmation(auxSwitch, value: .bool(true), for: wall, markedLightIds: marks))
+        let auxPrompt = ManualControlPolicy.confirmation(facet: auxSwitch, value: .bool(true), for: wall)
+        #expect(auxPrompt != nil)
+        #expect(auxPrompt?.markAsLight == nil)
+        #expect(auxPrompt?.hint == nil)
     }
 
     @Test("Switch-light marks persist per device id and join the canonical-ID preference index (#104)")
@@ -492,17 +519,34 @@ struct ManualControlPolicyTests {
         #expect(DevicePreferenceIndex.referencedIDs(defaults: defaults).contains(wall.id))
     }
 
-    @Test("Marking a wall switch through the store stops its toggle confirmation entirely (#104)")
+    @Test("Store mark updates Raycast snapshot, respects aliased names, and external togglePrimary omits mark button (#104)")
     @MainActor
     func storeMarkStopsTogglePrompt() async throws {
         let wall = Self.wallSwitch(id: "wall-e2e")
-        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall], scenes: []))
+        let initiallyLightNamed = Self.wallSwitch(id: "wall-aliased", name: "厨房灯")
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall, initiallyLightNamed], scenes: []))
         let suiteName = "test.switch-light-store.\(UUID().uuidString)"
         let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("raycast-switch-mark-\(UUID().uuidString).json")
+        defer {
+            try? FileManager.default.removeItem(at: snapshotURL)
+            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        }
         store.controlDebounceInterval = .milliseconds(10)
+        store.raycastSnapshotTestURL = snapshotURL
+        store.raycastExportSleep = { _ in }
         try await store.waitForTestSnapshot()
+        store.setRaycastIntegration(enabled: true)
         let device = try #require(store.devices.first { $0.id == wall.id })
+
+        let readSnapshotHighRisk: (String) throws -> Bool = { id in
+            let data = try Data(contentsOf: snapshotURL)
+            let snap = try JSONDecoder().decode(RaycastSnapshot.self, from: data)
+            let item = try #require(snap.devices.first { $0.id == id })
+            return item.capabilities.isHighRisk
+        }
+        #expect(try readSnapshotHighRisk(wall.id) == true)
 
         var prompts: [ManualControlConfirmation] = []
         store.manualControlConfirmationHandler = { prompt in
@@ -510,24 +554,45 @@ struct ManualControlPolicyTests {
             return true
         }
 
-        // Before the mark the toggle asks, and the prompt offers the «this is a light» entry.
-        _ = store.togglePrimary(device)
+        // External callers (`offersSwitchLightMark: false`) keep confirmation without offering the mark button.
+        _ = store.togglePrimary(device, offersSwitchLightMark: false)
         await waitUntil { await provider.executedCommands.count == 1 }
         #expect(prompts.count == 1)
-        #expect(prompts.first?.markAsLight?.deviceId == wall.id)
+        #expect(prompts[0].markAsLight == nil)
+        #expect(prompts[0].hint?.contains("加上「灯」") == true)
 
-        // Marking through the store persists per device id; the next toggle runs directly.
-        store.markSwitchAsLight(wall.id)
-        #expect(store.isSwitchMarkedAsLight(wall.id))
+        // Reset back to off so the next power-on toggle hits the hazard gate again.
         _ = store.togglePrimary(device)
         await waitUntil { await provider.executedCommands.count == 2 }
-        #expect(prompts.count == 1, "the marked wall switch no longer asks")
+        let refreshed = try #require(store.devices.first { $0.id == wall.id })
 
-        // Unmarking restores the confirmation.
-        store.unmarkSwitchAsLight(wall.id)
-        _ = store.togglePrimary(device)
+        // Card primary power (`offersSwitchLightMark: true`) offers the «this is a light» entry.
+        _ = store.togglePrimary(refreshed)
         await waitUntil { await provider.executedCommands.count == 3 }
         #expect(prompts.count == 2)
+        #expect(prompts[1].markAsLight?.deviceId == wall.id)
+
+        // Marking updates `raycast-snapshot.json` immediately after debounce and stops primary-power prompts.
+        store.markSwitchAsLight(wall.id)
+        #expect(store.isSwitchMarkedAsLight(wall.id))
+        await waitUntil { (try? readSnapshotHighRisk(wall.id)) == false }
+
+        _ = store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))
+        await waitUntil { await provider.executedCommands.count == 4 }
+        _ = store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))
+        await waitUntil { await provider.executedCommands.count == 5 }
+        #expect(prompts.count == 2, "the marked wall switch no longer asks")
+
+        // Unmarking restores both the confirmation and `isHighRisk: true` in the Raycast snapshot.
+        store.unmarkSwitchAsLight(wall.id)
+        await waitUntil { (try? readSnapshotHighRisk(wall.id)) == true }
+
+        // Aliasing a `"厨房灯"` wall switch to `"左键"` makes it eligible by its aliased name.
+        store.applyDeviceAliases([initiallyLightNamed.id: "左键"])
+        let aliasedDevice = try #require(store.devices.first { $0.id == initiallyLightNamed.id })
+        #expect(ManualControlPolicy.wallSwitchMayControlLight(aliasedDevice))
+        store.markSwitchAsLight(initiallyLightNamed.id)
+        #expect(store.isSwitchMarkedAsLight(initiallyLightNamed.id))
     }
 
     /// Text inside 「」 or “”, the marks the hint uses around the word to add.

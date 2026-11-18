@@ -46,6 +46,7 @@ function confirmHighRiskForHost(
   label: string,
   explicit?: { readonly summary: string; readonly intent: DeviceIntent },
   bannerOverride?: string,
+  primaryPower?: { readonly command: DeviceCommand; readonly summary: string; readonly intent: DeviceIntent },
 ): boolean {
   const actionKey = JSON.stringify(command);
   const armed = host.pendingHighRisk;
@@ -67,10 +68,11 @@ function confirmHighRiskForHost(
     ...(explicit
       ? { confirm: { command, summary: explicit.summary, intent: explicit.intent } }
       : {}),
+    ...(primaryPower ? { primaryPower } : {}),
   });
   const aliased = withAliases(host.layout, host.devices);
   const device = aliased.find((item) => item.id === deviceId);
-  const hint = device ? ManualControlPolicy.wallSwitchLightHint(device) : null;
+  const hint = device && !bannerOverride ? ManualControlPolicy.wallSwitchLightHint(device) : null;
   host.replyBanner = {
     text:
       bannerOverride ??
@@ -93,6 +95,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     return;
   }
   if (host.waitingDeviceIds.has(id)) return;
+  const aliased = withAliases(host.layout, host.devices);
+  const aliasedDev = aliased.find((d) => d.id === dev.id) ?? dev;
   // A momentary plug button only fires an activation; macOS always sends `.power(true)`,
   // even when Home Assistant still reports the button as on (#9).
   const isMomentaryPlug =
@@ -102,6 +106,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
   const cmds = IntentValidator.commandsForIntent(powerIntent, dev);
   const firstCmd = cmds[0];
   if (!firstCmd) return;
+  const summary = t(nextOn ? "已打开{name}" : "已关闭{name}", { name: aliasedDev.name });
   // Every manual toggle goes through the hazard table: a heater, plug, camera, vacuum or
   // generic card asks exactly like macOS `togglePrimary`. Stopping a moving cover is the one
   // cover de-escalation and never asks (#298, #143).
@@ -116,10 +121,18 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       ? !stopsMovingCover &&
         coverMotorRequiresConfirmation(dev.kind.subtype, nextOn ? "open" : "close")
       : !stopsMovingCover &&
-        ManualControlPolicy.requiresConfirmation(powerIntent, withAliases(host.layout, host.devices));
+        ManualControlPolicy.requiresConfirmation(powerIntent, aliased);
   if (
     hazard &&
-    !confirmHighRiskForHost(host, dev.id, firstCmd, t(nextOn ? "打开{name}" : "关闭{name}", { name: dev.name }))
+    !confirmHighRiskForHost(
+      host,
+      dev.id,
+      firstCmd,
+      t(nextOn ? "打开{name}" : "关闭{name}", { name: aliasedDev.name }),
+      undefined,
+      undefined,
+      { command: firstCmd, summary, intent: powerIntent },
+    )
   ) {
     return;
   }
@@ -132,8 +145,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
   void host.executeSingleCommand(
     dev,
     firstCmd,
-    t(nextOn ? "已打开{name}" : "已关闭{name}", { name: dev.name }),
-    { targetId: dev.id, operation: { kind: "power", isOn: nextOn } },
+    summary,
+    powerIntent,
     waitsForCloud,
   ).finally(() => {
     if (!waitsForCloud) return;
@@ -274,73 +287,53 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-rename-device]").forEach((btn) => {
       btn.addEventListener("click", () => host.openPrompt({ kind: "renameDevice", deviceId: btn.dataset.renameDevice ?? "" }));
     });
-    // #104: marking and unmarking a wall switch as an ordinary light, from the device menu.
+    // #104: marking lives exclusively inside the armed primary-power confirmation banner;
+    // clicking it persists the mark and executes the captured primary-power action once.
     host.root.querySelectorAll<HTMLElement>("[data-mark-switch-light]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.markSwitchLight ?? "";
-        if (!id) return;
-        if (btn.closest(".cc-menu")) host.ctxMenu = null;
-        markSwitchAsLight(id);
-        if (!btn.closest(".cc-live-banner")) {
-          host.replyBanner = {
-            text: t("已标记为灯，以后不再二次确认"),
-            source: t("需要确认"),
-          };
+        const armed = host.pendingHighRisk;
+        if (!id || !armed?.primaryPower || armed.deviceId !== id) return;
+        const expired = armed.expiresAtMs <= Date.now();
+        const stale = armed.sourceRevision !== host.sourceRevision;
+        host.clearPendingHighRisk();
+        if (expired) {
+          host.replyBanner = { text: t("确认已过期，请重新操作"), source: t("需要确认") };
+        }
+        if (expired || stale) {
           host.render();
           return;
         }
-        if (host.pendingHighRisk?.deviceId === id) {
-          // The pill lives inside the armed two-tap confirmation: marking also answers it, so
-          // the toggle the user already asked for runs directly instead of demanding a second tap.
-          host.clearPendingHighRisk();
-          host.replyBanner = {
-            text: t("已标记为灯，以后不再二次确认"),
-            source: t("需要确认"),
-          };
-          host.render();
-          toggleDeviceForHost(host, id);
-          return;
-        }
-        // Suggestion-chip confirmation (natural command, bare category): marking answers it too.
-        // The banner only carries `markSwitchLight` when every hazardous device is a wall switch,
-        // so after the marks no intent still needs a confirmation; a stale pill that survived a
-        // replaced banner only marks and never executes. A delayed chip («10分钟后…») keeps its
-        // delay: marking routes it through the same scheduler the confirm tap would use (#104).
-        const chip = host.pendingSuggestions.find((s) => suggestionBaseId(s.id).startsWith("confirm:"));
-        const aliasedDevices = withAliases(host.layout, host.devices);
-        const intents = chip
-          ? IntentValidator.sanitize(chip.intents, aliasedDevices, host.scenes)
-          : [];
-        for (const intent of intents) {
-          const device = aliasedDevices.find((d) => d.id === intent.targetId);
-          if (device && ManualControlPolicy.wallSwitchMayControlLight(device)) markSwitchAsLight(device.id);
-        }
-        host.replyBanner = {
-          text: t("已标记为灯，以后不再二次确认"),
-          source: t("需要确认"),
-        };
-        if (chip) {
-          const delaySpec = getSuggestionDelaySpec(chip);
-          if (delaySpec) {
-            host.pendingSuggestions = host.pendingSuggestions.filter((s) => s !== chip);
-            host.render();
-            confirmDelayedSuggestion(host, chip, delaySpec);
-            return;
-          }
-        }
+        const dev = host.devices.find((device) => device.id === id);
+        const aliasedDev = withAliases(host.layout, host.devices).find((device) => device.id === id);
         if (
-          intents.length > 0 &&
-          intents.every((intent) => !ManualControlPolicy.requiresConfirmation(intent, aliasedDevices))
+          !dev ||
+          !aliasedDev ||
+          !ManualControlPolicy.wallSwitchMayControlLight(aliasedDev) ||
+          host.waitingDeviceIds.has(id)
         ) {
-          if (chip) host.pendingSuggestions = host.pendingSuggestions.filter((s) => s !== chip);
-          void host.executeIntents(
-            intents,
-            IntentReply.describe(intents, aliasedDevices, host.scenes),
-            t("已确认"),
-            { recordHabits: true },
-          );
+          host.render();
+          return;
+        }
+        markSwitchAsLight(id);
+        host.replyBanner = null;
+        host.poppedDeviceId = dev.id;
+        const waitsForCloud = host.settings.connectionMode !== "demo";
+        if (waitsForCloud) {
+          host.waitingDeviceIds.add(id);
         }
         host.render();
+        void host.executeSingleCommand(
+          dev,
+          armed.primaryPower.command,
+          armed.primaryPower.summary,
+          armed.primaryPower.intent,
+          waitsForCloud,
+        ).finally(() => {
+          if (!waitsForCloud) return;
+          host.waitingDeviceIds.delete(id);
+          host.render();
+        });
       });
     });
     host.root.querySelectorAll<HTMLElement>("[data-unmark-switch-light]").forEach((btn) => {
@@ -748,15 +741,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
           const chips = ModelActionPolicy.chips(intents, null, "confirm:bare", aliasedDevices, host.scenes, true);
           host.pendingSuggestions = delaySpec ? chips.map((chip) => withSuggestionDelay(chip, delaySpec)) : chips;
           const hint = ManualControlPolicy.wallSwitchLightHintForIntents(intents, aliasedDevices);
-          // #104: the chip confirmation also offers the mark entry, so the hint stays actionable.
-          const markable = hint ? ManualControlPolicy.wallSwitchMarkableIdForIntents(intents, aliasedDevices) : null;
           host.replyBanner = {
             text: t("「{action}」属于高风险设备，再点一次确认执行", {
               action: IntentReply.describe(intents, aliasedDevices, host.scenes).replace(/^已/, ""),
             }),
             source: t("需要确认"),
             ...(hint ? { hint } : {}),
-            ...(markable ? { markSwitchLight: markable } : {}),
           };
           host.render();
           return;
@@ -1450,8 +1440,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       const bannerOverride = isFeedAction
         ? feedingConfirmationBannerText(dev.name, control, portion)
         : undefined;
+      const aliasedDev = withAliases(host.layout, [dev])[0] ?? dev;
       if (
-        ManualControlPolicy.facetRequiresConfirmation(control, value, dev) &&
+        ManualControlPolicy.facetRequiresConfirmation(control, value, aliasedDev) &&
         !confirmHighRisk(dev.id, command, facetTitle(control), undefined, bannerOverride)
       ) {
         return;

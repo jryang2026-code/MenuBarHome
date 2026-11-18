@@ -392,7 +392,11 @@ function selectedModeIsOff(selected: string | null): boolean {
 }
 
 function requiresOperationConfirmation(device: SmartDevice, operation: IntentOperation): boolean {
-  return ManualControlPolicy.requiresConfirmation({ targetId: device.id, operation }, [device]);
+  return ManualControlPolicy.requiresConfirmation(
+    { targetId: device.id, operation },
+    [device],
+    new Set(),
+  );
 }
 
 /**
@@ -410,11 +414,13 @@ export const ManualControlPolicy = {
     const device = devices.find((d) => d.id === intent.targetId);
     if (!device) return false;
     if (deescalatesHazard(intent.operation) && device.kind.kind !== "cover") return false;
-    // #104: a wall switch the user marked as an ordinary light stops asking here — the single
-    // decision point — so no UI layer can decide to skip the gate. The mark never widens: the
-    // wall-switch rule re-runs, so a stale id on a plug, cover, lock or heater still asks.
-    const marks = markedLightIds ?? switchLightMarkIds();
-    if (marks.has(device.id) && this.wallSwitchMayControlLight(device)) return false;
+    // #104: a wall switch the user marked as an ordinary light stops asking on primary power here —
+    // the single decision point — so no UI layer can decide to skip the gate. The mark never
+    // widens: the wall-switch rule re-runs, so a stale id on a plug, cover, lock or heater still asks.
+    if (intent.operation.kind === "power") {
+      const marks = markedLightIds ?? switchLightMarkIds();
+      if (marks.has(device.id) && this.wallSwitchMayControlLight(device)) return false;
+    }
     return ModelActionPolicy.needsConfirmation(intent, devices);
   },
 
@@ -433,8 +439,16 @@ export const ManualControlPolicy = {
     return isSwitchedLightDevice({ ...device, name: `${device.name}灯` });
   },
 
-  /** Copy for an existing confirmation. Appending 「灯」 reuses `isSwitchedLightDevice`. */
+  /** Rename guidance for confirmations that do not offer the in-prompt mark button (#104). */
   wallSwitchLightHint(device: SmartDevice): string | null {
+    if (!this.wallSwitchMayControlLight(device)) return null;
+    return t(
+      "如果这个开关实际控制的是普通照明灯，可在米家改名或在这里设置别名，名称里加上「灯」，以后就不会再弹出这个确认。",
+    );
+  },
+
+  /** In-prompt guidance shown only when the confirmation actually carries the mark button (#104). */
+  wallSwitchMarkPromptHint(device: SmartDevice): string | null {
     if (!this.wallSwitchMayControlLight(device)) return null;
     return t(
       "如果这个开关实际控制的是普通照明灯，点「这是灯，以后不再询问」，以后就不会再弹出这个确认。",
@@ -453,23 +467,6 @@ export const ManualControlPolicy = {
       hint = next;
     }
     return hint;
-  },
-
-  /**
-   * #104: the wall-switch id a suggestion-chip banner should offer to mark as a light. Non-null
-   * only when the same intents would also show the hint (every hazardous device is an eligible
-   * wall switch), so the banner never promises a button it cannot act on.
-   */
-  wallSwitchMarkableIdForIntents(intents: readonly DeviceIntent[], devices: readonly SmartDevice[]): string | null {
-    const hazardous = intents.filter((intent) => this.requiresConfirmation(intent, devices));
-    if (hazardous.length === 0) return null;
-    let markable: string | null = null;
-    for (const intent of hazardous) {
-      const device = devices.find((item) => item.id === intent.targetId);
-      if (!device || !this.wallSwitchMayControlLight(device)) return null;
-      if (markable === null) markable = device.id;
-    }
-    return markable;
   },
 
   /**

@@ -41,6 +41,7 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
 import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "../core/models.js";
@@ -1903,9 +1904,35 @@ interface UpperCardFactory {
   readonly render: (opts: { readonly stackCount: number; readonly showStackControls: boolean }) => string;
 }
 
+/**
+ * #104: returns the aliased wall-switch device when an active, current-revision primary-power
+ * `pendingHighRisk` confirmation should offer «这是灯，以后不再询问». Shared by Fluent `liveBanner`
+ * and Classic `reply:banner` so both themes apply identical eligibility rules.
+ */
+export function primaryPowerSwitchLightMarkDevice(
+  host: MenuMijiaWindowsApp,
+  nowMs = Date.now(),
+): SmartDevice | null {
+  const armed = host.pendingHighRisk;
+  if (
+    !armed ||
+    !armed.primaryPower ||
+    armed.expiresAtMs <= nowMs ||
+    armed.sourceRevision !== host.sourceRevision
+  ) {
+    return null;
+  }
+  const prefs = host.layout ?? host.settings?.layout;
+  const aliased = prefs ? withAliases(prefs, host.devices) : host.devices;
+  const device = aliased.find((d) => d.id === armed.deviceId);
+  if (!device || isSwitchMarkedAsLight(device.id)) return null;
+  return ManualControlPolicy.wallSwitchMayControlLight(device) ? device : null;
+}
+
 /** Wall-switch rename guidance under a confirmation, kept when the reply merges into the undo card (#104). */
-function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null): string {
-  return reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
+function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null, overrideHint?: string | null): string {
+  const text = overrideHint ?? reply?.hint;
+  return text ? `<p class="cc-feedback-hint">${host.escapeHtml(text)}</p>` : "";
 }
 
 function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperCardFactory[] {
@@ -1985,9 +2012,20 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
 
   if (host.replyBanner && !host.pendingCloudConsent && !replyConsumedByUndo && !replyConsumedByArmedAuto) {
     const reply = host.replyBanner;
-    const isDismissible = !(host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs);
-    const hint = feedbackHint(host, reply);
-    factories.push(wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner"));
+    const hasActiveHighRisk = host.pendingHighRisk !== null && host.pendingHighRisk.expiresAtMs > nowMs;
+    const isDismissible = !hasActiveHighRisk;
+    const markDevice = primaryPowerSwitchLightMarkDevice(host, nowMs);
+    const markPill = markDevice
+      ? `<button class="cc-inline-pill" data-mark-switch-light="${host.escapeHtml(markDevice.id)}">${t("这是灯，以后不再询问")}</button>`
+      : "";
+    const hint = feedbackHint(
+      host,
+      reply,
+      markDevice ? ManualControlPolicy.wallSwitchMarkPromptHint(markDevice) : undefined,
+    );
+    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
+    if (hasActiveHighRisk) factories.unshift(replyFactory);
+    else factories.push(replyFactory);
   }
   if (host.pendingSuggestions.length > 0) {
     factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
