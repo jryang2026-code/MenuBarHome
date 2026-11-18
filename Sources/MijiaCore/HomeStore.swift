@@ -150,9 +150,7 @@ public final class HomeStore {
     public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
     public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = [] {
         didSet {
-            if localNetworkBlocks.isEmpty || !localNetworkBlocks.isSubset(of: oldValue) {
-                dismissedActivityIds.remove("notice.localNetworkBlocked")
-            }
+            syncLocalNetworkBlockedNoticeDismissal(from: effectiveLocalNetworkBlocks(for: oldValue))
         }
     }
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
@@ -555,10 +553,20 @@ public final class HomeStore {
             userDefaults.set(homeBackend.rawValue, forKey: "home_backend")
             syncHistoryConnectionScopes()
             if homeBackend == .demo { deviceValuesAreStale = false }
+            let previousEffective = oldValue == .demo ? [] : effectiveLocalNetworkBlocks(for: localNetworkBlocks, backend: oldValue)
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
         }
     }
 
-    public internal(set) var miSessionMaskedUserId: String?
+    public internal(set) var miSessionMaskedUserId: String? {
+        didSet {
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                hasMi: oldValue != nil
+            )
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
+        }
+    }
     /// Every signed-in Mi account, primary (first) first. The panel groups by account when there is
     /// more than one, and adding an account never replaces the ones already signed in.
     public internal(set) var miAccounts: [MiAccount] = []
@@ -580,7 +588,15 @@ public final class HomeStore {
     }
 
     /// Whether an HA token is saved. The chosen `homeBackend` no longer implies the only live source.
-    public internal(set) var hasHASource: Bool = false
+    public internal(set) var hasHASource: Bool = false {
+        didSet {
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                hasHA: oldValue
+            )
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
+        }
+    }
     public var hasMiSource: Bool { miSessionMaskedUserId != nil }
     public var isDualSourceActive: Bool {
         homeBackend != .demo && hasHASource && hasMiSource
@@ -779,6 +795,11 @@ public final class HomeStore {
 
     public var lgConfig: LGWebOSConfig {
         didSet {
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                lgConfig: oldValue
+            )
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
             guard !suppressNextLGConfigDidSetSave else { return }
             lgConfigSaveCallsInDidSetForTesting += 1
             lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)

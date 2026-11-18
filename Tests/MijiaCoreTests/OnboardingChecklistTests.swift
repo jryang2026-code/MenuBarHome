@@ -475,6 +475,30 @@ struct PanelNoticeTests {
         store.localNetworkBlocks = []
         store.localNetworkBlocks = [.homeAssistant]
         #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        // Dismiss again, then toggle source / backend / LG config so `effectiveLocalNetworkBlocks`
+        // empties and restores without reassigning `localNetworkBlocks`.
+        let reblocked = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(reblocked)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.hasHASource = false
+        #expect(store.effectiveLocalNetworkBlocks.isEmpty)
+        store.hasHASource = true
+        #expect(store.effectiveLocalNetworkBlocks == [.homeAssistant])
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        // Widening `effectiveLocalNetworkBlocks` via LG config without mutating `localNetworkBlocks`
+        // also resurfaces a dismissed notice.
+        store.localNetworkBlocks = [.homeAssistant, .lgWebOS]
+        store.lgConfig = LGWebOSConfig(isEnabled: false, host: "192.168.1.50")
+        let haOnlyActivity = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(haOnlyActivity)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.168.1.50")
+        #expect(store.effectiveLocalNetworkBlocks == [.homeAssistant, .lgWebOS])
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
     }
 
     // MARK: - #144: the demo is a doorway

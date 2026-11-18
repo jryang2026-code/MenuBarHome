@@ -30,6 +30,13 @@ struct ClassicSensorCardView: View {
             Text(L10n.tr("可能过期", "Possibly stale"))
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
                 .foregroundStyle(.secondary)
+            if let store, SensorCardView.showsStaleTransportReadout(device: device, store: store) {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .classic
+                )
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: isCompact ? 72 : 120, alignment: .leading)

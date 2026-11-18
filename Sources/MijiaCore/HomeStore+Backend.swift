@@ -1543,12 +1543,33 @@ extension HomeStore {
     }
 
     public var effectiveLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> {
-        guard homeBackend != .demo else { return [] }
-        var blocks = localNetworkBlocks
-        if !hasHASource { blocks.remove(.homeAssistant) }
-        if !hasMiSource { blocks.remove(.xiaomiLAN) }
-        if !lgConfig.isEnabled || !lgConfig.hasConfiguredHost { blocks.remove(.lgWebOS) }
+        effectiveLocalNetworkBlocks(for: localNetworkBlocks)
+    }
+
+    func effectiveLocalNetworkBlocks(
+        for rawBlocks: Set<LocalNetworkBlockedFeature>,
+        backend: HomeBackend? = nil,
+        hasHA: Bool? = nil,
+        hasMi: Bool? = nil,
+        lgConfig: LGWebOSConfig? = nil
+    ) -> Set<LocalNetworkBlockedFeature> {
+        let resolvedBackend = backend ?? homeBackend
+        guard resolvedBackend != .demo else { return [] }
+        let resolvedHasHA = hasHA ?? hasHASource
+        let resolvedHasMi = hasMi ?? hasMiSource
+        let resolvedLG = lgConfig ?? self.lgConfig
+        var blocks = rawBlocks
+        if !resolvedHasHA { blocks.remove(.homeAssistant) }
+        if !resolvedHasMi { blocks.remove(.xiaomiLAN) }
+        if !resolvedLG.isEnabled || !resolvedLG.hasConfiguredHost { blocks.remove(.lgWebOS) }
         return blocks
+    }
+
+    func syncLocalNetworkBlockedNoticeDismissal(from oldEffective: Set<LocalNetworkBlockedFeature>) {
+        let current = effectiveLocalNetworkBlocks
+        if current.isEmpty || !current.isSubset(of: oldEffective) {
+            dismissedActivityIds.remove("notice.localNetworkBlocked")
+        }
     }
 
     /// The one connection verdict the footer, the settings badge and the menu-bar tooltip share.

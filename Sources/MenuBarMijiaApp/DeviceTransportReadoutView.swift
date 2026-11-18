@@ -419,7 +419,7 @@ struct XiaomiLANTransportSummaryRow: View {
                 Text(L10n.tr("米家局域网通道", "Xiaomi LAN Transport"))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer(minLength: 8)
-                Text(summaryLine(summary))
+                Text(Self.summaryLine(summary))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
                     .monospacedDigit()
@@ -428,13 +428,16 @@ struct XiaomiLANTransportSummaryRow: View {
         }
     }
 
-    private func summaryLine(_ summary: DiagnosticsReportBuilder.TransportSummary) -> String {
+    static func summaryLine(_ summary: DiagnosticsReportBuilder.TransportSummary) -> String {
         var parts: [String] = [
             L10n.tr("直连 \(summary.lanDeviceCount) 台", "LAN \(summary.lanDeviceCount)"),
             L10n.tr("云端 \(summary.cloudDeviceCount) 台", "Cloud \(summary.cloudDeviceCount)")
         ]
         if summary.cooldownDeviceCount > 0 {
             parts.append(L10n.tr("重连中 \(summary.cooldownDeviceCount) 台", "Cooldown \(summary.cooldownDeviceCount)"))
+        }
+        if summary.blockedDeviceCount > 0 {
+            parts.append(L10n.tr("权限受阻 \(summary.blockedDeviceCount) 台", "Blocked \(summary.blockedDeviceCount)"))
         }
         if summary.broadcastRecoveredCount > 0 {
             parts.append(L10n.tr("自动重连 \(summary.broadcastRecoveredCount) 台", "Auto-healed \(summary.broadcastRecoveredCount)"))

@@ -22,6 +22,11 @@ struct SensorCardView: View {
     @State private var selectedMetric: SensorMetricKind = .temperature
     @State private var hoveredSlotIndex: Int? = nil
 
+    static func showsStaleTransportReadout(device: SmartDevice, store: HomeStore?) -> Bool {
+        guard let store, store.deviceValuesAreStale || device.telemetryStale else { return false }
+        return store.deviceTransportDiagnostics[device.id] != nil
+    }
+
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(device.name)
@@ -30,6 +35,13 @@ struct SensorCardView: View {
             Text(L10n.tr("可能过期", "Possibly stale"))
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
                 .foregroundStyle(.secondary)
+            if let store, Self.showsStaleTransportReadout(device: device, store: store) {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .liquidGlass
+                )
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: isCompact ? 72 : 120, alignment: .leading)
