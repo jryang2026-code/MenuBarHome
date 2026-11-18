@@ -1,7 +1,9 @@
 import {
   ASSISTANT_PROVIDER_PRESETS,
+  endpointAllowsSendingSecrets,
   inferAssistantPreset,
   listReadableHabits,
+  parseAssistantEndpoint,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
 import { currentLanguage, speechLocale, t, type AppLanguage } from "../core/i18n.js";
@@ -30,6 +32,8 @@ import {
   PANEL_HEIGHTS,
   PANEL_OPACITY_MAX,
   PANEL_OPACITY_MIN,
+  hiddenDeviceIds,
+  roomDisplayName,
   type LayoutPrefs,
   type PanelAnchor,
 } from "./panelPrefs.js";
@@ -38,7 +42,12 @@ import type { HostActivityCenter } from "./activityStackView.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import { renderAutomationAndSafetySettingsSections, type HostAutoSafetySession } from "./automationSettingsView.js";
-import { renderConnectionsAndDiagSection, type ConnectionsAndDiagHost } from "./connectionsAndDiagView.js";
+import {
+  readCustomHomeTitle,
+  renderConnectionsAndDiagSection,
+  renderCustomHomeTitleField,
+  type ConnectionsAndDiagHost,
+} from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
 import { readAskWhenUnsure } from "./settings.js";
 
@@ -53,8 +62,8 @@ export type SettingsTab = "general" | "connection" | "assistant" | "system";
 
 /** Tab bar order; `title` is the catalog key, so a missing translation would fail i18n.test.ts. */
 const SETTINGS_TABS: ReadonlyArray<{ readonly id: SettingsTab; readonly title: string }> = [
-  { id: "general", title: "外观与面板" },
-  { id: "connection", title: "数据源" },
+  { id: "general", title: "常规" },
+  { id: "connection", title: "家居连接" },
   { id: "assistant", title: "AI 与习惯" },
   { id: "system", title: "全关与更新" },
 ];
@@ -64,6 +73,7 @@ const SETTINGS_TABS: ReadonlyArray<{ readonly id: SettingsTab; readonly title: s
  * DOM, so switching tabs already keeps a draft; these ids cover the refresh-driven rebuilds.
  */
 const DRAFT_VALUE_IDS: readonly string[] = [
+  "settings-custom-home-title",
   "settings-ha-url",
   "settings-ha-token",
   "settings-base-url",
@@ -135,6 +145,17 @@ export function restoreSettingsDraft(
   if (unsavedBar) {
     unsavedBar.hidden = !draft.unsavedConfirmOpen;
   }
+  const haUrlEl = root.querySelector<HTMLInputElement>("#settings-ha-url");
+  if (haUrlEl) {
+    const warnEl = root.querySelector<HTMLElement>("[data-ha-plaintext-warning]");
+    if (warnEl) {
+      warnEl.hidden = !isPlainHttpRemoteEndpoint(haUrlEl.value);
+    }
+    const fillBtn = root.querySelector<HTMLButtonElement>("#btn-fill-default-ha");
+    if (fillBtn) {
+      fillBtn.disabled = haUrlEl.value.trim().length > 0;
+    }
+  }
   const baseEl = root.querySelector<HTMLInputElement>("#settings-base-url");
   if (baseEl) {
     const preset = inferAssistantPreset(baseEl.value);
@@ -192,6 +213,11 @@ export interface SettingsViewContext {
       "搜索设置项（开机自启 / 密钥 / 全关 / 习惯 / 锁屏…）",
       "搜尋設定項（開機自啟 / 金鑰 / 全關 / 習慣 / 鎖屏…）",
       "Search settings (startup, token, all off, habits, lock…)",
+    );
+    const quitHint = tr3(
+      "完全退出后，托盘图标和快捷键都会停止",
+      "完全退出後，系統匣圖示和快速鍵都會停止",
+      "After quitting completely, the tray icon and global shortcut will stop.",
     );
     return `
       <div class="cc-sheet-backdrop">
@@ -275,7 +301,7 @@ export interface SettingsViewContext {
           </div>
 
           <div class="cc-sheet-footer">
-            <button class="cc-btn-danger cc-btn-ghost-danger" id="btn-settings-quit" data-settings-anchor="quitApp">${t("退出 MenuBarHome")}</button>
+            <button class="cc-btn-danger cc-btn-ghost-danger" id="btn-settings-quit" data-settings-anchor="quitApp" title="${ctx.escapeHtml(quitHint)}">${t("退出 MenuBarHome")}</button>
             <span class="cc-settings-save-hint" data-save-state="clean" title="${ctx.escapeHtml(trText("开关即时生效，地址与密钥点右侧保存", "Toggles apply instantly; click Save for URLs & keys"))}">${ctx.escapeHtml(trText("开关已即时生效", "Toggles auto-save"))}</span>
             <button class="cc-btn-primary" id="btn-save-settings">${t("完成并保存")}</button>
           </div>
@@ -288,6 +314,7 @@ const inactiveTabHtmlCache = new Map<SettingsTab, { key: string; html: string }>
 
 export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: SettingsTab): string | null {
   if (tabId === "general") {
+    const layout = ctx.layout ?? ctx.settings.layout;
     return JSON.stringify([
       t("外观模式"), ctx.availableUpdate, ctx.isCheckingUpdate, ctx.isInstallingUpdate, ctx.updateStatusMessage,
       ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
@@ -296,6 +323,9 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
+      readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
+      ctx.connDiagHost?.homeTitle, ctx.settings.selectedHomeId, ctx.connDiagHost?.homes.map((h) => [h.id, h.name]),
+      hiddenDeviceIds(layout), layout?.aliases, layout?.roomAliases, ctx.devices.map((d) => [d.id, d.name, d.roomId, d.roomName]),
     ]);
   }
   if (tabId === "assistant") {
@@ -330,164 +360,237 @@ function renderSettingsTabPanel(
   return `<div class="cc-settings-tab-panel" role="tabpanel" data-settings-panel="${tabId}" ${hidden}>${innerHtml}</div>`;
 }
 
+function renderGeneralHiddenDevicesRestore(ctx: SettingsViewContext): string {
+  const layout = ctx.layout ?? ctx.settings.layout;
+  const hiddenIds = new Set(hiddenDeviceIds(layout));
+  if (hiddenIds.size === 0) return "";
+  const hiddenList = ctx.devices.filter((d) => hiddenIds.has(d.id));
+  if (hiddenList.length === 0) return "";
+  return `
+    <div class="cc-hidden-devices-restore" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(128, 128, 128, 0.14); display: flex; flex-direction: column; gap: 6px;">
+      <div class="cc-field-row" style="flex-wrap: wrap;">
+        <span class="cc-field-hint" style="margin: 0;">${ctx.escapeHtml(
+          tr3(
+            `已手动隐藏 ${hiddenList.length} 台设备`,
+            `已手動隱藏 ${hiddenList.length} 台裝置`,
+            `${hiddenList.length} manually hidden device(s)`,
+          ),
+        )}</span>
+        ${
+          hiddenList.length > 1
+            ? `<button type="button" class="cc-inline-pill" id="btn-settings-unhide-all-devices">${ctx.escapeHtml(
+                tr3("全部恢复显示", "全部恢復顯示", "Unhide All"),
+              )}</button>`
+            : ""
+        }
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 4px;">
+        ${hiddenList
+          .map((dev) => {
+            const id = ctx.escapeHtml(dev.id);
+            const name = ctx.escapeHtml(layout?.aliases?.[dev.id] ?? dev.name);
+            const room = ctx.escapeHtml(roomDisplayName(layout, dev.roomId, dev.roomName));
+            return `<div class="cc-field-row" style="padding: 4px 8px; border-radius: 6px; background: rgba(128, 128, 128, 0.08);">
+              <span style="min-width: 0; overflow: hidden; text-overflow: ellipsis;">${name}${room ? ` · ${room}` : ""}</span>
+              <button type="button" class="cc-inline-pill" data-unhide-device="${id}">${ctx.escapeHtml(
+                tr3("恢复显示", "恢復顯示", "Restore"),
+              )}</button>
+            </div>`;
+          })
+          .join("")}
+      </div>
+    </div>`;
+}
+
 function renderGeneralPanel(ctx: SettingsViewContext): string {
   return `
     ${ctx.availableUpdate ? renderUpdateSection(ctx) : ""}
 
-    <div class="cc-field" data-settings-anchor="appearanceMode">
-      <label>${t("外观模式")}</label>
-      <div class="cc-segmented-pills is-even">
-        ${APPEARANCES.map(
-          (a) =>
-            `<button class="cc-seg-pill ${ctx.settings.appearance === a.id ? "is-active" : ""}" data-appearance="${a.id}" aria-pressed="${ctx.settings.appearance === a.id}">${ctx.escapeHtml(a.title)}</button>`,
-        ).join("")}
+    <section class="cc-settings-group" data-general-section="basicDisplay" style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cc-group-title" style="font-size: 12px; font-weight: 600; padding: 0 2px;">${ctx.escapeHtml(
+        tr3("基础显示", "基礎顯示", "Basic Display"),
+      )}</div>
+      <div class="cc-field" data-settings-anchor="appearanceMode">
+        <label>${t("外观模式")}</label>
+        <div class="cc-segmented-pills is-even">
+          ${APPEARANCES.map(
+            (a) =>
+              `<button class="cc-seg-pill ${ctx.settings.appearance === a.id ? "is-active" : ""}" data-appearance="${a.id}" aria-pressed="${ctx.settings.appearance === a.id}">${ctx.escapeHtml(a.title)}</button>`,
+          ).join("")}
+        </div>
       </div>
-    </div>
 
-    <div class="cc-field" data-settings-anchor="panelTheme">
-      <label>${t("面板风格")}</label>
-      <div class="cc-segmented-pills is-even">
-        <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "fluent" ? "is-active" : ""}" data-panel-theme="fluent" aria-pressed="${ctx.settings.panelTheme === "fluent"}">${ctx.escapeHtml(t("Win11 双岛"))}</button>
-        <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "classic" ? "is-active" : ""}" data-panel-theme="classic" aria-pressed="${ctx.settings.panelTheme === "classic"}">${ctx.escapeHtml(t("macOS 控制中心"))}</button>
+      <div class="cc-field" data-settings-anchor="language">
+        <label>${t("界面语言")}</label>
+        <div class="cc-segmented-pills">
+          ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["zh-Hant", t("繁體中文")], ["en", "English"]] as const)
+            .map(
+              ([value, label]) =>
+                `<button class="cc-seg-pill ${ctx.settings.interfaceLanguage === value ? "is-active" : ""}" data-interface-language="${value}" aria-pressed="${ctx.settings.interfaceLanguage === value}">${ctx.escapeHtml(label)}</button>`,
+            )
+            .join("")}
+        </div>
       </div>
-    </div>
 
-    <div class="cc-field" data-settings-anchor="panelOpacity">
-      <div class="cc-slider-label">
-        <label for="settings-panel-opacity">${t("面板不透明度")}</label>
-        <strong id="settings-panel-opacity-value">${ctx.settings.panelOpacity}%</strong>
+      <div class="cc-field" data-settings-anchor="temperatureUnit">
+        <label>${t("温度单位")}</label>
+        <div class="cc-segmented-pills">
+          ${([["system", t("跟随系统")], ["celsius", t("摄氏度 (°C)")], ["fahrenheit", t("华氏度 (°F)")]] as const)
+            .map(
+              ([value, label]) =>
+                `<button class="cc-seg-pill ${ctx.settings.temperatureUnit === value ? "is-active" : ""}" data-temperature-unit="${value}" aria-pressed="${ctx.settings.temperatureUnit === value}">${ctx.escapeHtml(label)}</button>`,
+            )
+            .join("")}
+        </div>
       </div>
-      <div class="cc-opacity-row">
-        <input id="settings-panel-opacity" class="cc-range" type="range" min="${PANEL_OPACITY_MIN}" max="${PANEL_OPACITY_MAX}" step="1" value="${ctx.settings.panelOpacity}" aria-valuemin="${PANEL_OPACITY_MIN}" aria-valuemax="${PANEL_OPACITY_MAX}" aria-valuenow="${ctx.settings.panelOpacity}" />
-        <span class="cc-opacity-preview" aria-hidden="true"><span class="cc-opacity-preview-panel">Aa</span></span>
+      ${renderCustomHomeTitleField(ctx)}
+    </section>
+
+    <section class="cc-settings-group" data-general-section="interaction" style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cc-group-title" style="font-size: 12px; font-weight: 600; padding: 0 2px;">${ctx.escapeHtml(
+        tr3("交互", "互動", "Interaction"),
+      )}</div>
+      <div class="cc-field cc-field-row" data-settings-anchor="quickScenesBar">
+        <label for="settings-quick-actions">${t("显示顶部快捷场景栏")}</label>
+        <input id="settings-quick-actions" type="checkbox" ${ctx.settings.showQuickActionsBar ? "checked" : ""} />
       </div>
-      <p class="cc-field-hint">${t("壁纸透出导致文字看不清时调高；100% 为不透明。")}</p>
-    </div>
 
-    <div class="cc-field" data-settings-anchor="language">
-      <label>${t("界面语言 / 语言")}</label>
-      <div class="cc-segmented-pills">
-        ${([["system", t("跟随系统")], ["zh-Hans", t("简体中文")], ["zh-Hant", t("繁體中文")], ["en", "English"]] as const)
-          .map(
-            ([value, label]) =>
-              `<button class="cc-seg-pill ${ctx.settings.interfaceLanguage === value ? "is-active" : ""}" data-interface-language="${value}" aria-pressed="${ctx.settings.interfaceLanguage === value}">${ctx.escapeHtml(label)}</button>`,
-          )
-          .join("")}
+      <div class="cc-field cc-field-row" data-settings-anchor="voiceControl">
+        <div>
+          <label for="settings-voice-input">${t("语音输入")}</label>
+          <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
+            isSpeechRecognitionSupported()
+              ? tr3(
+                  "打开后，面板顶部显示麦克风按钮，用当前界面语言听写。关闭后按钮隐藏，也不会启动识别。",
+                  "開啟後，面板頂部顯示麥克風按鈕，用目前介面語言聽寫。關閉後按鈕隱藏，也不會啟動辨識。",
+                  "When on, a microphone button appears at the top of the panel and dictates in your UI language. When off, the button is hidden and recognition never starts.",
+                )
+              : tr3(
+                  "这台电脑不支持在线语音识别。开关会保留你的选择，但暂时只能用键盘和文字指令。",
+                  "這台電腦不支援線上語音辨識。開關會保留你的選擇，但暫時只能用鍵盤和文字指令。",
+                  "This PC does not support online speech recognition. Your choice is kept, but for now only the keyboard and typed commands work.",
+                ),
+          )}</p>
+        </div>
+        <input id="settings-voice-input" type="checkbox" ${isVoiceInputEnabled(ctx.settings) ? "checked" : ""} />
       </div>
-    </div>
+    </section>
 
-    <div class="cc-field" data-settings-anchor="temperatureUnit">
-      <label>${t("温度单位")}</label>
-      <div class="cc-segmented-pills">
-        ${([["system", t("跟随系统")], ["celsius", t("摄氏度 (°C)")], ["fahrenheit", t("华氏度 (°F)")]] as const)
-          .map(
-            ([value, label]) =>
-              `<button class="cc-seg-pill ${ctx.settings.temperatureUnit === value ? "is-active" : ""}" data-temperature-unit="${value}" aria-pressed="${ctx.settings.temperatureUnit === value}">${ctx.escapeHtml(label)}</button>`,
-          )
-          .join("")}
+    <section class="cc-settings-group" data-general-section="startupShortcuts" style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cc-group-title" style="font-size: 12px; font-weight: 600; padding: 0 2px;">${ctx.escapeHtml(
+        tr3("启动与快捷键", "啟動與快速鍵", "Startup & Shortcuts"),
+      )}</div>
+      <div class="cc-field cc-field-row" data-settings-anchor="launchAtLogin">
+        <label for="settings-launch-at-login">${t("开机自动启动")}</label>
+        <input id="settings-launch-at-login" type="checkbox" ${ctx.settings.launchAtLogin ? "checked" : ""} />
       </div>
-    </div>
 
-    <div class="cc-field" data-settings-anchor="panelHeight">
-      <label>${t("面板高度")}</label>
-      <div class="cc-segmented-pills">
-        ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${ctx.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}" aria-pressed="${ctx.settings.panelHeight === h.id}">${h.title}</button>`).join("")}
+      <div class="cc-field" data-settings-anchor="globalHotkey">
+        <div class="cc-field-row">
+          <label for="settings-enable-hotkey">${t("启用全局呼出快捷键")}</label>
+          <input id="settings-enable-hotkey" type="checkbox" ${ctx.settings.enableGlobalHotkey ? "checked" : ""} />
+        </div>
+        ${
+          ctx.settings.enableGlobalHotkey
+            ? `<div class="cc-update-row" style="margin-top: 6px;">
+                 <span>${t("呼出面板的快捷键")}</span>
+                 <div style="display: flex; gap: 6px; align-items: center;">
+                   <button
+                     type="button"
+                     class="cc-seg-pill ${ctx.isRecordingHotkey ? "is-active" : ""}"
+                     id="btn-record-hotkey"
+                     title="${t("点击后按下新的组合；Esc 取消")}"
+                     aria-pressed="${ctx.isRecordingHotkey}"
+                   >${ctx.isRecordingHotkey ? t("按下组合…") : ctx.escapeHtml(ctx.settings.globalHotkey)}</button>
+                   ${
+                     ctx.settings.globalHotkey !== DEFAULT_GLOBAL_SHORTCUT
+                       ? `<button type="button" class="cc-btn-secondary" id="btn-reset-hotkey">${t("恢复 Alt+M")}</button>`
+                       : ""
+                   }
+                 </div>
+               </div>`
+            : ""
+        }
+        ${
+          ctx.settings.enableGlobalHotkey && (ctx.isRecordingHotkey || ctx.hotkeyNeedsHint)
+            ? `<p class="cc-field-hint" id="hotkey-record-hint">${t("需要至少一个 Ctrl / Alt / Shift / Win，或单按 F1–F20。Esc 取消。")}</p>`
+            : ""
+        }
+        ${
+          ctx.settings.enableGlobalHotkey && ctx.hotkeyRegistrationError
+            ? `<div class="cc-update-row" id="hotkey-conflict-row" style="margin-top: 6px;">
+                 <span class="cc-field-hint" style="color: #e67e22; margin: 0;">${ctx.escapeHtml(ctx.hotkeyRegistrationError)}</span>
+                 <button type="button" class="cc-btn-secondary" id="btn-retry-hotkey">${t("重试")}</button>
+               </div>`
+            : ""
+        }
       </div>
-    </div>
+    </section>
 
-    <div class="cc-field" data-settings-anchor="panelAnchor">
-      <label>${t("面板位置")}</label>
-      <div class="cc-segmented-pills">
-        ${PANEL_ANCHORS.map((a) => `<button class="cc-seg-pill ${ctx.panelAnchor === a.id ? "is-active" : ""}" data-panel-anchor="${a.id}" aria-pressed="${ctx.panelAnchor === a.id}">${ctx.escapeHtml(a.title)}</button>`).join("")}
+    <section class="cc-settings-group" data-general-section="deviceVisibility" style="display: flex; flex-direction: column; gap: 8px;">
+      <div class="cc-group-title" style="font-size: 12px; font-weight: 600; padding: 0 2px;">${ctx.escapeHtml(
+        tr3("设备可见性", "裝置可見性", "Device Visibility"),
+      )}</div>
+      <div class="cc-field" data-settings-anchor="hideOfflineDevices">
+        <div class="cc-field-row">
+          <label for="settings-hide-offline">${t("隐藏离线/未通电的设备")}</label>
+          <input id="settings-hide-offline" type="checkbox" ${ctx.settings.hideOfflineDevices ? "checked" : ""} />
+        </div>
+        ${renderGeneralHiddenDevicesRestore(ctx)}
       </div>
-      <p class="cc-field-hint">${t("拖动面板顶部即可移动，松开后吸附到最近的角落。")}</p>
-    </div>
+    </section>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="climatePanelModule">
-      <label for="settings-climate-panel">${t("空调使用整行控制条")}</label>
-      <input id="settings-climate-panel" type="checkbox" ${ctx.settings.climatePanel ? "checked" : ""} />
-    </div>
+    <details class="cc-conn-secondary" data-conn-section="advancedDisplay" data-general-section="advancedDisplay">
+      <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(
+        tr3("高级显示", "進階顯示", "Advanced Display"),
+      )}</summary>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div class="cc-field" data-settings-anchor="panelTheme">
+          <label>${t("面板风格")}</label>
+          <div class="cc-segmented-pills is-even">
+            <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "fluent" ? "is-active" : ""}" data-panel-theme="fluent" aria-pressed="${ctx.settings.panelTheme === "fluent"}">${ctx.escapeHtml(t("Win11 双岛"))}</button>
+            <button type="button" class="cc-seg-pill ${ctx.settings.panelTheme === "classic" ? "is-active" : ""}" data-panel-theme="classic" aria-pressed="${ctx.settings.panelTheme === "classic"}">${ctx.escapeHtml(t("macOS 控制中心"))}</button>
+          </div>
+        </div>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="hideOfflineDevices">
-      <label for="settings-hide-offline">${t("隐藏离线/未通电的设备")}</label>
-      <input id="settings-hide-offline" type="checkbox" ${ctx.settings.hideOfflineDevices ? "checked" : ""} />
-    </div>
+        <div class="cc-field" data-settings-anchor="panelHeight">
+          <label>${t("面板高度")}</label>
+          <div class="cc-segmented-pills">
+            ${PANEL_HEIGHTS.map((h) => `<button class="cc-seg-pill ${ctx.settings.panelHeight === h.id ? "is-active" : ""}" data-panel-height="${h.id}" aria-pressed="${ctx.settings.panelHeight === h.id}">${h.title}</button>`).join("")}
+          </div>
+        </div>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="hideGroupedLights">
-      <label for="settings-hide-grouped-lights">${t("灯组内的单灯不重复显示")}</label>
-      <input id="settings-hide-grouped-lights" type="checkbox" ${ctx.settings.hideGroupedLights ? "checked" : ""} />
-    </div>
+        <div class="cc-field" data-settings-anchor="panelOpacity">
+          <div class="cc-slider-label">
+            <label for="settings-panel-opacity">${t("面板不透明度")}</label>
+            <strong id="settings-panel-opacity-value">${ctx.settings.panelOpacity}%</strong>
+          </div>
+          <div class="cc-opacity-row">
+            <input id="settings-panel-opacity" class="cc-range" type="range" min="${PANEL_OPACITY_MIN}" max="${PANEL_OPACITY_MAX}" step="1" value="${ctx.settings.panelOpacity}" aria-valuemin="${PANEL_OPACITY_MIN}" aria-valuemax="${PANEL_OPACITY_MAX}" aria-valuenow="${ctx.settings.panelOpacity}" />
+            <span class="cc-opacity-preview" aria-hidden="true"><span class="cc-opacity-preview-panel">Aa</span></span>
+          </div>
+          <p class="cc-field-hint">${t("壁纸透出导致文字看不清时调高；100% 为不透明。")}</p>
+        </div>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="quickScenesBar">
-      <label for="settings-quick-actions">${t("显示顶部快捷场景栏")}</label>
-      <input id="settings-quick-actions" type="checkbox" ${ctx.settings.showQuickActionsBar ? "checked" : ""} />
-    </div>
+        <div class="cc-field" data-settings-anchor="panelAnchor">
+          <label>${t("面板位置")}</label>
+          <div class="cc-segmented-pills">
+            ${PANEL_ANCHORS.map((a) => `<button class="cc-seg-pill ${ctx.panelAnchor === a.id ? "is-active" : ""}" data-panel-anchor="${a.id}" aria-pressed="${ctx.panelAnchor === a.id}">${ctx.escapeHtml(a.title)}</button>`).join("")}
+          </div>
+          <p class="cc-field-hint">${t("拖动面板顶部即可移动，松开后吸附到最近的角落。")}</p>
+        </div>
 
-    <div class="cc-field cc-field-row" data-settings-anchor="launchAtLogin">
-      <label for="settings-launch-at-login">${t("开机自动启动")}</label>
-      <input id="settings-launch-at-login" type="checkbox" ${ctx.settings.launchAtLogin ? "checked" : ""} />
-    </div>
+        <div class="cc-field cc-field-row" data-settings-anchor="climatePanelModule">
+          <label for="settings-climate-panel">${t("空调使用整行控制条")}</label>
+          <input id="settings-climate-panel" type="checkbox" ${ctx.settings.climatePanel ? "checked" : ""} />
+        </div>
 
-    <div class="cc-field" data-settings-anchor="globalHotkey">
-      <div class="cc-field-row">
-        <label for="settings-enable-hotkey">${t("启用全局呼出快捷键")}</label>
-        <input id="settings-enable-hotkey" type="checkbox" ${ctx.settings.enableGlobalHotkey ? "checked" : ""} />
+        <div class="cc-field cc-field-row" data-settings-anchor="hideGroupedLights">
+          <label for="settings-hide-grouped-lights">${t("灯组内的单灯不重复显示")}</label>
+          <input id="settings-hide-grouped-lights" type="checkbox" ${ctx.settings.hideGroupedLights ? "checked" : ""} />
+        </div>
       </div>
-      ${
-        ctx.settings.enableGlobalHotkey
-          ? `<div class="cc-update-row" style="margin-top: 6px;">
-               <span>${t("呼出面板的快捷键")}</span>
-               <div style="display: flex; gap: 6px; align-items: center;">
-                 <button
-                   type="button"
-                   class="cc-seg-pill ${ctx.isRecordingHotkey ? "is-active" : ""}"
-                   id="btn-record-hotkey"
-                   title="${t("点击后按下新的组合；Esc 取消")}"
-                   aria-pressed="${ctx.isRecordingHotkey}"
-                 >${ctx.isRecordingHotkey ? t("按下组合…") : ctx.escapeHtml(ctx.settings.globalHotkey)}</button>
-                 ${
-                   ctx.settings.globalHotkey !== DEFAULT_GLOBAL_SHORTCUT
-                     ? `<button type="button" class="cc-btn-secondary" id="btn-reset-hotkey">${t("恢复 Alt+M")}</button>`
-                     : ""
-                 }
-               </div>
-             </div>`
-          : ""
-      }
-      ${
-        ctx.settings.enableGlobalHotkey && (ctx.isRecordingHotkey || ctx.hotkeyNeedsHint)
-          ? `<p class="cc-field-hint" id="hotkey-record-hint">${t("需要至少一个 Ctrl / Alt / Shift / Win，或单按 F1–F20。Esc 取消。")}</p>`
-          : ""
-      }
-      ${
-        ctx.settings.enableGlobalHotkey && ctx.hotkeyRegistrationError
-          ? `<div class="cc-update-row" id="hotkey-conflict-row" style="margin-top: 6px;">
-               <span class="cc-field-hint" style="color: #e67e22; margin: 0;">${ctx.escapeHtml(ctx.hotkeyRegistrationError)}</span>
-               <button type="button" class="cc-btn-secondary" id="btn-retry-hotkey">${t("重试")}</button>
-             </div>`
-          : ""
-      }
-    </div>
-
-    <div class="cc-field cc-field-row" data-settings-anchor="voiceControl">
-      <div>
-        <label for="settings-voice-input">${t("语音输入")}</label>
-        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
-          isSpeechRecognitionSupported()
-            ? tr3(
-                "打开后，面板顶部显示麦克风按钮，用当前界面语言听写。关闭后按钮隐藏，也不会启动识别。",
-                "開啟後，面板頂部顯示麥克風按鈕，用目前介面語言聽寫。關閉後按鈕隱藏，也不會啟動辨識。",
-                "When on, a microphone button appears at the top of the panel and dictates in your UI language. When off, the button is hidden and recognition never starts.",
-              )
-            : tr3(
-                "这台电脑不支持在线语音识别。开关会保留你的选择，但暂时只能用键盘和文字指令。",
-                "這台電腦不支援線上語音辨識。開關會保留你的選擇，但暫時只能用鍵盤和文字指令。",
-                "This PC does not support online speech recognition. Your choice is kept, but for now only the keyboard and typed commands work.",
-              ),
-        )}</p>
-      </div>
-      <input id="settings-voice-input" type="checkbox" ${isVoiceInputEnabled(ctx.settings) ? "checked" : ""} />
-    </div>
+    </details>
 
     <div class="cc-field cc-field-row" data-settings-anchor="setupGuide">
       <div>
@@ -507,16 +610,66 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
   `;
 }
 
+export function isPlainHttpRemoteEndpoint(rawURL: string): boolean {
+  const trimmed = rawURL.trim();
+  if (!trimmed) return false;
+  const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed) ? trimmed : `http://${trimmed}`;
+  const parsed = parseAssistantEndpoint(withScheme);
+  if (!parsed) return false;
+  return !endpointAllowsSendingSecrets(withScheme);
+}
+
 function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
+  const warnPlainHttp = isPlainHttpRemoteEndpoint(ctx.settings.haBaseURL);
+  const hasHaUrl = ctx.settings.haBaseURL.trim().length > 0;
   return `
     <div class="cc-field">
       <div data-settings-anchor="haServerAddress">
-        <label for="settings-ha-url">Home Assistant URL</label>
+        <div class="cc-field-row" style="flex-wrap: wrap; margin-bottom: 4px;">
+          <label for="settings-ha-url" style="margin: 0;">${ctx.escapeHtml(
+            tr3("Home Assistant 地址 (URL)", "Home Assistant 位址 (URL)", "Home Assistant URL"),
+          )}</label>
+          <button type="button" class="cc-inline-pill" id="btn-fill-default-ha" ${hasHaUrl ? "disabled" : ""}>${ctx.escapeHtml(
+            tr3("填入常用地址", "填入常用位址", "Fill Default Address"),
+          )}</button>
+        </div>
         <input id="settings-ha-url" class="cc-input" type="url" value="${ctx.escapeHtml(ctx.settings.haBaseURL)}" placeholder="http://homeassistant.local:8123" />
+        <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
+          tr3(
+            "不确定地址？可在 Home Assistant 网页设置里查看。",
+            "不確定位址？可在 Home Assistant 網頁設定裡查看。",
+            "Unsure of the address? Check your Home Assistant web settings.",
+          ),
+        )}</p>
+        <p
+          class="cc-field-hint"
+          data-ha-plaintext-warning
+          ${warnPlainHttp ? "" : "hidden"}
+          style="margin: 4px 0 0; font-size: 12px; color: #e67e22;"
+        >${ctx.escapeHtml(
+          tr3(
+            "专属连接钥匙将以明文传送。远程连接建议使用 HTTPS 或 Nabu Casa 地址。",
+            "專屬連線鑰匙將以明文傳送。遠端連線建議使用 HTTPS 或 Nabu Casa 位址。",
+            "Your dedicated connection key will travel unencrypted. Prefer HTTPS or Nabu Casa for remote access.",
+          ),
+        )}</p>
       </div>
       <div data-settings-anchor="haToken" style="margin-top: 6px;">
-        <label for="settings-ha-token">Home Assistant access token</label>
+        <label for="settings-ha-token">${ctx.escapeHtml(
+          tr3(
+            "专属连接钥匙 (Access Token)",
+            "專屬連線鑰匙 (Access Token)",
+            "Dedicated Connection Key (Access Token)",
+          ),
+        )}</label>
         <input id="settings-ha-token" class="cc-input" type="password" autocomplete="off" value="${ctx.escapeHtml(ctx.settings.haToken)}" />
+        <p class="cc-field-hint" style="margin: 4px 0 0;">${ctx.escapeHtml(
+          tr3(
+            "可在 Home Assistant 网页左下角「个人资料 → 安全设置」底部创建长期专属连接钥匙。",
+            "可在 Home Assistant 網頁左下角「個人資料 → 安全設定」底部建立長期專屬連線鑰匙。",
+            "Create a long-lived connection key at the bottom of Profile → Security in your Home Assistant web UI.",
+          ),
+        )}</p>
       </div>
     </div>
   `;
@@ -524,15 +677,13 @@ function renderHomeAssistantCredentialsBlock(ctx: SettingsViewContext): string {
 
 function renderXiaomiCloudBlock(ctx: SettingsViewContext): string {
   return `
-    <div class="cc-field" data-settings-anchor="miCloudRegion">
-      <label>${t("云端服务器地区")}</label>
-      <select class="cc-input" data-mi-region>
-        ${MI_CLOUD_REGIONS.map(
-          (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(t(region.label))}</option>`,
-        ).join("")}
-      </select>
-      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: t(miCloudRegionLabel(ctx.settings.miCloudRegion)) }))}</p>
-    </div>
+    <p class="cc-field-hint" data-mi-unofficial-warning style="margin: 0; font-size: 12px; color: #e67e22;">${ctx.escapeHtml(
+      tr3(
+        "使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。",
+        "使用非官方連線方式。小米可能限制請求或風控帳號，登入會過期，到期需重新掃碼。憑證安全儲存在本機。",
+        "Uses an unofficial connection method. Xiaomi may rate-limit or restrict accounts, and sign-in expires and requires rescanning. Credentials stay safely on this PC.",
+      ),
+    )}</p>
 
     <div class="cc-qr-box" data-settings-anchor="miAccount">
       <button class="cc-btn-primary is-full" id="btn-start-qr" ${ctx.isPollingQR ? "disabled" : ""}>
@@ -553,11 +704,27 @@ function renderXiaomiCloudBlock(ctx: SettingsViewContext): string {
           : ""
       }
     </div>
+
+    <div class="cc-field" data-settings-anchor="miCloudRegion">
+      <label>${t("云端服务器地区")}</label>
+      <select class="cc-input" data-mi-region>
+        ${MI_CLOUD_REGIONS.map(
+          (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(ctx.settings.miCloudRegion) === region.code ? "selected" : ""}>${ctx.escapeHtml(t(region.label))}</option>`,
+        ).join("")}
+      </select>
+      <p class="cc-field-hint">${ctx.escapeHtml(t("当前选择：{region}。切换后请重新扫码登录该地区的米家账号；已登录会话仍使用登录时的地区。", { region: t(miCloudRegionLabel(ctx.settings.miCloudRegion)) }))}</p>
+    </div>
   `;
 }
 
 function renderConnectionPanel(ctx: SettingsViewContext): string {
   const activeBadge = `<span class="cc-conn-active-badge">${ctx.escapeHtml(trText("当前使用", "Active"))}</span>`;
+  const demoHint = tr3(
+    "示例家庭，不会控制真实设备",
+    "範例家庭，不會控制真實裝置",
+    "Demo home — does not control real devices",
+  );
+  const demoEntryLabel = tr3("先逛逛示例家庭", "先逛逛範例家庭", "Explore Demo Home");
   const modeBlocks =
     ctx.settings.connectionMode === "homeAssistant"
       ? `
@@ -588,9 +755,10 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
         : `
     <div class="cc-conn-card is-active-mode" data-conn-section="demo">
       <div class="cc-conn-card-header">
-        <strong>${ctx.escapeHtml(t("演示设备预览"))}</strong>
+        <strong>${ctx.escapeHtml(demoEntryLabel)}</strong>
         ${activeBadge}
       </div>
+      <p class="cc-field-hint" style="margin: 0;">${ctx.escapeHtml(demoHint)}</p>
     </div>
     ${renderHomeAssistantCredentialsBlock(ctx)}
     ${renderXiaomiCloudBlock(ctx)}`;
@@ -610,10 +778,12 @@ function renderConnectionPanel(ctx: SettingsViewContext): string {
           class="cc-seg-pill ${ctx.settings.connectionMode === "demo" ? "is-active" : ""}"
           data-conn-mode="demo"
           data-settings-anchor="demoMode"
+          title="${ctx.escapeHtml(demoHint)}"
         >
-          ${t("演示设备预览")}
+          ${ctx.escapeHtml(demoEntryLabel)}
         </button>
       </div>
+      <p class="cc-field-hint" style="margin: 2px 0 0;">${ctx.escapeHtml(demoHint)}</p>
     </div>
     ${modeBlocks}
     ${renderConnectionsAndDiagSection(ctx)}

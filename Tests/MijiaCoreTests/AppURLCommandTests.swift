@@ -726,4 +726,120 @@ struct AppURLCommandTests {
             #expect(abs(HomeStore.snappedTemperature(item.celsius, lowerBound: item.min, upperBound: item.max, step: item.step) - item.expected) < 1e-6)
         }
     }
+
+    @Test("Direct natural-language fan preset command refuses unpublished modes and lists available ones (#21)")
+    @MainActor
+    func directFanPresetRefusesUnpublishedModeAndListsAvailable() async throws {
+        let suite = "test.raycast.fanpreset.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+
+        let twoModeFan = SmartDevice(
+            id: "dev_two_mode_fan",
+            name: "卧室风扇",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "zhimi.fan.za5",
+            isOnline: true,
+            kind: .fan(FanSpec(
+                entityId: "fan.two_mode",
+                isOn: false,
+                percentage: 30,
+                presetMode: "Auto",
+                availablePresetModes: ["Auto", "Sleep"]
+            ))
+        )
+        let noPresetFan = SmartDevice(
+            id: "dev_no_preset_fan",
+            name: "书房风扇",
+            roomId: "study",
+            roomName: "书房",
+            model: "zhimi.fan.za4",
+            isOnline: true,
+            kind: .fan(FanSpec(
+                entityId: "fan.no_preset",
+                isOn: false,
+                percentage: 40,
+                presetMode: nil,
+                availablePresetModes: []
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [
+                RoomArea(id: "bedroom", name: "卧室", sortOrder: 0),
+                RoomArea(id: "study", name: "书房", sortOrder: 1),
+            ],
+            devices: [twoModeFan, noPresetFan]
+        ))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        let missingFav = await store.executeRaycastDirectCommand("把卧室风扇设为最爱模式")
+        #expect(missingFav.handled)
+        #expect(missingFav.isError)
+        #expect(missingFav.message.contains("Auto"))
+        #expect(missingFav.message.contains("Sleep"))
+        #expect(await provider.executedCommands.isEmpty)
+        if case .fan(let spec)? = store.devices.first(where: { $0.id == "dev_two_mode_fan" })?.kind {
+            #expect(spec.presetMode == "Auto")
+            #expect(spec.isOn == false)
+        }
+
+        let emptyPresets = await store.executeRaycastDirectCommand("把书房风扇设为自动模式")
+        #expect(emptyPresets.handled)
+        #expect(emptyPresets.isError)
+        #expect(await provider.executedCommands.isEmpty)
+    }
+
+    @Test("Direct fan preset succeeds when percentage speed is read-only but preset modes are writable (#263)")
+    @MainActor
+    func directFanPresetSucceedsWhenSpeedReadOnlyButPresetsWritable() async throws {
+        let suite = "test.raycast.fanpreset.readonlyspeed.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+
+        let readOnlySpeedFan = SmartDevice(
+            id: "dev_readonly_speed_fan",
+            name: "客厅风扇",
+            roomId: "living",
+            roomName: "客厅",
+            model: "zhimi.fan.za5",
+            isOnline: true,
+            kind: .fan(FanSpec(
+                entityId: "fan.readonly_speed",
+                isOn: false,
+                percentage: nil,
+                presetMode: "Auto",
+                availablePresetModes: ["Auto", "Sleep"],
+                speedWritable: false
+            ))
+        )
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 0)],
+            devices: [readOnlySpeedFan]
+        ))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        // 1. Natural language preset command works despite speedWritable == false
+        let result = await store.executeRaycastDirectCommand("把客厅风扇设为睡眠模式")
+        #expect(result.handled)
+        #expect(!result.isError)
+        let commands = await provider.executedCommands
+        #expect(commands.last == .setFanPresetMode(entityId: "fan.readonly_speed", presetMode: "Sleep"))
+        if case .fan(let spec)? = store.devices.first(where: { $0.id == "dev_readonly_speed_fan" })?.kind {
+            #expect(spec.presetMode == "Sleep")
+            #expect(spec.isOn == true)
+        }
+
+        // 2. Setting percentage still correctly refuses when speedWritable == false
+        let percentResult = await store.executeRaycastDirectCommand("把客厅风扇风速调到 50%")
+        #expect(percentResult.handled)
+        #expect(percentResult.isError)
+
+        // 3. executeRaycastFan direct URL preset command also works despite speedWritable == false
+        let urlResult = await store.executeRaycastFan(deviceId: "dev_readonly_speed_fan", percent: nil, preset: "Auto")
+        #expect(!urlResult.isError)
+        let updatedCommands = await provider.executedCommands
+        #expect(updatedCommands.last == .setFanPresetMode(entityId: "fan.readonly_speed", presetMode: "Auto"))
+    }
 }
+

@@ -49,12 +49,13 @@ extension HomeStore {
         } else {
             .shared
         }
+        let clientID = UUID()
         let client = LGWebOSClient(
             config: lgConfig,
             trustStore: trustStore,
             onDeviceUpdated: { [weak self] dev in
                 Task { @MainActor [weak self] in
-                    self?.applyLGDeviceUpdate(dev)
+                    self?.applyLGDeviceUpdate(dev, fromClientID: clientID)
                 }
             },
             onClientKeyRegistered: { [weak self] key in
@@ -62,12 +63,12 @@ extension HomeStore {
                     guard let self else { return }
                     // The pairing only counts once the key is actually in the Keychain (#7);
                     // `applyLGClientKey` owns both the success toast and the error.
-                    self.applyLGClientKey(key)
+                    self.applyLGClientKey(key, fromClientID: clientID)
                 }
             },
             onSecurityFailure: { [weak self] message in
                 Task { @MainActor [weak self] in
-                    self?.showToast(message, isError: true)
+                    self?.applyLGSecurityFailure(message, fromClientID: clientID)
                 }
             }
         )
@@ -76,16 +77,27 @@ extension HomeStore {
             Task { await previousLG.shutdown() }
         }
         self.lgWebOSClient = client
+        self.lgWebOSClientID = clientID
         if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
         }
+    }
+
+    func applyLGSecurityFailure(_ message: String, fromClientID clientID: UUID? = nil) {
+        if let clientID {
+            guard !isResumeShutdown, homeBackend != .demo, clientID == lgWebOSClientID else { return }
+        }
+        showToast(message, isError: true)
     }
 
     /// Applies a freshly registered LG pairing key. Returns false when the Keychain refused to store it,
     /// rolling the live client back to the persisted `lgConfig` so client and store never diverge and the
     /// caller never sees a "Paired" toast for a key that will be gone after relaunch (#7).
     @discardableResult
-    func applyLGClientKey(_ key: String) -> Bool {
+    func applyLGClientKey(_ key: String, fromClientID clientID: UUID? = nil) -> Bool {
+        if let clientID {
+            guard !isResumeShutdown, homeBackend != .demo, clientID == lgWebOSClientID else { return false }
+        }
         var updated = lgConfig
         updated.clientKey = key
         // Write before swapping the in-memory config so a refused write keeps the old pairing key.
@@ -112,7 +124,10 @@ extension HomeStore {
         return true
     }
 
-    func applyLGDeviceUpdate(_ dev: SmartDevice) {
+    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil) {
+        if let clientID {
+            guard !isResumeShutdown, clientID == lgWebOSClientID else { return }
+        }
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil

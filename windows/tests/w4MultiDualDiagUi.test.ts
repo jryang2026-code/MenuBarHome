@@ -289,7 +289,8 @@ describe("W4 Contract: zero-conflict exports, search anchors & custom panel top 
 
     assert.equal(CONNECTIONS_DIAG_SEARCH_ANCHORS.length, 6);
     for (const spec of CONNECTIONS_DIAG_SEARCH_ANCHORS) {
-      assert.equal(spec.tab, "connection", `Anchor "${spec.anchor}" must target [data-settings-panel="connection"]`);
+      const expectedTab = spec.anchor === "dashboardTitle" ? "general" : "connection";
+      assert.equal(spec.tab, expectedTab, `Anchor "${spec.anchor}" must target [data-settings-panel="${expectedTab}"]`);
       const el = hostDiv.querySelector(`[data-settings-anchor="${spec.anchor}"]`);
       assert.ok(el, `default Demo DOM must include [data-settings-anchor="${spec.anchor}"]`);
       assert.equal(spec.title.length, 3);
@@ -2455,18 +2456,18 @@ describe("W4 Scanner & Diagnostics UI: cross-account scan, context-switch auto-c
 
     const app = createMountedApp({});
 
-    for (const [query, anchor] of [
-      ["多账号", "miMultiAccounts"],
-      ["断开连接", "haDisconnect"],
-      ["双源融合", "dualSourceFusion"],
-      ["面板标题", "dashboardTitle"],
-      ["扫描未能显示的设备", "scanUnsupportedDevices"],
-      ["复制脱敏诊断报告", "copyDiagnostics"],
+    for (const [query, anchor, expectedTab] of [
+      ["多账号", "miMultiAccounts", "connection"],
+      ["断开连接", "haDisconnect", "connection"],
+      ["双源融合", "dualSourceFusion", "connection"],
+      ["面板标题", "dashboardTitle", "general"],
+      ["扫描未能显示的设备", "scanUnsupportedDevices", "connection"],
+      ["复制脱敏诊断报告", "copyDiagnostics", "connection"],
     ] as const) {
       const outcome = searchSettings(query);
       const hit = outcome.hits.find((h) => h.anchor === anchor);
       assert.ok(hit, `Expected searchSettings("${query}") to match "${anchor}"`);
-      assert.equal(hit.tab, "connection");
+      assert.equal(hit.tab, expectedTab);
     }
 
     app.openSettingsSheet("general");
@@ -2490,19 +2491,21 @@ describe("W4 Scanner & Diagnostics UI: cross-account scan, context-switch auto-c
 
     app.openSettingsSheet("connection");
     const connPanel = app.root.querySelector<HTMLElement>('[data-settings-panel="connection"]');
-    assert.ok(connPanel);
+    const genPanel = app.root.querySelector<HTMLElement>('[data-settings-panel="general"]');
+    assert.ok(connPanel && genPanel);
     for (const spec of CONNECTIONS_DIAG_SEARCH_ANCHORS) {
+      const hostPanel = spec.tab === "general" ? genPanel : connPanel;
       assert.ok(
-        connPanel.querySelector(`[data-settings-anchor="${spec.anchor}"]`),
-        `[data-settings-panel="connection"] must contain [data-settings-anchor="${spec.anchor}"]`,
+        hostPanel.querySelector(`[data-settings-anchor="${spec.anchor}"]`),
+        `[data-settings-panel="${spec.tab}"] must contain [data-settings-anchor="${spec.anchor}"]`,
       );
     }
 
-    const titleInput = app.root.querySelector<HTMLInputElement>('[data-settings-panel="connection"] #settings-custom-home-title');
+    const titleInput = app.root.querySelector<HTMLInputElement>('[data-settings-panel="general"] #settings-custom-home-title');
     assert.ok(titleInput);
     titleInput.value = "书房控制中心";
     titleInput.dispatchEvent(new Event("input", { bubbles: true }));
-    app.root.querySelector<HTMLButtonElement>('[data-settings-panel="connection"] #btn-save-custom-home-title')!.click();
+    app.root.querySelector<HTMLButtonElement>('[data-settings-panel="general"] #btn-save-custom-home-title')!.click();
     await settleUi(2);
     assert.equal(readCustomHomeTitle(app.settings), "书房控制中心");
     assert.equal(effectivePanelHomeTitle(app), "书房控制中心");
