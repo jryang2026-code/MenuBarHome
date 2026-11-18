@@ -153,6 +153,11 @@ public actor MockHomeProvider: HomeProvider {
         continuation?.yield(.statusChanged(status))
     }
 
+    /// Emits a doorbell press as if the source had detected it (#23 dual-source tests).
+    public func sendDoorbellRing(_ ring: DoorbellRing) {
+        continuation?.yield(.doorbellRang(ring))
+    }
+
     public func fetchSensorHistory(
         deviceId: String,
         window: SensorHistoryWindow,

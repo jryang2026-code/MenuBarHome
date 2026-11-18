@@ -134,7 +134,7 @@ import {
   persistMiSessionExpired,
 } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
-import { bindSettingsEvents } from "./settingsEvents.js";
+import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.js";
 import { type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
@@ -729,53 +729,55 @@ export class MenuMijiaWindowsApp {
   }
 
   public bindAllOffControl(): void {
-    this.clearAllOffHold();
-    const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
-    if (!allOff) return;
-    const beginHold = () => {
-      if (this.allOffHoldTimer !== null) return;
-      this.allOffHoldConsumed = false;
-      allOff.classList.add("is-holding");
-      this.allOffHoldTimer = window.setTimeout(() => {
-        this.allOffHoldTimer = null;
-        // The popover hides on window blur but the button stays in the DOM: never fire a hold the
-        // user cannot see finish.
-        if (!allOff.isConnected || !document.hasFocus()) return;
-        this.allOffHoldConsumed = true;
+    this.pipeline.eventScope.bindWithinCurrentScope(this.root, () => {
+      this.clearAllOffHold();
+      const allOff = this.root.querySelector<HTMLElement>("#btn-all-off");
+      if (!allOff) return;
+      const beginHold = () => {
+        if (this.allOffHoldTimer !== null) return;
+        this.allOffHoldConsumed = false;
+        allOff.classList.add("is-holding");
+        this.allOffHoldTimer = window.setTimeout(() => {
+          this.allOffHoldTimer = null;
+          // The popover hides on window blur but the button stays in the DOM: never fire a hold the
+          // user cannot see finish.
+          if (!allOff.isConnected || !document.hasFocus()) return;
+          this.allOffHoldConsumed = true;
+          allOff.classList.remove("is-holding");
+          void this.turnAllOff();
+        }, 600);
+      };
+      // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
+      const endHold = (hint: "never" | "if-pending" | "always") => {
+        const pending = this.allOffHoldTimer !== null;
+        this.clearAllOffHold();
         allOff.classList.remove("is-holding");
-        void this.turnAllOff();
-      }, 600);
-    };
-    // A keyup after the button was rebuilt has no pending timer, so it must not show the short-press hint.
-    const endHold = (hint: "never" | "if-pending" | "always") => {
-      const pending = this.allOffHoldTimer !== null;
-      this.clearAllOffHold();
-      allOff.classList.remove("is-holding");
-      const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
-      if (!showHint) return;
-      this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
-      this.render();
-    };
-    const isHoldKey = (event: KeyboardEvent) => event.key === " " || event.key === "Spacebar" || event.key === "Enter";
-    allOff.addEventListener("pointerdown", () => beginHold());
-    allOff.addEventListener("pointerup", () => endHold("always"));
-    allOff.addEventListener("pointerleave", () => endHold("never"));
-    allOff.addEventListener("blur", () => {
-      this.clearAllOffHold();
-      allOff.classList.remove("is-holding");
-    });
-    allOff.addEventListener("keydown", (event) => {
-      if (!isHoldKey(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      if (event.repeat) return;
-      beginHold();
-    });
-    allOff.addEventListener("keyup", (event) => {
-      if (!isHoldKey(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      endHold("if-pending");
+        const showHint = !this.allOffHoldConsumed && (hint === "always" || (hint === "if-pending" && pending));
+        if (!showHint) return;
+        this.replyBanner = { text: t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与）", { count: this.allOffTargets.length }), source: t("提示") };
+        this.render();
+      };
+      const isHoldKey = (event: KeyboardEvent) => event.key === " " || event.key === "Spacebar" || event.key === "Enter";
+      allOff.addEventListener("pointerdown", () => beginHold());
+      allOff.addEventListener("pointerup", () => endHold("always"));
+      allOff.addEventListener("pointerleave", () => endHold("never"));
+      allOff.addEventListener("blur", () => {
+        this.clearAllOffHold();
+        allOff.classList.remove("is-holding");
+      });
+      allOff.addEventListener("keydown", (event) => {
+        if (!isHoldKey(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.repeat) return;
+        beginHold();
+      });
+      allOff.addEventListener("keyup", (event) => {
+        if (!isHoldKey(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        endHold("if-pending");
+      });
     });
   }
 
@@ -1534,6 +1536,10 @@ export class MenuMijiaWindowsApp {
    */
   public bindSettingsEvents(): void {
     bindSettingsEvents(this);
+  }
+
+  public requestCloseSettingsSheet(): boolean {
+    return requestCloseSettingsSheet(this);
   }
 
   private bindLayoutGestures(): void {

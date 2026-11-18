@@ -546,15 +546,16 @@ function keepEditingSettings(host: SettingsEventsHost): boolean {
   return true;
 }
 
-function requestCloseSettingsSheet(host: SettingsEventsHost): void {
+export function requestCloseSettingsSheet(host: SettingsEventsHost): boolean {
   if (hasUnsavedSettingsChanges(host)) {
     const unsavedBar = settingsUnsavedConfirm(host);
     if (unsavedBar) {
       unsavedBar.hidden = false;
-      return;
+      return false;
     }
   }
   closeSettingsSheetImmediate(host);
+  return true;
 }
 
 export function handleSettingsSheetEscape(host: SettingsEventsHost): void {
