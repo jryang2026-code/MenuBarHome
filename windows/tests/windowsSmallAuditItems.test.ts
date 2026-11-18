@@ -289,10 +289,11 @@ describe("Audit #34: focusDeviceFromUrl respects Settings unsaved changes protec
     assert.match(fb?.message ?? "", /未保存/);
     assert.doesNotMatch(fb?.message ?? "", /请在面板中确认/);
 
-    // Also verify the openExternalUrlConfirmPrompt high-risk branch (~line 668) stops when focusDeviceFromUrl returns false.
+    // Also verify the openExternalUrlConfirmPrompt high-risk branch stops when focusDeviceFromUrl reports unsaved-settings or source-changed with distinct messages.
     let modalCalls = 0;
     let modalRevealCalls = 0;
     let singleExecCalls = 0;
+    let focusResult: "focused" | "unsaved-settings" | "source-changed" = "unsaved-settings";
     const recordedFbs: Array<{ message: string; isError: boolean }> = [];
     const toastResults: Array<{ message: string; isError: boolean }> = [];
     const mockHost: AppURLCommandHost = {
@@ -336,7 +337,7 @@ describe("Audit #34: focusDeviceFromUrl respects Settings unsaved changes protec
       },
       handleNaturalCommand: async () => {},
       executeBuiltInSceneFromUrl: async () => ({ message: "ok", isError: false }),
-      focusDeviceFromUrl: () => false,
+      focusDeviceFromUrl: () => focusResult,
     };
 
     await onOpenURL(
@@ -345,11 +346,80 @@ describe("Audit #34: focusDeviceFromUrl respects Settings unsaved changes protec
     );
     assert.equal(modalCalls, 0, "Must not open high-risk modal prompt when focusDeviceFromUrl is blocked");
     assert.equal(singleExecCalls, 0, "Must not execute high-risk command when focusDeviceFromUrl is blocked");
-    assert.equal(modalRevealCalls, 1, "Must still reveal panel when focusDeviceFromUrl is blocked");
+    assert.equal(modalRevealCalls, 1, "Must still reveal panel when focusDeviceFromUrl is blocked by unsaved settings");
     assert.equal(toastResults.at(-1)?.isError, true);
     assert.match(toastResults.at(-1)?.message ?? "", /未保存/);
     assert.equal(recordedFbs.at(-1)?.isError, true);
     assert.match(recordedFbs.at(-1)?.message ?? "", /未保存/);
+
+    focusResult = "source-changed";
+    await onOpenURL(
+      `menumijia://power?device=plug.heater&on=true&id=req_hr_source_changed&token=${token}`,
+      mockHost,
+    );
+    assert.equal(modalCalls, 0);
+    assert.equal(singleExecCalls, 0);
+    assert.equal(modalRevealCalls, 1, "Source-changed failure must not reveal panel for unsaved settings");
+    assert.equal(toastResults.at(-1)?.isError, true);
+    assert.match(toastResults.at(-1)?.message ?? "", /数据源已切换/);
+    assert.doesNotMatch(toastResults.at(-1)?.message ?? "", /未保存/);
+    assert.notEqual(toastResults.at(-1)?.message, toastResults.at(-2)?.message);
+  });
+
+  it("reports data-source change instead of unsaved settings when sourceRevision changes before focusDeviceFromUrl runs", async () => {
+    let revealCalls = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (name: string) => {
+          if (name === "show_panel_for_url") revealCalls += 1;
+          return null;
+        },
+      },
+    });
+
+    const app = startDemoApp({ enableRaycastIntegration: true });
+    // `onOpenURL` reads `host.devices` twice in `resolveTarget` (before and after lock check)
+    // and then once in `isDeviceVisibleInPanel` before calling `host.focusDeviceFromUrl`.
+    // Advance `sourceRevision` on that third read so `focusDeviceFromUrl` observes `!revisionStillMatches()`.
+    const realDevices = app.devices;
+    const baseRevision = app.sourceRevision;
+    let bumpedRevision = baseRevision;
+    Object.defineProperty(app, "sourceRevision", {
+      configurable: true,
+      get() {
+        return bumpedRevision;
+      },
+    });
+    let reads = 0;
+    Object.defineProperty(app, "devices", {
+      configurable: true,
+      get() {
+        reads += 1;
+        if (reads === 3) {
+          bumpedRevision = baseRevision + 1;
+        }
+        return realDevices;
+      },
+    });
+
+    await enqueueIncomingOpenUrl(
+      app,
+      "menumijia://focus?device=light.living_ceiling&id=req_focus_source_changed",
+    );
+    await flushAsync();
+
+    assert.equal(app.expandedDeviceId, null);
+    assert.equal(revealCalls, 0, "Source change must not reveal panel");
+    assert.equal(app.replyBanner?.isError, true);
+    assert.match(app.replyBanner?.text ?? "", /数据源已切换/);
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /未保存/);
+
+    const fb = getLatestRaycastSnapshotForHost(app).lastCommandFeedback;
+    assert.equal(fb?.requestId, "req_focus_source_changed");
+    assert.equal(fb?.isError, true);
+    assert.match(fb?.message ?? "", /数据源已切换/);
+    assert.doesNotMatch(fb?.message ?? "", /未保存/);
   });
 
   it("closes Settings and focuses the device normally when there are no unsaved edits", async () => {
@@ -376,8 +446,20 @@ describe("Audit #34: focusDeviceFromUrl respects Settings unsaved changes protec
   });
 });
 
-describe("Audit #35: layoutGestures clears prior long-press timer on new pointerdown", () => {
-  it("cancels the previous long-press timer on a new pointerdown and prevents a stale timer from dragging the wrong card", async () => {
+describe("Audit #35: layoutGestures locks active gesture to initiating pointerId", () => {
+  function pointerEvent(
+    type: string,
+    init: MouseEventInit & { pointerId?: number } = {},
+  ): MouseEvent {
+    const ev = new window.MouseEvent(type, { bubbles: true, button: 0, ...init });
+    Object.defineProperty(ev, "pointerId", {
+      value: init.pointerId ?? 1,
+      configurable: true,
+    });
+    return ev;
+  }
+
+  it("ignores secondary pointer events during long-press, prevents stale 450ms timer from acting on a later press, and allows a new gesture after the initiator finishes", async () => {
     const app = startDemoApp();
     await flushAsync();
 
@@ -410,94 +492,111 @@ describe("Audit #35: layoutGestures clears prior long-press timer on new pointer
       const tileA = element('[data-tile-id="light.living_ceiling"]');
       const tileB = element('[data-tile-id="light.study_desk"]');
 
-      tileA.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 30 }));
+      // Pointer 1 presses tile A.
+      tileA.dispatchEvent(pointerEvent("pointerdown", { pointerId: 1, clientX: 20, clientY: 30 }));
       assert.equal(scheduled.length, 1);
-      const timerA = scheduled[0]!;
-      assert.equal(timerA.cleared, false);
+      const timerA1 = scheduled[0]!;
+      assert.equal(timerA1.cleared, false);
 
-      // Second finger presses tile B before tile A is released.
-      tileB.dispatchEvent(new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 140, clientY: 60 }));
-      assert.equal(timerA.cleared, true, "old long-press timer must be cleared when a new pointerdown starts");
-      assert.equal(scheduled.length, 2);
-      const timerB = scheduled[1]!;
+      // Pointer 2 presses tile B while pointer 1 is still active: must be ignored.
+      tileB.dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 140, clientY: 60 }));
+      assert.equal(scheduled.length, 1, "second pointerdown must not schedule a new press timer");
+      assert.equal(timerA1.cleared, false, "second pointerdown must not cancel pointer 1 timer");
 
-      // Even if the stale timerA callback runs, it must NOT drag tile A or enter editing mode.
-      timerA.fn();
-      assert.equal(app.isEditingLayout, false, "stale timer must not enter layout editing mode");
-      assert.equal(app.draggingId, null, "stale timer must not start dragging tile A");
+      // Pointer 2 move/up/cancel must not affect pointer 1.
+      window.dispatchEvent(pointerEvent("pointermove", { pointerId: 2, clientX: 200, clientY: 200 }));
+      window.dispatchEvent(pointerEvent("pointerup", { pointerId: 2, clientX: 200, clientY: 200 }));
+      window.dispatchEvent(pointerEvent("pointercancel", { pointerId: 2 }));
+      assert.equal(timerA1.cleared, false);
+      assert.equal(app.pointerIsDown, true);
 
-      // The active timerB should drag tile B and enter editing mode.
-      timerB.fn();
+      // Pointer 1 releases before 450ms, clearing timerA1.
+      window.dispatchEvent(pointerEvent("pointerup", { pointerId: 1, clientX: 20, clientY: 30 }));
+      assert.equal(timerA1.cleared, true);
+      assert.equal(app.pointerIsDown, false);
+
+      // After pointer 1 ends, pointer 2 can start a new gesture on tile B.
+      tileB.dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 140, clientY: 60 }));
+      assert.equal(scheduled.length, 2, "new gesture can start after initiator ends");
+      const timerB2 = scheduled[1]!;
+
+      // Even if the stale timerA1 callback fires late, it must not act on the new press.
+      timerA1.fn();
+      assert.equal(app.isEditingLayout, false, "stale timer must not affect subsequent press");
+      assert.equal(app.draggingId, null);
+
+      // The active timerB2 enters editing mode and drags tile B.
+      timerB2.fn();
       assert.equal(app.isEditingLayout, true);
       assert.equal(app.draggingId, "light.study_desk");
+
+      window.dispatchEvent(pointerEvent("pointerup", { pointerId: 2, clientX: 140, clientY: 60 }));
+      assert.equal(app.draggingId, null);
     } finally {
       Object.defineProperty(window, "setTimeout", { configurable: true, value: origSetTimeout });
       Object.defineProperty(window, "clearTimeout", { configurable: true, value: origClearTimeout });
     }
   });
 
-  it("cancels an active card drag completely when a second finger presses the background or an excluded control", async () => {
+  it("keeps first-finger card drag alive when a second finger presses, moves, or releases, and allows a new drag after the first finger ends", async () => {
     const app = startDemoApp();
     await flushAsync();
 
-    const selector = '[data-tile-id="light.living_ceiling"]';
-    element(selector).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
+    const tileASelector = '[data-tile-id="light.living_ceiling"]';
+    const tileBSelector = '[data-tile-id="light.study_desk"]';
+    element(tileASelector).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
     await click("[data-start-editing]");
     assert.equal(app.isEditingLayout, true);
 
-    const startDrag = async (): Promise<void> => {
-      element(selector).dispatchEvent(
-        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 40, clientY: 40 }),
-      );
-      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 60 }));
-      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 160, clientY: 80 }));
-      await flushAsync();
-      assert.equal(app.draggingId, "light.living_ceiling");
-      assert.ok(app.dragPointer);
-      assert.equal(element(selector).classList.contains("is-dragging"), true);
-      assert.notEqual(element(selector).style.translate, "");
-    };
-
-    // Case 1: second finger presses panel background.
-    await startDrag();
-    element(".cc-devices-grid").dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }),
+    // First finger (pointerId 1) starts dragging tile A.
+    element(tileASelector).dispatchEvent(pointerEvent("pointerdown", { pointerId: 1, clientX: 40, clientY: 40 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 1, clientX: 80, clientY: 50 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 1, clientX: 120, clientY: 60 }));
+    await flushAsync();
+    assert.equal(app.draggingId, "light.living_ceiling");
+    assert.deepEqual(
+      { x: app.dragPointer?.x, y: app.dragPointer?.y },
+      { x: 120, y: 60 },
     );
+
+    // Second finger (pointerId 2) presses tile B, background, and excluded input, then moves and releases.
+    element(tileBSelector).dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 200, clientY: 60 }));
+    element(".cc-devices-grid").dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 5, clientY: 5 }));
+    element("#command-input").dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 20, clientY: 10 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 2, clientX: 300, clientY: 300 }));
+    window.dispatchEvent(pointerEvent("pointerup", { pointerId: 2, clientX: 300, clientY: 300 }));
+    window.dispatchEvent(pointerEvent("pointercancel", { pointerId: 2 }));
     await flushAsync();
 
-    assert.equal(app.draggingId, null, "background pointerdown must clear draggingId");
-    assert.equal(app.dragPointer, null, "background pointerdown must clear dragPointer");
-    assert.equal(element(selector).classList.contains("is-dragging"), false, "card must leave is-dragging class");
-    assert.equal(element(selector).style.translate, "", "card must clear drag translate");
+    assert.equal(app.draggingId, "light.living_ceiling", "second finger must not cancel first finger drag");
+    assert.deepEqual(
+      { x: app.dragPointer?.x, y: app.dragPointer?.y },
+      { x: 120, y: 60 },
+      "second finger move must not move first finger dragPointer",
+    );
 
-    // Subsequent moves and both releases must keep the card unstuck.
-    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 220, clientY: 120 }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    // First finger continues moving and finishes normally.
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 1, clientX: 160, clientY: 80 }));
+    assert.deepEqual(
+      { x: app.dragPointer?.x, y: app.dragPointer?.y },
+      { x: 160, y: 80 },
+    );
+    window.dispatchEvent(pointerEvent("pointerup", { pointerId: 1, clientX: 160, clientY: 80 }));
     await flushAsync();
     assert.equal(app.draggingId, null);
     assert.equal(app.dragPointer, null);
-    assert.equal(element(selector).classList.contains("is-dragging"), false);
 
-    // Case 2: second finger presses an excluded control (search input).
-    await startDrag();
-    element("#command-input").dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 20, clientY: 10 }),
-    );
+    // Once first finger has ended, a new gesture on tile B works normally.
+    element(tileBSelector).dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 60, clientY: 60 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 2, clientX: 140, clientY: 90 }));
     await flushAsync();
-
-    assert.equal(app.draggingId, null, "excluded-control pointerdown must clear draggingId");
-    assert.equal(app.dragPointer, null, "excluded-control pointerdown must clear dragPointer");
-    assert.equal(element(selector).classList.contains("is-dragging"), false);
-    assert.equal(element(selector).style.translate, "");
-
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    assert.equal(app.draggingId, "light.study_desk");
+    window.dispatchEvent(pointerEvent("pointerup", { pointerId: 2, clientX: 140, clientY: 90 }));
     await flushAsync();
     assert.equal(app.draggingId, null);
   });
 
-  it("cancels an active dim preview without sending a command when a second finger presses background or excluded controls", async () => {
+  it("keeps first-finger brightness dim preview, commits on first-finger release, and suppresses the post-dim click even when a second finger interferes", async () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -534,92 +633,65 @@ describe("Audit #35: layoutGestures clears prior long-press timer on new pointer
     const app = new MenuMijiaWindowsApp(element("#app"));
     await flushAsync();
 
-    let commandCalls = 0;
-    const origExecuteSingleCommand = app.executeSingleCommand.bind(app);
-    app.executeSingleCommand = async (...args) => {
-      commandCalls += 1;
-      return origExecuteSingleCommand(...args);
+    const executedCommands: Array<{ command: unknown; summary: string }> = [];
+    app.executeSingleCommand = async (_dev, command, summary) => {
+      executedCommands.push({ command, summary });
     };
 
     const tileSelector = '[data-tile-id="rw-light"]';
+    const tile = element(tileSelector);
+    tile.getBoundingClientRect = () =>
+      ({
+        left: 0,
+        top: 0,
+        right: 200,
+        bottom: 80,
+        width: 200,
+        height: 80,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }) as DOMRect;
     const fill = () => document.querySelector(`${tileSelector} .cc-tile-fill`)?.getAttribute("style") ?? "";
 
-    const startDimPreview = async (): Promise<void> => {
-      element(tileSelector).dispatchEvent(
-        new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 10, clientY: 40 }),
-      );
-      window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 180, clientY: 42 }));
-      await flushAsync();
-      assert.deepEqual(app.dimPreview, { id: "rw-light", percent: 100 });
-      assert.match(fill(), /width:100%/);
-    };
+    // First finger (pointerId 1) starts dimming to 75%.
+    tile.dispatchEvent(pointerEvent("pointerdown", { pointerId: 1, clientX: 20, clientY: 40 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 1, clientX: 150, clientY: 42 }));
+    await flushAsync();
+    assert.deepEqual(app.dimPreview, { id: "rw-light", percent: 75 });
+    assert.equal(app.suppressNextClick, true);
+    assert.match(fill(), /width:75%/);
 
-    // Case 1: second finger presses panel background.
-    await startDimPreview();
-    element(".cc-devices-grid").dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 5, clientY: 5 }),
-    );
+    // Second finger (pointerId 2) presses, moves to 10%, and releases: must be ignored.
+    element(".cc-devices-grid").dispatchEvent(pointerEvent("pointerdown", { pointerId: 2, clientX: 5, clientY: 5 }));
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 2, clientX: 20, clientY: 42 }));
+    window.dispatchEvent(pointerEvent("pointerup", { pointerId: 2, clientX: 20, clientY: 42 }));
     await flushAsync();
 
-    assert.equal(app.dimPreview, null, "background pointerdown must clear dimPreview");
-    assert.equal(app.suppressNextClick, false, "background pointerdown must clear suppressNextClick");
-    assert.match(fill(), /width:40%/, "tile fill must revert to real brightness");
+    assert.deepEqual(app.dimPreview, { id: "rw-light", percent: 75 }, "second finger must not alter dimPreview");
+    assert.equal(app.suppressNextClick, true, "second finger must not clear suppressNextClick");
+    assert.equal(executedCommands.length, 0, "second finger release must not commit brightness early");
 
-    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 200, clientY: 42 }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
+    // First finger adjusts to 90% and releases: commits 90% brightness.
+    window.dispatchEvent(pointerEvent("pointermove", { pointerId: 1, clientX: 180, clientY: 42 }));
+    window.dispatchEvent(pointerEvent("pointerup", { pointerId: 1, clientX: 180, clientY: 42 }));
     await flushAsync();
+
     assert.equal(app.dimPreview, null);
-    assert.equal(commandCalls, 0, "cancelled dim preview must not send a brightness command");
-    assert.doesNotMatch(document.body.textContent ?? "", /已将|控制失败/);
+    assert.equal(executedCommands.length, 1, "first finger release must commit brightness");
+    assert.deepEqual(executedCommands[0]?.command, {
+      kind: "setLightBrightness",
+      entityId: "miot:rw-light:2",
+      percent: 90,
+    });
+    assert.equal(app.suppressNextClick, true, "suppressNextClick must remain armed for the trailing click");
 
-    // Case 2: second finger presses an excluded inline slider wrapper (which stops bubble propagation).
-    const excludedTarget = element(`${tileSelector} [data-inline-slider-wrap]`);
-    await startDimPreview();
-    excludedTarget.dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 30, clientY: 50 }),
-    );
+    // Trailing click from first finger release must be swallowed and must NOT toggle the light.
+    element(tileSelector).click();
     await flushAsync();
-
-    assert.equal(app.dimPreview, null, "excluded-control pointerdown must clear dimPreview");
-    assert.match(fill(), /width:40%/, "tile fill must revert to real brightness");
-
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    await flushAsync();
-    assert.equal(app.dimPreview, null);
-    assert.equal(commandCalls, 0, "cancelled dim preview must not send a brightness command");
-  });
-
-  it("clears prior drag or dim preview when a second finger presses another tile", async () => {
-    const app = startDemoApp();
-    await flushAsync();
-
-    const tileA = '[data-tile-id="light.living_ceiling"]';
-    const tileB = '[data-tile-id="light.study_desk"]';
-
-    element(tileA).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
-    await click("[data-start-editing]");
-
-    element(tileA).dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 40, clientY: 40 }),
-    );
-    window.dispatchEvent(new window.MouseEvent("pointermove", { bubbles: true, clientX: 120, clientY: 60 }));
-    await flushAsync();
-    assert.equal(app.draggingId, "light.living_ceiling");
-
-    // Second finger presses tile B while tile A is being dragged.
-    element(tileB).dispatchEvent(
-      new window.MouseEvent("pointerdown", { bubbles: true, button: 0, clientX: 200, clientY: 60 }),
-    );
-    await flushAsync();
-    assert.equal(app.draggingId, null, "pressing tile B must clear tile A draggingId");
-    assert.equal(app.dragPointer, null, "pressing tile B must clear tile A dragPointer");
-    assert.equal(element(tileA).classList.contains("is-dragging"), false);
-
-    window.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true }));
-    await flushAsync();
-    assert.equal(app.draggingId, null);
+    assert.equal(app.suppressNextClick, false);
+    assert.equal(executedCommands.length, 1, "trailing click after dim must not toggle light power");
   });
 });
+
 
