@@ -974,7 +974,39 @@ struct DualSourceIntegrationTests {
             #expect(store.panelHealth == .degraded(reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"))
         }
 
-        await haMock.sendLocalNetworkPermission([])
+        // A Xiaomi status update while HA is still in the TCC-blocked window (before HA emits
+        // `.disconnected`, or while merged snapshots are held/absent) emits `sourceStatusesChanged`
+        // with `.homeAssistant: .connected` and must not clear `.homeAssistant` in `HomeStore`.
+        let seenGen = store.snapshotGeneration
+        await miMock.sendStatus(.connecting)
+        await waitUntil { store.snapshotGeneration != seenGen }
+
+        // Direct `sourceStatusesChanged` without a following snapshot (e.g. before initial snapshot
+        // or when only statuses change) preserves `.homeAssistant` while HA has no active usable
+        // route, and clears it once HA is genuinely on an active connected path.
+        store.connectedBackends = [.xiaomiCloud]
+        store.handleProviderEvent(.sourceStatusesChanged([
+            .homeAssistant: .connected,
+            .xiaomiCloud: .connected,
+        ]))
+        #expect(store.effectiveLocalNetworkBlocks.contains(.homeAssistant))
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"))
+        }
+
+        store.connectedBackends = [.homeAssistant, .xiaomiCloud]
+        store.handleProviderEvent(.sourceStatusesChanged([
+            .homeAssistant: .connected,
+            .xiaomiCloud: .connected,
+        ]))
+        #expect(!store.effectiveLocalNetworkBlocks.contains(.homeAssistant))
+
+        await haMock.sendLocalNetworkPermission([.homeAssistant])
+        await waitUntil { store.effectiveLocalNetworkBlocks.contains(.homeAssistant) }
+
+        // When Home Assistant genuinely reconnects through `DualSourceHomeProvider`, its
+        // `.connected` status clears the HA TCC block.
+        await haMock.sendStatus(.connected)
         await waitUntil { !store.effectiveLocalNetworkBlocks.contains(.homeAssistant) }
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(store.panelHealth == .ok)

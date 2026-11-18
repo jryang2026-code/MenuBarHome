@@ -2800,22 +2800,28 @@ struct HybridProviderAndDoorbellTests {
         let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
         let denyLocalNetwork = LockedBox(false)
 
+        let udpCalls = LockedBox(0)
         let udpTransport = MockUDPTransport { packet, _, _ in
+            udpCalls.withValue { $0 += 1 }
             if denyLocalNetwork.withValue({ $0 }) { throw MiIOError.localNetworkDenied }
             if packet == MiIOPacket.helloPacket { return makeHelloResponse(deviceId: 101, stamp: 10) }
             let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
             let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
-            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0},{"did":"102","siid":2,"piid":1,"value":true,"code":0},{"did":"102","siid":2,"piid":2,"value":70,"code":0}]}"#
             return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
         }
         await udpTransport.setBroadcastHandler { _, _, _ in throw MiIOError.localNetworkDenied }
 
         let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
-        let ownWifi = MiDeviceRecord(did: "101", name: "Speaker Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let ownWifi1 = MiDeviceRecord(did: "101", name: "Speaker Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let ownWifi2 = MiDeviceRecord(did: "102", name: "Desk Light", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
         let api = HybridMockCloudAPI(
-            devices: [ownWifi],
-            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
-            props: [MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(55)]
+            devices: [ownWifi1, ownWifi2],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "101", siid: 2, piid: 2): .number(55),
+                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true), MiotPropKey(did: "102", siid: 2, piid: 2): .number(60),
+            ]
         )
         let provider = MiCloudProvider(
             sessionLoader: { self.stubSession },
@@ -2835,28 +2841,58 @@ struct HybridProviderAndDoorbellTests {
         let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
         defer { task.cancel() }
 
-        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan })
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan
+        })
 
         denyLocalNetwork.withValue { $0 = true }
         try await provider.execute(.sendNotifyMessage(entityId: "miot-action:101:7:3", message: "tcc-fallback"))
         #expect(await api.actionCalls == [MiotActionCall(did: "101", siid: 7, aiid: 3, inputs: [.string("tcc-fallback")])])
         #expect(await collector.wait { $0.localNetworkPermissions.last == [.xiaomiLAN] })
+        let blockedStateAfterAction = await provider.lanTransportState(for: "101")
+        #expect(blockedStateAfterAction.consecutiveFailures == 0)
+        #expect(blockedStateAfterAction.isCoolingDown == false)
+
+        // While permission is denied, another command skips LAN UDP completely and goes straight to cloud.
+        let callsBeforeSecondExecute = udpCalls.withValue { $0 }
+        try await provider.execute(.sendNotifyMessage(entityId: "miot-action:102:7:3", message: "tcc-fallback-2"))
+        #expect(udpCalls.withValue({ $0 }) == callsBeforeSecondExecute)
 
         clock.advance(by: 5)
         _ = await provider.readBack(deviceId: "101")
         #expect(await udpTransport.broadcastCalls == 0)
-
-        await provider.refreshNow()
         #expect(await collector.wait {
             $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
+                && $0.snapshots.last?.deviceTransportDiagnostics["101"]?.consecutiveFailures == 0
                 && $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN]
         })
 
+        // Grant Local Network permission while still inside the 30s cooldown window; even a
+        // regular poll / readBack (before refreshNow) must immediately retry LAN and recover.
         denyLocalNetwork.withValue { $0 = false }
         clock.advance(by: 5)
+        let readBackAfterGrant = await provider.readBack(deviceId: "101")
+        #expect(readBackAfterGrant == .published)
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true
+                && $0.localNetworkPermissions.last == []
+        })
+
+        // Verify refreshNow also clears a blocked state and recovers all LAN devices immediately.
+        denyLocalNetwork.withValue { $0 = true }
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .localNetworkBlocked
+                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .localNetworkBlocked
+                && $0.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN]
+        })
+        denyLocalNetwork.withValue { $0 = false }
         await provider.refreshNow()
         #expect(await collector.wait {
             $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["102"]?.route == .lan
                 && $0.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true
                 && $0.localNetworkPermissions.last == []
         })

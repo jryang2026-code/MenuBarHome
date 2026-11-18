@@ -270,7 +270,8 @@ extension HomeStore {
 
         case .sourceStatusesChanged(let statuses):
             if sourceStatuses != statuses { sourceStatuses = statuses }
-            if case .connected = statuses[.homeAssistant] {
+            if case .connected = statuses[.homeAssistant],
+               connectedBackends.contains(.homeAssistant) || (!hasMiSource && connectionStatus.isConnected) {
                 localNetworkBlocks.remove(.homeAssistant)
             }
 
