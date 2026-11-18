@@ -228,19 +228,19 @@ enum DarwinBSDMiIOBroadcastScanner {
 
     static func probeBroadcast(packet: Data, port: UInt16, timeout: Duration) async throws -> [MiIOBroadcastReply] {
         try Task.checkCancellation()
-        let cancelBox = RelayStopBox()
+        let cancelFlag = OSAllocatedUnfairLock(initialState: false)
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { cont in
                 broadcastQueue.async {
-                    if cancelBox.isStopped { cont.resume(throwing: CancellationError()); return }
-                    do { cont.resume(returning: try performBlockingBroadcast(packet: packet, port: port, timeout: timeout, cancelBox: cancelBox)) }
+                    if cancelFlag.withLock({ $0 }) { cont.resume(throwing: CancellationError()); return }
+                    do { cont.resume(returning: try performBlockingBroadcast(packet: packet, port: port, timeout: timeout, cancelFlag: cancelFlag)) }
                     catch { cont.resume(throwing: error) }
                 }
             }
-        } onCancel: { cancelBox.stop() }
+        } onCancel: { cancelFlag.withLock { $0 = true } }
     }
 
-    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelBox: RelayStopBox) throws -> [MiIOBroadcastReply] {
+    private static func performBlockingBroadcast(packet: Data, port: UInt16, timeout: Duration, cancelFlag: OSAllocatedUnfairLock<Bool>) throws -> [MiIOBroadcastReply] {
         var localIPs: Set<String> = ["0.0.0.0", "127.0.0.1"], broadcastIPs: Set<String> = ["255.255.255.255"]
         var ifap: UnsafeMutablePointer<ifaddrs>?
         if getifaddrs(&ifap) == 0, let first = ifap {
@@ -279,7 +279,7 @@ enum DarwinBSDMiIOBroadcastScanner {
         if sentCount == 0 { if sawDenied { throw MiIOError.localNetworkDenied }; return [] }
         let deadline = ContinuousClock.now + .milliseconds(max(1, Int(timeout.components.seconds) * 1000 + Int(timeout.components.attoseconds / 1_000_000_000_000_000)))
         var replies: [MiIOBroadcastReply] = [], seenSources: Set<String> = [], buf = [UInt8](repeating: 0, count: 2048)
-        while !cancelBox.isStopped {
+        while !cancelFlag.withLock({ $0 }) {
             let rem = deadline - ContinuousClock.now
             let remMs = Int(rem.components.seconds) * 1000 + Int(rem.components.attoseconds / 1_000_000_000_000_000)
             if remMs <= 0 { break }
@@ -299,7 +299,7 @@ enum DarwinBSDMiIOBroadcastScanner {
                 replies.append(MiIOBroadcastReply(sourceIP: sourceIP, packet: Data(buf.prefix(n))))
             }
         }
-        if cancelBox.isStopped { throw CancellationError() }
+        if cancelFlag.withLock({ $0 }) { throw CancellationError() }
         return replies
     }
 

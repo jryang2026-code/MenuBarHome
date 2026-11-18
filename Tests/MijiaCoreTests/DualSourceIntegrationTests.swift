@@ -757,11 +757,14 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.pairedDeviceIDs.count == 1
                 && store.devices.count == 2
         }
+        let pairedLightId = try #require(store.pairedDeviceIDs.first)
 
         store.favoriteDeviceIds = []
         store.favoriteOrder = []
@@ -783,7 +786,7 @@ struct DualSourceIntegrationTests {
         #expect(retainedKettle.name == "吧台水壶")
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
-        let onlineLight = try #require(store.devices.first { $0.id == haID })
+        let onlineLight = try #require(store.devices.first { $0.id == pairedLightId })
         #expect(onlineLight.isOnline == true)
         #expect(onlineLight.telemetryStale == false)
 

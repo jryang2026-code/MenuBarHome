@@ -14,7 +14,6 @@ extension HomeStore {
 
     /// Updates network reachability for debounced resume gating.
     public func setNetworkSatisfiedForResume(_ satisfied: Bool) {
-        networkSatisfiedBox.set(satisfied)
         guard isNetworkSatisfiedForResume != satisfied else { return }
         isNetworkSatisfiedForResume = satisfied
         guard let coordinator = debouncedResumeCoordinator else { return }

@@ -914,8 +914,9 @@ public actor MiCloudProvider: HomeProvider {
                             }
                         }
                     } catch is CancellationError { throw CancellationError() }
+                    catch let error as MiIOError where error == .shutDown { throw error }
                     catch let error as MiIOError where error == .localNetworkDenied { updateLocalNetworkDenied(true) }
-                    catch {}
+                    catch { logger.debug("LAN broadcast sweep failed: \(error.localizedDescription, privacy: .public)") }
                 }
             }
             for outcome in failedOutcomes where !recoveredDids.contains(outcome.did) { cloudKeys.append(contentsOf: outcome.keys) }

@@ -201,7 +201,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private let allowsToken: @Sendable (String) -> Bool
     /// Told when the address needs plaintext consent; nothing carrying the token is sent until then.
     private let onPlaintextConsentNeeded: (@Sendable (String) -> Void)?
-    private let isNetworkSatisfied: @Sendable () -> Bool
+    private let isNetworkSatisfied: @Sendable () async -> Bool
     private var isLocalNetworkDenied = false
 
     enum ConnectTestOutcome: Sendable {
@@ -241,7 +241,7 @@ public actor HAWebSocketProvider: HomeProvider {
         rediscover: @escaping @Sendable (String) async -> [HADiscoveredInstance] = { await HADiscovery.discoverOnLAN(currentURLHint: $0) },
         allowsToken: @escaping @Sendable (String) -> Bool = { HAPlaintextConsent.allowsToken(to: $0, defaults: .standard) },
         onPlaintextConsentNeeded: (@Sendable (String) -> Void)? = nil,
-        isNetworkSatisfied: @escaping @Sendable () -> Bool = { true }
+        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { true }
     ) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
@@ -436,7 +436,7 @@ public actor HAWebSocketProvider: HomeProvider {
                 consecutiveFailures = 0
             } catch {
                 if Task.isCancelled { break }
-                let networkSatisfied = isNetworkSatisfied()
+                let networkSatisfied = await isNetworkSatisfied()
                 let host = URL(string: Self.normalizeBaseURL(baseURLString))?.host?.lowercased()
                 updateLocalNetworkDenied(LocalNetworkPermissionClassifier.isDeniedConnectionError(
                     error, targetHost: host, isGeneralNetworkSatisfied: networkSatisfied

@@ -595,7 +595,6 @@ extension HomeStore {
             }
         }
         let defaults = UncheckedUserDefaults(userDefaults)
-        let networkSatisfiedBox = self.networkSatisfiedBox
         return HAWebSocketProvider(
             baseURLString: baseURLString,
             token: token,
@@ -606,7 +605,7 @@ extension HomeStore {
                     self?.askHAPlaintext(url)
                 }
             },
-            isNetworkSatisfied: { networkSatisfiedBox.get() }
+            isNetworkSatisfied: { @MainActor [weak self] in self?.isNetworkSatisfiedForResume ?? true }
         )
     }
 
