@@ -542,6 +542,9 @@ export const ManualControlPolicy = {
         const current = doubleValue(control.value);
         if (current !== null) return requested > current;
         if (heatingService) return true;
+        if (device.kind.kind === "appliance" && device.kind.targetTemperature === null) {
+          return true;
+        }
         return requiresOperationConfirmation(device, {
           kind: "targetTemperature",
           celsius: requested,

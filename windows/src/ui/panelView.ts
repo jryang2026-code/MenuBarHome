@@ -7,7 +7,7 @@ import { bindActivityStackAfterRender, renderActivityStack, renderClassicUnified
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
-import { quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
+import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 import { renderProactiveInlinePill } from "./proactive.js";
 import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
 import { effectivePanelHomeTitle } from "./connectionsAndDiagView.js";
@@ -63,7 +63,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                   ? `<button type="button" class="cc-edit-done-chip" data-done-editing="true">${host.escapeHtml(trText("完成", "Done"))}</button>`
                   : ""
               }
-              <button
+              ${
+                isVoiceInputEnabled(host.settings)
+                  ? `<button
                 class="cc-circle-btn ${host.isListeningVoice ? "is-recording" : ""}"
                 id="btn-mic"
                 title="${t("语音控制")}"
@@ -71,7 +73,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                 aria-pressed="${host.isListeningVoice}"
               >
                 ${SF_ICONS.micFill}
-              </button>
+              </button>`
+                  : ""
+              }
               <button
                 class="cc-circle-btn ${host.isShowingAssistantBar ? "is-selected" : ""}"
                 id="btn-toggle-assistant"

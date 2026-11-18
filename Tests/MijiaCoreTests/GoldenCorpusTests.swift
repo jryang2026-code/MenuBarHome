@@ -1784,15 +1784,17 @@ struct GoldenCorpusTests {
     private struct ConfirmationCorpus: Decodable {
         let rows: [ConfirmationRow]
         let decisionRows: [ConfirmationDecisionRow]
+        let facetRows: [ConfirmationFacetRow]
 
         private enum CodingKeys: String, CodingKey {
-            case rows, decisionRows
+            case rows, decisionRows, facetRows
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             rows = try container.decode([ConfirmationRow].self, forKey: .rows)
             decisionRows = try container.decodeIfPresent([ConfirmationDecisionRow].self, forKey: .decisionRows) ?? []
+            facetRows = try container.decodeIfPresent([ConfirmationFacetRow].self, forKey: .facetRows) ?? []
         }
     }
 
@@ -1805,6 +1807,42 @@ struct GoldenCorpusTests {
         let confidence: Double
         let askWhenUnsure: Bool
         let expectAutoRun: Bool
+    }
+
+    private struct ConfirmationFacetControl: Decodable {
+        let kind: MiotFacetKind
+        let name: String
+        let serviceName: String
+        let value: JSONValue?
+        let writesByDefault: Bool
+
+        func toFacetControl(deviceId: String) -> FacetControl {
+            let target: FacetTarget = kind == .button
+                ? .action(entityId: "miot:\(deviceId):a2")
+                : .property(entityId: "miot:\(deviceId):2", piid: 5)
+            return FacetControl(
+                id: "2.5",
+                kind: kind,
+                name: name,
+                title: nil,
+                serviceName: serviceName,
+                value: value,
+                isWritable: true,
+                writesByDefault: writesByDefault,
+                isHighValue: true,
+                target: target
+            )
+        }
+    }
+
+    /// A row for `ManualControlPolicy.facetRequiresConfirmation`, keeping facet-level confirmation
+    /// rules (such as unknown starting temperatures on water heaters) in cross-platform lockstep.
+    private struct ConfirmationFacetRow: Decodable {
+        let id: String
+        let device: ConfirmationDevice
+        let facet: ConfirmationFacetControl
+        let value: JSONValue?
+        let confirm: Bool
     }
 
     private struct ConfirmationRow: Decodable {
@@ -1855,6 +1893,7 @@ struct GoldenCorpusTests {
             case sensor
             /// Cover subtype string; an unknown value falls back to `.windowOpener` like the corpus decoder.
             case cover(String)
+            case appliance(heats: Bool, targetTemperature: Double?)
         }
 
         let id: String
@@ -1863,7 +1902,7 @@ struct GoldenCorpusTests {
         let kind: Kind
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, model, kind, targetTemperature, subtype
+            case id, name, model, kind, targetTemperature, subtype, heats
         }
 
         init(from decoder: Decoder) throws {
@@ -1873,6 +1912,7 @@ struct GoldenCorpusTests {
             model = try container.decode(String.self, forKey: .model)
             let kindName = try container.decode(String.self, forKey: .kind)
             let hasSetpoint = container.contains(.targetTemperature)
+            let hasHeats = container.contains(.heats)
             switch kindName {
             case "climate":
                 guard hasSetpoint else {
@@ -1882,13 +1922,39 @@ struct GoldenCorpusTests {
                         debugDescription: "climate device \(id) must include targetTemperature"
                     )
                 }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "climate device \(id) must omit heats"
+                    )
+                }
                 kind = .climate(try container.decode(Double.self, forKey: .targetTemperature))
+            case "appliance":
+                guard hasSetpoint else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .kind,
+                        in: container,
+                        debugDescription: "appliance device \(id) must include targetTemperature (or null)"
+                    )
+                }
+                kind = .appliance(
+                    heats: try container.decode(Bool.self, forKey: .heats),
+                    targetTemperature: try container.decodeIfPresent(Double.self, forKey: .targetTemperature)
+                )
             case "cover":
                 guard !hasSetpoint else {
                     throw DecodingError.dataCorruptedError(
                         forKey: .targetTemperature,
                         in: container,
                         debugDescription: "cover device \(id) must omit targetTemperature"
+                    )
+                }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "cover device \(id) must omit heats"
                     )
                 }
                 kind = .cover(try container.decode(String.self, forKey: .subtype))
@@ -1898,6 +1964,13 @@ struct GoldenCorpusTests {
                         forKey: .targetTemperature,
                         in: container,
                         debugDescription: "\(kindName) device \(id) must omit targetTemperature"
+                    )
+                }
+                guard !hasHeats else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .heats,
+                        in: container,
+                        debugDescription: "\(kindName) device \(id) must omit heats"
                     )
                 }
                 switch kindName {
@@ -1985,6 +2058,18 @@ struct GoldenCorpusTests {
                     closeDescription: "Close",
                     pauseDescription: "Pause"
                 ))
+            case .appliance(let heats, let setpoint):
+                deviceKind = .appliance(ApplianceSpec(
+                    entityId: "miot:\(id):2",
+                    isOn: true,
+                    powerPresent: true,
+                    powerWritable: true,
+                    targetTemperature: setpoint,
+                    minTemp: 0,
+                    maxTemp: 80,
+                    temperatureWritable: setpoint != nil,
+                    heats: heats
+                ))
             }
             return SmartDevice(
                 id: id,
@@ -2054,8 +2139,10 @@ struct GoldenCorpusTests {
         let corpus = try JSONDecoder().decode(ConfirmationCorpus.self, from: Data(contentsOf: fixtureURL))
         #expect(corpus.rows.count == 96)
         #expect(corpus.decisionRows.count == 4)
+        #expect(corpus.facetRows.count == 12)
         #expect(Set(corpus.decisionRows.map(\.id)).count == corpus.decisionRows.count)
         #expect(Set(corpus.rows.map(\.id)).count == corpus.rows.count)
+        #expect(Set(corpus.facetRows.map(\.id)).count == corpus.facetRows.count)
         for row in corpus.rows {
             if let device = row.device {
                 #expect(device.id == row.id, "\(row.id)")
@@ -2096,6 +2183,16 @@ struct GoldenCorpusTests {
             if !row.expectAutoRun {
                 #expect(decision.suggestions.count == 1, "\(row.id)")
             }
+        }
+
+        for row in corpus.facetRows {
+            #expect(row.device.id == row.id, "\(row.id)")
+            let device = row.device.toSmartDevice()
+            let facet = row.facet.toFacetControl(deviceId: device.id)
+            #expect(
+                ManualControlPolicy.facetRequiresConfirmation(facet, value: row.value, for: device) == row.confirm,
+                "\(row.id)"
+            )
         }
     }
 

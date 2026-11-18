@@ -953,6 +953,7 @@ describe("A15 Companion URL high-risk confirm, Zero-AI presets, group folding & 
       executeBuiltInSceneFromUrl: async () => ({ message: "ok", isError: false }),
       focusDeviceFromUrl: (id) => {
         host.expandedDeviceId = id;
+        return "focused";
       },
     };
 
