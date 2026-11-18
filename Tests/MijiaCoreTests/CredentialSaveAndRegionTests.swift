@@ -89,6 +89,147 @@ struct CredentialSaveResultTests {
         #expect(!notice.isError)
     }
 
+    @Test("updateLGWebOSConfig refusal never shows saved toast, mutates defaults, or starts connecting")
+    @MainActor
+    func lgConfigUpdateRefusalStopsAndShowsError() async throws {
+        let storage = MemoryVaultStorage()
+        storage.readResult = .unavailable
+        storage.writeSucceeds = false
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let attempted = LGWebOSConfig(
+            isEnabled: true,
+            host: "192.0.2.50",
+            macAddress: "AA:BB:CC:DD:EE:FF",
+            clientKey: "unsaved-key"
+        )
+        #expect(store.updateLGWebOSConfig(attempted) == false)
+
+        #expect(store.lgConfig == LGWebOSConfig(), "unsaved config must not replace in-memory lgConfig")
+        #expect(defaults.object(forKey: "lg_webos_enabled") == nil, "unsaved config must not mutate UserDefaults")
+        #expect(store.lgWebOSClient == nil, "unsaved config must not start an LG client connection")
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        #expect(!notice.message.contains("已保存并重连"))
+        #expect(!notice.message.contains("Saved and reconnecting"))
+    }
+
+    @Test("updateLGWebOSConfig refusal with an existing client keeps the old saved config on the client")
+    @MainActor
+    func lgConfigUpdateRefusalPreservesExistingClientConfig() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
+        #expect(store.updateLGWebOSConfig(initial))
+        let client = try #require(store.lgWebOSClient)
+
+        storage.writeSucceeds = false
+        store.dismissToast()
+        let replacement = LGWebOSConfig(isEnabled: true, host: "192.0.2.99", clientKey: "unsaved-new-key")
+        #expect(store.updateLGWebOSConfig(replacement) == false)
+
+        #expect(store.lgConfig == initial)
+        #expect(await client.configForTesting == initial, "client must not connect with unsaved config")
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        #expect(!notice.message.contains("已保存并重连"))
+        await client.shutdown()
+    }
+
+    @Test("updateLGWebOSConfig refusal in Demo Mode still reports the error instead of demo notice")
+    @MainActor
+    func lgConfigUpdateRefusalInDemoReportsError() throws {
+        let storage = MemoryVaultStorage()
+        storage.readResult = .unavailable
+        storage.writeSucceeds = false
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+        store.switchBackend(.demo)
+
+        #expect(store.updateLGWebOSConfig(LGWebOSConfig(isEnabled: true, host: "192.0.2.50")) == false)
+
+        #expect(store.lgConfig == LGWebOSConfig())
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        #expect(!notice.message.contains("演示模式下不会连接"))
+        #expect(!notice.message.contains("Demo Mode does not connect"))
+    }
+
+    @Test("resetLGWebOSTrustAndPair refusal keeps the saved pairing key, stops connecting with empty key, and shows an error")
+    @MainActor
+    func lgResetTrustRefusalKeepsKeyAndShowsError() async throws {
+        let storage = MemoryVaultStorage()
+        let vault = memoryVault(storage)
+        let (suite, defaults) = try suiteDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.toastAutoDismissInterval = nil
+
+        let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
+        #expect(store.updateLGWebOSConfig(initial))
+        let client = try #require(store.lgWebOSClient)
+        #expect(store.lgConfig.clientKey == "saved-key")
+
+        storage.writeSucceeds = false
+        store.dismissToast()
+        let resetResult = await store.resetLGWebOSTrustAndPair()?.value
+
+        #expect(resetResult == false)
+        #expect(store.lgConfig.clientKey == "saved-key", "refused Keychain clear must keep old pairing key")
+        #expect(await client.configForTesting.clientKey == "saved-key", "client must not reconnect with unsaved empty key")
+        let notice = try #require(store.toastNotice)
+        #expect(notice.isError)
+        #expect(!notice.message.contains("旧电视身份已清除"))
+        #expect(!notice.message.contains("Saved TV identity cleared"))
+
+        // Once Keychain writes work again, retrying clears the key and notifies the user.
+        storage.writeSucceeds = true
+        store.dismissToast()
+        let retryResult = await store.resetLGWebOSTrustAndPair()?.value
+        #expect(retryResult == true)
+        #expect(store.lgConfig.clientKey.isEmpty)
+        #expect(await client.configForTesting.clientKey.isEmpty)
+        let retryNotice = try #require(store.toastNotice)
+        #expect(!retryNotice.isError)
+        await client.shutdown()
+    }
+
     @Test("AssistantConfig.save reports a refused Keychain write and leaves the saved endpoint alone")
     func assistantConfigSaveReportsFailure() throws {
         let storage = MemoryVaultStorage()

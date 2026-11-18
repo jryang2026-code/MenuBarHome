@@ -42,8 +42,16 @@ extension HomeStore {
 
     func startLGWebOSIfNeeded() {
         guard homeBackend != .demo else { return }
+        let trustStore: LGCertificateTrust = if let credentialVault {
+            LGCertificateTrust(vault: credentialVault)
+        } else if userDefaults !== UserDefaults.standard {
+            LGCertificateTrust(defaults: userDefaults)
+        } else {
+            .shared
+        }
         let client = LGWebOSClient(
             config: lgConfig,
+            trustStore: trustStore,
             onDeviceUpdated: { [weak self] dev in
                 Task { @MainActor [weak self] in
                     self?.applyLGDeviceUpdate(dev)
@@ -1222,11 +1230,20 @@ extension HomeStore {
         return found
     }
 
-    public func updateLGWebOSConfig(_ newConfig: LGWebOSConfig) {
+    @discardableResult
+    public func updateLGWebOSConfig(_ newConfig: LGWebOSConfig) -> Bool {
+        // Write before swapping `lgConfig` or updating `lgWebOSClient` so a refused Keychain write
+        // never leaves unsaved config in memory, never connects with it, and never shows a success toast (#7).
+        guard newConfig.save(to: userDefaults, vault: credentialVault) else {
+            lgConfigSaveFailed = true
+            showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+            return false
+        }
         if newConfig.host != lgConfig.host || newConfig.isEnabled != lgConfig.isEnabled || newConfig.clientKey != lgConfig.clientKey {
             invalidateUndoContext()
         }
         self.lgConfig = newConfig
+        guard !lgConfigSaveFailed else { return false }
         if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
             latestLGDevice = nil
             lastReportedDevices.removeValue(forKey: LGWebOSProtocol.deviceId)
@@ -1239,7 +1256,7 @@ extension HomeStore {
                     ? L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs")
                     : L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection")
             )
-            return
+            return true
         }
         if let lgClient = lgWebOSClient {
             Task {
@@ -1258,6 +1275,7 @@ extension HomeStore {
         } else {
             showToast(L10n.tr("已停用 LG 电视局域网直连", "Disabled LG TV LAN direct connection"))
         }
+        return true
     }
 
     public func triggerLGWebOSPairing() {
@@ -1280,21 +1298,36 @@ extension HomeStore {
     }
 
     /// Called only after Settings confirms discarding the saved TV identity.
-    public func resetLGWebOSTrustAndPair() {
+    @discardableResult
+    public func resetLGWebOSTrustAndPair() -> Task<Bool, Never>? {
         guard homeBackend != .demo else {
             showToast(L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs"), isError: true)
-            return
+            return nil
         }
-        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient else { return }
+        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient else { return nil }
         let host = lgConfig.host
-        Task {
+        return Task { @MainActor [weak self] () -> Bool in
+            guard let self else { return false }
             do {
-                try await client.resetTrustAndPair()
-                guard lgConfig.host == host else { return }
-                lgConfig.clientKey = ""
-                showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
+                try await client.resetTrust()
+                guard self.lgConfig.host == host else { return false }
+                var cleared = self.lgConfig
+                cleared.clientKey = ""
+                // Commit the Keychain clear before swapping `lgConfig` or reconnecting, so a refused
+                // write keeps the existing key, never claims success, and never reconnects unsaved state (#7).
+                guard cleared.save(to: self.userDefaults, vault: self.credentialVault) else {
+                    self.lgConfigSaveFailed = true
+                    self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+                    return false
+                }
+                self.lgConfig = cleared
+                guard !self.lgConfigSaveFailed else { return false }
+                await client.updateConfig(cleared)
+                self.showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
+                return true
             } catch {
-                showToast(error.localizedDescription, isError: true)
+                self.showToast(error.localizedDescription, isError: true)
+                return false
             }
         }
     }

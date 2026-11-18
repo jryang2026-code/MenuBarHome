@@ -737,17 +737,18 @@ public final class HomeStore {
     public var updateRelaunchWatchdogInterval: Duration? = .seconds(30)
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
+    static var lgKeychainSaveErrorMessage: String {
+        L10n.tr(
+            "无法把电视配对密钥写入钥匙串，请授权钥匙串访问后重试",
+            "Could not save the TV pairing key to Keychain; allow Keychain access and try again"
+        )
+    }
+
     public var lgConfig: LGWebOSConfig {
         didSet {
             lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
             if lgConfigSaveFailed {
-                showToast(
-                    L10n.tr(
-                        "无法把电视配对密钥写入钥匙串，请授权钥匙串访问后重试",
-                        "Could not save the TV pairing key to Keychain; allow Keychain access and try again"
-                    ),
-                    isError: true
-                )
+                showToast(Self.lgKeychainSaveErrorMessage, isError: true)
             }
         }
     }

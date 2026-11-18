@@ -32,10 +32,12 @@ final class LGCertificateTrust: @unchecked Sendable {
 
     private let lock = NSLock()
     private let defaults: UserDefaults?
+    private let vault: CredentialVault?
     private var failures: [String: Failure] = [:]
 
-    init(defaults: UserDefaults? = nil) {
+    init(defaults: UserDefaults? = nil, vault: CredentialVault? = nil) {
         self.defaults = defaults
+        self.vault = vault
     }
 
     func accepts(certificate: Data, host: String) -> Bool {
@@ -92,13 +94,20 @@ final class LGCertificateTrust: @unchecked Sendable {
     }
 
     private func load(_ account: String) throws -> String? {
+        if let vault {
+            return try loadFromVault(vault, account: account)
+        }
         if let defaults {
             guard let stored = defaults.object(forKey: account) else { return nil }
             guard let value = stored as? String, !value.isEmpty else { throw Failure.unavailable }
             return value
         }
+        return try loadFromVault(.shared, account: account)
+    }
+
+    private func loadFromVault(_ activeVault: CredentialVault, account: String) throws -> String? {
         // A pin that cannot be read fails closed; only a pin that is known to be absent reads as nil.
-        switch CredentialVault.shared.lookup(account) {
+        switch activeVault.lookup(account) {
         case .missing:
             return nil
         case .unavailable:
@@ -110,6 +119,9 @@ final class LGCertificateTrust: @unchecked Sendable {
     }
 
     private func save(_ value: String, account: String) -> Bool {
+        if let vault {
+            return KeychainHelper.writeKeychainSecret(value, account: account, vault: vault)
+        }
         if let defaults {
             if value.isEmpty { defaults.removeObject(forKey: account) }
             else { defaults.set(value, forKey: account) }

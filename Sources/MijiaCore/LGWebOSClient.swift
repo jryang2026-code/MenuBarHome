@@ -95,12 +95,13 @@ public struct LGWebOSConfig: Equatable, Sendable {
     /// user instead of claiming the TV was paired.
     @discardableResult
     public func save(to defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
+        guard Self.saveClientKey(clientKey, to: defaults, vault: vault) else { return false }
         defaults.set(isEnabled, forKey: "lg_webos_enabled")
         defaults.set(host, forKey: "lg_webos_host")
         defaults.set(macAddress, forKey: "lg_webos_mac")
         defaults.set(name, forKey: "lg_webos_name")
         defaults.set(roomName, forKey: "lg_webos_room")
-        return Self.saveClientKey(clientKey, to: defaults, vault: vault)
+        return true
     }
 
     /// The pairing key is a credential, so `.standard` keeps it only in the Keychain (#16). Other suites (tests)
@@ -434,6 +435,7 @@ final class LGWebOSTrustDelegate: NSObject, URLSessionDelegate, Sendable {
 public actor LGWebOSClient {
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "LGWebOS")
     private var config: LGWebOSConfig
+    private let trustStore: LGCertificateTrust
     private var session: URLSession?
     private var isShutDown = false
     private let onDeviceUpdated: @Sendable (SmartDevice) -> Void
@@ -445,6 +447,7 @@ public actor LGWebOSClient {
     private var sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
     private var nextRequestId: Int = 1
 
+    var configForTesting: LGWebOSConfig { config }
     var hasActiveSessionForTesting: Bool { session != nil }
     var isConnectedForTesting: Bool { isConnected }
     var isShutDownForTesting: Bool { isShutDown }
@@ -471,6 +474,7 @@ public actor LGWebOSClient {
         onSecurityFailure: @escaping @Sendable (String) -> Void
     ) {
         self.config = config
+        self.trustStore = .shared
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
@@ -479,30 +483,32 @@ public actor LGWebOSClient {
 
     init(
         config: LGWebOSConfig,
+        trustStore: LGCertificateTrust = .shared,
         onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
         onClientKeyRegistered: @escaping @Sendable (String) -> Void,
         onSecurityFailure: @escaping @Sendable (String) -> Void,
-        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
+        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)? = nil
     ) {
         self.config = config
+        self.trustStore = trustStore
         self.onDeviceUpdated = onDeviceUpdated
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
         self.sendFrameOverrideForTesting = sendFrameOverrideForTesting
     }
 
-    private static func makeURLSession() -> URLSession {
+    private static func makeURLSession(trustStore: LGCertificateTrust) -> URLSession {
         let urlConfig = URLSessionConfiguration.ephemeral
         urlConfig.connectionProxyDictionary = [:]
         urlConfig.timeoutIntervalForRequest = 30
         urlConfig.waitsForConnectivity = false
-        return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(), delegateQueue: nil)
+        return URLSession(configuration: urlConfig, delegate: LGWebOSTrustDelegate(trustStore: trustStore), delegateQueue: nil)
     }
 
     private func replaceSession() -> URLSession? {
         guard !isShutDown else { return nil }
         let previous = self.session
-        let created = Self.makeURLSession()
+        let created = Self.makeURLSession(trustStore: trustStore)
         self.session = created
         createdSessionCountForTesting += 1
         if let previous {
@@ -568,14 +574,15 @@ public actor LGWebOSClient {
         }
     }
 
-    func resetTrustAndPair() throws {
+    /// Stops any active connection and discards the pinned TLS certificate without clearing
+    /// `config.clientKey` or reconnecting; the caller commits the Keychain clear first and
+    /// calls `updateConfig` only if persistence succeeded.
+    func resetTrust() throws {
         guard !isShutDown else { return }
         stop()
-        guard LGCertificateTrust.shared.reset(host: config.host) else {
+        guard trustStore.reset(host: config.host) else {
             throw LGCertificateTrust.Failure.unavailable
         }
-        config.clientKey = ""
-        start()
     }
 
     // MARK: - Command Execution
@@ -715,7 +722,7 @@ public actor LGWebOSClient {
                 isConnected = false
                 isWaitingForPairing = false
                 emitCurrentDevice()
-                if let failure = LGCertificateTrust.shared.failure(for: config.host) {
+                if let failure = trustStore.failure(for: config.host) {
                     onSecurityFailure(failure.localizedDescription)
                     return
                 }

@@ -1796,6 +1796,77 @@ private struct AboutSettingsTab: View {
 
 // MARK: - LG webOS
 
+enum LGWebOSSettingsSaveGuard {
+    @MainActor
+    @discardableResult
+    static func toggleEnabled(
+        _ newValue: Bool,
+        isEnabled: inout Bool,
+        hostDraft: String,
+        macDraft: String,
+        in store: HomeStore
+    ) -> Bool {
+        guard newValue != store.lgConfig.isEnabled else { return true }
+        var next = store.lgConfig
+        next.isEnabled = newValue
+        next.host = hostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        next.macAddress = macDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let saved = store.updateLGWebOSConfig(next)
+        isEnabled = store.lgConfig.isEnabled
+        return saved
+    }
+
+    @MainActor
+    @discardableResult
+    static func saveDrafts(
+        isEnabled: inout Bool,
+        hostDraft: inout String,
+        macDraft: inout String,
+        in store: HomeStore
+    ) -> Bool {
+        var next = store.lgConfig
+        next.isEnabled = isEnabled
+        next.host = hostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        next.macAddress = macDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let saved = store.updateLGWebOSConfig(next)
+        isEnabled = store.lgConfig.isEnabled
+        if saved {
+            hostDraft = store.lgConfig.host
+            macDraft = store.lgConfig.macAddress
+        }
+        return saved
+    }
+
+    @MainActor
+    @discardableResult
+    static func pairTV(
+        isEnabled: inout Bool,
+        hostDraft: inout String,
+        macDraft: inout String,
+        in store: HomeStore
+    ) -> Bool {
+        guard saveDrafts(isEnabled: &isEnabled, hostDraft: &hostDraft, macDraft: &macDraft, in: store) else {
+            return false
+        }
+        store.triggerLGWebOSPairing()
+        return true
+    }
+
+    @MainActor
+    @discardableResult
+    static func resetTrustAndPair(
+        isEnabled: inout Bool,
+        hostDraft: inout String,
+        macDraft: inout String,
+        in store: HomeStore
+    ) -> Task<Bool, Never>? {
+        guard saveDrafts(isEnabled: &isEnabled, hostDraft: &hostDraft, macDraft: &macDraft, in: store) else {
+            return nil
+        }
+        return store.resetLGWebOSTrustAndPair()
+    }
+}
+
 struct LGWebOSSettingsSection: View {
     let store: HomeStore
     @State private var isEnabled: Bool = false
@@ -1830,12 +1901,13 @@ struct LGWebOSSettingsSection: View {
                     .toggleStyle(.glass)
                     .controlSize(.regular)
                     .onChange(of: isEnabled) { _, newValue in
-                        guard newValue != store.lgConfig.isEnabled else { return }
-                        var next = store.lgConfig
-                        next.isEnabled = newValue
-                        next.host = hostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        next.macAddress = macDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-                        store.updateLGWebOSConfig(next)
+                        LGWebOSSettingsSaveGuard.toggleEnabled(
+                            newValue,
+                            isEnabled: &isEnabled,
+                            hostDraft: hostDraft,
+                            macDraft: macDraft,
+                            in: store
+                        )
                     }
             }
 
@@ -1886,8 +1958,12 @@ struct LGWebOSSettingsSection: View {
                     .disabled(isScanning)
 
                     Button(L10n.tr("发起电视配对", "Pair TV")) {
-                        saveDrafts()
-                        store.triggerLGWebOSPairing()
+                        LGWebOSSettingsSaveGuard.pairTV(
+                            isEnabled: &isEnabled,
+                            hostDraft: &hostDraft,
+                            macDraft: &macDraft,
+                            in: store
+                        )
                     }
                     .buttonStyle(PillActionButtonStyle())
 
@@ -1898,8 +1974,12 @@ struct LGWebOSSettingsSection: View {
                     .alert(L10n.tr("清除已保存的电视身份？", "Clear the saved TV identity?"), isPresented: $confirmsTrustReset) {
                         Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
                         Button(L10n.tr("重新配对", "Pair Again"), role: .destructive) {
-                            saveDrafts()
-                            store.resetLGWebOSTrustAndPair()
+                            LGWebOSSettingsSaveGuard.resetTrustAndPair(
+                                isEnabled: &isEnabled,
+                                hostDraft: &hostDraft,
+                                macDraft: &macDraft,
+                                in: store
+                            )
                         }
                     } message: {
                         Text(L10n.tr("请先核对电视 IP。确认后将清除旧证书和配对密钥，下次连接会信任新的证书，并要求在电视上重新确认。", "Verify the TV IP first. This clears the saved certificate and pairing key, trusts the certificate on the next connection, and requires confirmation on the TV."))
@@ -1919,13 +1999,18 @@ struct LGWebOSSettingsSection: View {
             hostDraft = store.lgConfig.host
             macDraft = store.lgConfig.macAddress
         }
+        .onChange(of: store.lgConfig.isEnabled) { _, newValue in
+            isEnabled = newValue
+        }
     }
 
-    private func saveDrafts() {
-        var next = store.lgConfig
-        next.isEnabled = isEnabled
-        next.host = hostDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        next.macAddress = macDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        store.updateLGWebOSConfig(next)
+    @discardableResult
+    private func saveDrafts() -> Bool {
+        LGWebOSSettingsSaveGuard.saveDrafts(
+            isEnabled: &isEnabled,
+            hostDraft: &hostDraft,
+            macDraft: &macDraft,
+            in: store
+        )
     }
 }
