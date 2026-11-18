@@ -872,6 +872,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "窗帘": ["窗帘", "Curtain"],
   "重试退出米家登录": ["重试退出米家登录", "Retry sign-out"],
   "米家登录将在 {date} 到期": ["米家登录将在 {date} 到期", "Xiaomi Home sign-in expires {date}"],
+  "部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。": ["部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。", "Some Xiaomi accounts cannot be read right now; the others still work. Restart or sign in again to retry."],
   "退出米家登录": ["退出米家登录", "Sign out"],
   "电视": ["电视", "TV"],
   "加湿器": ["加湿器", "Humidifier"],

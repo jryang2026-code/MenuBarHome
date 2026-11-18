@@ -8,6 +8,7 @@ import { applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAlias
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
+import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import { environmentReadingPriority, type HomeBackend, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
@@ -20,6 +21,7 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   MiAccountsStore,
+  hasCorruptMiAccountIndex,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   refreshMiAccountsConcurrently,
@@ -84,8 +86,17 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (!isHostAttachedToActiveWindow(host)) return;
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
-    if (host.settings.connectionMode === "xiaomiCloud" && hasMultipleMiAccountsForHost(host)) {
-      return refreshMultiAccountXiaomiDevices(host, silent);
+    if (host.settings.connectionMode === "xiaomiCloud") {
+      // The store's first load of this window enumerates the credential slots; later loads read
+      // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
+      const revision = host.localControlRevision;
+      const store = getHostMiAccountsStore(host);
+      const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
+      await adoptRecoveredPrimarySession(host, store, storeAccounts);
+      if (host.localControlRevision !== revision) return;
+      if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
+        return refreshMultiAccountXiaomiDevices(host, silent);
+      }
     }
     if (!host.settings.miSession || host.settings.connectionMode !== "xiaomiCloud" || host.isSyncingCloud) return;
     const session = host.settings.miSession;
@@ -769,7 +780,34 @@ export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMul
 
 export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
   if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
-  return hasSecondaryMiAccountsInIndex();
+  // A corrupt index cannot prove there is only one account; `store.load()` must run to rebuild it.
+  return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex();
+}
+
+/**
+ * Enumeration can promote a recovered secondary account into `mi_session` when no primary
+ * credential exists. The settings object must learn that session immediately, otherwise the next
+ * settings save persists `miSession: null` and deletes the recovered account's only credential.
+ */
+export async function adoptRecoveredPrimarySession(
+  host: { readonly settings: { miSession: MiSession | null; miCloudRegion: string } },
+  store: MiAccountsStore,
+  accounts: readonly MiAccount[],
+): Promise<void> {
+  const primary = accounts[0];
+  const adoptionBlocked = (): boolean => hasPendingMiVaultDeletion() || host.settings.miSession !== null;
+  if (!primary || adoptionBlocked() || !store.hasConfirmedPrimarySession()) {
+    return;
+  }
+  // The load may have raced a sign-out or another credential write. A confirmed mismatch means the
+  // promoted session is gone; an unavailable verification must not cost the just-promoted credential.
+  if ((await store.checkPrimarySession(primary.session)) === "stale") return;
+  // Revalidate after each await: a sign-out may have started or completed in the meantime.
+  if (adoptionBlocked()) return;
+  if ((await store.checkPrimarySession(primary.session)) === "stale") return;
+  if (adoptionBlocked()) return;
+  host.settings.miSession = primary.session;
+  host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }
 
 function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
@@ -836,7 +874,9 @@ export async function refreshMultiAccountXiaomiDevices(
   ) {
     return;
   }
-  const loadedFromStore = host.miAccountsOverride ?? (await getHostMiAccountsStore(host).load());
+  const store = getHostMiAccountsStore(host);
+  const loadedFromStore = host.miAccountsOverride ?? (await store.load());
+  await adoptRecoveredPrimarySession(host, store, loadedFromStore);
   if (
     !isHostAttachedToActiveWindow(host) ||
     host.settings.connectionMode !== "xiaomiCloud" ||
@@ -1096,11 +1136,10 @@ export async function refreshDualSourceDevices(
   const endpoint = host.settings.haBaseURL;
   const token = host.settings.haToken;
   const overrideAccounts = host.miAccountsOverride;
+  const store = getHostMiAccountsStore(host);
   const loadedAccounts =
-    overrideAccounts ??
-    (host.settings.miSession && !hasSecondaryMiAccountsInIndex()
-      ? [makeMiAccount(host.settings.miSession)]
-      : await getHostMiAccountsStore(host).load());
+    overrideAccounts ?? (await store.load().catch(() => []));
+  await adoptRecoveredPrimarySession(host, store, loadedAccounts);
   if (
     !isHostAttachedToActiveWindow(host) ||
     !isDualSourceEnabled(host) ||

@@ -247,6 +247,7 @@ fn main() {
             secure_store_get,
             secure_store_set,
             secure_store_delete,
+            secure_store_list_mi_account_slots,
             hide_panel,
             finish_hide_panel,
             quit_app,

@@ -249,6 +249,37 @@ export async function secureStoreDelete(
   await invoke<void>("secure_store_delete", { name });
 }
 
+/**
+ * Lists the `mi_session_<slotId>` slots stored in the OS credential store (#228).
+ *
+ * Only slot ids are returned; the native side never hands out values and refuses any name outside
+ * the constrained `mi_session_*` whitelist. `null` means the native shell has no enumeration
+ * command or the scan failed, and must not be confused with an authoritative empty list: rebuilding
+ * the account index from a failed scan would drop every secondary account.
+ */
+export async function secureStoreListMiAccountSlots(
+  invoke: SecureInvoke = tauriInvoke
+): Promise<string[] | null> {
+  let value: unknown;
+  try {
+    value = await invoke<unknown>("secure_store_list_mi_account_slots", {});
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    try {
+      const slotId = normalizeMiCredentialSlotId(item);
+      if (!out.includes(slotId)) out.push(slotId);
+    } catch {
+      // A name the whitelist rejects cannot be a Xiaomi slot; ignore it.
+    }
+  }
+  return out.sort();
+}
+
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
   private opChain: Promise<void> = Promise.resolve();
@@ -263,6 +294,14 @@ export class CredentialVault {
 
   didLastMiAccountSlotsReadFail(): boolean {
     return this.lastAccountSlotsReadFailed;
+  }
+
+  /** Slot ids present in the credential store, or `null` when enumeration is unavailable (#228). */
+  async listMiAccountSlotIds(): Promise<string[] | null> {
+    return this.serialize(async () => {
+      const slots = await secureStoreListMiAccountSlots(this.invoke);
+      return slots === null ? null : [...slots].sort();
+    });
   }
 
   private serialize<T>(work: () => Promise<T>): Promise<T> {
