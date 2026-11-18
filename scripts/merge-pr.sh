@@ -123,6 +123,20 @@ def check_name(check):
     return check.get("name") or check.get("context") or "(未命名检查)"
 
 
+def check_identity(check):
+    return (check.get("workflowName") or "", check_name(check))
+
+
+# A newer run of the same check supersedes older attempts, such as a Snapshot Guard run
+# cancelled when a label lands right after the PR opens.
+latest = {}
+for index, check in enumerate(checks):
+    key = check_identity(check)
+    rank = (check.get("startedAt") or "", index)
+    if key not in latest or rank >= latest[key][0]:
+        latest[key] = (rank, check)
+checks = [entry[1] for entry in latest.values()]
+
 has_ci_check = any(not check_name(check).startswith("Cursor ") for check in checks)
 bad = [] if has_ci_check else ["  （还没有任何检查登记）"]
 for check in checks:

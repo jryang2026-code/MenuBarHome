@@ -5914,6 +5914,107 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
   });
 
+  it("excludes garage door and curtain covers from hold All Off even when legacy allOffOverrides has true", async () => {
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
+      connectionMode: "demo",
+      hasCompletedOnboarding: true,
+      allOffOverrides: {
+        "cover.garage_door": true,
+        "cover.curtain": true,
+      },
+    }));
+    const app = new MenuMijiaWindowsApp(element("#app"));
+    const garageDoor: SmartDevice = {
+      id: "cover.garage_door",
+      name: "车库门",
+      roomId: "living",
+      roomName: "客厅",
+      model: "fixture.garage",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.garage_door",
+        subtype: "garage-door",
+        positionPercent: 100,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const curtain: SmartDevice = {
+      id: "cover.curtain",
+      name: "客厅窗帘",
+      roomId: "living",
+      roomName: "客厅",
+      model: "fixture.curtain",
+      isOnline: true,
+      kind: {
+        kind: "cover",
+        entityId: "cover.curtain",
+        subtype: "curtain",
+        positionPercent: 80,
+        positionWritable: true,
+        openDescription: "Open",
+        closeDescription: "Close",
+        pauseDescription: "Pause",
+        batteryPercent: null,
+        faultText: null,
+        motion: "stopped",
+      },
+    };
+    const lamp: SmartDevice = {
+      id: "light.living_ceiling",
+      name: "客厅主灯",
+      roomId: "living",
+      roomName: "客厅",
+      model: "yeelink.light.ceiling22",
+      isOnline: true,
+      kind: {
+        kind: "light",
+        entityId: "light.living_ceiling",
+        isOn: true,
+        brightnessPercent: 80,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+    app.devices = [garageDoor, curtain, lamp];
+    app.render();
+
+    assert.deepEqual(app.allOffTargets.map((d) => d.id), ["light.living_ceiling"]);
+    assert.match(textOf("#btn-all-off"), /全关 \(1\)/);
+
+    const dispatched: string[] = [];
+    const origApply = app.applyCommand.bind(app);
+    app.applyCommand = async (cmd, readBack) => {
+      dispatched.push(`${cmd.kind}:${"entityId" in cmd ? cmd.entityId : ""}`);
+      return origApply(cmd, readBack);
+    };
+
+    element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
+    await waitFor(() => {
+      const lampNow = app.devices.find((d) => d.id === "light.living_ceiling");
+      return lampNow?.kind.kind === "light" && !lampNow.kind.isOn;
+    });
+    await setImmediate();
+
+    assert.deepEqual(dispatched, ["setLightPower:light.living_ceiling"]);
+    const updatedGarage = app.devices.find((d) => d.id === "cover.garage_door")!;
+    const updatedCurtain = app.devices.find((d) => d.id === "cover.curtain")!;
+    const updatedLamp = app.devices.find((d) => d.id === "light.living_ceiling")!;
+    assert.equal(updatedGarage.kind.kind === "cover" ? updatedGarage.kind.positionPercent : null, 100);
+    assert.equal(updatedCurtain.kind.kind === "cover" ? updatedCurtain.kind.positionPercent : null, 80);
+    assert.equal(updatedLamp.kind.kind === "light" ? updatedLamp.kind.isOn : true, false);
+    assert.equal(app.settings.allOffOverrides["cover.garage_door"], true, "old override stays untouched");
+  });
+
   it("hides the undo control after 10 seconds, and after 15 seconds when three devices are involved", () => {
     const app = startDemoApp();
     const started = Date.now();

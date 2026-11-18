@@ -11,10 +11,14 @@ import os
 struct AutomationEnvironmentProbe {
     var isLidClosed: () -> Bool
     var currentWiFi: () -> (ssid: String?, isAuthorized: Bool)
+    var isScreenLocked: () -> Bool = { false }
 
     static let live = AutomationEnvironmentProbe(
         isLidClosed: { MacHardwareProbe.isLidClosed() },
-        currentWiFi: { MacHardwareProbe.currentWiFi() }
+        currentWiFi: { MacHardwareProbe.currentWiFi() },
+        isScreenLocked: {
+            ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
+        }
     )
 }
 
@@ -58,8 +62,8 @@ final class AutomationEngine {
     private var activeContextProvider: (any MacContextProviding)?
     private var lastContext: MacContextSnapshot?
     /// Away/back notifications drive this so a locked or sleeping Mac does not count as “still
-    /// using the computer” for late-night rules.
-    private var isUserPresent = true
+    /// using the computer” for late-night rules; launch-time session state seeds the initial value.
+    private var isUserPresent: Bool
 
     // MARK: Away arbitration state
 
@@ -100,6 +104,7 @@ final class AutomationEngine {
         self.calendar = calendar
         self.environment = environment
         self.lastExternalDisplayCount = Self.activeExternalDisplayCount()
+        self.isUserPresent = !environment.isScreenLocked()
     }
 
     deinit {
@@ -109,6 +114,7 @@ final class AutomationEngine {
     func start(with store: HomeStore) {
         attach(store: store)
         guard tokens.isEmpty else { return }
+        isUserPresent = !environment.isScreenLocked()
         let workspace = NSWorkspace.shared.notificationCenter
         observe(workspace, NSWorkspace.willSleepNotification, .away)
         observe(workspace, NSWorkspace.screensDidSleepNotification, .away)
@@ -350,6 +356,12 @@ final class AutomationEngine {
     /// Feeds one system notification through the arbiter and runs whatever it settles on.
     /// Also the test seam: the notifying systems cannot post inside a unit test.
     func ingestAway(_ signal: AwaySignal, at now: Date = Date()) async {
+        switch signal {
+        case .screenLocked, .willSleep, .displayDidSleep:
+            isUserPresent = false
+        case .screenUnlocked:
+            isUserPresent = true
+        }
         if signal == .screenLocked {
             // Read the SSID while the interface is certainly still up: a lid close locks *before*
             // it suspends, so this is the freshest reading a sleep can ever consult.
