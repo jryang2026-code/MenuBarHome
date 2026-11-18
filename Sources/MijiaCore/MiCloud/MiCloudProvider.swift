@@ -40,6 +40,11 @@ public actor MiCloudProvider: HomeProvider {
     private var session: MiSession?
     /// A rejection is reported once; later failures must not re-open the re-auth prompt.
     private var didReportSessionExpired = false
+    /// The credential the cloud already refused. A Mi service token has no client-side refresh, so
+    /// another request with it can only 401 again, and a repeated write would reach the device twice.
+    /// Polling, wake refreshes and commands stay off until `serviceToken` changes (a new scan) or the
+    /// account signs out.
+    private var rejectedSession: MiSession?
     private var pendingCameraReleases: [String: Task<Void, Never>] = [:]
     private var followUpTasks: [UUID: Task<Void, Never>] = [:]
     /// The hub DID and camera subdid used the last time this camera's bridge started.
@@ -175,6 +180,13 @@ public actor MiCloudProvider: HomeProvider {
 
     public func refreshNow() async {
         guard !isShutDown else { return }
+        if let rejected = rejectedSession {
+            // A wake refresh cannot revive a refused Mi token: only a scan that changed the stored
+            // serviceToken may poll again, and that credential rebuilds the loop from scratch.
+            guard let current = currentSession(), !current.sharesCredentials(with: rejected) else { return }
+            restartLoop()
+            return
+        }
         guard let api else {
             restartLoop()
             return
@@ -226,6 +238,10 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
         self.session = session
+        clearRejectionIfCredentialChanged(session)
+        // Stop before any cloud call: this credential is the one the server refused and a Mi token
+        // cannot refresh itself, so every request until a new scan can only 401 again.
+        guard !isRejected(session) else { return }
         // The declaration is already stored, so a relaunch only reports it; no cloud call, no event.
         if session.expiryState(at: Date()) == .expired {
             api = nil
@@ -315,13 +331,50 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    private func withSessionExpiryRetry<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+    private func performCloudCall<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+        // Xiaomi issues no refresh token, so the same rejected credential can only 401 again:
+        // a retry cannot succeed and a write would be sent twice. The credential is latched here
+        // and every later call, wake refresh and command is refused until a new scan replaces it.
+        if isSessionRejected { throw MiCloudError.sessionExpired }
         do {
             return try await body()
         } catch MiCloudError.sessionExpired {
             guard !Task.isCancelled && !isShutDown else { throw CancellationError() }
-            return try await body()
+            if let rejected = session ?? currentSession() { latchRejection(rejected) }
+            throw MiCloudError.sessionExpired
         }
+    }
+
+    /// The credential this provider would send today: a per-account child keeps its captured
+    /// account, the legacy single-session provider re-reads its loader.
+    private func currentSession() -> MiSession? {
+        account?.session ?? sessionLoader()
+    }
+
+    private func isRejected(_ candidate: MiSession?) -> Bool {
+        guard let candidate, let rejectedSession else { return false }
+        return candidate.sharesCredentials(with: rejectedSession)
+    }
+
+    private var isSessionRejected: Bool {
+        guard rejectedSession != nil else { return false }
+        return isRejected(currentSession())
+    }
+
+    /// Keeps the refused credential out of every later request and sends the one re-auth event;
+    /// a repeat must not re-open a prompt the user has already answered.
+    private func latchRejection(_ rejected: MiSession) {
+        rejectedSession = rejected
+        guard !didReportSessionExpired else { return }
+        didReportSessionExpired = true
+        continuation?.yield(.sessionExpired(rejected))
+    }
+
+    /// Lifts the stop once the stored credential is no longer the rejected one (a second scan).
+    private func clearRejectionIfCredentialChanged(_ candidate: MiSession) {
+        guard let rejected = rejectedSession, !candidate.sharesCredentials(with: rejected) else { return }
+        rejectedSession = nil
+        didReportSessionExpired = false
     }
 
     // MARK: Polling Rhythm (#26)
@@ -428,9 +481,8 @@ public actor MiCloudProvider: HomeProvider {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         logger.error("Mi cloud error: \(message, privacy: .public)")
         lastReportedConnected = false
-        if (error as? MiCloudError) == .sessionExpired, let session, !didReportSessionExpired {
-            didReportSessionExpired = true
-            continuation?.yield(.sessionExpired(session))
+        if (error as? MiCloudError) == .sessionExpired, let rejected = session ?? currentSession() {
+            latchRejection(rejected)
         }
         continuation?.yield(.statusChanged(.disconnected(message)))
     }
@@ -450,7 +502,7 @@ public actor MiCloudProvider: HomeProvider {
         }
         do {
             // Rooms first: they name the shared-home devices the unfiltered device list leaves out (#134).
-            let outcome = try await withSessionExpiryRetry { try await MiCloudDiscovery.rooms(api) }
+            let outcome = try await performCloudCall { try await MiCloudDiscovery.rooms(api) }
             if outcome.error == nil {
                 if outcome.rooms != rooms { unresolvedRoomDids = [] }
                 rooms = outcome.rooms
@@ -497,7 +549,7 @@ public actor MiCloudProvider: HomeProvider {
     private func refreshDeviceList(_ api: any MiCloudAPI, retryUnresolved: Bool = false) async throws {
         let currentRooms = rooms
         let previousUnresolved = unresolvedRoomDids
-        let outcome = try await withSessionExpiryRetry {
+        let outcome = try await performCloudCall {
             try await MiCloudDiscovery.devices(
                 api,
                 rooms: currentRooms,
@@ -560,7 +612,7 @@ public actor MiCloudProvider: HomeProvider {
             return
         }
         do {
-            groupMembersByGroup = try await withSessionExpiryRetry {
+            groupMembersByGroup = try await performCloudCall {
                 try await api.lightGroupMembers(groupDids: groupDids)
             }
         } catch MiCloudError.sessionExpired {
@@ -763,7 +815,7 @@ public actor MiCloudProvider: HomeProvider {
                 throw lastCloudError
             }
             do {
-                let cloudValues = try await withSessionExpiryRetry {
+                let cloudValues = try await performCloudCall {
                     try await api.getProps(keys)
                 }
                 clearCloudBackoff()
@@ -857,7 +909,7 @@ public actor MiCloudProvider: HomeProvider {
         if !cloudKeys.isEmpty {
             if cloudAllowed {
                 do {
-                    let cloudValues = try await withSessionExpiryRetry {
+                    let cloudValues = try await performCloudCall {
                         try await api.getProps(cloudKeys)
                     }
                     clearCloudBackoff()
@@ -980,7 +1032,7 @@ public actor MiCloudProvider: HomeProvider {
             do {
                 if let baseline = doorbellBaselineTime[trackerKey] {
                     let querySince = (lastDoorbellTimestamp[trackerKey] ?? baseline).addingTimeInterval(-1)
-                    let latest = try await withSessionExpiryRetry {
+                    let latest = try await performCloudCall {
                         try await api.doorbellLatestEventTimestamp(
                             did: record.miotDid,
                             eventKey: eventKey,
@@ -1008,7 +1060,7 @@ public actor MiCloudProvider: HomeProvider {
                     }
                 } else {
                     let initialSince = currentNow.addingTimeInterval(-3600)
-                    let latest = try await withSessionExpiryRetry {
+                    let latest = try await performCloudCall {
                         try await api.doorbellLatestEventTimestamp(
                             did: record.miotDid,
                             eventKey: eventKey,
@@ -1261,7 +1313,7 @@ public actor MiCloudProvider: HomeProvider {
 
         if !executedViaLAN {
             do {
-                try await withSessionExpiryRetry {
+                try await performCloudCall {
                     switch write {
                     case .setProps(let writes): try await api.setProps(writes)
                     case .action(let call): try await api.action(call)
@@ -1297,7 +1349,7 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
-        guard !isShutDown, let api else { return .failed }
+        guard !isShutDown, !isSessionRejected, let api else { return .failed }
         // Split wall-switch cards report `100.s2` while property reads are keyed by `100`.
         guard let record = devices.first(where: { $0.did == deviceId }),
               let spec = specsByModel[record.model],
@@ -1322,7 +1374,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func followUpPoll(did: String, taskId: UUID) async {
         followUpTasks.removeValue(forKey: taskId)
-        guard !isShutDown, let api else { return }
+        guard !isShutDown, !isSessionRejected, let api else { return }
         _ = try? await poll(api, dids: [did])
     }
 
@@ -1341,7 +1393,7 @@ public actor MiCloudProvider: HomeProvider {
             keys = (nil, nil)
         }
         do {
-            return try await withSessionExpiryRetry {
+            return try await performCloudCall {
                 try await api.sensorHistory(
                     did: did,
                     temperatureKey: keys.temperature,
@@ -1378,6 +1430,7 @@ public actor MiCloudProvider: HomeProvider {
             throw MiotCommandError.unsupported("camera")
         }
         try Task.checkCancellation()
+        if isSessionRejected { throw MiCloudError.sessionExpired }
         var failureReason: String?
         if let api,
            let record = devices.first(where: { $0.did == device.id }) ?? devices.first(where: { $0.miotDid == device.id }),

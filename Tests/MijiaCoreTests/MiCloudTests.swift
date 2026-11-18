@@ -1059,8 +1059,13 @@ actor StubMiCloudAPI: MiCloudAPI {
         return values.filter { keys.contains($0.key) }
     }
 
+    private var setPropsFailure: MiCloudError?
+
+    func setSetPropsFailure(_ failure: MiCloudError?) { setPropsFailure = failure }
+
     func setProps(_ writes: [MiotPropWrite]) async throws {
         setPropsCalls.append(writes)
+        if let setPropsFailure { throw setPropsFailure }
         for w in writes { values[MiotPropKey(did: w.did, siid: w.siid, piid: w.piid)] = w.value }
     }
 

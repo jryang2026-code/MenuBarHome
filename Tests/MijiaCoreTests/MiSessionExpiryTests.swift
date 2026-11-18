@@ -397,9 +397,10 @@ struct ProviderResilienceAndPerfTests {
         region: "cn"
     )
 
-    @Test("One transient 401/sessionExpired recovers on retry without emitting sessionExpired, while two consecutive 401s emit sessionExpired (#18)")
-    func transientSessionExpiredRecoversWhileConsecutiveRejects() async throws {
-        let api = TransientExpiryMiCloudAPI(remainingFailures: 1, remainingRoomFailures: 1)
+    @Test("A rejected credential is never retried: one 401 stops polling and reports the re-scan once (#6)")
+    func rejectedCredentialIsNotRetried() async throws {
+        // The old retry hid this failure and kept polling on the same dead serviceToken.
+        let api = TransientExpiryMiCloudAPI(remainingFailures: 0, remainingRoomFailures: 1)
         let provider = MiCloudProvider(
             sessionLoader: { Self.session },
             apiFactory: { _ in api },
@@ -407,21 +408,173 @@ struct ProviderResilienceAndPerfTests {
             pollInterval: .seconds(60),
             selectedHomeLoader: { nil }
         )
-        let log = EventLog()
-        let stream = provider.events()
-        let task = Task { for await event in stream { await log.append(event) } }
+        let (log, task) = consume(provider)
         defer { task.cancel() }
 
-        #expect(await log.wait { await !$0.snapshots.isEmpty })
-        #expect(await api.homeRoomsCalls == 2)
-        #expect(await api.deviceListCalls == 2)
-        #expect(await log.expiredSessions.isEmpty)
-
-        await api.setRemainingFailures(2)
-        await provider.refreshNow()
         #expect(await log.wait { await !$0.expiredSessions.isEmpty })
-        #expect(await log.expiredSessions.first == Self.session)
+        #expect(await api.homeRoomsCalls == 1, "the same dead token must reach the cloud once")
+        #expect(await api.deviceListCalls == 0)
+        #expect(await log.snapshots.isEmpty)
+        #expect(await log.expiredSessions == [Self.session])
+
+        // Wake and panel-open refreshes keep the account quiet instead of re-sending the credential.
+        await provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true))
+        await provider.refreshNow()
+        #expect(await api.homeRoomsCalls == 1)
+        #expect(await api.deviceListCalls == 0)
+        #expect(await log.expiredSessions == [Self.session])
         await provider.shutdown()
+    }
+
+    @Test("A refused control write is sent once and later taps never reach the dead session (#6)")
+    func refusedControlWriteIsNotResent() async throws {
+        let api = StubMiCloudAPI(
+            devices: [MiotFixtures.lightRecord],
+            rooms: [],
+            values: MiotFixtures.lightValues
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { Self.session },
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            selectedHomeLoader: { nil }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+
+        await api.setSetPropsFailure(.sessionExpired)
+        await #expect(throws: MiCloudError.sessionExpired) {
+            try await provider.execute(.setLightPower(entityId: "miot:123:2", isOn: false))
+        }
+        #expect(await api.setPropsCalls.count == 1, "the refused write must not be sent a second time")
+        #expect(await log.wait { await $0.expiredSessions == [Self.session] })
+
+        // Once the credential is condemned, another tap is refused locally instead of on the wire.
+        await #expect(throws: MiCloudError.sessionExpired) {
+            try await provider.execute(.setLightPower(entityId: "miot:123:2", isOn: false))
+        }
+        #expect(await api.setPropsCalls.count == 1)
+        await provider.shutdown()
+    }
+
+    @Test("Only a different stored credential lifts the stop and resumes polling (#6)")
+    func differentCredentialResumesPolling() async throws {
+        final class SessionBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: MiSession
+            init(_ session: MiSession) { value = session }
+            func get() -> MiSession { lock.withLock { value } }
+            func set(_ next: MiSession) { lock.withLock { value = next } }
+        }
+        let stored = SessionBox(Self.session)
+        let rejectedAPI = TransientExpiryMiCloudAPI(remainingFailures: 0, remainingRoomFailures: 1)
+        let rescannedAPI = TransientExpiryMiCloudAPI(remainingFailures: 0)
+        let rescanned = MiSession(
+            userId: Self.session.userId,
+            cUserId: Self.session.cUserId,
+            ssecurity: Self.session.ssecurity,
+            serviceToken: "tok-rescanned",
+            region: Self.session.region
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { stored.get() },
+            apiFactory: { $0.serviceToken == rescanned.serviceToken ? rescannedAPI : rejectedAPI },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60),
+            selectedHomeLoader: { nil }
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { await !$0.expiredSessions.isEmpty })
+        #expect(await log.snapshots.isEmpty)
+
+        stored.set(rescanned)
+        await provider.refreshNow()
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        #expect(await rescannedAPI.deviceListCalls > 0)
+        await provider.shutdown()
+    }
+
+    @Test("One account's rejection keeps the other account polling and stops the rejected child (#6)")
+    func rejectedAccountStopsOnlyItself() async throws {
+        let healthy = MiSession(
+            userId: "90020002",
+            cUserId: "c-90020002",
+            ssecurity: "c2VjcmV0",
+            serviceToken: "tok-healthy",
+            region: "de"
+        )
+        let healthyAPI = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "de-plug", name: "Plug", model: "cuco.plug.v3", isOnline: true)],
+            rooms: [],
+            values: [MiotFixtures.key("de-plug", 2, 1): .bool(false)]
+        )
+        let rejectedAPI = StubMiCloudAPI(devices: [], rooms: [], values: [:], failure: .sessionExpired)
+        let provider = MiAccountsProvider(
+            accounts: [MiAccount(session: Self.session), MiAccount(session: healthy)],
+            apiFactory: { $0.region == "de" ? healthyAPI : rejectedAPI },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60)
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { await $0.expiredSessions == [Self.session] })
+        #expect(await log.wait { events in await events.snapshots.last?.devices.map(\.id) == ["de-plug"] })
+        let rejectedCalls = await rejectedAPI.deviceListCalls
+
+        await provider.refreshNow()
+        #expect(await rejectedAPI.deviceListCalls == rejectedCalls, "the dead account is not woken again")
+        #expect(await healthyAPI.deviceListCalls > 0)
+        #expect(await log.snapshots.last?.devices.map(\.id) == ["de-plug"])
+        await provider.shutdown()
+    }
+
+    @Test("The store records the rejection once and rebuilds the account's child from the stored credential (#6)")
+    @MainActor
+    func storeRebuildsRejectedChild() async throws {
+        let suite = "com.jryang1997.MenuBarMijia.mi-rejected-child.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(Self.session, defaults: defaults))
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let api = StubMiCloudAPI(
+            devices: [MiotFixtures.lightRecord],
+            rooms: [],
+            values: MiotFixtures.lightValues
+        )
+        let account = MiAccount(session: Self.session)
+        let provider = MiAccountsProvider(
+            accounts: [account],
+            apiFactory: { _ in api },
+            specSource: StubSpecSource(),
+            pollInterval: .seconds(60)
+        )
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+        #expect(await log.wait { await !$0.snapshots.isEmpty })
+        store.activeMiAccountsProvider = provider
+        store.activeMiProviderAccounts = [account]
+        store.miAccounts = [account]
+        #expect(!store.miSessionShowsExpired)
+        #expect(await provider.childProviderIdentityForTesting(accountId: account.id) != nil)
+
+        store.handleMiSessionRejected(Self.session)
+        await store.providerShutdownTask?.value
+
+        #expect(store.miSessionShowsExpired, "the re-scan state must not fall back")
+        #expect(store.miAccounts.first?.session.expiresAt != nil)
+        #expect(store.activeMiProviderAccounts.first?.session.expiresAt != nil)
+        // The parent now treats the account as ended instead of leaving the dead child running.
+        #expect(await provider.isExpiredAccountForTesting(account.id),
+                "the child is rebuilt around the stored rejection, not left on the dead session")
+        await store.shutdown()
     }
 
     @Test("Shut-down MiCloudProvider, MiAccountsProvider, and DualSourceHomeProvider latch isShutDown and never restart (#20)")
