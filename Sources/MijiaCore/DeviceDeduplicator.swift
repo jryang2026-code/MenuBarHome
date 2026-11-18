@@ -43,13 +43,23 @@ public enum DeviceDeduplicator {
     public static func merge(
         homeAssistant: SynthesizedHome?,
         xiaomiCloud: SynthesizedHome?,
+        haConnected: Bool = true,
+        miConnected: Bool = true,
         canonical: CanonicalDeviceRegistry = CanonicalDeviceRegistry(),
         rooms: RoomIdentityRegistry = RoomIdentityRegistry(),
         knownPreferenceIDs: Set<String> = [],
         pinnedBackends: [String: HomeBackend] = [:]
     ) -> DeviceMergeResult {
-        var haCandidates = candidates(in: homeAssistant, backend: .homeAssistant)
-        let miCandidates = candidates(in: xiaomiCloud, backend: .xiaomiCloud)
+        var haCandidates = candidates(
+            in: homeAssistant,
+            backend: .homeAssistant,
+            isBackendConnected: haConnected
+        )
+        let miCandidates = candidates(
+            in: xiaomiCloud,
+            backend: .xiaomiCloud,
+            isBackendConnected: miConnected
+        )
         let haFallbackCounts = fallbackKeyCounts(in: haCandidates)
         let miFallbackCounts = fallbackKeyCounts(in: miCandidates)
 
@@ -113,7 +123,11 @@ public enum DeviceDeduplicator {
                 // MAC with every track, so none of them pairs 1:1 with the HA copy. That copy is
                 // still the same physical device and must not appear as an extra card beside them.
                 if let haIdentity = ha.identity,
-                   isAlreadyShownByMiTracks(haIdentity, in: miCandidates) {
+                   isAlreadyShownByMiTracks(
+                       haIdentity,
+                       in: miCandidates,
+                       requireFreshOnline: ha.device.isOnline && !ha.device.telemetryStale
+                   ) {
                     continue
                 }
                 draftCards.append(
@@ -260,12 +274,11 @@ public enum DeviceDeduplicator {
             if let pinned = pinnedBackends[canonicalID],
                let other = card.other,
                let pinnedCandidate = [card.winner, other].first(where: {
-                   $0.backend == pinned && ($0.device.isOnline || !card.winner.device.isOnline)
+                   let winnerFresh = card.winner.device.isOnline && !card.winner.device.telemetryStale
+                   let candidateFresh = $0.device.isOnline && !$0.device.telemetryStale
+                   return $0.backend == pinned && (candidateFresh || (!winnerFresh && ($0.device.isOnline || !card.winner.device.isOnline)))
                }),
                pinnedCandidate.backend != card.winner.backend {
-                // A pin wins whenever that source is online, or when both sources are offline so a
-                // user pin never stays stuck on an unwanted backend; an online source still takes over
-                // when the pinned source is offline (#111).
                 card.other = card.winner
                 card.winner = pinnedCandidate
             }
@@ -305,7 +318,8 @@ public enum DeviceDeduplicator {
                     kind: merged.kind,
                     isSharedHome: merged.isSharedHome,
                     accountId: merged.accountId,
-                    accountLabel: merged.accountLabel
+                    accountLabel: merged.accountLabel,
+                    telemetryStale: merged.telemetryStale
                 )
             )
             routes[canonicalID] = DeviceMergeRoute(
@@ -340,8 +354,8 @@ public enum DeviceDeduplicator {
         home.closesAwayGap = (homeAssistant?.closesAwayGap ?? true) && (xiaomiCloud?.closesAwayGap ?? true)
         home.isInitialLoadComplete = (homeAssistant?.isInitialLoadComplete ?? true) && (xiaomiCloud?.isInitialLoadComplete ?? true)
         var activeBackends: Set<HomeBackend> = []
-        if homeAssistant != nil { activeBackends.insert(.homeAssistant) }
-        if xiaomiCloud != nil { activeBackends.insert(.xiaomiCloud) }
+        if homeAssistant != nil && haConnected { activeBackends.insert(.homeAssistant) }
+        if xiaomiCloud != nil && miConnected { activeBackends.insert(.xiaomiCloud) }
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends
         home.pairedDeviceIDs = pairedDeviceIDs
@@ -544,7 +558,8 @@ public enum DeviceDeduplicator {
 
         for (haIndex, miIndex) in pairing.miIndexForHA {
             let groupMiDevice = miCandidates[miIndex].device
-            guard groupMiDevice.id.hasPrefix("group."),
+            guard !groupMiDevice.telemetryStale,
+                  groupMiDevice.id.hasPrefix("group."),
                   let memberMiIDs = memberMiIDsByGroup[groupMiDevice.id],
                   !memberMiIDs.isEmpty else { continue }
 
@@ -553,7 +568,7 @@ public enum DeviceDeduplicator {
             for memberMiID in memberMiIDs {
                 guard let miMemberIdx = miIndexByID[memberMiID] else { continue }
                 let miMember = miCandidates[miMemberIdx].device
-                if case .light(let spec) = miMember.kind {
+                if !miMember.telemetryStale, case .light(let spec) = miMember.kind {
                     miLightMembers.append((miMember.isOnline, spec.isOn))
                 }
                 if let haMemberIdx = haIndexForMi[miMemberIdx],
@@ -617,16 +632,37 @@ public enum DeviceDeduplicator {
         let hadStaleCanonicalConflict: Bool
     }
 
-    private static func candidates(in home: SynthesizedHome?, backend: HomeBackend) -> [Candidate] {
+    private static func candidates(
+        in home: SynthesizedHome?,
+        backend: HomeBackend,
+        isBackendConnected: Bool
+    ) -> [Candidate] {
         guard let home else { return [] }
-        return home.devices.map { device in
-            Candidate(backend: backend, device: device, identity: home.deviceIdentities[device.id])
+        return home.devices.map { rawDevice in
+            var device = rawDevice
+            let accountDisconnected: Bool
+            if backend == .xiaomiCloud,
+               let accId = device.accountId,
+               let accStatus = home.accountStatuses[accId],
+               !accStatus.isConnected {
+                accountDisconnected = true
+            } else {
+                accountDisconnected = false
+            }
+            if !isBackendConnected || accountDisconnected {
+                device.isOnline = false
+                device.telemetryStale = true
+            }
+            return Candidate(backend: backend, device: device, identity: home.deviceIdentities[device.id])
         }
     }
 
     private static func preferredCandidate(homeAssistant: Candidate, xiaomiCloud: Candidate) -> Candidate {
         let ha = homeAssistant.device
         let mi = xiaomiCloud.device
+        let haFreshOnline = ha.isOnline && !ha.telemetryStale
+        let miFreshOnline = mi.isOnline && !mi.telemetryStale
+        if haFreshOnline != miFreshOnline { return haFreshOnline ? homeAssistant : xiaomiCloud }
         if ha.isOnline != mi.isOnline { return ha.isOnline ? homeAssistant : xiaomiCloud }
         // The appliance shape carries the water heater's mode, fault and remaining time. When the
         // other source only knows it as a generic climate card, keep the appliance card.
@@ -677,7 +713,8 @@ public enum DeviceDeduplicator {
             kind: winner.kind,
             isSharedHome: winner.isSharedHome,
             accountId: accountId,
-            accountLabel: accountLabel
+            accountLabel: accountLabel,
+            telemetryStale: winner.telemetryStale
         )
     }
 
@@ -755,12 +792,16 @@ public enum DeviceDeduplicator {
     /// tracks that share one did.
     private static func isAlreadyShownByMiTracks(
         _ haIdentity: DeviceSourceIdentity,
-        in miCandidates: [Candidate]
+        in miCandidates: [Candidate],
+        requireFreshOnline: Bool
     ) -> Bool {
-        let identities = miCandidates.compactMap(\.identity)
+        let eligible = requireFreshOnline
+            ? miCandidates.filter { $0.device.isOnline && !$0.device.telemetryStale }
+            : miCandidates
+        let identities = eligible.compactMap(\.identity)
         if identities.filter({ sharesDID(haIdentity, $0) }).count >= 2 { return true }
 
-        let tracks = miCandidates.filter { candidate in
+        let tracks = eligible.filter { candidate in
             guard let identity = candidate.identity, sharesMAC(haIdentity, identity),
                   case .cover(let spec) = candidate.device.kind else { return false }
             return spec.subtype == .curtain

@@ -261,9 +261,14 @@ extension HomeStore {
                 miAccountStatuses = snapshot.accountStatuses
             }
             let previousBackends = deviceBackends
-            let nextConnected: Set<HomeBackend> = snapshot.activeBackends.isEmpty
-                ? [homeBackend]
-                : snapshot.activeBackends
+            let nextConnected: Set<HomeBackend>
+            if !snapshot.sourceStatuses.isEmpty {
+                nextConnected = snapshot.activeBackends
+            } else if snapshot.activeBackends.isEmpty {
+                nextConnected = [homeBackend]
+            } else {
+                nextConnected = snapshot.activeBackends
+            }
             if connectedBackends != nextConnected { connectedBackends = nextConnected }
             if deviceBackends != snapshot.deviceBackends { deviceBackends = snapshot.deviceBackends }
             if pairedDeviceIDs != snapshot.pairedDeviceIDs { pairedDeviceIDs = snapshot.pairedDeviceIDs }
@@ -423,7 +428,7 @@ extension HomeStore {
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
             scheduleRaycastSnapshotExport()
-            energyHistory.record(devices: devices, now: sampleNow)
+            energyHistory.record(devices: devices, deviceBackends: deviceBackends, now: sampleNow)
             sensorHistory.record(devices: devices, now: sampleNow)
             offlineHistory.record(devices: devices, now: sampleNow)
 
@@ -478,7 +483,7 @@ extension HomeStore {
         return homeBackend.descriptor.primaryScopeIdentifier(self)
     }
 
-    /// The Home Assistant scope value, shaped like the `ha:` entry `syncSensorHistoryScope()` writes, so
+    /// The Home Assistant scope value, shaped like the `ha:` entry `syncHistoryConnectionScopes()` writes, so
     /// stored timer stamps stay comparable with history scopes and with entries written by older builds.
     var homeAssistantScopeIdentifier: String {
         "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))"
@@ -498,10 +503,10 @@ extension HomeStore {
         return scopes
     }
 
-    /// Updates `sensorHistory.connectionScope` so sensors on different Home Assistant servers,
-    /// Xiaomi Cloud accounts, or Demo mode never share or overwrite each other's time series.
-    func syncSensorHistoryScope() {
-        sensorHistory.setConnectionScope(connectionScopeIdentifier ?? "mi:signed-out")
+    func syncHistoryConnectionScopes() {
+        let scope = connectionScopeIdentifier ?? "mi:signed-out"
+        sensorHistory.setConnectionScope(scope)
+        energyHistory.setConnectionScope(scope)
     }
 
     /// Triggers an on-demand provider fetch for `deviceId`'s historical readings when due.
@@ -894,6 +899,7 @@ extension HomeStore {
     @discardableResult
     public func logoutMiAccount() -> Bool {
         let cleared = MiSessionStore.clear(defaults: userDefaults, vault: credentialVault)
+        topologyCache?.removeAll()
         miAccounts = []
         miAccountStatuses = [:]
         self.miSessionMaskedUserId = nil
@@ -925,6 +931,7 @@ extension HomeStore {
     @discardableResult
     public func signOutAndRevokeAll() -> Bool {
         invalidateUndoContext()
+        topologyCache?.removeAll()
         var complete = true
         if !logoutMiAccount() { complete = false }
         if !disconnectHomeAssistant() { complete = false }
@@ -987,6 +994,7 @@ extension HomeStore {
             )
             return
         }
+        topologyCache?.remove(accountID: id)
         invalidateUndoContext()
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
         miAccountStatuses.removeValue(forKey: id)

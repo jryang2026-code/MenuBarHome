@@ -161,10 +161,8 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .statusChanged(let status):
             if backend == .homeAssistant {
                 haStatus = status
-                if case .disconnected = status { haSnapshot = nil }
             } else if backend == .xiaomiCloud {
                 miStatus = status
-                if case .disconnected = status { miSnapshot = nil }
             }
             emitStatus()
             emitSourceStatuses()
@@ -200,11 +198,9 @@ public actor DualSourceHomeProvider: HomeProvider {
         if backend == .homeAssistant {
             guard homeAssistant != nil else { return }
             haStatus = .disconnected("")
-            haSnapshot = nil
         } else if backend == .xiaomiCloud {
             guard xiaomiCloud != nil else { return }
             miStatus = .disconnected("")
-            miSnapshot = nil
         }
         emitStatus()
         emitSourceStatuses()
@@ -250,6 +246,8 @@ public actor DualSourceHomeProvider: HomeProvider {
         let result = DeviceDeduplicator.merge(
             homeAssistant: haSnapshot,
             xiaomiCloud: miSnapshot,
+            haConnected: haStatus.isConnected,
+            miConnected: miStatus.isConnected,
             canonical: canonical,
             rooms: rooms,
             knownPreferenceIDs: knownPreferenceIDs(),
