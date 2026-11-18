@@ -148,7 +148,13 @@ public final class HomeStore {
     /// while an optimistic write is locked.
     public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
     public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
-    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = [] {
+        didSet {
+            if localNetworkBlocks.isEmpty || !localNetworkBlocks.isSubset(of: oldValue) {
+                dismissedActivityIds.remove("notice.localNetworkBlocked")
+            }
+        }
+    }
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
     public internal(set) var lightGroupOwners: [String: String] = [:]
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {

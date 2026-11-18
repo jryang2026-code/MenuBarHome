@@ -43,6 +43,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
 
     // 连接
     case demoMode
+    case localNetwork
     case haServerAddress
     case haToken
     case haDiscovery
@@ -85,7 +86,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .doorbellAutoCloseSeconds, .weeklyReport, .notificationPermission, .hiddenDevices,
              .setupGuide, .automationRules, .allowURLControl, .raycast, .energyHistory:
             return .general
-        case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
+        case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
             return .connection
         case .askWhenUnsure, .confidenceThreshold, .assistantProvider, .assistantAPIKey,
              .assistantTest, .habitMemory:
@@ -116,6 +117,7 @@ enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
     case needsMacOS26
     /// The panel-height control only exists for the classic panel.
     case liquidGlassPanel
+    case localNetworkAllowed
 
     var explanation: String {
         switch self {
@@ -127,6 +129,8 @@ enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
             return L10n.tr("需要 macOS 26 或更新版本", "Needs macOS 26 or later")
         case .liquidGlassPanel:
             return L10n.tr("切回「常规」面板主题后可用", "Available with the Classic panel theme")
+        case .localNetworkAllowed:
+            return L10n.tr("当前本地网络权限正常", "Local network access is working normally")
         }
     }
 }
@@ -146,17 +150,20 @@ struct SettingsSearchAvailability: Equatable, Sendable {
     /// the raw string here keeps that resolution in one place instead of trusting each caller.
     var storedPanelTheme: String?
     var liquidGlassAvailable: Bool
+    var hasLocalNetworkBlock: Bool
 
     init(
         backend: HomeBackend,
         hiddenDeviceCount: Int,
         storedPanelTheme: String?,
-        liquidGlassAvailable: Bool
+        liquidGlassAvailable: Bool,
+        hasLocalNetworkBlock: Bool = false
     ) {
         self.backend = backend
         self.hiddenDeviceCount = hiddenDeviceCount
         self.storedPanelTheme = storedPanelTheme
         self.liquidGlassAvailable = liquidGlassAvailable
+        self.hasLocalNetworkBlock = hasLocalNetworkBlock
     }
 
     /// The theme the appearance pane actually renders, the same value the height control branches on.
@@ -169,6 +176,9 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         // Rendered inside `if store.homeBackend != .demo` in `ConnectionSettingsTab`, including
         // `haToken` (attached inside `homeAssistantForm`, which only that branch calls) and `lgTV`
         // (`LGWebOSSettingsSection`, whose call site is inside the same branch).
+        case .localNetwork:
+            if backend == .demo { return .demoMode }
+            return hasLocalNetworkBlock ? nil : .localNetworkAllowed
         case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
             return backend == .demo ? .demoMode : nil
         case .hiddenDevices:
@@ -337,6 +347,9 @@ enum SettingsSearch {
             entry(.demoMode, section: connectionSection,
                   zhTitle: "演示模式", enTitle: "Demo Mode",
                   synonyms: ["演示", "虚拟设备", "离线模式", "demo", "virtual", "sample"]),
+            entry(.localNetwork, section: connectionSection,
+                  zhTitle: "本地网络权限", enTitle: "Local Network Permission",
+                  synonyms: ["本地网络", "局域网权限", "系统权限", "隐私与安全性", "local network", "lan permission", "privacy"]),
             entry(.haServerAddress, section: connectionSection,
                   zhTitle: "Home Assistant 服务器地址", enTitle: "Home Assistant Server URL",
                   synonyms: ["服务器", "地址", "home assistant", "server", "url", "nabu casa", "ha"]),

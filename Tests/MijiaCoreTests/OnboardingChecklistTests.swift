@@ -432,6 +432,51 @@ struct PanelNoticeTests {
         })
     }
 
+    @Test("Local Network blocked notice can be dismissed, resurfaces on new block, and rejects stale dismiss")
+    @MainActor
+    func localNetworkBlockedNoticeDismissAndResurface() throws {
+        let suite = "test.notice.lntcc.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            defaults: defaults
+        ))
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])),
+            defaultsSuiteName: suite
+        )
+        store.hasHASource = true
+        store.localNetworkBlocks = [.homeAssistant]
+
+        #expect(store.panelNoticeKinds == [.localNetworkBlocked([.homeAssistant])])
+        let activity = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        #expect(activity.isDismissible)
+
+        store.dismissActivity(activity)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.localNetworkBlocks = [.homeAssistant, .xiaomiLAN]
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        store.dismissActivity(activity)
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" }, "stale activity snapshot must not dismiss widened block set")
+
+        let widened = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(widened)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.localNetworkBlocks = []
+        store.localNetworkBlocks = [.homeAssistant]
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+    }
+
     // MARK: - #144: the demo is a doorway
 
     @Test("Leaving the demo with nothing configured reopens the connect guide on the Xiaomi path")

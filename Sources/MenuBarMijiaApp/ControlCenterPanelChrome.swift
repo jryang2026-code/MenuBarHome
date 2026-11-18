@@ -754,6 +754,8 @@ extension ControlCenterPanel {
             withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
         case .openConnectionSettings:
             SettingsWindowOpener.shared.show(tab: .connection)
+        case .openLocalNetworkSettings:
+            LocalNetworkSystemSettings.open()
         }
     }
 

@@ -95,13 +95,14 @@ extension HomeStore {
     }
 
     /// Every pending notice in priority order: a blocked session, then the plaintext-token
-    /// decision, then an address suggestion, then a session that is only expiring. Each one is its
-    /// own row in the panel's activity stack.
+    /// decision, then a local-network permission block, then an address suggestion, then a session
+    /// that is only expiring. Each one is its own row in the panel's activity stack.
     public var panelNoticeKinds: [PanelNoticeSlot.Kind] {
         PanelNotice.kinds(
             miExpired: miSessionShowsExpired,
             expiringSoon: miSessionExpiringSoonDate,
             plaintext: haPlaintextPrompt,
+            localNetworkBlocks: effectiveLocalNetworkBlocks,
             address: pendingHAAddressSuggestion
         )
     }
@@ -173,13 +174,14 @@ public enum PanelNoticeSlot {
     public enum Kind: Equatable, Sendable {
         case miBlocked
         case haPlaintext(HAPlaintextPrompt)
+        case localNetworkBlocked(Set<LocalNetworkBlockedFeature>)
         case haAddress(HADiscoveredInstance)
         case miExpiringSoon(Date)
 
         /// A blocked session or a plaintext-token decision hides the getting-started row.
         public var hidesChecklist: Bool {
             switch self {
-            case .miBlocked, .haPlaintext: true
+            case .miBlocked, .haPlaintext, .localNetworkBlocked: true
             case .haAddress, .miExpiringSoon: false
             }
         }
@@ -191,6 +193,7 @@ public enum PanelNoticeSlot {
             case .miBlocked: "notice.miBlocked"
             case .haPlaintext(.asking): "notice.haPlaintext.asking"
             case .haPlaintext(.declined): "notice.haPlaintext.declined"
+            case .localNetworkBlocked: "notice.localNetworkBlocked"
             case .haAddress: "notice.haAddress"
             case .miExpiringSoon(let expiry): "notice.miExpiringSoon.\(Int(expiry.timeIntervalSince1970))"
             }
@@ -201,7 +204,7 @@ public enum PanelNoticeSlot {
         public var isDismissible: Bool {
             switch self {
             case .miBlocked, .haPlaintext(.asking): false
-            case .haPlaintext(.declined), .haAddress, .miExpiringSoon: true
+            case .haPlaintext(.declined), .localNetworkBlocked, .haAddress, .miExpiringSoon: true
             }
         }
 
@@ -217,7 +220,7 @@ public enum PanelNoticeSlot {
             switch self {
             case .miBlocked:
                 return toast.persistent && toast.action?.kind == .presentMiReauth
-            case .haPlaintext, .haAddress, .miExpiringSoon:
+            case .haPlaintext, .localNetworkBlocked, .haAddress, .miExpiringSoon:
                 return false
             }
         }
@@ -230,11 +233,13 @@ public enum PanelNotice {
         miExpired: Bool,
         expiringSoon: Date?,
         plaintext: HAPlaintextPrompt?,
+        localNetworkBlocks: Set<LocalNetworkBlockedFeature> = [],
         address: HADiscoveredInstance?
     ) -> [PanelNoticeSlot.Kind] {
         var kinds: [PanelNoticeSlot.Kind] = []
         if miExpired { kinds.append(.miBlocked) }
         if let plaintext { kinds.append(.haPlaintext(plaintext)) }
+        if !localNetworkBlocks.isEmpty { kinds.append(.localNetworkBlocked(localNetworkBlocks)) }
         if let address { kinds.append(.haAddress(address)) }
         if let expiringSoon { kinds.append(.miExpiringSoon(expiringSoon)) }
         return kinds

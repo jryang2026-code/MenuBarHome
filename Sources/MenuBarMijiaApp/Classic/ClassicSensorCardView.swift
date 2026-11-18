@@ -51,7 +51,7 @@ struct ClassicSensorCardView: View {
 
     var body: some View {
         Group {
-            if store?.deviceValuesAreStale == true {
+            if store?.deviceValuesAreStale == true || device.telemetryStale {
                 staleSensor
             } else if isExpanded {
                 expandedContainer
@@ -249,6 +249,14 @@ struct ClassicSensorCardView: View {
                 .frame(height: 96)
 
             axisFooter(points: points)
+
+            if let store, store.deviceTransportDiagnostics[device.id] != nil {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .classic
+                )
+            }
         }
     }
 

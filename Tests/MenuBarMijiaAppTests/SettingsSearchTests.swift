@@ -358,4 +358,29 @@ struct SettingsSearchTests {
         #expect(SettingsSearch.search("hidden", availability: someHidden)
             .hits.contains { $0.anchor == .hiddenDevices })
     }
+
+    @Test("Local Network permission banner is searchable when blocked and explained when allowed")
+    func localNetworkPermissionReachability() {
+        let allowed = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true,
+            hasLocalNetworkBlock: false
+        )
+        let allowedOutcome = SettingsSearch.search("本地网络权限", availability: allowed)
+        #expect(allowedOutcome.hits.isEmpty)
+        #expect(allowedOutcome.blocked?.reason == .localNetworkAllowed)
+
+        let blocked = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true,
+            hasLocalNetworkBlock: true
+        )
+        let blockedOutcome = SettingsSearch.search("本地网络权限", availability: blocked)
+        #expect(blockedOutcome.hits.contains { $0.anchor == .localNetwork })
+        #expect(blockedOutcome.blocked == nil)
+    }
 }

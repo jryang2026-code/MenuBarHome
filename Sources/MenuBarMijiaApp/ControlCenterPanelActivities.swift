@@ -59,6 +59,7 @@ enum PanelActivityCard {
             case .miBlocked: L10n.tr("米家登录已过期", "Xiaomi Home session expired")
             case .miExpiringSoon: L10n.tr("米家登录即将过期", "Xiaomi Home session expires soon")
             case .haPlaintext: L10n.tr("Home Assistant 明文连接", "Home Assistant plaintext connection")
+            case .localNetworkBlocked: L10n.tr("本地网络权限已关闭", "Local network access is turned off")
             case .haAddress: L10n.tr("发现 Home Assistant 地址", "Home Assistant address found")
             }
         case .safety(let recorded): recorded.alert.title
@@ -81,6 +82,12 @@ extension ControlCenterPanel {
                 switch kind {
                 case .miBlocked, .miExpiringSoon: miSessionExpiryBanner
                 case .haPlaintext(let prompt): haPlaintextConsentBanner(prompt)
+                case .localNetworkBlocked(let blocked):
+                    LocalNetworkPermissionBannerView(
+                        blockedFeatures: blocked,
+                        store: store,
+                        theme: .liquidGlass
+                    )
                 case .haAddress(let instance): haAddressSuggestionBanner(instance)
                 }
             }

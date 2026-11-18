@@ -18,7 +18,7 @@ struct ClassicClimatePanelModule: View {
     var forceExpanded = false
 
     private var isWaiting: Bool { store.waitingDeviceIds.contains(device.id) }
-    private var valuesAreStale: Bool { store.deviceValuesAreStale }
+    private var valuesAreStale: Bool { store.deviceValuesAreStale || device.telemetryStale }
     private var isRunning: Bool {
         !valuesAreStale && device.isOnline && spec.isOn && spec.hvacMode != "off"
     }
@@ -38,11 +38,12 @@ struct ClassicClimatePanelModule: View {
     /// Auxiliary MIoT controls (#30): the shared drawer's rows are this card's only surface for
     /// fresh-air, louver, sleep and similar services, so the expanded state must show them.
     private var facets: [FacetControl] { store.deviceFacets[device.id] ?? [] }
+    private var hasTransportDiagnostics: Bool { store.deviceTransportDiagnostics[device.id] != nil }
 
     /// Anything worth drawing beneath the strip.
     private var hasAuxiliaryControls: Bool {
         spec.temperatureWritable || !modes.isEmpty || !spec.availableFanModes.isEmpty
-            || !spec.availableSwingModes.isEmpty || !facets.isEmpty
+            || !spec.availableSwingModes.isEmpty || !facets.isEmpty || hasTransportDiagnostics
     }
 
     private var canExpand: Bool { spec.powerWritable || hasAuxiliaryControls }
@@ -64,7 +65,7 @@ struct ClassicClimatePanelModule: View {
                             store.setClimateSwingMode(device.id, swingMode: $0)
                         }
                     }
-                    if !facets.isEmpty {
+                    if !facets.isEmpty || hasTransportDiagnostics {
                         ClassicDeviceFacetSection(
                             device: device,
                             store: store,

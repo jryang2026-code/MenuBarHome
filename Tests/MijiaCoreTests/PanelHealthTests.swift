@@ -875,7 +875,7 @@ struct PanelHealthTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(health(haOnlyBlocked) == .blocked(
                 reason: "本地网络权限受阻 · 点此检查设置",
-                action: .openConnectionSettings
+                action: .openLocalNetworkSettings
             ))
             #expect(health(dualHABlocked) == .degraded(
                 reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"

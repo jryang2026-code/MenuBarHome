@@ -1579,6 +1579,7 @@ extension HomeStore {
 public enum PanelHealthAction: Equatable, Sendable {
     case presentMiReauth
     case openConnectionSettings
+    case openLocalNetworkSettings
 }
 
 /// Connection health for every status surface. Derived, never stored.
@@ -1641,7 +1642,7 @@ enum PanelHealthResolver {
             let miLANBlocked = input.hasMiSource && input.localNetworkBlocks.contains(.xiaomiLAN)
             let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.connectionStatus.isConnected
             let haWorking = input.hasHASource && !haBlocked && (input.haStatus.isConnected || (!input.hasMiSource && input.connectionStatus.isConnected))
-            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openConnectionSettings)
+            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openLocalNetworkSettings)
             if haBlocked && miLANBlocked {
                 return miWorking ? .degraded(reason: L10n.tr("本地网络权限受阻，当前仅米家云端可用", "Local network access is blocked. Using Xiaomi Cloud fallback")) : blockedVerdict
             }
