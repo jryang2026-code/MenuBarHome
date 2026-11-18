@@ -1,0 +1,1246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+<title>MenuBarHome 界面原型</title>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#ECEDEF;--surface:#FFFFFF;--surface-2:#F5F5F7;--sunken:#E6E7EA;
+  --line:rgba(24,24,32,.1);--line-strong:rgba(24,24,32,.2);
+  --fg:#1B1B20;--fg-2:#4F5059;--fg-3:#62636C;
+  --accent:#0A62D0;--accent-fg:#FFFFFF;--accent-soft:#E4EEFB;
+  --on:#A84A08;--on-soft:#FFF0E0;--on-line:rgba(200,100,20,.28);
+  --ok:#12733F;--warn:#854305;--warn-soft:#FCF0D9;--warn-line:rgba(150,90,10,.28);
+  --danger:#AE2318;--danger-soft:#FCE8E5;--danger-line:rgba(174,35,24,.28);
+  --track:#C4C5CC;--knob:#FFFFFF;
+  --shadow:0 1px 2px rgba(20,20,30,.06),0 12px 32px rgba(20,20,30,.1);
+  --ease:cubic-bezier(.23,1,.32,1);
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  color-scheme:dark;
+  --bg:#131316;--surface:#1E1E23;--surface-2:#27272D;--sunken:#0E0E11;
+  --line:rgba(255,255,255,.1);--line-strong:rgba(255,255,255,.22);
+  --fg:#F2F2F5;--fg-2:#C4C5CE;--fg-3:#A9AAB4;
+  --accent:#74B5FF;--accent-fg:#06233F;--accent-soft:#1B3048;
+  --on:#FFB877;--on-soft:#3A2A1C;--on-line:rgba(255,184,119,.3);
+  --ok:#62D595;--warn:#F8C55A;--warn-soft:#382C14;--warn-line:rgba(248,197,90,.3);
+  --danger:#FF9C92;--danger-soft:#42201D;--danger-line:rgba(255,156,146,.32);
+  --track:#55565F;--knob:#FFFFFF;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 36px rgba(0,0,0,.42);
+}}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#131316;--surface:#1E1E23;--surface-2:#27272D;--sunken:#0E0E11;
+  --line:rgba(255,255,255,.1);--line-strong:rgba(255,255,255,.22);
+  --fg:#F2F2F5;--fg-2:#C4C5CE;--fg-3:#A9AAB4;
+  --accent:#74B5FF;--accent-fg:#06233F;--accent-soft:#1B3048;
+  --on:#FFB877;--on-soft:#3A2A1C;--on-line:rgba(255,184,119,.3);
+  --ok:#62D595;--warn:#F8C55A;--warn-soft:#382C14;--warn-line:rgba(248,197,90,.3);
+  --danger:#FF9C92;--danger-soft:#42201D;--danger-line:rgba(255,156,146,.32);
+  --track:#55565F;--knob:#FFFFFF;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 14px 36px rgba(0,0,0,.42);
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.45 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;overflow-wrap:anywhere}
+h1,h2,h3,p,ul,ol{margin:0;padding:0}
+ul,ol{list-style:none}
+button,input,select{font:inherit;color:inherit}
+button{background:none;border:0;padding:0;cursor:pointer;text-align:inherit}
+button:disabled{cursor:not-allowed}
+:focus{outline:none}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+[data-focus-h]:focus-visible{outline:none}
+.ic{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+
+/* 原型外壳 */
+.proto{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:9px 16px;background:var(--surface);border-bottom:1px solid var(--line)}
+.proto-id{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
+.proto-id b{font-size:13px;font-weight:600}
+.badge-demo{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;color:var(--warn);background:var(--warn-soft);border-radius:999px;padding:2px 9px}
+.proto-nav{display:flex;flex-wrap:wrap;gap:2px;flex:1 1 auto;min-width:0;justify-content:center}
+.proto-nav button{padding:5px 10px;border-radius:7px;color:var(--fg-2);font-weight:500;transition:background-color .15s ease,color .15s ease,transform .12s ease-out}
+.proto-nav button[aria-current="page"]{background:var(--sunken);color:var(--fg)}
+.proto-tools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.stage{max-width:1180px;margin:0 auto;padding:22px 16px 72px}
+
+/* 通用控件 */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;flex:none;max-width:100%;min-height:30px;padding:5px 12px;border-radius:8px;font-weight:500;background:var(--surface-2);border:1px solid var(--line);transition:background-color .15s ease,border-color .15s ease,transform .12s ease-out}
+.btn.primary{background:var(--accent);color:var(--accent-fg);border-color:transparent}
+.btn.danger{background:var(--danger);color:var(--surface);border-color:transparent}
+.btn.ghost{background:none;border-color:transparent;color:var(--accent);padding-inline:6px}
+.btn.big{min-height:36px;padding:7px 18px;font-size:14px}
+.btn:disabled{opacity:.55}
+.btn:not(:disabled):active,.icon-btn:active,.proto-nav button:active,.seg button:active,.chip:active,.tile-main:active,.tile-more:active,.side-nav button:active,.plat:active{transform:scale(.97)}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:30px;height:30px;border-radius:8px;color:var(--fg-2);transition:background-color .15s ease,transform .12s ease-out}
+.link{color:var(--accent);font-weight:500;display:inline-flex;align-items:center;gap:2px;border-radius:4px}
+.link .ic{width:12px;height:12px}
+.seg{display:inline-flex;flex-wrap:wrap;background:var(--sunken);border-radius:8px;padding:2px;gap:2px;max-width:100%}
+.seg button{padding:3px 10px;min-height:26px;border-radius:6px;color:var(--fg-2);font-weight:500;transition:background-color .15s ease,color .15s ease,transform .12s ease-out}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.14)}
+.seg .n{color:var(--fg-3);font-weight:400;margin-left:3px}
+.sw{position:relative;flex:none;width:38px;height:22px;border-radius:999px;background:var(--track);transition:background-color .2s ease,transform .12s ease-out}
+.sw i{position:absolute;top:2px;left:2px;display:grid;place-items:center;width:18px;height:18px;border-radius:50%;background:var(--knob);box-shadow:0 1px 2px rgba(0,0,0,.28);transition:transform .22s var(--ease);color:#55565F}
+.sw[aria-checked="true"]{background:var(--accent)}
+.sw[aria-checked="true"] i{transform:translateX(16px)}
+.sw[aria-disabled="true"]{background:var(--track);cursor:not-allowed}
+.sw[aria-disabled="true"][aria-checked="true"]{background:color-mix(in srgb,var(--accent) 45%,var(--track))}
+.sw i .ic{width:10px;height:10px;stroke-width:2.2}
+.sw:active{transform:scale(.96)}
+input[type=text],input[type=password],input[type=search],select{width:100%;min-height:32px;padding:5px 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);transition:border-color .15s ease}
+input:focus-visible,select:focus-visible{outline-offset:0}
+input[aria-invalid="true"]{border-color:var(--danger)}
+input[type=range]{width:100%;accent-color:var(--accent);margin:0;height:22px}
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:400;color:var(--fg-2);background:var(--surface-2);border-radius:999px;padding:1px 8px;line-height:1.5}
+.pill.ok{color:var(--ok)}
+.pill.warn{color:var(--warn);background:var(--warn-soft)}
+.pill.danger{color:var(--danger);background:var(--danger-soft)}
+.pill .ic{width:11px;height:11px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);flex:none}
+.dot.hollow{background:none;border:1.5px solid var(--fg-3)}
+.status-x{color:var(--danger);font-weight:700;line-height:1}
+.note{display:flex;gap:8px;padding:10px 12px;border-radius:10px;font-size:12.5px;line-height:1.5;background:var(--surface-2);color:var(--fg)}
+.note>.ic{margin-top:2px;color:var(--fg-2)}
+.note.warn{background:var(--warn-soft)}.note.warn>.ic,.note.warn b{color:var(--warn)}
+.note.danger{background:var(--danger-soft)}.note.danger>.ic,.note.danger b{color:var(--danger)}
+.note.info{background:var(--accent-soft)}.note.info>.ic{color:var(--accent)}
+.note b{font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.actions.end{justify-content:flex-end}
+.muted{color:var(--fg-2)}
+.small{font-size:12px}
+.sim{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 10px;border:1px dashed var(--line-strong);border-radius:10px;font-size:12px;color:var(--fg-2)}
+.sim b{font-weight:500}
+
+/* 引导 */
+.onb{max-width:560px;margin:0 auto;background:var(--surface);border-radius:16px;box-shadow:var(--shadow);padding:22px 24px 20px}
+.onb-top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:18px}
+.onb-steps{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--fg-2)}
+.onb-bar{display:flex;gap:4px}
+.onb-bar i{width:22px;height:3px;border-radius:2px;background:var(--sunken);transition:background-color .2s ease}
+.onb-bar i.on{background:var(--accent)}
+.onb h1{font-size:20px;line-height:1.3;font-weight:600;letter-spacing:-.01em}
+.onb .lead{color:var(--fg-2);margin:6px 0 16px;font-size:13.5px}
+.onb-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:20px}
+.plats{display:grid;gap:8px}
+.plat{position:relative;display:grid;grid-template-columns:36px 1fr 18px;gap:12px;align-items:center;padding:12px 14px;border-radius:12px;border:1px solid var(--line-strong);cursor:pointer;transition:border-color .15s ease,background-color .15s ease,transform .12s ease-out}
+.plat:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+.plat:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.plat input{position:absolute;opacity:0;width:1px;height:1px}
+.plat .mi{width:36px;height:36px;border-radius:10px}
+.plat b{display:block;font-weight:600;font-size:14px}
+.plat span.d{color:var(--fg-2);font-size:12.5px}
+.radio{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line-strong);display:block;transition:border-width .15s ease,border-color .15s ease}
+.plat:has(input:checked) .radio{border:5px solid var(--accent)}
+.qr-wrap{display:grid;grid-template-columns:160px minmax(0,1fr);gap:18px;align-items:start}
+.qr{position:relative;width:160px;height:160px;background:#fff;color:#16161A;border-radius:12px;border:1px solid var(--line);padding:10px}
+.qr svg{display:block;width:100%;height:100%}
+.qr.dim svg{opacity:.14}
+.qr-tag{position:absolute;inset:auto 0 -1px;text-align:center}
+.qr-over{position:absolute;inset:0;display:grid;place-items:center;text-align:center;font-size:12.5px;color:#16161A;padding:12px}
+.qr-over button{background:#16161A;color:#fff;border-radius:8px;padding:5px 10px;font-weight:500}
+.steps{display:grid;gap:10px}
+.steps li{display:grid;grid-template-columns:18px 1fr;gap:8px;color:var(--fg-3)}
+.steps li.now{color:var(--fg);font-weight:500}
+.steps li.done{color:var(--fg-2)}
+.steps .mk{display:grid;place-items:center;width:18px;height:18px;border-radius:50%;border:1.5px solid var(--line-strong);font-size:11px}
+.steps li.now .mk{border-color:var(--accent);color:var(--accent)}
+.steps li.done .mk{background:var(--ok);border-color:transparent;color:var(--surface)}
+.steps .mk .ic{width:11px;height:11px;stroke-width:2.6}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--line-strong);border-top-color:var(--accent);animation:spin .7s linear infinite;flex:none;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.field{display:grid;gap:4px;margin-top:12px}
+.field label{font-weight:500}
+.field .hint{font-size:12px;color:var(--fg-2)}
+.field .err{font-size:12.5px;color:var(--danger)}
+.key-row{display:flex;gap:6px}
+.found{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;background:var(--accent-soft);flex-wrap:wrap}
+.found div{flex:1 1 180px;min-width:0}
+.found b{font-weight:600;display:block}
+.howto{margin-top:8px;font-size:12.5px;color:var(--fg-2)}
+.howto ol{list-style:decimal;padding-left:18px;margin-top:4px;display:grid;gap:2px}
+.errbox{margin-top:12px;display:grid;gap:8px;padding:12px;border-radius:10px;background:var(--danger-soft);color:var(--fg);font-size:12.5px}
+.errbox b{display:block;font-weight:600;color:var(--danger);font-size:13px}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:5px;min-height:30px;padding:4px 10px 4px 8px;border-radius:999px;border:1px solid var(--line-strong);color:var(--fg-2);transition:background-color .15s ease,border-color .15s ease,color .15s ease,transform .12s ease-out}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:transparent;color:var(--fg);font-weight:500}
+.chip .n{color:var(--fg-2);font-weight:400;font-size:12px}
+.sec-label{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-weight:600;margin:16px 0 8px}
+.tight-list{border-radius:12px;background:var(--surface-2);padding:2px 12px}
+.tight-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line)}
+.tight-row:last-child{border-bottom:0}
+.tight-row div{min-width:0}
+.tight-row small{display:block;color:var(--fg-2);font-size:12px}
+.mark-done{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent);margin-bottom:12px}
+.mark-done .ic{width:22px;height:22px}
+.tips{display:grid;gap:8px;margin-top:14px}
+.tips li{display:flex;gap:8px;color:var(--fg-2)}
+.tips .ic{margin-top:2px}
+
+/* 面板 */
+.panel-stage{display:grid;grid-template-columns:minmax(0,380px) minmax(0,270px);gap:24px;justify-content:center;align-items:start}
+.panel{width:100%;max-height:660px;display:flex;flex-direction:column;background:var(--surface);border-radius:18px;box-shadow:var(--shadow);overflow:hidden}
+.p-head{display:flex;align-items:center;gap:6px;padding:12px 10px 8px 14px}
+.p-title{flex:1;min-width:0}
+.p-title b{font-size:15px;font-weight:600;display:block;line-height:1.25}
+.p-title span{font-size:12px;color:var(--fg-2)}
+.p-alerts{display:grid;gap:6px;padding:0 10px 8px}
+.urgent{background:var(--danger-soft);border-radius:12px;padding:10px 12px;display:grid;gap:8px}
+.urgent b{display:flex;align-items:center;gap:6px;color:var(--danger);font-weight:600;font-size:14px}
+.urgent p{font-size:12.5px}
+.capsule{display:flex;align-items:center;gap:6px;min-height:32px;border-radius:999px;background:var(--surface-2);padding:2px 4px 2px 10px;font-size:12.5px}
+.capsule.danger{background:var(--danger-soft);color:var(--danger)}
+.capsule.warn{background:var(--warn-soft);color:var(--warn)}
+.capsule .ic{width:14px;height:14px}
+.capsule .t{flex:1;min-width:0;line-height:1.3}
+.capsule button.act{font-weight:600;padding:3px 8px;border-radius:999px;display:inline-flex;align-items:center;gap:2px;flex:none}
+.capsule .icon-btn{width:24px;height:24px;border-radius:50%}
+.rem-list{background:var(--surface-2);border-radius:12px;padding:2px 12px}
+.rem-list li{padding:7px 0;border-bottom:1px solid var(--line)}
+.rem-list li:last-child{border:0}
+.rem-list small{display:block;color:var(--fg-2);font-size:12px}
+.p-search{padding:0 10px 8px;display:flex;gap:6px;align-items:center}
+.rooms{display:flex;gap:2px;padding:0 10px 8px;overflow-x:auto;scrollbar-width:none;flex:none}
+.rooms::-webkit-scrollbar{display:none}
+.rooms button{flex:none;padding:3px 10px;min-height:26px;border-radius:999px;color:var(--fg-2);font-weight:500;transition:background-color .15s ease,color .15s ease}
+.rooms button[aria-pressed="true"]{background:var(--sunken);color:var(--fg)}
+.p-body{flex:1 1 auto;min-height:120px;overflow-y:auto;padding:2px 10px 10px;border-top:1px solid var(--line)}
+.p-group{font-size:12px;color:var(--fg-2);margin:8px 2px 6px;font-weight:500}
+.tiles{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.tile{display:grid;grid-template-columns:minmax(0,1fr) auto;background:var(--surface-2);border-radius:11px;transition:background-color .18s ease}
+.tile.on{background:var(--on-soft)}
+.tile.open,.tile.confirming{grid-column:1/-1}
+.tile.off-line .tile-main{opacity:.72}
+.tile-main{display:flex;align-items:center;gap:7px;min-width:0;padding:7px 2px 7px 7px;border-radius:11px;transition:transform .12s ease-out}
+div.tile-main{cursor:default}
+.ti{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--surface);color:var(--fg-2);flex:none;transition:color .18s ease}
+.tile.on .ti{color:var(--on)}
+.tt{min-width:0}
+.tt b{display:block;font-weight:500;line-height:1.25}
+.tt small{display:block;font-size:12px;color:var(--fg-2);line-height:1.3}
+.tile.on .tt small{color:var(--on)}
+.tile-more{display:grid;place-items:center;width:26px;align-self:stretch;color:var(--fg-3);border-radius:0 11px 11px 0;transition:transform .12s ease-out}
+.tile-more .ic{width:13px;height:13px;transition:transform .18s var(--ease)}
+.tile-more[aria-expanded="true"] .ic{transform:rotate(90deg)}
+.drawer{grid-column:1/-1;display:grid;gap:8px;padding:2px 10px 10px;font-size:12.5px;transition:opacity .18s ease;opacity:1}
+.fade-in{transition:opacity .16s ease;opacity:1}
+@starting-style{.drawer,.preview,.toast,.fade-in{opacity:0}}
+.drawer label{display:grid;grid-template-columns:44px 1fr 40px;gap:8px;align-items:center}
+.drawer output{text-align:right;color:var(--fg-2)}
+.stepper{display:flex;align-items:center;gap:10px}
+.stepper b{font-size:20px;font-weight:600;min-width:56px;text-align:center;font-variant-numeric:tabular-nums}
+.stepper button{width:30px;height:30px;border-radius:8px;background:var(--surface);display:grid;place-items:center}
+.cam{aspect-ratio:16/9;border-radius:8px;background:linear-gradient(160deg,#30323A,#191A1F);color:#E9E9EE;display:grid;place-items:center;font-size:12.5px}
+.confirm-text{color:var(--fg);font-size:12.5px}
+.confirm-text b{font-weight:600}
+.p-foot{display:flex;align-items:center;gap:8px;padding:8px 10px 8px 14px;border-top:1px solid var(--line);min-height:44px}
+.p-state{flex:1;min-width:0;display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--fg-2);border-radius:6px}
+.p-foot-col{display:grid;gap:8px;padding:10px 14px;border-top:1px solid var(--line)}
+.p-foot-col p{font-size:12.5px}
+.p-foot-col p.q{font-size:13px;font-weight:600}
+.p-empty{display:grid;gap:8px;justify-items:center;text-align:center;padding:28px 12px;color:var(--fg-2)}
+.p-empty b{color:var(--fg);font-size:14px;font-weight:600}
+.side{display:grid;gap:14px;font-size:12.5px}
+.side-card{background:var(--surface);border-radius:12px;padding:12px 14px;display:grid;gap:10px}
+.side-card h2{font-size:13px;font-weight:600}
+.side-card .row{display:grid;gap:5px}
+.side-card ul{display:grid;gap:6px;color:var(--fg-2)}
+
+/* 设置窗口 */
+.win{display:flex;flex-direction:column;background:var(--surface);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;height:min(800px,calc(100vh - 104px));min-height:560px}
+.stage:has(>.win){padding-bottom:20px}
+.win-top{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line)}
+.crumb{display:flex;align-items:center;gap:6px;flex:1 1 180px;color:var(--fg-2);min-width:0;flex-wrap:wrap}
+.crumb button{color:var(--fg-2);border-radius:4px}
+.crumb b{color:var(--fg);font-weight:600}
+.crumb .sep{color:var(--fg-3)}
+.win-search{position:relative;flex:0 1 260px;min-width:0}
+.win-search .ic{position:absolute;left:9px;top:8px;color:var(--fg-3);pointer-events:none}
+.win-search input{padding-left:30px;padding-right:30px;background:var(--surface-2);border-color:var(--line)}
+.win-search .icon-btn{position:absolute;right:2px;top:1px}
+.win-body{flex:1;display:grid;grid-template-columns:188px minmax(0,1fr);min-height:0}
+.side-nav{background:var(--surface-2);padding:10px 8px;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:2px;overflow:auto}
+.side-nav button{display:flex;align-items:center;gap:8px;padding:7px 9px;border-radius:8px;color:var(--fg-2);font-weight:500;transition:background-color .15s ease,color .15s ease,transform .12s ease-out}
+.side-nav button[aria-current="page"]{background:var(--sunken);color:var(--fg)}
+.win-main{overflow-y:auto;padding:20px 24px 40px;min-width:0}
+.page{max-width:680px;margin:0 auto}
+.page.wide{max-width:none}
+.page-h{font-size:18px;font-weight:600;letter-spacing:-.01em;line-height:1.3}
+.page-lead{color:var(--fg-2);margin:4px 0 16px;font-size:13px}
+.group-h{display:flex;align-items:center;gap:6px;font-weight:600;margin:20px 0 6px;font-size:13px}
+.group-h .n{font-weight:400;color:var(--fg-2)}
+.sub-h{font-size:12px;font-weight:500;color:var(--fg-2);margin:12px 2px 6px}
+.card{background:var(--surface-2);border-radius:12px;padding:0 14px}
+.set-row{display:flex;align-items:center;justify-content:space-between;gap:8px 16px;padding:10px 0;min-height:44px;border-bottom:1px solid var(--line);flex-wrap:wrap;scroll-margin:80px}
+.card>:last-child{border-bottom:0}
+.set-l{flex:1 1 110px;min-width:0}
+.set-l small{display:block;color:var(--fg-2);font-size:12px}
+.set-c{display:flex;align-items:center;gap:8px;max-width:100%;min-width:0}
+.set-c select{width:auto;max-width:100%}
+.set-c input[type=text]{width:180px;max-width:100%}
+.full{flex:1 1 100%;min-width:0}
+.disc{display:flex;align-items:center;gap:4px;padding:10px 2px;color:var(--fg-2);font-weight:500;border-radius:6px}
+.disc .ic{width:13px;height:13px;transition:transform .18s var(--ease)}
+.disc[aria-expanded="true"] .ic{transform:rotate(90deg)}
+.flash{animation:flash 1.8s ease-out}
+@keyframes flash{0%,55%{background-color:var(--accent-soft);box-shadow:0 0 0 6px var(--accent-soft)}100%{background-color:transparent;box-shadow:0 0 0 6px transparent}}
+.mrow{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:2px 12px;align-items:start;padding:11px 0;border-bottom:1px solid var(--line);scroll-margin:80px;border-radius:2px}
+.card>.mrow:last-child{border-bottom:0}
+.mi{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--surface);color:var(--fg-2)}
+.mt{min-width:0}
+.mn{display:flex;flex-wrap:wrap;align-items:center;gap:3px 8px;font-weight:600}
+.mt p{color:var(--fg-2);font-size:12.5px;line-height:1.4;margin-top:1px}
+.mc{display:flex;align-items:center;gap:10px;min-height:32px}
+.mrow.is-off .mn{font-weight:500}
+.mrow.is-off .mi{background:none;box-shadow:inset 0 0 0 1px var(--line)}
+.lock-why{display:flex;gap:5px;margin-top:4px;font-size:12.5px;color:var(--warn);align-items:flex-start}
+.lock-why .link{margin-left:4px}
+.lock-why .ic{width:13px;height:13px;margin-top:2px}
+.mx{grid-column:1/-1;margin-top:8px;min-width:0}
+.preview{display:grid;gap:9px;padding:12px;border-radius:10px;background:var(--surface);border:1px solid var(--line-strong);font-size:12.5px;transition:opacity .16s ease;opacity:1}
+.preview h3{font-size:13px;font-weight:600}
+.preview .impact{display:grid;gap:3px}
+.preview .impact>b{font-weight:600}
+.preview ul{display:grid;gap:3px}
+.preview li{display:flex;gap:6px;align-items:baseline}
+.tag{flex:none;font-size:12px;color:var(--fg-2)}
+.subs{display:grid;gap:0;padding:0 12px;border-radius:10px;background:var(--surface)}
+.subs>*{border-bottom:1px solid var(--line)}
+.subs>:last-child{border-bottom:0}
+.rule{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;padding:8px 0}
+.rule small{display:block;color:var(--fg-2);font-size:12px}
+.rule.paused>div:first-child{color:var(--fg-2)}
+.more-row{display:flex;align-items:center;gap:4px;padding:9px 0;color:var(--fg-2);font-weight:500;width:100%}
+.more-row .ic{width:13px;height:13px}
+.results{display:grid;gap:14px}
+.res{display:flex;align-items:center;gap:10px;width:100%;padding:9px 0;border-bottom:1px solid var(--line)}
+.card>.res:last-child{border-bottom:0}
+.res .rt{flex:1;min-width:0}
+.res small{display:block;color:var(--fg-2);font-size:12px}
+.res mark{background:var(--accent-soft);color:inherit;border-radius:3px;padding:0 1px}
+.empty{padding:36px 16px;text-align:center;color:var(--fg-2);display:grid;gap:8px;justify-items:center}
+.empty b{color:var(--fg);font-size:14px;font-weight:600}
+.conn-card{display:grid;grid-template-columns:32px minmax(0,1fr) auto;gap:2px 12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--line)}
+.compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:16px;align-items:start}
+.cmp-col{min-width:0}
+.cmp-label{display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--fg-2);margin-bottom:8px}
+.status-head{display:flex;align-items:center;gap:12px;padding:12px 0 14px}
+.status-head .mi{width:40px;height:40px;border-radius:11px;background:var(--surface-2)}
+.status-head h2{font-size:16px;font-weight:600;line-height:1.3}
+.status-head p{display:flex;align-items:center;gap:6px;color:var(--fg-2);font-size:12.5px;flex-wrap:wrap}
+.advanced{margin-top:2px}
+.advanced .card{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line)}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--fg-2)}
+.danger-zone{margin-top:14px;display:grid;gap:8px}
+.text-danger{color:var(--danger);font-weight:500}
+.toast-wrap{position:fixed;left:0;right:0;bottom:16px;display:flex;justify-content:center;pointer-events:none;z-index:30;padding:0 16px}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:10px;max-width:440px;padding:8px 10px 8px 14px;border-radius:12px;background:var(--fg);color:var(--bg);box-shadow:var(--shadow);font-size:13px;transition:opacity .16s ease;opacity:1}
+.toast button{color:inherit;font-weight:600;text-decoration:underline;text-underline-offset:2px;flex:none;padding:2px 4px;border-radius:4px}
+.toast :focus-visible{outline-color:var(--bg)}
+
+@media (hover:hover) and (pointer:fine){
+  .proto-nav button:hover,.icon-btn:hover,.side-nav button:hover,.rooms button:hover{background:var(--sunken)}
+  .btn:not(.primary):not(.danger):not(:disabled):hover{background:var(--sunken)}
+  .btn.ghost:hover{background:var(--accent-soft)!important}
+  .btn.primary:not(:disabled):hover,.btn.danger:hover{filter:brightness(1.08)}
+  .tile:not(.on):hover{background:var(--sunken)}
+  .link:hover{text-decoration:underline}
+  .res:hover .rt>span:first-child{color:var(--accent)}
+  .plat:hover{border-color:var(--fg-3)}
+}
+@media (max-width:760px){
+  .proto{position:static}
+  .proto-nav{justify-content:flex-start;order:3;flex-basis:100%}
+  .panel-stage{grid-template-columns:minmax(0,380px)}
+  .win{height:auto;min-height:0;overflow:visible}
+  .win-body{grid-template-columns:minmax(0,1fr)}
+  .win-search{flex:1 1 100%}
+  .side-nav{flex-direction:row;flex-wrap:wrap;border-right:0;border-bottom:1px solid var(--line);padding:8px}
+  .side-nav button{padding:5px 9px}
+  .win-main{overflow:visible;padding:16px 14px 28px}
+}
+@media (max-width:460px){
+  .stage{padding:14px 12px 72px}
+  .onb{padding:16px}
+  .qr-wrap{grid-template-columns:minmax(0,1fr)}
+  .qr{margin:0 auto}
+  .mrow{grid-template-columns:28px minmax(0,1fr) auto;gap:2px 8px}
+  .mrow>.mi{width:28px;height:28px}
+}
+.btn.hold{position:relative;overflow:hidden;touch-action:none;user-select:none;-webkit-user-select:none}
+.btn.hold::after{content:"";position:absolute;inset:0;background:currentColor;opacity:.16;transform:scaleX(0);transform-origin:left;pointer-events:none}
+.btn.hold.is-holding::after{transform:scaleX(1);transition:transform .6s linear}
+@media (prefers-reduced-motion:reduce){.btn.hold.is-holding::after{transition:none}}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-property:opacity,background-color,border-color,color!important;transition-duration:.12s!important;scroll-behavior:auto!important}
+  .btn:active,.icon-btn:active,.seg button:active,.chip:active,.tile-main:active,.tile-more:active,.sw:active,.plat:active,.proto-nav button:active,.side-nav button:active,.tile-more:active{transform:none!important}
+  .sw i{transition:none!important}
+  .spin{animation:pulse 1.6s ease-in-out infinite;border-color:var(--accent)}
+  @keyframes pulse{50%{opacity:.35}}
+}
+@media (prefers-contrast:more){:root{--line:rgba(120,120,130,.55);--line-strong:rgba(120,120,130,.9)}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-light" viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.7.6 1.1 1.3 1.2 2.4h5.2c.1-1.1.5-1.8 1.2-2.4A6 6 0 0 0 12 3Z"/></symbol>
+<symbol id="i-switch" viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="3"/><rect x="9.5" y="7" width="5" height="10" rx="1.5"/><path d="M12 7v5"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0V8ZM12 17v4"/></symbol>
+<symbol id="i-ac" viewBox="0 0 24 24"><path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9M9.5 4.5 12 7l2.5-2.5M9.5 19.5 12 17l2.5 2.5"/></symbol>
+<symbol id="i-curtain" viewBox="0 0 24 24"><path d="M3 4h18M5 4v16M19 4v16M5 4c0 6 2 10 5 12M19 4c0 6-2 10-5 12M3 20h4M17 20h4"/></symbol>
+<symbol id="i-tv" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></symbol>
+<symbol id="i-vacuum" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="9" r="2.4"/><path d="M6.5 16h11"/></symbol>
+<symbol id="i-camera" viewBox="0 0 24 24"><rect x="3" y="6" width="13" height="12" rx="2.5"/><path d="m16 11 5-3v8l-5-3"/></symbol>
+<symbol id="i-sensor" viewBox="0 0 24 24"><path d="M10 14.5V5a2.5 2.5 0 0 1 5 0v9.5a4.5 4.5 0 1 1-5 0ZM12.5 9v8"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol>
+<symbol id="i-safety" viewBox="0 0 24 24"><path d="M12 3c.5 3.5 5.5 5.8 5.5 11a5.5 5.5 0 0 1-11 0c0-2.3 1-3.8 2.3-5 .3 1.6 1 2.5 2 3C10.5 9 10.8 5.500 12 3Z"/></symbol>
+<symbol id="i-garage" viewBox="0 0 24 24"><path d="M3 10.500 12 4l9 6.500V20H3v-9.500ZM7 20v-8h10v8M7 15h10"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.500"/><path d="m16 16 4.500 4.500"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.88 1.2V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-2.91-1.12l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 3.09 14H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.2-2.91l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 10 3.09V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 2.91 1.2l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 20.91 10H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z"/></symbol>
+<symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="m5 9 7 7 7-7"/></symbol>
+<symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.500 4.500 4.500L19 7"/></symbol>
+<symbol id="i-home" viewBox="0 0 24 24"><path d="M4 11 12 4l8 7v9h-5v-6H9v6H4v-9Z"/></symbol>
+<symbol id="i-server" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="7" rx="2"/><rect x="4" y="13" width="16" height="7" rx="2"/><path d="M8 7.500h.01M8 16.500h.01"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 4l1.800 5.200L19 11l-5.200 1.800L12 18l-1.800-5.200L5 11l5.200-1.800L12 4Z"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.500 11a6.500 6.500 0 0 0 13 0M12 17.500V21"/></symbol>
+<symbol id="i-ball" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.500"/><path d="M9 10h.01M15 10h.01M9 14.500c1.700 1.500 4.300 1.500 6 0"/></symbol>
+<symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3 5 14h6l-1 7 8-11h-6l1-7Z"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V4M4 20h16M8 16v-4M12.500 16V8M17 16v-6"/></symbol>
+<symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.500"/><path d="M12 7v5l3.500 2"/></symbol>
+<symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 5 6v5.500c0 4.400 2.900 7.700 7 9.500 4.100-1.800 7-5.100 7-9.500V6l-7-3Z"/></symbol>
+<symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 2.800 20h18.400L12 4ZM12 10v4.500M12 17.500h.01"/></symbol>
+<symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.500"/><path d="M12 11v5M12 8h.01"/></symbol>
+<symbol id="i-bell" viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.500 2h-15L6 16ZM10 21h4"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.700 0l3-3a4 4 0 0 0-5.700-5.700l-1 1M14 10a4 4 0 0 0-5.700 0l-3 3a4 4 0 0 0 5.700 5.700l1-1"/></symbol>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.500"/><rect x="13" y="4" width="7" height="7" rx="1.500"/><rect x="4" y="13" width="7" height="7" rx="1.500"/><rect x="13" y="13" width="7" height="7" rx="1.500"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="i-link2" viewBox="0 0 24 24"><path d="M8 12h8M7 8H6a4 4 0 0 0 0 8h1M17 8h1a4 4 0 0 1 0 8h-1"/></symbol>
+<symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M5 13v6a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-6"/></symbol>
+</defs></svg>
+<div id="app"></div>
+<div id="live" class="sr" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+/* ---------- 示例数据 ---------- */
+const TYPES=[
+ {id:'light',name:'灯',icon:'light',desc:'吊灯、灯带和台灯的开关与亮度'},
+ {id:'ac',name:'空调',icon:'ac',desc:'开关空调，调温度和模式'},
+ {id:'plug',name:'插座',icon:'plug',desc:'开关插座，看它正在用多少电'},
+ {id:'curtain',name:'窗帘',icon:'curtain',desc:'打开、关上，或停在一半'},
+ {id:'switch',name:'开关',icon:'switch',desc:'墙壁开关和智能面板'},
+ {id:'tv',name:'电视',icon:'tv',desc:'开关电视'},
+ {id:'vacuum',name:'扫地机',icon:'vacuum',desc:'开始打扫，或让它回去充电'},
+ {id:'camera',name:'摄像机',icon:'camera',desc:'在面板里找到家里的摄像机'},
+ {id:'sensor',name:'温湿度',icon:'sensor',desc:'显示室内温度和湿度'},
+ {id:'lock',name:'门锁',icon:'lock',safety:true,desc:'查看门锁状态，开锁前要确认'},
+ {id:'safety',name:'烟雾与漏水',icon:'safety',safety:true,desc:'查看报警器和传感器的状态'},
+ {id:'garage',name:'车库门',icon:'garage',risky:true,desc:'开关车库门，每次都要确认'},
+];
+const CONNS={
+ mijia:{name:'米家',icon:'home',desc:'用手机上的米家账号连接家里的设备'},
+ ha:{name:'Home Assistant',icon:'server',desc:'连接你家里的家庭服务器'},
+ lg:{name:'LG 电视',icon:'tv',desc:'在同一网络里直接控制 LG 电视'},
+};
+const FEATURES=[
+ {id:'automation',name:'定时与自动化',icon:'clock',desc:'到点或满足条件时，自动控制设备',kw:'规则 定时 倒计时 场景 自动'},
+ {id:'live',name:'摄像机实时画面',icon:'camera',desc:'在面板里直接看摄像机画面',needs:'camera',kw:'监控 视频 直播 画面'},
+ {id:'energy',name:'用电统计',icon:'bolt',desc:'记录插座用了多少电，估算电费',needs:'plug',kw:'电费 电量 功率 度'},
+ {id:'forgot',name:'忘关提醒',icon:'bell',desc:'灯或空调开了很久时提醒你一声',kw:'忘记 长时间 通知'},
+ {id:'climate',name:'温湿度记录',icon:'chart',desc:'保存室内温湿度变化，每周汇总一次',needs:'sensor',kw:'周报 历史 趋势'},
+ {id:'ai',name:'一句话控制',icon:'spark',desc:'听懂“把客厅调暗一点”这样的话',kw:'AI 智能 助手 大模型 自然语言 api 密钥 provider'},
+ {id:'voice',name:'语音输入',icon:'mic',desc:'对着电脑说话来控制设备',kw:'麦克风 说话 识别 语音'},
+ {id:'ball',name:'桌面小球',icon:'ball',desc:'屏幕边上的小球，表情随家里状态变化',kw:'陪伴 情绪 悬浮 grok'},
+ {id:'external',name:'外部工具联动',icon:'share',desc:'让快捷指令等工具也能控制设备',kw:'raycast 快捷指令 脚本 命令行 cli mcp 集成'},
+];
+const SUBS=[
+ {id:'energy-price',feature:'energy',title:'电价',kw:'每度电 费用 峰谷'},
+ {id:'ai-service',feature:'ai',title:'AI 服务',kw:'服务商 模型 密钥 api provider'},
+ {id:'ai-ask',feature:'ai',title:'拿不准时先问我',kw:'确认 不确定'},
+ {id:'voice-local',feature:'voice',title:'优先用本机识别',kw:'离线 隐私'},
+];
+const SETTINGS=[
+ {id:'appearance',page:'general',title:'外观',kw:'深色 浅色 主题 夜间 暗色 dark light'},
+ {id:'language',page:'general',title:'语言',kw:'中文 英文 english'},
+ {id:'unit',page:'general',title:'温度单位',kw:'摄氏 华氏 celsius'},
+ {id:'ptitle',page:'general',title:'面板标题',kw:'名字 我的家 名称'},
+ {id:'menubar',page:'general',title:'菜单栏旁显示',kw:'读数 温度 托盘'},
+ {id:'boot',page:'general',title:'开机自动启动',kw:'登录 启动 自启'},
+ {id:'hotkey',page:'general',title:'呼出快捷键',kw:'键盘 快捷键 热键'},
+ {id:'sound',page:'general',title:'操作声音',kw:'提示音 音效'},
+ {id:'hideoff',page:'general',title:'隐藏离线设备',kw:'断电 未通电 不在线'},
+ {id:'acbig',page:'general',title:'空调使用大卡片',kw:'布局 磁贴',adv:'general'},
+ {id:'dedupe',page:'general',title:'灯组里的单灯不重复显示',kw:'灯组 合并',adv:'general'},
+ {id:'alert-smoke',page:'safety',title:'烟雾提醒',kw:'火灾 报警 燃气'},
+ {id:'alert-leak',page:'safety',title:'漏水提醒',kw:'水浸 报警 水'},
+ {id:'alert-lock',page:'safety',title:'门锁异常提醒',kw:'撬锁 未锁 报警'},
+ {id:'risky',page:'safety',title:'高风险设备二次确认',kw:'车库门 门锁 确认 安全'},
+ {id:'lockscreen',page:'safety',title:'锁屏时禁止控制',kw:'锁屏 隐私 屏幕'},
+ {id:'alloff',page:'safety',title:'一键全关包含的设备',kw:'全关 全部关闭 范围'},
+ {id:'doorbell',page:'safety',title:'门铃弹窗',kw:'访客 门铃'},
+ {id:'update',page:'about',title:'软件更新',kw:'版本 升级 检查更新'},
+ {id:'privacy',page:'about',title:'隐私说明',kw:'数据 上传 账号'},
+ {id:'diag',page:'about',title:'复制排障信息',kw:'诊断 日志 反馈 问题'},
+ {id:'rerun',page:'about',title:'重新运行首次引导',kw:'新手 向导 教程'},
+ {id:'scan',page:'about',title:'扫描未显示的设备',kw:'找不到 缺少 设备',adv:'about'},
+ {id:'wipe',page:'about',title:'退出并清除全部账号数据',kw:'重置 删除 清空 退出',adv:'about'},
+ {id:'mi-rescan',conn:'mijia',title:'重新扫码',kw:'登录 过期 账号'},
+ {id:'mi-region',conn:'mijia',title:'服务器地区',kw:'海外 中国大陆',adv:'conn'},
+ {id:'mi-lan',conn:'mijia',title:'优先走家庭网络',kw:'局域网 本地 lan',adv:'conn'},
+ {id:'multi',conn:'mijia',title:'同时连接多个平台',kw:'双源 合并 去重',adv:'conn'},
+ {id:'ha-key',conn:'ha',title:'连接钥匙',kw:'token 令牌 密钥 长期访问'},
+ {id:'ha-http',conn:'ha',title:'允许不加密的连接',kw:'http 明文',adv:'conn'},
+];
+const DEVICES=[
+ {id:'d1',name:'客厅主灯',t:'light',room:'客厅',src:'mijia',on:1,v:80,fav:1},
+ {id:'d2',name:'沙发灯带',t:'light',room:'客厅',src:'ha',on:1,v:40,fav:1},
+ {id:'d3',name:'餐厅吊灯',t:'light',room:'客厅',src:'mijia',on:0,v:60},
+ {id:'d4',name:'床头灯',t:'light',room:'卧室',src:'mijia',on:0,v:30,fav:1},
+ {id:'d5',name:'厨房灯',t:'light',room:'厨房',src:'mijia',on:0,v:100},
+ {id:'d6',name:'书房吸顶灯',t:'light',room:'书房',src:'mijia',on:0,v:0,offline:1},
+ {id:'a1',name:'客厅空调',t:'ac',room:'客厅',src:'mijia',on:1,v:26,fav:1},
+ {id:'a2',name:'卧室空调',t:'ac',room:'卧室',src:'mijia',on:0,v:24},
+ {id:'p1',name:'咖啡机插座',t:'plug',room:'厨房',src:'mijia',on:1,w:42},
+ {id:'p2',name:'书桌插座',t:'plug',room:'书房',src:'mijia',on:0,w:0},
+ {id:'c1',name:'客厅窗帘',t:'curtain',room:'客厅',src:'mijia',on:1,v:60},
+ {id:'s1',name:'玄关开关',t:'switch',room:'玄关',src:'mijia',on:0,fav:1},
+ {id:'s2',name:'走廊开关',t:'switch',room:'玄关',src:'mijia',on:0},
+ {id:'t1',name:'客厅电视',t:'tv',room:'客厅',src:'ha',on:0},
+ {id:'v1',name:'扫地机器人',t:'vacuum',room:'客厅',src:'mijia',on:0},
+ {id:'cam',name:'玄关摄像机',t:'camera',room:'玄关',src:'mijia',on:0},
+ {id:'h1',name:'客厅温湿度',t:'sensor',room:'客厅',src:'ha',temp:22.5,hum:52},
+ {id:'h2',name:'卧室温湿度',t:'sensor',room:'卧室',src:'mijia',temp:18.3,hum:70},
+ {id:'lock',name:'入户门锁',t:'lock',room:'玄关',src:'mijia',on:0},
+ {id:'smoke',name:'厨房烟雾报警器',t:'safety',room:'厨房',src:'mijia'},
+ {id:'leak',name:'卫生间水浸传感器',t:'safety',room:'卫生间',src:'mijia'},
+ {id:'garage',name:'车库门',t:'garage',room:'玄关',src:'ha',on:0},
+ {id:'lgtv',name:'卧室 LG 电视',t:'tv',room:'卧室',src:'lg',on:0},
+];
+const RULES=[
+ {id:'r1',kind:'定时',name:'每天 07:30 打开卧室空调',t:'ac',src:'mijia'},
+ {id:'r2',kind:'自动化',name:'离家时关闭所有灯',t:'light',src:'mijia'},
+ {id:'r6',kind:'定时',name:'日落时打开沙发灯带',t:'light',src:'ha'},
+ {id:'r3',kind:'定时',name:'每晚 22:30 关上客厅窗帘',t:'curtain',src:'mijia'},
+ {id:'r4',kind:'自动化',name:'电脑锁屏后关闭书桌插座',t:'plug',src:'mijia'},
+ {id:'r5',kind:'自动化',name:'车库门开着超过 10 分钟时提醒',t:'garage',src:'ha'},
+];
+const ALERTS={smoke:{name:'烟雾提醒',dev:'smoke',set:'alert-smoke',off:'厨房烟雾报警器报警时，这台电脑不会再提醒你。'},
+ leak:{name:'漏水提醒',dev:'leak',set:'alert-leak',off:'卫生间检测到漏水时，这台电脑不会再提醒你。'},
+ lock:{name:'门锁异常提醒',dev:'lock',set:'alert-lock',off:'门锁被撬或长时间没锁时，这台电脑不会再提醒你。'}};
+const PAGES=[['general','常规','sliders'],['conn','家居连接','link2'],['features','功能管理','grid'],['safety','安全与提醒','shield'],['about','关于与诊断','info']];
+const LIGHT_ONLY=['light','switch'];
+
+/* ---------- 状态（只在内存中） ---------- */
+function freshOnb(){return{step:'platform',platform:null,returnTo:null,
+  mi:{phase:'wait',region:false},
+  ha:{phase:'idle',url:'',key:'',showKey:false,status:'idle',failNext:false,howto:false,urlErr:'',keyErr:''},
+  types:Object.fromEntries(TYPES.map(t=>[t.id,true])),
+  feats:{boot:true,forgot:true,ai:false,voice:false}};}
+function freshState(){return{
+  screen:'onboarding',page:'general',detail:null,compare:true,theme:'system',
+  conn:{mijia:'on',ha:'on',lg:'none'},demo:false,single:null,
+  types:Object.fromEntries(TYPES.map(t=>[t.id,true])),
+  feats:{automation:true,live:true,energy:true,forgot:true,climate:false,ai:false,voice:false,ball:false,external:false},
+  paused:Object.fromEntries(RULES.map(r=>[r.id,[]])),
+  dev:Object.fromEntries(DEVICES.map(d=>[d.id,{on:d.on||0,v:d.v,mode:'制冷'}])),
+  alerts:{smoke:true,leak:true,lock:true},allOff:{light:true,switch:true,plug:true,ac:true,tv:true},
+  cameraLive:true,price:'0.56',aiService:'',aiAsk:true,voiceLocal:true,
+  gen:{title:'我的家',unit:'c',lang:'zh',menubar:'auto',boot:true,sound:false,hideOff:false,acBig:false,dedupe:true,lockscreen:false,doorbell:true,lan:true,multi:true,http:false,region:'cn',interval:'30'},
+  q:'',flash:null,preview:null,recover:null,adv:{},mgrFilter:'all',typesOpen:false,subOpen:{},alloffOpen:false,wipe:false,
+  onb:freshOnb(),
+  p:{top:null,room:'全部',more:false,open:null,confirm:null,search:false,q:'',rem:true,remOpen:false,allOff:'idle',undo:null,urgent:null,link:'ok',failNext:false,err:null},
+  toast:null};}
+let S=freshState();
+const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/* ---------- 工具 ---------- */
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ic=n=>`<svg class="ic" aria-hidden="true"><use href="#i-${n}"/></svg>`;
+const T=id=>TYPES.find(t=>t.id===id), F=id=>FEATURES.find(f=>f.id===id), D=id=>DEVICES.find(d=>d.id===id);
+const srcOf=d=>d.src==='lg'?'lg':(S.single||d.src);
+const srcLive=src=>S.demo||S.conn[src]==='on';
+const inScope=d=>d.src==='lg'?S.conn.lg==='on':(S.demo||S.conn[srcOf(d)]==='on');
+const visible=d=>S.types[d.t]&&inScope(d)&&!(S.gen.hideOff&&d.offline);
+const typeDevices=t=>DEVICES.filter(d=>d.t===t&&inScope(d));
+const connDevices=c=>DEVICES.filter(d=>srcOf(d)===c);
+const ruleActive=r=>S.paused[r.id].length===0;
+const ruleSrc=r=>S.single||r.src;
+const activeConns=()=>Object.keys(CONNS).filter(c=>c!=='lg'&&S.conn[c]==='on');
+const fmtT=c=>S.gen.unit==='f'?Math.round(c*9/5+32)+'°F':c+'°';
+const qs=(s,r=document)=>r.querySelector(s);
+const uniqJoin=a=>[...new Set(a)].join('、');
+const say=m=>{qs('#live').textContent=m};
+
+function sw({a,id,on,label,locked,fk}){return `<button class="sw" role="switch" aria-checked="${!!on}" aria-label="${esc(label)}" data-a="${a}" data-id="${esc(id)}" data-fk="${esc(fk||a+':'+id)}"${locked?' aria-disabled="true"':''}><i>${locked?ic('lock'):''}</i></button>`;}
+function seg(a,opts,val,label){return `<div class="seg" role="group" aria-label="${esc(label)}">${opts.map(([v,t,n])=>`<button data-a="${a}" data-id="${v}" data-fk="${a}:${v}" aria-pressed="${v===val}">${esc(t)}${n!=null?`<span class="n">${n}</span>`:''}</button>`).join('')}</div>`;}
+function setRow(id,label,ctrl,desc,extra=''){return `<div class="set-row${S.flash===id?' flash':''}" id="row-${id}" data-k="row-${id}"><div class="set-l">${esc(label)}${desc?`<small>${desc}</small>`:''}</div><div class="set-c">${ctrl}</div>${extra?`<div class="full">${extra}</div>`:''}</div>`;}
+function sel(i,opts,val,label){return `<select data-i="${i}" aria-label="${esc(label)}">${opts.map(([v,t])=>`<option value="${v}"${v===val?' selected':''}>${esc(t)}</option>`).join('')}</select>`;}
+function disc(a,id,open,label){return `<button class="disc" data-a="${a}" data-id="${id}" aria-expanded="${!!open}" data-fk="${a}:${id}">${ic('right')}${esc(label)}</button>`;}
+
+/* ---------- 影响分析 ---------- */
+function affected(kind,id){
+  const out={rules:[],feats:[],safetyLost:[],devices:0};
+  if(kind==='type'){
+    out.rules=RULES.filter(r=>r.t===id&&ruleActive(r));
+    out.feats=FEATURES.filter(f=>f.needs===id&&S.feats[f.id]);
+    out.devices=typeDevices(id).length;
+  }else if(kind==='conn'){
+    out.rules=RULES.filter(r=>ruleSrc(r)===id&&ruleActive(r));
+    out.devices=connDevices(id).length;
+    out.safetyLost=Object.values(ALERTS).filter(a=>S.alerts[a.dev]&&srcOf(D(a.dev))===id);
+  }else if(kind==='feature'&&id==='automation'){
+    out.rules=RULES.filter(ruleActive);
+  }
+  return out;
+}
+const hasImpact=a=>a.rules.length||a.feats.length||a.safetyLost.length;
+function snapshot(){return JSON.stringify({conn:S.conn,types:S.types,feats:S.feats,paused:S.paused,demo:S.demo,single:S.single});}
+function restore(j){Object.assign(S,JSON.parse(j));}
+function tagFor(kind,id){return kind+':'+id;}
+function allLinked(kind,id){return kind==='type'?RULES.filter(r=>r.t===id):kind==='conn'?RULES.filter(r=>ruleSrc(r)===id):kind==='feature'&&id==='automation'?RULES:[];}
+function pauseRules(list,tag){list.forEach(r=>{if(!S.paused[r.id].includes(tag))S.paused[r.id].push(tag)});}
+function resume(tag){let n=0;for(const r of RULES){const b=S.paused[r.id].length;S.paused[r.id]=S.paused[r.id].filter(t=>t!==tag);if(b&&!S.paused[r.id].length)n++;}return n;}
+function pauseReason(r){const t=S.paused[r.id][0]||'';const[k,i]=t.split(':');
+  if(k==='type')return{txt:`「${T(i).name}」已关闭`,a:'enableType',id:i,btn:`开启${T(i).name}`};
+  if(k==='conn')return{txt:`「${CONNS[i].name}」${S.conn[i]==='none'?'已移除':'已停用'}`,a:S.conn[i]==='none'?'connectStart':'resumeConn',id:i,btn:S.conn[i]==='none'?'重新连接':'恢复连接'};
+  if(k==='feature')return{txt:'定时与自动化已关闭',a:'enableFeature',id:i,btn:'开启'};
+  return{txt:'已暂停',a:'',id:''};}
+function typeName(kind,id){return kind==='type'?T(id).name:kind==='conn'?CONNS[id].name:F(id).name;}
+
+function doClose(kind,id){
+  const snap=snapshot(),a=affected(kind,id),name=typeName(kind,id),tag=tagFor(kind,id);
+  pauseRules(allLinked(kind,id),tag);
+  if(kind==='type')S.types[id]=false;
+  if(kind==='conn')S.conn[id]='paused';
+  if(kind==='feature')S.feats[id]=false;
+  S.preview=null;
+  const n=a.rules.length+a.feats.length;
+  toast(kind==='conn'?`已停用「${name}」，登录信息已保留${n?`，${n} 项已暂停`:''}`:`已关闭「${name}」${n?`，${n} 项已暂停`:'，设置已保留'}`,()=>{restore(snap);toast(`已恢复「${name}」`);});
+}
+function doOpen(kind,id){
+  const tag=tagFor(kind,id);
+  if(kind==='type')S.types[id]=true;
+  if(kind==='conn'){S.conn[id]='on';S.demo=false;}
+  if(kind==='feature')S.feats[id]=true;
+  const n=resume(tag);S.recover=null;
+  toast(`已开启「${typeName(kind,id)}」${n?`，${n} 项已恢复`:''}`);
+}
+function requestClose(kind,id,el){
+  const a=affected(kind,id);
+  const isSafetyType=kind==='type'&&T(id).safety;
+  if(!hasImpact(a)&&!isSafetyType){flipRender(()=>doClose(kind,id));return;}
+  S.preview={kind,id,mode:'close',from:el?.dataset.fk};S.focusNext='[data-fk="pv-cancel"]';render();
+  qs('.preview')?.scrollIntoView({block:'nearest'});
+}
+function previewHTML(){
+  const p=S.preview;
+  if(p.kind==='alert'){const a=ALERTS[p.id];return `<div class="preview" role="group" aria-label="确认关闭${a.name}"><h3>确定关闭「${a.name}」？</h3><p>${a.off}手机上的通知不受影响。</p><p>关闭后，面板顶部会一直显示这项提醒已关闭，直到你重新开启。</p><div class="actions end"><button class="btn" data-a="pvCancel" data-fk="pv-cancel">保持开启</button><button class="btn danger" data-a="alertOff" data-id="${p.id}" data-fk="pv-ok">仍要关闭</button></div></div>`;}
+  if(p.mode==='remove')return removeHTML(p.id);
+  const a=affected(p.kind,p.id),name=typeName(p.kind,p.id);
+  const verb=p.kind==='conn'?'停用':'关闭';
+  let lead=p.kind==='type'?`面板里不再显示这 ${a.devices} 台设备，它们的设置都会保留。`:p.kind==='conn'?`来自这里的 ${a.devices} 台设备会从面板收起。登录信息会保留，随时可以重新启用。`:'所有定时和自动化都会停下来，规则本身会保留。';
+  let body=`<h3>${verb}「${esc(name)}」后</h3><p>${lead}</p>`;
+  if(a.rules.length)body+=`<div class="impact"><b>这些在用的项会暂停</b><ul>${a.rules.map(r=>`<li><span class="tag">${r.kind}</span><span>${esc(r.name)}</span></li>`).join('')}</ul></div>`;
+  if(a.feats.length)body+=`<div class="impact"><b>这些功能会等它重新开启</b><ul>${a.feats.map(f=>`<li><span class="tag">功能</span><span>${esc(f.name)}</span></li>`).join('')}</ul></div>`;
+  if(a.safetyLost.length)body+=`<div class="note danger">${ic('warn')}<div><b>${uniqJoin(a.safetyLost.map(s=>s.name))}将收不到。</b>这些报警器由「${esc(name)}」连接，停用后这台电脑不会收到报警。面板顶部会一直提示，直到你恢复。</div></div>`;
+  if(p.kind==='type'&&T(p.id).safety)body+=`<div class="note info">${ic('shield')}<div><b>安全提醒不会跟着关闭。</b>这里只是不在面板显示设备，发生报警时仍会置顶提醒你。要停止提醒，需到「安全与提醒」单独关闭并确认。</div></div>`;
+  if(p.kind==='type'&&T(p.id).risky)body+=`<p>重新开启后，车库门每次动作前仍然要你确认。</p>`;
+  const ok=hasImpact(a)?'暂停这些项并关闭':'只隐藏这些设备';
+  body+=`<div class="actions end"><button class="btn" data-a="pvCancel" data-fk="pv-cancel">取消</button><button class="btn primary" data-a="pvConfirm" data-fk="pv-ok">${ok}</button></div>`;
+  return `<div class="preview" role="group" aria-label="${verb}${esc(name)}前的确认">${body}</div>`;
+}
+function removeHTML(id){
+  const c=CONNS[id],a=affected('conn',id),only=activeConns().length===1&&S.conn[id]==='on';
+  const again=id==='mijia'?'需要重新扫码':id==='ha'?'需要重新填写地址和连接钥匙':'需要重新配对';
+  return `<div class="preview" role="group" aria-label="确认移除${esc(c.name)}"><h3>移除「${esc(c.name)}」？</h3><p>这台电脑上保存的登录信息会被清除，下次连接${again}。这一步不能撤销。</p><p>你的账号和家里的设备不受影响。${only?'这是唯一的连接，移除后面板里将没有设备。':''}</p>${a.rules.length?`<div class="impact"><b>这些在用的项会暂停</b><ul>${a.rules.map(r=>`<li><span class="tag">${r.kind}</span><span>${esc(r.name)}</span></li>`).join('')}</ul></div>`:''}${a.safetyLost.length?`<div class="note danger">${ic('warn')}<div><b>${uniqJoin(a.safetyLost.map(s=>s.name))}将收不到。</b>面板顶部会一直提示。</div></div>`:''}<div class="actions end"><button class="btn" data-a="pvCancel" data-fk="pv-cancel">取消</button><button class="btn danger" data-a="removeConn" data-id="${id}" data-fk="pv-ok">确认移除</button></div></div>`;
+}
+const pvFor=(kind,id,mode)=>S.preview&&S.preview.kind===kind&&S.preview.id===id&&(!mode||S.preview.mode===mode);
+
+/* ---------- 顶栏 ---------- */
+function topbar(){
+  const cur=S.screen==='settings'?(S.detail?'connection':S.page==='features'?'features':'settings'):S.screen;
+  const items=[['onboarding','首次引导'],['panel','菜单栏面板'],['settings','设置窗口'],['features','功能管理'],['connection','连接详情']];
+  return `<header class="proto"><div class="proto-id"><b>MenuBarHome 界面原型</b><span class="badge-demo">${ic('info')}示例数据，不连接真实设备</span></div>
+  <nav class="proto-nav" aria-label="原型页面">${items.map(([k,t])=>`<button data-a="nav" data-id="${k}" data-fk="nav:${k}"${cur===k?' aria-current="page"':''}>${t}</button>`).join('')}</nav>
+  <div class="proto-tools">${seg('theme',[['system','跟随系统'],['light','浅色'],['dark','深色']],S.theme,'外观')}<button class="btn" data-a="reset" data-fk="reset">重置</button></div></header>`;
+}
+
+/* ---------- 首次引导 ---------- */
+function qrSVG(){let s=7,p='';const n=25;const finder=(x,y)=>`M${x} ${y}h7v7h-7zM${x+1} ${y+1}v5h5v-5zM${x+2} ${y+2}h3v3h-3z`;
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++){if((x<8&&y<8)||(x>16&&y<8)||(x<8&&y>16))continue;s=(s*73+41)%1021;if(s%5<2)p+=`M${x} ${y}h1v1h-1z`;}
+  return `<svg viewBox="0 0 25 25" role="img" aria-label="示例二维码，不能真实扫描"><path fill="currentColor" fill-rule="evenodd" d="${finder(0,0)}${finder(18,0)}${finder(0,18)}${p}"/></svg>`;}
+function onbShell(n,total,inner,opts={}){
+  const bar=Array.from({length:total},(_,i)=>`<i class="${i<n?'on':''}"></i>`).join('');
+  return `<section class="onb" aria-label="首次引导"><div class="onb-top"><div class="onb-steps"><span class="onb-bar" aria-hidden="true">${bar}</span>第 ${n} 步，共 ${total} 步</div>${opts.skip===false?'':`<button class="btn ghost" data-a="onbSkip" data-fk="onb-skip">跳过，先看示例家庭</button>`}</div>${inner}</section>`;
+}
+function onboarding(){
+  const o=S.onb,demo=o.platform==='demo',total=o.returnTo?1:demo?3:4;
+  if(o.step==='platform'){
+    const pl=[['mijia','home','米家','手机上装了米家 App，用它管理灯、空调和插座'],['ha','server','Home Assistant','家里有自己搭的家庭服务器或盒子'],['demo','grid','先体验示例家庭','手头没有设备，先用示例家庭试试所有操作']];
+    return onbShell(1,o.platform==='demo'?3:4,`<h1 tabindex="-1" data-focus-h>你家的智能设备在哪里管理？</h1><p class="lead">先选一个，之后可以在设置里再添加。</p>
+    <div class="plats" role="radiogroup" aria-label="接入平台">${pl.map(([v,i,n,d])=>`<label class="plat"><input type="radio" name="plat" value="${v}" data-i="platform"${o.platform===v?' checked':''}><span class="mi">${ic(i)}</span><span><b>${n}</b><span class="d">${d}</span></span><span class="radio"></span></label>`).join('')}</div>
+    <div class="onb-foot"><span></span><button class="btn primary big" data-a="onbNext" data-fk="onb-next"${o.platform?'':' disabled'}>继续</button></div>`);
+  }
+  if(o.step==='connect'){
+    const n=o.returnTo?1:2;
+    return onbShell(n,total,o.platform==='mijia'?onbMi():onbHa(),{skip:!o.returnTo});
+  }
+  if(o.step==='choose'){
+    const n=demo?2:3,on=TYPES.filter(t=>o.types[t.id]);
+    const all=on.length===TYPES.length,lo=on.length===2&&LIGHT_ONLY.every(t=>o.types[t]);
+    const hit=RULES.filter(r=>!o.types[r.t]);
+    const cnt=t=>DEVICES.filter(d=>d.t===t&&d.src!=='lg').length;
+    const head=demo?'示例家庭已准备好：6 个房间、22 台设备':`已同步 6 个房间、22 台设备`;
+    return onbShell(n,total,`<h1 tabindex="-1" data-focus-h>想在菜单栏里看到哪些设备？</h1><p class="lead">${head}。默认全部显示，随时可以改。</p>
+    <div class="sec-label"><span>设备类型 <span class="muted small">${on.length} / ${TYPES.length}</span></span>${seg('onbPreset',[['all','全部类型'],['lights','只用灯和开关']],all?'all':lo?'lights':'','快捷选择')}</div>
+    <div class="chips">${TYPES.map(t=>`<button class="chip" data-a="onbType" data-id="${t.id}" data-fk="onbType:${t.id}" aria-pressed="${!!o.types[t.id]}">${ic(t.icon)}${t.name}<span class="n">${cnt(t.id)}</span></button>`).join('')}</div>
+    ${hit.length?`<div class="note warn fade-in" style="margin-top:10px">${ic('warn')}<div><b>这些在用的项会暂停：</b>${hit.map(r=>esc(r.name)).join('；')}。重新打开对应类型后可以恢复。</div></div>`:''}
+    <div class="note info" style="margin-top:10px">${ic('shield')}<div>烟雾、漏水和门锁提醒不受这里影响，会一直开着。要关闭，需到「安全与提醒」单独确认。</div></div>
+    <div class="sec-label">顺手打开</div>
+    <div class="tight-list">${[['boot','开机后在菜单栏就绪',''],['forgot','忘关提醒','灯或空调开了很久时提醒你'],['ai','一句话控制','不开也能用设备名控制，之后可随时打开'],['voice','语音输入','用到时才会请求麦克风权限']].map(([k,t,d])=>`<div class="tight-row"><div>${t}${d?`<small>${d}</small>`:''}</div>${sw({a:'onbFeat',id:k,on:o.feats[k],label:t})}</div>`).join('')}</div>
+    <div class="onb-foot"><button class="btn" data-a="onbBack" data-fk="onb-back">${ic('left')}返回</button><button class="btn primary big" data-a="onbNext" data-fk="onb-next"${on.length?'':' disabled'}>完成设置</button></div>
+    ${on.length?'':'<p class="small muted" style="text-align:right;margin-top:6px">至少选一种设备类型。</p>'}`);
+  }
+  const on=TYPES.filter(t=>o.types[t.id]).length;
+  const src=demo?'示例家庭':CONNS[o.platform].name;
+  return onbShell(total,total,`<div class="mark-done">${ic('check')}</div><h1 tabindex="-1" data-focus-h>设置好了</h1><p class="lead">${esc(src)} · 显示 ${on} 类设备。这些选择都能在「功能管理」里改。</p>
+  <ul class="tips"><li>${ic('light')}<span>点设备左边直接开关，点右边的箭头调亮度或温度。</span></li><li>${ic('clock')}<span>全部关闭要按住约半秒才会执行，关完还能撤销。</span></li></ul>
+  <div class="onb-foot"><button class="btn" data-a="onbBack" data-fk="onb-back">${ic('left')}返回</button><div class="actions"><button class="btn" data-a="onbFinish" data-id="features" data-fk="onb-f2">去功能管理调整</button><button class="btn primary big" data-a="onbFinish" data-id="panel" data-fk="onb-next">打开我的家</button></div></div>`,{skip:false});
+}
+function onbFoot(){return `<div class="onb-foot"><button class="btn" data-a="onbBack" data-fk="onb-back">${ic('left')}${S.onb.returnTo?'返回设置':'返回'}</button><span></span></div>`;}
+function onbMi(){
+  const m=S.onb.mi,ph=m.phase,order=['wait','scanned','syncing'],idx=order.indexOf(ph);
+  const li=(i,t)=>{const st=idx>i?'done':idx===i?'now':'';return `<li class="${st}"><span class="mk">${st==='done'?ic('check'):i+1}</span><span>${t}</span></li>`;};
+  return `<h1 tabindex="-1" data-focus-h>用米家 App 扫一扫</h1><p class="lead">打开手机上的米家，点右上角的“扫一扫”。</p>
+  <div class="qr-wrap"><div class="qr${ph==='expired'||ph==='failed'?' dim':''}">${qrSVG()}${ph==='expired'?`<div class="qr-over"><div>二维码过期了<br><button style="margin-top:6px" data-a="miRefresh" data-fk="mi-refresh">刷新二维码</button></div></div>`:''}</div>
+  <div style="display:grid;gap:12px;min-width:0"><ol class="steps" aria-label="连接进度">${li(0,'用手机扫描二维码')}${li(1,'在手机上点“确认登录”')}${li(2,ph==='syncing'?'<span style="display:inline-flex;gap:6px;align-items:center"><i class="spin"></i>正在同步房间和设备</span>':'同步房间和设备')}</ol>
+  <p class="small" style="font-size:12.5px">这是非官方的连接方式。登录信息只加密保存在这台电脑上。</p></div></div>
+  ${ph==='failed'?`<div class="errbox" role="alert"><div><b>没能连上米家</b>登录没有完成，所以设备还不能在这里控制。手机上的米家不受影响。</div><div>检查电脑网络后重新扫码，或者先用示例家庭看看。</div><div class="actions"><button class="btn primary" data-a="miRefresh" data-fk="mi-refresh">重新扫码</button><button class="btn" data-a="onbSkip" data-fk="onb-skip2">先用示例家庭</button></div></div>`:''}
+  ${ph==='syncing'||ph==='failed'||ph==='expired'?'':`<div class="sim" style="margin-top:14px"><b>模拟手机操作</b>${ph==='wait'?`<button class="btn" data-a="miStep" data-id="scanned" data-fk="mi-sim1">已扫码</button>`:`<button class="btn" data-a="miStep" data-id="syncing" data-fk="mi-sim1">在手机上确认</button>`}<button class="btn" data-a="miStep" data-id="expired" data-fk="mi-sim2">二维码过期</button><button class="btn" data-a="miStep" data-id="failed" data-fk="mi-sim3">连接失败</button></div>`}
+  ${disc('miRegion','r',m.region,'服务器地区：中国大陆')}${m.region?`<div class="fade-in" style="max-width:220px">${sel('region',[['cn','中国大陆'],['sg','新加坡'],['de','德国'],['us','美国']],S.gen.region,'服务器地区')}</div>`:''}
+  ${onbFoot()}`;
+}
+function onbHa(){
+  const h=S.onb.ha,busy=h.status==='checking';
+  return `<h1 tabindex="-1" data-focus-h>连接 Home Assistant</h1><p class="lead">这台电脑要和家庭服务器在同一个网络里。</p>
+  ${h.phase==='scanning'?`<div class="found" aria-live="polite"><i class="spin"></i><div>正在家里的网络中查找…</div></div>`:h.phase==='found'&&!h.url?`<div class="found fade-in"><div><b>找到一台家庭服务器</b><span class="small muted">homeassistant.local:8123</span></div><button class="btn primary" data-a="haUse" data-fk="ha-use">使用这台</button></div>`:''}
+  <div class="field"><label for="ha-url">地址</label><input id="ha-url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="例如 homeassistant.local:8123" data-i="haUrl" value="${esc(h.url)}"${h.urlErr?' aria-invalid="true" aria-describedby="ha-url-e"':''}>${h.urlErr?`<span class="err" id="ha-url-e">${h.urlErr}</span>`:''}</div>
+  <div class="field"><label for="ha-key">连接钥匙</label><div class="key-row"><input id="ha-key" type="${h.showKey?'text':'password'}" autocomplete="off" spellcheck="false" placeholder="粘贴从 Home Assistant 生成的钥匙" data-i="haKey" value="${esc(h.key)}"${h.keyErr?' aria-invalid="true" aria-describedby="ha-key-e"':''}><button class="btn" data-a="haShow" data-fk="ha-show" aria-pressed="${h.showKey}">${h.showKey?'隐藏':'显示'}</button></div>${h.keyErr?`<span class="err" id="ha-key-e">${h.keyErr}</span>`:''}<span class="hint">钥匙只保存在这台电脑上。</span></div>
+  ${disc('haHow','h',h.howto,'连接钥匙在哪里找？')}${h.howto?`<div class="howto fade-in" style="margin-top:0"><ol><li>在浏览器打开 Home Assistant，点左下角你的头像。</li><li>进入“安全”，滑到页面底部。</li><li>点“创建”，起个名字，把生成的内容复制到这里。</li></ol></div>`:''}
+  ${h.status==='failed'?`<div class="errbox" role="alert"><div><b>连不上这个地址</b>设备暂时不能在这里控制，你填写的内容已保留。</div><div>确认电脑和家庭服务器在同一个 Wi-Fi，也可以改填 IP 地址，比如 192.168.1.20:8123。</div><div class="actions"><button class="btn primary" data-a="haConnect" data-fk="ha-retry">重试</button><button class="btn" data-a="onbSkip" data-fk="onb-skip2">先用示例家庭</button></div></div>`:''}
+  <div class="sim" style="margin-top:14px"><b>模拟</b><button class="btn" data-a="haFill" data-fk="ha-fill">填入示例钥匙</button><label style="display:inline-flex;gap:5px;align-items:center"><input type="checkbox" data-i="haFail"${h.failNext?' checked':''}>这次连接失败</label></div>
+  <div class="onb-foot"><button class="btn" data-a="onbBack" data-fk="onb-back">${ic('left')}${S.onb.returnTo?'返回设置':'返回'}</button><button class="btn primary big" data-a="haConnect" data-fk="ha-go"${busy?' disabled':''}>${busy?'<i class="spin"></i>正在验证…':'连接并验证'}</button></div>`;
+}
+
+/* ---------- 菜单栏面板 ---------- */
+function devState(d){const s=S.dev[d.id];if(d.offline)return'离线';
+  switch(d.t){case'light':return s.on?`开 · ${s.v}%`:'关';case'switch':case'tv':return s.on?'开':'关';case'plug':return s.on?`开 · ${d.w} W`:'关';case'ac':return s.on?`${s.mode} ${fmtT(s.v)}`:'关';case'curtain':return s.on?`开 ${s.v}%`:'已关上';case'vacuum':return s.on?'打扫中':'充电中';case'camera':return S.cameraLive?'正在播放':'在线';case'sensor':return`${fmtT(d.temp)} ${d.hum}%`;case'lock':return s.on?'未上锁':'已上锁';case'safety':return'正常';case'garage':return s.on?'已打开':'已关闭';}return'';}
+const isOn=d=>{if(d.offline)return false;const s=S.dev[d.id];return d.t==='camera'?S.cameraLive:['sensor','safety'].includes(d.t)?false:!!s.on&&d.t!=='lock';};
+const canExpand=d=>!d.offline&&['light','ac','curtain','camera'].includes(d.t);
+const pressable=d=>!d.offline&&!['sensor','safety'].includes(d.t);
+function tile(d){
+  const p=S.p,t=T(d.t),on=isOn(d),conf=p.confirm===d.id,open=p.open===d.id,s=S.dev[d.id];
+  const st=devState(d);
+  const main=`<span class="ti">${ic(t.icon)}</span><span class="tt"><b>${esc(d.name)}</b><small>${esc(st)}</small></span>`;
+  let h=pressable(d)?`<button class="tile-main" data-a="devTap" data-id="${d.id}" data-fk="dev:${d.id}" aria-pressed="${on}" aria-label="${esc(d.name)}，${esc(st)}">${main}</button>`:`<div class="tile-main">${main}</div>`;
+  h+=canExpand(d)?`<button class="tile-more" data-a="devMore" data-id="${d.id}" data-fk="more:${d.id}" aria-expanded="${open}" aria-label="调节${esc(d.name)}" title="调节${esc(d.name)}">${ic('right')}</button>`:'<span></span>';
+  if(open){let b='';
+    if(d.t==='light')b=`<label>亮度<input type="range" min="1" max="100" value="${s.v}" data-i="devV" data-id="${d.id}" aria-label="${esc(d.name)}亮度"><output>${s.v}%</output></label>`;
+    if(d.t==='curtain')b=`<label>打开<input type="range" min="0" max="100" value="${s.v}" data-i="devV" data-id="${d.id}" aria-label="${esc(d.name)}打开程度"><output>${s.v}%</output></label>`;
+    if(d.t==='ac')b=`<div class="stepper"><button data-a="acStep" data-id="${d.id}:-1" data-fk="ac-:${d.id}" aria-label="降低温度">−</button><b>${fmtT(s.v)}</b><button data-a="acStep" data-id="${d.id}:1" data-fk="ac+:${d.id}" aria-label="升高温度">+</button></div>${seg('acMode:'+d.id,[['制冷','制冷'],['制热','制热'],['送风','送风']],s.mode,'空调模式')}`;
+    if(d.t==='camera')b=S.feats.live?(S.cameraLive?`<div class="cam">示例画面</div><div class="actions"><button class="btn" data-a="camStop" data-fk="cam-stop">关闭画面</button></div>`:`<div class="actions"><button class="btn" data-a="camStart" data-fk="cam-start">查看画面</button></div>`):recoverInline('live');
+    h+=`<div class="drawer">${b}</div>`;
+  }
+  if(conf){const c=confirmCopy(d);h+=`<div class="drawer" role="group" aria-label="确认操作"><p class="confirm-text"><b>${c.q}</b> ${c.why}</p><div class="actions end"><button class="btn" data-a="devCancel" data-fk="dc-no">取消</button><button class="btn primary" data-a="devOk" data-id="${d.id}" data-fk="dc-ok">${c.ok}</button></div></div>`;}
+  return `<div class="tile${on?' on':''}${d.offline?' off-line':''}${open||(d.t==='ac'&&S.gen.acBig)?' open':''}${conf?' confirming':''}${S.flash==='dev-'+d.id?' flash':''}" data-k="t-${d.id}" data-flip="t-${d.id}" id="dev-${d.id}">${h}</div>`;
+}
+function recoverInline(fid){const f=F(fid);return `<p>「${f.name}」现在关着，设置还在。</p><div class="actions"><button class="btn primary" data-a="enableFeature" data-id="${fid}" data-fk="ri:${fid}">立即开启</button></div>`;}
+function confirmCopy(d){const s=S.dev[d.id];
+  if(d.t==='garage')return s.on?{q:'关上车库门？',why:'门会立即开始移动，请确认门下没有人或车。',ok:'确认关上'}:{q:'打开车库门？',why:'门会立即开始移动，家门外的人可以进入车库。',ok:'确认打开'};
+  return s.on?{q:'锁上入户门？',why:'门外的人将无法进入。',ok:'确认上锁'}:{q:'打开入户门锁？',why:'门会立即解锁，请确认门口是你认识的人。',ok:'确认开锁'};}
+function allOffTargets(){return DEVICES.filter(d=>visible(d)&&S.allOff[d.t]&&!d.offline&&S.dev[d.id].on);}
+function panelAlerts(){
+  const out=[],p=S.p;
+  const lost=Object.entries(ALERTS).filter(([k,a])=>S.alerts[k]&&!S.demo&&!srcLive(srcOf(D(a.dev))));
+  if(lost.length){const src=srcOf(D(lost[0][1].dev));const st=S.conn[src];
+    out.push(`<div class="capsule danger" role="status">${ic('warn')}<span class="t">${uniqJoin(lost.map(([,a])=>a.name))}现在收不到</span><button class="act" data-a="${st==='none'?'connectStart':'resumeConn'}" data-id="${src}" data-fk="cap-res">${st==='none'?'重新连接':'恢复'}</button></div>`);}
+  Object.entries(ALERTS).filter(([k])=>!S.alerts[k]).forEach(([k,a])=>out.push(`<div class="capsule danger" role="status">${ic('warn')}<span class="t">${a.name}已关闭</span><button class="act" data-a="alertOn" data-id="${k}" data-fk="cap-on:${k}">开启</button></div>`));
+  return out;
+}
+function panelReminders(){const r=[];if(inScope(D('d6'))&&S.types.light)r.push(['书房吸顶灯离线','7 分钟前断开，可能断电了']);if(inScope(D('h2'))&&S.types.sensor)r.push(['卧室温湿度电量低','大约还能用两周']);return r;}
+function panel(){
+  const p=S.p,g=S.gen;
+  const vis=DEVICES.filter(visible);
+  const rooms=['全部',...new Set(vis.map(d=>d.room))];
+  const room=rooms.includes(p.room)?p.room:'全部';
+  const hd=DEVICES.find(d=>d.t==='sensor'&&visible(d));
+  const noSource=!S.demo&&!activeConns().length&&S.conn.lg!=='on';
+  let list=vis;
+  if(room!=='全部')list=list.filter(d=>d.room===room);
+  const q=p.q.trim().toLowerCase();
+  let hiddenHit=[];
+  if(p.search&&q){
+    hiddenHit=[...new Set(DEVICES.filter(d=>!visible(d)&&inScope(d)&&!S.types[d.t]&&(d.name.includes(q)||T(d.t).name.includes(q))).map(d=>d.t))];
+    list=vis.filter(d=>d.name.toLowerCase().includes(q)||d.room.includes(q)||T(d.t).name.includes(q));
+  }
+  const sorted=[...list].sort((a,b)=>(!!a.offline)-(!!b.offline));
+  let body='';
+  if(noSource)body=`<div class="p-empty"><b>还没有连接</b><span>连接米家或 Home Assistant 后，设备会出现在这里。</span><div class="actions" style="justify-content:center"><button class="btn primary" data-a="goPage" data-id="conn" data-fk="pe-add">添加连接</button><button class="btn" data-a="useDemo" data-fk="pe-demo">看看示例家庭</button></div></div>`;
+  else if(p.search&&q){
+    body=(sorted.length?`<div class="tiles">${sorted.map(tile).join('')}</div>`:'')+hiddenHit.map(t=>`<div class="note" style="margin-top:8px">${ic(T(t).icon)}<div style="flex:1">「${T(t).name}」现在没有显示，设置还在。<div class="actions" style="margin-top:6px"><button class="btn primary" data-a="enableType" data-id="${t}" data-fk="ps-en:${t}">立即开启</button></div></div></div>`).join('');
+    if(!sorted.length&&!hiddenHit.length)body=`<div class="p-empty"><b>没有找到“${esc(p.q)}”</b><span>试试设备名或房间名。</span></div>`;
+  }else if(!vis.length)body=`<div class="p-empty"><b>没有要显示的设备</b><span>所有设备类型都关闭了。</span><button class="btn primary" data-a="goPage" data-id="features" data-fk="pe-f">去功能管理</button></div>`;
+  else if(room!=='全部')body=`<div class="tiles" style="margin-top:8px">${sorted.map(tile).join('')}</div>`;
+  else{if(!p.top)p.top=DEVICES.filter(d=>isOn(d)||d.fav).map(d=>d.id);const top=sorted.filter(d=>p.top.includes(d.id)||p.open===d.id||p.confirm===d.id),rest=sorted.filter(d=>!top.includes(d));
+    body=top.length?`<div class="p-group">常用</div><div class="tiles">${top.map(tile).join('')}</div>`:'';
+    if(rest.length)body+=p.more||!top.length?`<div class="p-group">其余设备</div><div class="tiles">${rest.map(tile).join('')}</div><button class="more-row" data-a="pMore" data-fk="p-more" aria-expanded="true">${ic('down')}收起</button>`:`<button class="more-row" data-a="pMore" data-fk="p-more" aria-expanded="false">${ic('right')}显示其余 ${rest.length} 台设备</button>`;}
+  const urgent=p.urgent?`<div class="urgent fade-in" role="alert"><b>${ic('warn')}${p.urgent==='smoke'?'厨房检测到烟雾':'卫生间检测到漏水'}</b><p>${p.urgent==='smoke'?'厨房烟雾报警器':'卫生间水浸传感器'} · 刚刚</p><div class="actions"><button class="btn danger" data-a="urgentView" data-fk="u-view">查看设备</button><button class="btn" data-a="urgentAck" data-fk="u-ack">我知道了</button></div></div>`:'';
+  const caps=panelAlerts();const rem=p.rem?panelReminders():[];
+  const remHTML=rem.length?`<div class="capsule"><span class="dot hollow" style="background:none"></span><span class="t">${esc(rem[0][0])}${rem.length>1?`等 ${rem.length} 条提醒`:''}</span><button class="act" style="color:var(--accent)" data-a="remToggle" data-fk="rem-t" aria-expanded="${p.remOpen}">${p.remOpen?'收起':'查看'}</button><button class="icon-btn" data-a="remClear" data-fk="rem-x" aria-label="全部标为已读" title="全部标为已读">${ic('x')}</button></div>${p.remOpen?`<ul class="rem-list fade-in">${rem.map(([a,b])=>`<li>${esc(a)}<small>${esc(b)}</small></li>`).join('')}</ul>`:''}`:'';
+  const alertsBlock=urgent+caps.join('')+remHTML;
+  /* 底栏 */
+  let foot;
+  const targets=allOffTargets();
+  if(p.undo)foot=`<div class="p-foot" role="status"><span class="p-state">${ic('check')}已关闭 ${p.undo.ids.length} 台设备</span><button class="btn" data-a="allOffUndo" data-fk="ao-undo">撤销 ${p.undo.left} 秒</button></div>`;
+  else{
+    const pausedC=Object.keys(CONNS).filter(c=>S.conn[c]==='paused').map(c=>CONNS[c].name);
+    let st;
+    if(S.demo)st=`<span class="dot hollow"></span>示例家庭，没有连接真实设备`;
+    else if(noSource)st=`<span class="dot hollow"></span>还没有连接`;
+    else if(p.link==='down')st=`<span class="status-x" aria-hidden="true">×</span>连接中断，点这里重连`;
+    else if(p.link==='backup')st=`<span class="dot"></span>米家暂不可用，部分设备暂无数据`;
+    else st=`<span class="dot"></span>设备同步正常${pausedC.length?`，${esc(pausedC.join('、'))}已停用`:''}`;
+    foot=`<div class="p-foot"><button class="p-state" data-a="goPage" data-id="conn" data-fk="p-state" title="查看家居连接">${st}</button><button class="btn hold" data-hold="allOff" data-fk="ao-ask" aria-label="${targets.length?`按住约 0.6 秒，关闭开着的 ${targets.length} 台设备`:'没有开着的设备'}" title="按住约 0.6 秒。门锁、车库门和摄像机不受影响"${targets.length?'':' disabled'}>${targets.length?'按住全部关闭':'都关着'}</button></div>`;
+  }
+  const err=p.err?`<div class="p-alerts" style="padding-top:8px"><div class="note danger fade-in" role="alert">${ic('warn')}<div style="flex:1"><b>${esc(p.err.name)}没有响应，</b>状态已恢复。<div class="actions" style="margin-top:6px"><button class="btn" data-a="devRetry" data-fk="err-retry">重试</button><button class="btn ghost" data-a="errClose" data-fk="err-x">关闭</button></div></div></div></div>`:'';
+  return `<section class="panel" aria-label="菜单栏面板">
+   <div class="p-head"><div class="p-title"><b>${esc(g.title||'我的家')}</b><span>${hd?`${fmtT(hd.temp)} · 湿度 ${hd.hum}%`:S.demo?'示例家庭':'&nbsp;'}</span></div>
+    <button class="icon-btn" data-a="pSearch" data-fk="p-search" aria-label="搜索设备" title="搜索设备" aria-expanded="${p.search}">${ic('search')}</button>
+    <button class="icon-btn" data-a="goPage" data-id="general" data-fk="p-gear" aria-label="打开设置" title="打开设置">${ic('gear')}</button></div>
+   ${alertsBlock?`<div class="p-alerts">${alertsBlock}</div>`:''}
+   ${p.search?`<div class="p-search"><input type="search" id="p-q" data-i="pq" aria-label="搜索设备" placeholder="${S.feats.ai?'搜索设备，或说一句话':'搜索设备或房间'}" value="${esc(p.q)}">${S.feats.voice?`<button class="icon-btn" data-a="voiceTap" data-fk="p-mic" aria-label="语音输入" title="语音输入">${ic('mic')}</button>`:''}</div>`:''}
+   ${!noSource&&vis.length&&!(p.search&&q)?`<div class="rooms" role="group" aria-label="房间">${rooms.map(r=>`<button data-a="room" data-id="${r}" data-fk="room:${r}" aria-pressed="${r===room}">${r}</button>`).join('')}</div>`:''}
+   <div class="p-body" tabindex="-1">${body}</div>${err}${foot}</section>`;
+}
+function panelScreen(){const p=S.p;return `<div class="panel-stage">${panel()}<aside class="side" aria-label="模拟控制">
+  <div class="side-card"><h2>试一试</h2>
+   <div class="row"><span class="muted">模拟紧急提醒</span><div class="actions"><button class="btn" data-a="simAlert" data-id="smoke" data-fk="sim-smoke">烟雾报警</button><button class="btn" data-a="simAlert" data-id="leak" data-fk="sim-leak">漏水报警</button></div></div>
+   <div class="row"><span class="muted">底部连接状态</span>${seg('simLink',[['ok','正常'],['backup','一个平台不可用'],['down','中断']],p.link,'连接状态')}</div>
+   <div class="row"><span class="muted">设备控制</span><button class="btn" data-a="simFail" data-fk="sim-fail" aria-pressed="${p.failNext}">${p.failNext?'下一次操作会失败':'让下一次操作失败'}</button></div></div>
+  <div class="side-card"><h2>这一屏改了什么</h2><ul><li>打开先看到设备，提醒只占一行。</li><li>离线设备沉到最后，不再展开大卡。</li><li>车库门和门锁要确认，试试点一下。</li><li>底部只说结果，详情在家居连接里。</li></ul></div></aside></div>`;}
+
+/* ---------- 设置窗口 ---------- */
+function searchIndex(){
+  const out=[];
+  SETTINGS.forEach(s=>{const page=s.conn?'conn':s.page;const pn=PAGES.find(p=>p[0]===page)[1];
+    const off=s.conn&&S.conn[s.conn]!=='on';
+    out.push({key:s.id,title:s.title,kw:s.kw,path:s.conn?`家居连接 › ${CONNS[s.conn].name}`:pn,state:off?(S.conn[s.conn]==='paused'?'连接已停用':'未连接'):null,adv:s.adv,go:{page,conn:s.conn,adv:s.adv,target:s.id}});});
+  Object.entries(CONNS).forEach(([id,c])=>out.push({key:'c-'+id,title:c.name,kw:c.desc+' 连接 账号 平台',path:'家居连接',state:S.conn[id]==='on'?null:S.conn[id]==='paused'?'已停用':'未连接',go:{page:'conn',conn:id}}));
+  TYPES.forEach(t=>out.push({key:'t-'+t.id,title:t.name,kw:t.desc+' 设备类型',path:'功能管理 › 设备类型',state:S.types[t.id]?null:'已关闭',go:{page:'features',row:'t-'+t.id,type:t.id}}));
+  FEATURES.forEach(f=>out.push({key:'f-'+f.id,title:f.name,kw:f.desc+' '+f.kw,path:'功能管理 › 功能',state:S.feats[f.id]?null:'已关闭',go:{page:'features',row:'f-'+f.id,feature:f.id}}));
+  SUBS.forEach(s=>{const f=F(s.feature);out.push({key:s.id,title:s.title,kw:s.kw+' '+f.name,path:`功能管理 › ${f.name}`,state:S.feats[s.feature]?null:'所属功能已关闭',go:{page:'features',row:'f-'+f.id,feature:f.id,sub:s}});});
+  return out;
+}
+function runSearch(q){const terms=q.toLowerCase().split(/\s+/).filter(Boolean);
+  const scored=searchIndex().map(e=>{const hay=(e.title+' '+e.kw+' '+e.path).toLowerCase();if(!terms.every(t=>hay.includes(t)))return null;const tt=e.title.toLowerCase();return{e,score:terms.reduce((n,t)=>n+(tt===t?0:tt.startsWith(t)?1:tt.includes(t)?2:4),0)};}).filter(Boolean);
+  scored.sort((a,b)=>a.score-b.score);return scored.map(x=>x.e);}
+function mark(s,q){const t=q.trim().split(/\s+/)[0];if(!t)return esc(s);const i=s.toLowerCase().indexOf(t.toLowerCase());if(i<0)return esc(s);return esc(s.slice(0,i))+'<mark>'+esc(s.slice(i,i+t.length))+'</mark>'+esc(s.slice(i+t.length));}
+function resultsView(){
+  const r=runSearch(S.q);
+  if(!r.length)return `<div class="page"><div class="empty"><b>没有找到“${esc(S.q)}”</b><span>换个说法试试，比如“灯”“提醒”“连接”。</span><button class="btn" data-a="searchClear" data-fk="s-clear2">清除搜索</button></div></div>`;
+  return `<div class="page"><h1 class="page-h">搜索结果</h1><p class="page-lead">${r.length} 项，已关闭的功能也在这里。</p><div class="card" id="results">${r.map(e=>`<button class="res" data-k="res-${e.key}" data-a="openResult" data-id="${e.key}" data-fk="res:${e.key}"><span class="rt"><span>${mark(e.title,S.q)}</span><small>${esc(e.path)}</small></span>${e.state?`<span class="pill warn">${esc(e.state)}</span>`:''}${ic('right')}</button>`).join('')}</div></div>`;
+}
+function pageGeneral(){const g=S.gen;return `<div class="page"><h1 class="page-h" tabindex="-1" data-focus-h>常规</h1><p class="page-lead">外观和日常使用习惯。</p>
+ <div class="card">${setRow('appearance','外观',seg('theme',[['system','跟随系统'],['light','浅色'],['dark','深色']],S.theme,'外观'))}
+ ${setRow('language','语言',sel('g:lang',[['zh','简体中文'],['tw','繁體中文'],['en','English']],g.lang,'语言'))}
+ ${setRow('unit','温度单位',seg('unit',[['c','摄氏度'],['f','华氏度']],g.unit,'温度单位'))}
+ ${setRow('ptitle','面板标题',`<input type="text" data-i="g:title" aria-label="面板标题" value="${esc(g.title)}">`)}
+ ${setRow('menubar','菜单栏旁显示',sel('g:menubar',[['auto','客厅温度'],['none','不显示'],['on','开着的设备数']],g.menubar,'菜单栏旁显示'))}</div>
+ <div class="group-h">使用习惯</div><div class="card">${setRow('boot','开机自动启动',sw({a:'gen',id:'boot',on:g.boot,label:'开机自动启动'}))}
+ ${setRow('hotkey','呼出快捷键','<span class="pill">未设置</span><button class="btn" data-a="noop" data-id="快捷键录制在正式版提供" data-fk="hk">录制</button>')}
+ ${setRow('sound','操作声音',sw({a:'gen',id:'sound',on:g.sound,label:'操作声音'}))}
+ ${setRow('hideoff','隐藏离线设备',sw({a:'gen',id:'hideOff',on:g.hideOff,label:'隐藏离线设备'}))}</div>
+ ${disc('adv','general',S.adv.general,'高级显示选项')}${S.adv.general?`<div class="advanced fade-in"><div class="card">${setRow('acbig','空调使用大卡片',sw({a:'gen',id:'acBig',on:g.acBig,label:'空调使用大卡片'}))}${setRow('dedupe','灯组里的单灯不重复显示',sw({a:'gen',id:'dedupe',on:g.dedupe,label:'灯组里的单灯不重复显示'}))}</div></div>`:''}</div>`;}
+function connStatus(id){const st=S.conn[id];const n=connDevices(id).length;
+  if(st==='on')return{dot:'<span class="dot"></span>',text:`已连接 · ${n} 台设备 · 刚刚同步`,short:`${n} 台设备在线`};
+  if(st==='paused')return{dot:'<span class="dot hollow"></span>',text:'已停用 · 登录信息已保留',short:'已停用，登录信息已保留'};
+  return{dot:'<span class="dot hollow"></span>',text:'未连接',short:'未连接'};}
+function connLock(id){if(S.conn[id]==='on'&&id!=='lg'&&!S.demo&&activeConns().length===1)return'这是现在唯一的连接，停用后面板会没有设备。先连接其他平台，或切换到示例家庭。';return null;}
+function connCtrl(id,where){const st=S.conn[id];if(st==='none')return`<button class="btn primary" data-a="connectStart" data-id="${id}" data-fk="cs:${id}:${where}">连接</button>`;
+  return sw({a:'connSw',id,on:st==='on',label:`启用${CONNS[id].name}`,locked:!!connLock(id),fk:`cs:${id}:${where}`});}
+function pageConn(){
+  const ids=Object.keys(CONNS);const active=ids.filter(i=>S.conn[i]!=='none'),other=ids.filter(i=>S.conn[i]==='none');
+  const card=id=>{const c=CONNS[id],s=connStatus(id);return `<div class="mrow${S.conn[id]==='on'?'':' is-off'}" data-k="cn-${id}" data-flip="cn-${id}"><span class="mi">${ic(c.icon)}</span><div class="mt"><div class="mn">${esc(c.name)}</div><p style="display:flex;align-items:center;gap:6px">${s.dot}${esc(s.text)}</p>${connLock(id)?`<div class="lock-why">${ic('lock')}<span>${connLock(id)}</span></div>`:''}</div><div class="mc">${S.conn[id]!=='none'?`<button class="link" data-a="openConn" data-id="${id}" data-fk="oc:${id}">详情${ic('right')}</button>`:''}${connCtrl(id,'p')}</div>${pvFor('conn',id)&&S.preview.mode==='close'?`<div class="mx">${previewHTML()}</div>`:''}</div>`;};
+  return `<div class="page"><h1 class="page-h" tabindex="-1" data-focus-h>家居连接</h1><p class="page-lead">设备从这里进入 MenuBarHome。同一台设备接入多个平台时，只显示一次。</p>
+  ${S.demo?`<div class="note info" style="margin-bottom:12px">${ic('grid')}<div style="flex:1"><b>正在使用示例家庭。</b>连接真实平台后，示例家庭会自动收起。</div></div>`:''}
+  ${active.length?`<div class="group-h">已添加</div><div class="card">${active.map(card).join('')}</div>`:''}
+  ${other.length?`<div class="group-h">添加连接</div><div class="card">${other.map(card).join('')}</div>`:''}
+  ${S.demo?'':`<div style="margin-top:12px"><button class="btn" data-a="useDemo" data-fk="use-demo">切换到示例家庭</button></div>`}</div>`;
+}
+function connDetailBody(id,copy){
+  const c=CONNS[id],st=S.conn[id],s=connStatus(id),g=S.gen,forceAdv=copy==='adv',open=forceAdv||(!copy&&S.adv['conn-'+id]);
+  const main=copy!=='adv';
+  const again=id==='mijia'?'重新扫码':id==='ha'?'更换连接钥匙':'重新配对';
+  const k=copy||'x';
+  let rows='';
+  if(id==='mijia')rows=setRow(k+'mi-acct','账号','<span class="muted">示例账号 ···4821</span>')+`<div class="set-row${S.flash==='mi-rescan'?' flash':''}" data-k="${k}mi-rescan" id="row-${copy?k:''}mi-rescan"><div class="set-l">登录状态<small>上次登录 12 天前</small></div><div class="set-c"><button class="btn" data-a="connectStart" data-id="mijia" data-fk="ag:${k}">重新扫码</button></div></div>`;
+  if(id==='ha')rows=setRow(k+'ha-addr','家庭服务器','<span class="muted">homeassistant.local</span>')+`<div class="set-row${S.flash==='ha-key'?' flash':''}" data-k="${k}ha-key" id="row-${copy?k:''}ha-key"><div class="set-l">连接钥匙<small>已保存在这台电脑上</small></div><div class="set-c"><button class="btn" data-a="connectStart" data-id="ha" data-fk="ag:${k}">更换</button></div></div>`;
+  if(id==='lg')rows=setRow(k+'lg-tv','电视','<span class="muted">卧室 LG 电视</span>');
+  const advRows=id==='mijia'?
+   `${setRow((copy?k:'')+'mi-region','服务器地区',sel('g:region',[['cn','中国大陆'],['sg','新加坡'],['de','德国'],['us','美国']],g.region,'服务器地区'))}
+    ${setRow((copy?k:'')+'mi-lan','优先走家庭网络',sw({a:'gen',id:'lan',on:g.lan,label:'优先走家庭网络',fk:'gen:lan:'+k}),'同一网络时更快，断开时自动改走云端')}
+    ${setRow((copy?k:'')+'multi','同时连接多个平台',sw({a:'gen',id:'multi',on:g.multi,label:'同时连接多个平台',fk:'gen:multi:'+k}),'相同设备自动合并')}
+    ${setRow(k+'mi-int','状态轮询间隔',sel('g:interval',[['15','15 秒'],['30','30 秒'],['60','60 秒']],g.interval,'状态轮询间隔'))}
+    <div class="set-row" data-k="${k}mi-tech"><div class="set-l">技术信息<div class="mono">接口 api.io.mi.com<br>账号 ID ···4821 · token 剩余 18 天<br>最近请求 128 ms</div></div></div>`:id==='ha'?
+   `${setRow((copy?k:'')+'ha-http','允许不加密的连接',sw({a:'gen',id:'http',on:g.http,label:'允许不加密的连接',fk:'gen:http:'+k}),'<span style="font-size:12.5px;color:var(--warn)">同一网络里的人可能看到你的连接钥匙，只在信任的家庭网络中打开。</span>')}
+    ${setRow(k+'ha-int','状态轮询兜底',sel('g:interval',[['15','15 秒'],['30','30 秒'],['60','60 秒']],g.interval,'状态轮询兜底'))}
+    <div class="set-row" data-k="${k}ha-tech"><div class="set-l">技术信息<div class="mono">REST API /api/states · WebSocket 已连接<br>长期访问令牌（Long-Lived Access Token）···f3a9<br>版本 2026.11.1 · 延迟 12 ms</div></div></div>`:
+   `${setRow(k+'lg-wol','允许远程开机',sw({a:'gen',id:'lan',on:g.lan,label:'允许远程开机',fk:'gen:lan:'+k}),'需要电视开启网络唤醒')}<div class="set-row" data-k="${k}lg-tech"><div class="set-l">技术信息<div class="mono">SSAP 192.168.1.42:3001 · MAC ··:7e:2c</div></div></div>`;
+  return `<div class="status-head"><span class="mi">${ic(c.icon)}</span><div style="flex:1;min-width:0"><h2>${esc(c.name)}</h2><p>${s.dot}${esc(s.text)}</p></div>${main&&st!=='none'?connCtrl(id,'d'):''}</div>
+   ${main&&connLock(id)?`<div class="lock-why" style="margin:-6px 0 10px">${ic('lock')}<span>${connLock(id)}</span></div>`:''}
+   ${main&&pvFor('conn',id)&&S.preview.mode==='close'?`<div style="margin-bottom:12px">${previewHTML()}</div>`:''}
+   ${st==='none'?`<div class="note">${ic('info')}<div style="flex:1">这个连接还没有设置。<div class="actions" style="margin-top:6px"><button class="btn primary" data-a="connectStart" data-id="${id}" data-fk="cn2:${id}">连接${esc(c.name)}</button></div></div></div>`:`
+   <div class="card">${rows}${setRow(k+'sync','同步',`<button class="btn" data-a="noop" data-id="已同步（示例）" data-fk="sync:${k}">立即同步</button>`)}</div>
+   ${forceAdv?'<div class="group-h">高级选项</div>':main?disc('adv','conn-'+id,open,'高级选项'):''}
+   ${open?`<div class="advanced fade-in"><div class="card">${advRows}</div></div>`:''}
+   ${main?`<div class="danger-zone">${pvFor('conn',id,'remove')?previewHTML():`<div><button class="btn" data-a="askRemove" data-id="${id}" data-fk="rm:${id}"><span class="text-danger">移除连接</span></button></div><p class="small muted">停用会保留登录信息。移除才会清除它。</p>`}</div>`:''}`}`;
+}
+function pageConnDetail(){
+  const id=S.detail,c=CONNS[id];
+  const cmp=S.compare&&S.conn[id]!=='none';
+  return `<div class="page${cmp?' wide':''}"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px"><h1 class="page-h" tabindex="-1" data-focus-h>${esc(c.name)}</h1>${seg('compare',[['0','普通视图'],['1','和高级视图对比']],cmp?'1':'0','查看方式')}</div>
+  ${cmp?`<div class="compare"><div class="cmp-col"><div class="cmp-label">普通用户看到的</div>${connDetailBody(id,null)}</div><div class="cmp-col"><div class="cmp-label">展开“高级选项”后</div>${connDetailBody(id,'adv')}</div></div>`:connDetailBody(id,null)}</div>`;
+}
+function mgrRow(o){return `<div class="mrow${o.off?' is-off':''}${S.flash===o.k?' flash':''}" id="row-${o.k}" data-k="m-${o.k}" data-flip="m-${o.k}"><span class="mi">${ic(o.icon)}</span><div class="mt"><div class="mn">${esc(o.name)}${o.sum?`<span class="pill ${o.tone||''}">${o.sum}</span>`:''}</div><p>${esc(o.desc)}</p>${o.lock?`<div class="lock-why">${ic('lock')}<span>${o.lock}${o.lockAct||''}</span></div>`:''}</div><div class="mc">${o.link||''}${o.ctrl}</div>${o.extra?`<div class="mx">${o.extra}</div>`:''}</div>`;}
+function typeRow(t){
+  const on=S.types[t.id],devs=typeDevices(t.id).length,rec=S.recover&&S.recover.type===t.id&&!on;
+  const rules=RULES.filter(r=>r.t===t.id),act=rules.filter(ruleActive).length,paused=rules.filter(r=>S.paused[r.id].includes('type:'+t.id)).length;
+  const locked=t.id==='camera'&&S.cameraLive&&S.feats.live&&on;
+  let sum=on?`${devs} 台${act?` · ${act} 项在用`:''}`:paused?`${paused} 项已暂停，开启后恢复`:t.safety?'设备已隐藏，提醒照常':'设置已保留';
+  return mgrRow({k:'t-'+t.id,icon:t.icon,name:t.name,desc:t.desc,off:!on,sum,tone:!on&&paused?'warn':'',lock:locked?'正在播放玄关画面，关闭画面后才能关闭。':null,lockAct:locked?`<button class="link" data-a="camStop" data-fk="cs-t">关闭画面</button>`:'',
+   ctrl:sw({a:'typeSw',id:t.id,on,label:`显示${t.name}`,locked,fk:'typeSw:'+t.id}),extra:pvFor('type',t.id)?previewHTML():rec?`<div class="note info fade-in">${ic('info')}<div style="flex:1">「${esc(t.name)}」现在关着，之前的设置还在。<div class="actions" style="margin-top:6px"><button class="btn primary" data-a="enableType" data-id="${t.id}" data-fk="rec:${t.id}">立即开启</button></div></div></div>`:''});
+}
+function featSummary(f){const on=S.feats[f.id];
+  if(!on){const p=f.id==='automation'?RULES.filter(r=>S.paused[r.id].includes('feature:automation')).length:0;return{sum:p?`${p} 项已暂停，开启后恢复`:'设置已保留',tone:p?'warn':''};}
+  if(f.needs&&!S.types[f.needs])return{sum:`等「${T(f.needs).name}」开启`,tone:'warn'};
+  switch(f.id){case'automation':{const n=RULES.filter(ruleActive).length,p=RULES.length-n;return{sum:`${n} 项在运行${p?` · ${p} 项已暂停`:''}`,tone:p?'warn':''};}
+   case'live':return{sum:S.cameraLive?'1 个画面播放中':'随时可看'};case'energy':return{sum:'本月 38 度'};case'forgot':return{sum:'盯着 8 台设备'};case'climate':return{sum:'已记录 3 天'};
+   case'ai':return S.aiService?{sum:'已就绪'}:{sum:'还没选 AI 服务',tone:'warn'};case'voice':return{sum:'用到时才听'};case'ball':return{sum:'显示中'};case'external':return{sum:'已允许'};}
+  return{sum:''};}
+function featSub(f){
+  if(f.id==='automation')return `<div class="subs">${RULES.map(r=>{const a=ruleActive(r),p=!a&&pauseReason(r);return `<div class="rule${a?'':' paused'}" data-k="rl-${r.id}"><div>${esc(r.name)}<small>${r.kind}${a?'':` · 已暂停，因为${esc(p.txt)}`}</small></div>${a?'':`<button class="link" data-a="${p.a}" data-id="${p.id}" data-fk="rr:${r.id}">${esc(p.btn)}</button>`}</div>`;}).join('')}</div>`;
+  if(f.id==='energy')return `<div class="subs">${setRow('energy-price','电价',`<input type="text" inputmode="decimal" style="width:80px" data-i="price" aria-label="每度电价格" value="${esc(S.price)}"><span class="muted">元 / 度</span>`)}</div>`;
+  if(f.id==='ai')return `<div class="subs">${setRow('ai-service','AI 服务',sel('aiService',[['','请选择'],['a','示例服务 A'],['b','示例服务 B']],S.aiService,'AI 服务'),'你说的话会发给所选服务来理解')}${setRow('ai-ask','拿不准时先问我',sw({a:'aiAsk',id:'x',on:S.aiAsk,label:'拿不准时先问我'}))}</div>`;
+  if(f.id==='voice')return `<div class="subs">${setRow('voice-local','优先用本机识别',sw({a:'voiceLocal',id:'x',on:S.voiceLocal,label:'优先用本机识别'}))}</div>`;
+  if(f.id==='external')return `<div class="note">${ic('lock')}<div>车库门和门锁仍需在这台电脑上确认，外部工具不能跳过。</div></div>`;
+  return'';
+}
+const hasSub=f=>['automation','energy','ai','voice','external'].includes(f.id);
+function featRow(f){
+  const on=S.feats[f.id],s=featSummary(f),locked=f.id==='live'&&on&&S.cameraLive;
+  const open=S.subOpen[f.id]&&on,rec=S.recover&&S.recover.feature===f.id&&!on;
+  let extra='';
+  if(pvFor('feature',f.id))extra=previewHTML();
+  else if(rec)extra=`<div class="note info fade-in">${ic('info')}<div style="flex:1">${S.recover.sub?`「${esc(S.recover.sub.title)}」属于「${esc(f.name)}」，`:`「${esc(f.name)}」`}这项功能现在关着，之前的设置还在。<div class="actions" style="margin-top:6px"><button class="btn primary" data-a="enableFeature" data-id="${f.id}" data-fk="rec:${f.id}">立即开启</button></div></div></div>`;
+  else if(open)extra=featSub(f);
+  return mgrRow({k:'f-'+f.id,icon:f.icon,name:f.name,desc:f.desc,off:!on,sum:s.sum,tone:s.tone,lock:locked?'正在播放玄关画面，关闭画面后才能停用。':null,lockAct:locked?`<button class="link" data-a="camStop" data-fk="cs-f">关闭画面</button>`:'',
+   link:on&&hasSub(f)?`<button class="link" data-a="subToggle" data-id="${f.id}" data-fk="sub:${f.id}" aria-expanded="${!!open}">${open?'收起':'设置'}</button>`:'',
+   ctrl:sw({a:'featSw',id:f.id,on,label:`启用${f.name}`,locked}),extra});
+}
+function connMgrRow(id){
+  const c=CONNS[id],st=S.conn[id],s=connStatus(id),lock=connLock(id);
+  return mgrRow({k:'c-'+id,icon:c.icon,name:c.name,desc:c.desc,off:st!=='on',sum:s.short,lock,link:st!=='none'?`<button class="link" data-a="openConn" data-id="${id}" data-fk="mc:${id}">详情</button>`:'',ctrl:connCtrl(id,'m'),extra:pvFor('conn',id)&&S.preview.mode==='close'?previewHTML():''});
+}
+function pageFeatures(){
+  const fl=S.mgrFilter,show=k=>fl==='all'||fl===k;
+  const cIds=Object.keys(CONNS);
+  const cOn=cIds.filter(i=>S.conn[i]==='on'),cOff=cIds.filter(i=>S.conn[i]!=='on');
+  const tOn=TYPES.filter(t=>S.types[t.id]),tOff=TYPES.filter(t=>!S.types[t.id]);
+  const fOn=FEATURES.filter(f=>S.feats[f.id]),fOff=FEATURES.filter(f=>!S.feats[f.id]);
+  const expanded=S.typesOpen||fl==='type'||tOn.slice(4).some(t=>S.flash==='t-'+t.id||pvFor('type',t.id));
+  const tShown=expanded?tOn:tOn.slice(0,4);
+  const nOn=(show('conn')?cOn.length:0)+(show('type')?tOn.length:0)+(show('feat')?fOn.length:0)+(S.demo&&show('conn')?1:0);
+  const nOff=(show('conn')?cOff.length:0)+(show('type')?tOff.length:0)+(show('feat')?fOff.length:0);
+  const sub=(label,inner)=>inner?`<div class="sub-h">${label}</div><div class="card">${inner}</div>`:'';
+  const demoRow=S.demo&&show('conn')?mgrRow({k:'c-demo',icon:'grid',name:'示例家庭',desc:'不连接真实设备，用来熟悉操作',sum:'22 台示例设备',ctrl:`<button class="btn" data-a="goPage" data-id="conn" data-fk="demo-conn">连接真实家庭</button>`}):'';
+  return `<div class="page"><h1 class="page-h" tabindex="-1" data-focus-h>功能管理</h1>
+  <p class="page-lead">不用的可以关掉。关掉后，入口会从面板和设置里收起，也不再在后台运行，你的设置都会保留。</p>
+  ${seg('mgrFilter',[['all','全部'],['conn','连接',cIds.length],['type','设备类型',TYPES.length],['feat','功能',FEATURES.length]],fl,'筛选')}
+  <div class="group-h">已启用 <span class="n">${nOn}</span></div>
+  ${show('conn')?sub('连接',demoRow+cOn.map(connMgrRow).join('')):''}
+  ${show('type')&&tOn.length?`<div class="sub-h">设备类型</div><div class="card">${tShown.map(typeRow).join('')}${fl!=='type'&&tOn.length>4?`<button class="more-row" data-k="types-more" data-a="typesMore" data-fk="types-more" aria-expanded="${expanded}">${ic(expanded?'down':'right')}${expanded?'收起':`显示其余 ${tOn.length-4} 类`}</button>`:''}</div>`:''}
+  ${show('feat')?sub('功能',fOn.map(featRow).join('')):''}
+  ${nOff?`<div class="group-h">未启用 <span class="n">${nOff}</span></div>
+  ${show('conn')?sub('连接',cOff.map(connMgrRow).join('')):''}${show('type')?sub('设备类型',tOff.map(typeRow).join('')):''}${show('feat')?sub('功能',fOff.map(featRow).join('')):''}`:''}
+  <div class="group-h">始终开启</div><div class="card">
+  ${mgrRow({k:'always-risky',icon:'shield',name:'高风险设备二次确认',desc:'车库门和门锁每次动作前都要你确认。这一项不能在这里关闭。',sum:'始终开启',tone:'ok',ctrl:sw({a:'lockedInfo',id:'risky',on:true,label:'高风险设备二次确认，始终开启',locked:true})})}
+  ${mgrRow({k:'always-alerts',icon:'bell',name:'安全提醒',desc:'烟雾、漏水和门锁提醒单独管理，不会因为关掉设备类型而停止。',sum:alertSummary(),tone:Object.values(S.alerts).every(Boolean)?'ok':'warn',ctrl:`<button class="link" data-a="goPage" data-id="safety" data-fk="go-safety">去设置${ic('right')}</button>`})}
+  </div></div>`;
+}
+function alertSummary(){const n=Object.values(S.alerts).filter(Boolean).length;return n===3?'3 项开启':`${n} / 3 项开启`;}
+function pageSafety(){
+  const g=S.gen;
+  const row=(k)=>{const a=ALERTS[k],on=S.alerts[k],dev=D(a.dev),src=srcOf(dev),reach=S.demo||srcLive(src);
+   return `<div class="set-row${S.flash===a.set?' flash':''}" id="row-${a.set}" data-k="row-${a.set}"><div class="set-l">${a.name}<small>${esc(dev.name)}${on&&reach?' · 工作正常':''}</small></div><div class="set-c">${on&&!reach?`<span class="pill danger">收不到</span>`:''}${sw({a:'alertSw',id:k,on,label:a.name})}</div>${on&&!reach?`<div class="full"><div class="note danger">${ic('warn')}<div style="flex:1">这个报警器由「${esc(CONNS[src].name)}」连接，现在${S.conn[src]==='none'?'已移除':'已停用'}，这台电脑收不到报警。<div class="actions" style="margin-top:6px"><button class="btn" data-a="${S.conn[src]==='none'?'connectStart':'resumeConn'}" data-id="${src}" data-fk="sa-res:${k}">${S.conn[src]==='none'?'重新连接':'恢复连接'}</button></div></div></div></div>`:''}${pvFor('alert',k)?`<div class="full">${previewHTML()}</div>`:''}</div>`;};
+  const n=Object.values(S.allOff).filter(Boolean).length,names={light:'灯',switch:'开关',plug:'插座',ac:'空调',tv:'电视'};
+  return `<div class="page"><h1 class="page-h" tabindex="-1" data-focus-h>安全与提醒</h1><p class="page-lead">关掉设备类型或功能时，这里的安全提醒不会跟着悄悄关闭。</p>
+  <div class="group-h">安全提醒</div><div class="card">${Object.keys(ALERTS).map(row).join('')}</div>
+  <div class="group-h">控制保护</div><div class="card">
+  ${setRow('risky','高风险设备二次确认',sw({a:'lockedInfo',id:'risky',on:true,label:'高风险设备二次确认，始终开启',locked:true,fk:'risky-s'}),'车库门、门锁每次动作前都要确认，不能关闭')}
+  ${setRow('lockscreen','锁屏时禁止控制',sw({a:'gen',id:'lockscreen',on:g.lockscreen,label:'锁屏时禁止控制'}))}
+  ${setRow('alloff','一键全关包含的设备',`<span class="muted">${n} 类</span><button class="btn" data-a="alloffOpen" data-fk="ao-open" aria-expanded="${S.alloffOpen}">${S.alloffOpen?'收起':'修改'}</button>`,'门锁、车库门和摄像机不在其中',S.alloffOpen?`<div class="chips fade-in">${Object.entries(names).map(([k,v])=>`<button class="chip" data-a="alloffType" data-id="${k}" data-fk="aot:${k}" aria-pressed="${S.allOff[k]}">${ic(T(k).icon)}${v}</button>`).join('')}</div>`:'')}</div>
+  <div class="group-h">日常提醒</div><div class="card">
+  ${S.feats.forgot?setRow('forgot-s','忘关提醒',sw({a:'featSw',id:'forgot',on:true,label:'忘关提醒',fk:'fg-s'}),'灯或空调开了很久时提醒你'):`<div class="set-row" data-k="forgot-off"><div class="set-l">忘关提醒<small>这项功能现在关着，之前的设置还在。</small></div><div class="set-c"><button class="btn primary" data-a="enableFeature" data-id="forgot" data-fk="fg-on">立即开启</button></div></div>`}
+  ${setRow('doorbell','门铃弹窗',sw({a:'gen',id:'doorbell',on:g.doorbell,label:'门铃弹窗'}))}</div></div>`;
+}
+function pageAbout(){return `<div class="page"><h1 class="page-h" tabindex="-1" data-focus-h>关于与诊断</h1><p class="page-lead">MenuBarHome 原型 · 示例版本</p>
+  <div class="card">${setRow('update','软件更新','<span class="muted">已是最新</span><button class="btn" data-a="noop" data-id="已是最新版本（示例）" data-fk="upd">检查更新</button>')}
+  ${setRow('privacy','隐私说明','<button class="btn" data-a="noop" data-id="登录信息只保存在这台电脑上（示例）" data-fk="pri">查看</button>')}
+  ${setRow('diag','复制排障信息','<button class="btn" data-a="noop" data-id="已生成排障信息，账号和钥匙已隐去（示例，未写入剪贴板）" data-fk="dg">复制</button>','账号和钥匙会自动隐去')}
+  ${setRow('rerun','重新运行首次引导','<button class="btn" data-a="nav" data-id="onboarding" data-fk="rr-on">开始</button>')}</div>
+  ${disc('adv','about',S.adv.about,'高级排障')}${S.adv.about?`<div class="advanced fade-in"><div class="card">${setRow('scan','扫描未显示的设备','<button class="btn" data-a="noop" data-id="没有发现新设备（示例）" data-fk="sc">扫描</button>')}
+  ${setRow('wipe','退出并清除全部账号数据',S.wipe?'':'<button class="btn" data-a="wipeAsk" data-fk="wipe-a"><span class="text-danger">清除</span></button>','',S.wipe?`<div class="preview" role="group" aria-label="确认清除全部数据"><h3>清除全部账号数据？</h3><p>这台电脑上所有登录信息和设置都会被删除，这一步不能撤销。你的账号和家里的设备不受影响。</p><div class="actions end"><button class="btn" data-a="wipeNo" data-fk="pv-cancel">取消</button><button class="btn danger" data-a="wipeYes" data-fk="pv-ok">确认清除</button></div></div>`:'')}</div></div>`:''}</div>`;}
+function settings(){
+  const pn=PAGES.find(p=>p[0]===S.page)[1];
+  const q=S.q.trim();
+  const crumb=q?'<b>搜索</b>':S.detail?`<button class="link" data-a="goPage" data-id="conn" data-fk="cr-back" style="color:var(--fg-2)">${ic('left')}家居连接</button><span class="sep">/</span><b>${esc(CONNS[S.detail].name)}</b>`:`<span>设置</span><span class="sep">/</span><b>${pn}</b>`;
+  const content=q?resultsView():S.detail?pageConnDetail():({general:pageGeneral,conn:pageConn,features:pageFeatures,safety:pageSafety,about:pageAbout})[S.page]();
+  return `<section class="win" aria-label="设置窗口"><div class="win-top"><div class="crumb">${crumb}</div><div class="win-search">${ic('search')}<input type="search" id="set-q" data-i="q" aria-label="查找设置" placeholder="查找设置" autocomplete="off" value="${esc(S.q)}">${q?`<button class="icon-btn" data-a="searchClear" data-fk="s-clear" aria-label="清除搜索" title="清除搜索">${ic('x')}</button>`:''}</div></div>
+  <div class="win-body"><nav class="side-nav" aria-label="设置分类">${PAGES.map(([k,t,i])=>`<button data-a="goPage" data-id="${k}" data-fk="sn:${k}"${S.page===k&&!q?' aria-current="page"':''}>${ic(i)}${t}</button>`).join('')}</nav><div class="win-main" id="win-main">${content}</div></div></section>`;
+}
+
+/* ---------- 渲染 ---------- */
+function morphKids(a,b){
+  const keyed=new Map();for(const c of a.children)if(c.dataset&&c.dataset.k)keyed.set(c.dataset.k,c);
+  let cur=a.firstChild;
+  for(const n of [...b.childNodes]){
+    const key=n.nodeType===1?n.dataset.k:null;let m=null;
+    if(key){const h=keyed.get(key);if(h&&h.nodeName===n.nodeName)m=h;}
+    else if(cur&&cur.nodeType===n.nodeType&&cur.nodeName===n.nodeName&&!(cur.dataset&&cur.dataset.k))m=cur;
+    if(m){if(m===cur)cur=cur.nextSibling;else a.insertBefore(m,cur);morph(m,n);}
+    else a.insertBefore(n,cur);
+  }
+  while(cur){const nx=cur.nextSibling;a.removeChild(cur);cur=nx;}
+}
+function morph(a,b){
+  if(a.nodeType!==1){if(a.nodeValue!==b.nodeValue)a.nodeValue=b.nodeValue;return;}
+  for(const at of [...a.attributes])if(!b.hasAttribute(at.name))a.removeAttribute(at.name);
+  for(const at of b.attributes)if(a.getAttribute(at.name)!==at.value)a.setAttribute(at.name,at.value);
+  if(a.nodeName==='INPUT'){if(a.type==='checkbox'||a.type==='radio')a.checked=b.hasAttribute('checked');else{const v=b.getAttribute('value')??'';if(a.value!==v)a.value=v;}return;}
+  morphKids(a,b);
+  if(a.nodeName==='SELECT'){const o=[...b.options].find(x=>x.hasAttribute('selected'));if(o)a.value=o.value;}
+}
+function view(){
+  let main=S.screen==='onboarding'?onboarding():S.screen==='panel'?panelScreen():settings();
+  const t=S.toast;
+  return topbar()+`<main class="stage" data-k="stage-${S.screen}">${main}</main><div class="toast-wrap" data-k="tw">${t?`<div class="toast" data-k="toast-${t.id}"><span>${esc(t.msg)}</span>${t.undo?`<button data-a="toastUndo" data-fk="toast-undo">撤销</button>`:''}</div>`:''}</div>`;
+}
+const tpl=document.createElement('template');
+function applyTheme(){const r=document.documentElement;if(S.theme==='system')r.removeAttribute('data-theme');else r.dataset.theme=S.theme;}
+function render(){
+  applyTheme();
+  const fk=document.activeElement&&document.activeElement.dataset?document.activeElement.dataset.fk:null;
+  tpl.innerHTML=view();morphKids(qs('#app'),tpl.content);
+  if(S.focusNext){const el=qs(S.focusNext);S.focusNext=null;if(el){el.focus({preventScroll:false});return;}}
+  if(fk&&(document.activeElement===document.body||!document.activeElement)){qs(`[data-fk="${CSS.escape(fk)}"]`)?.focus({preventScroll:true});}
+}
+function flipRender(fn){
+  if(reduced()){fn();render();return;}
+  const before=new Map([...document.querySelectorAll('[data-flip]')].map(e=>[e.dataset.flip,e.getBoundingClientRect()]));
+  fn();render();
+  document.querySelectorAll('[data-flip]').forEach(e=>{const o=before.get(e.dataset.flip);if(!o)return;const n=e.getBoundingClientRect(),dx=o.left-n.left,dy=o.top-n.top;if(Math.abs(dx)<1&&Math.abs(dy)<1)return;e.animate([{transform:`translate(${dx}px,${dy}px)`},{transform:'none'}],{duration:240,easing:'cubic-bezier(.23,1,.32,1)'});});
+}
+let toastSeq=0,toastTimer=null,toastUndo=null;
+function toast(msg,undo){toastUndo=undo||null;S.toast={msg,undo:!!undo,id:++toastSeq};say(msg);clearTimeout(toastTimer);toastTimer=setTimeout(()=>{S.toast=null;toastUndo=null;render();},undo?6000:3200);}
+let flashTimer=null;
+function flash(key,sel){S.flash=key;render();clearTimeout(flashTimer);const el=qs(sel||`#row-${CSS.escape(key)}`);el?.scrollIntoView({block:'center'});flashTimer=setTimeout(()=>{S.flash=null;render();},1900);}
+const timers=new Set();
+function later(fn,ms){const t=setTimeout(()=>{timers.delete(t);fn();render();},ms);timers.add(t);}
+function clearTimers(){timers.forEach(clearTimeout);timers.clear();}
+function focusH(){S.focusNext='[data-focus-h]';}
+
+/* ---------- 引导动作 ---------- */
+function enterConnect(){const o=S.onb;o.step='connect';if(o.platform==='ha'&&o.ha.phase==='idle'){o.ha.phase='scanning';later(()=>{if(o.ha.phase==='scanning')o.ha.phase='found';},1100);}focusH();}
+function connectDone(){const o=S.onb,id=o.platform;
+  if(o.returnTo){S.conn[id]='on';S.demo=false;S.single=activeConns().length===1?id:null;const n=resume('conn:'+id);S.screen='settings';S.page='conn';S.detail=id;S.compare=false;toast(`已连接「${CONNS[id].name}」${n?`，${n} 项已恢复`:''}`);S.onb=freshOnb();focusH();return;}
+  o.step='choose';focusH();}
+function finishOnb(dest){
+  const o=S.onb,demo=o.platform==='demo';
+  S.demo=demo;S.conn={mijia:'none',ha:'none',lg:'none'};S.single=demo?null:o.platform;if(!demo)S.conn[o.platform]='on';
+  S.paused=Object.fromEntries(RULES.map(r=>[r.id,[]]));
+  S.types={...o.types};TYPES.forEach(t=>{if(!S.types[t.id])pauseRules(RULES.filter(r=>r.t===t.id),'type:'+t.id);});
+  S.feats.forgot=o.feats.forgot;S.feats.ai=o.feats.ai;S.feats.voice=o.feats.voice;S.gen.boot=o.feats.boot;
+  S.p={...freshState().p};S.onb=freshOnb();S.detail=null;S.q='';
+  if(dest==='features'){S.screen='settings';S.page='features';focusH();}else{S.screen='panel';S.focusNext='[data-fk="p-search"]';}
+}
+function skipToDemo(){clearTimers();S.onb.platform='demo';S.onb.types=Object.fromEntries(TYPES.map(t=>[t.id,true]));S.onb.returnTo=null;finishOnb('panel');toast('已进入示例家庭，可以随时连接真实设备');}
+
+/* ---------- 动作表 ---------- */
+const A={
+ nav(id){clearTimers();S.q='';S.preview=null;S.recover=null;
+  if(id==='onboarding'){S.screen='onboarding';S.onb=freshOnb();focusH();}
+  else if(id==='panel'){S.screen='panel';}
+  else if(id==='settings'){S.screen='settings';S.detail=null;if(S.page==='features')S.page='general';focusH();}
+  else if(id==='features'){S.screen='settings';S.detail=null;S.page='features';focusH();}
+  else if(id==='connection'){S.screen='settings';S.page='conn';S.compare=true;S.detail=S.conn.mijia!=='none'?'mijia':S.conn.ha!=='none'?'ha':'mijia';focusH();}
+  scrollTo(0,0);},
+ theme(id){S.theme=id;},
+ reset(){clearTimers();clearInterval(undoTick);const t=S.theme;S=freshState();S.theme=t;toast('已恢复初始示例');},
+ noop(id){toast(id);},
+ /* 引导 */
+ onbNext(){const o=S.onb;if(o.step==='platform'){if(o.platform==='demo'){o.step='choose';focusH();}else enterConnect();}else if(o.step==='choose'){o.step='done';focusH();}},
+ onbBack(){const o=S.onb;clearTimers();if(o.step==='connect'){if(o.returnTo){S.screen='settings';S.page='conn';S.detail=null;S.onb=freshOnb();focusH();return;}o.step='platform';if(o.ha.phase==='scanning')o.ha.phase='idle';o.mi.phase='wait';}else if(o.step==='choose')o.step=o.platform==='demo'?'platform':'connect';else if(o.step==='done')o.step='choose';focusH();},
+ onbSkip(){skipToDemo();},
+ onbFinish(id){finishOnb(id);},
+ onbType(id){S.onb.types[id]=!S.onb.types[id];},
+ onbPreset(id){TYPES.forEach(t=>S.onb.types[t.id]=id==='all'||LIGHT_ONLY.includes(t.id));},
+ onbFeat(id){S.onb.feats[id]=!S.onb.feats[id];},
+ miStep(id){S.onb.mi.phase=id;if(id==='syncing'){later(connectDone,900);}if(id==='failed')S.focusNext='[data-fk="mi-refresh"]';if(id==='expired')S.focusNext='[data-fk="mi-refresh"]';},
+ miRefresh(){S.onb.mi.phase='wait';},
+ miRegion(){S.onb.mi.region=!S.onb.mi.region;},
+ haUse(){S.onb.ha.url='homeassistant.local:8123';S.onb.ha.urlErr='';S.focusNext='#ha-key';},
+ haShow(){S.onb.ha.showKey=!S.onb.ha.showKey;},
+ haHow(){S.onb.ha.howto=!S.onb.ha.howto;},
+ haFill(){S.onb.ha.key='示例钥匙-仅用于原型';S.onb.ha.keyErr='';},
+ haConnect(){const h=S.onb.ha;h.urlErr=h.url.trim()?'':'请填写家庭服务器地址。';h.keyErr=h.key.trim()?'':'请粘贴连接钥匙。';if(h.urlErr||h.keyErr){S.focusNext=h.urlErr?'#ha-url':'#ha-key';h.status='idle';return;}
+  h.status='checking';later(()=>{if(h.failNext){h.status='failed';h.failNext=false;S.focusNext='[data-fk="ha-retry"]';}else{h.status='idle';connectDone();}},800);},
+ /* 面板 */
+ room(id){S.p.room=id;S.p.open=null;S.p.confirm=null;},
+ pMore(){S.p.more=!S.p.more;},
+ pSearch(){S.p.search=!S.p.search;S.p.q='';if(S.p.search)S.focusNext='#p-q';},
+ voiceTap(){toast('示例里不会使用麦克风');},
+ devMore(id){S.p.open=S.p.open===id?null:id;S.p.confirm=null;},
+ devTap(id){const d=D(id),p=S.p;p.err=null;
+  if(d.t==='garage'||d.t==='lock'){p.confirm=p.confirm===id?null:id;p.open=null;if(p.confirm)S.focusNext='[data-fk="dc-no"]';return;}
+  if(d.t==='camera'){p.open=p.open===id?null:id;return;}
+  if(p.failNext){p.failNext=false;const s=S.dev[id];s.on=s.on?0:1;render();later(()=>{s.on=s.on?0:1;p.err={id,name:d.name};},450);return;}
+  S.dev[id].on=S.dev[id].on?0:1;say(`${d.name}${S.dev[id].on?'已打开':'已关闭'}`);},
+ devRetry(){const id=S.p.err.id;S.p.err=null;S.dev[id].on=S.dev[id].on?0:1;},
+ errClose(){S.p.err=null;},
+ devCancel(){const id=S.p.confirm;S.p.confirm=null;S.focusNext=`[data-fk="dev:${id}"]`;},
+ devOk(id){const d=D(id);S.dev[id].on=S.dev[id].on?0:1;S.p.confirm=null;S.focusNext=`[data-fk="dev:${id}"]`;toast(`${d.name}：${devState(d)}（示例）`);},
+ acStep(v){const[id,dl]=v.split(':');const s=S.dev[id];s.v=Math.max(16,Math.min(30,s.v+Number(dl)));},
+ camStop(){S.cameraLive=false;toast('已关闭画面，现在可以停用摄像机相关功能');},
+ camStart(){S.cameraLive=true;},
+ remToggle(){S.p.remOpen=!S.p.remOpen;},
+ remClear(){S.p.rem=false;S.p.remOpen=false;toast('提醒已标为已读');S.focusNext='[data-fk="p-search"]';},
+ allOffYes(){const ids=allOffTargets().map(d=>d.id);ids.forEach(i=>S.dev[i].on=0);S.p.allOff='idle';S.p.undo={ids,left:ids.length>=3?15:10};S.focusNext='[data-fk="ao-undo"]';clearInterval(undoTick);undoTick=setInterval(()=>{const u=S.p.undo;if(!u){clearInterval(undoTick);return;}u.left--;if(u.left<=0){S.p.undo=null;clearInterval(undoTick);}render();},1000);},
+ allOffUndo(){S.p.undo.ids.forEach(i=>S.dev[i].on=1);const n=S.p.undo.ids.length;S.p.undo=null;clearInterval(undoTick);S.focusNext='[data-fk="ao-ask"]';toast(`已恢复 ${n} 台设备`);},
+ simAlert(id){const a=ALERTS[id];if(!S.alerts[id]){toast(`${a.name}已关闭，不会弹出`);return;}if(!S.demo&&!srcLive(srcOf(D(a.dev)))){toast(`${a.name}收不到，连接已停用`);return;}S.p.urgent=id;},
+ urgentAck(){S.p.urgent=null;S.focusNext='[data-fk="sim-smoke"]';},
+ urgentView(){const id=S.p.urgent==='smoke'?'smoke':'leak';const d=D(id);S.p.urgent=null;if(!S.types.safety){toast(`${d.name}现在不在面板显示`);return;}S.p.room=d.room;S.p.q='';S.p.search=false;render();flash('dev-'+id,'#dev-'+id);},
+ simLink(id){S.p.link=id;},
+ simFail(){S.p.failNext=!S.p.failNext;},
+ useDemo(){S.demo=true;S.conn={mijia:S.conn.mijia==='none'?'none':'paused',ha:S.conn.ha==='none'?'none':'paused',lg:'none'};S.single=null;S.screen='panel';S.detail=null;toast('已切换到示例家庭，真实连接已停用并保留');},
+ /* 设置导航 */
+ goPage(id){S.screen='settings';S.page=id;S.detail=null;S.q='';S.preview=null;S.recover=null;focusH();qs('#win-main')&&(qs('#win-main').scrollTop=0);},
+ openConn(id){S.screen='settings';S.page='conn';S.detail=id;S.compare=false;S.preview=null;focusH();},
+ compare(v){S.compare=v==='1';S.preview=null;},
+ adv(id){S.adv[id]=!S.adv[id];},
+ searchClear(){S.q='';S.focusNext='#set-q';},
+ openResult(key){const e=searchIndex().find(x=>x.key===key),g=e.go;S.q='';S.preview=null;S.recover=null;S.page=g.page;S.detail=g.conn||null;if(g.conn)S.compare=false;
+  if(g.adv==='conn')S.adv['conn-'+g.conn]=true;else if(g.adv)S.adv[g.adv]=true;
+  if(g.type){S.mgrFilter='all';S.typesOpen=true;if(!S.types[g.type])S.recover={type:g.type};}
+  if(g.feature){S.mgrFilter='all';if(!S.feats[g.feature])S.recover={feature:g.feature,sub:g.sub||null};else if(g.sub)S.subOpen[g.feature]=true;}
+  render();
+  const target=g.target||g.row;
+  if(g.sub&&S.feats[g.feature])flash(g.sub.id);else if(target)flash(target);
+  else if(g.conn){qs('#win-main')&&(qs('#win-main').scrollTop=0);S.focusNext='[data-focus-h]';}},
+ /* 功能管理 */
+ mgrFilter(id){S.mgrFilter=id;S.preview=null;},
+ typesMore(){S.typesOpen=!S.typesOpen;},
+ subToggle(id){S.subOpen[id]=!S.subOpen[id];},
+ typeSw(id,el){if(locked(el,'正在播放画面，关闭画面后才能关闭')) return;if(S.types[id])return requestClose('type',id,el);flipRender(()=>doOpen('type',id));},
+ featSw(id,el){if(locked(el,'正在播放画面，关闭画面后才能停用'))return;if(S.feats[id])return requestClose('feature',id,el);S.subOpen[id]=['ai'].includes(id)||S.subOpen[id];flipRender(()=>doOpen('feature',id));},
+ connSw(id,el){if(locked(el,'这是现在唯一的连接，不能停用'))return;if(S.conn[id]==='on')return requestClose('conn',id,el);flipRender(()=>doOpen('conn',id));},
+ lockedInfo(){toast('这一项始终开启，保护车库门和门锁不被误操作');},
+ enableType(id){flipRender(()=>doOpen('type',id));},
+ enableFeature(id){const r=S.recover;flipRender(()=>{doOpen('feature',id);if(hasSub(F(id)))S.subOpen[id]=true;});if(r&&r.sub)flash(r.sub.id);else if(r)flash('f-'+id);},
+ resumeConn(id){flipRender(()=>{S.demo=false;doOpen('conn',id);});},
+ connectStart(id){clearTimers();S.preview=null;if(id==='lg'){S.conn.lg='on';toast('已连接 LG 电视（示例）');return;}
+  S.onb=freshOnb();S.onb.platform=id;S.onb.returnTo=id;S.screen='onboarding';enterConnect();scrollTo(0,0);},
+ pvCancel(){const f=S.preview&&S.preview.from;S.preview=null;if(f)S.focusNext=`[data-fk="${CSS.escape(f)}"]`;},
+ pvConfirm(){const p=S.preview,f=p.from;flipRender(()=>{doClose(p.kind,p.id);if(f)S.focusNext=`[data-fk="${CSS.escape(f)}"]`;});},
+ askRemove(id,el){S.preview={kind:'conn',id,mode:'remove',from:el.dataset.fk};S.focusNext='[data-fk="pv-cancel"]';},
+ removeConn(id){pauseRules(allLinked('conn',id),'conn:'+id);S.conn[id]='none';if(S.single===id)S.single=null;S.preview=null;S.detail=null;S.page='conn';focusH();toast(`已移除「${CONNS[id].name}」，这台电脑上的登录信息已清除`);},
+ /* 安全 */
+ alertSw(id,el){if(S.alerts[id]){S.preview={kind:'alert',id,mode:'close',from:el.dataset.fk};S.focusNext='[data-fk="pv-cancel"]';}else{S.alerts[id]=true;toast(`已开启${ALERTS[id].name}`);}},
+ alertOff(id){const f=S.preview.from;S.alerts[id]=false;S.preview=null;S.focusNext=`[data-fk="${CSS.escape(f)}"]`;toast(`已关闭${ALERTS[id].name}，面板顶部会一直提示`);},
+ alertOn(id){S.alerts[id]=true;toast(`已开启${ALERTS[id].name}`);},
+ alloffOpen(){S.alloffOpen=!S.alloffOpen;},
+ alloffType(id){S.allOff[id]=!S.allOff[id];},
+ gen(id){S.gen[id]=!S.gen[id];},
+ unit(id){S.gen.unit=id;},
+ aiAsk(){S.aiAsk=!S.aiAsk;},
+ voiceLocal(){S.voiceLocal=!S.voiceLocal;},
+ wipeAsk(){S.wipe=true;S.focusNext='[data-fk="pv-cancel"]';},
+ wipeNo(){S.wipe=false;S.focusNext='[data-fk="wipe-a"]';},
+ wipeYes(){clearTimers();const t=S.theme;S=freshState();S.theme=t;S.screen='onboarding';focusH();toast('示例数据已清除');},
+ toastUndo(){const u=toastUndo;toastUndo=null;S.toast=null;clearTimeout(toastTimer);if(u)flipRender(u);},
+};
+let undoTick=null;
+function locked(el,msg){if(el.getAttribute('aria-disabled')==='true'){toast(msg);render();return true;}return false;}
+const onDyn=(a,v)=>{if(a.startsWith('acMode:')){S.dev[a.slice(7)].mode=v;return true;}return false;};
+
+/* ---------- 事件 ---------- */
+let holdTimer=null;
+function holdEnd(){clearTimeout(holdTimer);holdTimer=null;document.querySelectorAll('.btn.hold.is-holding').forEach(b=>b.classList.remove('is-holding'));}
+function holdStart(el){if(el.disabled||holdTimer)return;el.classList.add('is-holding');holdTimer=setTimeout(()=>{holdEnd();A.allOffYes();render();},600);}
+document.addEventListener('pointerdown',e=>{const el=e.target.closest('[data-hold]');if(el&&e.button===0)holdStart(el);});
+['pointerup','pointercancel','dragstart'].forEach(t=>document.addEventListener(t,holdEnd));
+window.addEventListener('blur',holdEnd);
+document.addEventListener('pointerout',e=>{if(e.target.closest&&e.target.closest('[data-hold]')&&!e.target.closest('[data-hold]').contains(e.relatedTarget))holdEnd();});
+document.addEventListener('keydown',e=>{const el=e.target.closest&&e.target.closest('[data-hold]');if(el&&(e.key===' '||e.key==='Enter')){e.preventDefault();if(!e.repeat)holdStart(el);}});
+document.addEventListener('keyup',e=>{if(e.key===' '||e.key==='Enter')holdEnd();});
+document.addEventListener('click',e=>{
+  const el=e.target.closest('[data-a]');if(!el||el.disabled)return;
+  const a=el.dataset.a,id=el.dataset.id;
+  if(onDyn(a,id)){render();return;}
+  const fn=A[a];if(!fn)return;
+  const r=fn(id,el);
+  if(r!==undefined)return;
+  if(!['typeSw','featSw','connSw','pvConfirm','enableType','enableFeature','resumeConn','toastUndo'].includes(a)||!flipped(a))render();
+});
+const flipped=a=>['pvConfirm','enableType','enableFeature','resumeConn','toastUndo'].includes(a);
+function onField(e){
+  const el=e.target,i=el.dataset&&el.dataset.i;if(!i)return;const v=el.type==='checkbox'?el.checked:el.value;
+  if(i==='platform')S.onb.platform=v;
+  else if(i==='region')S.gen.region=v;
+  else if(i==='haUrl'){S.onb.ha.url=v;S.onb.ha.urlErr='';if(S.onb.ha.status==='failed')S.onb.ha.status='idle';}
+  else if(i==='haKey'){S.onb.ha.key=v;S.onb.ha.keyErr='';if(S.onb.ha.status==='failed')S.onb.ha.status='idle';}
+  else if(i==='haFail')S.onb.ha.failNext=v;
+  else if(i==='pq')S.p.q=v;
+  else if(i==='q'){S.q=v;S.preview=null;}
+  else if(i==='devV')S.dev[el.dataset.id].v=Number(v);
+  else if(i==='price')S.price=v;
+  else if(i==='aiService')S.aiService=v;
+  else if(i.startsWith('g:'))S.gen[i.slice(2)]=v;
+  render();
+}
+document.addEventListener('input',e=>{if(e.target.tagName!=='SELECT'&&e.target.type!=='radio'&&e.target.type!=='checkbox')onField(e);});
+document.addEventListener('change',e=>{if(e.target.tagName==='SELECT'||e.target.type==='radio'||e.target.type==='checkbox')onField(e);});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){const p=S.p;let hit=true;
+    if(S.preview)A.pvCancel();else if(S.wipe)A.wipeNo();
+    else if(S.screen==='panel'&&p.confirm)A.devCancel();
+    else if(S.screen==='panel'&&p.open){const id=p.open;p.open=null;S.focusNext=`[data-fk="more:${id}"]`;}
+    else if(S.screen==='panel'&&p.remOpen)p.remOpen=false;
+    else if(S.screen==='panel'&&p.search){p.search=false;p.q='';S.focusNext='[data-fk="p-search"]';}
+    else if(S.screen==='settings'&&S.q)A.searchClear();else hit=false;
+    if(hit){e.preventDefault();render();}return;}
+  const t=e.target;
+  if(t.id==='set-q'&&(e.key==='Enter'||e.key==='ArrowDown')&&S.q.trim()){const first=qs('#results .res');if(first){e.preventDefault();if(e.key==='Enter')first.click();else first.focus();}return;}
+  if(t.classList&&t.classList.contains('res')&&(e.key==='ArrowDown'||e.key==='ArrowUp')){e.preventDefault();const s=e.key==='ArrowDown'?t.nextElementSibling:t.previousElementSibling;(s||(e.key==='ArrowUp'?qs('#set-q'):null))?.focus();return;}
+  if(t.classList&&t.classList.contains('tile-main')&&['ArrowRight','ArrowLeft','ArrowDown','ArrowUp'].includes(e.key)){e.preventDefault();const all=[...document.querySelectorAll('button.tile-main')],i=all.indexOf(t),d={ArrowRight:1,ArrowLeft:-1,ArrowDown:2,ArrowUp:-2}[e.key];all[i+d]?.focus();}
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',render);
+render();
+</script>
+</body>
+</html>
