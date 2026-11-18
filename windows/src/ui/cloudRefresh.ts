@@ -798,9 +798,9 @@ export async function adoptRecoveredPrimarySession(
   if (!primary || host.settings.miSession !== null || hasPendingMiVaultDeletion() || !store.hasConfirmedPrimarySession()) {
     return;
   }
-  // The load may have raced a sign-out or another credential write. Only adopt a session that is
-  // still the stored primary; a revision bump alone (home selection etc.) must not drop it.
-  if (!(await store.isPrimarySessionCurrent(primary.session))) return;
+  // The load may have raced a sign-out or another credential write. A confirmed mismatch means the
+  // promoted session is gone; an unavailable verification must not cost the just-promoted credential.
+  if ((await store.checkPrimarySession(primary.session)) === "stale") return;
   host.settings.miSession = primary.session;
   host.settings.miCloudRegion = normalizeMiCloudRegion(primary.region);
 }

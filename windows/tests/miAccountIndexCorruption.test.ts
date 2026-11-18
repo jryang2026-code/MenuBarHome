@@ -389,7 +389,8 @@ describe("Mi account index corruption (#228)", () => {
 
   it("promotes a sole enumerated secondary and adopts it into settings", async () => {
     const storage = memoryStorage();
-    const { invoke, data } = makeCredentialFixture({ supportsSlotScan: true });
+    const failOnGet = new Set<string>();
+    const { invoke, data } = makeCredentialFixture({ supportsSlotScan: true, failOnGet });
     await new CredentialVault(invoke).saveMiAccountSlot(makeMiAccount(SESSION_SG).slotId, SESSION_SG);
     storage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, "{broken");
 
@@ -413,6 +414,15 @@ describe("Mi account index corruption (#228)", () => {
     await adoptRecoveredPrimarySession(existing, store, accounts);
     assert.equal(existing.settings.miSession?.userId, SESSION_PRIMARY.userId);
     assert.equal(existing.settings.miCloudRegion, "cn");
+
+    // A transient verification failure must not drop the session the promotion just wrote.
+    failOnGet.add("mi_session");
+    const unavailable: { settings: { miSession: MiSession | null; miCloudRegion: string } } = {
+      settings: { miSession: null, miCloudRegion: "cn" },
+    };
+    await adoptRecoveredPrimarySession(unavailable, store, accounts);
+    assert.equal(unavailable.settings.miSession?.userId, SESSION_SG.userId);
+    failOnGet.clear();
 
     // A sign-out may delete the promoted credential after load; re-reading prevents restoring it.
     data.delete("mi_session");
