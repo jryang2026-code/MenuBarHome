@@ -92,6 +92,24 @@ extension HomeStore {
         }
     }
 
+    private func canContinueDebouncedResumeRefresh(
+        expectedProviderGeneration: UInt64,
+        expectedProvider: any HomeProvider
+    ) -> Bool {
+        guard !isResumeShutdown,
+              homeBackend != .demo,
+              !isScreenLocked,
+              pollingContext.systemActive,
+              isNetworkSatisfiedForResume,
+              providerGeneration == expectedProviderGeneration else {
+            return false
+        }
+        if type(of: provider) is AnyObject.Type || type(of: expectedProvider) is AnyObject.Type {
+            return (provider as AnyObject) === (expectedProvider as AnyObject)
+        }
+        return true
+    }
+
     private func performDebouncedResumeRefresh(reasons: Set<ResumeReason>) async {
         guard !isResumeShutdown,
               !isPerformingResumeRefresh,
@@ -103,16 +121,28 @@ extension HomeStore {
         }
         isPerformingResumeRefresh = true
         defer { isPerformingResumeRefresh = false }
+        let expectedProviderGeneration = providerGeneration
+        let targetProvider = provider
         if let hook = onDebouncedResumeHook {
             await hook(reasons)
+            guard canContinueDebouncedResumeRefresh(
+                expectedProviderGeneration: expectedProviderGeneration,
+                expectedProvider: targetProvider
+            ) else {
+                return
+            }
         }
-        await provider.refreshNow()
-        if homeBackend != .demo,
-           lgConfig.isEnabled,
-           lgConfig.hasConfiguredHost,
-           let lgClient = lgWebOSClient {
-            await lgClient.start()
+        await targetProvider.refreshNow()
+        guard canContinueDebouncedResumeRefresh(
+            expectedProviderGeneration: expectedProviderGeneration,
+            expectedProvider: targetProvider
+        ),
+        lgConfig.isEnabled,
+        lgConfig.hasConfiguredHost,
+        let lgClient = lgWebOSClient else {
+            return
         }
+        await lgClient.start()
     }
 
     private func cancelResumeAndStoreTasks() -> (
@@ -159,6 +189,8 @@ extension HomeStore {
         scheduledTasks.removeAll()
         scheduledTaskTokens.removeAll()
 
+        readBackTickets.reset()
+        releaseReadBackEcho()
         clearOptimisticLocks()
 
         let currentProvider = provider

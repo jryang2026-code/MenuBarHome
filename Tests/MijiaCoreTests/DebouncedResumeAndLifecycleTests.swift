@@ -243,6 +243,71 @@ struct DebouncedResumeAndLifecycleTests {
         #expect(store.debouncedResumeCoordinator == nil)
     }
 
+    @Test("performDebouncedResumeRefresh skips refresh when shutdown or provider swap happens across await")
+    @MainActor
+    func debouncedResumeRefreshRechecksShutdownAndProviderIdentityAfterAwait() async throws {
+        // 1. Shutdown during await hook skips refreshNow()
+        let shutdownProvider = CountingHomeProvider()
+        let suite1 = "test.resume.hook-shutdown.\(UUID().uuidString)"
+        let store1 = HomeStore(provider: shutdownProvider, defaultsSuiteName: suite1)
+        defer { UserDefaults(suiteName: suite1)?.removePersistentDomain(forName: suite1) }
+        try await store1.waitForTestSnapshot()
+        store1.resumeDebounceInterval = .zero
+        var hookRan1 = false
+        store1.onDebouncedResumeHook = { _ in
+            hookRan1 = true
+            await store1.shutdown()
+        }
+        store1.scheduleDebouncedResume(reason: .systemWake)
+        await store1.flushResumeSync()
+        await waitUntil { hookRan1 && !store1.isPerformingResumeRefresh }
+        #expect(await shutdownProvider.refreshCount == 0, "must not refresh after shutdown during hook await")
+
+        // 2. Provider replacement during await hook skips refreshing old or swapped provider
+        let oldProvider = CountingHomeProvider()
+        let newProvider = CountingHomeProvider()
+        let suite2 = "test.resume.hook-swap.\(UUID().uuidString)"
+        let store2 = HomeStore(provider: oldProvider, defaultsSuiteName: suite2)
+        defer { UserDefaults(suiteName: suite2)?.removePersistentDomain(forName: suite2) }
+        try await store2.waitForTestSnapshot()
+        store2.resumeDebounceInterval = .zero
+        var hookRan2 = false
+        store2.onDebouncedResumeHook = { _ in
+            hookRan2 = true
+            store2.provider = newProvider
+        }
+        store2.scheduleDebouncedResume(reason: .systemWake)
+        await store2.flushResumeSync()
+        await waitUntil { hookRan2 && !store2.isPerformingResumeRefresh }
+        #expect(await oldProvider.refreshCount == 0, "old provider must not refresh after provider identity changed")
+        #expect(await newProvider.refreshCount == 0, "stale resume must not refresh replacement provider")
+
+        // 3. Provider replacement during refreshNow() skips starting LGWebOSClient
+        let gatedProvider = GatedRefreshProvider()
+        let suite3 = "test.resume.refresh-swap.\(UUID().uuidString)"
+        let store3 = HomeStore(provider: gatedProvider, defaultsSuiteName: suite3)
+        defer { UserDefaults(suiteName: suite3)?.removePersistentDomain(forName: suite3) }
+        try await store3.waitForTestSnapshot()
+        store3.resumeDebounceInterval = .zero
+        store3.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.55")
+        let lgClient = LGWebOSClient(
+            config: store3.lgConfig,
+            onDeviceUpdated: { _ in },
+            onClientKeyRegistered: { _ in },
+            onSecurityFailure: { _ in }
+        )
+        store3.lgWebOSClient = lgClient
+
+        store3.scheduleDebouncedResume(reason: .systemWake)
+        await waitUntil { await gatedProvider.enteredRefresh }
+        store3.provider = CountingHomeProvider()
+        await gatedProvider.releaseRefresh()
+        await store3.flushResumeSync()
+        await waitUntil { !store3.isPerformingResumeRefresh }
+        #expect(await lgClient.hasConnectionLoopForTesting == false, "must not start LG client after provider swap during refresh")
+        await lgClient.shutdown()
+    }
+
     // MARK: - Provider & Client Lifecycle Cleanup
 
     @Test("HAWebSocketProvider shutdown is idempotent and invalidates session")
@@ -495,5 +560,43 @@ private actor GatedShutdownProvider: HomeProvider {
         preReleased = true
         waiter?.resume()
         waiter = nil
+    }
+}
+
+private actor GatedRefreshProvider: HomeProvider {
+    private(set) var enteredRefresh = false
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
+
+    nonisolated func events() -> AsyncStream<HomeProviderEvent> {
+        AsyncStream { cont in
+            Task { await self.attach(cont) }
+        }
+    }
+
+    private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        continuation = cont
+        cont.yield(.statusChanged(.connected))
+        cont.yield(.snapshotUpdated(SynthesizedHome(devices: [ScheduledCommandTestSupport.ceiling], scenes: [])))
+    }
+
+    func execute(_ command: DeviceCommand) async throws {}
+
+    func refreshNow() async {
+        enteredRefresh = true
+        await withCheckedContinuation { continuation in
+            waiter = continuation
+        }
+    }
+
+    func releaseRefresh() {
+        waiter?.resume()
+        waiter = nil
+    }
+
+    func shutdown() async {
+        releaseRefresh()
+        continuation?.finish()
+        continuation = nil
     }
 }

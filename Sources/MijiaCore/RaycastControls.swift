@@ -349,7 +349,24 @@ extension HomeStore {
         let matchedPreset = FanSpeedMatcher.match(canonical, in: spec.availablePresetModes)
             ?? (canonical == "sleep" ? FanSpeedMatcher.match("silent", in: spec.availablePresetModes) : nil)
             ?? spec.availablePresetModes.first(where: { $0.localizedCaseInsensitiveContains(canonical) })
-            ?? (canonical == "auto" ? "Auto" : canonical == "sleep" ? "Sleep" : "Favorite")
+        guard let matchedPreset else {
+            if spec.availablePresetModes.isEmpty {
+                return (
+                    true,
+                    L10n.tr(
+                        "\(device.name) 没有可用的风速档位",
+                        "\(device.name) has no preset modes available"
+                    ),
+                    true
+                )
+            }
+            let options = spec.availablePresetModes.prefix(6).joined(separator: ", ")
+            let message = L10n.tr(
+                "\(device.name) 没有「\(modeWord)」档位，可选：\(options)",
+                "\(device.name) has no \"\(modeWord)\" mode; available: \(options)"
+            )
+            return (true, message, true)
+        }
         spec.isOn = true
         spec.presetMode = matchedPreset
         var updated = device
@@ -549,11 +566,9 @@ extension HomeStore {
         guard case .fan(var spec) = device.kind else {
             return (true, L10n.format("%@ 不是风扇或空气净化器", "%@ is not a fan or purifier", device.name), true)
         }
-        guard spec.speedWritable else {
-            return (true, L10n.format("%@ 不支持调节风速", "%@ does not support fan speed", device.name), true)
-        }
         if let percent {
-            guard let change = Self.fanPercentageChange(device, percent: percent) else {
+            guard spec.speedWritable,
+                  let change = Self.fanPercentageChange(device, percent: percent) else {
                 return (true, L10n.format("%@ 不支持调节风速", "%@ does not support fan speed", device.name), true)
             }
             if let refusal = raycastConfirm(.power(true), for: device) { return refusal }
@@ -576,6 +591,16 @@ extension HomeStore {
                     || $0.localizedCaseInsensitiveContains(wanted)
             }
         guard let matched else {
+            if spec.availablePresetModes.isEmpty {
+                return (
+                    true,
+                    L10n.tr(
+                        "\(device.name) 没有可用的风速档位",
+                        "\(device.name) has no preset modes available"
+                    ),
+                    true
+                )
+            }
             let options = spec.availablePresetModes.prefix(6).joined(separator: ", ")
             let message = L10n.tr(
                 "\(device.name) 没有「\(wanted)」档位，可选：\(options)",

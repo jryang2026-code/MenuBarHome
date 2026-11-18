@@ -555,20 +555,21 @@ struct ManualControlPolicyTests {
         }
 
         // External callers (`offersSwitchLightMark: false`) keep confirmation without offering the mark button.
-        _ = store.togglePrimary(device, offersSwitchLightMark: false)
-        await waitUntil { await provider.executedCommands.count == 1 }
+        // Each toggle is awaited: a tap made while the previous read-back is running is dropped.
+        _ = await store.togglePrimary(device, offersSwitchLightMark: false)?.value
+        #expect(await provider.executedCommands.count == 1)
         #expect(prompts.count == 1)
         #expect(prompts[0].markAsLight == nil)
         #expect(prompts[0].hint?.contains("加上「灯」") == true)
 
         // Reset back to off so the next power-on toggle hits the hazard gate again.
-        _ = store.togglePrimary(device)
-        await waitUntil { await provider.executedCommands.count == 2 }
+        _ = await store.togglePrimary(device)?.value
+        #expect(await provider.executedCommands.count == 2)
         let refreshed = try #require(store.devices.first { $0.id == wall.id })
 
         // Card primary power (`offersSwitchLightMark: true`) offers the «this is a light» entry.
-        _ = store.togglePrimary(refreshed)
-        await waitUntil { await provider.executedCommands.count == 3 }
+        _ = await store.togglePrimary(refreshed)?.value
+        #expect(await provider.executedCommands.count == 3)
         #expect(prompts.count == 2)
         #expect(prompts[1].markAsLight?.deviceId == wall.id)
 
@@ -577,10 +578,10 @@ struct ManualControlPolicyTests {
         #expect(store.isSwitchMarkedAsLight(wall.id))
         await waitUntil { (try? readSnapshotHighRisk(wall.id)) == false }
 
-        _ = store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))
-        await waitUntil { await provider.executedCommands.count == 4 }
-        _ = store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))
-        await waitUntil { await provider.executedCommands.count == 5 }
+        _ = await store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))?.value
+        #expect(await provider.executedCommands.count == 4)
+        _ = await store.togglePrimary(try #require(store.devices.first { $0.id == wall.id }))?.value
+        #expect(await provider.executedCommands.count == 5)
         #expect(prompts.count == 2, "the marked wall switch no longer asks")
 
         // Unmarking restores both the confirmation and `isHighRisk: true` in the Raycast snapshot.

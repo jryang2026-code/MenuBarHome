@@ -159,10 +159,13 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   settings: {
     connectionMode: string;
     miSession: unknown;
+    assistantBaseURL: string;
+    cloudConsentEndpoints: string[];
   };
   activeSheet: string;
   isSyncingCloud: boolean;
   isPollingQR: boolean;
+  isRefreshingProactive: boolean;
   lastCloudRefreshAt: number | null;
   cloudValuesStale: boolean;
   haConnectionError: string | null;
@@ -177,6 +180,7 @@ interface MockLifecycleHost extends ResumeRecoveryHost {
   renderCalls: number;
   backgroundRenderCalls: number;
   panelVisible: boolean;
+  apiKeyFor(baseURL: string): string;
   isPanelVisible(): boolean;
   refreshDevices(silent?: boolean): Promise<void>;
   render(): void;
@@ -190,10 +194,13 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
     settings: {
       connectionMode: "xiaomiCloud",
       miSession: { userId: "123456", serviceToken: "tok", ssecurity: "sec", region: "cn" },
+      assistantBaseURL: "https://openrouter.ai/api/v1",
+      cloudConsentEndpoints: [],
     },
     activeSheet: "none",
     isSyncingCloud: false,
     isPollingQR: false,
+    isRefreshingProactive: false,
     lastCloudRefreshAt: null,
     cloudValuesStale: false,
     haConnectionError: null,
@@ -206,6 +213,9 @@ function createMockHost(overrides: Partial<MockLifecycleHost> = {}): MockLifecyc
     renderCalls: 0,
     backgroundRenderCalls: 0,
     panelVisible: true,
+    apiKeyFor() {
+      return "";
+    },
     isPanelVisible() {
       return host.panelVisible;
     },
@@ -445,7 +455,12 @@ describe("ResumeRecoveryController deterministic lifecycle hardening", () => {
     assert.deepEqual(cloudHost.refreshCalls, [true]);
 
     const haHost = createMockHost({
-      settings: { connectionMode: "homeAssistant", miSession: null },
+      settings: {
+        connectionMode: "homeAssistant",
+        miSession: null,
+        assistantBaseURL: "https://openrouter.ai/api/v1",
+        cloudConsentEndpoints: [],
+      },
       lastCloudRefreshAt: 9_800,
       cloudValuesStale: true,
     });
@@ -735,4 +750,255 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       Date.now = realDateNow;
     }
   });
+
+  it("skips optional tick branches (proactive, cloud refresh, system context poll) without consumers, parses rules once per tick, and clears baseline on disable or stop", async () => {
+    const { canRefreshDevicesInBackground } = await import("../src/ui/appLifecycle.js");
+    const { proactiveHasConsumer } = await import("../src/ui/proactive.js");
+    const { systemSignalNeed } = await import("../src/ui/systemContextPoll.js");
+    const { createAutomationRule } = await import("../src/core/automationEngine.js");
+    const { getHostActivityCenter } = await import("../src/ui/activityStackView.js");
+
+    dom = mountTestWindow({ stubInterval: true });
+    installCssEscape();
+    setLanguage("zh-Hans");
+
+    const scheduler = new FakeLifecycleScheduler(100_000);
+    const realDateNow = Date.now;
+    Date.now = () => scheduler.now();
+    const nativeCalls: string[] = [];
+    let locked = false;
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string) => {
+          nativeCalls.push(cmd);
+          if (cmd === "is_workstation_locked") return locked;
+          if (cmd === "system_power_status") {
+            return { hasBattery: true, onExternalPower: true, batteryPercent: 85 };
+          }
+          if (cmd === "external_display_count") return 1;
+          if (cmd === "wifi_current") return { state: "connected", ssid: "Home_5G" };
+          return undefined;
+        },
+      },
+    });
+
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        connectionMode: "demo",
+        hasCompletedOnboarding: true,
+        interfaceLanguage: "zh-Hans",
+      }),
+    );
+    const app = new MenuMijiaWindowsApp(document.querySelector("#app")!);
+    let proactiveCalls = 0;
+    let refreshCalls = 0;
+    const origProactive = app.maybeRefreshProactiveInBackground.bind(app);
+    app.maybeRefreshProactiveInBackground = () => {
+      proactiveCalls += 1;
+      origProactive();
+    };
+    app.refreshDevices = async () => {
+      refreshCalls += 1;
+      app.lastCloudRefreshAt = scheduler.now();
+    };
+
+    const center = getHostActivityCenter(app);
+    center.automationEngine.store.save([]);
+    const origLoad = center.automationEngine.store.load.bind(center.automationEngine.store);
+    let storeLoadCalls = 0;
+    center.automationEngine.store.load = () => {
+      storeLoadCalls += 1;
+      return origLoad();
+    };
+
+    // 1) No optional consumers: demo mode, no AI key/consent, no power/display rules.
+    assert.equal(proactiveHasConsumer(app), false);
+    assert.equal(canRefreshDevicesInBackground(app), false);
+    assert.deepEqual(systemSignalNeed([]), { power: false, externalDisplayCount: false });
+
+    const stopLoop = startTimerLoop(app, { scheduler, intervalMs: 1000 });
+    assert.equal(scheduler.activeIntervalCount, 1, "only the shared 1s interval is created");
+    assert.equal(scheduler.activeTimeoutCount, 0, "zero extra timeouts created");
+
+    // Must-run branch: Undo expiry and scheduled command must still fire even with zero optional consumers.
+    app.lastUndoAction = {
+      summary: "测试撤销",
+      steps: [],
+      expiresAtMs: scheduler.now() + 1_500,
+    };
+    app.scheduledCommands = [
+      {
+        id: "sched-1",
+        command: "关闭书房灯",
+        intents: [],
+        delaySeconds: 2,
+        fireTimestampMs: scheduler.now() + 2_000,
+        reply: "已定时关闭书房灯",
+      },
+    ];
+    let ranScheduled = 0;
+    app.runScheduledCommand = async () => {
+      ranScheduled += 1;
+    };
+
+    storeLoadCalls = 0;
+    scheduler.advanceBy(1_000);
+    assert.equal(storeLoadCalls, 1, "idle tick parses the automation rule store only once");
+
+    scheduler.advanceBy(2_000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(proactiveCalls, 0, "proactive branch zero calls when no consumer");
+    assert.equal(refreshCalls, 0, "cloud refresh branch zero calls in demo mode");
+    assert.equal(
+      nativeCalls.filter((c) => c === "system_power_status" || c === "external_display_count").length,
+      0,
+      "system context poll zero calls when no power/display rules enabled",
+    );
+    assert.equal(app.lastUndoAction, null, "must-run Undo expiry still triggers");
+    assert.equal(ranScheduled, 1, "must-run scheduled command still fires");
+    assert.equal(scheduler.activeIntervalCount, 1, "no extra intervals leaked");
+    assert.equal(scheduler.activeTimeoutCount, 0, "no extra timeouts leaked");
+
+    // 2) Mount consumers on demand: enable cloud source, AI consent+key, and power automation rule.
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = {
+      userId: "10001",
+      cUserId: "",
+      serviceToken: "tok",
+      ssecurity: "sec",
+      passToken: "",
+      region: "cn",
+    };
+    app.lastCloudRefreshAt = 0;
+    app.settings.assistantBaseURL = "http://127.0.0.1:11434/v1";
+    const powerRule = createAutomationRule({
+      id: "rule-power",
+      trigger: "powerConnected",
+      action: { kind: "devices", deviceIds: ["light.desk"], isOn: false },
+    });
+    center.automationEngine.store.save([powerRule]);
+
+    assert.equal(proactiveHasConsumer(app), true);
+    assert.equal(canRefreshDevicesInBackground(app), true);
+    assert.deepEqual(systemSignalNeed([powerRule]), { power: true, externalDisplayCount: false });
+
+    // The poll reuses the tick's rules; only the engine's own dispatch may read the store again.
+    storeLoadCalls = 0;
+    scheduler.advanceBy(1_000);
+    assert.ok(storeLoadCalls <= 2, "poll-due tick adds no rule-store read beyond the engine dispatch");
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+
+    assert.equal(proactiveCalls, 1, "proactive branch runs once mounted");
+    assert.equal(refreshCalls, 1, "cloud refresh branch runs once mounted");
+    assert.equal(
+      nativeCalls.filter((c) => c === "system_power_status").length,
+      1,
+      "system context poll samples power once power rule is enabled",
+    );
+    assert.ok(
+      nativeCalls.includes("is_workstation_locked"),
+      "must-run lock sampling runs when automation rules are enabled",
+    );
+    assert.notEqual(center.systemSignalBaseline, null, "system poll populates baseline");
+
+    // 3) Unmount optional consumers: disable power rule, switch back to unconsented cloud AI without key,
+    // and open settings sheet so background device refresh unmounts while live snapshot stays active.
+    // Meanwhile enable a non-power/display rule (screenLocked) and trigger a low-battery safety alert
+    // to prove must-run branches (lock state, automation rules, safety alerts, undo expiry) keep firing.
+    app.settings.assistantBaseURL = "https://openrouter.ai/api/v1";
+    app.settings.openRouterApiKey = "";
+    app.settings.cloudConsentEndpoints = [];
+    app.activeSheet = "settings";
+    const targetDeviceId = app.devices[0]?.id ?? "light.desk";
+    const lockRule = createAutomationRule({
+      id: "rule-lock",
+      trigger: "screenLocked",
+      action: { kind: "devices", deviceIds: [targetDeviceId], isOn: false },
+    });
+    center.automationEngine.store.save([{ ...powerRule, isEnabled: false }, lockRule]);
+    app.devices = [
+      ...app.devices,
+      {
+        id: "sensor.study_th",
+        name: "书房温湿度计",
+        roomId: "room_study",
+        roomName: "书房",
+        model: "miaomiaoce.sensor_ht.t2",
+        isOnline: true,
+        kind: {
+          kind: "sensor",
+          temperature: 24,
+          humidity: 50,
+          battery: 10,
+        },
+      },
+    ];
+    let appliedCommands = 0;
+    app.applyCommand = async () => {
+      appliedCommands += 1;
+      return true;
+    };
+
+    assert.equal(proactiveHasConsumer(app), false);
+    assert.equal(canRefreshDevicesInBackground(app), false);
+
+    const prevProactiveCalls = proactiveCalls;
+    const prevRefreshCalls = refreshCalls;
+    const prevPowerCalls = nativeCalls.filter((c) => c === "system_power_status").length;
+
+    app.lastUndoAction = {
+      summary: "卸载后撤销",
+      steps: [],
+      expiresAtMs: scheduler.now() + 500,
+    };
+
+    // Prime unlocked baseline on first tick (expiring manual undo at +500ms and evaluating lowBattery safety alert),
+    // then flip to locked so the screenLocked automation rule fires after the 2s AwayArbitrator debounce.
+    storeLoadCalls = 0;
+    scheduler.advanceBy(1_000);
+    assert.ok(storeLoadCalls <= 2, "active rule tick adds no rule-store read beyond the engine dispatch");
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    assert.equal(app.lastUndoAction, null, "must-run Undo expiry continues working after unmount");
+    assert.ok(
+      center.recentSafetyAlerts.some((entry) => entry.alert.category === "lowBattery"),
+      "must-run safety alert evaluation still triggers lowBattery alert",
+    );
+    locked = true;
+
+    for (let step = 0; step < 15; step += 1) {
+      scheduler.advanceBy(1_000);
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    }
+
+    assert.equal(proactiveCalls, prevProactiveCalls, "proactive branch stops immediately after consumer unmounts");
+    assert.equal(refreshCalls, prevRefreshCalls, "cloud refresh stops immediately after consumer unmounts");
+    assert.equal(
+      nativeCalls.filter((c) => c === "system_power_status").length,
+      prevPowerCalls,
+      "system context poll stops immediately after power rule disables",
+    );
+    assert.equal(center.systemSignalBaseline, null, "disabling power/display rules clears cached signal baseline");
+    assert.equal(center.lastSystemPollAtMs, 0, "disabling power/display rules resets poll timestamp");
+    assert.ok(appliedCommands >= 1, "must-run lock state & screenLocked automation rule still fire");
+
+    // 4) Re-enable power rule to repopulate baseline, then verify stopping the timer clears baseline & timers.
+    center.automationEngine.store.save([powerRule]);
+    scheduler.advanceBy(1_000);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    assert.notEqual(center.systemSignalBaseline, null);
+    assert.ok(center.lastSystemPollAtMs > 0);
+
+    stopLoop();
+    assert.equal(center.systemSignalBaseline, null, "stopping timer loop clears cached signal baseline");
+    assert.equal(center.lastSystemPollAtMs, 0, "stopping timer loop resets poll timestamp");
+    Date.now = realDateNow;
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+  });
 });
+
