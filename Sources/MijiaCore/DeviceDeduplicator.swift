@@ -21,16 +21,20 @@ public struct DeviceMergeResult: Equatable, Sendable {
     public var rooms: RoomIdentityRegistry
     /// Home Assistant device id → the merged card id, whichever source won the card.
     public var haCanonicalIDs: [String: String]
+    /// Mi cloud device did → the merged card id, whichever source won the card (#23).
+    public var miCanonicalIDs: [String: String]
 
     public init(
         home: SynthesizedHome,
         routes: [String: DeviceMergeRoute],
         canonical: CanonicalDeviceRegistry,
         rooms: RoomIdentityRegistry,
-        haCanonicalIDs: [String: String] = [:]
+        haCanonicalIDs: [String: String] = [:],
+        miCanonicalIDs: [String: String] = [:]
     ) {
         self.home = home
         self.haCanonicalIDs = haCanonicalIDs
+        self.miCanonicalIDs = miCanonicalIDs
         self.routes = routes
         self.canonical = canonical
         self.rooms = rooms
@@ -405,7 +409,8 @@ public enum DeviceDeduplicator {
             routes: routes,
             canonical: updatedCanonical,
             rooms: updatedRooms,
-            haCanonicalIDs: haCanonicalIDs
+            haCanonicalIDs: haCanonicalIDs,
+            miCanonicalIDs: miCanonicalIDs
         )
     }
 

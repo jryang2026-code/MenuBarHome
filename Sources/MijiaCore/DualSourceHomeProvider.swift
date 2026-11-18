@@ -28,7 +28,17 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var rooms = RoomIdentityRegistry()
     private var routes: [String: DeviceMergeRoute] = [:]
     private var haCanonicalIDs: [String: String] = [:]
+    private var miCanonicalIDs: [String: String] = [:]
     private var activeCameraRoutes: [String: DeviceMergeRoute] = [:]
+    /// Merged card id → the latest press time each backend reported. A press the two sources
+    /// both report counts once (#23).
+    private var doorbellPressesByCard: [String: [HomeBackend: Date]] = [:]
+
+    /// A doorbell press the two sources both report within this window counts once (#23). Both
+    /// timestamps come from the device's own event clock, so cross-source skew stays far under
+    /// the window; a human double-press (plus the doorbell's own debounce) spans well over it.
+    /// The window is a fixed constant, so the boundary is deterministic and testable.
+    static let crossSourceDoorbellDedupWindow: TimeInterval = 2
 
     var isShutDownForTesting: Bool { isShutDown }
 
@@ -172,8 +182,21 @@ public actor DualSourceHomeProvider: HomeProvider {
             continuation?.yield(.sessionExpired(session))
 
         case .doorbellRang(var ring):
-            if backend == .homeAssistant, let cardID = haCanonicalIDs[ring.deviceId] {
+            // Both sources report presses with their own device id; translate onto the merged
+            // card so the paired card's popup and the activity feed can find it (#23).
+            let sourceCanonicalIDs = backend == .homeAssistant ? haCanonicalIDs : miCanonicalIDs
+            if let cardID = sourceCanonicalIDs[ring.deviceId] {
                 ring.deviceId = cardID
+            }
+            // The same physical press can arrive from both sources with different entity ids
+            // and slightly different timestamps. Yield it once.
+            if let firedAt = ring.firedAtDate {
+                if isCrossSourceDuplicateDoorbellPress(of: ring.deviceId, from: backend, at: firedAt) {
+                    return
+                }
+                var presses = doorbellPressesByCard[ring.deviceId] ?? [:]
+                presses[backend] = firedAt
+                doorbellPressesByCard[ring.deviceId] = presses
             }
             continuation?.yield(.doorbellRang(ring))
 
@@ -205,6 +228,16 @@ public actor DualSourceHomeProvider: HomeProvider {
         emitStatus()
         emitSourceStatuses()
         recompute()
+    }
+
+    /// True when the other backend already reported this card's press within the dedupe window
+    /// (#23). Suppressed presses are not recorded, so a genuine later press from either source
+    /// still rings; only the already-yielded press's timestamp is remembered.
+    private func isCrossSourceDuplicateDoorbellPress(of cardID: String, from backend: HomeBackend, at firedAt: Date) -> Bool {
+        guard backend == .homeAssistant || backend == .xiaomiCloud else { return false }
+        let otherBackend: HomeBackend = backend == .homeAssistant ? .xiaomiCloud : .homeAssistant
+        guard let other = doorbellPressesByCard[cardID]?[otherBackend] else { return false }
+        return abs(firedAt.timeIntervalSince(other)) <= Self.crossSourceDoorbellDedupWindow
     }
 
     private func emitStatus(force: Bool = false) {
@@ -260,6 +293,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         rooms = result.rooms
         routes = result.routes
         haCanonicalIDs = result.haCanonicalIDs
+        miCanonicalIDs = result.miCanonicalIDs
         for (deviceID, activeRoute) in activeCameraRoutes {
             let nextRoute = result.routes[deviceID]
             if nextRoute?.backend != activeRoute.backend || nextRoute?.sourceDeviceID != activeRoute.sourceDeviceID {
