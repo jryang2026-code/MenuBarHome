@@ -178,6 +178,7 @@ describe("Mi Cloud empty success is a control failure, not a success", () => {
       { code: "bad", out: ["x"] },
       { did: "lamp-1", siid: 2, aiid: 1, out: [] },
       { message: "offline" },
+      { message: "see https://example.com/help" },
     ]) {
       await assert.rejects(
         () => new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call),

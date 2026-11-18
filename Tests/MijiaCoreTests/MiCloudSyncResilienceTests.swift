@@ -124,6 +124,7 @@ struct MiCloudSyncResilienceTests {
         for result in [
             "null", "{}", "[]", #"{"out":[]}"#, #"[{"out":[]}]"#, #"{"code":"bad","out":["x"]}"#,
             #"{"did":"123","siid":2,"aiid":1,"out":[]}"#, #"{"message":"offline"}"#,
+            #"{"message":"see https://example.com/help"}"#,
         ] {
             await #expect(throws: noVerdict) {
                 _ = try await client(result: result).callAction(call)

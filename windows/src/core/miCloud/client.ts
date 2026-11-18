@@ -745,7 +745,17 @@ export class MiCloudClient {
     if (fields["code"] !== undefined) return false;
     const out = fields["out"];
     if (Array.isArray(out) && out.length > 0) return true;
-    return /https?:\/\//i.test(JSON.stringify(fields));
+    return MiCloudClient.containsStreamUrl(fields);
+  }
+
+  /** Matches macOS `extractStreamURL`: a value must itself be a URL, not text that mentions one. */
+  private static containsStreamUrl(value: unknown): boolean {
+    if (typeof value === "string") return /^https?:\/\//i.test(value.trim());
+    if (Array.isArray(value)) return value.some((item) => MiCloudClient.containsStreamUrl(item));
+    if (value && typeof value === "object") {
+      return Object.values(value).some((item) => MiCloudClient.containsStreamUrl(item));
+    }
+    return false;
   }
 
   /** Throws unless `item` carries an integer MIoT code; a negative code is the device's verdict. */
