@@ -80,6 +80,7 @@ public actor MiCloudProvider: HomeProvider {
     private var cloudBackoffSeconds: Double = 2
     private var lastCloudError: (any Error)?
     private var lanSucceededDids: Set<String> = []
+    private var lanTransportSucceededDids: Set<String> = []
     private var everObservedPropDids: Set<String> = []
     private var hasLiveTopologyRefresh = false
 
@@ -421,6 +422,7 @@ public actor MiCloudProvider: HomeProvider {
         }
         lastSavedTopology = nil
         lanSucceededDids.removeAll()
+        lanTransportSucceededDids.removeAll()
         everObservedPropDids.removeAll()
         cloudRetryNotBefore = nil
         lastCloudError = nil
@@ -699,6 +701,7 @@ public actor MiCloudProvider: HomeProvider {
         let values: [MiotPropKey: JSONValue]
         let completedKeys: [MiotPropKey]
         let lanSucceededDids: Set<String>
+        let lanTransportSucceededDids: Set<String>
         let cloudError: (any Error)?
     }
 
@@ -727,9 +730,12 @@ public actor MiCloudProvider: HomeProvider {
             let outcome = try await fetchPropsHybrid(api: api, keys: keys, scopedDevices: scopedDevices)
             if dids == nil {
                 lanSucceededDids = outcome.lanSucceededDids
+                lanTransportSucceededDids = outcome.lanTransportSucceededDids
             } else if let dids {
                 lanSucceededDids.subtract(dids)
                 lanSucceededDids.formUnion(outcome.lanSucceededDids)
+                lanTransportSucceededDids.subtract(dids)
+                lanTransportSucceededDids.formUnion(outcome.lanTransportSucceededDids)
             }
             freshKeys = Set(outcome.values.keys)
             everObservedPropDids.formUnion(outcome.values.keys.map(\.did))
@@ -759,6 +765,7 @@ public actor MiCloudProvider: HomeProvider {
             }
         } else if dids == nil {
             lanSucceededDids = []
+            lanTransportSucceededDids = []
         }
         if dids == nil,
            lanSucceededDids.isEmpty,
@@ -803,6 +810,7 @@ public actor MiCloudProvider: HomeProvider {
                     values: cloudValues,
                     completedKeys: keys,
                     lanSucceededDids: [],
+                    lanTransportSucceededDids: [],
                     cloudError: nil
                 )
             } catch is CancellationError {
@@ -839,6 +847,7 @@ public actor MiCloudProvider: HomeProvider {
         var combined: [MiotPropKey: JSONValue] = [:]
         var lanAnsweredKeys: [MiotPropKey] = []
         var pollLanSucceededDids: Set<String> = []
+        var pollLanTransportSucceededDids: Set<String> = []
         if !lanKeysByDid.isEmpty {
             struct LANPollResult: Sendable {
                 let did: String
@@ -876,7 +885,10 @@ public actor MiCloudProvider: HomeProvider {
                 } else if let resultValues = outcome.values {
                     let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
                     recordLANSuccess(did: outcome.did, rttMs: outcome.rttMs)
-                    pollLanSucceededDids.insert(outcome.did)
+                    pollLanTransportSucceededDids.insert(outcome.did)
+                    if !resultValues.isEmpty || outcome.keys.isEmpty {
+                        pollLanSucceededDids.insert(outcome.did)
+                    }
                     if !resultValues.isEmpty { combined.merge(resultValues) { _, new in new } }
                     // Even an all-nonzero reply completed the read attempt; keep its keys in
                     // completedKeys so failed cloud fallback still clears stale door-state claims.
@@ -905,7 +917,11 @@ public actor MiCloudProvider: HomeProvider {
                                 do {
                                     let retryValues = try await localClient.getProps(outcome.keys, endpoint: endpoint)
                                     recordLANSuccess(did: outcome.did, rttMs: await localClient.lastRoundTripMs(for: outcome.did))
-                                    pollLanSucceededDids.insert(outcome.did); recoveredDids.insert(outcome.did)
+                                    pollLanTransportSucceededDids.insert(outcome.did)
+                                    if !retryValues.isEmpty || outcome.keys.isEmpty {
+                                        pollLanSucceededDids.insert(outcome.did)
+                                    }
+                                    recoveredDids.insert(outcome.did)
                                     if !retryValues.isEmpty { combined.merge(retryValues) { _, new in new } }
                                     lanAnsweredKeys.append(contentsOf: outcome.keys)
                                     cloudKeys.append(contentsOf: outcome.keys.filter { retryValues[$0] == nil })
@@ -943,6 +959,7 @@ public actor MiCloudProvider: HomeProvider {
                         values: combined,
                         completedKeys: lanAnsweredKeys,
                         lanSucceededDids: pollLanSucceededDids,
+                        lanTransportSucceededDids: pollLanTransportSucceededDids,
                         cloudError: error
                     )
                 }
@@ -956,6 +973,7 @@ public actor MiCloudProvider: HomeProvider {
                     values: combined,
                     completedKeys: lanAnsweredKeys,
                     lanSucceededDids: pollLanSucceededDids,
+                    lanTransportSucceededDids: pollLanTransportSucceededDids,
                     cloudError: lastCloudError
                 )
             }
@@ -964,6 +982,7 @@ public actor MiCloudProvider: HomeProvider {
             values: combined,
             completedKeys: keys,
             lanSucceededDids: pollLanSucceededDids,
+            lanTransportSucceededDids: pollLanTransportSucceededDids,
             cloudError: nil
         )
     }
@@ -1055,7 +1074,7 @@ public actor MiCloudProvider: HomeProvider {
     private func recordLANSuccess(did: String, rttMs: Int? = nil) {
         let quantized = rttMs.map(DeviceTransportDiagnostics.quantizeRTT) ?? lanHealthByDid[did]?.lastRTTMs
         lanHealthByDid[did] = LANHealthState(consecutiveFailures: 0, cooldownUntil: nil, lastRTTMs: quantized, lastErrorWasLocalNetworkDenied: false)
-        lanSucceededDids.insert(did)
+        lanTransportSucceededDids.insert(did)
         if isLocalNetworkDenied { updateLocalNetworkDenied(false) }
     }
 
@@ -1071,6 +1090,7 @@ public actor MiCloudProvider: HomeProvider {
         }
         lanHealthByDid[did] = state
         lanSucceededDids.remove(did)
+        lanTransportSucceededDids.remove(did)
     }
 
     // MARK: - MIoT Doorbell Event Bridging
@@ -1263,7 +1283,7 @@ public actor MiCloudProvider: HomeProvider {
             let health = lanHealthByDid[primaryMiotDid]
             let route: DeviceTransportRoute = if health?.lastErrorWasLocalNetworkDenied == true { .localNetworkBlocked }
                 else if let cooldownUntil = health?.cooldownUntil, currentNow < cooldownUntil { .cooldown }
-                else if candidateDids.contains(where: { lanSucceededDids.contains($0) }) { .lan }
+                else if candidateDids.contains(where: { lanTransportSucceededDids.contains($0) }) { .lan }
                 else { .cloud }
             home.deviceTransportDiagnostics[home.devices[i].id] = DeviceTransportDiagnostics(
                 route: route, rttMs: route == .lan ? health?.lastRTTMs : nil,

@@ -2867,6 +2867,88 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.shutdown()
     }
+
+    @Test("All-nonzero LAN reply during cloud failure records LAN route health but leaves telemetryStale true")
+    func allNonzeroLANReplyDuringCloudFailurePreservesLANRouteWithoutValidatingStaleTelemetry() async throws {
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let secondDeviceAllNonzero = LockedBox(false)
+
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            if packet == MiIOPacket.helloPacket {
+                let deviceId: UInt32 = (host == "192.168.1.51") ? 102 : 101
+                return makeHelloResponse(deviceId: deviceId, stamp: 10)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let req = try JSONDecoder().decode(JSONValue.self, from: plaintext)
+            let reqId = req["id"]?.intValue ?? 0
+            let reply: String
+            if host == "192.168.1.51" && secondDeviceAllNonzero.withValue({ $0 }) {
+                reply = #"{"id":\#(reqId),"result":[{"did":"102","siid":2,"piid":1,"code":-4004},{"did":"102","siid":2,"piid":2,"code":-4004}]}"#
+            } else {
+                let did = (host == "192.168.1.51") ? "102" : "101"
+                let br = (did == "102") ? 45 : 65
+                reply = #"{"id":\#(reqId),"result":[{"did":"\#(did)","siid":2,"piid":1,"value":true,"code":0},{"did":"\#(did)","siid":2,"piid":2,"value":\#(br),"code":0}]}"#
+            }
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let localClient = LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() })
+        let bulb1 = MiDeviceRecord(did: "101", name: "Healthy Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.50", token: tokenHex, isShared: false)
+        let bulb2 = MiDeviceRecord(did: "102", name: "Error Code Bulb", model: "yeelink.light.color4", isOnline: true, localIp: "192.168.1.51", token: tokenHex, isShared: false)
+        let api = HybridMockCloudAPI(
+            devices: [bulb1, bulb2],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "102"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(65),
+                MiotPropKey(did: "102", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "102", siid: 2, piid: 2): .number(45),
+            ]
+        )
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()]),
+            localClient: localClient,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let stream = provider.events()
+        let task = Task {
+            for await event in stream {
+                await collector.append(event)
+            }
+            await collector.finish()
+        }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.snapshots.last?.devices.count == 2 })
+
+        secondDeviceAllNonzero.withValue { $0 = true }
+        await api.setGetPropsError(MiCloudError.http(429))
+        await provider.refreshNow()
+
+        #expect(await collector.wait {
+            guard let snap = $0.snapshots.last,
+                  let second = snap.devices.first(where: { $0.id == "102" }) else { return false }
+            return !snap.closesAwayGap && second.telemetryStale
+        })
+        let snap = try #require(await collector.snapshots.last)
+        let first = try #require(snap.devices.first { $0.id == "101" })
+        let second = try #require(snap.devices.first { $0.id == "102" })
+        #expect(first.telemetryStale == false)
+        #expect(snap.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(second.telemetryStale == true)
+        #expect(snap.deviceTransportDiagnostics["102"]?.route == .lan)
+        #expect(snap.deviceTransportDiagnostics["102"]?.consecutiveFailures == 0)
+
+        await provider.shutdown()
+    }
 }
 
 private func lightBrightness(_ device: SmartDevice?) -> Int? {
