@@ -44,12 +44,13 @@ extension HomeStore {
             }
             return
         }
+        var previousStaged: VerifiedStagedApp?
         switch updateState {
         case .checking, .downloading, .verifying, .installing:
             return
         case .readyToRelaunch(let staged):
             if !userInitiated { return }
-            updater.cleanupStagedApp(staged)
+            previousStaged = staged
         case .idle, .upToDate, .available, .failed:
             break
         }
@@ -60,17 +61,40 @@ extension HomeStore {
             guard case .checking = updateState else { return }
             lastUpdateCheckDate = now
             if let release {
-                updateState = .available(release)
+                if let previousStaged,
+                   Self.matchesStagedRelease(release, staged: previousStaged),
+                   FileManager.default.fileExists(atPath: previousStaged.stagingRootURL.path) {
+                    updateState = .readyToRelaunch(previousStaged)
+                } else {
+                    if let previousStaged {
+                        updater.cleanupStagedApp(previousStaged)
+                    }
+                    updateState = .available(release)
+                }
             } else {
+                if let previousStaged {
+                    updater.cleanupStagedApp(previousStaged)
+                }
                 updateState = .upToDate(checkedAt: now)
             }
         } catch is CancellationError {
             if case .checking = updateState {
-                updateState = .idle
+                if let previousStaged,
+                   FileManager.default.fileExists(atPath: previousStaged.stagingRootURL.path) {
+                    updateState = .readyToRelaunch(previousStaged)
+                } else {
+                    updateState = .idle
+                }
             }
         } catch {
             guard case .checking = updateState else { return }
-            if userInitiated {
+            if let previousStaged,
+               FileManager.default.fileExists(atPath: previousStaged.stagingRootURL.path) {
+                updateState = .readyToRelaunch(previousStaged)
+                if userInitiated {
+                    showToast(error.localizedDescription)
+                }
+            } else if userInitiated {
                 // The check itself failed; checking again is the only useful next step.
                 updateState = .failed(
                     AppUpdateFailure(
@@ -83,6 +107,13 @@ extension HomeStore {
                 updateState = .idle
             }
         }
+    }
+
+    private static func matchesStagedRelease(_ release: AppRelease, staged: VerifiedStagedApp) -> Bool {
+        if let latest = AppVersion(release.version), let stagedVersion = AppVersion(staged.release.version) {
+            return latest == stagedVersion
+        }
+        return release.version == staged.release.version
     }
 
     public func startUpdateInstallation() async {
@@ -197,22 +228,31 @@ extension HomeStore {
 
     /// Covers the case where the swap never terminates this process.
     ///
-    /// The detached script waits at most 15 s for the app to exit; this fires after that. If we are
-    /// still alive, the update did not land, so the state must stop claiming "正在重启…" forever and
-    /// the user must be able to try again. `nil` freezes the watchdog for tests.
+    /// The detached script waits at most 15 s for the app to exit, but on a busy system 150 polls
+    /// or the bundle move can run past the nominal window. The watchdog therefore waits while the
+    /// swap process is still alive before cleaning up staging and reporting that this process did
+    /// not exit in time. `nil` freezes the watchdog for tests.
     private func scheduleRelaunchWatchdog(for staged: VerifiedStagedApp) {
         updateRelaunchWatchdogTask?.cancel()
         guard let interval = updateRelaunchWatchdogInterval else { return }
         updateRelaunchWatchdogTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: interval)
-            guard let self, !Task.isCancelled, self.isInstallingUpdate else { return }
+            while let self, !Task.isCancelled, self.isInstallingUpdate,
+                  self.updater.isSwapProcessRunning(for: staged) {
+                try? await Task.sleep(for: interval)
+            }
+            guard let self, !Task.isCancelled,
+                  case .installing(let installingRelease) = self.updateState,
+                  installingRelease == staged.release else {
+                return
+            }
             self.updater.cleanupStagedApp(staged)
             self.updateState = .failed(
                 AppUpdateFailure(
                     release: staged.release,
                     message: L10n.tr(
-                        "替换后的应用没有自动启动，请重试或手动下载安装",
-                        "The replaced app did not start; retry or install manually"
+                        "应用未能及时退出以完成替换，请重试或手动下载安装",
+                        "The app did not exit in time to complete the update; retry or install manually"
                     ),
                     recovery: .retryInstall
                 )

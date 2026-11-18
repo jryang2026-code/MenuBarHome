@@ -3,6 +3,13 @@ name: Snapshot Guard
 # 独立工作流：改动只在面板渲染源码、却没刷新 UI 快照基线时失败。
 # 单独成流的原因：标签变更（labeled / unlabeled）只重跑这条几秒钟的检查，
 # 不会连带重跑 CI 里的 macOS 构建与 Windows 安装包。
+#
+# workflow_dispatch 供 Record snapshots 在推完基线后重评指定 PR：
+# GITHUB_TOKEN 的推送不会触发 pull_request 工作流，PR 上的 snapshot-baselines
+# 检查会停在旧头提交上，靠这里按 PR 号手动补跑。派发带 --ref 目标分支，运行的
+# 是分支上的本文件（pull_request 事件跑的也是 PR 合并提交里的工作流定义，同一
+# 信任面），运行的头提交就是 PR 头提交，检查运行直接落在 PR 上；head/base
+# 由 PR API 解析，分支代码只在下面的检出里运行。
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
@@ -12,12 +19,20 @@ on:
       - 'Tests/MenuBarMijiaAppTests/__Snapshots__/**'
       - 'scripts/check_snapshot_baselines.sh'
       - '.github/workflows/snapshot-guard.yml'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "要重评快照基线的 PR 编号（Record snapshots 刚推完基线的那条）"
+        required: true
+        type: string
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
-  group: snapshot-guard-${{ github.event.pull_request.number || github.ref }}
+  # 两种触发都以 PR 号分组：同一 PR 的派发与事件互相取消，不同 PR 不互相影响。
+  group: snapshot-guard-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 jobs:
@@ -26,11 +41,66 @@ jobs:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'no-snapshot-change') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Resolve the PR head and base
+        id: refs
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" --jq .head.sha)"
+          base="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" --jq .base.sha)"
+          labels="$(gh api "repos/${GH_REPO}/pulls/${PR_NUMBER}" --jq '[.labels[].name] | join(",")')"
+          if [ -z "$head" ] || [ -z "$base" ]; then
+              echo "❌ 无法从 PR ${PR_NUMBER} 解析 head/base 提交" >&2
+              exit 1
+          fi
+          echo "PR ${PR_NUMBER}: head=${head} base=${base} labels=${labels}"
+          if [ "${#head}" -ne 40 ] || [ "${#base}" -ne 40 ]; then
+              echo "❌ PR ${PR_NUMBER} 的 head/base 不是 40 位提交号" >&2
+              exit 1
+          fi
+          case ",$labels," in
+              *",no-snapshot-change,"*)
+                  echo "PR ${PR_NUMBER} 带 no-snapshot-change 标签，快照基线检查按 PR 事件同样跳过。"
+                  echo "skip=true" >> "$GITHUB_OUTPUT"
+                  ;;
+          esac
+          {
+              echo "head=${head}"
+              echo "base=${base}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check out the PR head
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.refs.outputs.skip != 'true' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.refs.outputs.head }}
+          fetch-depth: 0
+
+      - name: Fetch the resolved base commit
+        # 按 SHA 检出不会带上基线分支的历史；三点 diff 需要这里的 base 对象。
+        if: ${{ github.event_name == 'workflow_dispatch' && steps.refs.outputs.skip != 'true' }}
+        env:
+          BASE_SHA: ${{ steps.refs.outputs.base }}
+          HEAD_SHA: ${{ steps.refs.outputs.head }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$BASE_SHA" "$HEAD_SHA"
+
+      - name: Check out the pull request merge ref
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
       - name: Snapshot baselines cover UI changes
+        if: ${{ steps.refs.outputs.skip != 'true' }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || steps.refs.outputs.base }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || steps.refs.outputs.head }}
         run: >-
           bash scripts/check_snapshot_baselines.sh
-          '${{ github.event.pull_request.base.sha }}'
-          '${{ github.event.pull_request.head.sha }}'
+          "${BASE_SHA}" "${HEAD_SHA}"

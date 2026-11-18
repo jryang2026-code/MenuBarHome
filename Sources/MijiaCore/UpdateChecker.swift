@@ -1,5 +1,10 @@
 import CryptoKit
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 #if os(macOS)
 import Security
 #endif
@@ -324,12 +329,12 @@ public enum UpdateFailureClassifier {
             return .retryInstall
         }
         switch installError {
-        case .checksumMismatch, .bundleIdentifierMismatch, .bundleVersionMismatch,
+        case .bundleIdentifierMismatch, .bundleVersionMismatch,
              .codeSignatureInvalid, .updateSignatureMissing, .updateSignatureInvalid,
              .updateBelowMinimum, .missingPackageAsset, .notRunningFromAppBundle,
              .targetLocationNotWritable:
             return .manualDownload
-        case .unpackFailed, .relaunchFailed:
+        case .checksumMismatch, .unpackFailed, .relaunchFailed:
             return .retryInstall
         }
     }
@@ -773,8 +778,12 @@ public struct UpdateSystemDriver: Sendable {
             process.environment = env
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
+            process.terminationHandler = { _ in
+                AppUpdater.clearSwapProcessPID(for: staged)
+            }
             do {
                 try process.run()
+                AppUpdater.recordSwapProcessPID(process.processIdentifier, for: staged)
             } catch {
                 throw UpdateInstallError.relaunchFailed(error.localizedDescription)
             }
@@ -1028,7 +1037,10 @@ public struct AppUpdater: Sendable {
     public static let expectedBundleIdentifier = KeychainHelper.service
     public static let maxPackageDownloadBytes: Int64 = UpdateChecker.maxPackageDownloadBytes
     public static let maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
+    public static let defaultStaleStagingMaxAge: TimeInterval = 60 * 60
     private static let stagingDirectoryPrefix = "\(expectedBundleIdentifier).update-"
+    private static let ownerPIDFileName = ".owner.pid"
+    private static let swapPIDFileName = ".swap.pid"
 
     private let checker: UpdateChecker
     private let driver: UpdateSystemDriver
@@ -1036,6 +1048,10 @@ public struct AppUpdater: Sendable {
     private let stagingBaseDirectory: URL
     private let updateSigningPublicKeysBase64: [String]
     private let maxReleaseFileBytes: Int64
+    private let staleStagingMaxAge: TimeInterval
+    private let now: @Sendable () -> Date
+    private let ownerPID: Int32
+    private let isProcessAlive: @Sendable (Int32) -> Bool
 
     public init(
         currentVersion: String = UpdateChecker.bundleVersion,
@@ -1043,7 +1059,11 @@ public struct AppUpdater: Sendable {
         stagingBaseDirectory: URL = FileManager.default.temporaryDirectory,
         updateSigningPublicKeysBase64: [String] = UpdateChecker.updateSigningPublicKeysBase64,
         driver: UpdateSystemDriver = .live,
-        maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes
+        maxReleaseFileBytes: Int64 = UpdateChecker.maxReleaseFileBytes,
+        staleStagingMaxAge: TimeInterval = Self.defaultStaleStagingMaxAge,
+        now: @escaping @Sendable () -> Date = { Date() },
+        ownerPID: Int32 = ProcessInfo.processInfo.processIdentifier,
+        isProcessAlive: @escaping @Sendable (Int32) -> Bool = Self.defaultIsProcessAlive
     ) {
         self.checker = UpdateChecker(currentVersion: currentVersion, transport: driver.fetchData)
         self.driver = driver
@@ -1051,6 +1071,23 @@ public struct AppUpdater: Sendable {
         self.stagingBaseDirectory = stagingBaseDirectory
         self.updateSigningPublicKeysBase64 = updateSigningPublicKeysBase64
         self.maxReleaseFileBytes = maxReleaseFileBytes
+        self.staleStagingMaxAge = staleStagingMaxAge
+        self.now = now
+        self.ownerPID = ownerPID
+        self.isProcessAlive = isProcessAlive
+    }
+
+    public static func defaultIsProcessAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        #if canImport(Darwin)
+        if Darwin.kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+        #elseif canImport(Glibc)
+        if Glibc.kill(pid, 0) == 0 { return true }
+        return errno == EPERM
+        #else
+        return false
+        #endif
     }
 
     public func checkLatestRelease() async throws -> AppRelease? {
@@ -1086,6 +1123,11 @@ public struct AppUpdater: Sendable {
             isDirectory: true
         )
         try FileManager.default.createDirectory(at: stagingRootURL, withIntermediateDirectories: true)
+        Self.writePIDFile(ownerPID, named: Self.ownerPIDFileName, in: stagingRootURL)
+        try? FileManager.default.setAttributes(
+            [.modificationDate: now()],
+            ofItemAtPath: stagingRootURL.path
+        )
         var keepStaging = false
         defer {
             if !keepStaging {
@@ -1179,12 +1221,45 @@ public struct AppUpdater: Sendable {
         try driver.launchDetachedSwapAndRelaunch(
             staged,
             targetBundleURL,
-            ProcessInfo.processInfo.processIdentifier
+            ownerPID
         )
     }
 
     public func cleanupStagedApp(_ staged: VerifiedStagedApp) {
         try? FileManager.default.removeItem(at: staged.stagingRootURL)
+    }
+
+    public func isSwapProcessRunning(for staged: VerifiedStagedApp) -> Bool {
+        guard let swapPID = Self.readPIDFile(named: Self.swapPIDFileName, in: staged.stagingRootURL) else {
+            return false
+        }
+        return isProcessAlive(swapPID)
+    }
+
+    public static func recordSwapProcessPID(_ pid: Int32, for staged: VerifiedStagedApp) {
+        writePIDFile(pid, named: swapPIDFileName, in: staged.stagingRootURL)
+    }
+
+    public static func clearSwapProcessPID(for staged: VerifiedStagedApp) {
+        try? FileManager.default.removeItem(
+            at: staged.stagingRootURL.appendingPathComponent(swapPIDFileName)
+        )
+    }
+
+    private static func writePIDFile(_ pid: Int32, named fileName: String, in directory: URL) {
+        guard pid > 0 else { return }
+        let fileURL = directory.appendingPathComponent(fileName)
+        try? String(pid).write(to: fileURL, atomically: true, encoding: .utf8)
+    }
+
+    private static func readPIDFile(named fileName: String, in directory: URL) -> Int32? {
+        let fileURL = directory.appendingPathComponent(fileName)
+        guard let raw = try? String(contentsOf: fileURL, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              let pid = Int32(raw), pid > 0 else {
+            return nil
+        }
+        return pid
     }
 
     /// `codesign` requirement used to verify the staged bundle.
@@ -1270,9 +1345,33 @@ public struct AppUpdater: Sendable {
         ) else {
             return
         }
+        let referenceDate = now()
         for entry in entries where entry.lastPathComponent.hasPrefix(Self.stagingDirectoryPrefix) {
+            guard shouldSweepStagingDirectory(at: entry, now: referenceDate) else { continue }
             try? FileManager.default.removeItem(at: entry)
         }
+    }
+
+    private func shouldSweepStagingDirectory(at entry: URL, now referenceDate: Date) -> Bool {
+        if let swapPID = Self.readPIDFile(named: Self.swapPIDFileName, in: entry) {
+            if isProcessAlive(swapPID) {
+                return false
+            }
+            return true
+        }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: entry.path)
+        let modifiedAt = (attrs?[.modificationDate] as? Date) ?? (attrs?[.creationDate] as? Date)
+        if let modifiedAt {
+            if referenceDate.timeIntervalSince(modifiedAt) >= staleStagingMaxAge {
+                return true
+            }
+        } else {
+            return true
+        }
+        if let recordedOwnerPID = Self.readPIDFile(named: Self.ownerPIDFileName, in: entry) {
+            return !isProcessAlive(recordedOwnerPID)
+        }
+        return false
     }
 
     private func fetchReleaseFile(from url: URL, missing: UpdateInstallError) async throws -> Data {

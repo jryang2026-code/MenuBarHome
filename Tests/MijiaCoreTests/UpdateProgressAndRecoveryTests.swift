@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import MijiaCore
@@ -102,7 +103,6 @@ struct UpdateProgressAndRecoveryTests {
     @Test("Each install error maps to the recovery the user actually has")
     func failureRecoveryMatchesTheCause() {
         let manual: [UpdateInstallError] = [
-            .checksumMismatch(expected: "a", actual: "b"),
             .bundleIdentifierMismatch(found: "other.app"),
             .bundleVersionMismatch(found: "1.0.0", expected: "1.2.0"),
             .codeSignatureInvalid("codesign said no"),
@@ -119,7 +119,12 @@ struct UpdateProgressAndRecoveryTests {
                 "\(error) should not offer a retry that fails identically"
             )
         }
-        for error in [UpdateInstallError.unpackFailed("busy"), .relaunchFailed("no exit")] {
+        let retryable: [UpdateInstallError] = [
+            .checksumMismatch(expected: "a", actual: "b"),
+            .unpackFailed("busy"),
+            .relaunchFailed("no exit"),
+        ]
+        for error in retryable {
             #expect(UpdateFailureClassifier.recovery(for: error) == .retryInstall, "\(error)")
         }
 
@@ -190,12 +195,13 @@ struct UpdateProgressAndRecoveryTests {
     }
 
     @MainActor
-    @Test("A relaunch that never terminates turns into a retryable failure instead of a stuck spinner")
+    @Test("A relaunch that never terminates waits for the swap script and reports that the app did not exit in time")
     func relaunchWatchdogRecovers() async throws {
         let harness = try HomeStoreHarness()
         defer { harness.cleanUp() }
 
         let staged = harness.stagedApp()
+        harness.swapProcessAlive.set(true)
         harness.store.updateRelaunchWatchdogInterval = .milliseconds(20)
         harness.store.updateState = .readyToRelaunch(staged)
         harness.store.confirmRelaunchForUpdate()
@@ -204,10 +210,17 @@ struct UpdateProgressAndRecoveryTests {
         #expect(harness.store.updateState == .installing(harness.release))
         #expect(harness.didTerminate.value)
 
-        // It did not exit. The watchdog must stop claiming "正在重启…" and offer a retry.
-        // The deadline only bounds a real hang; it returns as soon as the state flips. On the
-        // parallel Linux run the main actor is busy enough that the 20 ms watchdog has taken
-        // 12 s to fire, so a tight deadline made this test fail on load rather than on behaviour.
+        // While the swap script is still alive on a busy system, the watchdog must not delete
+        // the verified staging directory or compete with the running swap.
+        try await waitUntil(timeout: .seconds(60)) {
+            harness.swapLivenessChecks.value >= 1
+        }
+        #expect(harness.store.updateState == .installing(harness.release))
+        #expect(FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
+
+        // Once the swap script gives up and exits while this process is still alive, the watchdog
+        // transitions to a retryable failure explaining that the app did not exit in time.
+        harness.swapProcessAlive.set(false)
         try await waitUntil(timeout: .seconds(60)) {
             if case .failed = harness.store.updateState { return true }
             return false
@@ -218,9 +231,250 @@ struct UpdateProgressAndRecoveryTests {
         }
         #expect(failure.recovery == .retryInstall)
         #expect(failure.release?.version == harness.release.version)
-        #expect(!failure.message.isEmpty)
-        // The staged copy is discarded; retrying downloads a fresh package.
+        #expect(failure.message.contains("退出") || failure.message.contains("exit in time"))
+        // The staged copy is discarded after the swap process has exited; retrying downloads a fresh package.
         #expect(!FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
+    }
+
+    @MainActor
+    @Test("Checking for updates while readyToRelaunch keeps the verified package on failure or same version")
+    func checkForUpdatesInReadyToRelaunchPreservesVerifiedPackage() async throws {
+        let harness = try HomeStoreHarness()
+        defer { harness.cleanUp() }
+
+        let staged = harness.stagedApp()
+        harness.store.updateState = .readyToRelaunch(staged)
+
+        // 1. Check fails (default harness returns HTTP 500): must keep the staged bundle and state.
+        await harness.store.checkForUpdates()
+        #expect(FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
+        #expect(harness.store.updateState == .readyToRelaunch(staged))
+
+        // 2. Check succeeds and reports the same version (1.4.0): must still keep the staged bundle.
+        harness.releaseFetchHandler.set { request in
+            let body = """
+            {
+              "tag_name": "v1.4.0",
+              "html_url": "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.4.0",
+              "body": "notes",
+              "assets": [
+                { "name": "MenuBarHome-1.4.0.dmg", "size": 1024 },
+                { "name": "MenuBarHome-1.4.0.update.json", "size": 256 }
+              ]
+            }
+            """
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(body.utf8), response)
+        }
+        await harness.store.checkForUpdates()
+        #expect(FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
+        #expect(harness.store.updateState == .readyToRelaunch(staged))
+
+        // 3. Check succeeds and reports a newer version (1.5.0): supersedes the old staged bundle.
+        harness.releaseFetchHandler.set { request in
+            let body = """
+            {
+              "tag_name": "v1.5.0",
+              "html_url": "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.5.0",
+              "body": "newer",
+              "assets": [
+                { "name": "MenuBarHome-1.5.0.dmg", "size": 2048 },
+                { "name": "MenuBarHome-1.5.0.update.json", "size": 256 }
+              ]
+            }
+            """
+            let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            return (Data(body.utf8), response)
+        }
+        await harness.store.checkForUpdates()
+        #expect(!FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
+        if case .available(let nextRelease) = harness.store.updateState {
+            #expect(nextRelease.version == "1.5.0")
+        } else {
+            Issue.record("expected .available(1.5.0), got \(harness.store.updateState)")
+        }
+    }
+
+    @MainActor
+    @Test("A truncated download failing SHA-256 verification is retryable and still enforces full verification on retry")
+    func truncatedDownloadChecksumMismatchCanRetryAndEnforcesVerification() async throws {
+        let harness = try HomeStoreHarness()
+        defer { harness.cleanUp() }
+
+        let fullBytes = Data("complete-signed-dmg-payload".utf8)
+        let truncatedBytes = Data(fullBytes.prefix(8))
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let publicKey = signingKey.publicKey.rawRepresentation.base64EncodedString()
+        let signed = try signedUpdateManifest(version: "1.4.0", package: fullBytes, signingKey: signingKey)
+
+        let deliverFullPackage = Flag()
+        let attempts = harness.downloadAttempts
+        let targetAppURL = harness.targetAppURL
+        let rootDir = harness.rootDir
+
+        let driver = UpdateSystemDriver(
+            downloadFile: { _, destination, onProgress in
+                attempts.increment()
+                let payload = deliverFullPackage.value ? fullBytes : truncatedBytes
+                try payload.write(to: destination)
+                onProgress(DownloadProgress(receivedBytes: Int64(payload.count), totalBytes: Int64(fullBytes.count)))
+            },
+            fetchData: { request in
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                if request.url?.path.hasSuffix(".update.json.ed25519.sig") == true {
+                    return (Data(signed.signatureText.utf8), response)
+                }
+                return (signed.bytes, response)
+            },
+            unpackArchive: { _, _, destinationDir in
+                let appURL = destinationDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
+                let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+                try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+                let plist: [String: Any] = [
+                    "CFBundleIdentifier": AppUpdater.expectedBundleIdentifier,
+                    "CFBundleShortVersionString": "1.4.0",
+                ]
+                let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+                try data.write(to: contentsURL.appendingPathComponent("Info.plist"))
+                return appURL
+            },
+            verifyCodeSignature: { _, _ in },
+            launchDetachedSwapAndRelaunch: { _, _, _ in }
+        )
+
+        harness.store.updater = AppUpdater(
+            currentVersion: "1.0.0",
+            targetBundleURL: targetAppURL,
+            stagingBaseDirectory: rootDir,
+            updateSigningPublicKeysBase64: [publicKey],
+            driver: driver
+        )
+        harness.store.updateState = .available(harness.release)
+
+        // First attempt: truncated download must be rejected by SHA-256 verification, but marked retryable.
+        await harness.store.startUpdateInstallation()
+        #expect(attempts.value == 1)
+        guard case .failed(let failure) = harness.store.updateState else {
+            Issue.record("expected checksumMismatch failure, got \(harness.store.updateState)")
+            return
+        }
+        #expect(failure.recovery == .retryInstall)
+        #expect(failure.canRetryInstall)
+
+        // Second attempt: retrying downloads the complete package and passes full verification.
+        deliverFullPackage.set(true)
+        await harness.store.startUpdateInstallation()
+        #expect(attempts.value == 2)
+        #expect(harness.store.updateState.isReadyToRelaunch)
+    }
+
+    @Test("sweepStaleStagingDirectories preserves live or fresh directories and removes expired or dead-owner ones")
+    func sweepStaleStagingDirectoriesHonorsLivenessAndAge() async throws {
+        let rootDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("update-sweep-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: rootDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: rootDir) }
+
+        let targetAppURL = rootDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: targetAppURL.appendingPathComponent("Contents", isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        let plist: [String: Any] = [
+            "CFBundleIdentifier": AppUpdater.expectedBundleIdentifier,
+            "CFBundleShortVersionString": "1.0.0",
+        ]
+        let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try plistData.write(to: targetAppURL.appendingPathComponent("Contents/Info.plist"))
+
+        let stagingParent = rootDir.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingParent, withIntermediateDirectories: true)
+
+        let baseNow = Date(timeIntervalSince1970: 1_800_000_000)
+        let prefix = "\(AppUpdater.expectedBundleIdentifier).update-"
+
+        func makeStagingDir(_ suffix: String, modifiedAt: Date, ownerPID: Int32? = nil, swapPID: Int32? = nil) throws -> URL {
+            let dir = stagingParent.appendingPathComponent("\(prefix)\(suffix)", isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            if let ownerPID {
+                try String(ownerPID).write(to: dir.appendingPathComponent(".owner.pid"), atomically: true, encoding: .utf8)
+            }
+            if let swapPID {
+                try String(swapPID).write(to: dir.appendingPathComponent(".swap.pid"), atomically: true, encoding: .utf8)
+            }
+            try FileManager.default.setAttributes([.modificationDate: modifiedAt], ofItemAtPath: dir.path)
+            return dir
+        }
+
+        let livePeerDir = try makeStagingDir("live-peer", modifiedAt: baseNow.addingTimeInterval(-30), ownerPID: 1001)
+        let freshUnmarkedDir = try makeStagingDir("fresh-unmarked", modifiedAt: baseNow.addingTimeInterval(-10))
+        let activeSwapDir = try makeStagingDir("active-swap", modifiedAt: baseNow.addingTimeInterval(-7200), ownerPID: 2002, swapPID: 3003)
+        let deadOwnerDir = try makeStagingDir("dead-owner", modifiedAt: baseNow.addingTimeInterval(-30), ownerPID: 9999)
+        let expiredDir = try makeStagingDir("expired", modifiedAt: baseNow.addingTimeInterval(-3601), ownerPID: 1001)
+
+        let archiveBytes = Data("sweep-test-dmg".utf8)
+        let signingKey = Curve25519.Signing.PrivateKey()
+        let publicKey = signingKey.publicKey.rawRepresentation.base64EncodedString()
+        let signed = try signedUpdateManifest(version: "1.4.0", package: archiveBytes, signingKey: signingKey)
+        let release = AppRelease(
+            version: "1.4.0",
+            pageURL: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.4.0")!,
+            notes: "",
+            packageAsset: .init(
+                name: "MenuBarHome-1.4.0.dmg",
+                downloadURL: UpdateChecker.releaseAssetURL(version: "1.4.0", fileName: "MenuBarHome-1.4.0.dmg")!,
+                sizeBytes: Int64(archiveBytes.count),
+                kind: .dmg
+            )
+        )
+
+        let driver = UpdateSystemDriver(
+            downloadFile: { _, destination, _ in
+                try archiveBytes.write(to: destination)
+            },
+            fetchData: { request in
+                let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                if request.url?.path.hasSuffix(".update.json.ed25519.sig") == true {
+                    return (Data(signed.signatureText.utf8), response)
+                }
+                return (signed.bytes, response)
+            },
+            unpackArchive: { _, _, destinationDir in
+                let appURL = destinationDir.appendingPathComponent("MenuBarHome.app", isDirectory: true)
+                let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
+                try FileManager.default.createDirectory(at: contentsURL, withIntermediateDirectories: true)
+                let info: [String: Any] = [
+                    "CFBundleIdentifier": AppUpdater.expectedBundleIdentifier,
+                    "CFBundleShortVersionString": "1.4.0",
+                ]
+                let data = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+                try data.write(to: contentsURL.appendingPathComponent("Info.plist"))
+                return appURL
+            },
+            verifyCodeSignature: { _, _ in },
+            launchDetachedSwapAndRelaunch: { _, _, _ in }
+        )
+
+        let livePIDs: Set<Int32> = [1001, 1002, 3003]
+        let updater = AppUpdater(
+            currentVersion: "1.0.0",
+            targetBundleURL: targetAppURL,
+            stagingBaseDirectory: stagingParent,
+            updateSigningPublicKeysBase64: [publicKey],
+            driver: driver,
+            staleStagingMaxAge: 3600,
+            now: { baseNow },
+            ownerPID: 1002,
+            isProcessAlive: { livePIDs.contains($0) }
+        )
+
+        let staged = try await updater.stageUpdate(for: release) { _ in }
+        #expect(FileManager.default.fileExists(atPath: livePeerDir.path))
+        #expect(FileManager.default.fileExists(atPath: freshUnmarkedDir.path))
+        #expect(FileManager.default.fileExists(atPath: activeSwapDir.path))
+        #expect(!FileManager.default.fileExists(atPath: deadOwnerDir.path))
+        #expect(!FileManager.default.fileExists(atPath: expiredDir.path))
+        #expect(FileManager.default.fileExists(atPath: staged.stagingRootURL.path))
     }
 }
 
@@ -236,6 +490,9 @@ private struct HomeStoreHarness {
     let targetAppURL: URL
     let downloadAttempts = Counter()
     let didTerminate = Flag()
+    let swapProcessAlive = Flag()
+    let swapLivenessChecks = Counter()
+    let releaseFetchHandler = FetchBox()
     private let suiteName: String
 
     init() throws {
@@ -271,6 +528,7 @@ private struct HomeStoreHarness {
         )
 
         let attempts = downloadAttempts
+        let fetchBox = releaseFetchHandler
         let driver = UpdateSystemDriver(
             downloadFile: { _, destination, onProgress in
                 attempts.increment()
@@ -279,6 +537,9 @@ private struct HomeStoreHarness {
                 onProgress(DownloadProgress(receivedBytes: 16, totalBytes: 16))
             },
             fetchData: { request in
+                if let custom = fetchBox.get() {
+                    return try await custom(request)
+                }
                 // Anything past the download is a manifest fetch that should not be needed here.
                 // Built as a guarded value rather than `HTTPURLResponse(...) ?? URLResponse()`:
                 // corelibs-foundation has no zero-argument `URLResponse()`, so the fallback only
@@ -295,9 +556,13 @@ private struct HomeStoreHarness {
             },
             unpackArchive: { _, _, directory in directory },
             verifyCodeSignature: { _, _ in },
-            launchDetachedSwapAndRelaunch: { _, _, _ in }
+            launchDetachedSwapAndRelaunch: { staged, _, _ in
+                AppUpdater.recordSwapProcessPID(4242, for: staged)
+            }
         )
 
+        let swapAlive = swapProcessAlive
+        let livenessChecks = swapLivenessChecks
         suiteName = "com.jryang1997.MenuBarMijia.update-recovery.\(UUID().uuidString)"
         store = HomeStore(
             provider: MockHomeProvider(),
@@ -307,7 +572,14 @@ private struct HomeStoreHarness {
                 targetBundleURL: targetAppURL,
                 stagingBaseDirectory: rootDir,
                 updateSigningPublicKeysBase64: ["unused-in-these-tests"],
-                driver: driver
+                driver: driver,
+                isProcessAlive: { pid in
+                    if pid == 4242 {
+                        livenessChecks.increment()
+                        return swapAlive.value
+                    }
+                    return AppUpdater.defaultIsProcessAlive(pid)
+                }
             )
         )
         store.automaticallyChecksForUpdates = false
@@ -381,9 +653,26 @@ private final class Flag: @unchecked Sendable {
         return stored
     }
 
-    func set() {
+    func set(_ newValue: Bool = true) {
         lock.lock()
-        stored = true
+        stored = newValue
+        lock.unlock()
+    }
+}
+
+private final class FetchBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: UpdateChecker.Transport?
+
+    func get() -> UpdateChecker.Transport? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ handler: @escaping UpdateChecker.Transport) {
+        lock.lock()
+        stored = handler
         lock.unlock()
     }
 }

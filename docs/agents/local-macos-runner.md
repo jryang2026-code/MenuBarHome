@@ -8,7 +8,7 @@
 - Softnet 阻断虚拟机主动访问宿主、其他虚拟机和私有网络；DNS 由 VM 内的回环服务转发到公共 HTTPS 解析器，不开放宿主 DNS 端口。
 - GitHub 管理凭据留在宿主，只有用于单个 job 的 JIT 配置传入虚拟机。
 - 控制脚本固定运行宿主安装目录中的副本，不从 PR 或 job 的 checkout 加载代码。
-- macOS 虚拟机渲染不同于维护者宿主机，继续沿用 CI 跳过快照像素比对的约定。
+- macOS 虚拟机不是 UI 快照基准。像素比对在 `macos-snapshots`，固定 GitHub 托管的 `macos-26-intel`。`macos-test` 排到本机时继续跳过 `SnapshotTests`。
 
 这些措施用于限制公开仓库 PR 中的任意代码。工作流中的条件和 runner 标签不是安全隔离措施。
 
@@ -49,7 +49,7 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.menubarhome.ci.pli
 
 ## 切换 CI 执行位置
 
-`MACOS_CI_RUNNER` 是仓库 Actions 变量，内容是 JSON。设置为以下值后，新的非 fork CI 运行会把 `macos-test` 排到本机（跨仓库 fork PR 始终回退到 `macos-26-intel` 托管机）。`macos-release` 和 `macos-appintents` 固定在 GitHub 的 `macos-26-intel` 托管机，与它并行：三个都排到单台 VM 时一次运行占用约 20 分钟，其他 PR 只能排队。
+`MACOS_CI_RUNNER` 是仓库 Actions 变量，内容是 JSON。设置为以下值后，新的非 fork CI 运行会把 `macos-test` 排到本机（跨仓库 fork PR 始终回退到 `macos-26-intel` 托管机）。`macos-release`、`macos-appintents` 和 `macos-snapshots` 固定在 GitHub 的 `macos-26-intel` 托管机，不读这个变量。`macos-snapshots` 是像素基准，不占这台 VM。`macos-release` 和 `macos-appintents` 留在托管机，是为了避免和 `macos-test` 一起排到单台 VM（那样一次运行约 20 分钟，后面的 PR 只能排队）。
 
 ```bash
 gh variable set MACOS_CI_RUNNER --repo jryang2026-code/MenuBarHome --body '["self-hosted","macOS","ARM64","menubarhome-vm"]'

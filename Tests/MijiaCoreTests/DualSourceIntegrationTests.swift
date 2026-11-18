@@ -762,6 +762,8 @@ struct DualSourceIntegrationTests {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 2
         }
+        let pairedLightID = try #require(store.devices.first { $0.id != unpairedMiDid }?.id)
+        #expect(pairedLightID == haID || pairedLightID == did)
 
         store.favoriteDeviceIds = []
         store.favoriteOrder = []
@@ -783,7 +785,7 @@ struct DualSourceIntegrationTests {
         #expect(retainedKettle.name == "吧台水壶")
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
-        let onlineLight = try #require(store.devices.first { $0.id == haID })
+        let onlineLight = try #require(store.devices.first { $0.id == pairedLightID })
         #expect(onlineLight.isOnline == true)
         #expect(onlineLight.telemetryStale == false)
 
@@ -795,6 +797,9 @@ struct DualSourceIntegrationTests {
         }
         #expect(store.devices.first(where: { $0.id == unpairedMiDid })?.name == "吧台水壶")
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
+        let recoveredLight = try #require(store.devices.first { $0.id == pairedLightID })
+        #expect(recoveredLight.isOnline == true)
+        #expect(recoveredLight.telemetryStale == false)
     }
 
     @MainActor
@@ -802,6 +807,11 @@ struct DualSourceIntegrationTests {
     func multiAccountSingleDisconnectFailsOverPairedCardToHA() async throws {
         let suite = "test.dual.multi_acc_failover.\(UUID().uuidString)"
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let suiteDefaults = try #require(UserDefaults(suiteName: suite))
+        // Without an explicit list, a Mi snapshot arriving first seeds favorites with the Mi id and
+        // makes it the paired card's canonical id.
+        suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteOrder)
 
         let acc1Id = "cn:1001"
         let acc2Id = "de:2002"

@@ -51,6 +51,10 @@ expect_true_keys "empty input falls back to full CI" \
     "" \
     "${ALL_KEYS[@]}"
 
+expect_true_keys "record-snapshots workflow runs the macOS snapshot job and script tests" \
+    ".github/workflows/record-snapshots.yml\n" \
+    code macos scripts
+
 expect_true_keys "unknown path falls back to full CI" \
     "unknown.bin\n" \
     "${ALL_KEYS[@]}"

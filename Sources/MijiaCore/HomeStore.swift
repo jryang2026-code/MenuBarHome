@@ -40,6 +40,9 @@ public struct ToastNotice: Equatable, Sendable {
 
 public struct UndoBanner: Equatable, Sendable {
     public let id: UUID
+    /// Logical action identity shared with `lastAssistantUndo` only when both entries were recorded
+    /// by the same execution, so a partial or refused undo never cross-pollinates independent stacks.
+    public let actionId: UUID
     public var title: String
     public var restoreCommands: [DeviceCommand]
     public var previousDevices: [SmartDevice]
@@ -59,6 +62,7 @@ public struct UndoBanner: Equatable, Sendable {
 
     public init(
         id: UUID = UUID(),
+        actionId: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
         previousDevices: [SmartDevice],
@@ -69,6 +73,7 @@ public struct UndoBanner: Equatable, Sendable {
         attemptedDeviceIds: Set<String>? = nil
     ) {
         self.id = id
+        self.actionId = actionId
         self.title = title
         self.restoreCommands = restoreCommands
         self.previousDevices = previousDevices
@@ -77,6 +82,31 @@ public struct UndoBanner: Equatable, Sendable {
         self.duration = duration
         self.isAllOff = isAllOff
         self.attemptedDeviceIds = attemptedDeviceIds
+    }
+}
+
+struct AssistantUndoEntry: Equatable, Sendable {
+    var actionId: UUID
+    var reply: String
+    var restore: [DeviceCommand]
+    var previous: [SmartDevice]
+    var at: Date
+    var habitReceipt: UserHabitMemory.RecordingReceipt?
+
+    init(
+        actionId: UUID = UUID(),
+        reply: String,
+        restore: [DeviceCommand],
+        previous: [SmartDevice],
+        at: Date,
+        habitReceipt: UserHabitMemory.RecordingReceipt? = nil
+    ) {
+        self.actionId = actionId
+        self.reply = reply
+        self.restore = restore
+        self.previous = previous
+        self.at = at
+        self.habitReceipt = habitReceipt
     }
 }
 
@@ -657,13 +687,14 @@ public final class HomeStore {
     public private(set) var toastNotice: ToastNotice?
     public internal(set) var undoBanner: UndoBanner? {
         didSet {
-            if undoBanner != nil {
-                undoStateRevision &+= 1
+            if let undoBanner, undoBanner.id != oldValue?.id {
+                bannerUndoRevision &+= 1
             }
             scheduleRaycastSnapshotExport()
         }
     }
-    var undoStateRevision: UInt64 = 0
+    var bannerUndoRevision: UInt64 = 0
+    var assistantUndoRevision: UInt64 = 0
     /// Delivers a newly fired safety alert to the app's notifier. Optional: the panel's activity
     /// stack records the alert in `recentSafetyAlerts` whether or not this is installed.
     public var onSafetyAlert: ((SafetyAlert) -> Void)?
@@ -700,9 +731,10 @@ public final class HomeStore {
         if case .installing = updateState { return true }
         return false
     }
-    /// How long a relaunch may take before the update is treated as not landed. Longer than the
-    /// swap script's own 15 s wait for this process to exit. `nil` disables the watchdog (tests).
-    public var updateRelaunchWatchdogInterval: Duration? = .seconds(20)
+    /// How long a relaunch may take before checking whether the detached swap process is still running.
+    /// Longer than the swap script's nominal 15 s wait for this process to exit; the watchdog also
+    /// defers while the swap process is alive. `nil` disables the watchdog (tests).
+    public var updateRelaunchWatchdogInterval: Duration? = .seconds(30)
     var updateRelaunchWatchdogTask: Task<Void, Never>?
 
     public var lgConfig: LGWebOSConfig {
@@ -1270,16 +1302,10 @@ public final class HomeStore {
     /// Card writes that have finished, including a cancellation that shows no toast.
     @ObservationIgnored var manualWriteExits = 0
     /// The most recent assistant action, kept so "撤销" can restore it after the 5 s banner is gone.
-    var lastAssistantUndo: (
-        reply: String,
-        restore: [DeviceCommand],
-        previous: [SmartDevice],
-        at: Date,
-        habitReceipt: UserHabitMemory.RecordingReceipt?
-    )? {
+    var lastAssistantUndo: AssistantUndoEntry? {
         didSet {
             if lastAssistantUndo != nil {
-                undoStateRevision &+= 1
+                assistantUndoRevision &+= 1
             }
             scheduleRaycastSnapshotExport()
         }

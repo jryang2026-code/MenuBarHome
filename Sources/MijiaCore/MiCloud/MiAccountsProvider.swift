@@ -116,6 +116,11 @@ public actor MiAccountsProvider: HomeProvider {
         childProvider(for: accountId).map(ObjectIdentifier.init)
     }
 
+    /// Whether the account is parked as ended: no child polls it until a new scan replaces the session.
+    func isExpiredAccountForTesting(_ accountId: String) -> Bool {
+        expiredAccounts.contains(accountId)
+    }
+
     public init(
         accounts: [MiAccount],
         apiFactory: @escaping MiCloudProvider.APIFactory = { MiCloudClient(session: $0) },

@@ -84,6 +84,9 @@ final class MenuBarPanelController: NSObject {
     var isClosing = false
     /// Bumped on every show, so stale presentation completions cannot hide a reopened panel.
     var presentationGeneration = 0
+    /// Drives `\.isPanelVisible` inside the kept-alive hosting tree; flips `false` once `orderOut`
+    /// removes the window from screen so hidden animations, spinners, and clocks tear down cleanly.
+    let panelHostingVisibility = PanelHostingVisibility()
 
     /// Page-routing boundary used by the status menu; the app delegates to the existing Settings owner.
     var showSettings: (SettingsTab?) -> Void = { SettingsWindowOpener.shared.show(tab: $0) }
@@ -276,6 +279,7 @@ final class MenuBarPanelController: NSObject {
         panelWindow?.contentView = nil
         panelWindow = nil
         hostedPanelTheme = nil
+        panelHostingVisibility.setVisible(false)
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -880,7 +884,13 @@ final class MenuBarPanelController: NSObject {
         panel.contentView = nil
         panel.contentMinSize = .zero
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let hosting = NSHostingView(rootView: Self.panelRoot(store: store, theme: theme))
+        let hosting = PanelHostingView(
+            rootView: Self.panelRoot(
+                store: store,
+                theme: theme,
+                visibility: panelHostingVisibility
+            )
+        )
         // Neither theme delegates window sizing to AppKit's intrinsic-content constraints: `.classic`
         // sizes explicitly via `updatePanelSize`, and `.liquidGlass` spans the screen height. Leaving
         // `sizingOptions` at its default stamps fixed min/max content constraints onto the reused
@@ -910,18 +920,47 @@ final class MenuBarPanelController: NSObject {
     /// backdrop belongs to the Liquid Glass tree, so it leaves with it — including mid-close.
     func dropPanelContent() {
         hideBackdropShadow()
+        panelHostingVisibility.setVisible(false)
         panelWindow?.contentView = nil
         panelWindow?.contentMinSize = .zero
         panelWindow?.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         hostedPanelTheme = nil
     }
 
-    private static func panelRoot(store: HomeStore, theme: PanelTheme) -> AnyView {
+    private static func panelRoot(
+        store: HomeStore,
+        theme: PanelTheme,
+        visibility: PanelHostingVisibility
+    ) -> AnyView {
         switch theme {
         case .classic:
-            return AnyView(ClassicControlCenterPanel(store: store))
+            return AnyView(
+                HostedPanelRoot(visibility: visibility) {
+                    ClassicControlCenterPanel(store: store)
+                }
+            )
         case .liquidGlass:
-            return AnyView(ControlCenterPanel(store: store).environment(\.appearsActive, true))
+            return AnyView(
+                HostedPanelRoot(visibility: visibility) {
+                    ControlCenterPanel(store: store)
+                        .environment(\.appearsActive, true)
+                }
+            )
+        }
+    }
+    private struct HostedPanelRoot<Content: View>: View {
+        let visibility: PanelHostingVisibility
+        @ViewBuilder let content: Content
+
+        var body: some View {
+            content
+                .environment(\.isPanelVisible, visibility.isVisible)
+                .transaction { transaction in
+                    if !visibility.isVisible {
+                        transaction.disablesAnimations = true
+                        transaction.animation = nil
+                    }
+                }
         }
     }
 

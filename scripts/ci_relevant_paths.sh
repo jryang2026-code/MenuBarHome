@@ -181,6 +181,11 @@ while IFS= read -r path || [ -n "$path" ]; do
             core=true
             scripts=true
             ;;
+        scripts/ci_snapshot_locale.sh|scripts/ci_snapshot_branch.sh|scripts/ci_commit_snapshot_baselines.sh|.github/workflows/record-snapshots.yml)
+            code=true
+            macos=true
+            scripts=true
+            ;;
         scripts/ci_swift_test.sh|scripts/ci_restore_mtimes.sh)
             code=true
             macos=true

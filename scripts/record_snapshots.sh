@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Record the UI snapshot baselines on this Mac and list the PNGs that changed.
+# Record UI snapshot baselines and list the PNGs that changed.
 #
 #   bash scripts/record_snapshots.sh [--dry-run]
 #
-# This Mac is the reference renderer. GitHub-hosted Macs render differently, so CI skips the
-# snapshot comparison and scripts/check.sh checks these baselines. Review the changed PNGs
-# before committing.
+# The reference renderer is GitHub-hosted macos-26-intel with Xcode 26.6 and the zh_CN
+# metric locale (scripts/ci_snapshot_locale.sh). This Mac is not that renderer. A local
+# diff is only a preview. Re-record with Actions → Record snapshots, and let that
+# workflow commit the PNGs. Bump the runner image or the Xcode pin only together with
+# a new recording. Do not widen SnapshotAssertion tolerances to hide a renderer change.
 #   --dry-run  record into a scratch copy and list what would change, leaving the baselines alone
 #
 # The script prints the Swift Testing summary and the process exit code, and keeps the log.
@@ -20,7 +22,10 @@ SNAPSHOT_DIR="$ROOT_DIR/$SNAPSHOT_REL"
 DRY_RUN=0
 case "${1:-}" in
     --dry-run) DRY_RUN=1 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help)
+        awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"
+        exit 0
+        ;;
     "") ;;
     *) echo "❌ 未知参数：$1（可用：--dry-run）" >&2; exit 2 ;;
 esac
@@ -52,8 +57,54 @@ else
     : >"$size_before"
 fi
 
+# macos-26 can hang after Swift Testing prints its summary (SwiftPM #8394).
+# On GitHub Actions, stop a quiet process and keep going when the log already settled.
+run_snapshot_tests() {
+    local log="$1"
+    if [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+        local status=0
+        SNAPSHOT_RECORD=1 swift test --filter SnapshotTests >"$log" 2>&1 || status=$?
+        return "$status"
+    fi
+    local stall_seconds="${SWIFT_TEST_STALL_SECONDS:-300}"
+    local tick=10
+    local test_pid stalled=0 last_size=-1 stall_detected=0 size exit_code=0 state
+    SNAPSHOT_RECORD=1 script -q /dev/null swift test --filter SnapshotTests >"$log" 2>&1 &
+    test_pid=$!
+    while kill -0 "$test_pid" 2>/dev/null; do
+        sleep "$tick"
+        size="$(wc -c <"$log" | tr -d '[:space:]')"
+        if [ "$size" = "$last_size" ]; then
+            stalled=$((stalled + tick))
+        else
+            stalled=0
+            last_size="$size"
+        fi
+        if [ "$stalled" -ge "$stall_seconds" ]; then
+            echo "swift test produced no output for ${stall_seconds}s; stopping it" >&2
+            kill -TERM "$test_pid" 2>/dev/null || true
+            sleep 2
+            pkill -TERM -f swiftpm-testing 2>/dev/null || true
+            sleep 2
+            pkill -KILL -f swiftpm-testing 2>/dev/null || true
+            stall_detected=1
+            break
+        fi
+    done
+    # script(1) on macOS can return 0 after a failed swift test, and a finished
+    # suite can hang (SwiftPM #8394). Judge the log, not the process status.
+    wait "$test_pid" 2>/dev/null || exit_code=$?
+    state="$(bash "$ROOT_DIR/scripts/gate_report.sh" suite-state "$log")"
+    echo "snapshot suite state: ${state} (exit ${exit_code}, stalled=${stall_detected})" >&2
+    case "$state" in
+        passed) return 0 ;;
+        failed) return 1 ;;
+        *) return 143 ;;
+    esac
+}
+
 set +e
-SNAPSHOT_RECORD=1 swift test --filter SnapshotTests >"$LOG" 2>&1
+run_snapshot_tests "$LOG"
 swift_status=$?
 set -e
 if ! bash "$ROOT_DIR/scripts/gate_report.sh" record-verdict "$swift_status" "$LOG"; then
@@ -91,6 +142,8 @@ rm -f "$rel_file" "$size_before"
 count="$(printf '%s\n' "$changed" | sed '/^$/d' | wc -l | tr -d '[:space:]')"
 if [ "$DRY_RUN" = "1" ]; then
     echo "ℹ️ 共 ${count} 张会变化（dry run，未写入）"
+elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+    echo "✅ 已更新 ${count} 张基线"
 else
-    echo "✅ 已更新 ${count} 张基线，审阅后提交"
+    echo "✅ 已更新 ${count} 张预览。本机不是基准。提交基准请用 Actions 的 Record snapshots。"
 fi
