@@ -148,9 +148,9 @@ struct MiAccountLoginExpiryTests {
         let transport = ScriptedTransport { request in
             let url = request.url!.absoluteString
             if url.hasPrefix("https://lp.example") {
-                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","location":"https://sts.example/sts?x=1"}"#)
+                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","location":"https://sts.api.io.mi.com/sts?x=1"}"#)
             }
-            if url.hasPrefix("https://sts.example") {
+            if url.hasPrefix("https://sts.api.io.mi.com") {
                 return (200, ["Set-Cookie": setCookie], "ok")
             }
             return (404, [:], "")
@@ -174,9 +174,9 @@ struct MiAccountLoginExpiryTests {
         let transport = ScriptedTransport { request in
             let url = request.url!.absoluteString
             if url.hasPrefix("https://lp.example") {
-                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","location":"https://sts.example/sts?x=1"}"#)
+                return (200, [:], #"&&&START&&&{"userId":42,"ssecurity":"c3M=","cUserId":"c","location":"https://sts.api.io.mi.com/sts?x=1"}"#)
             }
-            if url.hasPrefix("https://sts.example") {
+            if url.hasPrefix("https://sts.api.io.mi.com") {
                 return (200, ["Set-Cookie": "serviceToken=tok123; path=/"], "ok")
             }
             return (404, [:], "")

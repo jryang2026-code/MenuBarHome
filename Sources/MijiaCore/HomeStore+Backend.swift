@@ -1265,6 +1265,15 @@ extension HomeStore {
         }
     }
 
+    public func lgWebOSDiscoveryFailureMessage(hostHint: String? = nil) -> String {
+        guard homeBackend != .demo else {
+            return L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs")
+        }
+        let hint = (hostHint ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let effectiveHint = hint.isEmpty ? lgConfig.host : hint
+        return LGWebOSClient.discoveryFailureMessage(hostHint: effectiveHint)
+    }
+
     public func discoverLGWebOSTVs(hostHint: String? = nil) async -> [LGWebOSDiscoveredTV] {
         // Demo mode is strictly offline: no LAN discovery (#47).
         guard homeBackend != .demo else { return [] }

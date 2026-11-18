@@ -118,6 +118,79 @@ struct LGWebOSTests {
         #expect(await client.isConnectedForTesting == false)
         await client.shutdown()
     }
+
+    @Test("LGWebOSClient LAN discovery only probes private IPv4 and valid .local hosts")
+    func lanDiscoveryRejectsNonLANHostHints() async throws {
+        let upnpXML = """
+        <root><device>
+        <friendlyName>[LG] webOS TV OLED42C2PCA</friendlyName>
+        <modelName>OLED42C2PCA</modelName>
+        <UDN>uuid:fe42fad6-8f3a-0211-c3b5-363fad426a96</UDN>
+        </device></root>
+        """
+        let probed = LockedStrings()
+        let probe: @Sendable (String) async -> LGWebOSDiscoveredTV? = { host in
+            probed.append(host)
+            return LGWebOSProtocol.parseUPnPDescription(xml: upnpXML, host: host)
+        }
+
+        for rejected in [
+            "8.8.8.8",
+            "example.com",
+            "localhost",
+            "127.0.0.1",
+            "192.0.2.10",
+            "http://192.168.1.50:1869",
+            "192.168.1.50/evil",
+            "user@192.168.1.50",
+        ] {
+            let found = await LGWebOSClient.discoverOnLAN(
+                hostHint: rejected,
+                arpHostsProvider: { [] },
+                probeHost: probe
+            )
+            #expect(found.isEmpty, "Expected \(rejected) to be rejected without probing")
+        }
+        #expect(probed.items.isEmpty)
+
+        let allowed = await LGWebOSClient.discoverOnLAN(
+            hostHint: " lg-tv.local. ",
+            arpHostsProvider: { ["192.168.1.50", "8.8.8.8"] },
+            probeHost: probe
+        )
+        #expect(allowed.map(\.host) == ["lg-tv.local", "192.168.1.50"])
+        #expect(probed.items.sorted() == ["192.168.1.50", "lg-tv.local"])
+        #expect(LGWebOSClient.discoveryFailureMessage(hostHint: "8.8.8.8").contains("8.8.8.8"))
+        #expect(!LGWebOSClient.discoveryFailureMessage(hostHint: "192.168.1.50").contains("192.168.1.50"))
+    }
+
+    @Test("HomeStore LG discovery failure message explains rejected host hints including saved fallback")
+    @MainActor
+    func storeDiscoveryFailureMessageExplainsRejectedHost() async throws {
+        let suite = "test.lg.discovery.msg.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        let explicitRejected = store.lgWebOSDiscoveryFailureMessage(hostHint: "8.8.8.8")
+        #expect(explicitRejected.contains("8.8.8.8"))
+
+        let allowedHint = store.lgWebOSDiscoveryFailureMessage(hostHint: "192.168.1.50")
+        #expect(!allowedHint.contains("192.168.1.50"))
+
+        store.updateLGWebOSConfig(LGWebOSConfig(isEnabled: true, host: "example.com"))
+        let savedRejected = store.lgWebOSDiscoveryFailureMessage(hostHint: "   ")
+        #expect(savedRejected.contains("example.com"))
+    }
+}
+
+private final class LockedStrings: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [String] = []
+    var items: [String] { lock.withLock { stored } }
+    func append(_ value: String) { lock.withLock { stored.append(value) } }
 }
 
 private final class LockedDevices: @unchecked Sendable {
