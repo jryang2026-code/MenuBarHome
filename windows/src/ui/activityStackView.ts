@@ -1,5 +1,6 @@
 import {
   AutomationEngine,
+  type AutomationRule,
   DoorbellCameraCoordinator,
   DoorbellDetector,
   getAutomationUndoRunId,
@@ -53,6 +54,14 @@ import {
 import { proactiveSignature, renderProactiveInlinePill } from "./proactive.js";
 import { cancelScheduledCommands } from "./scheduledCommands.js";
 import { isWorkstationLocked } from "./transport.js";
+import {
+  SYSTEM_CONTEXT_POLL_INTERVAL_MS,
+  planSystemSignalTransition,
+  readNativeSystemSignals,
+  resolveSystemSignalBaseline,
+  triggerUsesSystemSignal,
+  type SystemSignalBaseline,
+} from "./systemContextPoll.js";
 import { computeUndoAvailability, undoTrackerFor } from "./undoTracker.js";
 
 export const MAX_RECENT_SAFETY_ALERTS = 10;
@@ -110,6 +119,9 @@ export interface HostActivityCenter {
   lastEvaluatedAtMs: number;
   lockPollInFlight: boolean;
   lastSampledLockState: boolean | null;
+  systemSignalBaseline: SystemSignalBaseline | null;
+  lastSystemPollAtMs: number;
+  systemPollInFlight: boolean;
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
   dismissedProactiveSignature?: string | null;
@@ -240,6 +252,9 @@ function createHostActivityCenter(
     lastEvaluatedAtMs: 0,
     lockPollInFlight: false,
     lastSampledLockState: null,
+    systemSignalBaseline: null,
+    lastSystemPollAtMs: 0,
+    systemPollInFlight: false,
     lastClipboardMarkdown: null,
     pendingHighRiskUndoRunId: null,
     dismissedProactiveSignature: null,
@@ -296,6 +311,10 @@ function clearCenterActivities(center: HostActivityCenter): void {
   center.safetyMonitor.resetSessionState(center.scopeKey);
   center.automationEngine.resetTransientState();
   center.lastSampledLockState = null;
+  // A backend switch re-primes both sampled signals so the new scope's first sample never
+  // looks like a power or display transition.
+  center.systemSignalBaseline = null;
+  center.lastSystemPollAtMs = 0;
   center.pendingHighRiskUndoRunId = null;
   center.dismissedProactiveSignature = null;
 }
@@ -1000,6 +1019,119 @@ export async function dispatchSystemContextEvent(
   return runs;
 }
 
+/**
+ * Polls the two Windows signals that the native layer can only report by sampling — AC/battery
+ * (`GetSystemPowerStatus`) and the external display count (`QueryDisplayConfig`) — and dispatches
+ * an engine event when either actually changed. macOS runs the same shape from
+ * `MacContextObserver` (10 s) into `MacContextAutomation`; sleep and display power are pushed from
+ * `system_events.rs` instead, because a poll cannot observe them in time.
+ *
+ * The first sample only primes the engine (see `AutomationEngine.primePowerBaseline`), so booting
+ * on battery never runs a "power disconnected" rule. Returns whether a rule actually ran.
+ */
+export async function pollSystemContextSignals(
+  host: MenuMijiaWindowsApp,
+  nowMs = Date.now(),
+  /** The caller's enabled-rule snapshot; reusing it avoids a second rule-store parse per tick. */
+  enabledRules?: readonly AutomationRule[],
+): Promise<boolean> {
+  if (typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) return false;
+  const center = getHostActivityCenter(host);
+  if (center.systemPollInFlight) return false;
+  if (
+    center.lastSystemPollAtMs > 0 &&
+    nowMs - center.lastSystemPollAtMs < SYSTEM_CONTEXT_POLL_INTERVAL_MS
+  ) {
+    return false;
+  }
+  const rules = enabledRules ?? center.automationEngine.store.load().filter((r) => r.isEnabled);
+  const needsPower = rules.some((r) => triggerUsesSystemSignal(r.trigger, "powerChanged"));
+  const needsDisplay = rules.some((r) => triggerUsesSystemSignal(r.trigger, "externalDisplayChanged"));
+  if (!needsPower && !needsDisplay) return false;
+
+  center.lastSystemPollAtMs = nowMs;
+  center.systemPollInFlight = true;
+  try {
+    const signals = await readNativeSystemSignals({
+      power: needsPower,
+      externalDisplayCount: needsDisplay,
+    });
+    if (!isFullPanelHost(host)) return false;
+    const previous = center.systemSignalBaseline;
+    const transition = planSystemSignalTransition(previous, signals);
+    const baseline = resolveSystemSignalBaseline(previous, signals);
+    center.systemSignalBaseline = baseline;
+    if (baseline.power !== null && previous?.power == null) {
+      center.automationEngine.primePowerBaseline(
+        baseline.power.onExternalPower,
+        baseline.power.batteryPercent,
+      );
+    }
+    if (baseline.externalDisplayCount !== null && previous?.externalDisplayCount == null) {
+      center.automationEngine.primeExternalDisplayBaseline(baseline.externalDisplayCount);
+    }
+
+    let fired = false;
+    if (transition.power !== null) {
+      const runs = await dispatchSystemContextEvent(
+        host,
+        {
+          kind: "powerChanged",
+          onExternalPower: transition.power.onExternalPower,
+          batteryPercent: transition.power.batteryPercent,
+        },
+        nowMs,
+      );
+      fired = fired || runs.length > 0;
+    }
+    if (transition.externalDisplayCount !== null) {
+      const runs = await dispatchSystemContextEvent(
+        host,
+        {
+          kind: "externalDisplayChanged",
+          externalDisplayCount: transition.externalDisplayCount,
+        },
+        nowMs,
+      );
+      fired = fired || runs.length > 0;
+    }
+    if (fired) host.queueBackgroundRender();
+    return fired;
+  } finally {
+    center.systemPollInFlight = false;
+  }
+}
+
+/** `PBT_APMSUSPEND` from `system_events.rs`: Windows is about to suspend. */
+export function notifySystemSleep(host: unknown, nowMs = Date.now()): void {
+  if (!isFullPanelHost(host)) return;
+  void dispatchSystemContextEvent(host, { kind: "systemSleep" }, nowMs).then((runs) => {
+    if (runs.length > 0) host.queueBackgroundRender();
+  });
+}
+
+/** `PBT_APMRESUMEAUTOMATIC` / `PBT_APMRESUMESUSPEND` from `system_events.rs`. */
+export function notifySystemWake(host: unknown, nowMs = Date.now()): void {
+  if (!isFullPanelHost(host)) return;
+  void dispatchSystemContextEvent(host, { kind: "systemWake" }, nowMs).then((runs) => {
+    if (runs.length > 0) host.queueBackgroundRender();
+  });
+}
+
+/** `GUID_CONSOLE_DISPLAY_STATE` change from `system_events.rs` (0 = off, 1 = on, 2 = dimmed). */
+export function notifyDisplayPowerChanged(
+  host: unknown,
+  isAsleep: boolean,
+  nowMs = Date.now(),
+): void {
+  if (!isFullPanelHost(host)) return;
+  void dispatchSystemContextEvent(host, { kind: "displayPowerChanged", isAsleep }, nowMs).then(
+    (runs) => {
+      if (runs.length > 0) host.queueBackgroundRender();
+    },
+  );
+}
+
 export function notifyPanelWakeLifecycle(host: unknown, nowMs = Date.now()): void {
   if (!isFullPanelHost(host)) return;
   void dispatchSystemContextEvent(host, { kind: "panelWake" }, nowMs);
@@ -1091,6 +1223,9 @@ export function tickSafetyHealthAndAutomation(
       }
     }
   }
+
+  // Power and external-display sampling runs on the macOS 10 s cadence inside the 1 s tick.
+  void pollSystemContextSignals(host, nowMs, enabledRules);
 
   if (
     (enabledRules.length > 0 && (host.settings.connectionMode === "demo" || isLiveSnapshotReadyForTelemetry(host) || host.devices.length === 0)) ||

@@ -20,7 +20,7 @@ MenuBarHome 的 macOS 版本采用 Swift 6 原生开发，Windows 11 版本基�
 | **GrokBall 情绪球与侧边推荐** | ✅ 原生 Canvas | — 暂不支持 | macOS 下轻点小球展开最多四项可撤销设备推荐，支持自由拖动与长按 0.5 秒进入语音输入，默认黑球白眼跟随光标（减弱动态效果下静态显示），基于 [TyCoding/grok-ball](https://github.com/TyCoding/grok-ball)（MIT）；Windows 端推荐统一收纳在顶部通知岛中。 |
 | **顶部快捷动作与场景栏** | ✅ 3 个动作 | ✅ 3 个动作 | macOS 通过设置里的「输入框里显示快捷场景」开关（点击输入框时在下方展开），Windows 通过「显示顶部快捷场景栏」开关。双端都提供 全屋关灯 / 柔和夜灯 / 关温控风扇（家里有对应设备时才显示），Windows 演示模式另用四个示例动作；接入 Home Assistant 后双端都会追加你的场景胶囊。macOS 下动作与场景合计不超过四项时等宽铺满，更多则支持普通鼠标滚轮横向滚动。 |
 | **批量全关与即刻撤销** | ✅ 支持 | ✅ 支持 | 长按 0.6 秒触发；插座与扫地机默认不参与，可调整；操作可撤销时提供 10–15 秒横幅 |
-| **Mac 状态自动化** | ✅ 支持 | — 暂不支持 | 支持锁屏、唤醒、外接显示器，以及摄像头 / 麦克风占用、电源与电量、Wi-Fi、专注模式、日历与深夜使用等 Mac 专属触发（默认关闭） |
+| **状态自动化** | ✅ 支持 | ⚠️ 部分支持 | macOS 支持锁屏、唤醒、外接显示器，以及摄像头 / 麦克风占用、电源与电量、Wi-Fi、专注模式、日历与深夜使用等 Mac 专属触发（默认关闭）。Windows 已接入锁屏离开、电源与电量（`GetSystemPowerStatus`，10 秒轮询）、外接显示器（`QueryDisplayConfig`）、休眠与息屏（`RegisterSuspendResumeNotification` / `GUID_CONSOLE_DISPLAY_STATE`）、深夜使用、定时与传感器条件；Wi-Fi、摄像头 / 麦克风、专注模式、日历与合盖休眠暂无事件源 |
 | **系统快捷指令集成** | ✅ 支持 (4 个动作) | — 暂不支持 | 提供设备切换、执行场景、一句话控制、查询温湿度 4 项 App Intents |
 | **URL Scheme 控制** | ✅ 支持 | ✅ 支持 | `menumijia://toggle`（及 `power`、`brightness`、`color-temp`、`temperature`、`fan`、`scene`、`ask`、`focus`）调用默认需确认，可在设置中允许直接执行；Windows 通过单实例转发交给运行中的托盘程序处理 |
 | **Raycast 扩展、本地 CLI 与 MCP 服务** | ✅ 支持 | ✅ 支持 | `raycast/`、`scripts/mijia` 与 `scripts/mijia-mcp` 只读应用写出的 `raycast-snapshot.json`（macOS 为 `~/Library/Application Support/MenuBarMijia/`，Windows 为 `%LOCALAPPDATA%\MenuBarMijia\`），通过 `menumijia://` 链接控制设备、场景与快捷动作，不持有任何凭据；MCP 响应自动剥离 `bridgeToken`，高风险二次确认与锁屏拦截仍在应用内执行 |

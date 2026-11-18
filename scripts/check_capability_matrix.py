@@ -201,8 +201,8 @@ CODE_ANCHORS = (
             "symbol": "MacContextAutomation",
         },
         "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
-            "symbol": "MacContextAutomation",
+            "path": "windows/src/ui/systemContextPoll.ts",
+            "symbol": "SYSTEM_CONTEXT_POLL_INTERVAL_MS",
         },
     },
     {

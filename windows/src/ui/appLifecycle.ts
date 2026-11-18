@@ -29,7 +29,10 @@ import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
   dispatchSystemContextEvent,
+  notifyDisplayPowerChanged,
   notifyPanelWakeLifecycle,
+  notifySystemSleep,
+  notifySystemWake,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
@@ -925,6 +928,21 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
     }
   };
+  // Native power callbacks (`system_events.rs`) forward suspend, resume and console-display
+  // changes as DOM events; a 10 s poll cannot see any of them in time.
+  const onSystemSleep = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    notifySystemSleep(host);
+  };
+  const onSystemWake = () => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    notifySystemWake(host);
+  };
+  const onDisplayPower = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    const detail = (event as CustomEvent<{ readonly asleep?: unknown } | null>).detail;
+    notifyDisplayPowerChanged(host, detail?.asleep === true);
+  };
 
   state.recoveryDisposers.push(
     listen(ownerDoc, "visibilitychange", onVisibilityChange),
@@ -933,6 +951,9 @@ export function bindLifecycleRecovery(
     listen(ownerWin, "online", onOnline),
     listen(ownerWin, "offline", onOffline),
     listen(ownerWin, "menumijia:resume", onResume),
+    listen(ownerWin, "menumijia:system-sleep", onSystemSleep),
+    listen(ownerWin, "menumijia:system-wake", onSystemWake),
+    listen(ownerWin, "menumijia:display-power", onDisplayPower),
     listen(ownerWin, "pagehide", onPageHide),
   );
 

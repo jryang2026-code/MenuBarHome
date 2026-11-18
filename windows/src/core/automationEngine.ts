@@ -44,20 +44,30 @@ export type SystemContextEventKind = SystemContextEvent["kind"];
 /**
  * Windows 当前有生产事件来源驱动的自动化触发器集合。
  *
- * 生产链路只派发三类系统上下文事件（`ui/activityStackView.ts` 中 `dispatchSystemContextEvent`
+ * 生产链路派发这些系统上下文事件（`ui/activityStackView.ts` 中 `dispatchSystemContextEvent`
  * 的全部调用点）：锁屏轮询状态翻转派发 `lockChanged`，面板唤醒生命周期派发 `panelWake`，
- * `tickSafetyHealthAndAutomation` 周期派发 `tick`。`dispatchEvent` 里其余事件分支
- * （显示器电源、系统休眠/唤醒、电源/电池、Wi-Fi、摄像头/麦克风、外接显示器、
- * 专注模式、日历）在 Windows 上没有事件源，规则永远等不到触发。
+ * `tickSafetyHealthAndAutomation` 周期派发 `tick`；`pollSystemContextSignals` 每 10 秒采样
+ * 电源/电量与外接显示器数量，变化时派发 `powerChanged`、`externalDisplayChanged`；
+ * `system_events.rs` 的电源回调推送 `systemSleep` / `systemWake` / `displayPowerChanged`
+ * （`notifySystemSleep` / `notifySystemWake` / `notifyDisplayPowerChanged`）。
  *
- * 第二阶段接入原生事件采集后，把对应触发器加入本集合并在 `WINDOWS_TRIGGER_SOURCES`
- * 登记其事件来源即可解锁设置界面下拉与规则标识。
+ * 仍未接入的触发器（Wi-Fi、摄像头/麦克风、专注模式、日历、合盖休眠）没有事件源，规则永远
+ * 等不到触发，因此留在本集合之外，设置界面也不会提供。
  */
 export const WINDOWS_SUPPORTED_TRIGGERS = [
   "away",
   "back",
   "screenLocked",
   "screenUnlocked",
+  "displaySleep",
+  "displayWake",
+  "systemSleep",
+  "systemWake",
+  "powerConnected",
+  "powerDisconnected",
+  "batteryBelowThreshold",
+  "externalDisplayConnected",
+  "externalDisplayDisconnected",
   "lateNightUsage",
   "scheduledTime",
   "sensorThreshold",
@@ -74,10 +84,19 @@ export function isTriggerSupportedOnWindows(trigger: AutomationTrigger): boolean
 
 /** 每个受支持触发器的生产事件来源（守护测试据此静态核对生产派发点，防止加入未接线的触发器）。 */
 export const WINDOWS_TRIGGER_SOURCES: Readonly<Record<WindowsSupportedTrigger, readonly SystemContextEventKind[]>> = {
-  away: ["lockChanged"],
-  back: ["lockChanged"],
+  away: ["lockChanged", "displayPowerChanged", "systemSleep"],
+  back: ["lockChanged", "displayPowerChanged", "systemWake"],
   screenLocked: ["lockChanged", "tick"],
   screenUnlocked: ["lockChanged"],
+  displaySleep: ["displayPowerChanged"],
+  displayWake: ["displayPowerChanged"],
+  systemSleep: ["systemSleep"],
+  systemWake: ["systemWake"],
+  powerConnected: ["powerChanged"],
+  powerDisconnected: ["powerChanged"],
+  batteryBelowThreshold: ["powerChanged"],
+  externalDisplayConnected: ["externalDisplayChanged"],
+  externalDisplayDisconnected: ["externalDisplayChanged"],
   lateNightUsage: ["panelWake", "tick"],
   scheduledTime: ["tick"],
   sensorThreshold: ["tick"],
@@ -1087,6 +1106,31 @@ export class AutomationEngine {
   public primeLockBaseline(isLocked: boolean): void {
     this.context = { ...this.context, isLocked };
     this.hasLockBaseline = true;
+  }
+
+  /**
+   * Seeds the polled power signal from the first native sample, so the first *transition* is what
+   * fires: macOS also starts from a nil previous snapshot (`MacContextObserver.lastContext`), and a
+   * machine that boots on battery must not look like it just unplugged. The per-rule battery edge
+   * is pinned too, otherwise a laptop that is already below the threshold would fire on its first
+   * charge-level change inside the window.
+   */
+  public primePowerBaseline(onExternalPower: boolean, batteryPercent: number | null): void {
+    this.context = { ...this.context, onExternalPower, batteryPercent };
+    this.batteryEdgeByRule.clear();
+    if (batteryPercent === null) return;
+    for (const rule of this.store.load()) {
+      if (rule.trigger !== "batteryBelowThreshold") continue;
+      this.batteryEdgeByRule.set(rule.id, batteryPercent < rule.triggerOptions.batteryThresholdPercent);
+    }
+  }
+
+  /** Seeds the external display count so plugging a display in — not the startup layout — fires. */
+  public primeExternalDisplayBaseline(externalDisplayCount: number): void {
+    this.context = {
+      ...this.context,
+      externalDisplayCount: Math.max(0, Math.trunc(externalDisplayCount)),
+    };
   }
 
   private passesConditions(

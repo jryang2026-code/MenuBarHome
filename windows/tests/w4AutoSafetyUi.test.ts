@@ -843,14 +843,16 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
 
     app.openSettingsSheet("system");
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
-    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 3);
+    // cameraInUse 与带 Wi-Fi 条件的 away 仍不支持；batteryBelowThreshold 已接入电源事件。
+    assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 2);
+    assert.equal(document.querySelector('[data-auto-rule-unsupported="legacy-battery"]'), null);
     assert.match(document.body.textContent ?? "", /Windows 暂不支持，不会触发/);
 
     // 旧规则原值照常展示，不被静默改写。
     const wifiRowText = element('[data-auto-rule-unsupported="legacy-wifi"]').closest("[data-auto-rule-row]")?.textContent ?? "";
     assert.match(wifiRowText, /Office_Guest, Home_5G/);
     assert.match(wifiRowText, /排除 Wi-Fi: Office_Guest, Home_5G/);
-    const batteryRowText = element('[data-auto-rule-unsupported="legacy-battery"]').closest("[data-auto-rule-row]")?.textContent ?? "";
+    const batteryRowText = element('[data-auto-rule-row="legacy-battery"]').textContent ?? "";
     assert.match(batteryRowText, /电量 < 18%/);
 
     // 开关切换只写 isEnabled，其余字段保持字节级一致。
@@ -873,9 +875,12 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     assert.equal(afterEnable[0]?.isEnabled, true);
     assert.deepEqual(afterEnable.map(project), before.map(project));
 
-    // 这些规则不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态。
+    // 未支持触发器不会因 Windows 生产事件（lockChanged / tick）触发，即使处于启用状态；
+    // 电量规则已接入电源采样，只在 powerChanged 里越过阈值时才执行。
     await dispatchSystemContextEvent(app, { kind: "lockChanged", isLocked: true }, new Date(2026, 10, 14, 14, 0, 0).getTime());
     await dispatchSystemContextEvent(app, { kind: "tick" }, new Date(2026, 10, 14, 14, 2, 30).getTime());
+    assert.equal(dispatched.length, 0);
+    // 已接入的电源事件不在 lockChanged / tick 里，所以旧电量规则同样不会被动触发。
     assert.equal(dispatched.length, 0);
   });
 });
