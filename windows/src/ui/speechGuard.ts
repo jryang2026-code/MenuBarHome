@@ -4,6 +4,7 @@ import {
   onOpenURL,
   type AppURLCommandHost,
   type BuiltInURLSceneId,
+  type UrlDeviceFocusResult,
 } from "../core/appUrlCommand.js";
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
@@ -1208,9 +1209,13 @@ function createUrlCommandHostAdapter(
       return true;
     },
 
-    focusDeviceFromUrl(deviceId: string): void {
-      if (!revisionStillMatches()) return;
-      host.activeSheet = "none";
+    focusDeviceFromUrl(deviceId: string): UrlDeviceFocusResult {
+      if (!revisionStillMatches()) return "source-changed";
+      if (host.activeSheet === "settings") {
+        if (!host.requestCloseSettingsSheet()) return "unsaved-settings";
+      } else {
+        host.activeSheet = "none";
+      }
       if (host.cameraLive.activeLiveCameraId !== null) {
         host.cameraLive.closeCameraLiveView();
       }
@@ -1232,6 +1237,7 @@ function createUrlCommandHostAdapter(
         `[data-tile-id="${escapedId}"]`,
       );
       card?.scrollIntoView?.({ block: "nearest" });
+      return "focused";
     },
   };
 }
