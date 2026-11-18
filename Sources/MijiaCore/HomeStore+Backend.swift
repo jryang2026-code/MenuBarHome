@@ -76,6 +76,7 @@ extension HomeStore {
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: dev.id)
             devices.removeAll { $0.id == dev.id }
             return
         }
@@ -85,6 +86,7 @@ extension HomeStore {
         }
         latestLGDevice = dev
         rawDeviceNames[dev.id] = dev.name
+        lastReportedDevices[dev.id] = dev
         let now = optimisticNow()
         pruneExpiredOptimisticLocks(for: dev.id, at: now)
         let lockedFields = activeLockedFields(for: dev.id, at: now)
@@ -253,7 +255,7 @@ extension HomeStore {
         }
     }
 
-    private func handleProviderEvent(_ event: HomeProviderEvent) {
+    func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
             if connectionStatus != status { connectionStatus = status }
@@ -413,6 +415,15 @@ extension HomeStore {
             }
             // 更多设置 rows lock independently per controlId: a write in flight keeps only that
             // facet's local value until the lock expires or a read-back confirms it (#5).
+            var nextReportedDevices = Dictionary(
+                snapshot.devices.map { ($0.id, $0) },
+                uniquingKeysWith: { first, _ in first }
+            )
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, nextReportedDevices[lgDev.id] == nil {
+                nextReportedDevices[lgDev.id] = lgDev
+            }
+            lastReportedDevices = nextReportedDevices
+            lastReportedFacets = snapshot.deviceFacets
             var nextFacets: [String: [FacetControl]] = [:]
             for device in snapshot.devices {
                 var lockedControlIds = activeLockedFacetControlIds(for: device.id, at: now)
@@ -560,7 +571,7 @@ extension HomeStore {
         if devices != nextDevices { devices = nextDevices }
     }
 
-    private func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
+    func devicesWithAliases(_ input: [SmartDevice], overrides: [String: String]? = nil) -> [SmartDevice] {
         var result = input
         let aliases: [String: String]
         if let overrides {
@@ -1035,6 +1046,8 @@ extension HomeStore {
             for removedId in removedDeviceIds {
                 cancelFacetWrites(for: removedId)
                 deviceFacets.removeValue(forKey: removedId)
+                lastReportedDevices.removeValue(forKey: removedId)
+                lastReportedFacets.removeValue(forKey: removedId)
             }
             environmentReadings.removeAll { removedDeviceIds.contains($0.id) }
             rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
@@ -1182,6 +1195,7 @@ extension HomeStore {
         self.lgConfig = newConfig
         if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: LGWebOSProtocol.deviceId)
             devices.removeAll { $0.id == LGWebOSProtocol.deviceId }
         }
         // Demo mode persists the preference but never connects to the LAN (#47).
