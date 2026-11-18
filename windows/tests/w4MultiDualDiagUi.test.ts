@@ -52,6 +52,7 @@ import {
   markAccountSessionRejected,
 } from "../src/core/miAccountsStore.js";
 import { PINNED_DEVICE_SOURCES_STORAGE_KEY } from "../src/core/dualSourceProvider.js";
+import { HomeAssistantSynthesizer, homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import {
   GITHUB_UNSUPPORTED_DEVICE_ISSUE_URL,
   appDiagnosticsLog,
@@ -1003,6 +1004,283 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     assert.equal(app.devices.length, 1);
     assert.equal(app.devices[0]?.id, haCam.id);
     assert.equal(app.homes.length, 0);
+  });
+
+  it("prefers current dual-source HA snapshot over stale cachedHAHome on Xiaomi sign-out", async () => {
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [{ id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-plug-only"] }] }],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [{ did: "mi-plug-only", name: "米家专属插座", model: PLUG_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      return okMi({});
+    };
+
+    const oldCachedRaw = {
+      areas: [{ area_id: "a1", name: "客厅" }],
+      devices: [
+        { id: "ha-old-removed", area_id: "a1", name: "已拆除旧插座", model: "chuangmi.plug.v3", identifiers: [], connections: [] },
+        { id: "ha-lamp-1", area_id: "a1", name: "客厅旧灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "switch.old_removed", device_id: "ha-old-removed", area_id: null, disabled_by: null, hidden_by: null },
+        { entity_id: "light.living_lamp", device_id: "ha-lamp-1", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "switch.old_removed", state: "on", attributes: { friendly_name: "已拆除旧插座" } },
+        { entity_id: "light.living_lamp", state: "off", attributes: { friendly_name: "客厅旧灯" } },
+        { entity_id: "scene.old_night", state: "scening", attributes: { friendly_name: "旧夜间模式" } },
+      ],
+    };
+
+    const freshDualRaw = {
+      areas: [{ area_id: "a1", name: "客厅" }, { area_id: "a2", name: "书房" }],
+      devices: [
+        { id: "ha-lamp-1", area_id: "a1", name: "客厅新灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+        { id: "ha-new-study-lamp", area_id: "a2", name: "书房新增灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+        { id: "ha-temp-1", area_id: "a1", name: "客厅温湿度", model: "miaomiaoce.sensor_ht.t2", identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "light.living_lamp", device_id: "ha-lamp-1", area_id: null, disabled_by: null, hidden_by: null },
+        { entity_id: "light.study_new", device_id: "ha-new-study-lamp", area_id: null, disabled_by: null, hidden_by: null },
+        { entity_id: "sensor.living_temp", device_id: "ha-temp-1", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "light.living_lamp", state: "on", attributes: { friendly_name: "客厅新灯", supported_color_modes: ["brightness"], brightness: 204 } },
+        { entity_id: "light.study_new", state: "on", attributes: { friendly_name: "书房新增灯" } },
+        { entity_id: "sensor.living_temp", state: "24.5", attributes: { friendly_name: "客厅温湿度", device_class: "temperature", unit_of_measurement: "°C" } },
+        { entity_id: "scene.new_morning", state: "scening", attributes: { friendly_name: "新晨起模式" } },
+      ],
+    };
+
+    let haFetchCount = 0;
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      haFetchCount += 1;
+      return freshDualRaw as unknown as T;
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: secure.invoke });
+    await settleUi(6);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    app.settings.cachedHAHome = {
+      identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken)!,
+      home: HomeAssistantSynthesizer.synthesize(oldCachedRaw),
+    };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    assert.equal(haFetchCount, 1);
+    assert.ok(app.devices.some((d) => d.id === "ha-new-study-lamp"));
+    assert.ok(app.devices.some((d) => d.id === "mi-plug-only"));
+    assert.ok(
+      app.settings.cachedHAHome.home.devices.some((d) => d.id === "ha-old-removed"),
+      "dual-source refresh must leave cachedHAHome stale",
+    );
+
+    signOutXiaomiAccount(app);
+
+    // Synchronously (before post-sign-out refreshHADevices resolves), the list must already show current HA data, not old cache.
+    assert.equal(app.settings.connectionMode, "homeAssistant");
+    assert.equal(isDualSourceEnabled(app), false);
+    assert.equal(app.devices.some((d) => d.id === "ha-old-removed"), false, "stale cached device must not reappear");
+    assert.equal(app.devices.some((d) => d.id === "mi-plug-only"), false, "Xiaomi-only device must be removed");
+    const lamp = app.devices.find((d) => d.id === "ha-lamp-1");
+    assert.ok(lamp && lamp.kind.kind === "light" && lamp.kind.isOn, "current HA state must not be overwritten by old cache");
+    assert.ok(app.devices.some((d) => d.id === "ha-new-study-lamp"), "newly added HA device must remain visible");
+    assert.deepEqual(app.scenes.map((s) => s.id), ["scene.new_morning"]);
+    assert.ok(app.environmentReadings.some((r) => r.id === "ha-temp-1" && r.temperature === 24.5));
+
+    await settleUi(10);
+    assert.equal(haFetchCount, 2);
+  });
+
+  it("does not revert to stale cachedHAHome when post-sign-out HA refresh fails", async () => {
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const transport: HttpTransport = async (req: HttpRequest): Promise<HttpResponse> => {
+      if (req.url.includes("miot-spec.org")) {
+        return { status: 200, headers: {}, body: JSON.stringify(PLUG_SPEC_RAW) };
+      }
+      const { path } = cookieHeaderAccount(req);
+      const payload = req.body ? decryptMiPayload(req.body) : {};
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({
+          homelist: [{ id: "h1", name: "家", roomlist: [{ id: "r1", name: "玄关", dids: ["mi-plug-only"] }] }],
+        });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({
+          list: [{ did: "mi-plug-only", name: "米家专属插座", model: PLUG_MODEL, isOnline: true }],
+        });
+      }
+      if (path === "miotspec/prop/get") {
+        const params = (payload["params"] as Array<{ did: string; siid: number; piid: number }>) ?? [];
+        return okMi(params.map((p) => ({ ...p, code: 0, value: true })));
+      }
+      return okMi({});
+    };
+
+    const oldCachedRaw = {
+      areas: [{ area_id: "a1", name: "客厅" }],
+      devices: [
+        { id: "ha-old-removed", area_id: "a1", name: "旧缓存插座", model: "chuangmi.plug.v3", identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "switch.old_removed", device_id: "ha-old-removed", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "switch.old_removed", state: "off", attributes: { friendly_name: "旧缓存插座" } },
+        { entity_id: "scene.old_cached", state: "scening", attributes: { friendly_name: "旧缓存场景" } },
+      ],
+    };
+
+    const freshDualRaw = {
+      areas: [{ area_id: "a2", name: "书房" }],
+      devices: [
+        { id: "ha-new-study-lamp", area_id: "a2", name: "书房当前新灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "light.study_new", device_id: "ha-new-study-lamp", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "light.study_new", state: "on", attributes: { friendly_name: "书房当前新灯" } },
+        { entity_id: "scene.fresh_study", state: "scening", attributes: { friendly_name: "新书房场景" } },
+      ],
+    };
+
+    let failHA = false;
+    const haInvoke = async <T>(cmd: string): Promise<T> => {
+      assert.equal(cmd, "ha_snapshot");
+      if (failHA) {
+        throw new Error("HA gateway unreachable");
+      }
+      return freshDualRaw as unknown as T;
+    };
+
+    const app = createMountedApp({ transport, vault, secureInvoke: secure.invoke });
+    await settleUi(6);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    app.settings.cachedHAHome = {
+      identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken)!,
+      home: HomeAssistantSynthesizer.synthesize(oldCachedRaw),
+    };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    await refreshDevices(app, false);
+    assert.ok(app.settings.cachedHAHome.home.devices.some((d) => d.id === "ha-old-removed"));
+    failHA = true;
+
+    openConnectionsAndDiagModal(app, "accounts");
+    await settleUi(6);
+    const cnAcc = makeMiAccount(SESSION_CN_PRIMARY);
+    app.root.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${cnAcc.id}"]`)!.click();
+    await settleUi(20);
+
+    assert.match(app.haConnectionError ?? "", /HA gateway unreachable/);
+    assert.deepEqual(app.devices.map((d) => d.id), ["ha-new-study-lamp"]);
+    assert.equal(app.devices.some((d) => d.id === "ha-old-removed"), false);
+    assert.deepEqual(app.scenes.map((s) => s.id), ["scene.fresh_study"]);
+  });
+
+  it("falls back to matching cachedHAHome on Xiaomi sign-out only when coordinator has no current HA snapshot", async () => {
+    const secure = makeInMemorySecureStore({
+      mi_session: JSON.stringify({
+        userId: SESSION_CN_PRIMARY.userId,
+        cUserId: SESSION_CN_PRIMARY.cUserId,
+        ssecurity: SESSION_CN_PRIMARY.ssecurity,
+        serviceToken: SESSION_CN_PRIMARY.serviceToken,
+        region: "cn",
+      }),
+      ha_token: "ha-dual-token",
+    });
+    const vault = new CredentialVault(secure.invoke);
+
+    const cachedRaw = {
+      areas: [{ area_id: "a1", name: "客厅" }],
+      devices: [
+        { id: "ha-cached-lamp", area_id: "a1", name: "缓存客厅灯", model: LIGHT_MODEL, identifiers: [], connections: [] },
+      ],
+      entities: [
+        { entity_id: "light.cached_lamp", device_id: "ha-cached-lamp", area_id: null, disabled_by: null, hidden_by: null },
+      ],
+      states: [
+        { entity_id: "light.cached_lamp", state: "on", attributes: { friendly_name: "缓存客厅灯" } },
+        { entity_id: "scene.cached_home", state: "scening", attributes: { friendly_name: "缓存场景" } },
+      ],
+    };
+
+    const haInvoke = async <T>(): Promise<T> => {
+      throw new Error("HA temporarily unavailable");
+    };
+
+    const app = createMountedApp({ vault, secureInvoke: secure.invoke });
+    await settleUi(6);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-dual-token";
+    app.settings.miSession = { ...SESSION_CN_PRIMARY };
+    app.settings.cachedHAHome = {
+      identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken)!,
+      home: HomeAssistantSynthesizer.synthesize(cachedRaw),
+    };
+    setHostHAInvokeOverride(app, haInvoke);
+    setHostDualSourceEnabled(app, true, { persist: true });
+
+    // No dual-source refresh has succeeded for HA, so coordinator has no current HA snapshot.
+    assert.equal(getHostDualSourceState(app), null);
+
+    signOutXiaomiAccount(app);
+    await settleUi(10);
+
+    assert.equal(app.settings.connectionMode, "homeAssistant");
+    assert.equal(isDualSourceEnabled(app), false);
+    assert.deepEqual(app.devices.map((d) => d.id), ["ha-cached-lamp"]);
+    assert.deepEqual(app.scenes.map((s) => s.id), ["scene.cached_home"]);
   });
 });
 

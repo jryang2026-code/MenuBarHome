@@ -5,7 +5,7 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
 import { MiAccountScope, MiAccountsStore, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
-import type { DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { EnvironmentReading, FacetControl, HomeBackend, HomeScene, SmartDevice } from "../core/models.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
@@ -628,6 +628,61 @@ async function performSignOutSingleMiAccountOnHost(
   }
 }
 
+function buildHAStateFromDualRoutes(
+  host: ConnectionsAndDiagHost,
+  dualRoutes: Readonly<Record<string, DeviceMergeRoute>>,
+): {
+  readonly devices: SmartDevice[];
+  readonly environmentReadings: EnvironmentReading[];
+  readonly deviceFacets: Record<string, readonly FacetControl[]>;
+} {
+  const nextDevices: SmartDevice[] = [];
+  const keepIds = new Set<string>();
+  const seenIds = new Set<string>();
+  for (const dev of host.devices) {
+    seenIds.add(dev.id);
+    const route = dualRoutes[dev.id];
+    if (route?.backend === "homeAssistant") {
+      nextDevices.push({
+        ...route.sourceDevice,
+        id: dev.id,
+        roomId: dev.roomId,
+        roomName: dev.roomName,
+        sourceBackend: "homeAssistant",
+      });
+      keepIds.add(dev.id);
+    } else if (route?.alternateBackend === "homeAssistant" && route.alternateDevice) {
+      nextDevices.push({
+        ...route.alternateDevice,
+        id: dev.id,
+        roomId: dev.roomId,
+        roomName: dev.roomName,
+        sourceBackend: "homeAssistant",
+      });
+      keepIds.add(dev.id);
+    } else if (!route && dev.sourceBackend === "homeAssistant") {
+      nextDevices.push(dev);
+      keepIds.add(dev.id);
+    }
+  }
+  for (const [id, route] of Object.entries(dualRoutes)) {
+    if (seenIds.has(id)) continue;
+    if (route.backend === "homeAssistant") {
+      nextDevices.push({ ...route.sourceDevice, id, sourceBackend: "homeAssistant" });
+      keepIds.add(id);
+    } else if (route.alternateBackend === "homeAssistant" && route.alternateDevice) {
+      nextDevices.push({ ...route.alternateDevice, id, sourceBackend: "homeAssistant" });
+      keepIds.add(id);
+    }
+  }
+  const environmentReadings = host.environmentReadings.filter((r) => keepIds.has(r.id));
+  const deviceFacets: Record<string, readonly FacetControl[]> = {};
+  for (const [id, controls] of Object.entries(host.deviceFacets)) {
+    if (keepIds.has(id)) deviceFacets[id] = controls;
+  }
+  return { devices: nextDevices, environmentReadings, deviceFacets };
+}
+
 export function finishAllMiAccountsSignedOutOnHost(
   host: ConnectionsAndDiagHost,
   options: {
@@ -656,7 +711,10 @@ export function finishAllMiAccountsSignedOutOnHost(
   host.cloudValuesStale = false;
 
   const hasHA = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
-  const dualRoutes = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+  const dualCoordinator = wasDualSource ? host.dualSourceCoordinator : null;
+  const currentHASnapshot = dualCoordinator?.getLastHASnapshot?.() ?? null;
+  const lastMerged = dualCoordinator?.getLastMerged() ?? null;
+  const dualRoutes = lastMerged?.routes;
   setHostDualSourceEnabled(host, false, { persist: true });
 
   if (hasHA && (wasDualSource || host.settings.connectionMode === "homeAssistant")) {
@@ -668,46 +726,28 @@ export function finishAllMiAccountsSignedOutOnHost(
       const cache = host.settings.cachedHAHome;
       const matchesCache =
         cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
-      if (matchesCache && cache) {
+      const routeDerivedHA = dualRoutes ? buildHAStateFromDualRoutes(host, dualRoutes) : null;
+      if (currentHASnapshot) {
+        host.devices = structuredClone(currentHASnapshot.home.devices);
+        host.scenes = structuredClone(currentHASnapshot.home.scenes);
+        host.environmentReadings = structuredClone(currentHASnapshot.home.environmentReadings);
+        host.deviceFacets = structuredClone(currentHASnapshot.home.deviceFacets ?? {});
+      } else if (routeDerivedHA && routeDerivedHA.devices.length > 0) {
+        host.devices = routeDerivedHA.devices;
+        if (lastMerged) {
+          host.scenes = structuredClone(lastMerged.home.scenes);
+        }
+        host.environmentReadings = routeDerivedHA.environmentReadings;
+        host.deviceFacets = routeDerivedHA.deviceFacets;
+      } else if (matchesCache && cache) {
         host.devices = structuredClone(cache.home.devices);
         host.scenes = structuredClone(cache.home.scenes);
         host.environmentReadings = structuredClone(cache.home.environmentReadings);
         host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
       } else if (dualRoutes) {
-        const nextDevices: SmartDevice[] = [];
-        const keepIds = new Set<string>();
-        for (const dev of host.devices) {
-          const route = dualRoutes[dev.id];
-          if (route?.backend === "homeAssistant") {
-            nextDevices.push({
-              ...route.sourceDevice,
-              id: dev.id,
-              roomId: dev.roomId,
-              roomName: dev.roomName,
-              sourceBackend: "homeAssistant",
-            });
-            keepIds.add(dev.id);
-          } else if (route?.alternateBackend === "homeAssistant" && route.alternateDevice) {
-            nextDevices.push({
-              ...route.alternateDevice,
-              id: dev.id,
-              roomId: dev.roomId,
-              roomName: dev.roomName,
-              sourceBackend: "homeAssistant",
-            });
-            keepIds.add(dev.id);
-          } else if (!route && dev.sourceBackend === "homeAssistant") {
-            nextDevices.push(dev);
-            keepIds.add(dev.id);
-          }
-        }
-        host.devices = nextDevices;
-        host.environmentReadings = host.environmentReadings.filter((r) => keepIds.has(r.id));
-        const nextFacets: Record<string, readonly FacetControl[]> = {};
-        for (const [id, controls] of Object.entries(host.deviceFacets)) {
-          if (keepIds.has(id)) nextFacets[id] = controls;
-        }
-        host.deviceFacets = nextFacets;
+        host.devices = [];
+        host.environmentReadings = [];
+        host.deviceFacets = {};
       } else {
         host.devices = host.devices.filter((d) => d.sourceBackend !== "xiaomiCloud");
         const keepIds = new Set(host.devices.map((d) => d.id));

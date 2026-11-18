@@ -1025,6 +1025,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getLastMerged(): DeviceMergeResult | null { return this.lastMerged;
   }
 
+  getLastHASnapshot(): DualSourceInputSnapshot | null { return this.lastHA;
+  }
+
   reset(): void {
     this.lastHA = null;
     this.lastMi = null;
