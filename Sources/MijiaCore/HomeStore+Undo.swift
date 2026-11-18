@@ -540,22 +540,26 @@ extension HomeStore {
     static let undoWaitLockCeiling: Duration = .seconds(120)
 
     func scheduleUndoBanner(
+        actionId: UUID = UUID(),
         title: String,
         restoreCommands: [DeviceCommand],
         previousDevices: [SmartDevice],
         deviceCount: Int,
         habitReceipt: UserHabitMemory.RecordingReceipt? = nil,
         duration: TimeInterval? = nil,
-        isAllOff: Bool = false
+        isAllOff: Bool = false,
+        attemptedDeviceIds: Set<String>? = nil
     ) {
         let banner = UndoBanner(
+            actionId: actionId,
             title: title,
             restoreCommands: restoreCommands,
             previousDevices: previousDevices,
             deviceCount: deviceCount,
             habitReceipt: habitReceipt,
             duration: duration,
-            isAllOff: isAllOff
+            isAllOff: isAllOff,
+            attemptedDeviceIds: attemptedDeviceIds
         )
         self.undoBanner = banner
         undoTimerTask?.cancel()
@@ -745,7 +749,9 @@ extension HomeStore {
             return nil
         }
         if banner.restoreCommands.isEmpty {
-            lastAssistantUndo = nil
+            if lastAssistantUndo?.actionId == banner.actionId {
+                lastAssistantUndo = nil
+            }
             undoTimerTask?.cancel()
             self.undoBanner = nil
             return nil
@@ -762,14 +768,17 @@ extension HomeStore {
         if confirmation.abortUndo {
             return nil
         }
-        let savedAssistantUndo = lastAssistantUndo
-        lastAssistantUndo = nil
+        let savedAssistantUndo = lastAssistantUndo?.actionId == banner.actionId ? lastAssistantUndo : nil
+        if savedAssistantUndo != nil {
+            lastAssistantUndo = nil
+        }
         undoTimerTask?.cancel()
         self.undoBanner = nil
         batch?.isStopped = true
         let batchTask = batch?.task
         let attemptedDeviceIds = batch?.attemptedDeviceIds ?? banner.attemptedDeviceIds
-        let undoRevision = undoStateRevision
+        let capturedBannerRevision = bannerUndoRevision
+        let capturedAssistantRevision = assistantUndoRevision
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
@@ -862,18 +871,41 @@ extension HomeStore {
                 showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
                 return
             }
-            if undoStateRevision == undoRevision {
-                scheduleUndoBanner(
-                    title: banner.title,
-                    restoreCommands: outcome.failedCommands,
-                    previousDevices: banner.previousDevices,
-                    deviceCount: outcome.failedDeviceIds.count,
-                    habitReceipt: outcome.habitReceipt,
-                    duration: banner.duration,
-                    isAllOff: banner.isAllOff
-                )
-                if let savedAssistantUndo {
-                    lastAssistantUndo = (
+            let lockedBeforeAnySend = outcome.blockedByScreenLock && !outcome.didSendAnyCommand
+            if bannerUndoRevision == capturedBannerRevision {
+                if lockedBeforeAnySend, batchTask == nil {
+                    scheduleUndoBanner(
+                        actionId: banner.actionId,
+                        title: banner.title,
+                        restoreCommands: banner.restoreCommands,
+                        previousDevices: banner.previousDevices,
+                        deviceCount: banner.deviceCount,
+                        habitReceipt: banner.habitReceipt,
+                        duration: banner.duration,
+                        isAllOff: banner.isAllOff,
+                        attemptedDeviceIds: banner.attemptedDeviceIds
+                    )
+                } else {
+                    scheduleUndoBanner(
+                        actionId: banner.actionId,
+                        title: banner.title,
+                        restoreCommands: outcome.failedCommands,
+                        previousDevices: banner.previousDevices.filter { outcome.failedDeviceIds.contains($0.id) },
+                        deviceCount: outcome.failedDeviceIds.count,
+                        habitReceipt: outcome.habitReceipt,
+                        duration: banner.duration,
+                        isAllOff: banner.isAllOff
+                    )
+                }
+            }
+            if let savedAssistantUndo,
+               assistantUndoRevision == capturedAssistantRevision,
+               Date().timeIntervalSince(savedAssistantUndo.at) <= Self.voiceUndoWindow {
+                if lockedBeforeAnySend {
+                    lastAssistantUndo = savedAssistantUndo
+                } else {
+                    lastAssistantUndo = AssistantUndoEntry(
+                        actionId: savedAssistantUndo.actionId,
                         reply: savedAssistantUndo.reply,
                         restore: outcome.failedCommands,
                         previous: savedAssistantUndo.previous.filter { outcome.failedDeviceIds.contains($0.id) },
@@ -1012,6 +1044,8 @@ extension HomeStore {
         let blockedByMiSession: Bool
         /// At least one restore was refused because the Mac locked before or during the send loop.
         let blockedByScreenLock: Bool
+        /// Whether any restore command reached `executeDeviceCommand` before a lock or failure stopped the rest.
+        let didSendAnyCommand: Bool
 
         var succeeded: Bool { failedCommands.isEmpty }
     }
@@ -1031,6 +1065,7 @@ extension HomeStore {
         var failedNames: [String] = []
         var blockedByMiSession = false
         var blockedByScreenLock = false
+        var didSendAnyCommand = false
         for item in applicable {
             guard context == controlContextID else { return nil }
             if failedDeviceIds.contains(item.deviceId) {
@@ -1050,6 +1085,7 @@ extension HomeStore {
                 }
                 continue
             }
+            didSendAnyCommand = true
             do {
                 try await executeDeviceCommand(item.command)
             } catch {
@@ -1074,7 +1110,8 @@ extension HomeStore {
                 failedNames: [],
                 habitReceipt: nil,
                 blockedByMiSession: false,
-                blockedByScreenLock: false
+                blockedByScreenLock: false,
+                didSendAnyCommand: didSendAnyCommand
             )
         }
         rollbackFailedUndoDevices(
@@ -1097,7 +1134,8 @@ extension HomeStore {
             failedNames: failedNames,
             habitReceipt: remainingReceipt,
             blockedByMiSession: blockedByMiSession,
-            blockedByScreenLock: blockedByScreenLock
+            blockedByScreenLock: blockedByScreenLock,
+            didSendAnyCommand: didSendAnyCommand
         )
     }
 

@@ -108,7 +108,7 @@ struct FacetUndoTests {
             devices: [device], facets: [device.id: [facet(entityId: target)]]
         )
         let command = DeviceCommand.setMiotProperty(entityId: target, piid: 2, value: .number(0))
-        store.lastAssistantUndo = (
+        store.lastAssistantUndo = AssistantUndoEntry(
             reply: "Updated mode", restore: [command], previous: store.devices,
             at: Date(), habitReceipt: nil
         )
@@ -263,7 +263,7 @@ struct FacetUndoTests {
             voicePrompts += 1
             return false
         }
-        voiceStore.lastAssistantUndo = (
+        voiceStore.lastAssistantUndo = AssistantUndoEntry(
             reply: "Updated settings", restore: [autoOff, heating], previous: voiceStore.devices,
             at: Date(), habitReceipt: nil
         )
