@@ -37,7 +37,9 @@ The digest is the same value either way — `UpdateCheckerTests` pins `hashFile 
 
 Phase says where it broke; recovery says what the user can actually do about it.
 
-- `retryInstall` — network, disk, unpack, or the swap script. Re-running the same download can work.
+- `retryInstall` — network, disk, package checksum mismatch (e.g. a truncated download), unpack, or
+  the swap script. Re-running the same download can work while still enforcing full Ed25519 + SHA-256 +
+  bundle metadata + codesign verification.
 - `recheck` — the release metadata was wrong or stale; a fresh check is the useful next step.
 - `manualDownload` — a signature, code-signature, bundle-identity, `min_from`, or target-location
   failure. Retrying the identical package cannot succeed, so the UI offers only the release page.
@@ -55,9 +57,11 @@ task, deletes the staging root, and returns to `.available`.
 ## Relaunch watchdog
 
 `confirmRelaunchForUpdate` launches the detached swap, starts
-`HomeStore.updateRelaunchWatchdogInterval` (default 20 s, longer than the script's own 15 s wait for
-the app to exit), then terminates. If the process is still alive after that, the update did not
-land and the state becomes a retryable `.failed` instead of a permanent "正在重启…" that never moves.
+`HomeStore.updateRelaunchWatchdogInterval` (default 30 s, longer than the script's nominal 15 s wait
+for the app to exit), then terminates. While the detached swap process (`.swap.pid`) is still alive,
+the watchdog defers so it never deletes staging out from under a slow swap. Once the swap process has
+exited and this process is still alive, the update did not land because the app did not exit in time,
+and the state becomes a retryable `.failed` instead of a permanent "正在重启…" that never moves.
 A test freezes the watchdog by setting the interval to `nil`.
 
 ## The swap script
