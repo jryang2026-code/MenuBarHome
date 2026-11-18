@@ -3,7 +3,12 @@ import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { availableQuickActions, trText, type QuickActionId } from "../core/quickActions.js";
-import { bindActivityStackAfterRender, renderActivityStack, renderClassicUnifiedUpperStack } from "./activityStackView.js";
+import {
+  bindActivityStackAfterRender,
+  primaryPowerSwitchLightMarkDevice,
+  renderActivityStack,
+  renderClassicUnifiedUpperStack,
+} from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
@@ -15,6 +20,7 @@ import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
+import { ManualControlPolicy } from "../core/assistant.js";
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
@@ -568,7 +574,16 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
   const undo = host.undoButtonVisible();
   if (!reply && !undo && !host.pendingCloudConsent) return "";
   const role = reply?.isError ? "alert" : "status";
-  const hint = reply?.hint ? `<p class="cc-feedback-hint">${host.escapeHtml(reply.hint)}</p>` : "";
+  // #104: only the armed primary-power confirmation offers «这是灯，以后不再询问»; every other
+  // confirmation keeps the rename hint so no copy points to a button that is not rendered.
+  const markAsLightDevice = primaryPowerSwitchLightMarkDevice(host);
+  const hintText = markAsLightDevice
+    ? ManualControlPolicy.wallSwitchMarkPromptHint(markAsLightDevice)
+    : reply?.hint;
+  const hint = hintText ? `<p class="cc-feedback-hint">${host.escapeHtml(hintText)}</p>` : "";
+  const markAsLightPill = markAsLightDevice
+    ? `<button class="cc-inline-pill" data-mark-switch-light="${host.escapeHtml(markAsLightDevice.id)}">${t("这是灯，以后不再询问")}</button>`
+    : "";
   return `<div class="win-notif-card cc-live-banner cc-feedback-card ${reply?.isError ? "is-error" : ""}" role="${role}">
     <div class="cc-feedback-row">
       ${reply ? `<span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>` : ""}
@@ -577,6 +592,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
           ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
           : ""
       }
+      ${markAsLightPill}
       ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>

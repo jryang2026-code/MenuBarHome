@@ -549,6 +549,7 @@ extension HomeStore {
             return lhs.offset < rhs.offset
         }.map(\.element)
 
+        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
         var favCounter = 0
         let deviceItems: [RaycastDeviceItem] = sortedDevices.map { dev in
             let isFav = favoriteDeviceIds.contains(dev.id)
@@ -564,7 +565,7 @@ extension HomeStore {
             let pinyinInitials = Self.pinyinInitials(of: dev.name)
             let pinyinFull = PanelSearch.Pinyin.syllables(dev.name)?.joined() ?? ""
             let roomPinyin = Self.pinyinInitials(of: displayRoom)
-            let capabilities = Self.buildCapabilities(for: dev)
+            let capabilities = Self.buildCapabilities(for: dev, markedLightIds: markedLightIds)
             let snapshotTag: DeviceKindTag = dev.isSwitchedLight ? .light : dev.kind.tag
 
             return RaycastDeviceItem(
@@ -857,9 +858,12 @@ extension HomeStore {
         ]
     }
 
-    private static func buildCapabilities(for device: SmartDevice) -> RaycastDeviceCapabilities {
-        let isHighRisk = ManualControlPolicy.requiresConfirmation(.power(true), for: device)
-            || ManualControlPolicy.requiresConfirmation(.power(false), for: device)
+    private static func buildCapabilities(
+        for device: SmartDevice,
+        markedLightIds: Set<String> = []
+    ) -> RaycastDeviceCapabilities {
+        let isHighRisk = ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: markedLightIds)
+            || ManualControlPolicy.requiresConfirmation(.power(false), for: device, markedLightIds: markedLightIds)
         switch device.kind {
         case .light(let s):
             return RaycastDeviceCapabilities(

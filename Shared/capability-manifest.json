@@ -2,7 +2,8 @@
   "schemaVersion": 1,
   "hostCoreCapabilityMatrixIds": [
     "keyboard-search", "global-hotkey", "local-command", "quick-actions", "all-off-undo",
-    "app-intents", "url-scheme", "layout-resize", "visual-look", "code-signing"
+    "app-intents", "url-scheme", "layout-resize", "visual-look", "code-signing",
+    "switch-light-mark"
   ],
   "capabilities": [
     { "id": "xiaomi-cloud", "kind": "connection", "dependsOn": [], "defaultOnFreshInstall": false, "startupPolicy": "whenConfigured", "platforms": { "macos": "supported", "windows": "supported" }, "capabilityMatrix": { "coverage": "mapped", "rowIds": ["mi-home-qr"] } },

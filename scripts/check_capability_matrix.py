@@ -401,6 +401,21 @@ CODE_ANCHORS = (
             "symbol": "verify_ed25519_signature",
         },
     },
+    {
+        "id": "switch-light-mark",
+        "macos": {
+            "path": "Sources/MijiaCore/ManualControlPolicy.swift",
+            "symbol": "SwitchLightMarks",
+        },
+        "windows": {
+            "checks": (
+                {
+                    "path": "windows/src/core/switchLightMarks.ts",
+                    "symbols": ("markSwitchAsLight", "SWITCH_LIGHT_MARKS_STORAGE_KEY"),
+                },
+            ),
+        },
+    },
 )
 
 

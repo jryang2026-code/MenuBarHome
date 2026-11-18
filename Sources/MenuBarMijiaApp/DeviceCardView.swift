@@ -297,6 +297,20 @@ public struct DeviceCardView: View {
                 Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
             }
 
+            // #104: marking lives exclusively in the primary-power confirmation dialog; the context
+            // menu keeps the undo entry so the user can restore the confirmation later.
+            if ManualControlPolicy.wallSwitchMayControlLight(device),
+               store.isSwitchMarkedAsLight(device.id) {
+                Button {
+                    store.unmarkSwitchAsLight(device.id)
+                } label: {
+                    Label(
+                        L10n.tr("撤销『这是灯』标记", "Undo “this is a light”"),
+                        systemImage: "lightbulb.slash"
+                    )
+                }
+            }
+
             Button {
                 LayoutUIState.shared.isEditingLayoutRequested = true
             } label: {
