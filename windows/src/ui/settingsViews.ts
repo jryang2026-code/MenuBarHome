@@ -77,6 +77,7 @@ export interface SettingsDraft {
   readonly values: ReadonlyArray<readonly [string, string]>;
   readonly checks: ReadonlyArray<readonly [string, boolean]>;
   readonly openConnSections?: ReadonlyArray<string>;
+  readonly unsavedConfirmOpen?: boolean;
 }
 
 /** Captures the drafts of an open Settings sheet; `null` when no settings sheet is mounted. */
@@ -98,7 +99,9 @@ export function captureSettingsDraft(root: HTMLElement): SettingsDraft | null {
       openConnSections.push(details.dataset.connSection);
     }
   });
-  return { values, checks, openConnSections };
+  const unsavedBar = root.querySelector<HTMLElement>("#settings-unsaved-confirm");
+  const unsavedConfirmOpen = Boolean(unsavedBar && !unsavedBar.hidden);
+  return { values, checks, openConnSections, unsavedConfirmOpen };
 }
 
 /**
@@ -125,6 +128,10 @@ export function restoreSettingsDraft(
       `details.cc-conn-secondary[data-conn-section="${section}"]`,
     );
     if (details) details.open = true;
+  }
+  const unsavedBar = root.querySelector<HTMLElement>("#settings-unsaved-confirm");
+  if (unsavedBar) {
+    unsavedBar.hidden = !draft.unsavedConfirmOpen;
   }
   const baseEl = root.querySelector<HTMLInputElement>("#settings-base-url");
   if (baseEl) {

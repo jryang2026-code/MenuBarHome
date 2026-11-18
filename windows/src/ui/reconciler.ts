@@ -9,7 +9,7 @@ import {
 } from "./motionSpring.js";
 import { renderPanel } from "./panelView.js";
 import { syncPanelSelection } from "./panelKeyboard.js";
-import { refreshHabitSharePreview } from "./settingsEvents.js";
+import { refreshHabitSharePreview, syncSettingsSaveHint } from "./settingsEvents.js";
 import { captureSettingsDraft, restoreSettingsDraft } from "./settingsViews.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 
@@ -1541,6 +1541,9 @@ export class PanelRenderPipeline {
       )
     ) {
       refreshHabitSharePreview(host);
+    }
+    if (settingsDraft) {
+      syncSettingsSaveHint(host);
     }
 
     if (isClassic) {

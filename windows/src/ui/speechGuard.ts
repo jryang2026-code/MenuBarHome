@@ -1167,7 +1167,11 @@ function createUrlCommandHostAdapter(
 
     focusDeviceFromUrl(deviceId: string): void {
       if (!revisionStillMatches()) return;
-      host.activeSheet = "none";
+      if (host.activeSheet === "settings") {
+        if (!host.requestCloseSettingsSheet()) return;
+      } else {
+        host.activeSheet = "none";
+      }
       if (host.cameraLive.activeLiveCameraId !== null) {
         host.cameraLive.closeCameraLiveView();
       }

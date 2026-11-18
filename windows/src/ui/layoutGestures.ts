@@ -136,6 +136,10 @@ export interface LayoutGestureHost {
 
     host.root.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
+      if (press) {
+        window.clearTimeout(press.timer);
+        press = null;
+      }
       suppressNextHandleClick = false;
       const handleEl = (e.target as HTMLElement).closest<HTMLElement>(".cc-resize-handle");
       if (handleEl && host.isEditingLayout) {
@@ -161,14 +165,15 @@ export interface LayoutGestureHost {
       const el = (e.target as HTMLElement).closest<HTMLElement>("[data-tile-id]");
       if (!el || (e.target as HTMLElement).closest(".cc-resize-handle, .cc-inline-slider-wrap, .cc-hero-primary-bar, input")) return;
       const id = el.dataset.tileId as string;
-      const timer = host.isEditingLayout
+      const currentPress = { id, x: e.clientX, y: e.clientY, timer: 0, dimming: false, el };
+      currentPress.timer = host.isEditingLayout
         ? 0
         : window.setTimeout(() => {
-            if (!press || press.dimming) return;
-            beginDrag(id, el, press.x, press.y);
+            if (press !== currentPress || currentPress.dimming) return;
+            beginDrag(id, el, currentPress.x, currentPress.y);
             host.startEditing();
           }, 450);
-      press = { id, x: e.clientX, y: e.clientY, timer, dimming: false, el };
+      press = currentPress;
     });
 
     window.addEventListener("pointermove", (e) => {
