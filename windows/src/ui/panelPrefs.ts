@@ -179,6 +179,71 @@ export function unhideAllDevices(prefs: LayoutPrefs): string[] {
   return [];
 }
 
+/**
+ * Folds the orphaned side's stored layout preferences onto each paired card's canonical id (#24).
+ *
+ * When Home Assistant and the Mi cloud both hold history for one physical device, the dedup keeps
+ * one canonical id and the other side's entries — hidden, pinned, order, aliases, tile sizes —
+ * point at an id no card ever uses again. Hidden wins, pinned merges by union, the order slot
+ * follows the orphan, and aliases / tile sizes only fill a canonical id without its own. Every
+ * rule is a union or copy-if-absent, so re-running changes nothing; the orphaned entries stay so
+ * returning to a single-source home still finds them.
+ *
+ * Mutates `prefs` in place and returns whether anything changed.
+ */
+export function adoptPairedDevicePreferences(
+  prefs: LayoutPrefs,
+  adoptions: Readonly<Record<string, string>>,
+): boolean {
+  let changed = false;
+
+  for (const [rawCanonicalId, rawOrphanedId] of Object.entries(adoptions)) {
+    const canonicalId = rawCanonicalId.trim();
+    const orphanedId = rawOrphanedId.trim();
+    if (!canonicalId || !orphanedId || canonicalId === orphanedId) continue;
+
+    // Hidden wins: the orphaned side hid this device, so the merged card stays hidden.
+    if (hiddenDeviceIds(prefs).includes(orphanedId) && !hiddenDeviceIds(prefs).includes(canonicalId)) {
+      prefs.hiddenDeviceIds = [...hiddenDeviceIds(prefs), canonicalId];
+      changed = true;
+    }
+
+    // Pinned (favorites) merge by union; the order slot sits right after the orphan.
+    if (pinnedDeviceIds(prefs).includes(orphanedId) && !pinnedDeviceIds(prefs).includes(canonicalId)) {
+      prefs.pinnedDeviceIds = [...pinnedDeviceIds(prefs), canonicalId];
+      changed = true;
+    }
+    if (prefs.order.includes(orphanedId) && !prefs.order.includes(canonicalId)) {
+      prefs.order = [...prefs.order];
+      prefs.order.splice(prefs.order.indexOf(orphanedId) + 1, 0, canonicalId);
+      changed = true;
+    }
+
+    // An alias only fills a canonical id without one of its own.
+    const orphanAlias = prefs.aliases[orphanedId]?.trim();
+    if (orphanAlias && !(prefs.aliases[canonicalId] ?? "").trim()) {
+      prefs.aliases = { ...prefs.aliases, [canonicalId]: prefs.aliases[orphanedId]! };
+      changed = true;
+    }
+
+    // Tile sizes are keyed by bare device id or `<page>|<device id>`; copy per key.
+    for (const [key, size] of Object.entries(prefs.tileSizes)) {
+      const bar = key.indexOf("|");
+      const id = bar >= 0 ? key.slice(bar + 1) : key;
+      if (id !== orphanedId) continue;
+      const canonicalKey = bar >= 0 ? `${key.slice(0, bar + 1)}${canonicalId}` : canonicalId;
+      if (prefs.tileSizes[canonicalKey] !== undefined) continue;
+      // A bare `.auto` is dropped on save, so copying it is meaningless.
+      if (size === "auto" && bar < 0) continue;
+      prefs.tileSizes = { ...prefs.tileSizes, [canonicalKey]: size };
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+
 export function pinnedDeviceIds(prefs?: Pick<LayoutPrefs, "pinnedDeviceIds"> | null): string[] {
   return dedupeStrings(prefs?.pinnedDeviceIds);
 }

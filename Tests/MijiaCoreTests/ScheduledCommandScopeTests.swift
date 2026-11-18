@@ -385,9 +385,9 @@ struct ScheduledCommandScopeTests {
         #expect(store.scheduledCommands.count == 1, "The timer was neither run nor silently dropped")
     }
 
-    @Test("Timers saved before scopes existed still decode and join the current source")
+    @Test("Timers saved before scopes existed wait visibly for confirmation instead of being adopted (#22)")
     @MainActor
-    func legacyTimerAdoptsCurrentScope() async throws {
+    func legacyTimerWaitsForConfirmationInsteadOfAdoption() async throws {
         let (store, mock) = try await makeStore()
         let id = UUID(uuidString: "0E7A2C6B-8C4F-4A0D-9D7E-5C3B1F2A6D41")!
         // Exactly what 1.2.0 wrote: no `sourceScope` key at all, Date as seconds since 2001.
@@ -403,11 +403,41 @@ struct ScheduledCommandScopeTests {
         #expect(decoded.first?.sourceScope == nil)
 
         store.restoreScheduledCommands()
-        let adopted = try #require(store.missedScheduledCommands.first)
-        #expect(adopted.id == id)
-        #expect(adopted.sourceScope == store.connectionScopeIdentifier)
-        #expect(ScheduledCommand.load(from: store.userDefaults).first?.sourceScope == store.connectionScopeIdentifier)
+        #expect(store.scheduledCommands.isEmpty, "An unscoped timer must never arm against the current source")
+        let pending = try #require(store.missedScheduledCommands.first)
+        #expect(pending.id == id)
+        #expect(pending.effectiveSourceScopes == nil, "The entry stays unadopted on disk")
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == nil)
         #expect(await mock.executedCommands.isEmpty)
+
+        // 立即补执行 is the explicit confirmation that this home owns the timer.
+        _ = await store.runMissedScheduledCommand(id: id)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
+    }
+
+    @Test("A future timer without a scope also waits visibly and keeps its record (#22)")
+    @MainActor
+    func legacyFutureTimerWaitsVisibly() async throws {
+        let (store, mock) = try await makeStore()
+        let legacy = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: Self.plan
+        )
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+
+        store.restoreScheduledCommands()
+        #expect(store.scheduledCommands.isEmpty, "No countdown may run while the owner is unknown")
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == nil)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Dismissing it removes the record; it does not come back adopted.
+        store.dismissMissedScheduledCommand(id: legacy.id)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
     }
 
     @Test("A timer firing while the Mac is locked still runs")

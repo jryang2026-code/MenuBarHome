@@ -796,8 +796,9 @@ extension HomeStore {
     /// `missedScheduledCommands` so an overdue heater or light timer never fires silently hours later.
     /// Timers the Mac sleeps through take the same path when they wake up late (see `startScheduledTask`).
     /// Only timers whose captured sources still match the connected ones are armed or shown; the other
-    /// sources' entries stay persisted (ADR-0019). Legacy entries with no scope are adopted here, once,
-    /// when a primary source is known.
+    /// sources' entries stay persisted (ADR-0019). Legacy entries with no scope never arm against the
+    /// connected home: with a primary source known they wait visibly in the missed list until the user
+    /// confirms them, and stay parked on disk while no source is known (#22).
     public func restoreScheduledCommands(now: Date? = nil) {
         for task in scheduledTasks.values {
             task.cancel()
@@ -822,12 +823,18 @@ extension HomeStore {
         var missed: [ScheduledCommand] = []
         var foreign: [ScheduledCommand] = []
         for stored in persisted {
-            let entry: ScheduledCommand
-            if stored.effectiveSourceScopes == nil, let primaryScope {
-                entry = stored.adoptingScope(primaryScope)
-            } else {
-                entry = stored
+            if stored.effectiveSourceScopes == nil {
+                // No recorded scope means the creating home is unknown. Adopting it to whichever
+                // source happens to be connected could fire it in a home it never belonged to, so
+                // it only becomes visible — never armed — and runs solely on an explicit tap (#22).
+                if primaryScope != nil {
+                    missed.append(stored)
+                } else {
+                    foreign.append(stored)
+                }
+                continue
             }
+            let entry = stored
             guard let entryScopes = entry.effectiveSourceScopes,
                   Self.sourceScopesMatch(entryScopes, active: scopes) else {
                 foreign.append(entry)
@@ -869,13 +876,20 @@ extension HomeStore {
         // before anything else: a refused run stays in the list and can be retried after unlocking.
         if rejectControlWhileLocked() { return nil }
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
-        guard let entryScopes = entry.effectiveSourceScopes,
-              Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        // A scoped entry must still match the connected sources. An unscoped legacy entry has no
+        // owner to match; the explicit tap is the confirmation that this home owns it (#22), and
+        // the target check below still refuses a plan aimed at devices that are not here.
+        let entryScopes = entry.effectiveSourceScopes
+        if let entryScopes {
+            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        }
         await waitForInitialSnapshotIfNeeded()
         // A switch or a lock can land while we wait for the snapshot. Re-check before consuming the
         // entry: it is removed and persisted only once the run is actually going ahead.
         if rejectControlWhileLocked() { return nil }
-        guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        if let entryScopes {
+            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        }
         guard missingPlanTargets(entry.plan).isEmpty else {
             showToast(
                 L10n.tr(

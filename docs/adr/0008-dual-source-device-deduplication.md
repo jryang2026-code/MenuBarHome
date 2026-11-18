@@ -41,3 +41,4 @@ ADR-0002 引入了 `HAWebSocketProvider` 与 `MiCloudProvider` 双后端，但�
 
 - `Sources/MijiaCore/DeviceDeduplicator.swift:preferredCandidate`（L627-654）在“在线优先”之后、“`capabilityScore` 评分”之前新增两项专项裁决：热水器 `.appliance` 卡片优先于通用 `.climate` 卡片（`#300`），以及具备可播放实时画面的摄像机（`hasLiveView`）优先于无流摄像机（`#266`）。
 - Windows 端已同步落地双源并行连接与整卡去重合并（`windows/src/core/dualSourceProvider.ts`），与 macOS 共享同一套配对与胜出语义。
+- **配对卡偏好合并（#24）**：第 4 条的“主键稳定”只覆盖了单侧历史（米家老用户后来接入 HA 时规范 ID 选择会偏向已有偏好的那侧）。当两侧都存过历史（先只用 HA、后只用米家、再双源并行）时，落选一侧的隐藏、收藏、别名、磁贴偏好会指向一个不再出现的 ID。现在合并结果会随快照报告 `preferenceAdoptions`（规范卡 ID → 落选源 ID），macOS `HomeStore` 与 Windows 端 layout 把孤儿侧偏好合并到规范卡上：隐藏优先保持隐藏，收藏取并集（排序槽位跟随孤儿侧），别名与磁贴仅在规范侧没有明确设置时拷贝；孤儿条目保留在磁盘上，回到单源模式仍然生效。迁移全部为并集或“缺失才拷贝”，天然幂等。

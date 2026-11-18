@@ -514,6 +514,7 @@ extension HomeStore {
             // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
             if devices != nextDevices { devices = nextDevices }
+            adoptPairedDevicePreferences(snapshot.preferenceAdoptions)
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
             isApplyingProviderSnapshot = false
@@ -537,6 +538,37 @@ extension HomeStore {
                 finishPresenceSnapshot()
             }
             notifyMissedScheduledCommandsIfNeeded()
+        }
+    }
+
+    /// Folds the orphaned side's stored preferences onto each paired card's canonical id (#24).
+    /// The dedup reports pairs whose other source id also holds history; hidden wins, favorites
+    /// merge by union, and aliases / tile sizes only fill a canonical id without its own. Every
+    /// rule is a union or copy-if-absent, so a snapshot repeating the same report changes nothing.
+    func adoptPairedDevicePreferences(_ adoptions: [String: String]) {
+        guard !adoptions.isEmpty else { return }
+        var aliasesChanged = false
+        for (canonicalID, orphanedID) in adoptions.sorted(by: { $0.key < $1.key }) {
+            let outcome = DevicePreferenceMigrator.adopt(
+                canonicalID: canonicalID,
+                orphanedID: orphanedID,
+                defaults: userDefaults
+            )
+            if outcome.hidden { hiddenDeviceIds.insert(canonicalID) }
+            if outcome.favorite {
+                favoriteDeviceIds.insert(canonicalID)
+                if !favoriteOrder.contains(canonicalID) {
+                    if let index = favoriteOrder.firstIndex(of: orphanedID) {
+                        favoriteOrder.insert(canonicalID, at: index + 1)
+                    } else {
+                        favoriteOrder.append(canonicalID)
+                    }
+                }
+            }
+            aliasesChanged = aliasesChanged || outcome.alias
+        }
+        if aliasesChanged {
+            devices = devicesWithAliases(devices)
         }
     }
 

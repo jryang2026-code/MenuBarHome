@@ -91,6 +91,12 @@ struct AssistantScheduleTests {
     func pendingTimerSurvivesRestart() async throws {
         let suiteName = "test.schedule.persist.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        try await store.waitForTestSnapshot()
+        // Current builds stamp the creating source; only pre-scope legacy entries wait for
+        // confirmation instead of arming (#22), and that path has its own tests.
+        let scope = try #require(store.connectionScopeIdentifier)
         let futureEntry = ScheduledCommand(
             reply: "10 分钟后关闭书房吸顶灯",
             fireDate: Date().addingTimeInterval(300),
@@ -98,13 +104,12 @@ struct AssistantScheduleTests {
                 intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
                 reply: "已关闭书房吸顶灯",
                 source: .local
-            )
+            ),
+            sourceScope: scope
         )
         ScheduledCommand.save([futureEntry], to: defaults)
 
-        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
-        try await store.waitForTestSnapshot()
+        store.restoreScheduledCommands()
         #expect(store.scheduledCommands.map(\.id) == [futureEntry.id])
         #expect(store.missedScheduledCommands.isEmpty)
         #expect(await mock.executedCommands.isEmpty)

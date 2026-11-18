@@ -398,6 +398,8 @@ export interface DeviceMergeResult {
   readonly rooms: RoomIdentityRegistry;
   readonly haCanonicalIds: Readonly<Record<string, string>>;
   readonly miCanonicalIds: Readonly<Record<string, string>>;
+  /** Canonical card id → the paired source id whose stored preferences lost the card (#24). */
+  readonly preferenceAdoptions: Readonly<Record<string, string>>;
   readonly lightGroupOwners: Map<string, string>;
   readonly homes: readonly AccountScopedHomeOption[];
   readonly accountStatuses: Readonly<Record<string, ConnectionStatus>>;
@@ -796,6 +798,7 @@ export const DeviceDeduplicator = {
     const mergedDevices: MergedSmartDevice[] = []; const routes: Record<string, DeviceMergeRoute> = {};
     const deviceBackends: Record<string, HomeBackend> = {}; const pairedDeviceIds = new Set<string>();
     const miCanonicalIds: Record<string, string> = {}; const haCanonicalIds: Record<string, string> = {};
+    const preferenceAdoptions: Record<string, string> = {};
     const usedCanonicalIds = new Set<string>(); 
     for (const card of resolvedCards) { const canUseCanonical = card.chosenCanonical
         ? card.other !== null
@@ -820,6 +823,20 @@ export const DeviceDeduplicator = {
       } else { canonicalId = `${card.winner.backend}:${card.winner.device.id}`;
       }
       usedCanonicalIds.add(canonicalId);
+
+      // Both sides of a pair can carry history (an HA-only period and a Mi-only period). Whichever
+      // native id lost the canonical choice keeps its stored preferences orphaned; report it so the
+      // host merges those onto the card (#24). A canonical id that is neither native id is
+      // ambiguous, so nothing is reported.
+      if (card.other !== null) {
+        const winnerId = card.winner.device.id;
+        const otherId = card.other.device.id;
+        if (canonicalId === winnerId && knownPrefIds.has(otherId)) {
+          preferenceAdoptions[canonicalId] = otherId;
+        } else if (canonicalId === otherId && knownPrefIds.has(winnerId)) {
+          preferenceAdoptions[canonicalId] = winnerId;
+        }
+      }
 
       const wasPaired = card.other !== null; const pinned = pinnedBackends[canonicalId] ?? null;
       if (pinned && card.other) { const pairList = [card.winner, card.other];
@@ -968,6 +985,7 @@ export const DeviceDeduplicator = {
       rooms: updatedRooms,
       haCanonicalIds,
       miCanonicalIds,
+      preferenceAdoptions,
       lightGroupOwners: translatedGroupOwners,
       homes: miInput?.homes ?? [],
       accountStatuses: miInput?.accountStatuses ?? {},

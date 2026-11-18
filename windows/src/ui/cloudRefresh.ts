@@ -4,7 +4,7 @@ import { t } from "../core/i18n.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec, type MiotPropKey } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
-import { applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAliases } from "./panelPrefs.js";
+import { adoptPairedDevicePreferences, applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAliases } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
@@ -1110,6 +1110,11 @@ function applyDualSourceMergeToHost(host: MenuMijiaWindowsApp, merged: DeviceMer
   const groupOwners = new Map<string, string>(merged.lightGroupOwners);
   applySynthesizedSnapshotToHost(host, merged.home, groupOwners);
   host.scenes = [...merged.home.scenes];
+  // Fold the orphaned side's preferences onto the canonical cards (#24). Persisting only on a
+  // real change keeps the periodic refresh from rewriting the settings store.
+  if (adoptPairedDevicePreferences(host.settings.layout, merged.preferenceAdoptions)) {
+    host.saveSettings();
+  }
 }
 
 export async function refreshDualSourceDevices(

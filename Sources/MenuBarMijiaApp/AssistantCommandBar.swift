@@ -753,14 +753,20 @@ struct AssistantResponseArea: View {
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
-    /// Timers that expired while the app was closed; user can run or dismiss each one.
+    /// Timers the app could not safely fire: expired ones wait for confirmation, and legacy
+    /// entries with no recorded source wait visibly instead of being adopted to the connected
+    /// home (#22). Each can be run once or dismissed.
     private var missedScheduledRow: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(store.missedScheduledCommands) { entry in
+                let unscoped = entry.effectiveSourceScopes == nil
                 HStack(spacing: 5) {
-                    Image(systemName: "exclamationmark.clock.fill")
+                    Image(systemName: unscoped ? "questionmark.circle.fill" : "exclamationmark.clock.fill")
                         .foregroundStyle(Color.orange)
-                    Text(L10n.tr("已错过：\(entry.reply)", "Missed: \(entry.reply)"))
+                    Text(L10n.tr(
+                        unscoped ? "来源待确认：\(entry.reply)" : "已错过：\(entry.reply)",
+                        unscoped ? "Source unverified: \(entry.reply)" : "Missed: \(entry.reply)"
+                    ))
                         .foregroundStyle(.primary.opacity(0.88))
                         .lineLimit(1)
                     Spacer(minLength: 4)
@@ -775,8 +781,14 @@ struct AssistantResponseArea: View {
                             .foregroundStyle(DesignTokens.secondaryText)
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
-                    .help(L10n.tr("忽略这个已错过的定时", "Dismiss this missed timer"))
+                    .accessibilityLabel(Text(L10n.tr(
+                        unscoped ? "忽略来源待确认的定时" : "忽略已错过的定时",
+                        unscoped ? "Dismiss unverified timer" : "Dismiss missed timer"
+                    )))
+                    .help(L10n.tr(
+                        unscoped ? "忽略这个来源待确认的定时" : "忽略这个已错过的定时",
+                        unscoped ? "Dismiss this unverified timer" : "Dismiss this missed timer"
+                    ))
                 }
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .padding(.horizontal, 4)
