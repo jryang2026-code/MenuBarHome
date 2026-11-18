@@ -1901,7 +1901,7 @@ struct CameraLivePanelView: View {
                                     .foregroundStyle(.white.opacity(0.48))
                             }
                         }
-                        .font(.system(size: 10.5, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(.white.opacity(camera.isOnline ? 0.92 : 0.55))
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
@@ -2133,25 +2133,25 @@ struct CameraLivePanelView: View {
 
             // Stylized room/crib silhouette & live scanline pulse
             VStack(spacing: 14) {
-                HStack {
+                HStack(spacing: 4) {
                     HStack(spacing: 5) {
                         Circle()
                             .fill(Color.green)
                             .frame(width: 6, height: 6)
                         Text(isNight ? "LIVE · IR NIGHT 2K" : "LIVE · 2K HDR · 25fps")
-                            .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white.opacity(0.92))
                     }
-                    .padding(.horizontal, 8)
+                    .padding(.horizontal, 7)
                     .padding(.vertical, 3.5)
                     .background(Capsule().fill(Color.black.opacity(0.45)))
 
-                    Spacer()
+                    Spacer(minLength: 4)
 
                     Text(Self.timestampString(controller: controller, tick: demoTick))
-                        .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.white.opacity(0.85))
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 7)
                         .padding(.vertical, 3.5)
                         .background(Capsule().fill(Color.black.opacity(0.45)))
                 }

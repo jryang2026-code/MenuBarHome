@@ -94,4 +94,47 @@ struct CameraWindowChromeTests {
             }
         }
     }
+
+    @Test("All readable text in CameraLivePanelController uses at least 11 pt font size (§18)")
+    func cameraLivePanelReadableTextIsAtLeastElevenPoints() throws {
+        let controllerURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MenuBarMijiaApp/CameraLivePanelController.swift")
+        let source = try String(contentsOf: controllerURL, encoding: .utf8)
+        let regex = try NSRegularExpression(pattern: #"\.font\(\.system\(size:\s*([0-9]+(?:\.[0-9]+)?)"#)
+        let range = NSRange(source.startIndex..<source.endIndex, in: source)
+        let matches = regex.matches(in: source, range: range)
+        #expect(!matches.isEmpty)
+        for match in matches {
+            guard let sizeRange = Range(match.range(at: 1), in: source),
+                  let size = Double(source[sizeRange]) else { continue }
+            #expect(size >= 11.0, "Found undersized system font \(size) pt in CameraLivePanelController.swift")
+        }
+    }
+
+    @MainActor
+    @Test("11 pt demo OSD badges fit side-by-side inside the 360 pt compact width")
+    func demoOSDBadgesFitCompactWidth() {
+        let headerRow = HStack(spacing: 4) {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(Color.green)
+                    .frame(width: 6, height: 6)
+                Text("LIVE · 2K HDR · 25fps")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+            }
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3.5)
+            Spacer(minLength: 4)
+            Text("2026-04-20 12:34:56")
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3.5)
+        }
+        let width = NSHostingView(rootView: headerRow).fittingSize.width
+        // compactSize width is 360 pt with `.padding(14)` -> 332 pt available.
+        #expect(width <= 332, "11 pt OSD header row \(width) pt exceeds 332 pt compact content width")
+    }
 }
