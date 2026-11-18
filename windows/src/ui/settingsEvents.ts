@@ -102,7 +102,6 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   groupOwnerByMemberDid: Map<string, string>;
   hotkeyNeedsHint: boolean;
   isRecordingHotkey: boolean;
-  readonly localRevision: number;
   pendingCloudConsent: { utterance: string; endpoint: string } | null;
   replyBanner: ReplyBannerState | null;
   selectRoom(roomId: string | null, roomName?: string): void;
@@ -1299,7 +1298,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     const requestedBaseURL = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
     const preset = inferAssistantPreset(requestedBaseURL);
     const requestedEndpoint = assistantEndpointIdentity(requestedBaseURL);
-    const capturedRevision = host.localRevision;
+    const capturedToken = host.sourceEpoch.capture();
     if (!presetSupportsEnvKeyImport(preset.id)) {
       const msg = tr3(
         "当前预设无需或不支持从环境变量自动导入密钥",
@@ -1322,7 +1321,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       const currentEndpoint = assistantEndpointIdentity(currentBaseURL);
       if (
         getSettingsSession(host) !== session ||
-        host.localRevision !== capturedRevision ||
+        !capturedToken.isCurrent() ||
         currentPreset.id !== preset.id ||
         currentEndpoint !== requestedEndpoint
       ) {

@@ -149,7 +149,7 @@ _Avoid_: Ambiguous command（模糊指令）、Whole-home command（全屋指令
 _Avoid_: Background job（后台任务）、Cron（计划任务）
 
 **SourceEpoch（连接源代际）**：
-`windows/src/ui/sourceEpoch.ts` 中三级嵌套（`source` ⊃ `home` ⊃ `localWrite`）的连接源失效代际：`advance` 按层级向下级联（换源三级全动、换家庭动 home+localWrite、本地写只动 localWrite），异步工作用 `capture()` 取 `EpochToken` 后以 `isCurrent` / `guard`（返回 `STALE`）判弃；`ui/sourceSwitch.ts` 的 `switchSource` / `switchHome` 是仅有的换源/换家庭入口，云端同步接力用 `claimSyncRun` 只占 home 级。
+`windows/src/ui/sourceEpoch.ts` 中三级嵌套（`source` ⊃ `home` ⊃ `localWrite`）的连接源失效代际：`advance` 按层级向下级联（换源三级全动、换家庭动 home+localWrite、本地写只动 localWrite），异步工作用 `capture()` 取 `EpochToken` 后以 `isCurrent` / `guard`（返回 `STALE`）判弃；`ui/sourceSwitch.ts` 的 `switchSource` / `switchHome` 是仅有的换源/换家庭入口，云端同步接力用 `claimSyncRun` 领取独立于三级的 `SyncRunToken`——新一轮领取、换源或换家庭都会使其失效，本地写不会；领取本身不触碰 home 级（后台刷新不等于换了家庭）。
 _Avoid_: 裸 revision 计数（手写自增 `sourceRevision` / `syncGeneration` / `localControlRevision`）、`invalidateSourceControl`
 
 **ActiveDevice（活跃开启设备）**：

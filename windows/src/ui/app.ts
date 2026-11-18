@@ -313,19 +313,11 @@ export class MenuMijiaWindowsApp {
   public proactiveRetryAfterMs: number | null = null;
   public isResolvingIntent = false;
   public isSyncingCloud = false;
-  /** Connection-source epoch; the single owner of the three invalidation counters below. */
+  /** Connection-source epoch; the single owner of the source/home/local-write invalidation counters. */
   public readonly sourceEpoch = new SourceEpoch();
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
   public get sourceRevision(): number {
     return this.sourceEpoch.sourceRevision;
-  }
-  /** Advances on source/home switches and sync-run claims (today's `syncGeneration`). */
-  public get homeGeneration(): number {
-    return this.sourceEpoch.homeGeneration;
-  }
-  /** Advances on source/home switches and local control writes (today's `localControlRevision`). */
-  public get localRevision(): number {
-    return this.sourceEpoch.localRevision;
   }
   public lastCloudRefreshAt: number | null = null;
   /** A silent cloud result that is waiting for the user to finish interacting. */

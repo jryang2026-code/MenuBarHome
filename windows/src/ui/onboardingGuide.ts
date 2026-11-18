@@ -815,12 +815,12 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   sheet.querySelector("#btn-onboarding-import-env")?.addEventListener("click", () => {
     const requestedPreset = session.assistantDraft.selectedPreset;
     const requestedBaseURL = session.assistantDraft.baseURL.trim();
-    const capturedRevision = host.localRevision;
+    const capturedToken = host.sourceEpoch.capture();
     void (async () => {
       const hit = await importAmbientAssistantKey(requestedPreset);
       if (
         onboardingSessionByHost.get(host) !== session ||
-        host.localRevision !== capturedRevision ||
+        !capturedToken.isCurrent() ||
         session.assistantDraft.selectedPreset !== requestedPreset ||
         session.assistantDraft.baseURL.trim() !== requestedBaseURL
       ) {

@@ -49,7 +49,8 @@ export interface SwitchHomeHost {
  * the home and local-write levels). `reason` names the call site
  * (`"qr-login-success"`, `"settings-connection-mode"`, …) for future
  * diagnostics; the switch itself treats every reason identically. The only
- * entries that may advance the `"source"` level are here and `switchHome`.
+ * entry that advances the `"source"` level is this function; `switchHome`
+ * advances the `"home"` level.
  */
 export function switchSource(host: SourceSwitchHost, reason: string): void {
   host.pipeline.clearTransientState();
