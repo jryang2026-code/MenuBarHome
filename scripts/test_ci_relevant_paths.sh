@@ -55,6 +55,10 @@ expect_true_keys "record-snapshots workflow runs the macOS snapshot job and scri
     ".github/workflows/record-snapshots.yml\n" \
     code macos scripts
 
+expect_true_keys "Shared capability manifest runs lint, macOS, Windows, and Linux core" \
+    "Shared/capability-manifest.json\n" \
+    code macos windows core
+
 expect_true_keys "unknown path falls back to full CI" \
     "unknown.bin\n" \
     "${ALL_KEYS[@]}"

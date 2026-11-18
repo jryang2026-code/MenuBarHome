@@ -161,10 +161,11 @@ export class CameraLiveController {
     readonly backend: "xiaomiCloud" | "homeAssistant" | "demo";
     readonly sourceDev: SmartDevice;
     readonly miSession: MiSession | null;
+    readonly accountId: string | null;
   } {
-    const route = isDualSourceEnabled(this.host)
-      ? getHostDualSourceState(this.host)?.routes[dev.id]
-      : undefined;
+    const route =
+      (isDualSourceEnabled(this.host) ? getHostDualSourceState(this.host)?.routes[dev.id] : undefined) ??
+      this.host.dualSourceCoordinator?.getLastMerged()?.routes[dev.id];
     const sourceDev = route?.sourceDevice ?? dev;
     const backend: "xiaomiCloud" | "homeAssistant" | "demo" =
       route?.backend ??
@@ -172,20 +173,30 @@ export class CameraLiveController {
         ? dev.sourceBackend
         : this.host.settings.connectionMode);
     if (backend !== "xiaomiCloud") {
-      return { backend, sourceDev, miSession: null };
+      return { backend, sourceDev, miSession: null, accountId: null };
     }
     const accounts = this.host.miAccountsOverride ?? getHostMiAccountsState(this.host)?.accounts ?? [];
-    const targetAccountId = sourceDev.accountId ?? dev.accountId ?? null;
+    const scopedSourceAccountId = sourceDev.id.includes("/") ? sourceDev.id.slice(0, sourceDev.id.indexOf("/")) : null;
+    const scopedDevAccountId = dev.id.includes("/") ? dev.id.slice(0, dev.id.indexOf("/")) : null;
+    const targetAccountId =
+      sourceDev.accountId ??
+      dev.accountId ??
+      scopedSourceAccountId ??
+      scopedDevAccountId ??
+      (this.host.settings.miSession ? `${this.host.settings.miSession.region}:${this.host.settings.miSession.userId}` : null) ??
+      accounts[0]?.id ??
+      null;
     if (targetAccountId) {
       const matched = accounts.find(
         (acc) => acc.id === targetAccountId || acc.session.userId === targetAccountId,
       );
-      if (matched) return { backend, sourceDev, miSession: matched.session };
+      if (matched) return { backend, sourceDev, miSession: matched.session, accountId: matched.id };
     }
     return {
       backend,
       sourceDev,
       miSession: this.host.settings.miSession ?? accounts[0]?.session ?? null,
+      accountId: targetAccountId,
     };
   }
 
@@ -398,6 +409,37 @@ export class CameraLiveController {
     }
     invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
     this.host.render();
+  }
+
+  public activeLiveCameraUsesXiaomiCloud(accountId?: string): boolean {
+    const activeId = this.activeLiveCameraId;
+    if (!activeId) return false;
+    if (accountId && activeId.startsWith(`${accountId}/`)) return true;
+    const dev =
+      this.host.devices.find((d) => d.id === activeId) ??
+      (this.activeLiveCameraSnapshot?.id === activeId ? this.activeLiveCameraSnapshot : undefined);
+    if (!dev) {
+      return this.host.settings.connectionMode === "xiaomiCloud" || this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+    }
+    const resolved = this.resolveCameraSource(dev);
+    if (resolved.backend !== "xiaomiCloud") {
+      return this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+    }
+    if (!accountId) return true;
+    const owner = dev.accountId ?? resolved.sourceDev.accountId ?? resolved.accountId ?? null;
+    return owner === accountId || resolved.sourceDev.id.startsWith(`${accountId}/`);
+  }
+
+  public closeXiaomiCameraLiveView(accountId?: string): void {
+    if (this.activeLiveCameraId !== null) {
+      if (this.activeLiveCameraUsesXiaomiCloud(accountId)) {
+        this.closeCameraLiveView();
+      }
+      return;
+    }
+    if (!accountId && this.liveCameraKeepAliveTimer !== null) {
+      this.closeCameraLiveView();
+    }
   }
 
   /**
