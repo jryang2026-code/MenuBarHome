@@ -267,10 +267,10 @@ public enum ManualControlPolicy {
                 return requested > current ? .warmer : nil
             }
             if heatingService { return .unknownStartTemperature }
-            guard requiresConfirmation(.targetTemperature(requested), for: device) else { return nil }
             if case .appliance(let spec) = device.kind, spec.targetTemperature == nil {
                 return .unknownStartTemperature
             }
+            guard requiresConfirmation(.targetTemperature(requested), for: device) else { return nil }
             return .warmer
         }
         if isMode, heatingService || waterHeater {

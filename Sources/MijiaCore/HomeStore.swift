@@ -116,13 +116,7 @@ public final class HomeStore {
     }
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
     /// while an optimistic write is locked.
-    public internal(set) var deviceFacets: [String: [FacetControl]] = [:] {
-        didSet {
-            if !isApplyingProviderSnapshot && !isApplyingOptimisticFacetWrite {
-                lastReportedFacets = deviceFacets
-            }
-        }
-    }
+    public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
     public internal(set) var lightGroupOwners: [String: String] = [:]
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
@@ -795,6 +789,7 @@ public final class HomeStore {
         }
         let token: UUID
         let origin: JSONValue?
+        let originSnapshotGeneration: UInt64
         let value: JSONValue?
         /// Confirmation kind covering this tick's value when `dispatchFacetWrite` rechecks before sending.
         let approval: FacetDragApproval?
@@ -804,20 +799,14 @@ public final class HomeStore {
         var bannerID: UUID?
     }
     var facetWrites: [String: FacetWriteState] = [:]
-    /// Latest provider-reported device rows before optimistic locks merge local values on top.
-    /// Cleared in `invalidateUndoContext()` and per-account in `logoutMiAccount(id:)` (§13).
+    /// Latest provider- or LAN-reported device rows before optimistic locks merge local values on top.
+    /// Written only by real device reports (`snapshotUpdated`, `applyLGDeviceUpdate`) and cleared in
+    /// `invalidateUndoContext()` and per-account in `logoutMiAccount(id:)` (§13).
     @ObservationIgnored var lastReportedDevices: [String: SmartDevice] = [:]
     /// Latest provider-reported facet rows before `optimisticFacetLocks` preserve local values.
-    /// Cleared in `invalidateUndoContext()` and per-account in `logoutMiAccount(id:)` (§13).
+    /// Written only by `snapshotUpdated` and cleared in `invalidateUndoContext()` and per-account in
+    /// `logoutMiAccount(id:)` (§13), so local `deviceFacets` mutations can never poison baselines.
     @ObservationIgnored var lastReportedFacets: [String: [FacetControl]] = [:]
-    @ObservationIgnored var isApplyingOptimisticFacetWrite = false
-
-    func withOptimisticFacetMutation<T>(_ body: () -> T) -> T {
-        let wasApplying = isApplyingOptimisticFacetWrite
-        isApplyingOptimisticFacetWrite = true
-        defer { isApplyingOptimisticFacetWrite = wasApplying }
-        return body()
-    }
     var undoTimerTask: Task<Void, Never>?
     /// Bulk actions whose commands are still being sent, keyed by the banner they created.
     /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).

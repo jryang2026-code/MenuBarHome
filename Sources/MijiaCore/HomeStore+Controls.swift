@@ -1012,42 +1012,43 @@ extension HomeStore {
     // MARK: - Generic Facet Controls (#5)
 
     public func setFacetValue(_ deviceId: String, controlId: String, value: JSONValue) {
+        let context = controlContextID
         guard let device = controllableDevice(deviceId), device.isOnline,
-              var facets = deviceFacets[deviceId],
+              let facets = deviceFacets[deviceId],
               let index = facets.firstIndex(where: { $0.id == controlId }) else { return }
         let control = facets[index]
         guard facetWriteAllowed(control),
               control.target?.isAction == false,
               control.value != value,
-              let command = Self.facetCommand(for: control, value: value) else { return }
+              Self.facetCommand(for: control, value: value) != nil else { return }
         let key = facetWriteKey(deviceId, controlId)
-        let previous = facetWrites[key]
-        let origin = if let previous { previous.origin } else { control.value }
+        let prePromptPrevious = facetWrites[key]
+        let prePromptOrigin = if let prePromptPrevious { prePromptPrevious.origin } else { control.value }
         let tickApproval: FacetDragApproval?
-        var confirmedApprovals: Set<FacetDragApproval> = []
+        var newlyApproved: FacetDragApproval?
         if control.kind == .slider {
             // Only a slider still waiting in its debounce may reuse an approval that this same
             // drag already obtained for the same hazard kind. Cooling first (`confirmedApprovals`
             // empty) never covers a later warm-up, and an already in-flight write belongs to the
             // earlier gesture.
-            let activeDrag = previous?.phase == .debouncing ? previous : nil
-            confirmedApprovals = activeDrag?.confirmedApprovals ?? []
+            let activeDrag = prePromptPrevious?.phase == .debouncing ? prePromptPrevious : nil
+            let priorApprovals = activeDrag?.confirmedApprovals ?? []
             let evaluation = facetSliderEvaluation(
                 deviceId: deviceId,
                 controlId: controlId,
-                origin: origin,
+                origin: prePromptOrigin,
                 value: value,
                 fallbackDevice: device,
                 fallbackControl: control
             )
             tickApproval = evaluation.approval
-            if let required = evaluation.approval, !confirmedApprovals.contains(required) {
+            if let required = evaluation.approval, !priorApprovals.contains(required) {
                 guard allowManualControl(
                     facet: evaluation.control,
                     value: value,
                     for: evaluation.device
                 ) else { return }
-                confirmedApprovals.insert(required)
+                newlyApproved = required
             }
         } else {
             // A toggle or select tapped again while an earlier write is pending is a new decision
@@ -1055,61 +1056,104 @@ extension HomeStore {
             guard allowManualControl(facet: control, value: value, for: device) else { return }
             tickApproval = nil
         }
+
+        // `allowManualControl` may run a modal confirmation loop during which snapshots arrive
+        // or an earlier debounced tick rolls back and clears its undo banner. Re-read live state
+        // before committing so stale pre-modal captures cannot skip undo or target gone rows.
+        guard controlContextID == context,
+              let currentDevice = controllableDevice(deviceId), currentDevice.isOnline,
+              var currentFacets = deviceFacets[deviceId],
+              let currentIndex = currentFacets.firstIndex(where: { $0.id == controlId }) else { return }
+        let currentControl = currentFacets[currentIndex]
+        guard facetWriteAllowed(currentControl),
+              currentControl.target?.isAction == false,
+              currentControl.value != value,
+              let currentCommand = Self.facetCommand(for: currentControl, value: value) else { return }
+        let previous = facetWrites[key]
+        let origin = if let previous { previous.origin } else { currentControl.value }
+        let originSnapshotGeneration = previous?.originSnapshotGeneration ?? snapshotGeneration
+        var confirmedApprovals: Set<FacetDragApproval> = []
+        if currentControl.kind == .slider {
+            let liveActiveDrag = previous?.phase == .debouncing ? previous : nil
+            confirmedApprovals = liveActiveDrag?.confirmedApprovals ?? []
+            if let newlyApproved {
+                confirmedApprovals.insert(newlyApproved)
+            }
+        }
+        let reusableBannerID: UUID? = if let existingBannerID = previous?.bannerID,
+                                         undoBanner?.id == existingBannerID {
+            existingBannerID
+        } else {
+            nil
+        }
         var pending = FacetWriteState(
             token: UUID(),
             origin: origin,
+            originSnapshotGeneration: originSnapshotGeneration,
             value: value,
             approval: tickApproval,
             confirmedApprovals: confirmedApprovals,
-            phase: control.kind == .slider ? .debouncing : .inFlight,
-            bannerID: previous?.bannerID
+            phase: currentControl.kind == .slider ? .debouncing : .inFlight,
+            bannerID: reusableBannerID
         )
-        facets[index].value = value
-        withOptimisticFacetMutation {
-            deviceFacets[deviceId] = facets
-        }
+        currentFacets[currentIndex].value = value
+        deviceFacets[deviceId] = currentFacets
         extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.2))
-        if previous == nil, let origin, let restore = Self.facetCommand(for: control, value: origin) {
-            let rawTitle = control.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let title = rawTitle.isEmpty ? control.name : rawTitle
+        if reusableBannerID == nil,
+           let origin,
+           let restore = Self.facetCommand(for: currentControl, value: origin) {
+            let rawTitle = currentControl.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let title = rawTitle.isEmpty ? currentControl.name : rawTitle
             scheduleUndoBanner(
-                title: L10n.tr("已更新 \(device.name) 的\(title)", "Updated \(device.name): \(title)"),
+                title: L10n.tr("已更新 \(currentDevice.name) 的\(title)", "Updated \(currentDevice.name): \(title)"),
                 restoreCommands: [restore],
-                previousDevices: [device], deviceCount: 1
+                previousDevices: [currentDevice], deviceCount: 1
             )
             pending.bannerID = undoBanner?.id
         }
         facetWrites[key] = pending
         dispatchFacetWrite(
-            device: device, controlId: controlId, pending: pending,
-            command: command,
-            adjustment: control.kind == .slider
+            device: currentDevice, controlId: controlId, pending: pending,
+            command: currentCommand,
+            adjustment: currentControl.kind == .slider
         )
     }
 
     /// Fires a 更多设置 button. A feeding action takes `portion`, the amount the drawer picked;
     /// other inputs fall back to the profile default (an enum input prefers the app/remote source).
     public func runFacetAction(_ deviceId: String, controlId: String, portion: Int? = nil) {
+        let context = controlContextID
         guard let device = controllableDevice(deviceId), device.isOnline,
               let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
               facetWriteAllowed(control), let target = control.target else { return }
-        let command: DeviceCommand
         switch target {
+        case .action, .haAction:
+            break
+        case .property, .haProperty:
+            return
+        }
+        guard allowManualControl(facet: control, value: nil, portion: portion, for: device) else { return }
+        guard controlContextID == context,
+              let currentDevice = controllableDevice(deviceId), currentDevice.isOnline,
+              let currentControl = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
+              facetWriteAllowed(currentControl), let currentTarget = currentControl.target else { return }
+        let command: DeviceCommand
+        switch currentTarget {
         case .action(let entityId):
             command = .callMiotAction(
                 entityId: entityId,
-                arguments: Self.facetActionArguments(control, portion: portion)
+                arguments: Self.facetActionArguments(currentControl, portion: portion)
             )
         case .haAction(let entityId):
             command = .pressButton(entityId: entityId)
         case .property, .haProperty:
             return
         }
-        guard allowManualControl(facet: control, value: nil, portion: portion, for: device) else { return }
         extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.0))
         let pending = FacetWriteState(
             token: UUID(),
             origin: nil,
+            originSnapshotGeneration: snapshotGeneration,
             value: nil,
             approval: .write,
             confirmedApprovals: [.write],
@@ -1117,7 +1161,7 @@ extension HomeStore {
             bannerID: nil
         )
         facetWrites[facetWriteKey(deviceId, controlId)] = pending
-        dispatchFacetWrite(device: device, controlId: controlId, pending: pending,
+        dispatchFacetWrite(device: currentDevice, controlId: controlId, pending: pending,
                            command: command, adjustment: false)
     }
 
@@ -1248,22 +1292,20 @@ extension HomeStore {
     }
 
     private func reportedDevice(for deviceId: String) -> SmartDevice? {
-        let locked = activeLockedFields(
-            for: deviceId,
-            at: optimisticNow(),
-            continuousNow: ContinuousClock.now
-        )
-        if !locked.isEmpty, let raw = lastReportedDevices[deviceId] {
-            return devicesWithAliases([raw]).first ?? raw
-        }
-        if let current = devices.first(where: { $0.id == deviceId }) {
-            return current
-        }
-        return lastReportedDevices[deviceId].map { devicesWithAliases([$0]).first ?? $0 }
+        lastReportedDevices[deviceId].map { devicesWithAliases([$0]).first ?? $0 }
     }
 
     private func reportedFacetControl(deviceId: String, controlId: String) -> FacetControl? {
         lastReportedFacets[deviceId]?.first(where: { $0.id == controlId })
+    }
+
+    private static func deviceWithoutUnreportedBaseline(_ device: SmartDevice) -> SmartDevice {
+        var copy = device
+        if case .appliance(var spec) = copy.kind {
+            spec.targetTemperature = nil
+            copy.kind = .appliance(spec)
+        }
+        return copy
     }
 
     private func facetSliderEvaluation(
@@ -1274,8 +1316,27 @@ extension HomeStore {
         fallbackDevice: SmartDevice,
         fallbackControl: FacetControl
     ) -> (device: SmartDevice, control: FacetControl, approval: FacetDragApproval?) {
-        let evaluationDevice = reportedDevice(for: deviceId) ?? fallbackDevice
-        let reportedControl = reportedFacetControl(deviceId: deviceId, controlId: controlId) ?? fallbackControl
+        let reportedDev = reportedDevice(for: deviceId)
+        let evaluationDevice = reportedDev ?? Self.deviceWithoutUnreportedBaseline(fallbackDevice)
+        let reportedControl: FacetControl
+        if let reported = reportedFacetControl(deviceId: deviceId, controlId: controlId) {
+            reportedControl = reported
+        } else {
+            // Without a real snapshot baseline, never trust the optimistic value on `deviceFacets`:
+            // treat the starting reading as unknown so any leftover drag value cannot skip a prompt.
+            var unknownStart = fallbackControl
+            unknownStart.value = nil
+            reportedControl = unknownStart
+        }
+        let lowerName = reportedControl.name.lowercased()
+        let isTargetTemperature = lowerName == "target-temperature" || lowerName.hasSuffix("-target-temperature")
+        if reportedDev == nil,
+           isTargetTemperature,
+           value?.doubleValue != nil,
+           case .climate = fallbackDevice.kind,
+           fallbackDevice.name.contains("热水器") {
+            return (fallbackDevice, reportedControl, .unknownStartTemperature)
+        }
         if let reportedApproval = ManualControlPolicy.facetConfirmationKind(
             reportedControl,
             value: value,
@@ -1283,7 +1344,7 @@ extension HomeStore {
         ) {
             return (evaluationDevice, reportedControl, reportedApproval)
         }
-        if origin != reportedControl.value {
+        if reportedDev != nil, origin != reportedControl.value {
             var originControl = reportedControl
             originControl.value = origin
             if let originApproval = ManualControlPolicy.facetConfirmationKind(
@@ -1293,6 +1354,14 @@ extension HomeStore {
             ) {
                 return (evaluationDevice, originControl, originApproval)
             }
+        }
+        if fallbackDevice != evaluationDevice,
+           let localDeviceApproval = ManualControlPolicy.facetConfirmationKind(
+               reportedControl,
+               value: value,
+               for: fallbackDevice
+           ) {
+            return (fallbackDevice, reportedControl, localDeviceApproval)
         }
         return (evaluationDevice, reportedControl, nil)
     }
@@ -1308,14 +1377,23 @@ extension HomeStore {
               let reportedControl = reportedFacetControl(deviceId: deviceId, controlId: controlId) else {
             return false
         }
-        guard let required = ManualControlPolicy.facetConfirmationKind(
+        if let required = ManualControlPolicy.facetConfirmationKind(
             reportedControl,
             value: pending.value,
             for: reportedDevice
-        ) else {
-            return true
+        ) {
+            guard pending.approval == required else { return false }
         }
-        return pending.approval == required
+        if let liveDevice = devices.first(where: { $0.id == deviceId }),
+           liveDevice != reportedDevice,
+           let liveRequired = ManualControlPolicy.facetConfirmationKind(
+               reportedControl,
+               value: pending.value,
+               for: liveDevice
+           ) {
+            return pending.approval == liveRequired
+        }
+        return true
     }
 
     private func rollbackFacetWrite(
@@ -1325,22 +1403,48 @@ extension HomeStore {
         pending: FacetWriteState
     ) {
         let restoredValue: JSONValue?
-        if let reported = reportedFacetControl(deviceId: deviceId, controlId: controlId) {
+        if snapshotGeneration != pending.originSnapshotGeneration,
+           let reported = reportedFacetControl(deviceId: deviceId, controlId: controlId) {
             restoredValue = reported.value
         } else {
             restoredValue = pending.origin
         }
         if let index = deviceFacets[deviceId]?.firstIndex(where: { $0.id == controlId }),
            deviceFacets[deviceId]?[index].target?.isAction == false {
-            withOptimisticFacetMutation {
-                deviceFacets[deviceId]?[index].value = restoredValue
-            }
+            deviceFacets[deviceId]?[index].value = restoredValue
         }
         optimisticFacetLocks.removeValue(forKey: key)
         if let bannerID = pending.bannerID, undoBanner?.id == bannerID {
             undoTimerTask?.cancel()
             undoBanner = nil
         }
+    }
+
+    /// Runs the pre-send confirmation gate for `pending`; on mismatch, rolls back the optimistic
+    /// facet value, lock and undo banner, shows the re-confirmation error toast, and returns `false`.
+    func verifyPendingFacetSliderBeforeSend(
+        device: SmartDevice,
+        controlId: String,
+        key: String,
+        pending: FacetWriteState
+    ) -> Bool {
+        let deviceId = device.id
+        guard !facetSliderMaySend(deviceId: deviceId, controlId: controlId, pending: pending) else {
+            return true
+        }
+        rollbackFacetWrite(
+            deviceId: deviceId,
+            controlId: controlId,
+            key: key,
+            pending: pending
+        )
+        let toastDevice = reportedDevice(for: deviceId) ?? device
+        showControlFailure(
+            ManualWriteNeedsFacetConfirmation(),
+            device: toastDevice,
+            adjustment: true
+        )
+        return false
     }
 
     private func dispatchFacetWrite(
@@ -1365,19 +1469,13 @@ extension HomeStore {
             }
             guard !Task.isCancelled, let self, self.controlContextID == context,
                   self.facetWrites[key]?.token == pending.token else { return }
-            if adjustment, !self.facetSliderMaySend(deviceId: deviceId, controlId: controlId, pending: pending) {
-                self.rollbackFacetWrite(
-                    deviceId: deviceId,
-                    controlId: controlId,
-                    key: key,
-                    pending: pending
-                )
-                let toastDevice = self.reportedDevice(for: deviceId) ?? device
-                self.showControlFailure(
-                    ManualWriteNeedsFacetConfirmation(),
-                    device: toastDevice,
-                    adjustment: true
-                )
+            if adjustment,
+               !self.verifyPendingFacetSliderBeforeSend(
+                   device: device,
+                   controlId: controlId,
+                   key: key,
+                   pending: pending
+               ) {
                 return
             }
             self.facetWrites[key]?.phase = .inFlight

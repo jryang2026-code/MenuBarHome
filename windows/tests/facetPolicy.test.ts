@@ -450,6 +450,19 @@ const rows: readonly Row[] = [
     source: "nan compared as not-hotter and skipped the confirmation; now it is unknown and asks",
   },
   {
+    name: "a cardless water heater with an unknown facet start asks even at 0°C",
+    control: facet({ kind: "slider", name: "target-temperature", serviceName: "number", value: null }),
+    value: 0,
+    device: (() => {
+      const wh = waterHeater();
+      return wh.kind.kind === "appliance"
+        ? { ...wh, kind: { ...wh.kind, targetTemperature: null } }
+        : wh;
+    })(),
+    expected: true,
+    source: "ManualControlPolicy.swift: `spec.targetTemperature == nil` asks before `requiresConfirmation`",
+  },
+  {
     name: "a padded 0/1 switch value never parses, so a plug write stays direct",
     control: facet({ name: "bath-heater-ptc", serviceName: "switch", value: " 1 " }),
     value: " 1 ",

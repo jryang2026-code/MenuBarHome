@@ -1093,9 +1093,7 @@ extension HomeStore {
                     if let value = Self.facetValue(for: command, control: facets[index]) {
                         facets[index].value = value
                     }
-                    withOptimisticFacetMutation {
-                        deviceFacets[device.id] = facets
-                    }
+                    deviceFacets[device.id] = facets
                     lockedControlIds.insert(controlId)
                     rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
                 } else {
@@ -1132,9 +1130,7 @@ extension HomeStore {
                     let controlId = facets[index].id
                     cancelFacetWrite(deviceId: device.id, controlId: controlId)
                     facets[index].value = value
-                    withOptimisticFacetMutation {
-                        deviceFacets[device.id] = facets
-                    }
+                    deviceFacets[device.id] = facets
                     lockedControlIds.insert(controlId)
                     rev = lockOptimisticFacet(device.id, controlId: controlId, duration: .seconds(3.0), bumpDeviceRevision: true)
                 } else {
@@ -1249,9 +1245,7 @@ extension HomeStore {
                 revert(write)
                 continue
             }
-            withOptimisticFacetMutation {
-                deviceFacets[failedId] = preUndoFacetsById[failedId]
-            }
+            deviceFacets[failedId] = preUndoFacetsById[failedId]
             revert(write)
         }
     }

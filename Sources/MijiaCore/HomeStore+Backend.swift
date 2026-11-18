@@ -76,6 +76,7 @@ extension HomeStore {
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: dev.id)
             devices.removeAll { $0.id == dev.id }
             return
         }
@@ -85,6 +86,7 @@ extension HomeStore {
         }
         latestLGDevice = dev
         rawDeviceNames[dev.id] = dev.name
+        lastReportedDevices[dev.id] = dev
         let now = optimisticNow()
         pruneExpiredOptimisticLocks(for: dev.id, at: now)
         let lockedFields = activeLockedFields(for: dev.id, at: now)
@@ -222,7 +224,7 @@ extension HomeStore {
             : incomingPosition <= localPosition
     }
 
-    private func handleProviderEvent(_ event: HomeProviderEvent) {
+    func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
             if connectionStatus != status { connectionStatus = status }
@@ -1169,6 +1171,7 @@ extension HomeStore {
         self.lgConfig = newConfig
         if !newConfig.isEnabled || !newConfig.hasConfiguredHost {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: LGWebOSProtocol.deviceId)
             devices.removeAll { $0.id == LGWebOSProtocol.deviceId }
         }
         // Demo mode persists the preference but never connects to the LAN (#47).

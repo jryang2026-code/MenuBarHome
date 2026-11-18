@@ -1056,9 +1056,7 @@ extension HomeStore {
               let index = deviceFacets[device.id]?.firstIndex(where: { $0.id == control.id }) else {
             return
         }
-        withOptimisticFacetMutation {
-            deviceFacets[device.id]?[index].value = .bool(spec.isOn)
-        }
+        deviceFacets[device.id]?[index].value = .bool(spec.isOn)
     }
 
     // MARK: Card controls
