@@ -268,6 +268,7 @@ describe("P5a-W acceptance 2: removing a provider clears only its own config and
     app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
     app.assistantKeysByPreset["deepseek"] = "sk-deepseek-test";
     app.settings.cloudConsentEndpoints.push("openrouter.ai", "api.deepseek.com");
+    app.timerCredentialsReady = true; // production hydration finished long before a user clicks
     app.activeSheet = "settings";
     app.render();
 
@@ -291,12 +292,19 @@ describe("P5a-W acceptance 2: removing a provider clears only its own config and
     app.settings.assistantKeyEndpoint = "openrouter.ai";
     app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
     app.assistantKeysByPreset["deepseek"] = "sk-deepseek-test";
+    app.timerCredentialsReady = true; // production hydration finished long before a user clicks
     app.activeSheet = "settings";
     app.render();
 
     // The user picks DeepSeek in the form but has not saved the draft.
     const baseEl = element("#settings-base-url") as HTMLInputElement;
     baseEl.value = "https://api.deepseek.com/v1";
+    baseEl.dispatchEvent(new Event("input", { bubbles: true }));
+    assert.equal(
+      document.querySelector<HTMLElement>('[data-ai-preset="deepseek"]')?.classList.contains("is-active"),
+      true,
+      "typing the URL must move the active pill before removal",
+    );
 
     const removeBtn = element("#btn-remove-ai-provider");
     removeBtn.click();
@@ -426,6 +434,34 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.match(status.textContent ?? "", /测试中止/, "the probe reports the abort in the status line");
   });
 
+  it("removing the selected Custom preset with an empty draft URL leaves other providers intact", async () => {
+    const app = mountDemoApp();
+    app.settings.openRouterApiKey = "sk-or-test";
+    app.settings.assistantKeyEndpoint = "openrouter.ai";
+    app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
+    app.assistantKeysByPreset["custom"] = "sk-custom-test";
+    app.settings.cloudConsentEndpoints.push("openrouter.ai");
+    app.timerCredentialsReady = true; // production hydration finished long before a user clicks
+    app.activeSheet = "settings";
+    app.render();
+
+    // The user selects Custom but has not typed a URL: the empty field means Custom.
+    element('[data-ai-preset="custom"]').click();
+    const baseEl = element("#settings-base-url") as HTMLInputElement;
+    assert.equal(baseEl.value, "");
+
+    const removeBtn = element("#btn-remove-ai-provider");
+    removeBtn.click();
+    removeBtn.click();
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.assistantKeysByPreset["custom"], undefined, "custom's own key goes");
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "saved default provider untouched");
+    assert.equal(app.settings.assistantBaseURL, "https://openrouter.ai/api/v1", "active config untouched");
+    assert.deepEqual([...app.settings.cloudConsentEndpoints], ["openrouter.ai"], "default consent untouched");
+  });
+
   it("rolls the removal back when the vault persist fails so a retry keeps the same target", async () => {
     const app = mountDemoApp();
     app.settings.assistantBaseURL = "https://api.deepseek.com/v1";
@@ -444,6 +480,7 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     };
     Object.defineProperty(app, "credentialVault", { value: vaultStub, configurable: true });
 
+    app.timerCredentialsReady = true; // production hydration finished long before a user clicks
     app.activeSheet = "settings";
     app.render();
     await removeActiveAssistantProvider(app);
@@ -460,6 +497,24 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.equal(app.assistantKeysByPreset["deepseek"], undefined, "retry removes the same provider");
     assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "default key survives the retry");
     assert.equal(app.settings.openRouterApiKey, "sk-or-test");
+  });
+
+  it("waits for startup credential hydration before mutating provider state", async () => {
+    const app = mountDemoApp();
+    app.settings.openRouterApiKey = "sk-or-test";
+    app.settings.assistantKeyEndpoint = "openrouter.ai";
+    app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
+    app.timerCredentialsReady = false;
+
+    const pendingRemoval = removeActiveAssistantProvider(app);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "must not mutate while hydration is pending");
+
+    app.timerCredentialsReady = true;
+    await pendingRemoval;
+    await setImmediate();
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], undefined, "removal proceeds once hydration finished");
   });
 
   it("discards a proactive refresh result that lands after a provider change", async () => {

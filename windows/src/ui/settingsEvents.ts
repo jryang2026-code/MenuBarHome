@@ -134,6 +134,8 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   advanceAssistantEpoch?(): void;
   /** Current feature-level AI generation; request helpers capture and compare it (P5a-W). */
   readonly assistantEpoch?: number;
+  /** False while startup credential hydration is still reading the vault (P5a-W). */
+  readonly timerCredentialsReady?: boolean;
 }
 
 interface SettingsUiSessionState {
@@ -433,9 +435,22 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
  * falls back to the app default preset. Other providers' key slots and bindings stay.
  */
 export async function removeActiveAssistantProvider(host: SettingsEventsHost): Promise<void> {
+  // Removal targets what the form currently shows: the active preset pill, which the pill
+  // clicks and the URL input keep in sync. The URL draft alone is ambiguous — an empty
+  // custom draft must mean "remove Custom", not fall back to the saved provider.
+  const activePill = host.root.querySelector<HTMLElement>("[data-ai-preset].is-active");
+  const selectedPresetId = activePill?.dataset.aiPreset;
   const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
-  const draftBase = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
-  const presetId = inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id;
+  const draftBase = (baseEl?.value ?? "").trim();
+  const presetId =
+    selectedPresetId ?? inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id;
+  // Startup hydration may still be reading the vault: mutating before it finishes lets
+  // hydrateCredentials merge the removed key back and re-persist it on save. Wait (bounded)
+  // for the hydration flag before touching provider state.
+  const hydrationDeadline = Date.now() + 5000;
+  while (host.timerCredentialsReady === false && Date.now() < hydrationDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
   // Snapshot for the vault-failure rollback: after a failed persist the retry must target
   // the same provider, not whatever the default-preset fallback re-activation shows.
   const rollback = {
