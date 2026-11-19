@@ -1047,6 +1047,9 @@ public final class HomeStore {
     /// they stay cancellable while paused.
     public internal(set) var pausedScheduledCommands: [PausedScheduledCommand] = []
     @ObservationIgnored var pausedQuickActionIDs: Set<String> = []
+    /// Scopes each paused quick action lost, so its resume decision can be per-item instead of
+    /// waiting for every account.
+    @ObservationIgnored var pausedQuickActionScopes: [String: [String]] = [:]
     @ObservationIgnored var pendingRevalidationScopes: Set<String> = []
 
     public init(

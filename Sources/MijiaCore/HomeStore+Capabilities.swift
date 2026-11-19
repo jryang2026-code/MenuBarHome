@@ -20,6 +20,7 @@ private extension CapabilityDeactivationVerdict {
 extension HomeStore {
     static let capabilityDeviceIndexKey = "capability_device_index_v1"
     static let pausedQuickActionsKey = "paused_quick_actions_v1"
+    static let pausedQuickActionScopesKey = "paused_quick_action_scopes_v1"
 
     private struct StoredDeviceGroupItem: Decodable {
         let id: String
@@ -348,6 +349,10 @@ extension HomeStore {
         }
         pausedScheduledCommands = PausedScheduledCommand.load(from: userDefaults)
         pausedQuickActionIDs = Set(userDefaults.stringArray(forKey: Self.pausedQuickActionsKey) ?? [])
+        if let data = userDefaults.data(forKey: Self.pausedQuickActionScopesKey),
+           let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            pausedQuickActionScopes = decoded.filter { pausedQuickActionIDs.contains($0.key) }
+        }
         // `pendingRevalidationScopes` is in memory only, so a relaunch between "enable" and the first
         // fresh snapshot would leave paused items paused forever. Rebuild the work from the pause
         // markers themselves: every enabled scope is revalidated once it is fresh again.
@@ -440,21 +445,33 @@ extension HomeStore {
         }
     }
 
-    /// A paused timer waits until its own scopes are settled: fresh when enabled, or left alone when
-    /// the scope is configured but turned off. Otherwise a fresh snapshot from one account would arm,
-    /// move or hide timers that belong to another account still reconnecting (review #275).
-    private func pausedTimerWaitsForItsScopes(_ paused: PausedScheduledCommand) -> Bool {
-        // Only the scopes this timer lost matter; its creation stamp also names sources that were
-        // healthy all along, and waiting on those would freeze a timer behind an unrelated account.
-        let scopes = paused.pausedScopes.isEmpty
-            ? (paused.command.effectiveSourceScopes ?? [])
-            : paused.pausedScopes
-        return scopes.contains { scope in
-            if pendingRevalidationScopes.contains(scope) { return true }
-            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return false }
-            return isCapabilityScopeConfigured(connection, scope: scope)
-                && !capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
+    /// One rule for every paused reference (timer, automation, quick action): only the scopes it
+    /// actually lost decide when it may resume. A scope that is still enabled but waiting for its
+    /// first fresh snapshot keeps the item paused, and so does a scope the user turned off. A scope
+    /// that is no longer configured needs no snapshot at all: the item moves on through the normal
+    /// missing/foreign flow. Nothing here looks at *other* accounts.
+    private func pausedItemScopesAreSettled(_ scopes: [String]) -> Bool {
+        scopes.allSatisfy { scope in
+            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
+            guard isCapabilityScopeConfigured(connection, scope: scope) else { return true }
+            return capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
+                && !pendingRevalidationScopes.contains(scope)
         }
+    }
+
+    private func persistPausedQuickActionScopes() {
+        if pausedQuickActionScopes.isEmpty {
+            userDefaults.removeObject(forKey: Self.pausedQuickActionScopesKey)
+            return
+        }
+        if let data = try? JSONEncoder().encode(pausedQuickActionScopes) {
+            userDefaults.set(data, forKey: Self.pausedQuickActionScopesKey)
+        }
+    }
+
+    /// The scopes actually lost by a paused timer; older records only stamped their source set.
+    private func pausedTimerScopes(_ paused: PausedScheduledCommand) -> [String] {
+        paused.pausedScopes.isEmpty ? (paused.command.effectiveSourceScopes ?? []) : paused.pausedScopes
     }
 
     private func persistIndexedDevices() {
@@ -693,7 +710,7 @@ extension HomeStore {
     private func pauseAffectedReferences(_ items: [AffectedReferenceItem]) {
         var timerPauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
         var rulePauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
-        var quickActionIds: Set<String> = []
+        var quickActionScopes: [String: [String]] = [:]
         for item in items {
             switch item.kind {
             case .waitingTimer, .missedTimer, .foreignTimer:
@@ -705,7 +722,7 @@ extension HomeStore {
                     rulePauseById[uuid] = (item.affectedCapabilities, item.connectionScopes)
                 }
             case .quickAction:
-                quickActionIds.insert(item.id)
+                quickActionScopes[item.id] = item.connectionScopes
             }
         }
 
@@ -758,9 +775,13 @@ extension HomeStore {
             }
         }
 
-        if !quickActionIds.isEmpty {
-            pausedQuickActionIDs.formUnion(quickActionIds)
+        if !quickActionScopes.isEmpty {
+            pausedQuickActionIDs.formUnion(quickActionScopes.keys)
+            for (id, scopes) in quickActionScopes {
+                pausedQuickActionScopes[id] = Array(Set(pausedQuickActionScopes[id] ?? []).union(scopes)).sorted()
+            }
             userDefaults.set(pausedQuickActionIDs.sorted(), forKey: Self.pausedQuickActionsKey)
+            persistPausedQuickActionScopes()
         }
     }
 
@@ -800,7 +821,7 @@ extension HomeStore {
             var stillPaused: [PausedScheduledCommand] = []
             var timersChanged = false
             for paused in pausedScheduledCommands {
-                if pausedTimerWaitsForItsScopes(paused) {
+                if !pausedItemScopesAreSettled(pausedTimerScopes(paused)) {
                     stillPaused.append(paused)
                     continue
                 }
@@ -860,15 +881,9 @@ extension HomeStore {
 
         for idx in rules.indices where !rules[idx].isEnabled
             && (!rules[idx].pausedCapabilities.isEmpty || !rules[idx].pausedScopes.isEmpty) {
-            // The scopes the rule lost have to be back before it may run again; a different surviving
-            // account supplying one target is not the same thing.
-            let scopesSatisfied = rules[idx].pausedScopes.allSatisfy {
-                capabilitySelection.isSourceEnabled(connection: nil, scope: $0)
-            }
-            guard scopesSatisfied else { continue }
-            // A scope still waiting for its own fresh snapshot cannot prove this rule's targets came
-            // back, even when another account has already polled.
-            guard Set(rules[idx].pausedScopes).isDisjoint(with: pendingRevalidationScopes) else { continue }
+            // The scopes the rule lost have to be back and settled before it may run again; a
+            // different surviving account supplying one target is not the same thing.
+            guard pausedItemScopesAreSettled(rules[idx].pausedScopes) else { continue }
             let capsSatisfied = rules[idx].pausedCapabilities.allSatisfy { cap in
                 switch cap {
                 case .connection(let conn): capabilitySelection.enabledConnections.contains(conn)
@@ -913,11 +928,14 @@ extension HomeStore {
             onAutomationRulesChanged?()
         }
 
-        // Quick actions have no scope of their own; only a settled configuration can say whether
-        // enough of their targets are back.
-        if !pausedQuickActionIDs.isEmpty, pendingRevalidationScopes.isEmpty {
+        if !pausedQuickActionIDs.isEmpty {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
+                // Same per-item rule: a quick action resumes only once the scopes it lost are settled.
+                guard pausedItemScopesAreSettled(pausedQuickActionScopes[qaId] ?? []) else {
+                    remainingQA.insert(qaId)
+                    continue
+                }
                 if qaId.hasPrefix("group:") {
                     let grpId = String(qaId.dropFirst("group:".count))
                     guard let grp = groupById[grpId], !grp.memberDeviceIds.isEmpty,
@@ -936,11 +954,13 @@ extension HomeStore {
             }
             if remainingQA != pausedQuickActionIDs {
                 pausedQuickActionIDs = remainingQA
+                pausedQuickActionScopes = pausedQuickActionScopes.filter { remainingQA.contains($0.key) }
                 if remainingQA.isEmpty {
                     userDefaults.removeObject(forKey: Self.pausedQuickActionsKey)
                 } else {
                     userDefaults.set(remainingQA.sorted(), forKey: Self.pausedQuickActionsKey)
                 }
+                persistPausedQuickActionScopes()
             }
         }
     }

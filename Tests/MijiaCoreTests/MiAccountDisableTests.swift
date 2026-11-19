@@ -958,6 +958,33 @@ struct MiAccountDisableTestsReview {
         #expect(store.pendingRevalidationScopes == [Self.de.id])
     }
 
+    @Test("A paused quick action waits only for the scopes it lost")
+    func pausedQuickActionWaitsForItsOwnScopes() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
+        store.selectedMiHomeId = Self.de.id + "/home-de"
+
+        // Paused for the visible account while the other account is only hidden and pending: resume.
+        store.pausedQuickActionIDs = ["lightsOff"]
+        store.pausedQuickActionScopes = ["lightsOff": [Self.cn.id]]
+        store.pendingRevalidationScopes = [Self.de.id]
+        store.revalidatePausedItems()
+        #expect(!store.pausedQuickActionIDs.contains("lightsOff"))
+        #expect(!store.pausedQuickActionScopes.keys.contains("lightsOff"))
+
+        // Paused for the hidden account: no fresh, visible snapshot can prove its lights are back.
+        store.pausedQuickActionIDs = ["lightsOff"]
+        store.pausedQuickActionScopes = ["lightsOff": [Self.de.id]]
+        store.revalidatePausedItems()
+        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
+        #expect(store.pausedQuickActionScopes["lightsOff"] == [Self.de.id])
+    }
+
     @Test("Another account's selected home delays revalidation instead of pruning the hidden account")
     func selectedHomeDelaysRevalidation() throws {
         let suite = Self.makeSuite()
