@@ -12,25 +12,31 @@ protocol FallbackRecheckTimer: Sendable {
     func schedule(after delay: Duration, onFire: @escaping @Sendable () -> Void)
     /// Disarms any pending fire while keeping the timer reusable for later schedules.
     func cancelPending()
-    /// Permanently cancels the timer during shutdown so no further callback can fire.
+    /// Permanently invalidates the timer during shutdown, preventing further schedules; a callback
+    /// already dequeued before invalidation may still arrive and must be guarded by the caller.
     func invalidate()
 }
 
 final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Sendable {
-    private static let queue = DispatchQueue(
+    private static let defaultQueue = DispatchQueue(
         label: "com.jryang1997.MenuBarMijia.DualSourceFallbackRecheck",
         qos: .utility
     )
 
+    private let queue: DispatchQueue
     private let lock = NSLock()
     private var desiredID: UInt64 = 0
     private var desiredHandler: (@Sendable () -> Void)?
     private var isInvalidated = false
 
-    // Accessed only on `Self.queue` while `self` is alive, and once in `deinit` after the last
+    // Accessed only on `queue` while `self` is alive, and once in `deinit` after the last
     // strong reference drops.
     private var timer: DispatchSourceTimer?
     private var armedOnQueueID: UInt64 = 0
+
+    init(queue: DispatchQueue = DispatchFallbackRecheckTimer.defaultQueue) {
+        self.queue = queue
+    }
 
     deinit {
         timer?.cancel()
@@ -46,7 +52,7 @@ final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Senda
             return desiredID
         }
         guard id != 0 else { return }
-        Self.queue.async { [weak self] in
+        queue.async { [weak self] in
             self?.applyScheduleOnQueue(id: id, deadline: deadline)
         }
     }
@@ -60,7 +66,7 @@ final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Senda
             return true
         }
         guard shouldDisarm else { return }
-        Self.queue.async { [weak self] in
+        queue.async { [weak self] in
             self?.disarmIfIdleOnQueue()
         }
     }
@@ -75,7 +81,7 @@ final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Senda
             return true
         }
         guard shouldCancel else { return }
-        Self.queue.async { [weak self] in
+        queue.async { [weak self] in
             guard let self else { return }
             self.armedOnQueueID = 0
             self.timer?.cancel()
@@ -101,7 +107,7 @@ final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Senda
         if let existing = timer {
             return existing
         }
-        let created = DispatchSource.makeTimerSource(queue: Self.queue)
+        let created = DispatchSource.makeTimerSource(queue: queue)
         created.setEventHandler { [weak self] in
             self?.handleTimerEventOnQueue()
         }
@@ -219,9 +225,15 @@ public actor DualSourceHomeProvider: HomeProvider {
     /// active grace while `pollingContext.systemActive` is false.
     private var haOfflineSince: SuspendingClock.Instant?
     private var miOfflineSince: SuspendingClock.Instant?
+    private struct PreDropXiaomiDevice: Sendable {
+        let device: SmartDevice
+        let identity: DeviceSourceIdentity?
+        let wasPrimaryOwner: Bool
+    }
+
     private var miAccountStatuses: [String: ConnectionStatus] = [:]
     private var miAccountOfflineSince: [String: SuspendingClock.Instant] = [:]
-    private var miAccountPreDropDevices: [String: [String: SmartDevice]] = [:]
+    private var miAccountPreDropDevices: [String: [String: PreDropXiaomiDevice]] = [:]
     private var miExpiredAccountIDs: Set<String> = []
     private var inactiveSince: SuspendingClock.Instant?
     private var haGraceActiveInLastRecompute = false
@@ -842,17 +854,26 @@ public actor DualSourceHomeProvider: HomeProvider {
                     miExpiredAccountIDs.remove(accountID)
                     miAccountStatuses[accountID] = nextAccStatus
                     miAccountOfflineSince.removeValue(forKey: accountID)
-                    var owned: [String: SmartDevice] = [:]
+                    var owned: [String: PreDropXiaomiDevice] = [:]
                     for device in home.devices {
+                        let identity = home.deviceIdentities[device.id]
                         if Self.resolvedXiaomiAccountID(for: device, knownAccountIDs: knownIDs) == accountID {
-                            owned[device.id] = device
+                            owned[device.id] = PreDropXiaomiDevice(
+                                device: device,
+                                identity: identity,
+                                wasPrimaryOwner: true
+                            )
                         } else if home.deviceAccountIDs[device.id]?.contains(accountID) == true {
                             var copy = device
                             copy.accountId = accountID
                             if let label = Self.accountLabel(for: accountID, in: home) {
                                 copy.accountLabel = label
                             }
-                            owned[device.id] = copy
+                            owned[device.id] = PreDropXiaomiDevice(
+                                device: copy,
+                                identity: identity,
+                                wasPrimaryOwner: false
+                            )
                         }
                     }
                     miAccountPreDropDevices[accountID] = owned
@@ -1043,14 +1064,58 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         guard !gracedAccountIDs.isEmpty else { return (snapshot, []) }
         for index in snapshot.devices.indices {
-            guard let ownerID = Self.resolvedXiaomiAccountID(for: snapshot.devices[index], knownAccountIDs: knownIDs),
-                  gracedAccountIDs.contains(ownerID),
-                  let restored = miAccountPreDropDevices[ownerID]?[snapshot.devices[index].id] else {
-                continue
+            let current = snapshot.devices[index]
+            let currentOwnerID = Self.resolvedXiaomiAccountID(for: current, knownAccountIDs: knownIDs)
+            var bestDevice = current
+            var bestIdentity: DeviceSourceIdentity?
+            var bestRank: Int
+            if let currentOwnerID,
+               gracedAccountIDs.contains(currentOwnerID),
+               let restored = miAccountPreDropDevices[currentOwnerID]?[current.id] {
+                bestDevice = restored.device
+                bestIdentity = restored.identity
+                bestRank = Self.xiaomiDeviceFreshnessRank(restored.device, accountDisconnected: false)
+            } else {
+                let currentDisconnected = currentOwnerID.map { ownerID in
+                    !(snapshot.accountStatuses[ownerID]?.isConnected ?? true)
+                } ?? false
+                bestRank = Self.xiaomiDeviceFreshnessRank(current, accountDisconnected: currentDisconnected)
             }
-            snapshot.devices[index] = restored
+            // Shared devices can have a connected co-owner (e.g. reporting the camera offline)
+            // overwrite the streaming owner in `MiAccountsProvider` as soon as the primary owner
+            // drops. Include still-graced pre-drop primary owners by DID so grace holds routing.
+            var candidateOwnerIDs = snapshot.deviceAccountIDs[current.id] ?? []
+            for gracedID in gracedAccountIDs.sorted() where !candidateOwnerIDs.contains(gracedID) {
+                candidateOwnerIDs.append(gracedID)
+            }
+            for candidateOwnerID in candidateOwnerIDs
+            where candidateOwnerID != currentOwnerID && gracedAccountIDs.contains(candidateOwnerID) {
+                guard let preDrop = miAccountPreDropDevices[candidateOwnerID]?[current.id],
+                      preDrop.wasPrimaryOwner else {
+                    continue
+                }
+                let candidateRank = Self.xiaomiDeviceFreshnessRank(preDrop.device, accountDisconnected: false)
+                if candidateRank < bestRank {
+                    bestDevice = preDrop.device
+                    bestIdentity = preDrop.identity
+                    bestRank = candidateRank
+                }
+            }
+            snapshot.devices[index] = bestDevice
+            if let bestIdentity {
+                snapshot.deviceIdentities[bestDevice.id] = bestIdentity
+            }
         }
         return (snapshot, gracedAccountIDs)
+    }
+
+    private static func xiaomiDeviceFreshnessRank(
+        _ device: SmartDevice,
+        accountDisconnected: Bool
+    ) -> Int {
+        if accountDisconnected { return 3 }
+        if device.telemetryStale { return 2 }
+        return device.isOnline ? 0 : 1
     }
 
     /// Test seam (#25): expires any active drop grace windows immediately and re-merges, so

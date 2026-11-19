@@ -1,3 +1,4 @@
+import Dispatch
 import Foundation
 import Testing
 @testable import MijiaCore
@@ -533,6 +534,163 @@ struct DualSourceFallbackGraceTests {
         await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
     }
 
+    @Test("Shared camera keeps Mi routing and live stream when streaming account transiently drops while connected co-owner reports it offline")
+    func sharedCameraGracedOwnerBeatsOfflineCoOwnerOnTransientDrop() async throws {
+        try await withTeardown { teardown in
+            try await sharedCameraGracedOwnerBeatsOfflineCoOwnerOnTransientDropBody(teardown)
+        }
+    }
+
+    private func sharedCameraGracedOwnerBeatsOfflineCoOwnerOnTransientDropBody(_ teardown: Teardown) async throws {
+        let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]},{"iid":2,"type":"urn:miot-spec-v2:property:night-shot:00000057:chuangmi-061a01:1","format":"uint8","access":["read","write","notify"],"value-list":[{"value":0,"description":"Off"},{"value":1,"description":"On"},{"value":2,"description":"Auto"}]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let camSpec = MiotFixtures.decode(cameraSpecJSON)
+        struct CameraSpecSource: MiotSpecSource {
+            let spec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                model == "chuangmi.camera.061a01" ? spec : nil
+            }
+        }
+
+        let accountA = MiAccount(session: MiSession(
+            userId: "10010011", cUserId: "c-a", ssecurity: "ssec-a", serviceToken: "tok-a", region: "cn"
+        ))
+        let accountB = MiAccount(session: MiSession(
+            userId: "10010022", cUserId: "c-b", ssecurity: "ssec-b", serviceToken: "tok-b", region: "cn"
+        ))
+        let apiA = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rA", name: "门口", dids: [Self.did], homeId: "hA", homeName: "家A")],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: Self.did, siid: 2, piid: 2): .number(2),
+            ]
+        )
+        // Co-owner B stays connected throughout, but always reports the shared camera offline.
+        let apiB = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: false,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rB", name: "门口", dids: [Self.did], homeId: "hB", homeName: "家B")],
+            values: [:]
+        )
+        let bridge = StubXiaomiCameraBridge()
+        let miAccounts = MiAccountsProvider(
+            accounts: [accountA, accountB],
+            apiFactory: { session in
+                session.userId == accountA.session.userId ? apiA : apiB
+            },
+            specSource: CameraSpecSource(spec: camSpec),
+            cameraBridge: bridge,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            cameraSessionReleaseDelay: .milliseconds(5),
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let haHome = home(
+            [camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)],
+            identityID: Self.haID
+        )
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let clock = TestClock()
+        let gate = GraceTimerGate()
+        let provider = DualSourceHomeProvider(
+            homeAssistant: haMock,
+            xiaomiCloud: miAccounts,
+            graceNow: { clock.now },
+            fallbackRecheckTimer: gate
+        )
+        let collector = RouteCollector()
+        let pump = Task {
+            for await event in provider.events() {
+                await collector.append(event)
+            }
+        }
+        track(teardown, provider: provider, gate: gate, pump: pump)
+
+        await waitUntil {
+            let backend = await collector.backend(forCard: Self.haID)
+            let aConnected = await collector.accountIsConnected(accountA.id)
+            let bConnected = await collector.accountIsConnected(accountB.id)
+            return backend == .xiaomiCloud && aConnected && bConnected
+        }
+        let initialCard = try #require(
+            await collector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await provider.resolveCameraStream(for: initialCard)
+        #expect(await bridge.startCalls.count == 1)
+        #expect(await bridge.stopCalls.isEmpty)
+
+        // Start recording every merged snapshot across A's transient drop and recovery.
+        await collector.clearSnapshots()
+
+        // Account A transiently drops while B stays connected and reports the shared camera offline.
+        // MiAccountsProvider overwrites the DID with B's offline copy, so grace must restore A's
+        // pre-drop online copy by DID rather than letting HA take over and kill the stream.
+        await apiA.setGetPropsFailure(.http(502))
+        await miAccounts.refreshNow()
+        await waitUntil {
+            let aDisconnected = await collector.accountIsDisconnected(accountA.id)
+            let bConnected = await collector.accountIsConnected(accountB.id)
+            let waiting = gate.waiting
+            return aDisconnected && bConnected && waiting == 1
+        }
+        #expect(await collector.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge.stopCalls.isEmpty, "Transient drop of streaming owner A must not stop the live stream")
+
+        // A subsequent refresh while A is still within grace and B still reports offline must also hold.
+        let snapshotsBeforeMidGraceRefresh = await collector.snapshotCount
+        clock.advance(5)
+        await miAccounts.refreshNow()
+        await waitUntil { await collector.snapshotCount > snapshotsBeforeMidGraceRefresh }
+        #expect(await collector.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge.stopCalls.isEmpty)
+
+        // Account A recovers within grace: zero stream stops and zero card flips throughout.
+        await apiA.setGetPropsFailure(nil)
+        await miAccounts.refreshNow()
+        await waitUntil {
+            let aConnected = await collector.accountIsConnected(accountA.id)
+            return aConnected && gate.waiting == 0
+        }
+        let recordedSnapshots = await collector.snapshots
+        #expect(!recordedSnapshots.isEmpty)
+        for snap in recordedSnapshots {
+            #expect(snap.deviceBackends[Self.haID] == .xiaomiCloud)
+        }
+        #expect(await bridge.stopCalls.isEmpty)
+
+        // If A later suffers a real outage past grace while B remains offline, HA takes over and
+        // closes the dead Xiaomi stream.
+        await apiA.setGetPropsFailure(.http(502))
+        await miAccounts.refreshNow()
+        await waitUntil {
+            let aDisconnected = await collector.accountIsDisconnected(accountA.id)
+            let waiting = gate.waiting
+            return aDisconnected && waiting == 1
+        }
+        clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
+        await waitUntil {
+            if gate.waiting > 0 {
+                gate.releaseLatest()
+            }
+            return await collector.backend(forCard: Self.haID) == .homeAssistant
+        }
+        await waitUntil { await bridge.stopCalls.contains(Self.did) }
+        #expect(Set(await bridge.stopCalls) == [Self.did])
+    }
+
     @Test("Other source events during grace cancel superseded fallback tasks without recompute loops")
     func cancelledFallbackTaskDoesNotRecomputeOrReschedule() async throws {
         try await withTeardown { teardown in
@@ -561,6 +719,7 @@ struct DualSourceFallbackGraceTests {
         // Four seconds in, a Xiaomi snapshot arrives while HA is still inside grace.
         // The first sleeper must wake via cancellation and exit without recomputing or rescheduling;
         // only the single replacement sleeper (11s remaining) stays parked.
+        let snapshotsBeforeFirstMiUpdate = await rig.collector.snapshotCount
         rig.clock.advance(4)
         rig.gate.ignoreCancellationOnNextSleep()
         let updatedMiHome = home(
@@ -572,18 +731,21 @@ struct DualSourceFallbackGraceTests {
             let cancelled = rig.gate.cancelledWakeCount
             let parks = rig.gate.parkCount
             let waiting = rig.gate.waiting
-            return cancelled == 1 && parks == 2 && waiting == 1
+            let snapshots = await rig.collector.snapshotCount
+            return cancelled == 1 && parks == 2 && waiting == 1 && snapshots > snapshotsBeforeFirstMiUpdate
         }
         #expect(rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
 
         // Simulate a second recompute at +6s where sleeper #2 finishes its sleep just as #3
         // supersedes it (without throwing CancellationError): token check must still make #2 a no-op.
+        let snapshotsBeforeSecondMiUpdate = await rig.collector.snapshotCount
         rig.clock.advance(2)
         await rig.miMock.updateSnapshot(updatedMiHome)
         await waitUntil {
             let parks = rig.gate.parkCount
             let waiting = rig.gate.waiting
-            return parks == 3 && waiting == 2
+            let snapshots = await rig.collector.snapshotCount
+            return parks == 3 && waiting == 2 && snapshots > snapshotsBeforeSecondMiUpdate
         }
         let snapshotsBeforeStaleWake = await rig.collector.snapshotCount
         rig.gate.releaseOldestNormally()
@@ -1427,9 +1589,13 @@ struct DualSourceFallbackGraceTests {
             let sharedCamBackend = await collector.backend(forCard: Self.haID)
             let sharedPlugBackend = await collector.backend(forCard: sharedPlugDID)
             let exclusiveBackend = await collector.backend(forCard: exclusiveHAID)
+            let acc1Connected = await collector.accountIsConnected(account1.id)
+            let acc2Connected = await collector.accountIsConnected(account2.id)
             return sharedCamBackend == .xiaomiCloud
                 && sharedPlugBackend == .xiaomiCloud
                 && exclusiveBackend == .xiaomiCloud
+                && acc1Connected
+                && acc2Connected
         }
 
         let initialHome = try #require(await collector.latestHome)
@@ -1561,7 +1727,12 @@ struct DualSourceFallbackGraceTests {
         await waitUntil {
             let camBackend = await followUpCollector.backend(forCard: Self.haID)
             let plugBackend = await followUpCollector.backend(forCard: sharedPlugDID)
-            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+            let acc1Connected = await followUpCollector.accountIsConnected(account1.id)
+            let acc2Connected = await followUpCollector.accountIsConnected(account2.id)
+            return camBackend == .xiaomiCloud
+                && plugBackend == .xiaomiCloud
+                && acc1Connected
+                && acc2Connected
         }
         let followUpDoorCard = try #require(
             await followUpCollector.latestHome?.devices.first { $0.id == Self.haID }
@@ -2161,57 +2332,77 @@ struct DualSourceFallbackGraceTests {
         final class TagLog: @unchecked Sendable {
             private let lock = NSLock()
             private var stored: [String] = []
-            private let cont: AsyncStream<String>.Continuation
-            let stream: AsyncStream<String>
-
-            init() {
-                let (stream, cont) = AsyncStream<String>.makeStream()
-                self.stream = stream
-                self.cont = cont
-            }
 
             func record(_ tag: String) {
                 lock.withLock { stored.append(tag) }
-                cont.yield(tag)
             }
 
             var tags: [String] { lock.withLock { stored } }
-
-            func finish() { cont.finish() }
         }
 
-        let timer = DispatchFallbackRecheckTimer()
+        func drain(_ queue: DispatchQueue) async {
+            await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+                queue.async { cont.resume() }
+            }
+        }
+
+        func whileHolding(_ queue: DispatchQueue, _ body: () -> Void) async {
+            let release = DispatchSemaphore(value: 0)
+            await withCheckedContinuation { (entered: CheckedContinuation<Void, Never>) in
+                queue.async {
+                    entered.resume()
+                    release.wait()
+                }
+            }
+            defer { release.signal() }
+            body()
+        }
+
+        let queue = DispatchQueue(label: "test.DispatchFallbackRecheckTimer")
+        let timer = DispatchFallbackRecheckTimer(queue: queue)
         defer { timer.invalidate() }
         let log = TagLog()
-        defer { log.finish() }
 
-        // 1. Cancelled pending schedule never fires; a later schedule fires once.
-        timer.schedule(after: .milliseconds(10)) { log.record("cancelled") }
+        // 1. Both an already-armed timer and a queued schedule stay silent after cancelPending;
+        //    a later schedule fires once.
+        timer.schedule(after: .seconds(60)) { log.record("armed-cancelled") }
+        await drain(queue)
         timer.cancelPending()
-        timer.schedule(after: .milliseconds(25)) { log.record("after-cancel") }
-        var iterator = log.stream.makeAsyncIterator()
-        let first = await iterator.next()
-        #expect(first == "after-cancel")
+        await drain(queue)
+
+        await whileHolding(queue) {
+            timer.schedule(after: .zero) { log.record("queued-cancelled") }
+            timer.cancelPending()
+            timer.schedule(after: .milliseconds(5)) { log.record("after-cancel") }
+        }
+        await waitUntil(timeout: .seconds(5)) { log.tags.contains("after-cancel") }
+        await drain(queue)
         #expect(log.tags == ["after-cancel"])
 
-        // 2. High-frequency re-arming reuses the single timer and fires only the latest callback.
-        for index in 0..<200 {
-            timer.schedule(after: .milliseconds(10)) { log.record("stale-\(index)") }
+        // 2. High-frequency re-arming with the timer queue held cannot be preempted mid-burst and
+        //    fires only the latest callback once released.
+        await whileHolding(queue) {
+            for index in 0..<200 {
+                timer.schedule(after: .zero) { log.record("stale-\(index)") }
+            }
+            timer.schedule(after: .milliseconds(5)) { log.record("latest") }
         }
-        timer.schedule(after: .milliseconds(25)) { log.record("latest") }
-        let second = await iterator.next()
-        #expect(second == "latest")
+        await waitUntil(timeout: .seconds(5)) { log.tags.contains("latest") }
+        await drain(queue)
         #expect(log.tags == ["after-cancel", "latest"])
 
         // 3. Invalidate permanently disarms pending and future schedules.
-        timer.schedule(after: .milliseconds(10)) { log.record("before-invalidate") }
-        timer.invalidate()
-        timer.schedule(after: .zero) { log.record("after-invalidate") }
-        let probe = DispatchFallbackRecheckTimer()
+        await whileHolding(queue) {
+            timer.schedule(after: .zero) { log.record("before-invalidate") }
+            timer.invalidate()
+            timer.schedule(after: .zero) { log.record("after-invalidate") }
+        }
+        await drain(queue)
+        let probe = DispatchFallbackRecheckTimer(queue: queue)
         defer { probe.invalidate() }
-        probe.schedule(after: .milliseconds(30)) { log.record("probe") }
-        let third = await iterator.next()
-        #expect(third == "probe")
+        probe.schedule(after: .milliseconds(10)) { log.record("probe") }
+        await waitUntil(timeout: .seconds(5)) { log.tags.contains("probe") }
+        await drain(queue)
         #expect(log.tags == ["after-cancel", "latest", "probe"])
     }
 

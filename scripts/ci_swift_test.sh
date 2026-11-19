@@ -11,27 +11,27 @@
 # watchdog. A passing run can fail to exit on macos-26 (SwiftPM #8394), and `script` does not
 # reliably forward the child status. A run with no summary line is a failure.
 #
-# A crash additionally dumps the macOS `ReportCrash` report for the test process, with the faulting
-# thread's frames symbolized through `atos`: the runner is destroyed with the job, so the abort
-# reason (`asi`) and its stack are only readable inside the step that saw the crash.
+# A crash additionally dumps filtered fields from the macOS `ReportCrash` `.ips` report for the
+# crashing test process (exception type, faulting thread, and `atos`-symbolized stack frames): the
+# runner is destroyed with the job, so this metadata is only readable inside the step that saw it.
 #
 # Usage:
 #   bash scripts/ci_swift_test.sh [swift test arguments...]
 set -uo pipefail
 
-# Prints the newest macOS crash reports for a crashing test process.
+# Prints filtered crash metadata from newest macOS `.ips` reports written for this test run's
+# process (`swiftpm-testing-helper` / `xctest`) after `run_started_epoch`.
 #
-# `swift test` aborts with `signal code 6: freed pointer was not the last allocation` — a Swift
-# runtime / libmalloc assertion whose only evidence is the `asi` string and the faulting stack in
-# the `.ips` file ReportCrash writes just after the abort. Without this the job log ends at the
-# signal line and every later diagnosis is a guess. Diagnosis must never change the step verdict:
-# every command is best-effort and every failure prints a warning instead of a non-zero status.
+# Diagnosis is bounded by a single total deadline and must never change the step verdict: every
+# command is best-effort and every failure prints a warning instead of a non-zero status.
 dump_macos_crash_reports() {
+    local min_epoch="${1:-0}"
     if [ "$(uname -s)" != "Darwin" ]; then
         return 0
     fi
     echo "=== macOS crash reports (ReportCrash)"
-    CRASH_REPORT_SEARCH_DIRS="$(printf '%s\n%s\n' "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports")" \
+    CRASH_REPORT_MIN_EPOCH="$min_epoch" \
+    CRASH_REPORT_SEARCH_DIRS="${CRASH_REPORT_SEARCH_DIRS:-$(printf '%s\n%s\n' "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports")}" \
         python3 - <<'PY' || echo "::warning::could not read the macOS crash reports (see the log above)"
 import glob
 import json
@@ -39,42 +39,65 @@ import os
 import subprocess
 import time
 
-# The directories also hold months of unrelated crashes; only this run's reports are interesting.
-WINDOW_SECONDS = 600
+# Single end-to-end budget across report polling and `atos` symbolization.
+TOTAL_BUDGET_SECONDS = max(1.0, float(os.environ.get("CRASH_REPORT_BUDGET_SECONDS", "90")))
 # ReportCrash flushes the `.ips` asynchronously after the abort and a loaded runner can take a while,
-# so poll instead of racing a fixed sleep: one run already lost its report to a 3s wait.
-REPORT_WAIT_SECONDS = 45
-POLL_SECONDS = 2
-NAME_PATTERNS = ("*swiftpm-testing*", "*MenuBarMijia*", "*xctest*")
-EXTENSIONS = (".ips", ".crash")
+# so poll instead of racing a fixed sleep.
+REPORT_WAIT_SECONDS = min(45.0, TOTAL_BUDGET_SECONDS)
+POLL_SECONDS = 2.0
+ALLOWED_PROC_NAMES = ("swiftpm-testing-helper", "xctest")
+NAME_PATTERNS = (
+    "swiftpm-testing-helper-*",
+    "swiftpm-testing-helper.*",
+    "xctest-*",
+    "xctest.*",
+)
 MAX_REPORTS = 2
+ATOS_PER_CALL_CAP_SECONDS = 15.0
 # Only our own modules are worth an `atos` call: system frames keep the symbols ReportCrash recorded.
 SYMBOLIZE_IMAGES = ("MenuBarMijiaPackageTests", "MijiaCore", "MenuBarMijiaApp")
 
 search_dirs = [line for line in os.environ.get("CRASH_REPORT_SEARCH_DIRS", "").splitlines() if line]
+try:
+    min_epoch = float(os.environ.get("CRASH_REPORT_MIN_EPOCH", "0"))
+except ValueError:
+    min_epoch = 0.0
+
+total_deadline = time.monotonic() + TOTAL_BUDGET_SECONDS
+
+
+def remaining_budget():
+    return max(0.0, total_deadline - time.monotonic())
 
 
 def recent_reports():
     now = time.time()
+    cutoff = min_epoch if min_epoch > 0 else (now - 600.0)
     found = []
+    seen = set()
     for directory in search_dirs:
         for pattern in NAME_PATTERNS:
-            for extension in EXTENSIONS:
-                for path in glob.glob(os.path.join(directory, pattern + extension)):
-                    try:
-                        modified = os.path.getmtime(path)
-                    except OSError:
-                        continue
-                    if now - modified <= WINDOW_SECONDS:
-                        found.append((modified, path))
+            for path in glob.glob(os.path.join(directory, pattern + ".ips")):
+                if path in seen:
+                    continue
+                seen.add(path)
+                try:
+                    modified = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if modified >= cutoff:
+                    found.append((modified, path))
     found.sort(reverse=True)
     return found
 
 
-deadline = time.time() + REPORT_WAIT_SECONDS
+poll_deadline = min(total_deadline, time.monotonic() + REPORT_WAIT_SECONDS)
 candidates = recent_reports()
-while not candidates and time.time() < deadline:
-    time.sleep(POLL_SECONDS)
+while not candidates and time.monotonic() < poll_deadline:
+    sleep_for = min(POLL_SECONDS, max(0.0, poll_deadline - time.monotonic()))
+    if sleep_for <= 0:
+        break
+    time.sleep(sleep_for)
     candidates = recent_reports()
 
 
@@ -90,29 +113,38 @@ def to_hex(value):
     return "0x%x" % number if number is not None else str(value)
 
 
+def filter_fields(mapping, allowed_keys):
+    if not isinstance(mapping, dict):
+        return None
+    filtered = {key: mapping[key] for key in allowed_keys if mapping.get(key) not in (None, "", {}, [])}
+    return filtered or None
+
+
 def show(label, value):
     if value not in (None, "", {}, []):
         print("%s: %s" % (label, json.dumps(value, ensure_ascii=False, sort_keys=True)))
 
 
 def atos_frame(binary, base, address):
+    budget = remaining_budget()
+    if budget < 1.0:
+        return "skipped (diagnosis budget exhausted)"
     if not binary or not os.path.exists(binary):
-        return "binary not on disk (%s)" % (binary or "no path in report")
+        return "binary not on disk"
     try:
         result = subprocess.run(
             ["atos", "-o", binary, "-l", to_hex(base), to_hex(address)],
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=min(ATOS_PER_CALL_CAP_SECONDS, budget),
         )
-    except Exception as error:  # atos missing or hung: keep the raw frame
-        return "atos failed (%s)" % error
+    except Exception as error:  # atos missing or timed out: keep the raw frame
+        return "atos failed (%s)" % type(error).__name__
     lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     return lines[0] if lines else "atos produced no symbol"
 
 
 def dump_ips(path):
-    print("--- %s" % path)
     with open(path, "r", errors="replace") as handle:
         lines = handle.read().splitlines()
     # An `.ips` is two JSON documents: a one-line header, then the report body.
@@ -120,22 +152,22 @@ def dump_ips(path):
         header = json.loads(lines[0]) if lines else {}
         body = json.loads("\n".join(lines[1:])) if len(lines) > 1 else {}
     except ValueError:
-        print("(json decode failed, raw report follows)")
-        print("\n".join(lines[:200]))
-        return
+        print("--- %s (json decode failed; skipping raw report)" % os.path.basename(path))
+        return False
+    proc_name = str(header.get("app_name") or body.get("procName") or "")
+    if proc_name not in ALLOWED_PROC_NAMES:
+        return False
+    print("--- %s" % os.path.basename(path))
     print(
         "report: %s bug_type=%s timestamp=%s"
         % (
-            header.get("app_name") or body.get("procName") or "?",
+            proc_name,
             header.get("bug_type"),
             header.get("timestamp"),
         )
     )
-    show("exception", body.get("exception"))
-    show("termination", body.get("termination"))
-    # Application Specific Information is where the abort reason lives: the Swift runtime's
-    # "freed pointer was not the last allocation" and libmalloc's own diagnostics both land here.
-    show("asi", body.get("asi"))
+    show("exception", filter_fields(body.get("exception"), ("type", "signal", "subtype")))
+    show("termination", filter_fields(body.get("termination"), ("namespace", "code", "indicator")))
 
     images = body.get("usedImages") or body.get("images") or []
     threads = body.get("threads") or []
@@ -144,7 +176,7 @@ def dump_ips(path):
         faulting = next((index for index, thread in enumerate(threads) if thread.get("triggered")), None)
     if faulting is None:
         print("no faulting thread recorded")
-        return
+        return True
     frames = threads[faulting].get("frames") or []
     print("faulting thread %s: %d frames" % (faulting, len(frames)))
     for depth, frame in enumerate(frames):
@@ -165,27 +197,24 @@ def dump_ips(path):
         if base is None or offset is None:
             continue
         print("      atos: %s" % atos_frame(image.get("path") or "", base, base + offset))
+    return True
 
 
-def dump_text_report(path):
-    print("--- %s (text report)" % path)
-    with open(path, "r", errors="replace") as handle:
-        for number, line in enumerate(handle):
-            if number >= 200:
-                break
-            print(line.rstrip("\n"))
-
-
-if not candidates:
-    print("no report modified in the last %ds under %s" % (WINDOW_SECONDS, ", ".join(search_dirs)))
-for _, path in candidates[:MAX_REPORTS]:
+dumped = 0
+for _, path in candidates:
+    if dumped >= MAX_REPORTS:
+        break
+    if remaining_budget() <= 0:
+        print("diagnosis budget (%.0fs) exhausted" % TOTAL_BUDGET_SECONDS)
+        break
     try:
-        if path.endswith(".ips"):
-            dump_ips(path)
-        else:
-            dump_text_report(path)
+        if dump_ips(path):
+            dumped += 1
     except Exception as error:  # never let diagnosis change the step verdict
-        print("could not read %s (%s)" % (path, error))
+        print("could not read %s (%s)" % (os.path.basename(path), type(error).__name__))
+
+if dumped == 0:
+    print("no matching test-process .ips report created after epoch %.0f" % min_epoch)
 PY
     echo "=== end of macOS crash reports"
 }
@@ -195,12 +224,13 @@ evaluate_swift_test_log() {
     local run_exit="$2"
     local run_stalled="$3"
     local stall_limit="$4"
+    local run_started_epoch="${5:-0}"
 
     # A crash in a later test binary must fail even if an earlier target printed a passing summary.
     if grep -qE 'unexpected signal code|Fatal error:' "$log_file"; then
         echo "::error::swift test crashed during execution"
-        # The runner goes away with the job: dump the crash report before failing.
-        dump_macos_crash_reports || true
+        # The runner goes away with the job: dump filtered crash fields before failing.
+        dump_macos_crash_reports "$run_started_epoch" || true
         return 1
     fi
 
@@ -241,6 +271,7 @@ stall_seconds="${SWIFT_TEST_STALL_SECONDS:-300}"
 tick=10
 log="$(mktemp -t swift-test)"
 echo "swift test log: $log"
+run_started_epoch="$(date +%s)"
 
 # A pty keeps stdout line-buffered: without it the final summary can sit in a 4 KiB buffer
 # forever when the process hangs at exit, and the watchdog would never see the result.
@@ -288,5 +319,5 @@ wait "$tail_pid" 2>/dev/null || true
 echo "=== swift test process exit: $exit_code (stalled=${stall_detected})"
 # Read the summary before treating a stall as failure. The macos-26 exit hang writes a passing
 # summary and then stays alive, so the watchdog sets stall_detected on a suite that already passed.
-evaluate_swift_test_log "$log" "$exit_code" "$stall_detected" "$stall_seconds"
+evaluate_swift_test_log "$log" "$exit_code" "$stall_detected" "$stall_seconds" "$run_started_epoch"
 exit $?
