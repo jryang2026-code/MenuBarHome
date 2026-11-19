@@ -511,6 +511,74 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     assert.deepEqual(writes, []);
   });
 
+  it("matches disabled-account URL devices by entity id, miot form, and normalized name instead of reporting missing (PR #271 round 6)", async () => {
+    const writes: string[] = [];
+    const transport: HttpTransport = async (req) => {
+      const path = reqPath(req);
+      if (path === "miotspec/prop/set" || path === "miotspec/action") writes.push(path);
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") return okMi({ homelist: [{ id: "9101", name: "Home", roomlist: [] }] });
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({ list: [{ did: "101", name: "Desk 书房台灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        return okMi([{ did: "101", siid: 2, piid: 1, code: 0, value: true }, { did: "101", siid: 2, piid: 2, code: 0, value: 50 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    await refreshDevices(app, false);
+    const light = app.devices.find((d) => d.name === "Desk 书房台灯")!;
+    const lightEntityId = light.kind.kind === "light" ? light.kind.entityId : "101.2.1";
+    assert.ok(lightEntityId && lightEntityId !== light.id, "fixture needs an entity id that differs from the card id");
+    await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
+    assert.equal(app.devices.some((d) => d.name === "Desk 书房台灯"), false, "disabled device is stripped from the panel");
+
+    const urlToasts: string[] = [];
+    const urlHost = () => ({
+      get devices() { return app.devices; },
+      get scenes() { return app.scenes; },
+      get settings() { return app.settings; },
+      get layout() { return app.layout; },
+      get sourceRevision() { return app.sourceRevision; },
+      pendingHighRisk: null,
+      replyBanner: null,
+      pendingConsent: null,
+      expandedDeviceId: null,
+      isControlBlockedByScreenLock: async () => false,
+      getActiveRaycastBridgeToken: () => undefined,
+      revealPanelForExternalUrl: async () => {},
+      requestExternalUrlConfirmation: async () => true,
+      setPendingHighRisk: () => {},
+      clearPendingHighRisk: () => {},
+      showExternalToast: (msg: string) => { urlToasts.push(msg); },
+      recordRaycastCommandFeedback: () => {},
+      executeSingleCommand: (d: never, c: never, s: never, i: never, r: never) => app.executeSingleCommand(d, c, s, i, r),
+      applyCommand: (c: never, r: never) => app.applyCommand(c, r),
+      updateUndoCommandsForDevice: () => {},
+      handleNaturalCommand: (u: string, f?: boolean) => app.handleNaturalCommand(u, f),
+      executeBuiltInSceneFromUrl: async () => ({ message: "", isError: false }),
+      focusDeviceFromUrl: () => "focused" as const,
+    });
+
+    // The gate must accept every identifier the device answers to: entity id, `miot:<did>:` property form, the
+    // lower-cased display name, and the bare raw did. Anything less reports "missing or not loaded" for a device
+    // the panel itself names as belonging to a turned-off account.
+    const miotForm = `miot:101:${lightEntityId.split(".").slice(1).join(".")}`;
+    for (const identifier of [lightEntityId, miotForm, "Desk 书房台灯", "desk  书房台灯", "101"]) {
+      urlToasts.length = 0;
+      await onOpenURL(`menumijia://toggle?device=${encodeURIComponent(identifier)}`, urlHost());
+      assert.match(urlToasts.at(-1) ?? "", /该米家账号已停用/, `${identifier} must report the disabled account`);
+      assert.doesNotMatch(urlToasts.at(-1) ?? "", /不存在|尚未加载|不在面板中/, `${identifier} must not fall back to the generic missing-device copy`);
+    }
+    urlToasts.length = 0;
+    await onOpenURL(`menumijia://toggle?device=${encodeURIComponent("999404.2.1")}`, urlHost());
+    assert.match(urlToasts.at(-1) ?? "", /不存在|尚未加载|不在面板中/, "an unknown device keeps the generic missing copy");
+    assert.deepEqual(writes, []);
+  });
+
   it("renders minimal 连接 toggle and pause confirmation preview in Settings", async () => {
     const transport: HttpTransport = async (req) => {
       const path = reqPath(req);

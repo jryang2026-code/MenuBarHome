@@ -841,12 +841,28 @@ export function revalidateAfterMiAccountReenable(options: {
   return true;
 }
 
+/**
+ * One identifier space for a disabled Xiaomi device snapshot: the card id, the raw did, every entity/action id
+ * collected at snapshot time, and the `miot:<did>:` property forms. Direct writes (`evaluateDeviceEntityWriteGate`)
+ * and URL commands must agree on it, or a link reports "missing device" for a device the panel can name.
+ */
+function disabledDeviceIdentifierMatches(rec: DisabledMiDeviceSnapshot, targetIdOrEntityId: string): boolean {
+  const base = targetIdOrEntityId.split("#")[0] ?? targetIdOrEntityId;
+  return (
+    rec.id === targetIdOrEntityId || rec.id === base || rec.rawDid === targetIdOrEntityId || rec.rawDid === base ||
+    rec.entityIds.includes(targetIdOrEntityId) || rec.entityIds.includes(base) ||
+    base.startsWith(`${rec.id}.`) || base.startsWith(`${rec.rawDid}.`) || base.startsWith(`miot:${rec.id}:`) || base.startsWith(`miot:${rec.rawDid}:`)
+  );
+}
+
+/** `menumijia://toggle?device=` also accepts the display name; compare it like `resolveTarget` does elsewhere. */
+function disabledDeviceNameMatches(rec: DisabledMiDeviceSnapshot, targetName: string): boolean {
+  const wanted = normalizeSceneName(targetName).toLocaleLowerCase();
+  return wanted.length > 0 && normalizeSceneName(rec.name).toLocaleLowerCase() === wanted;
+}
+
 export function resolveDisabledDeviceByEntity(entityId: string, knownDisabledDevices: readonly DisabledMiDeviceSnapshot[]): DisabledMiDeviceSnapshot | null {
-  const base = entityId.split("#")[0] ?? entityId;
-  return knownDisabledDevices.find((rec) =>
-    rec.id === entityId || rec.id === base || rec.rawDid === entityId || rec.rawDid === base || rec.entityIds.includes(entityId) || rec.entityIds.includes(base) ||
-    base.startsWith(`${rec.id}.`) || base.startsWith(`${rec.rawDid}.`) || base.startsWith(`miot:${rec.id}:`) || base.startsWith(`miot:${rec.rawDid}:`),
-  ) ?? null;
+  return knownDisabledDevices.find((rec) => disabledDeviceIdentifierMatches(rec, entityId)) ?? null;
 }
 
 export function resolveDisabledSceneByTarget(
@@ -920,12 +936,18 @@ export function evaluateDisabledDeviceUrlGate(
   settings: { readonly connectionMode?: string; readonly miSession?: MiSession | null; readonly haBaseURL?: string; readonly haToken?: string; readonly dualSourceEnabled?: boolean; readonly interfaceLanguage?: LanguagePreference },
   storage?: StorageLike | null,
 ): string | null {
-  if (settings.connectionMode === "demo") return null;
+  if (settings.connectionMode === "demo" && !settings.dualSourceEnabled) return null;
   const accounts = settings.miSession ? [makeMiAccount(settings.miSession)] : [];
   const mode = settings.connectionMode ?? "xiaomiCloud";
   const state = resolveMiAccountSelectionState({ storage, accounts, haBaseURL: settings.haBaseURL ?? null, haToken: settings.haToken ?? null, connectionMode: mode, dualSourceEnabled: Boolean(settings.dualSourceEnabled), hasExistingPreferences: true });
-  const hit = state.knownDisabledDevices.find((d) => d.id === deviceIdOrName || d.rawDid === deviceIdOrName || d.name === deviceIdOrName);
-  if (!hit || !state.disabledAccountIds.has(hit.accountId)) return null;
+  // The account check belongs inside the predicate: a same-named device on an enabled account must not shadow the
+  // disabled one and turn this into a "device missing" answer.
+  const hit = state.knownDisabledDevices.find(
+    (d) =>
+      state.disabledAccountIds.has(miAccountScope(d.accountId)) &&
+      (disabledDeviceIdentifierMatches(d, deviceIdOrName) || disabledDeviceNameMatches(d, deviceIdOrName)),
+  );
+  if (!hit) return null;
   const { indexedDevices } = buildIndexedCapabilityDevices({ state, accounts, devices: [], scenes: [], haBaseURL: settings.haBaseURL ?? null, haToken: settings.haToken ?? null, connectionMode: mode, dualSourceEnabled: Boolean(settings.dualSourceEnabled) });
   const v = evaluateControlTargetGate({ targetKind: "device", targetId: hit.id, selection: state.selection, devices: indexedDevices });
   return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, effectivePref(settings.interfaceLanguage));
