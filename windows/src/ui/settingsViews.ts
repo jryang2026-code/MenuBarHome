@@ -2,6 +2,7 @@ import {
   ASSISTANT_PROVIDER_PRESETS,
   endpointAllowsSendingSecrets,
   inferAssistantPreset,
+  isAiAssistantEnabled,
   listReadableHabits,
   parseAssistantEndpoint,
   type HabitSequenceEntry,
@@ -832,7 +833,15 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
   });
 
   return `
-    <div class="cc-field" data-settings-anchor="assistantProvider">
+    <div class="cc-field cc-field-row" data-settings-anchor="assistantProvider">
+      <div>
+        <label for="settings-ai-enabled">${t("AI 一句话控制")}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("关闭后，指令只在本机解析，不再发送 AI 请求；已保存的服务商配置与密钥保留。")}</p>
+      </div>
+      <input id="settings-ai-enabled" type="checkbox" ${isAiAssistantEnabled(ctx.settings) ? "checked" : ""} />
+    </div>
+
+    <div class="cc-field">
       <label>${t("AI 服务商预设（支持 OpenRouter Jev、原生 Jev、DeepSeek、千问、GLM 等）")}</label>
       <div class="cc-segmented-pills" style="flex-wrap: wrap;">
         ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
@@ -846,6 +855,11 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
             data-ai-preset="${ctx.escapeHtml(preset.id)}"
           >${ctx.escapeHtml(label)}</button>`;
         }).join("")}
+      </div>
+      <div class="cc-update-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap;">
+        <button type="button" class="cc-inline-pill" id="btn-remove-ai-provider" title="${ctx.escapeHtml(
+          t("只移除当前服务商保存的密钥、端点绑定与云端授权；其他服务商的密钥与绑定保留。"),
+        )}">${t("移除此服务商的本机配置与密钥")}</button>
       </div>
     </div>
 
