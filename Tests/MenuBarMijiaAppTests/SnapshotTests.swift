@@ -214,6 +214,34 @@ struct SnapshotTests {
         }
     }
 
+    @Test("The panel marks a timer whose source is unverified instead of running it")
+    func panelUnscopedTimerPendingSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        // A timer saved before scopes existed (ADR-0019 #22): it waits visibly for confirmation,
+        // never arms, and the panel's activity stack must say the source is unverified rather than
+        // "已错过". It is not due yet, so the card offers 确认 (arm at its own time) instead of 立即执行.
+        let legacy = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(intents: [], reply: "已关闭书房吸顶灯", source: .local)
+        )
+        ScheduledCommand.save([legacy], to: fixture.store.userDefaults)
+        fixture.store.restoreScheduledCommands()
+        #expect(fixture.store.scheduledCommands.isEmpty)
+        #expect(fixture.store.missedScheduledCommands.map(\.id) == [legacy.id])
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-unscoped-timer-pending-zh-light")
+            )
+        }
+    }
+
     @Test("The dashboard checklist shows the next lesson while the lessons are pending")
     func panelOnboardingLessonSnapshot() async throws {
         let fixture = try await SnapshotFixture()

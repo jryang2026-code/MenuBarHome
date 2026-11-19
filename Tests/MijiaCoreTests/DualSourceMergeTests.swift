@@ -1358,4 +1358,98 @@ struct DualSourceMergeTests {
         #expect(onceFresh.routes[cardID]?.backend == .xiaomiCloud)
         #expect(onceFresh.routes[cardID]?.sourceDeviceID == freshMiLight.id)
     }
+
+    // MARK: - Cross-source preference adoption (#24)
+
+    private func makePairableHomes(sharedDID: String) -> (ha: SynthesizedHome, mi: SynthesizedHome) {
+        let haLight = makeLight(id: "ha-light-a", name: "筒灯", roomId: "living_room", roomName: "客厅")
+        let miLight = makeLight(id: "111000111", name: "筒灯", roomId: "mi_living", roomName: "客厅")
+        let haHome = makeHome(
+            devices: [haLight],
+            identities: [haLight.id: makeIdentity(
+                dids: [sharedDID], model: haLight.model, name: haLight.name, roomName: haLight.roomName, kind: .light
+            )]
+        )
+        let miHome = makeHome(
+            devices: [miLight],
+            identities: [miLight.id: makeIdentity(
+                dids: [sharedDID], model: miLight.model, name: miLight.name, roomName: miLight.roomName, kind: .light
+            )]
+        )
+        return (haHome, miHome)
+    }
+
+    @Test("A pair with preference history on both sides reports the Mi id for adoption (#24)")
+    func bothSidesKnownReportsTheOrphanedPreferenceID() throws {
+        let (haHome, miHome) = makePairableHomes(sharedDID: "111000111")
+        let result = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            knownPreferenceIDs: ["ha-light-a", "111000111"]
+        )
+        #expect(result.home.devices.map(\.id) == ["ha-light-a"])
+        #expect(result.home.preferenceAdoptions == ["ha-light-a": "111000111"])
+    }
+
+    @Test("A pair with history on only one side adopts nothing because the canonical id already carries it (#24)")
+    func oneSideKnownReportsNoAdoption() throws {
+        let (haHome, miHome) = makePairableHomes(sharedDID: "111000111")
+
+        // Mi-only history: the Mi id wins the canonical choice, so nothing is orphaned.
+        let miFirst = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            knownPreferenceIDs: ["111000111"]
+        )
+        #expect(miFirst.home.devices.map(\.id) == ["111000111"])
+        #expect(miFirst.home.preferenceAdoptions.isEmpty)
+
+        // HA-only history: the HA id is canonical, so nothing is orphaned either.
+        let haFirst = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            knownPreferenceIDs: ["ha-light-a"]
+        )
+        #expect(haFirst.home.devices.map(\.id) == ["ha-light-a"])
+        #expect(haFirst.home.preferenceAdoptions.isEmpty)
+    }
+
+    @Test("A canonical registry that already picked the Mi id reports the HA id for adoption (#24)")
+    func registryChosenMiIDReportsHAOrphan() throws {
+        let (haHome, miHome) = makePairableHomes(sharedDID: "111000111")
+        // First merge seeds the registry while only the Mi id holds history.
+        let first = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            knownPreferenceIDs: ["111000111"]
+        )
+        // Later the user also saves HA-side history; the registry keeps the Mi canonical id, so the
+        // HA id's preferences become the orphan that must merge onto the card.
+        let second = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: miHome,
+            canonical: first.canonical,
+            knownPreferenceIDs: ["ha-light-a", "111000111"]
+        )
+        #expect(second.home.devices.map(\.id) == ["111000111"])
+        #expect(second.home.preferenceAdoptions == ["111000111": "ha-light-a"])
+    }
+
+    @Test("Unpaired cards never report a preference adoption (#24)")
+    func unpairedCardsReportNoAdoption() throws {
+        let haLight = makeLight(id: "ha-lone", name: "走廊灯", roomId: "hall", roomName: "走廊")
+        let haHome = makeHome(
+            devices: [haLight],
+            identities: [haLight.id: makeIdentity(
+                dids: ["777000777"], model: haLight.model, name: haLight.name, roomName: haLight.roomName, kind: .light
+            )]
+        )
+        let result = DeviceDeduplicator.merge(
+            homeAssistant: haHome,
+            xiaomiCloud: nil,
+            knownPreferenceIDs: ["ha-lone", "777000777"]
+        )
+        #expect(result.home.devices.map(\.id) == ["ha-lone"])
+        #expect(result.home.preferenceAdoptions.isEmpty)
+    }
 }
