@@ -26,8 +26,12 @@ import {
   getHostDualSourceState,
   getHostMiAccountsState,
   isDualSourceEnabled,
+  isHostHaEnabled,
   isHostMiSessionEnabled,
+  resolveHostMiSelectionState,
 } from "./cloudRefresh.js";
+import { controlTargetRejectionMessage } from "../core/capabilityReferenceVerdict.js";
+import { haConnectionScope, resolveDisabledHaDeviceByEntity } from "../core/miAccountControl.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { writeSettingsForStorage } from "./settings.js";
 import { hasPendingUrlConfirmation, rejectIfControlBlockedWhileLocked } from "./speechGuard.js";
@@ -291,7 +295,30 @@ export class CameraLiveController {
     options?: { readonly alreadyCountedLockBlock?: boolean },
   ): void {
     const dev = this.host.devices.find((d) => d.id === deviceId);
-    if (!dev || dev.kind.kind !== "camera") return;
+    if (!dev) {
+      const state = resolveHostMiSelectionState(this.host);
+      const disabledHaSnap = resolveDisabledHaDeviceByEntity(deviceId, state.knownDisabledHaDevices);
+      if (disabledHaSnap) {
+        const msg = controlTargetRejectionMessage(
+          { code: "connectionScopeDisabled", connection: "home-assistant", scope: disabledHaSnap.scope },
+          this.host.settings.interfaceLanguage,
+        );
+        this.host.replyBanner = { text: msg, source: t("控制失败"), isError: true };
+        this.host.render();
+      }
+      return;
+    }
+    if (dev.kind.kind !== "camera") return;
+    if (this.resolveCameraSource(dev).backend === "homeAssistant" && !isHostHaEnabled(this.host)) {
+      const scope = haConnectionScope(this.host.settings.haBaseURL, this.host.settings.haToken) ?? "ha:disabled";
+      const msg = controlTargetRejectionMessage(
+        { code: "connectionScopeDisabled", connection: "home-assistant", scope },
+        this.host.settings.interfaceLanguage,
+      );
+      this.host.replyBanner = { text: msg, source: t("控制失败"), isError: true };
+      this.host.render();
+      return;
+    }
     // Opening is idempotent even before the first frame or while cloud negotiation is
     // pending. Only the explicit reconnect action may replace this camera's session.
     if (this.activeLiveCameraId === deviceId) {
@@ -383,6 +410,7 @@ export class CameraLiveController {
   }
 
   public resolveHaCameraStreamUrl(dev: SmartDevice): string | null {
+    if (!isHostHaEnabled(this.host)) return null;
     const { backend, sourceDev } = this.resolveCameraSource(dev);
     if (backend !== "homeAssistant" || sourceDev.kind.kind !== "camera") return null;
     const rawPath = sourceDev.kind.snapshotPath?.trim() ?? "";
@@ -562,6 +590,31 @@ export class CameraLiveController {
     if (!accountId && this.liveCameraKeepAliveTimer !== null) {
       this.closeCameraLiveView();
     }
+  }
+
+  public activeLiveCameraUsesHomeAssistant(): boolean {
+    const activeId = this.activeLiveCameraId;
+    if (!activeId) return false;
+    const dev =
+      this.host.devices.find((d) => d.id === activeId) ??
+      (this.activeLiveCameraSnapshot?.id === activeId ? this.activeLiveCameraSnapshot : undefined);
+    if (!dev) {
+      return (
+        activeId.startsWith("ha:") ||
+        activeId.startsWith("camera.") ||
+        (!isDualSourceEnabled(this.host) && this.host.settings.connectionMode === "homeAssistant")
+      );
+    }
+    if (this.activeLiveCameraUsesXiaomiCloud()) return false;
+    return this.resolveCameraSource(dev).backend === "homeAssistant";
+  }
+
+  public closeHomeAssistantCameraLiveView(): boolean {
+    if (this.activeLiveCameraId !== null && this.activeLiveCameraUsesHomeAssistant()) {
+      this.closeCameraLiveView();
+      return true;
+    }
+    return false;
   }
 
   /**

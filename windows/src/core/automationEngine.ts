@@ -998,6 +998,7 @@ export interface AutomationExecutionHost {
     readonly isError?: boolean;
   } | null;
   applyCommand(command: DeviceCommand, silent?: boolean): Promise<boolean>;
+  evaluateAutomationRuleWriteGate?(rule: AutomationRule): string | null;
   queueBackgroundRender?(): void;
 }
 
@@ -1082,6 +1083,7 @@ interface ExecuteAutomationRuleOptions {
   readonly firedAtMs?: number;
   readonly scope?: string;
   readonly displayDevices?: readonly SmartDevice[];
+  readonly evaluateRuleWriteGate?: (rule: AutomationRule) => string | null;
   readonly onUndoRecorded?: (run: RecordedAutomationRun) => void;
   readonly recordUndoKindSnapshots?: (
     action: NonNullable<AutomationExecutionHost["lastUndoAction"]>,
@@ -1099,6 +1101,41 @@ export async function executeAutomationRule(
   const scope = options.scope ?? "default";
   const startingRevision = host.sourceRevision ?? 0;
   const preference = host.settings?.interfaceLanguage;
+  const effectivePref = preference && preference !== "system" ? preference : undefined;
+
+  let gateMsg = options.evaluateRuleWriteGate
+    ? options.evaluateRuleWriteGate(rule)
+    : host.evaluateAutomationRuleWriteGate
+      ? host.evaluateAutomationRuleWriteGate(rule)
+      : null;
+  if (gateMsg === null && rule.pausedByCapabilities?.length) {
+    if (rule.pausedByCapabilities.some((c) => c.startsWith("ha:") || c === "home-assistant")) {
+      gateMsg = tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, effectivePref);
+    } else if (rule.pausedByCapabilities.some((c) => c.startsWith("mi:") || c === "xiaomi-cloud")) {
+      gateMsg = tr3("该米家账号已停用", "該米家帳號已停用", "This Xiaomi account is turned off", undefined, effectivePref);
+    }
+  }
+  if (gateMsg === null && host.settings?.connectionMode && host.settings.connectionMode !== "demo") {
+    const action = rule.action;
+    if (action.kind === "devices" && action.deviceIds.some((id) => !host.devices.some((d) => d.id === id))) {
+      gateMsg = tr3("设备不存在", "設備不存在", "Device not found", undefined, effectivePref);
+    } else if (
+      action.kind === "scene" &&
+      !host.scenes.some((s) => s.id === action.sceneId || s.entityId === action.sceneId)
+    ) {
+      gateMsg = tr3("场景不存在", "場景不存在", "Scene not found", undefined, effectivePref);
+    }
+  }
+  if (gateMsg !== null) {
+    host.replyBanner = {
+      text: gateMsg,
+      source: tr3("控制失败", "控制失敗", "Control Failed", undefined, effectivePref),
+      isError: true,
+    };
+    host.queueBackgroundRender?.();
+    return null;
+  }
+
   const steps: AutomationUndoStep[] = [];
   const kindSnapshots = new Map<string, SmartDevice["kind"]>();
   let attemptedCount = 0;

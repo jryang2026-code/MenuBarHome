@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -160,8 +161,6 @@ struct AppIntentExecutionTests {
     @Test("URLCommandHandler runs trusted bridgeToken silently without stealing focus, while preserving hazard confirmation")
     func urlCommandHandlerBridgeTokenAndHazardGate() async throws {
         try await L10n.$overrideLanguage.withValue(.zhHans) {
-            let suite = "test.url.bridge.\(UUID().uuidString)"
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
             let desk = SmartDevice(
                 id: "study_desk", name: "书房台灯", roomId: "study", roomName: "书房",
                 model: "yeelink.light.lamp4", isOnline: true,
@@ -180,7 +179,8 @@ struct AppIntentExecutionTests {
                 kind: .plug(PlugSpec(switchEntityId: "switch.bath_heater", isOn: false))
             )
             let provider = ControlledIntentProvider(autoComplete: true)
-            let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+            let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+            defer { store.stop() }
             await provider.sendSnapshot(SynthesizedHome(devices: [desk, heater]))
             try await store.waitForTestSnapshot()
 

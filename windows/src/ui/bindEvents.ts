@@ -34,7 +34,11 @@ import { normalizeSearch } from "../core/panelSearch.js";
 import { markSwitchAsLight, unmarkSwitchAsLight } from "../core/switchLightMarks.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
-import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
+import {
+  bindConnectionsAndDiagPanelEvents,
+  retryTimedOutHaStopOnHost,
+  setHaConnectionEnabledOnHost,
+} from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import {
@@ -43,7 +47,7 @@ import {
   shouldKeepPopoverPinned,
 } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
-import { evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
+import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import {
   positionRoomBrowseMenu,
@@ -61,11 +65,13 @@ function confirmHighRiskForHost(
   primaryPower?: { readonly command: DeviceCommand; readonly summary: string; readonly intent: DeviceIntent },
 ): boolean {
   if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const activeId = host.devices.some((d) => d.id === deviceId) ? deviceId : null;
     const gateMsg = evaluateDeviceEntityWriteGate({
-      targetKind: "device",
-      targetIdOrEntityId: command.entityId,
-      resolvedActiveDeviceId: deviceId,
+      targetKind: command.kind === "activateScene" ? "scene" : "device",
+      targetIdOrEntityId: command.entityId || deviceId,
+      resolvedActiveDeviceId: activeId,
       context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
       languagePreference: host.settings.interfaceLanguage,
     });
     if (gateMsg !== null) {
@@ -115,13 +121,47 @@ function confirmHighRiskForHost(
 
 export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void {
   const dev = host.devices.find((d) => d.id === id);
-  if (!dev || dev.kind.kind === "sensor" || !deviceCanTogglePower(dev)) return;
+  if (!dev) {
+    if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+      const gateMsg = evaluateDeviceEntityWriteGate({
+        targetKind: "device",
+        targetIdOrEntityId: id,
+        resolvedActiveDeviceId: null,
+        context: buildHostCapabilityContext(host),
+        rejectUnknown: true,
+        languagePreference: host.settings.interfaceLanguage,
+      });
+      if (gateMsg !== null) {
+        host.clearPendingHighRisk();
+        host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+        host.render();
+      }
+    }
+    return;
+  }
+  if (dev.kind.kind === "sensor" || !deviceCanTogglePower(dev)) return;
   if (dev.kind.kind === "fridge") {
     host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
     host.render();
     return;
   }
   if (host.waitingDeviceIds.has(id)) return;
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateDeviceEntityWriteGate({
+      targetKind: "device",
+      targetIdOrEntityId: dev.id,
+      resolvedActiveDeviceId: dev.id,
+      context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.clearPendingHighRisk();
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
+  }
   const aliased = withAliases(host.layout, host.devices);
   const aliasedDev = aliased.find((d) => d.id === dev.id) ?? dev;
   // A momentary plug button only fires an activation; macOS always sends `.power(true)`,
@@ -774,6 +814,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       void host.refreshDevices(false);
     });
 
+    host.root.querySelector("#btn-empty-ha-reenable")?.addEventListener("click", () => {
+      void setHaConnectionEnabledOnHost(host, true);
+    });
+
+    host.root.querySelector("#btn-empty-ha-stop-retry")?.addEventListener("click", () => {
+      retryTimedOutHaStopOnHost(host);
+    });
+
     host.root.querySelector("#btn-empty-settings")?.addEventListener("click", () => {
       host.openSettingsSheet("connection");
     });
@@ -802,6 +850,19 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const suggestion = host.pendingSuggestions.find((s) => s.id === btn.dataset.suggestionId);
         if (!suggestion) return;
         host.pendingSuggestions = host.pendingSuggestions.filter((s) => s.id !== suggestion.id);
+        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const gateMsg = evaluateIntentsWriteGate({
+            intents: suggestion.intents,
+            context: buildHostCapabilityContext(host),
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            host.pendingSuggestions = [];
+            host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+            host.render();
+            return;
+          }
+        }
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         const baseId = suggestionBaseId(suggestion.id);
@@ -864,8 +925,26 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelectorAll<HTMLElement>("[data-ha-scene]").forEach((button) => {
       button.addEventListener("click", () => {
-        const scene = host.scenes.find((item) => item.id === button.dataset.haScene);
-        if (!scene) return;
+        const sceneId = button.dataset.haScene;
+        if (!sceneId) return;
+        const scene = host.scenes.find((item) => item.id === sceneId);
+        if (!scene) {
+          if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+            const gateMsg = evaluateDeviceEntityWriteGate({
+              targetKind: "scene",
+              targetIdOrEntityId: sceneId,
+              resolvedActiveDeviceId: null,
+              context: buildHostCapabilityContext(host),
+              rejectUnknown: true,
+              languagePreference: host.settings.interfaceLanguage,
+            });
+            if (gateMsg !== null) {
+              host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+              host.render();
+            }
+          }
+          return;
+        }
         const intents: DeviceIntent[] = [{targetId:scene.id,operation:{kind:"activateScene"}}];
         void host.executeIntents(intents, IntentReply.describe(intents, host.devices, host.scenes), t("0ms 本地直达"), {recordHabits:true});
       });
@@ -875,6 +954,19 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       btn.addEventListener("click", () => {
         const suggestion = host.currentProactiveSuggestions().find((s) => s.id === btn.dataset.proactiveId);
         if (!suggestion) return;
+        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const gateMsg = evaluateIntentsWriteGate({
+            intents: suggestion.intents,
+            context: buildHostCapabilityContext(host),
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            host.isShowingAssistantBar = true;
+            host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+            host.render();
+            return;
+          }
+        }
         const aliasedDevices = withAliases(host.layout, host.devices);
         const intents = IntentValidator.sanitize(suggestion.intents, aliasedDevices, host.scenes);
         if (intents.length === 0) return;
@@ -1112,8 +1204,26 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelectorAll<HTMLElement>("[data-high-risk-confirm]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const id = btn.dataset.highRiskConfirm;
+        if (!id) return;
         const armed = host.pendingHighRisk;
-        if (!id || !armed?.confirm || armed.deviceId !== id) return;
+        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const activeId = host.devices.some((device) => device.id === id) ? id : null;
+          const gateMsg = evaluateDeviceEntityWriteGate({
+            targetKind: armed?.confirm?.command.kind === "activateScene" ? "scene" : "device",
+            targetIdOrEntityId: armed?.confirm?.command.entityId ?? id,
+            resolvedActiveDeviceId: activeId,
+            context: buildHostCapabilityContext(host),
+            rejectUnknown: true,
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            host.clearPendingHighRisk();
+            host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+            host.render();
+            return;
+          }
+        }
+        if (!armed?.confirm || armed.deviceId !== id) return;
         const expired = armed.expiresAtMs <= Date.now();
         const stale = armed.sourceRevision !== host.sourceRevision;
         host.clearPendingHighRisk();

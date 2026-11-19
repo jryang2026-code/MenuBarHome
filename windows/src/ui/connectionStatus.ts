@@ -7,7 +7,7 @@ import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
-import { getHostMiAccountsState, isDualSourceEnabled, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
+import { getHostHaLifecyclePhase, getHostMiAccountsState, isDualSourceEnabled, isHostHaEnabled, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
 import { hasMatchingDomShape, morphMatchingDom } from "./dom.js";
 import { isVerboseConnectionFooter } from "./panelView.js";
 /** Plain-language connection state for the footer and its keyboard-reachable detail card. */
@@ -202,6 +202,19 @@ function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses
 /** Home Assistant owns only its own coordinator status, error message and sync state. */
 function haSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
   if (!IS_ACTIVE_HA(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
+  const haPhase = getHostHaLifecyclePhase(host);
+  if (haPhase === "stop_timeout") {
+    return { badge: "degraded", text: tr(host, "还在停止 · 重试", "還在停止 · 重試", "Still stopping · Retry") };
+  }
+  if (haPhase === "stopping") {
+    return { badge: "connecting", text: tr(host, "正在停止…", "正在停止…", "Stopping…") };
+  }
+  if (!isHostHaEnabled(host)) {
+    return {
+      badge: "unconfigured",
+      text: tr(host, "Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off"),
+    };
+  }
   const message = haErrorMessage(host);
   if (message.includes("Home Assistant authentication rejected")) {
     return { badge: "reauth", text: tr(host, "凭据或地址需更新", "憑證或地址需更新", "Credentials or address need attention") };
@@ -247,6 +260,8 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
   const dualStatuses = dual ? host.dualSourceCoordinator?.getSourceStatuses() ?? null : null;
   const miView = hasMi(host) ? miSourcePresentation(host, dual, dualStatuses) : null;
   const haView = hasHA(host) ? haSourcePresentation(host, dual, dualStatuses) : null;
+  const haPhase = hasHA(host) ? getHostHaLifecyclePhase(host) : "enabled";
+  const haTurnedOff = hasHA(host) && !isHostHaEnabled(host) && haPhase !== "stopping";
   const sources: ConnectionSourceItem[] = [];
   if (miView) sources.push({ id: "mi", name: tr(host, "米家", "米家", "Xiaomi Home"), statusText: miView.text, badge: miView.badge });
   if (haView) sources.push({ id: "ha", name: "Home Assistant", statusText: haView.text, badge: haView.badge });
@@ -294,10 +309,32 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
       return present("degraded", BADGE_ICON[miBadge], miDownText, recoveryFor("mi", miBadge));
     }
     if (miUp && !haUp) {
+      if (haPhase === "stopping") {
+        return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在停止 Home Assistant…", "正在停止 Home Assistant…", "Stopping Home Assistant…"), null);
+      }
+      if (haTurnedOff) {
+        if (host.isSyncingCloud) return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在同步家居平台…", "正在同步家居平台…", "Syncing smart home platforms…"), null);
+        return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
+      }
       if (haBadge === "connecting") return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接 Home Assistant…", "正在連線 Home Assistant…", "Connecting to Home Assistant…"), null);
       return present("degraded", BADGE_ICON[haBadge], haDownText, recoveryFor("ha", haBadge));
     }
     if (!miUp && !haUp) {
+      if (haPhase === "stopping") {
+        return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在停止 Home Assistant…", "正在停止 Home Assistant…", "Stopping Home Assistant…"), null);
+      }
+      if (haTurnedOff) {
+        if (miBadge === "unconfigured") {
+          return present("unconfigured", SF_ICONS.wifiSlash, tr(host, "米家与 Home Assistant 均已停用", "米家與 Home Assistant 均已停用", "Xiaomi Home and Home Assistant are turned off"), actions.settings);
+        }
+        if (miBadge === "connecting") {
+          return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接米家…", "正在連線米家…", "Connecting to Xiaomi Home…"), null);
+        }
+        if (miBadge === "degraded") {
+          return present("degraded", SF_ICONS.wifi, miDownText, recoveryFor("mi", miBadge));
+        }
+        return present("offline", BADGE_ICON[miBadge], miDownText, recoveryFor("mi", miBadge));
+      }
       if (miBadge === "connecting" || haBadge === "connecting") {
         return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接家居平台…", "正在連線家居平台…", "Connecting to smart home platforms…"), null);
       }
@@ -318,6 +355,8 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
   if (IS_ACTIVE_HA(host) && haView) {
+    if (haPhase === "stopping") return present("syncing", SF_ICONS.arrowClockwise, haView.text, null);
+    if (haView.badge === "unconfigured") return present("unconfigured", SF_ICONS.wifiSlash, haView.text, actions.settings);
     if (haView.badge === "reauth") return present("offline", SF_ICONS.exclamationTriangleFill, haDownText, actions.settings);
     if (haView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, haDownText, actions.settings);
     if (haView.badge === "degraded") return present("degraded", SF_ICONS.wifi, haView.text, actions.retry);

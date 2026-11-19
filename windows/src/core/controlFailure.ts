@@ -1,3 +1,7 @@
+import { controlTargetRejectionMessage } from "./capabilityReferenceVerdict.js";
+import { isHaBlockedRequestError } from "./haTransportGate.js";
+import type { LanguagePreference } from "./i18n.js";
+import { isCapabilityGateError } from "./miAccountControl.js";
 import { MiCloudError } from "./miCloud/session.js";
 import { trText } from "./quickActions.js";
 
@@ -27,6 +31,7 @@ interface ControlFailureFormatOptions extends ClassifyControlFailureOptions {
   readonly adjustment?: boolean;
   /** Returned when the failure does not fit any structured bucket (e.g. generic HTTP 500). */
   readonly fallback?: string;
+  readonly languagePreference?: LanguagePreference;
 }
 
 interface ExtractedErrorShape {
@@ -96,6 +101,9 @@ export function isCancellationError(error: unknown): boolean {
 }
 
 function neverLeftClient(shape: ExtractedErrorShape): boolean {
+  if (shape.code === "CAPABILITY_GATE_REJECTED" || shape.code === "HA_CONNECTION_DISABLED") {
+    return true;
+  }
   const lower = shape.message.toLowerCase();
   return (
     lower.includes("invalid url") ||
@@ -453,6 +461,19 @@ export function controlFailureUserMessage(
   error: unknown,
   options: ControlFailureFormatOptions = {},
 ): string | null {
+  const pref =
+    options.languagePreference && options.languagePreference !== "system"
+      ? options.languagePreference
+      : undefined;
+  if (isCapabilityGateError(error)) {
+    return controlTargetRejectionMessage(error.reason, pref);
+  }
+  if (isHaBlockedRequestError(error)) {
+    return controlTargetRejectionMessage(
+      { code: "connectionScopeDisabled", connection: "home-assistant", scope: error.scope },
+      pref,
+    );
+  }
   const failure = classifyControlFailure(error, options);
   if (failure?.isCancellation) {
     return null;
