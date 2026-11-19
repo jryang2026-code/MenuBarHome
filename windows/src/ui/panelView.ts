@@ -290,6 +290,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
       ${host.activeSheet === "onboarding" ? host.renderOnboardingModal() : ""}
       ${host.activeSheet === "settings" ? host.renderSettingsModal() : ""}
       ${host.cameraLive.activeLiveCameraId !== null ? host.cameraLive.renderCameraLiveModal() : ""}
+      ${host.renderRoomBrowseMenu()}
       ${host.renderHomeMenu()}
       ${host.renderContextMenu()}
       ${host.renderPrompt()}`;

@@ -10,6 +10,7 @@ export type SettingsAnchor =
   | "temperatureUnit"
   | "panelHeight"
   | "panelAnchor"
+  | "compactGridMode"
   | "climatePanelModule"
   | "hideOfflineDevices"
   | "hideGroupedLights"
@@ -136,6 +137,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "temperatureUnit":
     case "panelHeight":
     case "panelAnchor":
+    case "compactGridMode":
     case "climatePanelModule":
     case "hideOfflineDevices":
     case "hideGroupedLights":
@@ -246,6 +248,12 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_GENERAL,
     title: ["面板位置", "面板位置", "Panel Position"],
     synonyms: ["位置", "角落", "吸附", "拖动", "左上", "右上", "左下", "右下", "position", "anchor", "corner", "location", "drag", "weizhi"],
+  },
+  {
+    anchor: "compactGridMode",
+    section: SEC_GENERAL,
+    title: ["紧凑双列分体磁贴", "緊湊雙列分體磁貼", "Compact 2-Column Split Tiles"],
+    synonyms: ["紧凑", "緊湊", "双列", "雙列", "分体", "分體", "磁贴", "磁貼", "卡片密度", "网格", "compact", "grid", "2-column", "two column", "split tile", "density", "jincou", "shuanglie"],
   },
   {
     anchor: "climatePanelModule",
