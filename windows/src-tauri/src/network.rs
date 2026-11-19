@@ -141,9 +141,32 @@ pub(crate) async fn native_http(
     follow_redirects: Option<bool>,
     timeout_ms: Option<u64>,
 ) -> Result<NativeHttpResponse, String> {
+    native_http_with_scope(url, method, headers, body, follow_redirects, timeout_ms, None).await
+}
+
+pub(crate) async fn native_http_with_scope(
+    url: String,
+    method: Option<String>,
+    headers: Option<HashMap<String, String>>,
+    body: Option<String>,
+    follow_redirects: Option<bool>,
+    timeout_ms: Option<u64>,
+    ha_scope: Option<String>,
+) -> Result<NativeHttpResponse, String> {
+    fn in_ha_scope(url: &reqwest::Url, scope: &str) -> bool {
+        let path = url.path().to_ascii_lowercase();
+        let target = format!("{}{}", url.origin().ascii_serialization(), url.path());
+        target.starts_with(&format!("{scope}/api/"))
+            && url.fragment().is_none()
+            && !["%2e", "%2f", "%5c"].iter().any(|&escape| path.contains(escape))
+    }
+
     let allowed_origins = allowed_origins_snapshot()?;
     let parsed_url = reqwest::Url::parse(&url).map_err(|e| format!("native_http 地址无效：{e}"))?;
     check_url_allowed(&parsed_url, &allowed_origins)?;
+    if ha_scope.as_ref().is_some_and(|scope| !in_ha_scope(&parsed_url, scope)) {
+        return Err("Home Assistant HTTP request is outside the registered scope".into());
+    }
 
     let follow = follow_redirects.unwrap_or(true);
     let policy = if follow {
@@ -154,7 +177,9 @@ pub(crate) async fn native_http(
                 return attempt.stop();
             }
             // Even another configured origin must not receive this request's headers or body.
-            if redirect_allowed(&original_origin, attempt.url(), &redirect_origins) {
+            if redirect_allowed(&original_origin, attempt.url(), &redirect_origins)
+                && ha_scope.as_ref().is_none_or(|scope| in_ha_scope(attempt.url(), scope))
+            {
                 attempt.follow()
             } else {
                 attempt.stop()
@@ -321,11 +346,13 @@ pub(crate) fn ha_websocket_path(raw_path: &str) -> Result<String, String> {
             return Err("Home Assistant URL path is invalid".into());
         }
     }
-    let mut trimmed = raw_path.trim_end_matches('/');
-    if let Some(without_api) = trimmed.strip_suffix("/api") {
-        trimmed = without_api.trim_end_matches('/');
+    let trimmed = raw_path.trim_end_matches('/');
+    let mut prefix: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+    if prefix.ends_with(&["api", "websocket"]) {
+        prefix.truncate(prefix.len() - 2);
+    } else if prefix.last() == Some(&"api") {
+        prefix.pop();
     }
-    let prefix: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
     if prefix.is_empty() {
         Ok("/api/websocket".to_string())
     } else {

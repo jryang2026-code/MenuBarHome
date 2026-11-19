@@ -1,6 +1,7 @@
 import {
   HaBlockedRequestError,
   acquireHaTransportLease,
+  invokeHaWithLease,
   haConnectionScope,
   isHaBlockedRequestError,
 } from "./haTransportGate.js";
@@ -1017,12 +1018,12 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
   readonly home: SynthesizedHome;
   readonly identities: Record<string, DeviceSourceIdentity>;
 }> {
-  const lease = acquireHaTransportLease(baseURL);
+  const lease = acquireHaTransportLease(baseURL, { token: token });
   if (!lease) {
     throw new HaBlockedRequestError(haConnectionScope(baseURL) ?? "ha:");
   }
   try {
-    const rawSnapshot = await invoke<unknown>("ha_snapshot", {
+    const rawSnapshot = await invokeHaWithLease<unknown>(lease, invoke, "ha_snapshot", {
       baseUrl: baseURL,
       token,
     });

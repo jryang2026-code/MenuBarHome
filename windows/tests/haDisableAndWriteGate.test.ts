@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createTransport } from "../src/ui/transport.js";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
@@ -215,6 +216,7 @@ function makeHaSnapshotPayload(overrides: Partial<Record<string, unknown>> = {})
 }
 
 function makeHarness(options: {
+  onHaSetConnection?: (args: Record<string, unknown>) => Promise<void>;
   onHaSnapshot?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   onHaExecute?: (args: Record<string, unknown>) => Promise<unknown>;
   onTransport?: (req: HttpRequest) => Promise<HttpResponse>;
@@ -246,6 +248,9 @@ function makeHarness(options: {
     if (cmd === "is_workstation_locked") {
       lockChecks += 1;
       return (Boolean(options.workstationLocked) as unknown) as T;
+    }
+    if (cmd === "ha_set_connection") {
+      return (await options.onHaSetConnection?.(args)) as T;
     }
     if (cmd === "ha_snapshot") {
       if (options.onHaSnapshot) return (await options.onHaSnapshot(args)) as unknown as T;
@@ -469,7 +474,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     pendingSnap = createDeferred<Record<string, unknown>>();
     pendingExec = createDeferred<unknown>();
     const inFlightRefresh = app.refreshHADevices(true);
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const inFlightClientExec = new HomeAssistantClient(HA_URL, "ha-tok-drain", h.invoke).execute({
       kind: "setLightPower",
       entityId: "light.ha_strip",
@@ -555,9 +560,11 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
       resolve: gen1Deferred.resolve,
       reject: gen1Deferred.reject,
     };
+    const beforeGen1 = h.countCmd("ha_snapshot");
     const hungGen1 = app.refreshHADevices(true);
-    await Promise.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
     const snapsWhenGen1Started = h.countCmd("ha_snapshot");
+    assert.equal(snapsWhenGen1Started, beforeGen1 + 1);
 
     await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
     assert.equal(getHostHaLifecyclePhase(app), "stopping");
@@ -1271,9 +1278,9 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(h.miWritePaths.length, miWriteBaseline, "total Xiaomi writes across all blocked/partial plans must be 0");
   });
 
-  it("gates the HA disable checkbox behind HA_NATIVE_CANCEL_READY === false by default while still exposing Re-enable recovery for persisted disabledHaScopes", async () => {
+  it("exposes the HA disable checkbox by default and supports recovery when the feature is gated off", async () => {
     setHaNativeCancelReadyForTests(null);
-    assert.equal(isHaNativeCancelReady(), false, "production default must keep HA_NATIVE_CANCEL_READY === false until Rust cancellation lands");
+    assert.equal(isHaNativeCancelReady(), true);
 
     const h = makeHarness();
     const { app } = h;
@@ -1283,15 +1290,13 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     await app.refreshHADevices(false);
 
     app.openSettingsSheet("connection");
-    assert.equal(
-      document.querySelector("[data-ha-connection-enabled]"),
-      null,
-      "HA disable checkbox must remain hidden when HA_NATIVE_CANCEL_READY is false",
-    );
-    assert.ok(document.querySelector("#btn-disconnect-ha"), "Disconnect HA button must remain available");
+    assert.ok(document.querySelector("[data-ha-connection-enabled]"));
+    assert.ok(document.querySelector("#btn-disconnect-ha"));
 
-    // Simulate a persisted disabledHaScopes entry on disk under default HA_NATIVE_CANCEL_READY === false:
-    // both Settings ([data-ha-reenable]) and the main panel empty state (#btn-empty-ha-reenable) must still allow recovery!
+    setHaNativeCancelReadyForTests(false);
+    app.render();
+    assert.equal(document.querySelector("[data-ha-connection-enabled]"), null);
+
     writeMiAccountSelectionMutation({
       storage: localStorage,
       mutate: (prev) => ({
@@ -1392,6 +1397,58 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     hungSnapshot.resolve(makeHaSnapshotPayload());
     await inFlightRefresh;
     assert.deepEqual(app.devices.map((d) => d.name), ["恢复后新灯"], "late hung response must not overwrite fresh state");
+  });
+
+  it("keeps HA stopping until native drain completes and waits for the new endpoint registration", async () => {
+    const oldDrain = createDeferred<void>();
+    const newReady = createDeferred<void>();
+    const nextURL = "https://next-ha.example/house";
+    const h = makeHarness({
+      onHaSetConnection: ({ baseUrl }) => baseUrl === null
+        ? oldDrain.promise
+        : baseUrl === nextURL ? newReady.promise : Promise.resolve(),
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-first";
+    app.submitServiceEndpoints();
+    await app.refreshHADevices(false);
+    const first = h.tauriCalls.find((call) => call.cmd === "ha_snapshot");
+    const firstRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection");
+    assert.ok(first && firstRegistration);
+    assert.equal(first.args["generation"], firstRegistration.args["generation"]);
+
+    await fetchHomeAssistantSensorHistory({
+      baseURL: HA_URL,
+      token: "ha-first",
+      transport: createTransport(),
+      entityIds: ["sensor.ha_temp"],
+      window: "24h",
+    });
+    const http = h.tauriCalls.find((call) => call.cmd === "ha_http");
+    assert.equal(http?.args["generation"], firstRegistration.args["generation"]);
+
+    await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    assert.equal(getHostHaLifecyclePhase(app), "stopping");
+    const stop = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === null);
+    assert.ok(stop);
+    assert.ok(Number(stop.args["generation"]) > Number(first.args["generation"]));
+
+    app.settings.haBaseURL = nextURL;
+    app.settings.haToken = "ha-next";
+    app.submitServiceEndpoints();
+    const refresh = app.refreshHADevices(false);
+    oldDrain.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.countCmd("ha_snapshot"), 1);
+    newReady.resolve();
+    await refresh;
+    const last = h.tauriCalls.filter((call) => call.cmd === "ha_snapshot").at(-1);
+    const nextRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === nextURL);
+    assert.equal(last?.args["baseUrl"], nextURL);
+    assert.equal(last?.args["generation"], nextRegistration?.args["generation"]);
+    assert.ok(Number(last?.args["generation"]) > Number(stop.args["generation"]));
   });
 
   it("keeps dual-source Xiaomi timers ready and firing when HA is disabled, and uses structured verdict codes in zh-Hant", async () => {

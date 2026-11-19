@@ -58,7 +58,7 @@ import {
 import type { MiSession } from "../core/miCloudClient.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { removeDisconnectedHaFromSelection, removeSignedOutMiAccountFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
-import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
+import { clearHaScopeLifecycle, getHaScopeLifecyclePhase, syncHaNativeConnection } from "../core/haTransportGate.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import {
   buildHostCapabilityContext,
@@ -427,14 +427,17 @@ export function submitServiceEndpoints(host: MenuMijiaWindowsApp, force = false)
     const assistantUrl = host.settings.assistantBaseURL.trim();
     const haUrl = isHostHaEnabled(host) ? host.settings.haBaseURL.trim() : "";
     const serialized = `${assistantUrl}\n${haUrl}`;
-    if (!force && serialized === host.lastSubmittedEndpoints) return;
-    host.lastSubmittedEndpoints = serialized;
     const invoke = window.__TAURI_INTERNALS__?.invoke;
     if (!invoke) return;
-    host.endpointSubmission = invoke("set_service_endpoints", {
-      assistantUrl,
-      haUrl,
-    }).catch((error: unknown) => {
+    const haToken = haUrl && getHaScopeLifecyclePhase(haUrl) === "enabled" ? host.settings.haToken.trim() : "";
+    const native = syncHaNativeConnection(haUrl, haToken);
+    const sameEndpoints = !force && serialized === host.lastSubmittedEndpoints;
+    if (sameEndpoints && !native) return;
+    const authorization = sameEndpoints
+      ? host.endpointSubmission
+      : invoke("set_service_endpoints", { assistantUrl, haUrl });
+    host.lastSubmittedEndpoints = serialized;
+    host.endpointSubmission = (native ? Promise.all([authorization, native]) : authorization).catch((error: unknown) => {
       host.noteServiceEndpointFailure(error);
     });
   }

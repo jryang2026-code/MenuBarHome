@@ -9,6 +9,7 @@ export interface HttpRequest {
   readonly body?: string;
   readonly followRedirects?: boolean;
   readonly timeoutMs?: number;
+  readonly haConnection?: { readonly baseUrl: string; readonly generation: number; readonly signal: AbortSignal };
 }
 
 export interface HttpResponse {

@@ -3,6 +3,15 @@ import type { HttpRequest, HttpResponse, HttpTransport } from "../core/miCloudCl
 export function createTransport(): HttpTransport {
   return async (req: HttpRequest): Promise<HttpResponse> => {
     if (window.__TAURI_INTERNALS__?.invoke) {
+      if (req.haConnection) {
+        return window.__TAURI_INTERNALS__.invoke<HttpResponse>("ha_http", {
+          baseUrl: req.haConnection.baseUrl,
+          generation: req.haConnection.generation,
+          url: req.url,
+          headers: req.headers ?? {},
+          timeoutMs: req.timeoutMs ?? 15000,
+        });
+      }
       return window.__TAURI_INTERNALS__.invoke<HttpResponse>("native_http", {
         url: req.url,
         method: req.method ?? "GET",
@@ -16,6 +25,7 @@ export function createTransport(): HttpTransport {
       method: req.method ?? "GET",
       headers: req.headers,
       body: req.body,
+      ...(req.haConnection ? { signal: req.haConnection.signal } : {}),
     });
     const headers: Record<string, string> = {};
     response.headers.forEach((value, key) => {
