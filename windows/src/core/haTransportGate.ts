@@ -203,6 +203,27 @@ function retireNativeHaScope(scope: string | null): Promise<void> | undefined {
   return syncHaNativeConnection("", "");
 }
 
+const NATIVE_HA_STALE_MESSAGE = "Home Assistant connection is disabled or has changed";
+
+function nativeErrorMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "object" && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return "";
+}
+
+/**
+ * A stale native registration is the same condition as a locally blocked scope, so it must reach
+ * callers as `HaBlockedRequestError` instead of surfacing the native English message in the UI.
+ */
+export function mapNativeHaTransportError(error: unknown, scope?: string | null): unknown {
+  if (!nativeErrorMessage(error).includes(NATIVE_HA_STALE_MESSAGE)) return error;
+  return new HaBlockedRequestError(scope ?? "ha:");
+}
+
 export function invokeHaWithLease<T>(
   lease: HaTransportLease,
   invoke: (command: string, args: Record<string, unknown>) => Promise<T>,
@@ -213,7 +234,10 @@ export function invokeHaWithLease<T>(
     if (!lease.isCurrent()) return Promise.reject(new HaBlockedRequestError(lease.scope ?? "ha:"));
     return invoke(command, { ...args, generation: lease.generation });
   };
-  return lease.nativeReady ? lease.nativeReady.then(send) : send();
+  const pending = lease.nativeReady ? lease.nativeReady.then(send) : send();
+  return pending.catch((error: unknown) => {
+    throw mapNativeHaTransportError(error, lease.scope);
+  });
 }
 
 export function isHaNativeCancelReady(): boolean {
@@ -427,6 +451,9 @@ export function beginHaScopeDisable(
       finishDrain(normalized, entry, storage);
     }, () => {
       if (entry.nativeDrain !== nativeDrain) return;
+      // A rejected registration would otherwise stay counted as in-flight forever, pinning the
+      // lifecycle at `stop_timeout` and starving every later `requestHaScopeEnableAfterDrain`.
+      entry.nativeDrain = null;
       clearDrainTimer(entry);
       entry.stopTimedOut = true;
       cancelPendingEnableCallbacks(entry, { timedOut: true });

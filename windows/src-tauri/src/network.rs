@@ -614,6 +614,102 @@ pub(crate) fn set_service_endpoints(
 }
 
 #[cfg(test)]
+mod ha_scope_tests {
+    use super::*;
+
+    const OUTSIDE_SCOPE: &str = "Home Assistant HTTP request is outside the registered scope";
+
+    fn scope_result(url: &str, scope: &str) -> Result<(), String> {
+        tauri::async_runtime::block_on(native_http_with_scope(
+            url.to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some(2_000),
+            Some(scope.to_string()),
+        ))
+        .map(|_| ())
+    }
+
+    /// Anything that is not inside `<origin>/<subpath>/api/` must be refused before a request is
+    /// sent, so a WebView cannot reach the rest of the Home Assistant host through this command.
+    #[test]
+    fn requests_outside_the_registered_ha_scope_are_refused() {
+        let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
+        let origin = normalize_extra_origin("https://h").unwrap();
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
+        for url in [
+            // A sibling subpath that merely shares the character prefix (`/ha` vs `/hat`).
+            "https://h/hat/api/x",
+            // The origin root, i.e. Home Assistant installed without a reverse-proxy subpath.
+            "https://h/api/x",
+            // Percent-encoded dot segments must not walk out of the registered subpath.
+            "https://h/ha/api/%2e%2e/x",
+            "https://h/ha/api/%2E%2E/x",
+            "https://h/ha/api/../x",
+            // A fragment is not part of `url.path()`, so it must be refused explicitly.
+            "https://h/ha/api/x#f",
+        ] {
+            assert_eq!(scope_result(url, "https://h/ha"), Err(OUTSIDE_SCOPE.into()), "{url}");
+        }
+        // The in-scope path itself still reaches the host; the redirect test below asserts that.
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(&origin);
+    }
+
+    /// A 302 that stays on the allowed origin but leaves the registered Home Assistant subpath must
+    /// be stopped at the redirect policy, not followed with the caller's headers.
+    #[test]
+    fn redirect_outside_the_registered_ha_scope_is_stopped() {
+        let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let origin = normalize_extra_origin(&base).unwrap();
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
+        let hijack = format!("{base}/api/hijack");
+        let peer = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Write};
+            let (mut first, _) = listener.accept().unwrap();
+            first.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            {
+                let mut reader = BufReader::new(&mut first);
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).unwrap_or(0) == 0 || header == "\r\n" {
+                        break;
+                    }
+                }
+            }
+            write!(
+                first,
+                "HTTP/1.1 302 Found\r\nLocation: {hijack}\r\nContent-Length: 0\r\n\r\n"
+            )
+            .unwrap();
+            // Reaching the second request would mean the redirect was followed outside the scope.
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut second, _)) => {
+                        let _ = second.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nleaked\n");
+                        return true;
+                    }
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(_) => break,
+                }
+            }
+            false
+        });
+        let result = scope_result(&format!("{base}/ha/api/states"), &format!("{base}/ha"));
+        assert_eq!(result, Err("native_http 拒绝跨来源或未授权重定向".into()));
+        assert!(!peer.join().unwrap(), "a 302 leaving the registered scope must not be followed");
+        EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(&origin);
+    }
+}
+
+#[cfg(test)]
 mod subpath_tests {
     use super::*;
 

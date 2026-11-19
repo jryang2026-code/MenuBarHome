@@ -1,16 +1,21 @@
 import type { HttpRequest, HttpResponse, HttpTransport } from "../core/miCloudClient.js";
+import { haConnectionScope, mapNativeHaTransportError } from "../core/haTransportGate.js";
 
 export function createTransport(): HttpTransport {
   return async (req: HttpRequest): Promise<HttpResponse> => {
     if (window.__TAURI_INTERNALS__?.invoke) {
       if (req.haConnection) {
-        return window.__TAURI_INTERNALS__.invoke<HttpResponse>("ha_http", {
-          baseUrl: req.haConnection.baseUrl,
-          generation: req.haConnection.generation,
-          url: req.url,
-          headers: req.headers ?? {},
-          timeoutMs: req.timeoutMs ?? 15000,
-        });
+        try {
+          return await window.__TAURI_INTERNALS__.invoke<HttpResponse>("ha_http", {
+            baseUrl: req.haConnection.baseUrl,
+            generation: req.haConnection.generation,
+            url: req.url,
+            headers: req.headers ?? {},
+            timeoutMs: req.timeoutMs ?? 15000,
+          });
+        } catch (error) {
+          throw mapNativeHaTransportError(error, haConnectionScope(req.haConnection.baseUrl));
+        }
       }
       return window.__TAURI_INTERNALS__.invoke<HttpResponse>("native_http", {
         url: req.url,

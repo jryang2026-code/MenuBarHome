@@ -51,9 +51,12 @@ import {
   HaBlockedRequestError,
   acquireHaTransportLease,
   beginHaScopeDisable,
+  getHaScopeInFlightCount,
   getHaScopeLifecyclePhase,
+  isHaBlockedRequestError,
   isHaDrainTimerRefedForTests,
   isHaNativeCancelReady,
+  isHaScopeStopTimedOut,
   requestHaScopeEnableAfterDrain,
   resetHaTransportGateForTests,
   setHaNativeCancelReadyForTests,
@@ -1421,6 +1424,75 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.deepEqual(drained, { ready: false, timedOut: true }, "hung in-flight request must report a timed-out drain");
     assert.equal(getHaScopeLifecyclePhase(HA_SCOPE), "stop_timeout");
     lease.release();
+  });
+
+  it("clears a rejected native drain so the lifecycle leaves stop_timeout and re-enabling completes", async () => {
+    setHaStopDrainTimeoutMsForTests(20);
+    let rejectStop = true;
+    const h = makeHarness({
+      onHaSetConnection: ({ baseUrl }) =>
+        baseUrl === null && rejectStop
+          ? Promise.reject(new Error("native drain unavailable"))
+          : Promise.resolve(),
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-native-drain";
+    app.submitServiceEndpoints();
+    await app.refreshHADevices(false);
+    assert.equal(getHaScopeInFlightCount(HA_SCOPE), 0);
+
+    const dis = await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    assert.equal(dis.status, "applied");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(
+      getHaScopeInFlightCount(HA_SCOPE),
+      0,
+      "a rejected native drain must not stay counted as in-flight forever",
+    );
+    assert.equal(isHaScopeStopTimedOut(HA_SCOPE), false);
+    assert.equal(
+      getHostHaLifecyclePhase(app),
+      "disabled",
+      "the lifecycle must not be pinned at stop_timeout by a failed native drain",
+    );
+
+    rejectStop = false;
+    const reenabled = await setHaConnectionEnabledOnHost(app, true);
+    assert.equal(reenabled.status, "applied", "re-enabling after a failed drain must not be blocked");
+    assert.equal(isHostHaEnabled(app), true);
+    assert.equal(getHostHaLifecyclePhase(app), "enabled");
+    assert.equal(app.devices.some((d) => d.name === "HA灯带"), true);
+  });
+
+  it("maps the native stale-registration answer to HaBlockedRequestError instead of leaking the Rust text", async () => {
+    const STALE_TEXT = "Home Assistant connection is disabled or has changed";
+    const staleInvoke = async (): Promise<never> => {
+      throw STALE_TEXT;
+    };
+    const client = new HomeAssistantClient(HA_URL, "ha-tok-stale", staleInvoke);
+    await assert.rejects(client.snapshot(), (error: unknown) => {
+      assert.ok(isHaBlockedRequestError(error), "a stale native registration must read as a blocked HA request");
+      assert.equal(error.scope, HA_SCOPE);
+      assert.equal(String(error.message).includes(STALE_TEXT), false, "the native English text must not reach the UI");
+      return true;
+    });
+
+    (window as unknown as { __TAURI_INTERNALS__?: { invoke: unknown } }).__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string): Promise<never> => {
+        assert.equal(cmd, "ha_http");
+        throw STALE_TEXT;
+      },
+    };
+    await assert.rejects(
+      createTransport()({
+        url: `${HA_URL}/api/states`,
+        haConnection: { baseUrl: HA_URL, generation: 7, signal: new AbortController().signal },
+      }),
+      (error: unknown) => isHaBlockedRequestError(error),
+      "ha_http must report a stale generation as a blocked HA request too",
+    );
   });
 
   it("bounds hung HA in-flight stop with stop_timeout, surfaces Still stopping · Retry without hanging setHaConnectionEnabledOnHost(true), and abandons stale leases cleanly", async () => {
