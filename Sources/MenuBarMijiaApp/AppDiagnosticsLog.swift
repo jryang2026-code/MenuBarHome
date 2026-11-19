@@ -33,6 +33,18 @@ final class AppDiagnosticsLog {
         UserDefaults.standard.set(errorTimestamps.map(\.timeIntervalSince1970), forKey: Self.storageKey)
     }
 
+    #if DEBUG
+    func replaceTimestampsForTesting(_ timestamps: [Date]) {
+        errorTimestamps = timestamps
+        lastRecordedToastId = nil
+        if timestamps.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        } else {
+            UserDefaults.standard.set(timestamps.map(\.timeIntervalSince1970), forKey: Self.storageKey)
+        }
+    }
+    #endif
+
     // MARK: - Local crash files (#17)
 
     /// The system folder macOS writes crash reports to.
