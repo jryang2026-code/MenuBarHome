@@ -148,10 +148,55 @@ describe("cross-source preference adoption (#24)", () => {
     layout.aliases = { "ha-light-b": "客厅主灯", "222000222": "旧名字" };
     layout.tileSizes = { "客厅|ha-light-b": "hero", "客厅|222000222": "half" };
 
+    // Nothing is copied, but the pair is recorded as adopted, so the settings still need saving.
     const changed = adoptPairedDevicePreferences(layout, { "ha-light-b": "222000222" });
-    assert.equal(changed, false);
+    assert.equal(changed, true);
     assert.equal(layout.aliases["ha-light-b"], "客厅主灯");
     assert.equal(layout.tileSizes["客厅|ha-light-b"], "hero");
     assert.deepEqual(layout.hiddenDeviceIds, []);
+
+    // Clearing the canonical alias later is the user's call; the orphan's alias does not refill it.
+    layout.aliases = { "222000222": "旧名字" };
+    assert.equal(adoptPairedDevicePreferences(layout, { "ha-light-b": "222000222" }), false);
+    assert.equal(layout.aliases["ha-light-b"], undefined);
+  });
+
+  it("keeps edits made after the adoption: the orphan never re-applies them", () => {
+    const layout = emptyLayoutPrefs();
+    layout.hiddenDeviceIds = ["111000111"];
+    layout.pinnedDeviceIds = ["111000111"];
+    layout.order = ["111000111"];
+    layout.aliases = { "111000111": "门厅筒灯" };
+    layout.tileSizes = { "客厅|111000111": "half" };
+    assert.equal(adoptPairedDevicePreferences(layout, { "ha-light-a": "111000111" }), true);
+
+    // The user unhides, unpins, clears the alias and resets the tile on the merged card.
+    layout.hiddenDeviceIds = ["111000111"];
+    layout.pinnedDeviceIds = ["111000111"];
+    layout.order = ["111000111"];
+    layout.aliases = { "111000111": "门厅筒灯" };
+    layout.tileSizes = { "客厅|111000111": "half" };
+
+    assert.equal(adoptPairedDevicePreferences(layout, { "ha-light-a": "111000111" }), false);
+    assert.deepEqual(layout.hiddenDeviceIds, ["111000111"]);
+    assert.deepEqual(layout.pinnedDeviceIds, ["111000111"]);
+    assert.deepEqual(layout.order, ["111000111"]);
+    assert.equal(layout.aliases["ha-light-a"], undefined);
+    assert.equal(layout.tileSizes["客厅|ha-light-a"], undefined);
+  });
+
+  it("survives a settings file that lost the adoption record (stays a union, then sticks)", () => {
+    const layout = emptyLayoutPrefs();
+    layout.hiddenDeviceIds = ["111000111"];
+    adoptPairedDevicePreferences(layout, { "ha-light-a": "111000111" });
+    // A settings file written before the record existed: the merged ids are already there.
+    const reloaded = JSON.parse(JSON.stringify({ ...layout, adoptedPreferencePairs: undefined }));
+
+    adoptPairedDevicePreferences(reloaded, { "ha-light-a": "111000111" });
+    assert.deepEqual(reloaded.hiddenDeviceIds, ["111000111", "ha-light-a"]);
+
+    reloaded.hiddenDeviceIds = ["111000111"];
+    assert.equal(adoptPairedDevicePreferences(reloaded, { "ha-light-a": "111000111" }), false);
+    assert.deepEqual(reloaded.hiddenDeviceIds, ["111000111"]);
   });
 });

@@ -119,6 +119,8 @@ export interface LayoutPrefs {
   roomOrder?: string[];
   roomAliases?: Record<string, string>;
   kindOrder?: string[];
+  /** Canonical card id → orphaned source ids already merged onto it (#24); see `adoptPairedDevicePreferences`. */
+  adoptedPreferencePairs?: Record<string, string[]>;
 }
 
 export const emptyLayoutPrefs = (): LayoutPrefs => ({
@@ -185,11 +187,15 @@ export function unhideAllDevices(prefs: LayoutPrefs): string[] {
  * When Home Assistant and the Mi cloud both hold history for one physical device, the dedup keeps
  * one canonical id and the other side's entries — hidden, pinned, order, aliases, tile sizes —
  * point at an id no card ever uses again. Hidden wins, pinned merges by union, the order slot
- * follows the orphan, and aliases / tile sizes only fill a canonical id without its own. Every
- * rule is a union or copy-if-absent, so re-running changes nothing; the orphaned entries stay so
- * returning to a single-source home still finds them.
+ * follows the orphan, and aliases / tile sizes only fill a canonical id without its own. The
+ * orphaned entries stay so returning to a single-source home still finds them.
  *
- * Mutates `prefs` in place and returns whether anything changed.
+ * Each pair merges once. `adoptedPreferencePairs` records it in the same settings file as the
+ * merged values, so later edits on the merged card (unhide, unpin, a cleared alias) are never
+ * undone by the orphan's still-stored entries. A file without that record (written before it
+ * existed) re-runs the union, which only adds ids that are already there.
+ *
+ * Mutates `prefs` in place and returns whether anything changed, including a newly recorded pair.
  */
 export function adoptPairedDevicePreferences(
   prefs: LayoutPrefs,
@@ -201,29 +207,27 @@ export function adoptPairedDevicePreferences(
     const canonicalId = rawCanonicalId.trim();
     const orphanedId = rawOrphanedId.trim();
     if (!canonicalId || !orphanedId || canonicalId === orphanedId) continue;
+    const adopted = dedupeStrings(adoptionLedger(prefs)[canonicalId]);
+    if (adopted.includes(orphanedId)) continue;
 
     // Hidden wins: the orphaned side hid this device, so the merged card stays hidden.
     if (hiddenDeviceIds(prefs).includes(orphanedId) && !hiddenDeviceIds(prefs).includes(canonicalId)) {
       prefs.hiddenDeviceIds = [...hiddenDeviceIds(prefs), canonicalId];
-      changed = true;
     }
 
     // Pinned (favorites) merge by union; the order slot sits right after the orphan.
     if (pinnedDeviceIds(prefs).includes(orphanedId) && !pinnedDeviceIds(prefs).includes(canonicalId)) {
       prefs.pinnedDeviceIds = [...pinnedDeviceIds(prefs), canonicalId];
-      changed = true;
     }
     if (prefs.order.includes(orphanedId) && !prefs.order.includes(canonicalId)) {
       prefs.order = [...prefs.order];
       prefs.order.splice(prefs.order.indexOf(orphanedId) + 1, 0, canonicalId);
-      changed = true;
     }
 
     // An alias only fills a canonical id without one of its own.
     const orphanAlias = prefs.aliases[orphanedId]?.trim();
     if (orphanAlias && !(prefs.aliases[canonicalId] ?? "").trim()) {
       prefs.aliases = { ...prefs.aliases, [canonicalId]: prefs.aliases[orphanedId]! };
-      changed = true;
     }
 
     // Tile sizes are keyed by bare device id or `<page>|<device id>`; copy per key.
@@ -236,11 +240,18 @@ export function adoptPairedDevicePreferences(
       // A bare `.auto` is dropped on save, so copying it is meaningless.
       if (size === "auto" && bar < 0) continue;
       prefs.tileSizes = { ...prefs.tileSizes, [canonicalKey]: size };
-      changed = true;
     }
+
+    prefs.adoptedPreferencePairs = { ...adoptionLedger(prefs), [canonicalId]: [...adopted, orphanedId] };
+    changed = true;
   }
 
   return changed;
+}
+
+function adoptionLedger(prefs: LayoutPrefs): Record<string, string[]> {
+  const raw: unknown = prefs.adoptedPreferencePairs;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, string[]>) : {};
 }
 
 

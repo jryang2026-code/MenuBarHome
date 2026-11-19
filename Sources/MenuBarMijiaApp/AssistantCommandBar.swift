@@ -755,11 +755,13 @@ struct AssistantResponseArea: View {
 
     /// Timers the app could not safely fire: expired ones wait for confirmation, and legacy
     /// entries with no recorded source wait visibly instead of being adopted to the connected
-    /// home (#22). Each can be run once or dismissed.
+    /// home (#22). A legacy timer that is not due yet offers 确认, which arms it for its own time;
+    /// everything else can be run once. Each can be dismissed.
     private var missedScheduledRow: some View {
         VStack(alignment: .leading, spacing: 3) {
             ForEach(store.missedScheduledCommands) { entry in
                 let unscoped = entry.effectiveSourceScopes == nil
+                let awaitsConfirmation = unscoped && entry.fireDate > Date()
                 HStack(spacing: 5) {
                     Image(systemName: unscoped ? "questionmark.circle.fill" : "exclamationmark.clock.fill")
                         .foregroundStyle(Color.orange)
@@ -770,10 +772,21 @@ struct AssistantResponseArea: View {
                         .foregroundStyle(.primary.opacity(0.88))
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Button(L10n.tr("立即执行", "Run Now")) {
-                        Task { await store.runMissedScheduledCommand(id: entry.id) }
+                    if awaitsConfirmation {
+                        Button(L10n.tr("确认", "Confirm")) {
+                            Task { await store.confirmScheduledCommandSource(id: entry.id) }
+                        }
+                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                        .help(L10n.tr(
+                            "确认这个定时属于当前家庭，到点后照常执行",
+                            "Confirm this timer belongs to the current home; it runs at its set time"
+                        ))
+                    } else {
+                        Button(L10n.tr("立即执行", "Run Now")) {
+                            Task { await store.runMissedScheduledCommand(id: entry.id) }
+                        }
+                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                     Button {
                         store.dismissMissedScheduledCommand(id: entry.id)
                     } label: {

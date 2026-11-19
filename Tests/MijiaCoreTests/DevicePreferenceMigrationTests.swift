@@ -143,6 +143,66 @@ struct DevicePreferenceMigrationTests {
         #expect(preferenceSnapshot() == afterFirst)
     }
 
+    @Test("Edits made after the adoption stick: the orphan never re-applies them (#24)")
+    func userEditsAfterAdoptionStick() {
+        let defaults = makeDefaults()
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteOrder)
+        setAliases(["111000111": "门厅筒灯"], defaults: defaults)
+        setTileSizes(["mi_page|111000111": "half"], defaults: defaults)
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+
+        // The user unhides, unstars, clears the alias and resets the tile on the merged card. The
+        // orphaned entries stay on disk for a later single-source home.
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteOrder)
+        setAliases(["111000111": "门厅筒灯"], defaults: defaults)
+        setTileSizes(["mi_page|111000111": "half"], defaults: defaults)
+
+        let again = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+        #expect(again == .none, "A pair already adopted is never merged again")
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.favoriteDeviceIds) == ["111000111"])
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.favoriteOrder) == ["111000111"])
+        #expect(aliases(defaults: defaults)["ha-light-a"] == nil)
+        #expect(tileSizes(defaults: defaults)["mi_page|ha-light-a"] == nil)
+    }
+
+    @Test("An adoption with nothing to copy still counts, so a later cleared alias is not refilled (#24)")
+    func emptyAdoptionStillCounts() {
+        let defaults = makeDefaults()
+        setAliases(["ha-light-b": "客厅主灯", "222000222": "旧名字"], defaults: defaults)
+        let first = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-b", orphanedID: "222000222", defaults: defaults)
+        #expect(!first.changed)
+
+        setAliases(["222000222": "旧名字"], defaults: defaults)
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-b", orphanedID: "222000222", defaults: defaults)
+        #expect(aliases(defaults: defaults)["ha-light-b"] == nil, "Clearing the canonical alias is the user's call")
+    }
+
+    @Test("A crash between the preference writes and the ledger write stays idempotent (#24)")
+    func crashBeforeLedgerWriteIsIdempotent() {
+        let defaults = makeDefaults()
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteOrder)
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+        // The ledger is written last; losing only that write is what a crash can leave behind.
+        defaults.removeObject(forKey: ViewPreferenceKeys.adoptedPreferencePairs)
+
+        let rerun = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+        #expect(!rerun.changed)
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111", "ha-light-a"])
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.favoriteOrder) == ["111000111", "ha-light-a"])
+
+        // The rerun recorded the pair, so the user's unhide after the restart sticks.
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+    }
+
     // MARK: - Store wiring
 
     private func pairableLight(id: String, did: String, room: String) -> SmartDevice {
@@ -206,5 +266,55 @@ struct DevicePreferenceMigrationTests {
         #expect(store.hiddenDeviceIds == ["111000111", "ha-light-a"])
         #expect(store.favoriteDeviceIds == ["ha-light-a"])
         #expect(store.devices == devicesAfterFirst)
+    }
+
+    @Test("Unhiding or unstarring the merged card sticks across snapshots and a relaunch (#24)")
+    func storeKeepsUserEditsAfterAdoption() async throws {
+        let suite = "test.prefadoption.edits.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        // HA-side history (a tile) and Mi-side history (hidden, starred): the HA id stays canonical.
+        setTileSizes(["ha_page|ha-light-a": "half"], defaults: defaults)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        defaults.set(["111000111", "other"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        defaults.set(["111000111", "other"], forKey: ViewPreferenceKeys.favoriteOrder)
+
+        let miHome = pairableHome(id: "111000111", did: "111000111")
+        let haMock = MockHomeProvider(snapshot: pairableHome(id: "ha-light-a", did: "111000111"))
+        let miMock = MockHomeProvider(snapshot: miHome)
+        let store = HomeStore(
+            provider: HomeStore.makeComposite(homeAssistant: haMock, xiaomiCloud: miMock, defaults: defaults),
+            defaultsSuiteName: suite
+        )
+        try await store.waitForTestSnapshot()
+        await waitUntil { store.pairedDeviceIDs.contains("ha-light-a") }
+        #expect(store.hiddenDeviceIds.contains("ha-light-a"))
+        #expect(store.favoriteDeviceIds.contains("ha-light-a"))
+
+        store.hiddenDeviceIds.remove("ha-light-a")
+        store.favoriteDeviceIds.remove("ha-light-a")
+        store.favoriteOrder.removeAll { $0 == "ha-light-a" }
+
+        let generation = store.snapshotGeneration
+        await miMock.updateSnapshot(miHome)
+        await waitUntil { store.snapshotGeneration > generation }
+        #expect(store.pairedDeviceIDs.contains("ha-light-a"))
+        #expect(!store.hiddenDeviceIds.contains("ha-light-a"), "The orphan's hidden flag must not come back")
+        #expect(!store.favoriteDeviceIds.contains("ha-light-a"), "The orphan's star must not come back")
+        #expect(!store.favoriteOrder.contains("ha-light-a"))
+
+        // A relaunch reads the same defaults and must not redo the finished adoption either.
+        let relaunched = HomeStore(
+            provider: HomeStore.makeComposite(
+                homeAssistant: MockHomeProvider(snapshot: pairableHome(id: "ha-light-a", did: "111000111")),
+                xiaomiCloud: MockHomeProvider(snapshot: miHome),
+                defaults: defaults
+            ),
+            defaultsSuiteName: suite
+        )
+        try await relaunched.waitForTestSnapshot()
+        await waitUntil { relaunched.pairedDeviceIDs.contains("ha-light-a") }
+        #expect(!relaunched.hiddenDeviceIds.contains("ha-light-a"))
+        #expect(!relaunched.favoriteDeviceIds.contains("ha-light-a"))
     }
 }

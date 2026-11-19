@@ -440,6 +440,122 @@ struct ScheduledCommandScopeTests {
         #expect(ScheduledCommand.load(from: store.userDefaults).isEmpty)
     }
 
+    @Test("A legacy timer is never announced as missed, due or not (#22)")
+    @MainActor
+    func legacyTimerPostsNoMissedNotification() async throws {
+        let (store, mock) = try await makeStore()
+        let future = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯", fireDate: Date().addingTimeInterval(600), plan: Self.plan
+        )
+        let overdue = ScheduledCommand(
+            reply: "关闭书房吸顶灯", fireDate: Date().addingTimeInterval(-600), plan: Self.plan
+        )
+        ScheduledCommand.save([future, overdue], to: store.userDefaults)
+        var notified: [ScheduledCommand] = []
+        store.onMissedScheduledCommand = { notified.append($0) }
+
+        store.restoreScheduledCommands()
+        #expect(Set(store.missedScheduledCommands.map(\.id)) == [future.id, overdue.id])
+        #expect(notified.isEmpty, "The \"missed while closed\" banner offers Run Now for a timer nobody owns yet")
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A not-yet-due legacy timer never runs now; confirming arms it for its own time (#22)")
+    @MainActor
+    func legacyFutureTimerConfirmationArmsInsteadOfRunning() async throws {
+        let (store, mock) = try await makeStore()
+        let gate = SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        let legacy = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯", fireDate: Date().addingTimeInterval(600), plan: Self.plan
+        )
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        #expect(await store.runMissedScheduledCommand(id: legacy.id) == nil, "Run Now must not fire a timer early")
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id])
+        #expect(await mock.executedCommands.isEmpty)
+
+        #expect(await store.confirmScheduledCommandSource(id: legacy.id))
+        let armed = try #require(store.scheduledCommands.first)
+        #expect(armed.id == legacy.id)
+        #expect(armed.fireDate == legacy.fireDate)
+        #expect(armed.effectiveSourceScopes == store.activeConnectionScopes.sorted())
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == armed.effectiveSourceScopes)
+        await waitUntil { gate.waiting == 1 }
+        #expect(await mock.executedCommands.isEmpty, "Confirming only arms the countdown")
+
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        #expect(store.scheduledCommands.isEmpty)
+    }
+
+    @Test("Confirming a legacy timer that fell due meanwhile leaves it as an ordinary missed timer (#22)")
+    @MainActor
+    func legacyConfirmationAfterDueDateDoesNotRun() async throws {
+        let (store, mock) = try await makeStore()
+        let fireDate = Date().addingTimeInterval(600)
+        let legacy = ScheduledCommand(reply: "10 分钟后关闭书房吸顶灯", fireDate: fireDate, plan: Self.plan)
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.assistantNow = { fireDate.addingTimeInterval(120) }
+        #expect(await store.confirmScheduledCommandSource(id: legacy.id))
+        let missed = try #require(store.missedScheduledCommands.first)
+        #expect(missed.id == legacy.id)
+        #expect(missed.effectiveSourceScopes == store.activeConnectionScopes.sorted())
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(await mock.executedCommands.isEmpty, "Confirming the owner is not a request to run it")
+    }
+
+    @Test("A legacy run confirmed before the snapshot wait is refused when the source changes during it (#22)")
+    @MainActor
+    func legacyRunBindsToTheSourceConfirmedBeforeTheWait() async throws {
+        let (store, mock) = try await makeStore()
+        let legacy = ScheduledCommand(
+            reply: "关闭书房吸顶灯", fireDate: Date().addingTimeInterval(-120), plan: Self.plan
+        )
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.devices = []
+        let run = Task { await store.runMissedScheduledCommand(id: legacy.id) }
+        await waitUntil { store.initialSnapshotWaiters == 1 }
+        // Another home with the same target id shows up while the tap waits.
+        store.serverURLString = Self.otherHomeURL
+        store.devices = [Self.ceiling]
+
+        #expect(await run.value == nil)
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id], "It stays for another confirmation")
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == nil)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("A home switch that keeps the same scopes still voids a pending legacy confirmation (#22)")
+    @MainActor
+    func legacyConfirmationVoidedByHomeSwitch() async throws {
+        let (store, mock) = try await makeStore()
+        let legacy = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯", fireDate: Date().addingTimeInterval(600), plan: Self.plan
+        )
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+        store.restoreScheduledCommands()
+
+        store.devices = []
+        let confirm = Task { await store.confirmScheduledCommandSource(id: legacy.id) }
+        await waitUntil { store.initialSnapshotWaiters == 1 }
+        // Selecting another Mi Home keeps the connection scope but resets the control context.
+        store.invalidateUndoContext()
+        store.devices = [Self.ceiling]
+
+        #expect(await confirm.value == false)
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id])
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == nil)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
     @Test("A timer firing while the Mac is locked still runs")
     @MainActor
     func timerRunsWhileLocked() async throws {

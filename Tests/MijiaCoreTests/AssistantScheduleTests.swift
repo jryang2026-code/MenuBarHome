@@ -130,6 +130,12 @@ struct AssistantScheduleTests {
     func expiredTimerRequiresConfirmationOnLaunch() async throws {
         let suiteName = "test.schedule.missed.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        try await store.waitForTestSnapshot()
+        // Current builds stamp the creating source. Unscoped legacy entries are never announced as
+        // missed (#22); ScheduledCommandScopeTests covers them.
+        let scope = try #require(store.connectionScopeIdentifier)
         let expiredEntry = ScheduledCommand(
             reply: "10 分钟后关闭书房吸顶灯",
             fireDate: Date().addingTimeInterval(-120),
@@ -137,15 +143,14 @@ struct AssistantScheduleTests {
                 intents: [DeviceIntent(targetId: "dev_study_ceiling", operation: .power(false))],
                 reply: "已关闭书房吸顶灯",
                 source: .local
-            )
+            ),
+            sourceScope: scope
         )
         ScheduledCommand.save([expiredEntry], to: defaults)
 
-        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
         var notified: [ScheduledCommand] = []
         store.onMissedScheduledCommand = { notified.append($0) }
-        store.notifyMissedScheduledCommandsIfNeeded()
+        store.restoreScheduledCommands()
 
         #expect(store.scheduledCommands.isEmpty)
         #expect(ScheduledCommand.load(from: defaults).map(\.id) == [expiredEntry.id])

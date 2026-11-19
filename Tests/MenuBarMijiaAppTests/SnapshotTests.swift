@@ -221,7 +221,8 @@ struct SnapshotTests {
 
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         // A timer saved before scopes existed (ADR-0019 #22): it waits visibly for confirmation,
-        // never arms, and the row must say the source is unverified rather than "已错过".
+        // never arms, and the row must say the source is unverified rather than "已错过". It is not
+        // due yet, so the row offers 确认 (arm at its own time) instead of 立即执行.
         let legacy = ScheduledCommand(
             reply: "10 分钟后关闭书房吸顶灯",
             fireDate: Date().addingTimeInterval(600),

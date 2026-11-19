@@ -543,8 +543,9 @@ extension HomeStore {
 
     /// Folds the orphaned side's stored preferences onto each paired card's canonical id (#24).
     /// The dedup reports pairs whose other source id also holds history; hidden wins, favorites
-    /// merge by union, and aliases / tile sizes only fill a canonical id without its own. Every
-    /// rule is a union or copy-if-absent, so a snapshot repeating the same report changes nothing.
+    /// merge by union, and aliases / tile sizes only fill a canonical id without its own. Each pair
+    /// merges once (`DevicePreferenceMigrator`), so a later snapshot repeating the same report
+    /// leaves the user's unhide, unstar or cleared alias on the merged card alone.
     func adoptPairedDevicePreferences(_ adoptions: [String: String]) {
         guard !adoptions.isEmpty else { return }
         var aliasesChanged = false

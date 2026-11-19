@@ -13,11 +13,16 @@ import Foundation
 ///   explicit setting on the winning side is never overwritten.
 /// - The orphaned entries stay on disk, so returning to a single-source home still finds them.
 ///
-/// Every rule is a union or a copy-if-absent, so re-running the adoption changes nothing.
+/// Each pair merges once. Afterwards the canonical card's preferences belong to the user: an
+/// unhide, an unstar or a cleared alias must not be undone by the orphan's still-stored entries.
+/// `ViewPreferenceKeys.adoptedPreferencePairs` records finished pairs and is written after the
+/// preference writes. A crash between the two re-runs the merge on the next launch; every rule is a
+/// union or a copy-if-absent, and nothing the user could have changed sits between them, so that
+/// re-run adds nothing.
 public enum DevicePreferenceMigrator {
-    /// Which preference kinds the orphaned side holds, and whether this adoption actually wrote
-    /// anything. The store uses the kind flags to update its in-memory sets; `changed` is false on
-    /// a repeated adoption, so idempotent re-runs never churn the defaults.
+    /// Which preference kinds this adoption carried over from the orphaned side. The store uses the
+    /// kind flags to update its in-memory sets. `changed` reports preference writes only; recording
+    /// the pair is bookkeeping. A pair that was already adopted returns `.none`.
     public struct Outcome: Equatable, Sendable {
         public let hidden: Bool
         public let favorite: Bool
@@ -38,6 +43,9 @@ public enum DevicePreferenceMigrator {
         guard !canonicalID.isEmpty, !orphanedID.isEmpty, canonicalID != orphanedID else {
             return .none
         }
+        var ledger = defaults.dictionary(forKey: ViewPreferenceKeys.adoptedPreferencePairs) as? [String: [String]] ?? [:]
+        let adopted = ledger[canonicalID] ?? []
+        guard !adopted.contains(orphanedID) else { return .none }
 
         var hidden = false
         var favorite = false
@@ -102,6 +110,11 @@ public enum DevicePreferenceMigrator {
             tileSize = true
             wroteDefaults = true
         }
+
+        // Last write. Recorded even when nothing was copied, so a canonical alias the user clears
+        // later is not refilled from the orphan.
+        ledger[canonicalID] = adopted + [orphanedID]
+        defaults.set(ledger, forKey: ViewPreferenceKeys.adoptedPreferencePairs)
 
         return Outcome(
             hidden: hidden,
