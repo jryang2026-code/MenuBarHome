@@ -230,11 +230,38 @@ public struct PausedScheduledCommand: Codable, Equatable, Sendable {
     public var command: ScheduledCommand
     public var originalPartition: TimerPartition
     public var pausedCapabilities: [CapabilityID]
+    /// The scopes this timer actually lost. A timer stamps every source connected at creation, so
+    /// waiting on the whole stamp would also wait for unrelated accounts.
+    public var pausedScopes: [String]
 
-    public init(command: ScheduledCommand, originalPartition: TimerPartition, pausedCapabilities: [CapabilityID]) {
+    public init(
+        command: ScheduledCommand,
+        originalPartition: TimerPartition,
+        pausedCapabilities: [CapabilityID],
+        pausedScopes: [String] = []
+    ) {
         self.command = command
         self.originalPartition = originalPartition
         self.pausedCapabilities = pausedCapabilities
+        self.pausedScopes = pausedScopes
+    }
+
+    private enum CodingKeys: String, CodingKey { case command, originalPartition, pausedCapabilities, pausedScopes }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        command = try container.decode(ScheduledCommand.self, forKey: .command)
+        originalPartition = try container.decode(TimerPartition.self, forKey: .originalPartition)
+        pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
+        pausedScopes = try container.decodeIfPresent([String].self, forKey: .pausedScopes) ?? []
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(command, forKey: .command)
+        try container.encode(originalPartition, forKey: .originalPartition)
+        try container.encode(pausedCapabilities, forKey: .pausedCapabilities)
+        if !pausedScopes.isEmpty { try container.encode(pausedScopes, forKey: .pausedScopes) }
     }
 
     public static func load(from defaults: UserDefaults) -> [PausedScheduledCommand] {

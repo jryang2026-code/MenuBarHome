@@ -921,6 +921,43 @@ struct MiAccountDisableTestsReview {
         #expect(store.foreignScheduledCommands.isEmpty)
     }
 
+    @Test("A timer paused for a visible account resumes while another account is only hidden by the selected home")
+    func hiddenAccountDoesNotFreezeVisibleTimers() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
+
+        // Timers stamp every source connected at creation; only the scope that was actually lost
+        // belongs in the pause marker.
+        let timer = ScheduledCommand(
+            reply: "10 分钟后关闭客厅灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(
+                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
+                reply: "关闭客厅灯", source: .local
+            ),
+            sourceScope: Self.cn.id,
+            sourceScopes: [Self.cn.id, Self.de.id]
+        )
+        store.pausedScheduledCommands = [PausedScheduledCommand(
+            command: timer, originalPartition: .waiting,
+            pausedCapabilities: [.connection(.xiaomiCloud)], pausedScopes: [Self.cn.id]
+        )]
+        store.selectedMiHomeId = Self.cn.id + "/home-cn"
+        store.pendingRevalidationScopes = [Self.de.id]
+
+        store.revalidatePausedItems()
+
+        #expect(store.pausedScheduledCommands.isEmpty)
+        #expect(store.scheduledCommands.map(\.id) == [timer.id])
+        // The hidden account keeps its own pending work for when its devices are visible again.
+        #expect(store.pendingRevalidationScopes == [Self.de.id])
+    }
+
     @Test("Another account's selected home delays revalidation instead of pruning the hidden account")
     func selectedHomeDelaysRevalidation() throws {
         let suite = Self.makeSuite()

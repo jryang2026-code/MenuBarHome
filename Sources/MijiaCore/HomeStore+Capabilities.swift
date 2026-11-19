@@ -443,8 +443,12 @@ extension HomeStore {
     /// A paused timer waits until its own scopes are settled: fresh when enabled, or left alone when
     /// the scope is configured but turned off. Otherwise a fresh snapshot from one account would arm,
     /// move or hide timers that belong to another account still reconnecting (review #275).
-    private func pausedTimerWaitsForItsScopes(_ command: ScheduledCommand) -> Bool {
-        guard let scopes = command.effectiveSourceScopes else { return false }
+    private func pausedTimerWaitsForItsScopes(_ paused: PausedScheduledCommand) -> Bool {
+        // Only the scopes this timer lost matter; its creation stamp also names sources that were
+        // healthy all along, and waiting on those would freeze a timer behind an unrelated account.
+        let scopes = paused.pausedScopes.isEmpty
+            ? (paused.command.effectiveSourceScopes ?? [])
+            : paused.pausedScopes
         return scopes.contains { scope in
             if pendingRevalidationScopes.contains(scope) { return true }
             guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return false }
@@ -687,13 +691,15 @@ extension HomeStore {
     // MARK: - Pause & Re-Enable Revalidation
 
     private func pauseAffectedReferences(_ items: [AffectedReferenceItem]) {
-        var timerCapsById: [UUID: [CapabilityID]] = [:]
+        var timerPauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
         var rulePauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
         var quickActionIds: Set<String> = []
         for item in items {
             switch item.kind {
             case .waitingTimer, .missedTimer, .foreignTimer:
-                if let uuid = UUID(uuidString: item.id) { timerCapsById[uuid] = item.affectedCapabilities }
+                if let uuid = UUID(uuidString: item.id) {
+                    timerPauseById[uuid] = (item.affectedCapabilities, item.connectionScopes)
+                }
             case .automationRule:
                 if let uuid = UUID(uuidString: item.id) {
                     rulePauseById[uuid] = (item.affectedCapabilities, item.connectionScopes)
@@ -703,16 +709,19 @@ extension HomeStore {
             }
         }
 
-        if !timerCapsById.isEmpty {
+        if !timerPauseById.isEmpty {
             func extractPaused(from list: inout [ScheduledCommand], partition: TimerPartition) {
                 var kept: [ScheduledCommand] = []
                 for entry in list {
-                    if let caps = timerCapsById[entry.id] {
+                    if let pause = timerPauseById[entry.id] {
                         scheduledTasks.removeValue(forKey: entry.id)?.cancel()
                         scheduledTaskTokens.removeValue(forKey: entry.id)
                         notifiedMissedTimerIds.remove(entry.id)
                         pausedScheduledCommands.append(
-                            PausedScheduledCommand(command: entry, originalPartition: partition, pausedCapabilities: caps)
+                            PausedScheduledCommand(
+                                command: entry, originalPartition: partition,
+                                pausedCapabilities: pause.caps, pausedScopes: pause.scopes
+                            )
                         )
                     } else {
                         kept.append(entry)
@@ -791,7 +800,7 @@ extension HomeStore {
             var stillPaused: [PausedScheduledCommand] = []
             var timersChanged = false
             for paused in pausedScheduledCommands {
-                if pausedTimerWaitsForItsScopes(paused.command) {
+                if pausedTimerWaitsForItsScopes(paused) {
                     stillPaused.append(paused)
                     continue
                 }
