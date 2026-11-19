@@ -938,6 +938,143 @@ struct LocalMiIOClientTests {
         await floodClient.shutdown()
     }
 
+    @Test("Broadcast matching probes use bounded concurrency and preserve budget for non-numeric discovery without duplicate IP binding")
+    func broadcastDiscoveryMatchingConcurrencyAndNonNumericBudgetPreservation() async throws {
+        let token1Hex = "00112233445566778899aabbccddeeff"
+        let token2Hex = "112233445566778899aabbccddeeff00"
+        let token3Hex = "2233445566778899aabbccddeeff0011"
+        let token4Hex = "33445566778899aabbccddeeff001122"
+        let tokenLumiHex = "445566778899aabbccddeeff00112233"
+        let tokenCollisionHex = "5566778899aabbccddeeff0011223344"
+
+        let token4 = try #require(MiIOPacket.validateToken(token4Hex))
+        let tokenLumi = try #require(MiIOPacket.validateToken(tokenLumiHex))
+
+        let sharedLow32: UInt32 = 0x0000_0404
+        let did4 = String((UInt64(1) << 32) | UInt64(sharedLow32))
+        let didCollision = String((UInt64(2) << 32) | UInt64(sharedLow32))
+
+        // Synchronize deterministically: when the 4th matching probe arrives at 192.168.1.14,
+        // verify that the 3 unresponsive matching probes (192.168.1.11..13) are already in flight concurrently.
+        let activeUnresponsiveProbes = LockedBox(0)
+        let concurrentUnresponsiveObservedByFourth = LockedBox(0)
+        let sentHosts = LockedBox<[String]>([])
+
+        let transport = MockUDPTransport { packet, host, _ in
+            sentHosts.withValue { $0.append(host) }
+            switch host {
+            case "192.168.1.11", "192.168.1.12", "192.168.1.13", "192.168.1.53":
+                activeUnresponsiveProbes.withValue { $0 += 1 }
+                defer { activeUnresponsiveProbes.withValue { $0 -= 1 } }
+                try await Task.sleep(for: .milliseconds(80))
+                throw MiIOError.timeout
+            case "192.168.1.14":
+                concurrentUnresponsiveObservedByFourth.withValue {
+                    $0 = activeUnresponsiveProbes.withValue { count in count }
+                }
+                return try self.encodeRPCReply(
+                    packet,
+                    token: token4,
+                    resultOrError: #""result":[{"did":"\#(did4)","siid":1,"piid":1,"value":true,"code":0}]"#
+                )
+            case "192.168.1.20":
+                return try self.encodeRPCReply(
+                    packet,
+                    token: tokenLumi,
+                    resultOrError: #""result":[{"did":"lumi.sensor.v1","siid":1,"piid":1,"value":1,"code":0}]"#
+                )
+            default:
+                throw MiIOError.timeout
+            }
+        }
+
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.11", packet: makeHelloResponse(deviceId: 101, stamp: 10)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.12", packet: makeHelloResponse(deviceId: 102, stamp: 11)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.13", packet: makeHelloResponse(deviceId: 103, stamp: 12)),
+                // Low-32-bit header shared by both did4 and didCollision to exercise same-IP claim exclusivity.
+                MiIOBroadcastReply(sourceIP: "192.168.1.14", packet: makeHelloResponse64(unknown: 0, deviceId: sharedLow32, stamp: 13)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.20", packet: makeHelloResponse(deviceId: 0x0BEE_F001, stamp: 14)),
+            ]
+        }
+
+        // Budget: handshakeTimeout = 200ms, maxDiscoveryDuration = 500ms.
+        // Sequential matching of 3 unresponsive candidates (3 * 200ms = 600ms > 500ms) would exhaust the budget
+        // before reaching the 4th candidate or the non-numeric phase.
+        // Bounded concurrent matching finishes the matching wave in ~200ms, leaving ~300ms for the non-numeric phase.
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .milliseconds(200),
+            maxRetries: 0,
+            maxDiscoveryDuration: .milliseconds(500),
+            discoveryConcurrency: 6
+        )
+
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "101", token: token1Hex),
+                MiIODeviceCandidate(did: "102", token: token2Hex),
+                MiIODeviceCandidate(did: "103", token: token3Hex),
+                MiIODeviceCandidate(did: did4, token: token4Hex),
+                MiIODeviceCandidate(did: didCollision, token: tokenCollisionHex),
+                MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
+            ],
+            broadcastTimeout: .milliseconds(20)
+        )
+
+        #expect(discovered[did4] == "192.168.1.14")
+        #expect(discovered["lumi.sensor.v1"] == "192.168.1.20")
+        #expect(discovered[didCollision] == nil)
+        #expect(Set(discovered.values).count == discovered.values.count)
+        #expect(concurrentUnresponsiveObservedByFourth.withValue { $0 } == 3)
+        // 192.168.1.14 is claimed by did4 in the first wave and must not be probed again or claimed by didCollision.
+        #expect(sentHosts.withValue { $0.filter { $0 == "192.168.1.14" }.count } == 1)
+
+        await client.shutdown()
+
+        // Also verify that even across multiple waves of unresponsive matching candidates (e.g. concurrency = 2,
+        // 4 unresponsive matching candidates), the matching phase reserves remaining budget for the non-numeric phase.
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.11", packet: makeHelloResponse(deviceId: 101, stamp: 10)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.12", packet: makeHelloResponse(deviceId: 102, stamp: 11)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.13", packet: makeHelloResponse(deviceId: 103, stamp: 12)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.53", packet: makeHelloResponse(deviceId: 105, stamp: 13)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.20", packet: makeHelloResponse(deviceId: 0x0BEE_F001, stamp: 14)),
+            ]
+        }
+        let multiWaveClient = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .milliseconds(160),
+            maxRetries: 0,
+            maxDiscoveryDuration: .milliseconds(500),
+            discoveryConcurrency: 2
+        )
+        let multiWaveDiscovered = try await multiWaveClient.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "101", token: token1Hex),
+                MiIODeviceCandidate(did: "102", token: token2Hex),
+                MiIODeviceCandidate(did: "103", token: token3Hex),
+                MiIODeviceCandidate(did: "105", token: tokenCollisionHex),
+                MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
+            ],
+            broadcastTimeout: .milliseconds(20)
+        )
+        #expect(multiWaveDiscovered["lumi.sensor.v1"] == "192.168.1.20")
+        await multiWaveClient.shutdown()
+
+        #if canImport(Network)
+        // Verify NWConnectionMiIOUDPTransport timeout outcome is deterministically serialized on the Network queue:
+        // once a send completion is queued on the Network queue, a concurrent timeout must report .timeout (post-send),
+        // whereas a timeout before send completion reports .sendFailed (pre-send).
+        let nwTransport = NWConnectionMiIOUDPTransport()
+        #expect(await nwTransport.testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: true) == .timeout)
+        #expect(await nwTransport.testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: false) == .sendFailed)
+        await nwTransport.shutdown()
+        #endif
+    }
+
     @Test("LocalNetworkDenied is non-retryable and bypasses ambiguousActionOutcome when occurring before packet send")
     func localNetworkDeniedFastFailAndPreSendActionBypass() async throws {
         let tokenData = try #require(MiIOPacket.validateToken(validTokenHex))
@@ -3501,14 +3638,14 @@ struct HybridProviderAndDoorbellTests {
                 case "192.168.1.50": throw MiIOError.sendFailed
                 case "192.168.1.181": return try replyForHost("101", 101)
                 case "192.168.1.51": return try replyForHost("102", 102)
-                case "192.168.1.52": return try replyForHost("103", 103)
+                case "192.168.1.183": return try replyForHost("103", 103)
                 default: throw MiIOError.timeout
                 }
             case .probeTimeoutOthersHealthy:
                 switch host {
                 case "192.168.1.181": throw MiIOError.timeout
                 case "192.168.1.51": return try replyForHost("102", 102)
-                case "192.168.1.52": return try replyForHost("103", 103)
+                case "192.168.1.52", "192.168.1.183": return try replyForHost("103", 103)
                 default: throw MiIOError.timeout
                 }
             case .timeoutThenBroadcastRetryDeniedOnFirst:
@@ -3539,7 +3676,10 @@ struct HybridProviderAndDoorbellTests {
         await udpTransport.setBroadcastHandler { _, _, _ in
             switch mode.withValue({ $0 }) {
             case .probeSendFailedOthersHealthyAndSweepHeals101:
-                return [MiIOBroadcastReply(sourceIP: "192.168.1.181", packet: makeHelloResponse(deviceId: 101, stamp: 40))]
+                return [
+                    MiIOBroadcastReply(sourceIP: "192.168.1.181", packet: makeHelloResponse(deviceId: 101, stamp: 40)),
+                    MiIOBroadcastReply(sourceIP: "192.168.1.183", packet: makeHelloResponse(deviceId: 103, stamp: 40)),
+                ]
             case .timeoutThenBroadcastRetryDeniedOnFirst:
                 return [
                     MiIOBroadcastReply(sourceIP: "192.168.1.191", packet: makeHelloResponse(deviceId: 101, stamp: 41)),
@@ -3599,40 +3739,46 @@ struct HybridProviderAndDoorbellTests {
         hostAttempts.withValue { $0.removeAll() }
         clock.advance(by: 2)
         let beforeDeniedProbeSnaps = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= beforeDeniedProbeSnaps + 2 })
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { $0.snapshots.count >= beforeDeniedProbeSnaps + 1 })
         #expect(hostAttempts.withValue { $0 } == ["192.168.1.50"])
+        #expect(await provider.lanTransportState(for: "103").isCoolingDown == true)
 
-        // 3b. While denied, if probe (101) fails with pre-send .sendFailed (e.g. stale IP) after permission is restored,
-        // remaining devices (102, 103) must NOT be skipped; they prove permission crossed, clear denied state,
-        // and broadcast sweep runs in the same poll to heal 101 to .181!
+        // 3b. System wake while still denied and still inside 103's 30s cooldown (clock + 5s), with permission restored and 101/103 moved to .181/.183:
+        // Probe (101) fails with pre-send .transportUnavailable (or .sendFailed), remaining non-cooling-down device (102) succeeds and clears denied state,
+        // and the wake broadcast sweep must include BOTH failed 101 AND cooling-down 103 so both heal to .181 and .183 in the same wake poll!
         mode.withValue { $0 = .probeSendFailedOthersHealthyAndSweepHeals101 }
         hostAttempts.withValue { $0.removeAll() }
-        clock.advance(by: 35) // past 103's cooldown
-        let beforeHealSnaps = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= beforeHealSnaps + 2 })
-        let snapAfterHeal = try #require(await collector.snapshots.last)
-        #expect(snapAfterHeal.localNetworkBlockedFeatures == [])
-        #expect(snapAfterHeal.deviceTransportDiagnostics["101"]?.route == .lan)
-        #expect(snapAfterHeal.deviceTransportDiagnostics["102"]?.route == .lan)
-        #expect(snapAfterHeal.deviceTransportDiagnostics["103"]?.route == .lan)
+        clock.advance(by: 5) // still inside 103's 30s cooldown!
+        let beforeWakeHealSnaps = await collector.snapshots.count
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { $0.snapshots.count >= beforeWakeHealSnaps + 1 })
+        let snapAfterWakeHeal = try #require(await collector.snapshots.last)
+        #expect(snapAfterWakeHeal.localNetworkBlockedFeatures == [])
+        #expect(snapAfterWakeHeal.deviceTransportDiagnostics["101"]?.route == .lan)
+        #expect(snapAfterWakeHeal.deviceTransportDiagnostics["102"]?.route == .lan)
+        #expect(snapAfterWakeHeal.deviceTransportDiagnostics["103"]?.route == .lan)
         #expect(await provider.lanTransportState(for: "101").effectiveIP == "192.168.1.181")
+        #expect(await provider.lanTransportState(for: "103").effectiveIP == "192.168.1.183")
 
         // 3c. Re-enter denied state, then probe (101) times out (.timeout): remaining devices (102, 103) must still run and succeed.
         mode.withValue { $0 = .probeDenied }
         clock.advance(by: 2)
         let beforeReDenySnaps = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= beforeReDenySnaps + 2 })
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { $0.snapshots.count >= beforeReDenySnaps + 1 })
         #expect(await collector.snapshots.last?.localNetworkBlockedFeatures == [.xiaomiLAN])
 
         mode.withValue { $0 = .probeTimeoutOthersHealthy }
         hostAttempts.withValue { $0.removeAll() }
         clock.advance(by: 2)
         let beforeTimeoutProbeSnaps = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= beforeTimeoutProbeSnaps + 2 })
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { $0.snapshots.count >= beforeTimeoutProbeSnaps + 1 })
         let snapAfterTimeoutProbe = try #require(await collector.snapshots.last)
         #expect(snapAfterTimeoutProbe.localNetworkBlockedFeatures == [])
         #expect(snapAfterTimeoutProbe.deviceTransportDiagnostics["102"]?.route == .lan)
@@ -3646,8 +3792,9 @@ struct HybridProviderAndDoorbellTests {
         postDiscoveryRetryHosts.withValue { $0.removeAll() }
         clock.advance(by: 65) // allow broadcast sweep
         let beforeRetryBreakSnaps = await collector.snapshots.count
-        await provider.refreshNow()
-        #expect(await collector.wait { $0.snapshots.count >= beforeRetryBreakSnaps + 2 })
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false, lowPower: false))
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true, lowPower: false))
+        #expect(await collector.wait { $0.snapshots.count >= beforeRetryBreakSnaps + 1 })
         #expect(postDiscoveryRetryHosts.withValue { $0.count } == 1)
         let snapAfterRetryBreak = try #require(await collector.snapshots.last)
         #expect(snapAfterRetryBreak.localNetworkBlockedFeatures == [.xiaomiLAN])

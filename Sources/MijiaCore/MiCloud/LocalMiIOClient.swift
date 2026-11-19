@@ -193,8 +193,43 @@ public actor NWConnectionMiIOUDPTransport: MiIOUDPTransport {
     }
 
     private func timeoutCall(id: UUID) {
+        queue.async { [weak self] in
+            Task { await self?.completeTimeoutOnNetworkQueue(id: id) }
+        }
+    }
+
+    private func completeTimeoutOnNetworkQueue(id: UUID) {
         if let call = pending.removeValue(forKey: id) {
             call.fail(call.didCompleteSend ? MiIOError.timeout : MiIOError.sendFailed)
+        }
+    }
+
+    func testTimeoutClassification(simulateQueuedSendCompletionBeforeTimeout: Bool) async -> MiIOError? {
+        let callID = UUID()
+        let connection = NWConnection(host: NWEndpoint.Host("192.168.1.1"), port: 54321, using: .udp)
+        let releaseQueue = DispatchSemaphore(value: 0)
+        do {
+            _ = try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, any Error>) in
+                let call = PendingCall(continuation: cont, connection: connection)
+                self.register(call, id: callID)
+                if simulateQueuedSendCompletionBeforeTimeout {
+                    self.queue.async {
+                        releaseQueue.wait()
+                        call.markSendCompleted()
+                    }
+                }
+                Task {
+                    self.timeoutCall(id: callID)
+                    if simulateQueuedSendCompletionBeforeTimeout {
+                        releaseQueue.signal()
+                    }
+                }
+            }
+            return nil
+        } catch let error as MiIOError {
+            return error
+        } catch {
+            return nil
         }
     }
 
@@ -478,17 +513,10 @@ public actor LocalMiIOClient {
         }
         guard !validCandidates.isEmpty else { return [:] }
 
-        let discoveryDeadline = ContinuousClock.now.advanced(by: maxDiscoveryDuration)
-        func remainingBudget() -> Duration? {
-            let remaining = discoveryDeadline - ContinuousClock.now
-            return remaining > .zero ? remaining : nil
-        }
-
-        guard let initialBudget = remainingBudget() else { return [:] }
         let replies = try await transport.probeBroadcast(
             MiIOPacket.helloPacket,
             port: port,
-            timeout: min(broadcastTimeout, initialBudget)
+            timeout: min(broadcastTimeout, maxDiscoveryDuration)
         )
         guard !isShutDown else { throw MiIOError.shutDown }
         var parsedReplies: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)] = [], seenReplyIPs: Set<String> = []
@@ -504,37 +532,63 @@ public actor LocalMiIOClient {
         var discovered: [String: String] = [:]
         var claimedIPs: Set<String> = Set(excludedIPs.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter(Self.isPrivateRFC1918IPv4))
 
+        let probeBudget = max(maxDiscoveryDuration - min(broadcastTimeout, maxDiscoveryDuration), min(handshakeTimeout, maxDiscoveryDuration))
+        let discoveryDeadline = ContinuousClock.now.advanced(by: probeBudget)
+        func remainingBudget() -> Duration? {
+            let remaining = discoveryDeadline - ContinuousClock.now
+            return remaining > .zero ? remaining : nil
+        }
+
+        let hasUnresolvedNonNumericCandidates = validCandidates.contains {
+            UInt64($0.did) == nil && knownHardwareIdsByDid[$0.did] == nil
+        }
+        let reservedNonNumericBudget: Duration = hasUnresolvedNonNumericCandidates
+            ? min(handshakeTimeout, probeBudget / 2)
+            : .zero
+        let matchingDeadline = discoveryDeadline.advanced(by: .zero - reservedNonNumericBudget)
+        func remainingMatchingBudget() -> Duration? {
+            let remaining = matchingDeadline - ContinuousClock.now
+            return remaining > .zero ? remaining : nil
+        }
+
+        var matchingQueuesByDid: [String: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)]] = [:]
+        var matchingTriedIPsByDid: [String: Set<String>] = [:]
+        var matchingCandidates: [(did: String, tokenData: Data)] = []
         for candidate in validCandidates {
             let matching = parsedReplies.filter { r in
                 guard !claimedIPs.contains(r.sourceIP) else { return false }
+                if MiIOPacket.helloChecksumMatches(r.packet, token: candidate.tokenData) == false { return false }
                 if let known = knownHardwareIdsByDid[candidate.did], known.matches(r.header) { return true }
                 guard let did64 = UInt64(candidate.did) else { return false }
                 return r.header.deviceId64 == did64 || ((r.header.unknown == 0 || r.header.unknown == UInt32.max) && UInt32(truncatingIfNeeded: did64) == r.header.deviceId)
             }
-            for reply in matching {
-                try Task.checkCancellation()
-                guard let probeBudget = remainingBudget() else { return discovered }
-                if try await verifyBroadcastCandidate(
-                    did: candidate.did,
-                    tokenData: candidate.tokenData,
-                    sourceIP: reply.sourceIP,
-                    packet: reply.packet,
-                    header: reply.header,
-                    timeout: min(handshakeTimeout, probeBudget)
-                ) {
-                    discovered[candidate.did] = reply.sourceIP
-                    claimedIPs.insert(reply.sourceIP)
-                    break
-                }
+            if !matching.isEmpty {
+                matchingCandidates.append(candidate)
+                matchingQueuesByDid[candidate.did] = matching
+                matchingTriedIPsByDid[candidate.did] = []
             }
+        }
+
+        var totalProbesLaunched = 0
+        if !matchingCandidates.isEmpty {
+            totalProbesLaunched += try await runBoundedProbeWaves(
+                candidates: matchingCandidates,
+                queuesByDid: matchingQueuesByDid,
+                triedIPsByDid: &matchingTriedIPsByDid,
+                discovered: &discovered,
+                claimedIPs: &claimedIPs,
+                maxTotalProbes: maxTotalUnclaimedProbes,
+                remainingBudget: remainingMatchingBudget
+            )
         }
 
         let unresolved = validCandidates.filter {
             discovered[$0.did] == nil && UInt64($0.did) == nil && knownHardwareIdsByDid[$0.did] == nil
         }
-        guard !unresolved.isEmpty else { return discovered }
+        guard !unresolved.isEmpty, totalProbesLaunched < maxTotalUnclaimedProbes else { return discovered }
 
-        let knownNumericLow32 = Set(knownNumericDids.map { UInt32(truncatingIfNeeded: $0) })
+        let allKnownNumericDids = knownNumericDids.union(validCandidates.compactMap { UInt64($0.did) })
+        let knownNumericLow32 = Set(allKnownNumericDids.map { UInt32(truncatingIfNeeded: $0) })
         let nonCandidateHardwareIDs = knownHardwareIdsByDid.compactMap { did, hw in
             (!candidateDidSet.contains(did) || discovered[did] != nil) ? hw : nil
         }
@@ -544,7 +598,7 @@ public actor LocalMiIOClient {
         guard !unclaimedPool.isEmpty else { return discovered }
 
         func matchesKnownNumeric(_ header: MiIOPacketHeader) -> Bool {
-            if knownNumericDids.contains(header.deviceId64) { return true }
+            if allKnownNumericDids.contains(header.deviceId64) { return true }
             if header.unknown == 0 || header.unknown == UInt32.max {
                 return knownNumericLow32.contains(header.deviceId)
             }
@@ -572,27 +626,55 @@ public actor LocalMiIOClient {
             triedIPsByDid[candidate.did] = []
         }
 
-        enum ProbeOutcome: Sendable {
-            case response(PreparedProbe, Data, Int)
-            case noMatch
-            case fatal(MiIOError)
-        }
+        let nonNumericPhaseDeadline = max(
+            discoveryDeadline,
+            ContinuousClock.now.advanced(by: reservedNonNumericBudget)
+        )
+        _ = try await runBoundedProbeWaves(
+            candidates: unresolved,
+            queuesByDid: queuesByDid,
+            triedIPsByDid: &triedIPsByDid,
+            discovered: &discovered,
+            claimedIPs: &claimedIPs,
+            maxTotalProbes: maxTotalUnclaimedProbes - totalProbesLaunched,
+            remainingBudget: {
+                let remaining = nonNumericPhaseDeadline - ContinuousClock.now
+                return remaining > .zero ? remaining : nil
+            }
+        )
+        return discovered
+    }
 
+    private enum ProbeOutcome: Sendable {
+        case response(PreparedProbe, Data, Int)
+        case noMatch
+        case fatal(MiIOError)
+    }
+
+    private func runBoundedProbeWaves(
+        candidates: [(did: String, tokenData: Data)],
+        queuesByDid: [String: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)]],
+        triedIPsByDid: inout [String: Set<String>],
+        discovered: inout [String: String],
+        claimedIPs: inout Set<String>,
+        maxTotalProbes: Int,
+        remainingBudget: () -> Duration?
+    ) async throws -> Int {
         var totalProbesLaunched = 0
         var roundRobinStart = 0
-        while totalProbesLaunched < maxTotalUnclaimedProbes {
+        while totalProbesLaunched < maxTotalProbes {
             try Task.checkCancellation()
             guard !isShutDown else { throw MiIOError.shutDown }
             guard let waveBudget = remainingBudget() else { break }
 
-            let activeCandidates = unresolved.filter { candidate in
+            let activeCandidates = candidates.filter { candidate in
                 guard discovered[candidate.did] == nil, let queue = queuesByDid[candidate.did] else { return false }
                 let tried = triedIPsByDid[candidate.did] ?? []
                 return queue.contains { !claimedIPs.contains($0.sourceIP) && !tried.contains($0.sourceIP) }
             }
             guard !activeCandidates.isEmpty else { break }
 
-            let batchLimit = min(discoveryConcurrency, maxTotalUnclaimedProbes - totalProbesLaunched)
+            let batchLimit = min(discoveryConcurrency, maxTotalProbes - totalProbesLaunched)
             var preparedBatch: [PreparedProbe] = []
             var inFlightIPs: Set<String> = []
             var passesWithoutProgress = 0
@@ -660,7 +742,7 @@ public actor LocalMiIOClient {
                 }
             }
         }
-        return discovered
+        return totalProbesLaunched
     }
 
     private struct PreparedProbe: Sendable {
@@ -730,40 +812,6 @@ public actor LocalMiIOClient {
         knownHardwareIdsByDid[probe.did] = HardwareDeviceID(unknown: probe.resolvedUnknown, deviceId: probe.header.deviceId)
         sessions[probe.did] = DeviceSession(ip: probe.sourceIP, tokenData: probe.tokenData, unknown: probe.resolvedUnknown, deviceId32: probe.header.deviceId, baseStamp: respHeader.stamp, handshakeAt: now(), lastSentStamp: probe.probeStamp)
         return true
-    }
-
-    private func verifyBroadcastCandidate(
-        did: String, tokenData: Data, sourceIP: String, packet: Data, header: MiIOPacketHeader, timeout: Duration
-    ) async throws -> Bool {
-        if MiIOPacket.helloChecksumMatches(packet, token: tokenData) == false { return false }
-        let prepared = try prepareBroadcastProbe(did: did, tokenData: tokenData, sourceIP: sourceIP, header: header)
-        let transport = self.transport
-        let port = self.port
-        enum SingleVerifyOutcome: Sendable {
-            case ok(Data, Int)
-            case miss
-            case err(MiIOError)
-        }
-        let outcome: SingleVerifyOutcome = try await Self.runBoundedDiscoveryProbe(
-            timeout: timeout,
-            sendBody: {
-                let sendStart = ContinuousClock.now
-                let response = try await transport.send(prepared.probePacket, to: sourceIP, port: port, timeout: timeout)
-                return (response, Self.milliseconds(since: sendStart))
-            },
-            makeOutcome: { .ok($0, $1) },
-            noMatch: .miss,
-            fatal: { .err($0) }
-        )
-        guard !isShutDown else { throw MiIOError.shutDown }
-        switch outcome {
-        case .err(let error):
-            throw error
-        case .miss:
-            return false
-        case .ok(let responsePacket, let rttMs):
-            return acceptVerifiedBroadcastResponse(prepared, responsePacket: responsePacket, rttMs: rttMs)
-        }
     }
 
     public func handshake(for endpoint: MiIODeviceEndpoint) async throws -> MiIOHandshakeInfo {

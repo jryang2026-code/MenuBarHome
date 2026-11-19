@@ -929,7 +929,6 @@ public actor MiCloudProvider: HomeProvider {
                 lanEndpoints[key.did] = endpoint
                 lanKeysByDid[key.did, default: []].append(key)
             } else if allowCooldownSweep,
-                      !isLocalNetworkDenied,
                       let record = recordByDid[key.did],
                       lanEligibleEndpointIgnoringCooldown(for: record) != nil {
                 cooldownSweepKeysByDid[key.did, default: []].append(key)
@@ -1047,15 +1046,6 @@ public actor MiCloudProvider: HomeProvider {
             if batchSawLocalNetworkDenied {
                 updateLocalNetworkDenied(true)
                 shouldSweep = false
-            }
-        }
-
-        if isLocalNetworkDenied, !cooldownSweepKeysByDid.isEmpty {
-            for did in cooldownSweepKeysByDid.keys {
-                var state = lanHealthByDid[did] ?? LANHealthState()
-                state.lastErrorWasLocalNetworkDenied = true
-                state.cooldownUntil = nil
-                lanHealthByDid[did] = state
             }
         }
 
