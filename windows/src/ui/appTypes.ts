@@ -57,6 +57,8 @@ export interface LearnedShortcut {
 
 export interface PersistedSettings {
   connectionMode: ConnectionMode;
+  /** Prior real connection mode remembered when entering offline demo home so leaving demo restores it. */
+  preDemoConnectionMode?: Exclude<ConnectionMode, "demo"> | null;
   miSession: MiSession | null;
   dualSourceEnabled?: boolean;
   /** Non-sensitive Xiaomi cloud region for the next QR login (#37); the session keeps the region it logged in with. */
@@ -182,4 +184,12 @@ export interface LoadedSettings {
   readonly settings: PersistedSettings;
   /** An old localStorage copy still contains secrets that must move to the credential manager (#28). */
   readonly hasLegacyCredentials: boolean;
+  /** True when a non-empty settings payload existed on disk (distinguishing upgrades from fresh installs). */
+  readonly hasPersistedSettings: boolean;
+  /** True when `hasCompletedOnboarding` was explicitly recorded in persisted settings. */
+  readonly hasExplicitOnboardingFlag: boolean;
+  /** True when local caches, layout prefs, multi-accounts, rules, or timers exist on disk. */
+  readonly hasPersistedLocalData: boolean;
+  /** Non-null when persisted settings could not be read or parsed; falls back to legacy without sealing migration. */
+  readonly settingsReadError: string | null;
 }

@@ -604,14 +604,16 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
         <label>${ctx.escapeHtml(tr3("首次设置与新手引导", "首次設定與新手引導", "Setup & Onboarding Guide"))}</label>
         <p class="cc-field-hint" style="margin: 2px 0 0 0;">${ctx.escapeHtml(
           tr3(
-            "随时重新打开三步上手引导，查看连接、快捷键与全关撤销演练。",
-            "隨時重新打開三步上手引導，查看連線、快速鍵與全關復原演練。",
-            "Reopen the 3-step onboarding guide anytime to review connections, shortcuts, and All Off.",
+            "随时重新打开平台引导，查看连接、快捷键与全关撤销说明。",
+            "隨時重新打開平台引導，查看連線、快速鍵與全關復原說明。",
+            "Reopen the platform setup guide anytime to review connections, shortcuts, and All Off.",
           ),
         )}</p>
       </div>
       <button type="button" class="cc-btn-secondary" id="btn-reopen-onboarding">${ctx.escapeHtml(
-        tr3("重新查看新手引导", "重新查看新手引導", "Reopen Setup Guide"),
+        Boolean(ctx.settings.miSession) || Boolean(ctx.settings.haBaseURL.trim() && ctx.settings.haToken.trim())
+          ? tr3("重新查看新手引导", "重新查看新手引導", "Reopen Setup Guide")
+          : t("继续初始设置"),
       )}</button>
     </div>
   `;

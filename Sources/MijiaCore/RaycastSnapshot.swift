@@ -565,7 +565,8 @@ extension HomeStore {
             let pinyinInitials = Self.pinyinInitials(of: dev.name)
             let pinyinFull = PanelSearch.Pinyin.syllables(dev.name)?.joined() ?? ""
             let roomPinyin = Self.pinyinInitials(of: displayRoom)
-            let capabilities = Self.buildCapabilities(for: dev, markedLightIds: markedLightIds)
+            let isWritable = capabilityWriteRejection(for: dev) == nil
+            let capabilities = Self.buildCapabilities(for: dev, markedLightIds: markedLightIds, isWritable: isWritable)
             let snapshotTag: DeviceKindTag = dev.isSwitchedLight ? .light : dev.kind.tag
 
             return RaycastDeviceItem(
@@ -580,7 +581,7 @@ extension HomeStore {
                 stateText: dev.statusSubtitle,
                 isOnline: dev.isOnline,
                 isActiveOn: dev.isActiveOn,
-                isPrimaryToggleable: dev.isPrimaryToggleable,
+                isPrimaryToggleable: isWritable && dev.isPrimaryToggleable,
                 isFavorite: isFav,
                 favoriteRank: favRank,
                 pinyinInitials: pinyinInitials,
@@ -592,7 +593,7 @@ extension HomeStore {
 
         let quickActions = buildQuickActionItems()
 
-        let sceneItems: [RaycastSceneItem] = scenes.map { scene in
+        let sceneItems: [RaycastSceneItem] = visibleScenes.map { scene in
             RaycastSceneItem(
                 id: scene.id,
                 name: scene.name,
@@ -766,17 +767,17 @@ extension HomeStore {
 
     private func buildQuickActionItems() -> [RaycastQuickActionItem] {
         let activeLightsCount = devices.filter { dev in
-            guard dev.isOnline, case .light(let s) = dev.kind else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil, case .light(let s) = dev.kind else { return false }
             return s.isOn && s.powerWritable
         }.count
 
         let nightLightCandidatesCount = devices.filter { dev in
-            guard dev.isOnline, case .light(let s) = dev.kind else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil, case .light(let s) = dev.kind else { return false }
             return s.brightnessWritable && s.colorWritable
         }.count
 
         let activeClimateFanCount = devices.filter { dev in
-            guard dev.isOnline else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil else { return false }
             switch dev.kind {
             case .climate(let s): return s.isOn && s.hvacMode != "off" && s.powerWritable
             case .fan(let s): return s.isOn && s.powerWritable
@@ -860,57 +861,58 @@ extension HomeStore {
 
     private static func buildCapabilities(
         for device: SmartDevice,
-        markedLightIds: Set<String> = []
+        markedLightIds: Set<String> = [],
+        isWritable: Bool = true
     ) -> RaycastDeviceCapabilities {
         let isHighRisk = ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: markedLightIds)
             || ManualControlPolicy.requiresConfirmation(.power(false), for: device, markedLightIds: markedLightIds)
         switch device.kind {
         case .light(let s):
             return RaycastDeviceCapabilities(
-                canTogglePower: s.powerWritable,
-                brightnessWritable: s.brightnessWritable,
+                canTogglePower: isWritable && s.powerWritable,
+                brightnessWritable: isWritable && s.brightnessWritable,
                 brightnessPercent: s.brightnessPercent,
-                colorWritable: s.colorWritable,
+                colorWritable: isWritable && s.colorWritable,
                 colorTempKelvin: s.colorTempKelvin,
                 minKelvin: s.minKelvin,
                 maxKelvin: s.maxKelvin,
-                supportsMoonlight: s.brightnessWritable || s.colorWritable || !s.availableEffects.isEmpty,
-                availableEffects: s.availableEffects,
+                supportsMoonlight: isWritable && (s.brightnessWritable || s.colorWritable || !s.availableEffects.isEmpty),
+                availableEffects: isWritable ? s.availableEffects : [],
                 isHighRisk: isHighRisk
             )
         case .climate(let s):
             return RaycastDeviceCapabilities(
-                canTogglePower: s.powerWritable,
-                temperatureWritable: s.temperatureWritable,
+                canTogglePower: isWritable && s.powerWritable,
+                temperatureWritable: isWritable && s.temperatureWritable,
                 targetTemperature: s.targetTemperature,
                 currentTemperature: s.currentTemperature,
                 minTemp: s.minTemp,
                 maxTemp: s.maxTemp,
                 step: s.step,
                 hvacMode: s.hvacMode,
-                availableModes: s.availableModes,
+                availableModes: isWritable ? s.availableModes : [],
                 isHighRisk: isHighRisk
             )
         case .fan(let s):
             return RaycastDeviceCapabilities(
-                canTogglePower: s.powerWritable,
-                fanSpeedWritable: s.speedWritable,
+                canTogglePower: isWritable && s.powerWritable,
+                fanSpeedWritable: isWritable && s.speedWritable,
                 fanPercentage: s.percentage,
-                availablePresetModes: s.availablePresetModes,
+                availablePresetModes: isWritable ? s.availablePresetModes : [],
                 isHighRisk: isHighRisk
             )
         case .cover(let s):
             return RaycastDeviceCapabilities(
-                canTogglePower: device.kind.canTogglePower,
+                canTogglePower: isWritable && device.kind.canTogglePower,
                 coverSubtype: s.subtype.rawValue,
-                positionWritable: s.positionWritable,
+                positionWritable: isWritable && s.positionWritable,
                 positionPercent: s.positionPercent,
-                canMoveCover: s.canMove,
+                canMoveCover: isWritable && s.canMove,
                 isHighRisk: isHighRisk || s.subtype == .garageDoor || s.subtype == .windowOpener
             )
         default:
             return RaycastDeviceCapabilities(
-                canTogglePower: device.kind.canTogglePower,
+                canTogglePower: isWritable && device.kind.canTogglePower,
                 isHighRisk: isHighRisk
             )
         }

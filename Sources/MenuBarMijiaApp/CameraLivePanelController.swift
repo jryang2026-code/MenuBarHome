@@ -201,6 +201,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         store.onMiAccountDisabled = { [weak self] _, deviceIds in
             self?.tearDownDevices(deviceIds)
         }
+        store.onHAConnectionDisabled = { [weak self] deviceIds in
+            self?.tearDownDevices(deviceIds)
+        }
     }
 
     func tearDownDevices(_ deviceIds: Set<String>) {
@@ -221,6 +224,8 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         warmPlaybacks = keptWarm
         if let active = activeDeviceId, deviceIds.contains(active) {
             closePanel()
+            activeDeviceId = nil
+            activeCameraEntityID = nil
         }
     }
 

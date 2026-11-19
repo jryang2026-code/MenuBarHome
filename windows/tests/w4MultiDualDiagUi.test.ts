@@ -297,7 +297,7 @@ describe("W4 Contract: zero-conflict exports, search anchors & custom panel top 
     const hostDiv = document.createElement("div");
     document.body.appendChild(hostDiv);
 
-    assert.equal(app.settings.connectionMode, "demo");
+    assert.equal(app.settings.connectionMode, "xiaomiCloud");
     assert.equal(app.settings.haBaseURL, "");
     assert.equal(app.settings.haToken, "");
     hostDiv.innerHTML = renderConnectionsAndDiagSection({
