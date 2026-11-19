@@ -163,9 +163,13 @@ export class CameraLiveController {
     readonly miSession: MiSession | null;
     readonly accountId: string | null;
   } {
-    const route =
-      (isDualSourceEnabled(this.host) ? getHostDualSourceState(this.host)?.routes[dev.id] : undefined) ??
-      this.host.dualSourceCoordinator?.getLastMerged()?.routes[dev.id];
+    // Both lookups stay behind the dual-source gate: a refresh that lands after sign-out can still
+    // publish its routes into the coordinator, and a stale Xiaomi route must never decide how an
+    // HA-native card streams once dual-source mode has ended (#254).
+    const route = isDualSourceEnabled(this.host)
+      ? (getHostDualSourceState(this.host)?.routes[dev.id] ??
+        this.host.dualSourceCoordinator?.getLastMerged()?.routes[dev.id])
+      : undefined;
     const sourceDev = route?.sourceDevice ?? dev;
     const backend: "xiaomiCloud" | "homeAssistant" | "demo" =
       route?.backend ??
@@ -428,6 +432,31 @@ export class CameraLiveController {
     if (!accountId) return true;
     const owner = dev.accountId ?? resolved.sourceDev.accountId ?? resolved.accountId ?? null;
     return owner === accountId || resolved.sourceDev.id.startsWith(`${accountId}/`);
+  }
+
+  /**
+   * Follows an open live view to the card that replaced it: ending dual-source mode restores raw
+   * Home Assistant ids, so a stream opened under a paired card's canonical id would otherwise keep
+   * an id the device list no longer has (#254). The transport keeps running: it already points at
+   * this camera's frame source.
+   */
+  public retargetActiveLiveCamera(deviceId: string): boolean {
+    const previousId = this.activeLiveCameraId;
+    if (previousId === null) return false;
+    const dev = this.host.devices.find((d) => d.id === deviceId);
+    if (!dev || dev.kind.kind !== "camera") return false;
+    if (previousId === dev.id) return true;
+    // Teardown reads the bridge binding by the active id, so the binding has to move with the view.
+    const bridge = this.cameraBridgeBindings.get(previousId);
+    if (bridge) {
+      this.cameraBridgeBindings.delete(previousId);
+      this.cameraBridgeBindings.set(dev.id, bridge);
+    }
+    this.activeLiveCameraId = dev.id;
+    this.activeLiveCameraSnapshot = dev;
+    this.syncModalEscapeListener();
+    this.host.render();
+    return true;
   }
 
   public closeXiaomiCameraLiveView(accountId?: string): void {
