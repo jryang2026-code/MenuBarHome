@@ -61,6 +61,12 @@ enum ActivityStackPolicy {
         !(store.sensorAlertsOnlyWhenAway && !store.awayGapIncludesAway)
     }
 
+    /// VoiceOver label for the capsule's xmark. It clears every dismissible ordinary reminder, so it must
+    /// not read as the neighbouring 收起/Collapse control.
+    static func ordinaryClearAccessibilityLabel() -> String {
+        L10n.tr("清除全部普通提醒", "Dismiss all reminders")
+    }
+
     static func ordinaryCapsuleSummary(labels: [String]) -> String {
         guard let first = labels.first else { return "" }
         guard labels.count > 1 else { return first }
@@ -217,7 +223,7 @@ struct ActivityStackView<Content: View>: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(Text(L10n.tr("收起普通提醒", "Dismiss notifications")))
+                    .accessibilityLabel(Text(ActivityStackPolicy.ordinaryClearAccessibilityLabel()))
                 }
             }
             .padding(.horizontal, 12)

@@ -934,6 +934,15 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
                         sources: sources
                     )
                 }
+                if haItem.badge == .reauthRequired {
+                    return PanelConnectionStatusPresentation(
+                        badge: .reauthRequired,
+                        text: L10n.tr("Home Assistant 凭据或地址需更新", "Home Assistant credentials or address need attention"),
+                        inlineActionTitle: L10n.tr("查看连接", "Check Connection"),
+                        inlineAction: .openDetail,
+                        sources: sources
+                    )
+                }
                 return PanelConnectionStatusPresentation(
                     badge: .degraded,
                     text: L10n.tr("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant unavailable; some devices have no data"),

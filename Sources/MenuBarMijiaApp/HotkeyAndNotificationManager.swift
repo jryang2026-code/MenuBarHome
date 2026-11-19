@@ -530,6 +530,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             // Both themes publish the order of the cards they actually draw; when no panel is
             // mounted, `PanelQuickIndexState` falls back to the store's own list.
             PanelQuickIndexState.shared.select(digit, store: store)
+        case .selectQuickIndexClearingStatusFocus(let digit):
+            PanelConnectionDetailState.shared.clearStatusControlFocus()
+            PanelQuickIndexState.shared.select(digit, store: store)
         }
         return true
     }

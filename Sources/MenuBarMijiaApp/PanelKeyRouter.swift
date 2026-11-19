@@ -70,6 +70,9 @@ enum PanelKeyRouter {
         case clearFocus
         case hidePanel
         case selectQuickIndex(Int)
+        /// A digit pressed while the footer status control holds focus: select the device and release the
+        /// status control, otherwise the Return/Space that follows would still land on the status button.
+        case selectQuickIndexClearingStatusFocus(Int)
     }
 
     /// Keys decided before search sees them. nil means search goes next.
@@ -185,7 +188,7 @@ enum PanelKeyRouter {
         }
 
         if let chars = key.characters, chars.count == 1, let digit = Int(chars), (1...9).contains(digit) {
-            return .selectQuickIndex(digit)
+            return context.isConnectionStatusFocused ? .selectQuickIndexClearingStatusFocus(digit) : .selectQuickIndex(digit)
         }
         return .passThrough
     }

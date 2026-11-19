@@ -375,6 +375,33 @@ struct PanelAlertsAndStatusTests {
             }
         }
 
+        // 3c. Dual-source with HA credentials rejected (401) while Xiaomi is online must say the key needs
+        // updating and offer the connection entry, like the HA-only path, not a transient outage.
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            store.connectionStatus = .connected
+            store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("401 Unauthorized")]
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Home Assistant 凭据或地址需更新")
+                #expect(status.badge == .reauthRequired)
+                #expect(status.inlineActionTitle == "查看连接")
+                #expect(status.inlineAction == .openDetail)
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Home Assistant 憑據或位址需更新")
+                #expect(status.inlineActionTitle == "查看連線")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Home Assistant credentials or address need attention")
+                #expect(status.inlineActionTitle == "Check Connection")
+            }
+        }
+
         // 4. Only LG TV online while Xiaomi is unavailable -> "米家暂不可用，LG 电视仍可控制"
         do {
             let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
@@ -507,6 +534,19 @@ struct PanelAlertsAndStatusTests {
         }
     }
 
+    @Test("Ordinary reminder capsule's xmark is announced as clearing all reminders, not collapsing, in all three languages")
+    func ordinaryCapsuleClearAccessibilityLabel() {
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ActivityStackPolicy.ordinaryClearAccessibilityLabel() == "清除全部普通提醒")
+        }
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(ActivityStackPolicy.ordinaryClearAccessibilityLabel() == "清除全部普通提醒")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(ActivityStackPolicy.ordinaryClearAccessibilityLabel() == "Dismiss all reminders")
+        }
+    }
+
     @Test("Connection status detail provides actual per-source online state, settings entry, and keyboard routing for Tab, Return, Space, and Esc")
     func statusDetailAndKeyboardEscapeRouting() {
         let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
@@ -549,6 +589,11 @@ struct PanelAlertsAndStatusTests {
         #expect(route(PanelKeyRouter.Key(code: kVK_UpArrow), statusFocusedContext) == .moveFocus(-1))
         #expect(route(PanelKeyRouter.Key(code: kVK_DownArrow), statusFocusedContext) == .moveFocus(1))
         #expect(route(PanelKeyRouter.Key(code: kVK_Tab), statusFocusedContext) == .cycleRoom(1))
+
+        // 2b. A digit while the status control is focused selects the device and hands focus over to it,
+        // so the Return/Space that follows toggles the device instead of opening the connection popover.
+        #expect(route(PanelKeyRouter.Key(code: kVK_ANSI_2, characters: "2"), statusFocusedContext) == .selectQuickIndexClearingStatusFocus(2))
+        #expect(route(PanelKeyRouter.Key(code: kVK_ANSI_2, characters: "2"), PanelKeyRouter.Context()) == .selectQuickIndex(2))
 
         // 3. Tab without device focus cycles through rooms and includes connection status at the wrap boundary.
         store.rooms = [
