@@ -942,21 +942,39 @@ final class MenuBarPanelController: NSObject {
         hostedPanelTheme = nil
     }
 
+    /// Pushes `panelHostingVisibility.isVisible` into `NSHostingView.rootView` synchronously so
+    /// `layoutSubtreeIfNeeded()` tears down hidden-panel `TimelineView`s and animations immediately
+    /// instead of waiting for an asynchronous `@Observable` runloop turn after `orderOut`.
+    func syncPanelRootVisibility() {
+        guard let panel = panelWindow,
+              let hosting = panel.contentView as? PanelHostingView<AnyView>,
+              let store,
+              let theme = hostedPanelTheme else { return }
+        hosting.rootView = Self.panelRoot(
+            store: store,
+            theme: theme,
+            visibility: panelHostingVisibility,
+            isVisible: panelHostingVisibility.isVisible
+        )
+    }
+
     private static func panelRoot(
         store: HomeStore,
         theme: PanelTheme,
-        visibility: PanelHostingVisibility
+        visibility: PanelHostingVisibility,
+        isVisible: Bool? = nil
     ) -> AnyView {
+        let resolvedVisible = isVisible ?? visibility.isVisible
         switch theme {
         case .classic:
             return AnyView(
-                HostedPanelRoot(visibility: visibility) {
+                HostedPanelRoot(visibility: visibility, isVisible: resolvedVisible) {
                     ClassicControlCenterPanel(store: store)
                 }
             )
         case .liquidGlass:
             return AnyView(
-                HostedPanelRoot(visibility: visibility) {
+                HostedPanelRoot(visibility: visibility, isVisible: resolvedVisible) {
                     ControlCenterPanel(store: store)
                         .environment(\.appearsActive, true)
                 }
@@ -965,13 +983,15 @@ final class MenuBarPanelController: NSObject {
     }
     private struct HostedPanelRoot<Content: View>: View {
         let visibility: PanelHostingVisibility
+        let isVisible: Bool
         @ViewBuilder let content: Content
 
         var body: some View {
+            let visible = isVisible && visibility.isVisible
             content
-                .environment(\.isPanelVisible, visibility.isVisible)
+                .environment(\.isPanelVisible, visible)
                 .transaction { transaction in
-                    if !visibility.isVisible {
+                    if !visible {
                         transaction.disablesAnimations = true
                         transaction.animation = nil
                     }
