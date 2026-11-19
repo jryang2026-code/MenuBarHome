@@ -9,6 +9,7 @@ import {
   type QuickActionReference, type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
 } from "./capabilityReferenceVerdict.js";
 import type { DeviceMergeRoute } from "./dualSourceProvider.js";
+import { pendingConnectionRemovalScopes } from "./connectionRemoval.js";
 import { CAPABILITY_SELECTION_STORAGE_KEY, haConnectionScope } from "./haTransportGate.js";
 import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
@@ -218,6 +219,10 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
   const pendingRevalidationSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.pendingRevalidationAccountIds.map(miAccountScope) : []);
   const disabledHaSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.disabledHaScopes.map(normalizeHaScopeString) : []);
   const pendingRevalidationHaSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.pendingRevalidationHaScopes.map(normalizeHaScopeString) : []);
+  // An unfinished connection removal keeps its scope out of the enabled set until the cleanup
+  // completes, so a restart cannot reconnect the connection that is still being removed (P2c-W).
+  for (const scope of pendingConnectionRemovalScopes("mi", storage)) disabledSet.add(miAccountScope(scope));
+  for (const scope of pendingConnectionRemovalScopes("ha", storage)) disabledHaSet.add(normalizeHaScopeString(scope));
   const isCurrentHaDisabled = Boolean(haScope && disabledHaSet.has(haScope));
   const enabledConns = [
     ...(miScopes.length > 0 || options.connectionMode === "xiaomiCloud" || (stored.parsed?.knownDisabledDevices.length ?? 0) > 0 || (stored.parsed?.knownDisabledScenes.length ?? 0) > 0 ? (["xiaomi-cloud"] as const) : []),

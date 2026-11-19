@@ -380,6 +380,14 @@ export class MiAccountsStore { private cachedAccounts: MiAccount[] = [];
     return this.cachedAccounts;
   }
 
+  /**
+   * Credential slots a sign-out or removal of `accountId` owns: its canonical slot plus any
+   * enumerated alias that resolves to the same identity. Never includes another account (#228).
+   */
+  credentialSlotIdsForAccount(accountId: string): string[] { const account = this.getAccounts().find((item) => item.id === accountId);
+    return account ? this.slotIdsForAccount(account) : [];
+  }
+
   primarySession(): MiSession | null { this.syncExternalRevocation();
     return this.cachedAccounts[0]?.session ?? null;
   }

@@ -31,11 +31,24 @@ import {
   isHaScopeDisabledInStorage,
   isHaScopeStopTimedOut,
   requestHaScopeEnableAfterDrain,
+  waitForHaScopeDrained,
 } from "../core/haTransportGate.js";
+import {
+  beginConnectionRemoval,
+  executeConnectionRemoval,
+  findConnectionRemoval,
+  haConnectionRemovalScope,
+  markConnectionRemovalStage,
+  miConnectionRemovalScope,
+  readConnectionRemovalState,
+  type ConnectionRemovalExecution,
+  type ConnectionRemovalRecord,
+  type ConnectionRemovalVaultPort,
+} from "../core/connectionRemoval.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
-import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
+import { CredentialVault, sessionWithoutPassToken } from "../core/secureStore.js";
 import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, miAccountId, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
 import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
@@ -1500,6 +1513,145 @@ export async function setHaConnectionEnabledOnHost(
   return { status: "applied" };
 }
 
+/**
+ * Adapts the credential vault to the removal port, so cleanup can prove what it deleted and never
+ * delete a credential another account was promoted into (#228, P2c-W).
+ */
+function connectionRemovalVaultPort(vault: CredentialVault): ConnectionRemovalVaultPort {
+  return {
+    deleteCredentialSlots: (names) => vault.deleteCredentialSlots(names),
+    readPrimarySession: () => vault.loadPrimaryMiSession(),
+    didLastPrimarySessionReadFail: () => vault.didLastPrimaryMiSessionReadFail(),
+  };
+}
+
+function connectionRemovalIncompleteText(
+  execution: Extract<ConnectionRemovalExecution, { status: "incomplete" }>,
+  lang: AppLanguage,
+): string {
+  const base = tr3("未完成移除 · 重试", "未完成移除 · 重試", "Removal not finished · Retry", lang);
+  const detail =
+    execution.reason === "primary_session_unreadable"
+      ? tr3(
+          "无法确认本机米家主账号凭据归属",
+          "無法確認本機米家主帳號憑據歸屬",
+          "could not confirm which Xiaomi account owns the stored primary credential",
+          lang,
+        )
+      : execution.reason;
+  return detail.trim() === "" ? base : `${base}（${detail}）`;
+}
+
+function reportConnectionRemovalIncomplete(
+  host: ConnectionsAndDiagHost,
+  execution: Extract<ConnectionRemovalExecution, { status: "incomplete" }>,
+  lang: AppLanguage,
+  source: string,
+): false {
+  host.replyBanner = {
+    text: connectionRemovalIncompleteText(execution, lang),
+    source,
+    isError: true,
+  };
+  host.render();
+  return false;
+}
+
+/** Records the removal intent before anything is deleted; `null` means nothing was persisted. */
+function beginMiAccountRemovalRecord(
+  store: MiAccountsStore,
+  accountId: string,
+): ConnectionRemovalRecord | null {
+  const accounts = store.getAccounts();
+  const primaryId = store.hasConfirmedPrimarySession() ? (accounts[0]?.id ?? null) : null;
+  return beginConnectionRemoval({
+    kind: "mi",
+    scope: miConnectionRemovalScope(accountId),
+    accountId,
+    slotIds: store.credentialSlotIdsForAccount(accountId),
+    ownsPrimarySlot: primaryId === accountId,
+    stage: "cleaning",
+  });
+}
+
+/**
+ * Stops the scope and waits for its transports before its credential is deleted (P2b-W / P2b-R).
+ * Returns false when the stop did not drain, keeping the record for a retry.
+ */
+async function drainHaScopeForRemoval(
+  host: ConnectionsAndDiagHost,
+  record: ConnectionRemovalRecord,
+  lang: AppLanguage,
+  source: string,
+): Promise<boolean> {
+  beginHaScopeDisable(record.scope);
+  const drained = await waitForHaScopeDrained(record.scope);
+  if (drained.drained) {
+    markConnectionRemovalStage(record.scope, record.ownerVersion, "cleaning");
+    return true;
+  }
+  markConnectionRemovalStage(
+    record.scope,
+    record.ownerVersion,
+    "draining",
+    drained.timedOut ? "stop_timeout" : "still_stopping",
+  );
+  host.replyBanner = {
+    text: tr3(
+      "Home Assistant 仍在等待请求结束，移除未完成 · 重试",
+      "Home Assistant 仍在等待請求結束，移除未完成 · 重試",
+      "Home Assistant is still finishing a request; removal not finished · Retry",
+      lang,
+    ),
+    source,
+    isError: true,
+  };
+  host.render();
+  return false;
+}
+
+/**「未完成移除 · 重试」rows: the only entry point back into an interrupted cleanup (P2c-W). */
+function renderPendingConnectionRemovalsHtml(
+  esc: (raw: string) => string,
+  lang: AppLanguage,
+): string {
+  const removals = readConnectionRemovalState().records;
+  if (removals.length === 0) return "";
+  const rows = removals
+    .map((record) => {
+      const target =
+        record.kind === "ha"
+          ? record.scope.replace(/^ha:/, "")
+          : tr3("米家账号", "米家帳號", "Xiaomi account", lang);
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="flex:1;min-width:160px;">${esc(target)}</span>
+        <button type="button" class="cc-btn-secondary" data-connection-removal-retry="${esc(record.scope)}">${esc(tr3("重试清理", "重試清理", "Retry cleanup", lang))}</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="cc-field" id="conn-diag-pending-removals">
+    <label style="margin:0;font-weight:600;">${esc(tr3("未完成移除", "未完成移除", "Removal not finished", lang))}</label>
+    <span class="cc-field-hint" style="margin:0;">${esc(
+      tr3(
+        "下面这些连接的钥匙还留在本机，重启后也不会重新连接。点「重试清理」继续清除。",
+        "下面這些連線的鑰匙還留在本機，重新啟動後也不會重新連線。點「重試清理」繼續清除。",
+        "These connections still have credentials on this PC and will not reconnect after a restart. Use Retry cleanup to finish deleting them.",
+        lang,
+      ),
+    )}</span>
+    ${rows}
+  </div>`;
+}
+
+function connectionRemovalRecordFailedText(lang: AppLanguage): string {
+  return tr3(
+    "无法记录移除进度，凭据未改动，请重试",
+    "無法記錄移除進度，憑據未改動，請重試",
+    "Could not record the removal, so no credential was touched; please retry",
+    lang,
+  );
+}
+
 function signOutSingleMiAccountOnHost(
   host: ConnectionsAndDiagHost,
   accountId: string,
@@ -1538,13 +1690,42 @@ async function performSignOutSingleMiAccountOnHost(
     const beforeIds = new Set(store.getAccounts().map((account) => account.id));
     if (beforeIds.size === 0) return false;
     const wasDualSource = isDualSourceEnabled(host);
+    // P2c-W: the retryable removal record is written before the first credential changes, so a
+    // failed or interrupted cleanup can resume and a restart cannot reconnect this account.
+    const removalRecord = beginMiAccountRemovalRecord(store, accountId);
+    if (removalRecord === null) {
+      host.replyBanner = {
+        text: connectionRemovalRecordFailedText(lang),
+        source: tr3("多账号管理", "多帳號管理", "Accounts", lang),
+        isError: true,
+      };
+      host.render();
+      return false;
+    }
     const removal = await store.removeAccount(accountId, host.settings.selectedHomeId);
     setHostMiAccounts(host, null);
     // Hidden-account recovery can replace the removed account with a discovered one, keeping the
     // count unchanged; only identity proves the requested account is gone.
     if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
+      markConnectionRemovalStage(removalRecord.scope, removalRecord.ownerVersion, "failed", "account_still_present");
       return false;
     }
+    // Only this account's slots were deleted above and are re-deleted here, so a partial failure can
+    // resume. The record settles before selection revalidation, so a finished removal no longer
+    // counts as a disabled connection while paused items are released.
+    const removalExecution = await executeConnectionRemoval(
+      removalRecord,
+      connectionRemovalVaultPort(host.credentialVault ?? new CredentialVault()),
+    );
+    const reportRemoval = (): boolean => {
+      if (removalExecution.status === "completed") return true;
+      return reportConnectionRemovalIncomplete(
+        host,
+        removalExecution,
+        lang,
+        tr3("多账号管理", "多帳號管理", "Accounts", lang),
+      );
+    };
     removeSignedOutMiAccountFromSelection(accountId);
     delete session.disableErrorByAccountId[accountId];
     if (session.pendingDisablePreview?.accountId === accountId) {
@@ -1753,7 +1934,7 @@ async function performSignOutSingleMiAccountOnHost(
         };
         host.render();
       }
-      return true;
+      return reportRemoval();
     }
 
     revalidateHostAfterAccountRemoval(host, removal.accounts);
@@ -1772,13 +1953,23 @@ async function performSignOutSingleMiAccountOnHost(
     if (!hasMoreQueuedSignOuts && host.settings.connectionMode !== "demo") {
       await host.refreshDevices(false);
     }
-    return true;
+    return reportRemoval();
   } catch (error) {
     session.signingOutAccountIds.delete(accountId);
     const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
+    // Keep the record: the account's slots may be partially deleted, and the user retries from here.
+    const pending = findConnectionRemoval(miConnectionRemovalScope(accountId));
+    if (pending) {
+      markConnectionRemovalStage(
+        pending.scope,
+        pending.ownerVersion,
+        "failed",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     host.replyBanner = {
-      text: `${tr3("无法从系统凭据库移除该米家账号，请重试", "無法從系統憑證庫移除該米家帳號，請重試", "Could not remove Xiaomi account from the OS credential store; please retry", lang)}${detail}`,
-      source: tr3("出错提示", "錯誤提示", "Error", lang),
+      text: `${tr3("未完成移除 · 重试", "未完成移除 · 重試", "Removal not finished · Retry", lang)}${detail}`,
+      source: tr3("多账号管理", "多帳號管理", "Accounts", lang),
       isError: true,
     };
     host.render();
@@ -2006,26 +2197,34 @@ export function finishAllMiAccountsSignedOutOnHost(
 export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
   const lang = activeLanguage(host.settings.interfaceLanguage);
   const oldHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  const removalScope = haConnectionRemovalScope(oldHaScope);
 
-  try {
-    if (host.credentialVault) {
-      await host.credentialVault.load();
-      await host.credentialVault.persist(
-        credentialsFromSettings({ ...host.settings, haToken: "" }, host.assistantKeysByPreset),
-      );
-    } else {
-      await secureStoreDelete("ha_token");
-    }
-  } catch (error) {
-    const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
+  // P2c-W: record the intent first, then stop and drain the scope, and only then delete the one
+  // credential this connection owns. A failure anywhere keeps the record, so the cleanup is
+  // retryable and a restart cannot reconnect this scope.
+  const removalRecord =
+    removalScope === null
+      ? null
+      : beginConnectionRemoval({ kind: "ha", scope: removalScope, stage: "draining" });
+  if (removalScope !== null && removalRecord === null) {
     host.replyBanner = {
-      text: `${tr3("无法清除系统凭据库中的 Home Assistant 令牌，请重试", "無法清除系統憑證庫中的 Home Assistant 權杖，請重試", "Could not clear Home Assistant token from the OS credential store; please retry", lang)}${detail}`,
+      text: connectionRemovalRecordFailedText(lang),
       source: "Home Assistant",
       isError: true,
     };
     host.render();
     return false;
   }
+
+  if (removalRecord !== null && !(await drainHaScopeForRemoval(host, removalRecord, lang, "Home Assistant"))) {
+    return false;
+  }
+
+  let haRemovalExecution: ConnectionRemovalExecution | null = null;
+  const finishHaRemoval = (): boolean => {
+    if (haRemovalExecution === null || haRemovalExecution.status === "completed") return true;
+    return reportConnectionRemovalIncomplete(host, haRemovalExecution, lang, "Home Assistant");
+  };
 
   if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
     if (host.cameraLive.closeHomeAssistantCameraLiveView) {
@@ -2040,18 +2239,27 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
   host.clearPendingHighRisk();
   (host as { pendingHighRiskUndoAction?: unknown }).pendingHighRiskUndoAction = null;
 
+  host.settings.haToken = "";
+  host.settings.cachedHAHome = null;
+  host.haConnectionError = null;
+  setHostDualSourceEnabled(host, false, { persist: true });
+  resetHostUnsupportedScanner(host);
+
+  // Delete exactly this connection's credential slot, then drop the record. Doing it before the
+  // selection cleanup keeps the finished removal from looking like a still-disabled connection
+  // while paused items are released.
+  if (removalRecord !== null) {
+    haRemovalExecution = await executeConnectionRemoval(
+      removalRecord,
+      connectionRemovalVaultPort(host.credentialVault ?? new CredentialVault()),
+    );
+  }
   clearHaScopeLifecycle(oldHaScope);
   removeDisconnectedHaFromSelection(oldHaScope);
   if (host.connDiagSession) {
     host.connDiagSession.pendingHaDisablePreview = null;
     host.connDiagSession.haDisableError = null;
   }
-
-  host.settings.haToken = "";
-  host.settings.cachedHAHome = null;
-  host.haConnectionError = null;
-  setHostDualSourceEnabled(host, false, { persist: true });
-  resetHostUnsupportedScanner(host);
   revalidateHostAfterAccountRemoval(host, resolveHostMiAccounts(host));
 
   const tokenField = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
@@ -2082,7 +2290,7 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
       host.saveSettings();
       host.render();
       await host.refreshDevices(false);
-      return true;
+      return finishHaRemoval();
     }
     host.devices = [];
     host.scenes = [];
@@ -2099,6 +2307,90 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
     source: "Home Assistant",
   };
   host.saveSettings();
+  host.render();
+  return finishHaRemoval();
+}
+
+/**
+ * Retries an interrupted connection removal from its persisted record (P2c-W).
+ *
+ * The retry re-takes the record first, so an older cleanup that is still in flight cannot delete a
+ * credential the user re-added in the meantime. Only the slots named by the record are touched.
+ */
+export async function retryConnectionRemovalOnHost(
+  host: ConnectionsAndDiagHost,
+  scope: string,
+): Promise<boolean> {
+  const lang = activeLanguage(host.settings.interfaceLanguage);
+  const source = tr3("连接管理", "連線管理", "Connections", lang);
+  const existing = findConnectionRemoval(scope);
+  if (existing === null) return true;
+  if (existing.kind === "mi" && existing.accountId !== null) {
+    const store = getHostMiAccountsStore(host);
+    if (store.getAccounts().length === 0) await store.load().catch(() => []);
+    if (store.getAccounts().some((account) => account.id === existing.accountId)) {
+      // Reuse the sign-out flow: it re-records the intent, promotes a new primary and settles the record.
+      return signOutSingleMiAccountOnHost(host, existing.accountId);
+    }
+  }
+  // A newer retry owns the record, so an older cleanup that is still running cannot delete a
+  // credential the user re-added in the meantime.
+  const record = beginConnectionRemoval({
+    kind: existing.kind,
+    scope: existing.scope,
+    accountId: existing.accountId,
+    slotIds: existing.slotIds,
+    ownsPrimarySlot: existing.ownsPrimarySlot,
+    stage: existing.kind === "ha" ? "draining" : "cleaning",
+  });
+  if (record === null) {
+    host.replyBanner = { text: connectionRemovalRecordFailedText(lang), source, isError: true };
+    host.render();
+    return false;
+  }
+  if (record.kind === "ha" && !(await drainHaScopeForRemoval(host, record, lang, source))) return false;
+
+  let execution: ConnectionRemovalExecution;
+  try {
+    markConnectionRemovalStage(record.scope, record.ownerVersion, "cleaning");
+    execution = await executeConnectionRemoval(
+      record,
+      connectionRemovalVaultPort(host.credentialVault ?? new CredentialVault()),
+    );
+  } catch (error) {
+    markConnectionRemovalStage(
+      record.scope,
+      record.ownerVersion,
+      "failed",
+      error instanceof Error ? error.message : String(error),
+    );
+    const detail = error instanceof Error && error.message.trim() ? ` (${error.message.trim()})` : "";
+    host.replyBanner = {
+      text: `${tr3("未完成移除 · 重试", "未完成移除 · 重試", "Removal not finished · Retry", lang)}${detail}`,
+      source,
+      isError: true,
+    };
+    host.render();
+    return false;
+  }
+  if (execution.status !== "completed") return reportConnectionRemovalIncomplete(host, execution, lang, source);
+
+  if (record.kind === "ha") {
+    host.settings.haToken = "";
+    host.settings.cachedHAHome = null;
+    host.haConnectionError = null;
+    clearHaScopeLifecycle(record.scope);
+    removeDisconnectedHaFromSelection(record.scope);
+    const tokenField = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
+    if (tokenField) {
+      tokenField.value = "";
+      tokenField.defaultValue = "";
+    }
+  } else if (record.accountId !== null) {
+    removeSignedOutMiAccountFromSelection(record.accountId);
+  }
+  host.saveSettings();
+  host.replyBanner = { text: tr3("移除已完成", "移除已完成", "Removal finished", lang), source };
   host.render();
   return true;
 }
@@ -2666,6 +2958,7 @@ export function renderConnectionsAndDiagSection(
 
   return `
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
+      ${renderPendingConnectionRemovalsHtml(esc, lang)}
       ${renderHaDisconnectRowHtml(ctx, host, session, esc)}
 
       <details class="cc-conn-secondary" data-conn-section="advancedConnectionOptions">
@@ -2974,6 +3267,14 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
         session.pendingDisablePreview = null;
       }
       host.render();
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-connection-removal-retry]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const scope = el.dataset.connectionRemovalRetry;
+      if (!scope || el.disabled) return;
+      el.disabled = true;
+      void retryConnectionRemovalOnHost(host, scope);
     });
   });
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]").forEach((btn) => {
