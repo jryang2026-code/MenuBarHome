@@ -1304,13 +1304,24 @@ extension HomeStore {
         miLoginStartBackend = homeBackend
     }
 
-    public func completeMiLogin(_ session: MiSession) {
+    @discardableResult
+    public func completeMiLogin(_ session: MiSession) -> Bool {
+        if identityMigrationDiagnostic != nil, !retryIdentityMigration() {
+            showToast(
+                L10n.tr(
+                    "无法确认现有配置或凭据，未保存本次米家登录，请检查钥匙串授权后重试",
+                    "Could not verify existing settings or credentials; sign-in was not saved. Check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
         guard MiSessionStore.upsert(session, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
                 isError: true
             )
-            return
+            return false
         }
         // The primary (first) account drives the summary and the history scope, so signing in a
         // second account must not relabel the panel with the newcomer.
@@ -1334,7 +1345,7 @@ extension HomeStore {
         let regionChanged = miCloudRegion != previousRegion
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
-        if superseded { return }
+        if superseded { return true }
         let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         self.hasHASource = !loadHAToken()
@@ -1352,6 +1363,7 @@ extension HomeStore {
                 )
                 : L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))")
         )
+        return true
     }
 
     /// Returns false when the Keychain/vault refused to delete the stored Mi session; the in-memory

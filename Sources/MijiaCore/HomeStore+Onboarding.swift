@@ -47,17 +47,18 @@ extension HomeStore {
 
     /// Resolves the persisted Xiaomi home selection. A bare home ID saved before multi-account has
     /// no account prefix; only migrate or drop it once account reads are confirmed reliable
-    /// (`canMigrateLegacySelection == true`), so a transient Keychain failure never deletes it.
+    /// (`canMigrateLegacySelection == true` and `accountsResult` is `.loaded`), so a transient
+    /// Keychain failure never deletes it.
     static func resolveSelectedMiHomeId(
         defaults: UserDefaults,
-        accounts: [MiAccount],
+        accountsResult: MiSessionStore.AccountsLoadResult,
         canMigrateLegacySelection: Bool
     ) -> String? {
         let stored = defaults.string(forKey: MiCloudProvider.selectedHomeKey)
         guard let selection = stored, MiAccountScope.owner(of: selection) == nil else {
             return stored
         }
-        guard canMigrateLegacySelection else {
+        guard canMigrateLegacySelection, case .loaded(let accounts) = accountsResult else {
             return stored
         }
         if accounts.count == 1, let onlyAccount = accounts.first {
@@ -96,7 +97,7 @@ extension HomeStore {
     static func resolveLaunchCapabilities(
         defaults: UserDefaults,
         vault: CredentialVault?,
-        accounts: [MiAccount],
+        accountsResult: MiSessionStore.AccountsLoadResult,
         hasHASource: Bool,
         serverURLString: String,
         lgHasConfiguredHost: Bool,
@@ -105,7 +106,7 @@ extension HomeStore {
         legacyVoiceInput: Bool,
         legacyGrokBall: Bool
     ) -> CapabilityInstallResolution {
-        var scopes = accounts.map(\.id)
+        var scopes = accountsResult.accounts.map(\.id)
         if hasHASource {
             scopes.append("ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))")
         }
@@ -124,6 +125,7 @@ extension HomeStore {
             defaults: defaults,
             vault: vault,
             configuredScopes: scopes,
+            miAccountsResult: accountsResult,
             checkMiVault: checkMiVault,
             checkHATokenVault: checkHATokenVault,
             hasLegacySettingsOrOnboarding: hasLegacySettings,
@@ -141,7 +143,12 @@ extension HomeStore {
         } else if !isTestEnvironment && userDefaults === UserDefaults.standard {
             _ = CredentialVault.shared.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
         }
-        let reloadedAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        let reloadedAccountsResult = MiSessionStore.loadAccountsResult(
+            defaults: userDefaults,
+            vault: credentialVault,
+            retryingUnavailable: false
+        )
+        let reloadedAccounts = reloadedAccountsResult.accounts
         let needsHAToken = homeBackend != .demo && (!usesInjectedProvider || credentialVault != nil)
         let reloadedHAToken = needsHAToken
             ? KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
@@ -151,7 +158,7 @@ extension HomeStore {
         let resolution = Self.resolveLaunchCapabilities(
             defaults: userDefaults,
             vault: credentialVault,
-            accounts: reloadedAccounts,
+            accountsResult: reloadedAccountsResult,
             hasHASource: reloadedHasHA,
             serverURLString: serverURLString,
             lgHasConfiguredHost: lgConfig.hasConfiguredHost,
@@ -185,7 +192,7 @@ extension HomeStore {
         hasHASource = reloadedHasHA
         selectedMiHomeId = Self.resolveSelectedMiHomeId(
             defaults: userDefaults,
-            accounts: reloadedAccounts,
+            accountsResult: reloadedAccountsResult,
             canMigrateLegacySelection: true
         )
         miSessionMaskedUserId = reloadedAccounts.first?.maskedUserId

@@ -398,7 +398,16 @@ extension HomeStore {
         // be a re-added account whose paused quick actions lost their targets when it was removed, and
         // that removal already cleared the explicit-disable marker this check used to look at.
         pendingRevalidationScopes.insert(scope)
-        persistCapabilitySelection()
+        // Explicit re-login/re-connect must emit a non-empty re-enable patch even when the local
+        // baseline already had this scope enabled, so a cross-store revision conflict after another
+        // store disabled the scope still re-enables it.
+        persistCapabilitySelection(
+            patch: CapabilitySelectionPatch(
+                addedConnections: [connection],
+                removedDisabledConnections: [connection],
+                enabledScopes: [scope]
+            )
+        )
     }
 
     /// Carries the Home Assistant scope over when the saved address changes. The stored selection

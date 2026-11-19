@@ -1252,7 +1252,8 @@ public final class HomeStore {
             L10n.currentLanguage = initialEffective
         }
 
-        let initialAccounts = MiSessionStore.loadAccounts(defaults: ud, vault: credentialVault)
+        let initialAccountsResult = MiSessionStore.loadAccountsResult(defaults: ud, vault: credentialVault)
+        let initialAccounts = initialAccountsResult.accounts
         self.miAccounts = initialAccounts
         let initialMiSession = initialAccounts.first?.session
         let savedRegion = ud.string(forKey: "mi_cloud_region").flatMap(MiCloudRegion.init(rawValue:))
@@ -1357,7 +1358,7 @@ public final class HomeStore {
         let capResolution = Self.resolveLaunchCapabilities(
             defaults: ud,
             vault: credentialVault,
-            accounts: initialAccounts,
+            accountsResult: initialAccountsResult,
             hasHASource: initialHasHASource,
             serverURLString: savedURL,
             lgHasConfiguredHost: initialLGConfig.hasConfiguredHost,
@@ -1372,7 +1373,7 @@ public final class HomeStore {
         self.capabilityStoreRevision = CapabilitySelectionStore.currentRevision(defaults: ud)
         self.selectedMiHomeId = Self.resolveSelectedMiHomeId(
             defaults: ud,
-            accounts: initialAccounts,
+            accountsResult: initialAccountsResult,
             canMigrateLegacySelection: capResolution.retryDiagnostic == nil
         )
         switch capResolution.mode {

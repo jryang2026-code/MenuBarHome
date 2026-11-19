@@ -227,6 +227,7 @@ public enum CapabilitySelectionStore {
         defaults: UserDefaults,
         vault: CredentialVault?,
         configuredScopes: [String],
+        miAccountsResult: MiSessionStore.AccountsLoadResult,
         checkMiVault: Bool,
         checkHATokenVault: Bool,
         hasLegacySettingsOrOnboarding: Bool,
@@ -276,7 +277,7 @@ public enum CapabilitySelectionStore {
         }
 
         if identityReadFailure == nil && checkMiVault,
-           MiSessionStore.readExistingAccounts(defaults: defaults, vault: vault) == nil {
+           case .unavailable = miAccountsResult {
             identityReadFailure = "mi_accounts_unavailable"
         }
         if identityReadFailure == nil && checkHATokenVault,

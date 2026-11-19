@@ -687,9 +687,9 @@ struct FirstRunOnboardingTests {
         )
         let baseRev = try #require(seed.revision)
 
-        nonisolated(unsafe) let sharedDefaults = defaults
-        let results = await withTaskGroup(of: CapabilitySelectionSaveResult.self, returning: [CapabilitySelectionSaveResult].self) { group in
+        let results = try await withThrowingTaskGroup(of: CapabilitySelectionSaveResult.self, returning: [CapabilitySelectionSaveResult].self) { group in
             group.addTask {
+                let taskDefaults = try #require(UserDefaults(suiteName: suite))
                 var sel = baseSelection
                 sel.enabledConnectionScopes.remove("mi:cn:1")
                 return CapabilitySelectionStore.saveMergingConflicts(
@@ -698,10 +698,11 @@ struct FirstRunOnboardingTests {
                     explicitlyDisabledConnections: [],
                     patch: CapabilitySelectionPatch(disabledScopes: ["mi:cn:1"]),
                     expectedRevision: baseRev,
-                    defaults: sharedDefaults
+                    defaults: taskDefaults
                 )
             }
             group.addTask {
+                let taskDefaults = try #require(UserDefaults(suiteName: suite))
                 var sel = baseSelection
                 sel.enabledFeatures.remove(.grokball)
                 return CapabilitySelectionStore.saveMergingConflicts(
@@ -710,10 +711,11 @@ struct FirstRunOnboardingTests {
                     explicitlyDisabledConnections: [],
                     patch: CapabilitySelectionPatch(removedFeatures: [.grokball]),
                     expectedRevision: baseRev,
-                    defaults: sharedDefaults
+                    defaults: taskDefaults
                 )
             }
             group.addTask {
+                let taskDefaults = try #require(UserDefaults(suiteName: suite))
                 var sel = baseSelection
                 sel.enabledFeatures.remove(.voiceInput)
                 return CapabilitySelectionStore.saveMergingConflicts(
@@ -722,11 +724,11 @@ struct FirstRunOnboardingTests {
                     explicitlyDisabledConnections: [],
                     patch: CapabilitySelectionPatch(removedFeatures: [.voiceInput]),
                     expectedRevision: baseRev,
-                    defaults: sharedDefaults
+                    defaults: taskDefaults
                 )
             }
             var collected: [CapabilitySelectionSaveResult] = []
-            for await result in group {
+            for try await result in group {
                 collected.append(result)
             }
             return collected
@@ -966,5 +968,237 @@ struct FirstRunOnboardingTests {
             await probe.refreshNow()
             #expect(connectAttempts.count == 1, "cancelled probe must not retry in the background")
         }
+    }
+
+    private final class TransientReadVaultBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var remainingFailures: Int
+        private var blob: Data?
+
+        init(remainingFailures: Int = 0) {
+            self.remainingFailures = remainingFailures
+        }
+
+        func setRemainingFailures(_ count: Int) {
+            lock.lock()
+            remainingFailures = count
+            lock.unlock()
+        }
+
+        var storage: CredentialVault.Storage {
+            CredentialVault.Storage(
+                read: {
+                    self.lock.lock()
+                    defer { self.lock.unlock() }
+                    if self.remainingFailures > 0 {
+                        self.remainingFailures -= 1
+                        return .unavailable
+                    }
+                    return self.blob.map(CredentialVault.Storage.ReadResult.found) ?? .notFound
+                },
+                write: { data in
+                    self.lock.lock()
+                    self.blob = data
+                    self.lock.unlock()
+                    return true
+                }
+            )
+        }
+    }
+
+    @Test("C1: Transient first-read Keychain failure during launch never deletes legacy bare Mi home ID and migrates it once recovered")
+    @MainActor
+    func transientFirstReadFailurePreservesAndMigratesLegacySelectedMiHome() async throws {
+        let (suite, defaults) = try Self.makeFreshSuite("c1-transient-first-read-home")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let box = TransientReadVaultBox()
+        let seedVault = CredentialVault(storage: box.storage)
+        let session = MiSession(
+            userId: "66200", cUserId: "c", ssecurity: "s", serviceToken: "tok",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults, vault: seedVault))
+        defaults.set("legacy-home-99", forKey: MiCloudProvider.selectedHomeKey)
+
+        // Fail ONLY the very first Keychain read; the next read succeeds.
+        // Previously, HomeStore.init loaded `initialAccounts = []` on read #1 while
+        // `resolveAtLaunch -> readExistingAccounts` retried and succeeded on read #2,
+        // causing `resolveSelectedMiHomeId` to delete `mi_selected_home_id` with empty accounts.
+        box.setRemainingFailures(1)
+        let launchVault = CredentialVault(storage: box.storage)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: launchVault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+
+        if store.identityMigrationDiagnostic != nil {
+            #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == "legacy-home-99")
+            #expect(store.retryIdentityMigration())
+        }
+
+        #expect(store.identityMigrationDiagnostic == nil)
+        let account = try #require(store.miAccounts.first)
+        let expectedScoped = MiAccountScope.id("legacy-home-99", account: account.id)
+        #expect(store.selectedMiHomeId == expectedScoped)
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == expectedScoped)
+        #expect(store.isMiAccountEnabled(account.id))
+        await store.shutdown()
+    }
+
+    @Test("C2: QR sign-in after uncertain launch recovers identity first, preserves existing accounts enabled, and starts live provider")
+    @MainActor
+    func miLoginAfterUncertainLaunchRecoversIdentityPreservesOtherAccountsAndStartsProvider() async throws {
+        let (suite, defaults) = try Self.makeFreshSuite("c2-login-after-uncertain")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let box = ToggleableVaultBox()
+        let seedVault = CredentialVault(storage: box.storage)
+        let sessionA = MiSession(
+            userId: "77101", cUserId: "c1", ssecurity: "s1", serviceToken: "tok1",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        let sessionB = MiSession(
+            userId: "77202", cUserId: "c2", ssecurity: "s2", serviceToken: "tok2",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.upsert(sessionA, defaults: defaults, vault: seedVault))
+        let acctAId = MiAccount(session: sessionA).id
+        let acctBId = MiAccount(session: sessionB).id
+
+        // Cold launch fails to read Keychain -> uncertain identity, no live provider.
+        box.failReads = true
+        let miFactoryCalls = RequestCounter()
+        let launchVault = CredentialVault(storage: box.storage)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: launchVault,
+            miAccountsProviderFactory: { accounts in
+                miFactoryCalls.requests += 1
+                return Self.stubMiFactory(accounts)
+            },
+            haProviderFactory: Self.stubHAFactory
+        )
+        #expect(store.identityMigrationDiagnostic != nil)
+        #expect(miFactoryCalls.requests == 0)
+
+        // While Keychain is still unavailable, QR login must refuse rather than corrupting state.
+        store.completeMiLogin(sessionB)
+        #expect(store.identityMigrationDiagnostic != nil)
+        #expect(store.toastNotice?.isError == true)
+        #expect(miFactoryCalls.requests == 0)
+        #expect(!store.hasCompletedOnboarding)
+
+        // Keychain recovers; user directly completes QR login for account B without pressing Retry first.
+        box.failReads = false
+        store.completeMiLogin(sessionB)
+
+        #expect(store.identityMigrationDiagnostic == nil)
+        #expect(store.isMiAccountEnabled(acctAId), "pre-existing account A must remain enabled")
+        #expect(store.isMiAccountEnabled(acctBId), "newly signed-in account B must be enabled")
+        #expect(!store.explicitlyDisabledScopes.contains(acctAId))
+        #expect(!store.explicitlyDisabledScopes.contains(acctBId))
+        #expect(miFactoryCalls.requests >= 1, "live Mi provider must start once identity recovers on login")
+
+        let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
+        #expect(!diskDisabledScopes.contains(acctAId), "account A must not be persisted into disabledConnectionScopes")
+        #expect(!diskDisabledScopes.contains(acctBId))
+        await store.shutdown()
+    }
+
+    @Test("D: Cross-store revision conflict preserves explicit re-enable when another store re-signs in a disabled Mi account")
+    @MainActor
+    func crossStoreConflictPreservesExplicitReenableOnMiRelogin() async throws {
+        let (suite, defaults) = try Self.makeFreshSuite("d-conflict-explicit-reenable")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        let sessionA = MiSession(
+            userId: "88101", cUserId: "c1", ssecurity: "s1", serviceToken: "tok1",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        let sessionB = MiSession(
+            userId: "88202", cUserId: "c2", ssecurity: "s2", serviceToken: "tok2",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.upsert(sessionA, defaults: defaults, vault: vault))
+        #expect(MiSessionStore.upsert(sessionB, defaults: defaults, vault: vault))
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        // Seed revision 1 with both accounts enabled, then load two stores A & B at the same baseline.
+        let seedStore = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        let acctA = try #require(seedStore.miAccounts.first { $0.session.userId == "88101" })
+        let baseRev = try #require(seedStore.capabilityStoreRevision)
+        await seedStore.shutdown()
+
+        let storeA = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        let storeB = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        #expect(storeA.capabilityStoreRevision == baseRev)
+        #expect(storeB.capabilityStoreRevision == baseRev)
+        #expect(storeA.isMiAccountEnabled(acctA.id))
+        #expect(storeB.isMiAccountEnabled(acctA.id))
+
+        // Store A disables account A (and toggles off an unrelated feature).
+        let verdict = storeA.setMiAccountEnabled(false, id: acctA.id, pauseConfirmed: true)
+        #expect(verdict.disposition == .allowed)
+        #expect(!storeA.isMiAccountEnabled(acctA.id))
+        storeA.capabilitySelection.enabledFeatures.remove(.grokball)
+        #expect(storeA.persistCapabilitySelection())
+
+        // Store B (still at baseRev, where acctA was already enabled in its baseline) re-signs in account A.
+        let refreshedSessionA = MiSession(
+            userId: "88101", cUserId: "c1", ssecurity: "s1-new", serviceToken: "tok1-new",
+            expiresAt: Date(timeIntervalSince1970: 4_100_000_000)
+        )
+        storeB.completeMiLogin(refreshedSessionA)
+
+        // Account A must be explicitly re-enabled despite matching B's old baseline, while A's unrelated feature toggle survives.
+        #expect(storeB.isMiAccountEnabled(acctA.id), "explicit re-login must re-enable account A across revision conflict")
+        #expect(!storeB.explicitlyDisabledScopes.contains(acctA.id))
+        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.grokball), "unrelated feature edit from store A must survive merge")
+
+        let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
+        let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
+        #expect(!diskDisabledScopes.contains(acctA.id), "disk state must not keep account A disabled after explicit re-login")
+        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue))
+
+        // A freshly opened store confirms account A is enabled on disk.
+        let reloaded = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        #expect(reloaded.isMiAccountEnabled(acctA.id))
+        #expect(!reloaded.capabilitySelection.enabledFeatures.contains(.grokball))
+        await storeA.shutdown()
+        await storeB.shutdown()
+        await reloaded.shutdown()
     }
 }

@@ -60,9 +60,13 @@ public enum KeychainHelper {
         )
     }
 
-    static func isTokenVaultUnavailable(defaults: UserDefaults, vault: CredentialVault?) -> Bool {
+    static func isTokenVaultUnavailable(
+        defaults: UserDefaults,
+        vault: CredentialVault?,
+        retryingUnavailable: Bool = false
+    ) -> Bool {
         guard vault != nil || defaults === UserDefaults.standard else { return false }
-        if case .unavailable = (vault ?? .shared).lookup(account, retryingUnavailable: true) {
+        if case .unavailable = (vault ?? .shared).lookup(account, retryingUnavailable: retryingUnavailable) {
             return true
         }
         return false
