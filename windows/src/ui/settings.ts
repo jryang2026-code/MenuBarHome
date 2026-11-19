@@ -354,6 +354,10 @@ export function loadSettings(): LoadedSettings {
         // must keep the mic entry they had before the switch existed.
         voiceInputEnabled:
           typeof parsed.voiceInputEnabled === "boolean" ? parsed.voiceInputEnabled : true,
+        // Same rule as voice: only an explicit `false` turns AI off, so every upgrade keeps
+        // the assistant behavior the user had before P5a-W.
+        aiAssistantEnabled:
+          typeof parsed.aiAssistantEnabled === "boolean" ? parsed.aiAssistantEnabled : true,
         enableRaycastIntegration:
           typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
         allowDirectURLControl:
@@ -452,6 +456,7 @@ function buildDefaultSettings(): PersistedSettings {
     launchAtLogin: false,
     blockControlWhileLocked: true,
     voiceInputEnabled: true,
+    aiAssistantEnabled: true,
     enableRaycastIntegration: false,
     allowDirectURLControl: false,
     cameraStreamURLs: {},

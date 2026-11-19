@@ -398,6 +398,9 @@ export function leaveDemoHome(host: OnboardingRenderViewHost): void {
 function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: OnboardingSessionState): boolean {
   const resolved = resolveAssistantDraftForSave(session.assistantDraft);
   if (!resolved) return false;
+  const prevBaseURL = host.settings.assistantBaseURL;
+  const prevModel = host.settings.assistantModel;
+  const prevApiKey = host.settings.openRouterApiKey;
   host.settings.assistantBaseURL = resolved.baseURL;
   host.settings.assistantModel = resolved.model;
   host.settings.openRouterApiKey = resolved.apiKey;
@@ -412,6 +415,14 @@ function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: Onbo
     host.settings.assistantKeyEndpoint = endpoint;
   } else {
     host.settings.assistantKeyEndpoint = endpoint;
+  }
+  // A provider change through onboarding invalidates requests still in flight (P5a-W #3).
+  if (
+    host.settings.assistantBaseURL !== prevBaseURL ||
+    host.settings.assistantModel !== prevModel ||
+    host.settings.openRouterApiKey !== prevApiKey
+  ) {
+    host.advanceAssistantEpoch?.();
   }
   return true;
 }

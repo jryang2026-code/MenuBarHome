@@ -8,6 +8,7 @@ import {
   encodeHabitOperation,
   endpointAllowsSendingSecrets,
   habitActionable,
+  isAiAssistantEnabled,
   isLocalAssistantEndpoint,
   timeBucketLabel,
 } from "../core/assistant.js";
@@ -196,6 +197,8 @@ export function proactiveHasConsumer(
   host: Pick<MenuMijiaWindowsApp, "isRefreshingProactive" | "settings" | "apiKeyFor">,
 ): boolean {
   if (host.isRefreshingProactive || host.settings.connectionMode === "demo") return false;
+  // AI off (P5a-W): the background inference is a pure AI consumer and must not send.
+  if (!isAiAssistantEnabled(host.settings)) return false;
   const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
   if (!endpointAllowsSendingSecrets(baseURL)) return false;
   if (isLocalAssistantEndpoint(baseURL)) return true;
@@ -218,6 +221,10 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
   const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
   const apiKey = host.apiKeyFor(baseURL);
   const sourceRevision = host.sourceRevision;
+  // A disable or provider change during the request discards this run entirely; the
+  // epoch advance already cleared `isRefreshingProactive`, so the late callback returns
+  // without touching state a newer run may own.
+  const assistantEpoch = host.assistantEpoch;
   const selectedHomeId = host.settings.selectedHomeId;
   host.isRefreshingProactive = true;
   const resolver = new ModelIntentResolver(
@@ -245,6 +252,7 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
     )
     .then((suggestions) => {
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
+      if (assistantEpoch !== host.assistantEpoch) return;
       host.isRefreshingProactive = false;
       if (proactiveSignature(host) === signature) {
         // The context counts as served only once a usable result landed (Codex #116 review).
@@ -261,6 +269,7 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
     })
     .catch(() => {
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
+      if (assistantEpoch !== host.assistantEpoch) return;
       // Silent: the previous cache keeps showing; retry after a cooldown (Codex #116 review).
       host.isRefreshingProactive = false;
       host.proactiveRetryAfterMs = Date.now() + PROACTIVE_RETRY_COOLDOWN_MS;

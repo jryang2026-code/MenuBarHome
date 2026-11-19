@@ -330,6 +330,31 @@ export class MenuMijiaWindowsApp {
   public isSyncingCloud = false;
   /** Connection-source epoch; the single owner of the source/home/local-write invalidation counters. */
   public readonly sourceEpoch = new SourceEpoch();
+  /**
+   * Feature-level AI generation (P5a-W): every enable/disable or provider change advances
+   * it, and in-flight resolver results compare it before touching any device or cache.
+   */
+  private assistantEpochCount = 0;
+  public get assistantEpoch(): number {
+    return this.assistantEpochCount;
+  }
+  /**
+   * Invalidates every in-flight AI request: late natural-command results return before the
+   * write gate, and the proactive branch drops its cache, cooldown and in-flight marker so
+   * the next tick starts clean instead of resurrecting a stale run.
+   */
+  public advanceAssistantEpoch(): void {
+    this.assistantEpochCount += 1;
+    // A discarded in-flight command must not leave the resolving spinner up: a newer
+    // command re-sets the flag itself, so clearing here is always safe.
+    this.isResolvingIntent = false;
+    this.isRefreshingProactive = false;
+    this.proactiveRetryAfterMs = null;
+    this.aiProactiveSignature = null;
+    this.aiProactiveSuggestions = null;
+    this.pendingCloudConsent = null;
+    this.pendingSuggestions = [];
+  }
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
   public get sourceRevision(): number {
     return this.sourceEpoch.sourceRevision;

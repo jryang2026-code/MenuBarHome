@@ -9,9 +9,11 @@ import {
   endpointAllowsSendingSecrets,
   forgetHabitItem,
   inferAssistantPreset,
+  isAiAssistantEnabled,
   isLocalNetworkEndpoint,
   listReadableHabits,
   parseAssistantEndpoint,
+  removeAssistantProviderState,
   shareHabitSentence,
   type AssistantConfig,
   type HabitLastAction,
@@ -128,6 +130,8 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
+  /** Invalidates in-flight AI requests after an enable/disable or provider change (P5a-W). */
+  advanceAssistantEpoch?(): void;
 }
 
 interface SettingsUiSessionState {
@@ -417,6 +421,49 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
   }
 }
 
+/**
+ * Removes the provider currently shown in the AI settings form (P5a-W acceptance #2):
+ * its saved key slot is deleted from the credential vault, its endpoint bindings and
+ * cloud-send consent are cleared, and — when it is the configured provider — the config
+ * falls back to the app default preset. Other providers' key slots and bindings stay.
+ */
+export async function removeActiveAssistantProvider(host: SettingsEventsHost): Promise<void> {
+  const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
+  const draftBase = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
+  // Mutates the saved settings and the in-memory key map in place; the vault persist below
+  // turns the dropped preset entry into a credential-store delete.
+  removeAssistantProviderState({
+    presetId: inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id,
+    settings: host.settings,
+    keysByPreset: host.assistantKeysByPreset,
+  });
+
+  // MenuMijiaWindowsApp always carries the vault; the structural settings host does not name it.
+  const vault = (host as Partial<MenuMijiaWindowsApp>).credentialVault;
+  if (vault) {
+    try {
+      await vault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
+    } catch {
+      host.replyBanner = {
+        text: t("无法从系统凭据库移除该服务商的密钥，请重试"),
+        source: t("出错提示"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
+  }
+  host.saveSettings();
+  // The active config may have changed; in-flight requests must not land afterwards.
+  host.advanceAssistantEpoch?.();
+
+  host.replyBanner = {
+    text: t("已移除本机保存的该服务商配置与密钥"),
+    source: t("AI 一句话控制"),
+  };
+  host.render();
+}
+
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -457,6 +504,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.settings.assistantLegacyKeyEndpoint = null;
   host.assistantKeysByPreset = {};
   host.settings.cloudConsentEndpoints = [];
+  host.advanceAssistantEpoch?.();
 
   const session = getSettingsSession(host);
   session.aiTestStatus = null;
@@ -582,6 +630,12 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   const haToken = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
 
   const prevHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  // Provider config comparison for the in-flight AI invalidation (P5a-W #3).
+  const prevAssistantBaseURL = host.settings.assistantBaseURL;
+  const prevAssistantModel = host.settings.assistantModel;
+  const prevOpenRouterApiKey = host.settings.openRouterApiKey;
+  const prevAssistantKeyEndpoint = host.settings.assistantKeyEndpoint;
+  const prevAssistantCustomKeyEndpoint = host.settings.assistantCustomKeyEndpoint;
 
   if (haUrl) {
     let endpoint = haUrl.value.trim();
@@ -675,6 +729,17 @@ function commitSettingsSave(host: SettingsEventsHost): void {
     if (modelEl) {
       host.settings.assistantModel = modelEl.value.trim() || fallbackModel;
     }
+  }
+
+  if (
+    host.settings.assistantBaseURL !== prevAssistantBaseURL ||
+    host.settings.assistantModel !== prevAssistantModel ||
+    host.settings.openRouterApiKey !== prevOpenRouterApiKey ||
+    host.settings.assistantKeyEndpoint !== prevAssistantKeyEndpoint ||
+    host.settings.assistantCustomKeyEndpoint !== prevAssistantCustomKeyEndpoint
+  ) {
+    // A provider switch or key change must discard results still in flight (P5a-W #3).
+    host.advanceAssistantEpoch?.();
   }
 
   if (askUnsureEl) {
@@ -1294,6 +1359,30 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     });
   });
 
+  const removeProviderBtn = host.root.querySelector<HTMLButtonElement>("#btn-remove-ai-provider");
+  if (removeProviderBtn) {
+    let armed = false;
+    let disarmTimer: number | undefined;
+    removeProviderBtn.addEventListener("click", () => {
+      if (!armed) {
+        armed = true;
+        removeProviderBtn.textContent = t("再点一次确认移除");
+        clearTimeout(disarmTimer);
+        disarmTimer = window.setTimeout(() => {
+          armed = false;
+          disarmTimer = undefined;
+          if (removeProviderBtn.isConnected) removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+        }, 4000);
+        return;
+      }
+      clearTimeout(disarmTimer);
+      disarmTimer = undefined;
+      armed = false;
+      removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+      void removeActiveAssistantProvider(host);
+    });
+  }
+
   host.root.querySelector<HTMLInputElement>("#settings-base-url")?.addEventListener("input", (event) => {
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
     const target = event.target as HTMLInputElement;
@@ -1322,6 +1411,17 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     writeAskWhenUnsure(host.settings, checked);
     syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-ai-enabled")?.addEventListener("change", (event) => {
+    const checked = (event.target as HTMLInputElement).checked;
+    if (isAiAssistantEnabled(host.settings) === checked) return;
+    host.settings.aiAssistantEnabled = checked;
+    host.saveSettings();
+    // Flipping the switch mid-request must discard the in-flight result (P5a-W #3).
+    host.advanceAssistantEpoch?.();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
   });
 
   const envStatusEl = host.root.querySelector<HTMLElement>("#settings-env-import-status");
@@ -1402,6 +1502,22 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   }
 
   aiTestBtn?.addEventListener("click", () => {
+    const aiTestStatusGate = host.root.querySelector<HTMLElement>("#settings-ai-test-status");
+    if (!isAiAssistantEnabled(host.settings)) {
+      // AI off (P5a-W): the probe is an AI request too, so it must not send.
+      const offText = tr3(
+        "AI 一句话控制已关闭，测试连接不可用",
+        "AI 一句話控制已關閉，測試連線不可用",
+        "AI command control is off; the connection check is unavailable",
+      );
+      session.aiTestStatus = { text: offText, state: "error" };
+      if (aiTestStatusGate) {
+        aiTestStatusGate.textContent = offText;
+        aiTestStatusGate.dataset.testState = "error";
+        aiTestStatusGate.style.color = "#e67e22";
+      }
+      return;
+    }
     const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
     const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
