@@ -45,10 +45,18 @@ final class MenuBarPanelController: NSObject {
         category: statusItemLogCategory
     )
 
-    /// Control center width, identical in every skin.
+    /// Classic card width (376 pt); preserved until WP2e theme retirement decision.
     static let panelWidth: CGFloat = 376
+    /// Adaptive pilot width (380 pt) and content height bounds (280–560 pt) from `ui.md` §4 `macOS`.
+    static let pilotPanelWidth: CGFloat = 380
+    static let pilotMinHeight: CGFloat = 280
+    static let pilotMaxHeight: CGFloat = 560
     /// The panel draws its own material; AppKit only clips it to the extra's rounded corners.
     static let panelCornerRadius: CGFloat = DesignTokens.Radius.panel
+
+    static func panelWidth(for theme: PanelTheme) -> CGFloat {
+        theme == .liquidGlass ? pilotPanelWidth : panelWidth
+    }
 
     /// Posted after the panel becomes visible, and after it is ordered out.
     static let didShowNotification = Notification.Name("MenuBarMijia.panelDidShow")
@@ -87,6 +95,14 @@ final class MenuBarPanelController: NSObject {
     /// Drives `\.isPanelVisible` inside the kept-alive hosting tree; flips `false` once `orderOut`
     /// removes the window from screen so hidden animations, spinners, and clocks tear down cleanly.
     let panelHostingVisibility = PanelHostingVisibility()
+    /// Collects slice heights inside `ControlCenterPanel` so adaptive resizing stays loop-free.
+    let panelAdaptiveHeightProbe = PanelAdaptiveHeightProbe()
+    var isApplyingPanelGeometry = false
+    var isEntranceAnimating = false
+    var hasPendingGeometryPass = false
+    /// One coalesced geometry pass per runloop turn; `scheduleAdaptiveGeometryPass()` owns the hop.
+    var isGeometryPassScheduled = false
+    var serialGeometryApplyCount = 0
 
     /// Page-routing boundary used by the status menu; the app delegates to the existing Settings owner.
     var showSettings: (SettingsTab?) -> Void = { SettingsWindowOpener.shared.show(tab: $0) }
@@ -201,6 +217,9 @@ final class MenuBarPanelController: NSObject {
         self.statusItem = statusItem
         self.userDefaults = userDefaults
         super.init()
+        panelAdaptiveHeightProbe.onHeightChange = { [weak self] _ in
+            self?.scheduleAdaptiveGeometryPass()
+        }
     }
 
     // MARK: - Installation
@@ -261,6 +280,12 @@ final class MenuBarPanelController: NSObject {
         presentationGeneration &+= 1
         observationGeneration &+= 1
         isClosing = false
+        isApplyingPanelGeometry = false
+        isEntranceAnimating = false
+        hasPendingGeometryPass = false
+        isGeometryPassScheduled = false
+        panelAdaptiveHeightProbe.resetNotificationBaseline()
+        PanelTransientUIState.shared.resetOnPanelHide(store: store)
         removeMouseMonitors()
         labelTimer?.invalidate()
         labelTimer = nil
@@ -903,13 +928,14 @@ final class MenuBarPanelController: NSObject {
             rootView: Self.panelRoot(
                 store: store,
                 theme: theme,
-                visibility: panelHostingVisibility
+                visibility: panelHostingVisibility,
+                adaptiveProbe: theme == .liquidGlass ? panelAdaptiveHeightProbe : nil
             )
         )
         // Neither theme delegates window sizing to AppKit's intrinsic-content constraints: `.classic`
-        // sizes explicitly via `updatePanelSize`, and `.liquidGlass` spans the screen height. Leaving
-        // `sizingOptions` at its default stamps fixed min/max content constraints onto the reused
-        // `NSPanel`, clamping a subsequent `.liquidGlass` frame to the classic height.
+        // sizes explicitly via `updatePanelSize`, and `.liquidGlass` serially clamps 280–560 pt via
+        // `applySerialPanelGeometry`. Leaving `sizingOptions` at its default stamps fixed min/max
+        // content constraints onto the reused `NSPanel`.
         hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)
         hosting.autoresizingMask = [.width, .height]
@@ -935,6 +961,11 @@ final class MenuBarPanelController: NSObject {
     /// backdrop belongs to the Liquid Glass tree, so it leaves with it — including mid-close.
     func dropPanelContent() {
         hideBackdropShadow()
+        isApplyingPanelGeometry = false
+        isEntranceAnimating = false
+        hasPendingGeometryPass = false
+        isGeometryPassScheduled = false
+        panelAdaptiveHeightProbe.resetNotificationBaseline()
         panelHostingVisibility.setVisible(false)
         panelWindow?.contentView = nil
         panelWindow?.contentMinSize = .zero
@@ -954,6 +985,7 @@ final class MenuBarPanelController: NSObject {
             store: store,
             theme: theme,
             visibility: panelHostingVisibility,
+            adaptiveProbe: theme == .liquidGlass ? panelAdaptiveHeightProbe : nil,
             isVisible: panelHostingVisibility.isVisible
         )
     }
@@ -962,19 +994,20 @@ final class MenuBarPanelController: NSObject {
         store: HomeStore,
         theme: PanelTheme,
         visibility: PanelHostingVisibility,
+        adaptiveProbe: PanelAdaptiveHeightProbe? = nil,
         isVisible: Bool? = nil
     ) -> AnyView {
         let resolvedVisible = isVisible ?? visibility.isVisible
         switch theme {
         case .classic:
             return AnyView(
-                HostedPanelRoot(visibility: visibility, isVisible: resolvedVisible) {
+                HostedPanelRoot(visibility: visibility, adaptiveProbe: nil, isVisible: resolvedVisible) {
                     ClassicControlCenterPanel(store: store)
                 }
             )
         case .liquidGlass:
             return AnyView(
-                HostedPanelRoot(visibility: visibility, isVisible: resolvedVisible) {
+                HostedPanelRoot(visibility: visibility, adaptiveProbe: adaptiveProbe, isVisible: resolvedVisible) {
                     ControlCenterPanel(store: store)
                         .environment(\.appearsActive, true)
                 }
@@ -983,6 +1016,7 @@ final class MenuBarPanelController: NSObject {
     }
     private struct HostedPanelRoot<Content: View>: View {
         let visibility: PanelHostingVisibility
+        let adaptiveProbe: PanelAdaptiveHeightProbe?
         let isVisible: Bool
         @ViewBuilder let content: Content
 
@@ -990,6 +1024,7 @@ final class MenuBarPanelController: NSObject {
             let visible = isVisible && visibility.isVisible
             content
                 .environment(\.isPanelVisible, visible)
+                .environment(\.panelAdaptiveHeightProbe, adaptiveProbe)
                 .transaction { transaction in
                     if !visible {
                         transaction.disablesAnimations = true
@@ -1340,14 +1375,23 @@ final class MenuBarPanelController: NSObject {
     // MARK: - Outside Click, Screens & Preferences
 
     private func installPanelGeometryObservers(for panel: NSPanel) {
-        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification,
-                     NSWindow.didChangeScreenNotification] {
+        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
             observers.append(NotificationCenter.default.addObserver(
                 forName: name, object: panel, queue: .main
             ) { [weak self] _ in
                 MainActor.assumeIsolated { self?.grokBallSidecar?.synchronize() }
             })
         }
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeScreenNotification, object: panel, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleScreenParametersChanged() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: panel, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated { PanelTransientUIState.shared.cancelAllOffHold() }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.willCloseNotification, object: panel, queue: .main
         ) { [weak self] _ in

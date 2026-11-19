@@ -35,6 +35,13 @@ struct GrokBallSidecarPlacement {
         return CGPoint(x: suggestionsFrame.minX - frame.minX, y: frame.maxY - suggestionsFrame.maxY)
     }
 
+    /// Top-edge reference point on `parent`, so an adaptive bottom-edge height change (`280...560` pt)
+    /// never moves a ball the user placed: a `midY`-relative offset would slide it by half the delta.
+    /// The remaining suggestion-flip recalibration lives on `feat/macos-grokball-adaptive-anchor`.
+    static func anchorOrigin(for parent: NSRect) -> NSPoint {
+        NSPoint(x: parent.midX, y: parent.maxY)
+    }
+
     static func resolve(parent: NSRect, visible: NSRect, expanded: Bool, ballCenter requested: NSPoint? = nil) -> Self {
         let safe = visible.insetBy(dx: gap, dy: gap)
         let defaultRight = safe.maxX - parent.maxX - gap >= expandedWidth
@@ -172,13 +179,18 @@ final class GrokBallSidecarController {
         panelWindow.appearance = parent.appearance
         panelWindow.alphaValue = parent.alphaValue
         guard parent.isVisible, !store.showsFullOnboardingGuide, store.enableGrokBall else { hide(); return }
-        let requested = ballOffset.map { NSPoint(x: parent.frame.midX + $0.x, y: parent.frame.midY + $0.y) }
+        let anchor = GrokBallSidecarPlacement.anchorOrigin(for: parent.frame)
+        let requested = ballOffset.map { NSPoint(x: anchor.x + $0.x, y: anchor.y + $0.y) }
         let visible = screen(at: requested)?.visibleFrame ?? parent.screen?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let placement = GrokBallSidecarPlacement.resolve(parent: parent.frame, visible: visible,
                                                         expanded: store.isGrokBallStageExpanded, ballCenter: requested)
         state.placement = placement
-        panelWindow.setFrame(placement.frame, display: true)
+        // Geometry passes run on every adaptive height change; an unchanged frame must not re-enter
+        // AppKit's move/resize notifications.
+        if panelWindow.frame != placement.frame {
+            panelWindow.setFrame(placement.frame, display: true)
+        }
         if panelWindow.parent !== parent { parent.addChildWindow(panelWindow, ordered: .above) }
         state.isVisible = true
         panelWindow.orderFront(nil)
@@ -325,10 +337,11 @@ final class GrokBallSidecarController {
 
     private func moveBall(to point: NSPoint) {
         guard let parent else { return }
-        ballOffset = NSPoint(x: point.x - parent.frame.midX, y: point.y - parent.frame.midY)
+        let anchor = GrokBallSidecarPlacement.anchorOrigin(for: parent.frame)
+        ballOffset = NSPoint(x: point.x - anchor.x, y: point.y - anchor.y)
         synchronize()
         if let actual = state.placement?.ballCenter {
-            ballOffset = NSPoint(x: actual.x - parent.frame.midX, y: actual.y - parent.frame.midY)
+            ballOffset = NSPoint(x: actual.x - anchor.x, y: actual.y - anchor.y)
         }
     }
 

@@ -134,4 +134,97 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_Space, characters: " "), detailOpen) == .passThrough)
         #expect(route(Key(code: kVK_Tab), detailOpen) == .passThrough)
     }
+
+    @Test("WP2d Escape priority: confirmation/hold -> expanded surfaces -> search/focus/hide, without hijacking form fields")
+    func escapePriorityTiersAndFormGuards() {
+        let esc = Key(code: kVK_Escape)
+
+        // Tier 1: active confirmation or 0.6s All-Off hold beats expanded drawers and search.
+        let holdAndDrawer = Context(
+            isAllOffHoldActive: true,
+            hasPendingConfirmation: true,
+            hasExpandedDevice: true,
+            hasExpandedReminders: true,
+            hasExpandedOfflineDrawer: true,
+            hasFocusedDevice: true
+        )
+        #expect(route(esc, holdAndDrawer) == .cancelAllOffHold)
+
+        var confirmAndDrawer = holdAndDrawer
+        confirmAndDrawer.isAllOffHoldActive = false
+        #expect(route(esc, confirmAndDrawer) == .cancelPendingConfirmation)
+
+        // Tier 2: expanded device drawer -> expanded reminders -> expanded offline drawer -> focus/hide.
+        var expandedSurfaces = confirmAndDrawer
+        expandedSurfaces.hasPendingConfirmation = false
+        #expect(route(esc, expandedSurfaces) == .collapseExpandedDevice)
+
+        expandedSurfaces.hasExpandedDevice = false
+        #expect(route(esc, expandedSurfaces) == .collapseExpandedReminders)
+
+        expandedSurfaces.hasExpandedReminders = false
+        #expect(route(esc, expandedSurfaces) == .collapseOfflineDrawer)
+
+        expandedSurfaces.hasExpandedOfflineDrawer = false
+        #expect(route(esc, expandedSurfaces) == .clearFocus)
+
+        // Form fields and onboarding keep typing/digits/arrows instead of being hijacked by panel shortcuts.
+        let formFocused = Context(isFormFieldFocused: true, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_ANSI_2, characters: "2"), formFocused) == .passThrough)
+        #expect(route(Key(code: kVK_DownArrow), formFocused) == .passThrough)
+        #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), formFocused) == .passThrough)
+        #expect(route(esc, formFocused) == .leaveTextField(dismissAssistant: false))
+
+        let onboarding = Context(isShowingOnboarding: true, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_ANSI_1, characters: "1"), onboarding) == .passThrough)
+        #expect(route(Key(code: kVK_Space, characters: " "), onboarding) == .passThrough)
+        #expect(route(esc, onboarding) == .hidePanel)
+    }
+
+    @Test("An IME composition keeps Esc: tier-2 surfaces and the GrokBall stage wait for the marked text to commit")
+    func imeCompositionKeepsEscape() {
+        let esc = Key(code: kVK_Escape)
+        let composing = Context(
+            isGrokBallStageExpanded: true,
+            isTextFieldFocused: true,
+            isComposingText: true,
+            hasExpandedDevice: true
+        )
+        // Neither the GrokBall stage nor the device drawer may collapse while Pinyin/Kana marked text is live.
+        #expect(PanelKeyRouter.beforeSearch(esc, composing) == nil)
+        #expect(route(esc, composing) == .leaveTextField(dismissAssistant: false))
+
+        // The same context without marked text hands Esc back to the panel.
+        var committed = composing
+        committed.isComposingText = false
+        #expect(route(esc, committed) == .dismissGrokBallStage)
+        committed.isGrokBallStageExpanded = false
+        #expect(route(esc, committed) == .collapseExpandedDevice)
+    }
+
+    @Test("An active prompt only owns keys inside the panel window")
+    func promptScopeIsThePanelWindow() {
+        let esc = Key(code: kVK_Escape)
+        #expect(route(esc, Context(isPanelWindow: false, hasActivePrompt: true)) == .passThrough)
+        #expect(route(Key(code: kVK_Return), Context(isPanelWindow: false, hasActivePrompt: true)) == .passThrough)
+        #expect(route(esc, Context(isPanelWindow: true, hasActivePrompt: true)) == .dismissPrompt)
+    }
+
+    @Test("Esc in a connection-detail form leaves the field without closing the assistant bar behind it")
+    func connectionDetailFormEscape() {
+        let detailForm = Context(isShowingConnectionDetail: true, isTextFieldFocused: true, isFormFieldFocused: true, isShowingAssistantBar: true)
+        #expect(route(Key(code: kVK_Escape), detailForm) == .leaveTextField(dismissAssistant: false))
+        // Other keys still belong to the detail's own form controls.
+        #expect(route(Key(code: kVK_Tab), detailForm) == .passThrough)
+        // A connection-detail field that is mid-composition keeps Esc for the IME.
+        var composingDetail = detailForm
+        composingDetail.isComposingText = true
+        #expect(route(Key(code: kVK_Escape), composingDetail) == .passThrough)
+        // With no field focused, Esc closes the detail itself.
+        var unfocused = detailForm
+        unfocused.isTextFieldFocused = false
+        unfocused.isFormFieldFocused = false
+        #expect(route(Key(code: kVK_Escape), unfocused) == .dismissConnectionDetail)
+    }
 }
+

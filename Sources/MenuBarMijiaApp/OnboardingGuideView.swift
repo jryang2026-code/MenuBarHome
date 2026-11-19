@@ -476,6 +476,14 @@ public struct OnboardingGuideView: View {
                         "Results rank the best match first. Esc leaves search; a second Esc closes the panel."
                     )
                 )
+                shortcutTipRow(
+                    icon: "rectangle.split.2x1",
+                    title: L10n.tr("磁贴左侧开关，右侧打开调节", "Left Half Toggles, Right Half Adjusts"),
+                    detail: L10n.tr(
+                        "分体磁贴点左侧直接开关，点右侧打开亮度、温度或模式调节；键盘按 → 也能展开。",
+                        "Click the left half of a split tile to toggle power, or the right half to open brightness, temperature, or mode controls; → expands from the keyboard."
+                    )
+                )
             }
         }
         .padding(11)
@@ -499,8 +507,8 @@ public struct OnboardingGuideView: View {
             }
 
             Text(L10n.tr(
-                "按住顶部「全关」会列出将关闭的设备，并提示未实际执行。以后真的全关，这一步也算完成。",
-                "Hold All Off at the top to list the devices that would turn off. Nothing is sent. A real All Off later completes this step too."
+                "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。引导演练只会列出将关闭的设备，不会实际发送；以后真的全关，这一步也算完成。",
+                "Hold All Off for 0.6s to confirm; undo stays available for 10s, or 15s for 3+ devices. Practicing here only previews what would turn off without sending commands; a real All Off later completes this step too."
             ))
             .font(.system(size: DesignTokens.TypeSize.caption))
             .foregroundStyle(.primary.opacity(0.85))
@@ -520,8 +528,8 @@ public struct OnboardingGuideView: View {
                     icon: "arrow.uturn.backward",
                     title: L10n.tr("撤销是一次性的", "Undo Is One Shot"),
                     detail: L10n.tr(
-                        "撤销后横幅消失，再想改回来就点设备卡片。",
-                        "The banner disappears after undo; toggle the device card if you change your mind again."
+                        "1–2 台保留 10 秒、3 台起保留 15 秒；撤销后横幅消失，再想改回来点磁贴左侧即可。",
+                        "Undo stays up for 10s (15s for 3+ devices) and disappears once used; click the left half of a tile to toggle again."
                     ),
                     statesConsequence: true
                 )
