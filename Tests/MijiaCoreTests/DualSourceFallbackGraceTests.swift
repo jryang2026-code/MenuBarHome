@@ -354,10 +354,10 @@ struct DualSourceFallbackGraceTests {
     /// Runs `body` and always drains its teardown, including when `#require` throws.
     ///
     /// Call sites pass an explicit closure (`{ teardown in try await someBody(teardown) }`) instead
-    /// of handing the unbound `async` instance method to this parameter: on `x86_64` Debug a
-    /// partially applied `async` method becomes a curried async thunk, and those thunk coroutine
-    /// frames are what the Swift 6 runtime abort (`freed pointer was not the last allocation`)
-    /// tripped over on the Intel CI runner (#274).
+    /// of handing the unbound `async` instance method to this parameter. Both compile to the same
+    /// work, but the method form needs a curried partial-application `async` thunk on every call,
+    /// and those extra coroutine frames on `x86_64` Debug are one more thing the Swift runtime's
+    /// task-local allocator has to unwind in a run that already aborts there (#274).
     private func withTeardown(_ body: (Teardown) async throws -> Void) async throws {
         let teardown = Teardown()
         do {
