@@ -39,10 +39,25 @@ extension MenuBarPanelController {
         refreshPanelContent(theme: theme)
         syncPanelRootVisibility()
 
-        let target = columnFrame(for: theme)
         let wasVisible = panel.isVisible && !isClosing
         let wasOnScreen = panel.isVisible
+        if theme == .liquidGlass, !wasVisible, let hosting = panel.contentView {
+            panelAdaptiveHeightProbe.resetNotificationBaseline()
+            if !wasOnScreen {
+                hosting.frame = NSRect(
+                    x: 0,
+                    y: 0,
+                    width: Self.pilotPanelWidth,
+                    height: Self.pilotMaxHeight
+                )
+            }
+            hosting.layoutSubtreeIfNeeded()
+        }
+
+        let target = columnFrame(for: theme)
         isClosing = false
+        isEntranceAnimating = false
+        hasPendingGeometryPass = false
         clearImplicitDismissalStateOnShow()
         if !wasVisible { presentationGeneration &+= 1 }
         let generation = presentationGeneration
@@ -96,7 +111,12 @@ extension MenuBarPanelController {
         }
         // Re-showing an already visible panel (hotkey while open, URL scheme, intent) must not replay
         // the entrance animation.
-        guard !wasVisible else { return }
+        guard !wasVisible else {
+            if theme == .liquidGlass {
+                applySerialPanelGeometry()
+            }
+            return
+        }
         store.setPanelVisible(true)
         NotificationCenter.default.post(name: Self.didShowNotification, object: panel)
         if presentsActively, theme == .liquidGlass {
@@ -105,13 +125,19 @@ extension MenuBarPanelController {
             panel.displayIfNeeded()
             backdropWindow?.displayIfNeeded()
             CATransaction.flush()
+            isEntranceAnimating = true
             fadePanel(to: 1, duration: Self.fadeInDuration) { [weak self] in
-                guard let self, generation == self.presentationGeneration, !self.isClosing else { return }
+                guard let self else { return }
+                if generation == self.presentationGeneration {
+                    self.isEntranceAnimating = false
+                }
+                guard generation == self.presentationGeneration, !self.isClosing else { return }
                 self.grokBallSidecar?.setPresentationSuspended(false)
-                self.refreshPanelFrame()
+                self.applySerialPanelGeometry()
             }
         } else if theme == .liquidGlass {
             grokBallSidecar?.setPresentationSuspended(false)
+            applySerialPanelGeometry()
         }
     }
 
@@ -119,11 +145,13 @@ extension MenuBarPanelController {
     /// tree is rebuilt for the other theme.
     func hidePanel(animated: Bool = true) {
         guard let panel = panelWindow, panel.isVisible, !isClosing else { return }
+        isEntranceAnimating = false
+        hasPendingGeometryPass = false
         clearResignActiveSuppressionOnHide()
         // #146 §5.2：点面板外、⌘Tab、打开设置、Esc 阶梯都会走到这里，排序会话不能比面板活得久。
         // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
         LayoutUIState.shared.commitRoomOrderIfNeeded()
-        LayoutUIState.shared.dismissActivePrompt()
+        PanelTransientUIState.shared.resetOnPanelHide(store: store)
         if hostedPanelTheme == .classic {
             grokBallSidecar?.hide()
         } else {
@@ -206,8 +234,8 @@ extension MenuBarPanelController {
     // MARK: - Frame
 
     /// Sizing hook for `ClassicControlCenterPanel`: 376 pt wide, the requested height, top edge kept
-    /// under the item and clamped to the item's screen. No-op for the Liquid Glass column, whose
-    /// height always comes from the screen.
+    /// under the item and clamped to the item's screen. No-op for the Liquid Glass pilot column,
+    /// whose geometry is serially managed by `applySerialPanelGeometry()`.
     func updatePanelSize(width: CGFloat, height: CGFloat) {
         guard hostedPanelTheme == .classic, let panel = panelWindow else { return }
         let target = Self.frame(
@@ -227,16 +255,16 @@ extension MenuBarPanelController {
     }
 
     func handleScreenParametersChanged() {
-        guard let panel = panelWindow, panel.isVisible else { return }
+        guard let panel = panelWindow, isPanelVisible else { return }
         switch hostedPanelTheme ?? currentPanelTheme {
         case .classic:
-            panel.setFrame(
-                Self.frame(for: panel.frame.size, anchor: statusAnchor, screen: statusScreen, theme: .classic),
-                display: true
-            )
+            let target = Self.frame(for: panel.frame.size, anchor: statusAnchor, screen: statusScreen, theme: .classic)
+            if panel.frame != target {
+                panel.setFrame(target, display: true)
+            }
             grokBallSidecar?.synchronize()
         case .liquidGlass:
-            refreshPanelFrame()
+            scheduleAdaptiveGeometryPass()
         }
     }
 
@@ -253,6 +281,8 @@ extension MenuBarPanelController {
             // generation invalidates any in-flight show/close completion.
             presentationGeneration &+= 1
             isClosing = false
+            isEntranceAnimating = false
+            hasPendingGeometryPass = false
             if panelWindow?.isVisible == true {
                 hidePanel(animated: false)
             }
@@ -269,32 +299,94 @@ extension MenuBarPanelController {
                 height: Self.preferredContentSize(screen: statusScreen, theme: .classic, defaults: userDefaults).height
             )
         case .liquidGlass:
-            refreshPanelFrame()
+            scheduleAdaptiveGeometryPass()
         }
     }
 
     /// The window target for the theme currently on screen.
     private func columnFrame(for theme: PanelTheme) -> NSRect {
-        Self.frame(
-            for: Self.preferredContentSize(screen: statusScreen, theme: theme, defaults: userDefaults),
+        let adaptiveHeight: CGFloat?
+        if theme == .liquidGlass {
+            let measured = panelAdaptiveHeightProbe.resolvedContentHeight
+            adaptiveHeight = measured > 0 ? measured : nil
+        } else {
+            adaptiveHeight = nil
+        }
+        return Self.frame(
+            for: Self.preferredContentSize(
+                screen: statusScreen,
+                theme: theme,
+                defaults: userDefaults,
+                adaptiveContentHeight: adaptiveHeight
+            ),
             anchor: statusAnchor,
             screen: statusScreen,
             theme: theme
         )
     }
 
-    /// Re-applies the column frame after a screen or preference change. No-op while closed.
-    private func refreshPanelFrame() {
-        guard let panel = panelWindow, isPanelVisible, grokBallSidecar?.isPresentationSuspended != true else { return }
-        let theme = hostedPanelTheme ?? currentPanelTheme
-        let target = columnFrame(for: theme)
-        if panel.frame != target {
-            panel.setFrame(target, display: true)
+    /// Queues or executes a serial adaptive geometry pass while the panel is open.
+    /// Defers mid-slide updates until the entrance transition finishes, and ignores hidden/closing panels.
+    func scheduleAdaptiveGeometryPass() {
+        guard isPanelVisible, hostedPanelTheme == .liquidGlass else { return }
+        if isEntranceAnimating {
+            hasPendingGeometryPass = true
+            return
         }
-        if presentsActively, theme == .liquidGlass {
-            presentBackdropShadow(around: target, under: panel)
+        // The probe notifies from inside SwiftUI's layout/`onChange` cycle and `didChangeScreen` arrives
+        // mid-transaction; resizing right there re-enters AppKit's display pass and `onDisappear`.
+        // Coalesce every request from this runloop turn into one pass on the next turn.
+        guard !isGeometryPassScheduled else {
+            hasPendingGeometryPass = true
+            return
         }
-        grokBallSidecar?.synchronize()
+        isGeometryPassScheduled = true
+        // A runloop block, not `Task { @MainActor }`: the pass must land after the current AppKit
+        // layout/display turn, and it has to run inside the runloop pumps the panel tests drive.
+        RunLoop.main.perform { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isGeometryPassScheduled = false
+                guard self.isPanelVisible, !self.isClosing else { return }
+                if self.isEntranceAnimating {
+                    self.hasPendingGeometryPass = true
+                    return
+                }
+                self.applySerialPanelGeometry()
+            }
+        }
+    }
+
+    /// Serially applies size measurement, screen clamping, backdrop shadow, and GrokBall synchronization
+    /// so room switches, drawer toggles, and display changes never re-enter competitively or jitter.
+    /// Only call this from outside a SwiftUI update; scheduled paths go through
+    /// `scheduleAdaptiveGeometryPass()`, which hops to the next runloop turn first.
+    func applySerialPanelGeometry() {
+        guard !isApplyingPanelGeometry else {
+            hasPendingGeometryPass = true
+            return
+        }
+        isApplyingPanelGeometry = true
+        defer { isApplyingPanelGeometry = false }
+
+        var iterations = 0
+        repeat {
+            hasPendingGeometryPass = false
+            iterations &+= 1
+            guard isPanelVisible,
+                  let panel = panelWindow,
+                  grokBallSidecar?.isPresentationSuspended != true else { break }
+            let theme = hostedPanelTheme ?? currentPanelTheme
+            let target = columnFrame(for: theme)
+            if panel.frame != target {
+                serialGeometryApplyCount &+= 1
+                panel.setFrame(target, display: true)
+            }
+            if presentsActively, theme == .liquidGlass {
+                presentBackdropShadow(around: target, under: panel)
+            }
+            grokBallSidecar?.synchronize()
+        } while hasPendingGeometryPass && iterations < 4
     }
 
     static func makePanel(theme: PanelTheme) -> NSPanel {
@@ -328,12 +420,20 @@ extension MenuBarPanelController {
         return (raw.flatMap(AppAppearance.init(rawValue:)) ?? .system).nsAppearance
     }
 
-    /// Width is fixed; height comes from the theme: the `PanelHeight` preference for the classic
-    /// card, the full column under the menu bar for Liquid Glass.
+    /// Clamps pilot content height into `[280, 560]` pt, bounded by the screen's usable height.
+    static func clampAdaptiveHeight(_ rawHeight: CGFloat, availableHeight: CGFloat) -> CGFloat {
+        let cap = min(pilotMaxHeight, max(0, availableHeight))
+        let floor = min(pilotMinHeight, cap)
+        return min(max(ceil(rawHeight), floor), cap)
+    }
+
+    /// Width and height per theme: Classic keeps 376 pt and `PanelHeight`; Liquid Glass pilot uses
+    /// 380 pt width and adaptive 280–560 pt height bounded by `visibleFrame`.
     static func preferredContentSize(
         screen: NSScreen?,
         theme: PanelTheme,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        adaptiveContentHeight: CGFloat? = nil
     ) -> NSSize {
         let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
         switch theme {
@@ -342,7 +442,12 @@ extension MenuBarPanelController {
             let height = (raw.flatMap(PanelHeight.init(rawValue:)) ?? .standard).points
             return NSSize(width: panelWidth, height: min(height, available - 24))
         case .liquidGlass:
-            return NSSize(width: panelWidth, height: max(320, available - topGap - screenMargin))
+            let usable = max(0, available - topGap - screenMargin)
+            let requested = adaptiveContentHeight ?? pilotMaxHeight
+            return NSSize(
+                width: pilotPanelWidth,
+                height: clampAdaptiveHeight(requested, availableHeight: usable)
+            )
         }
     }
 
@@ -378,17 +483,19 @@ extension MenuBarPanelController {
         return NSRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
     }
 
-    /// Right-aligns the column on the status item's screen, with its top below the menu bar.
-    /// The column runs down to the screen margin; detached anchors fall back to the visible top.
-    private static func liquidFrame(for size: NSSize, within visible: NSRect, anchor: NSRect?) -> NSRect {
-        let width = min(size.width, visible.width - screenMargin - rightInset)
-        let x = visible.maxX - width - rightInset
+    /// Right-aligns the 380 pt adaptive pilot column on the status item's screen, anchored below
+    /// the menu bar and clamped into `[280, 560]` pt within `visibleFrame`.
+    static func liquidFrame(for size: NSSize, within visible: NSRect, anchor: NSRect?) -> NSRect {
+        let maxUsableWidth = max(1, visible.width - screenMargin - rightInset)
+        let width = min(size.width, maxUsableWidth)
+        let x = max(visible.minX + screenMargin, visible.maxX - width - rightInset)
         let bottom = visible.minY + screenMargin
         // An anchor outside the visible frame (a hidden or detached item) falls back to the top edge.
         let anchorTop = anchor?.minY ?? visible.maxY
-        let top = (anchorTop > bottom + 320 && anchorTop <= visible.maxY + 1 ? anchorTop : visible.maxY) - topGap
-        let height = max(min(size.height, top - bottom), 320)
-        return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width, height: height.rounded())
+        let minTopClearance = min(pilotMinHeight, max(0, visible.height - topGap - screenMargin))
+        let top = (anchorTop >= bottom + minTopClearance && anchorTop <= visible.maxY + 1 ? anchorTop : visible.maxY) - topGap
+        let height = clampAdaptiveHeight(size.height, availableHeight: max(0, top - bottom))
+        return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width.rounded(), height: height.rounded())
     }
 
     static func makeBackdropWindow(frame: NSRect) -> NSPanel {

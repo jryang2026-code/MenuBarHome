@@ -144,6 +144,8 @@ export interface AutoSafetySettingsHost {
   replyBanner: ReplyBannerState | null;
   readonly sourceRevision?: number;
   readonly deviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Alert-only devices of turned-off types (P3a-W); they never become cards. */
+  readonly safetyRetainedDevices?: readonly SmartDevice[];
   readonly miAccountsOverride?: readonly import("../core/miAccountsStore.js").MiAccount[] | null;
   readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
   readonly dualSourceEnabledOverride?: boolean | null;
@@ -1573,7 +1575,13 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
                 : {};
     if (Object.keys(patch).length === 0) return;
     const saved = saveSafetyGuardPrefs(patch, storage);
-    if (center) pruneDisabledSafetyAlertsFromCenter(center, aliasedDevices, saved);
+    if (center) {
+      // A retained device has no card, so the long-run rule's plug/climate lookup must still find
+      // it: filtering against the cards alone would read it as a climate rule and survive a plug
+      // switch that is off (P3a-W).
+      const safetyDevices = host.safetyRetainedDevices ?? [];
+      pruneDisabledSafetyAlertsFromCenter(center, [...aliasedDevices, ...safetyDevices], saved);
+    }
     host.render();
   });
 
