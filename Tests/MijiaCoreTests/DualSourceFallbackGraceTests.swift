@@ -160,7 +160,7 @@ struct DualSourceFallbackGraceTests {
                 latestSourceStatuses = statuses
             case .sessionExpired(let session):
                 expiredSessions.append(session)
-            case .statusChanged, .doorbellRang, .localNetworkPermissionChanged:
+            case .statusChanged, .doorbellRang, .localNetworkPermissionChanged, .miotTypePruneChanged:
                 break
             }
         }

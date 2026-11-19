@@ -211,6 +211,7 @@ extension HomeStore {
             break
         }
         syncHistoryConnectionScopes()
+        syncMiotTypePrunePolicy()
         scheduleMiSessionExpiryTransition()
         if !usesInjectedProvider && homeBackend != .demo {
             rebuildLiveProvider()
@@ -369,7 +370,8 @@ extension HomeStore {
                                  .sourceStatusesChanged,
                                  .localNetworkPermissionChanged,
                                  .sessionExpired,
-                                 .doorbellRang:
+                                 .doorbellRang,
+                                 .miotTypePruneChanged:
                                 break
                             }
                         }

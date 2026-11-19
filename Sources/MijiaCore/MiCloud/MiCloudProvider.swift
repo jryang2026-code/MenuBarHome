@@ -117,6 +117,9 @@ public actor MiCloudProvider: HomeProvider {
     private var effectsUnsupported: Set<String> = []
 
     private var pollingContext = PollingContext()
+    /// Host's enabled device types and safety switches. Read once per plan, so a change reaches the
+    /// next poll without rebuilding the provider.
+    private let typePrunePolicyLoader: @Sendable () -> MiotTypePrunePolicy
     private var lastFullPollAt: ContinuousClock.Instant?
     private var lastWakePollAt: ContinuousClock.Instant?
     private var lastPolledSelection: String?
@@ -179,7 +182,8 @@ public actor MiCloudProvider: HomeProvider {
         deviceRefreshEveryPolls: Int = 20,
         followUpDelay: Duration = .milliseconds(800),
         cameraSessionReleaseDelay: Duration = .milliseconds(2500),
-        selectedHomeLoader: @escaping @Sendable () -> String? = { UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey) }
+        selectedHomeLoader: @escaping @Sendable () -> String? = { UserDefaults.standard.string(forKey: MiCloudProvider.selectedHomeKey) },
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() }
     ) {
         self.account = account
         self.sessionLoader = sessionLoader
@@ -198,6 +202,7 @@ public actor MiCloudProvider: HomeProvider {
         self.followUpDelay = followUpDelay
         self.cameraSessionReleaseDelay = cameraSessionReleaseDelay
         self.selectedHomeLoader = selectedHomeLoader
+        self.typePrunePolicyLoader = typePrunePolicyLoader
         self.lastPolledSelection = selectedHomeLoader()
     }
 
@@ -1000,7 +1005,8 @@ public actor MiCloudProvider: HomeProvider {
             allowCooldownSweep = false
         }
         let scopedDevices = scopedDevicesAndRooms().devices
-        let keys = propKeys(of: scopedDevices, dids: dids)
+        let plan = typePrunePlan(for: (scopedDevices, []))
+        let keys = pollKeys(from: plan, scoped: scopedDevices, dids: dids)
         var freshKeys: Set<MiotPropKey> = []
         if !keys.isEmpty {
             let outcome = try await fetchPropsHybrid(
@@ -1058,7 +1064,8 @@ public actor MiCloudProvider: HomeProvider {
         if dids == nil {
             if isCloudAllowed {
                 clearCloudBackoff()
-                try await pollDoorbellEvents(api, scopedDevices: scopedDevices)
+                // A hidden doorbell still rings: its record is in the safety-retained set.
+                try await pollDoorbellEvents(api, scopedDevices: plan.visibleRecords + plan.safetyRecords)
             }
             lastFullPollAt = .now
             if wakePollPending {
@@ -1620,6 +1627,17 @@ public actor MiCloudProvider: HomeProvider {
                 logger.notice("Doorbell event query failed for \(record.miotDid, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
+        // A doorbell a closed type stopped polling keeps no baseline: otherwise a press that happened
+        // while it was off replays as a fresh ring on the first poll after it comes back. The next
+        // query after pruning establishes a new baseline instead.
+        let polledDids = Set(scopedDevices.map(\.miotDid))
+        let departed = doorbellBaselineTime.keys.filter {
+            !polledDids.contains($0.split(separator: "#").first.map(String.init) ?? "")
+        }
+        for key in departed {
+            doorbellBaselineTime.removeValue(forKey: key)
+            lastDoorbellTimestamp.removeValue(forKey: key)
+        }
     }
 
     private static func iso8601String(from date: Date) -> String {
@@ -1653,14 +1671,27 @@ public actor MiCloudProvider: HomeProvider {
         return keys
     }
 
+    /// The round's read and synthesis plan. With every device type on — or an account that already
+    /// lost its enablement — it is the historical `requiredProps` + `facetProps` list unchanged.
+    private func typePrunePlan(for scoped: (devices: [MiDeviceRecord], rooms: [MiRoom])) -> MiotTypePrunePlan {
+        var policy = typePrunePolicyLoader()
+        policy.sourceScope = account?.id ?? policy.sourceScope
+        return MiotSynthesizer.typePrunePlan(
+            devices: scoped.devices, rooms: scoped.rooms, specs: specsByModel, policy: policy
+        )
+    }
+
     private func propKeys(of scoped: [MiDeviceRecord], dids: Set<String>?) -> [MiotPropKey] {
-        var keys: [MiotPropKey] = []
-        for d in scoped where d.isOnline && (dids?.contains(d.miotDid) ?? true) {
-            guard let spec = specsByModel[d.model] else { continue }
-            keys.append(contentsOf: MiotSynthesizer.requiredProps(for: d, spec: spec))
-            keys.append(contentsOf: MiotSynthesizer.facetProps(for: d, spec: spec))
+        pollKeys(from: typePrunePlan(for: (scoped, [])), scoped: scoped, dids: dids)
+    }
+
+    /// A closed type keeps its keys out of the poll; an offline device was never polled either.
+    private func pollKeys(from plan: MiotTypePrunePlan, scoped: [MiDeviceRecord], dids: Set<String>?) -> [MiotPropKey] {
+        let onlineDids = Set(scoped.filter(\.isOnline).map(\.miotDid))
+        return plan.readKeys.filter { key in
+            guard onlineDids.contains(key.did) else { return false }
+            return dids?.contains(key.did) ?? true
         }
-        return keys
     }
 
     private func hasValuesForScope() -> Bool {
@@ -1697,30 +1728,17 @@ public actor MiCloudProvider: HomeProvider {
 
     private func emitSnapshot(closesAwayGap: Bool = true) {
         let (visibleDevices, visibleRooms) = scopedDevicesAndRooms()
+        let plan = typePrunePlan(for: (visibleDevices, visibleRooms))
         let cloudBackingOff = cloudRetryNotBefore != nil
-        let synthDevices: [MiDeviceRecord]
-        if cloudBackingOff {
-            synthDevices = visibleDevices.map { record in
-                guard !lanSucceededDids.contains(record.miotDid),
-                      !everObservedPropDids.contains(record.miotDid) else {
-                    return record
-                }
-                var copy = record
-                copy.isOnline = false
-                return copy
-            }
-        } else {
-            synthDevices = visibleDevices
-        }
         var home = MiotSynthesizer.synthesize(
-            devices: synthDevices,
+            devices: backingOffRecords(plan.visibleRecords),
             rooms: visibleRooms,
             specs: specsByModel,
             values: values
         )
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
-        home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
+        home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: plan.visibleRecords)
         home.localNetworkBlockedFeatures = isLocalNetworkDenied ? [.xiaomiLAN] : []
         if let rejected = rejectedSession, isRejected(session ?? currentSession()) {
             home.expiredAccountIDs = [MiAccount(session: rejected).id]
@@ -1729,7 +1747,7 @@ public actor MiCloudProvider: HomeProvider {
         let currentNow = now()
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
         for i in home.devices.indices {
-            let recordMiotDid = visibleDevices.first(where: { $0.did == home.devices[i].id })?.miotDid
+            let recordMiotDid = plan.visibleRecords.first(where: { $0.did == home.devices[i].id })?.miotDid
             let candidateDids = ([recordMiotDid].compactMap { $0 })
                 + home.devices[i].miotCommandDids
                 + [home.devices[i].id]
@@ -1754,7 +1772,61 @@ public actor MiCloudProvider: HomeProvider {
             spec.availableEffects = []
             home.devices[i].kind = .light(spec)
         }
+        // The report lands first: `handleProviderEvent` evaluates safety at the end of the snapshot,
+        // so a hidden device's fresh state (and its monitor baseline) must already be adopted.
+        emitTypePruneReport(for: plan, rooms: visibleRooms)
         continuation?.yield(.snapshotUpdated(stamp(home)))
+    }
+
+    /// During cloud backoff a device the cloud has not confirmed since wake keeps its last cached
+    /// values; the card must not claim them fresh. Hidden safety records take the same path.
+    private func backingOffRecords(_ records: [MiDeviceRecord]) -> [MiDeviceRecord] {
+        guard cloudRetryNotBefore != nil else { return records }
+        return records.map { record in
+            guard !lanSucceededDids.contains(record.miotDid),
+                  !everObservedPropDids.contains(record.miotDid) else { return record }
+            var copy = record
+            copy.isOnline = false
+            return copy
+        }
+    }
+
+    /// Hands the host what this round hid: the identities the write gate answers
+    /// 「该设备类型已关闭」 with (`CapabilityReferenceEngine.evaluateControlTargetGate`) and the hidden
+    /// devices whose enabled alerts still need evaluating. An empty report clears this account's
+    /// retained set, so re-enabling a type or disabling the account leaves nothing behind.
+    private func emitTypePruneReport(for plan: MiotTypePrunePlan, rooms: [MiRoom]) {
+        let scope = account?.id ?? typePrunePolicyLoader().sourceScope
+        var safetyDevices: [SmartDevice] = []
+        if plan.isPruned, !plan.safetyRecords.isEmpty {
+            let records = backingOffRecords(plan.safetyRecords)
+            var safetyHome = MiotSynthesizer.synthesize(
+                devices: records, rooms: rooms, specs: specsByModel, values: values
+            )
+            if cloudRetryNotBefore != nil {
+                // A hidden card needs the same reachability guard as a visible one, or a cached "on"
+                // keeps its long-run timer counting.
+                var didsByDeviceId: [String: Set<String>] = [:]
+                for record in records {
+                    didsByDeviceId[record.did, default: []].insert(record.miotDid)
+                }
+                for i in safetyHome.devices.indices {
+                    let candidateDids = (didsByDeviceId[safetyHome.devices[i].id].map(Array.init) ?? [])
+                        + safetyHome.devices[i].miotCommandDids
+                        + [safetyHome.devices[i].id]
+                    if !candidateDids.contains(where: { lanSucceededDids.contains($0) }) {
+                        safetyHome.devices[i].telemetryStale = true
+                    }
+                }
+            }
+            safetyDevices = stampDevices(safetyHome.devices)
+        }
+        continuation?.yield(.miotTypePruneChanged(MiotTypePruneReport(
+            scope: scope,
+            hiddenIndexedDevices: plan.isPruned ? plan.hiddenIndexedDevices : [],
+            hiddenDeviceIds: plan.isPruned ? plan.hiddenDeviceIds : [],
+            safetyDevices: safetyDevices
+        )))
     }
 
     /// Namespaces room/home ids and tags devices with the account, so several accounts can be merged
@@ -1767,15 +1839,25 @@ public actor MiCloudProvider: HomeProvider {
             let room = stamped.rooms[i]
             stamped.rooms[i] = RoomArea(id: prefix + room.id, name: room.name, sortOrder: room.sortOrder)
         }
-        for i in stamped.devices.indices {
-            stamped.devices[i].roomId = prefix + stamped.devices[i].roomId
-            stamped.devices[i].accountId = account.id
-            stamped.devices[i].accountLabel = account.maskedUserId
-        }
+        stamped.devices = stampDevices(stamped.devices)
         for i in stamped.homes.indices {
             stamped.homes[i].id = prefix + stamped.homes[i].id
             stamped.homes[i].accountId = account.id
             stamped.homes[i].accountLabel = account.maskedUserId
+        }
+        return stamped
+    }
+
+    /// The same account tags for devices that travel outside a snapshot: the hidden ones a closed
+    /// type keeps for enabled alerts, so their rooms and names still belong to this account.
+    private func stampDevices(_ devices: [SmartDevice]) -> [SmartDevice] {
+        guard let account else { return devices }
+        let prefix = "\(account.id)/"
+        var stamped = devices
+        for i in stamped.indices {
+            stamped[i].roomId = prefix + stamped[i].roomId
+            stamped[i].accountId = account.id
+            stamped[i].accountLabel = account.maskedUserId
         }
         return stamped
     }

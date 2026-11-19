@@ -298,6 +298,8 @@ public final class HomeStore {
     public var favoriteDeviceIds: Set<String> {
         didSet {
             HomePreferences.favoriteDeviceIds.save(favoriteDeviceIds, to: userDefaults)
+            // 收藏设备离线提醒 reads favourites, so a hidden type keeps or drops their reads here.
+            syncMiotTypePrunePolicy()
             scheduleRaycastSnapshotExport()
         }
     }
@@ -333,7 +335,10 @@ public final class HomeStore {
     }
 
     public var enableSafetyAlerts: Bool {
-        didSet { HomePreferences.enableSafetyAlerts.save(enableSafetyAlerts, to: userDefaults) }
+        didSet {
+            HomePreferences.enableSafetyAlerts.save(enableSafetyAlerts, to: userDefaults)
+            syncMiotTypePrunePolicy()
+        }
     }
 
     /// Weekly home health report notification (#182). Off by default: a new recurring notification.
@@ -343,12 +348,18 @@ public final class HomeStore {
 
     /// Open the doorbell's live camera when it rings (#308). Off by default: privacy and interruption.
     public var doorbellAutoPopup: Bool {
-        didSet { HomePreferences.doorbellAutoPopup.save(doorbellAutoPopup, to: userDefaults) }
+        didSet {
+            HomePreferences.doorbellAutoPopup.save(doorbellAutoPopup, to: userDefaults)
+            syncMiotTypePrunePolicy()
+        }
     }
 
     /// Play a chime when a doorbell popup opens (#308). Off by default.
     public var doorbellChime: Bool {
-        didSet { HomePreferences.doorbellChime.save(doorbellChime, to: userDefaults) }
+        didSet {
+            HomePreferences.doorbellChime.save(doorbellChime, to: userDefaults)
+            syncMiotTypePrunePolicy()
+        }
     }
 
     /// Seconds before a doorbell popup closes itself (#308).
@@ -701,6 +712,12 @@ public final class HomeStore {
         }
     }
     @ObservationIgnored let pinnedDeviceSourcesBox: DeviceSourcePinBox
+    /// Host's enabled device types and safety switches, read by the Mi provider off the main actor
+    /// (P3a-M). Updated by `syncMiotTypePrunePolicy()`.
+    @ObservationIgnored let miotTypePruneBox = MiotTypePrunePolicyBox()
+    /// One entry per Mi account that currently hides cards: the identities a closed type keeps for
+    /// the write gate and the hidden devices whose enabled alerts still need evaluating.
+    var miotTypePruneReports: [String: MiotTypePruneReport] = [:]
     /// Sources that contributed the latest merged snapshot.
     public internal(set) var connectedBackends: Set<HomeBackend> = []
 
@@ -1454,14 +1471,16 @@ public final class HomeStore {
     private static func makeMiAccountsProvider(
         accounts: [MiAccount],
         defaults: UserDefaults,
-        topologyCache: MiTopologyCache?
+        topologyCache: MiTopologyCache?,
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy
     ) -> MiAccountsProvider {
         nonisolated(unsafe) let ud = defaults
         return MiAccountsProvider(
             accounts: accounts,
             topologyCache: topologyCache,
             selectedHomeLoader: { ud.string(forKey: MiCloudProvider.selectedHomeKey) },
-            clearSelectedHome: { ud.removeObject(forKey: MiCloudProvider.selectedHomeKey) }
+            clearSelectedHome: { ud.removeObject(forKey: MiCloudProvider.selectedHomeKey) },
+            typePrunePolicyLoader: typePrunePolicyLoader
         )
     }
 
@@ -1474,10 +1493,12 @@ public final class HomeStore {
         if let factory = miAccountsProviderFactory {
             return factory(enabled)
         }
+        let box = miotTypePruneBox
         return Self.makeMiAccountsProvider(
             accounts: enabled,
             defaults: userDefaults,
-            topologyCache: topologyCache
+            topologyCache: topologyCache,
+            typePrunePolicyLoader: { box.get() }
         )
     }
 

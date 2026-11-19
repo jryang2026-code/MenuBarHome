@@ -1564,6 +1564,292 @@ public enum MiotSynthesizer {
     }
 }
 
+// MARK: - Device-Type Pruning (P3a-M)
+
+/// What one Mi account currently shows and evaluates, in the shared capability vocabulary.
+/// `selection` and `safetyPolicy` are the same values the host uses for the write gate and the
+/// reference verdict, so Mi and Home Assistant answer "visible / safety-retained / pruned"
+/// identically (`docs/plans/optional-features/architecture.md` §D).
+public struct MiotTypePrunePolicy: Equatable, Sendable {
+    public var selection: CapabilitySelection
+    public var safetyPolicy: SafetyRetentionPolicy
+    /// Account scope the records belong to (`mi:<accountId>` once several accounts are merged).
+    public var sourceScope: String
+
+    /// Every type on, for a source that is not running under a selection at all.
+    public static func unpruned(sourceScope: String = "") -> MiotTypePrunePolicy {
+        MiotTypePrunePolicy(
+            selection: CapabilitySelection(
+                enabledConnections: [.xiaomiCloud],
+                enabledConnectionScopes: [sourceScope],
+                enabledFeatures: [],
+                enabledCategories: Set(DeviceCategoryID.allCases)
+            ),
+            safetyPolicy: SafetyRetentionPolicy(),
+            sourceScope: sourceScope
+        )
+    }
+
+    /// Nothing may be pruned: every type is on, the connection is off, or this account scope is not
+    /// enabled yet (a login or migration in flight must never look like a closed type).
+    public var prunesNothing: Bool {
+        guard selection.enabledCategories.count < DeviceCategoryID.allCases.count else { return true }
+        guard selection.enabledConnections.contains(.xiaomiCloud) else { return true }
+        return !selection.enabledConnectionScopes.contains(sourceScope)
+    }
+}
+
+/// What one account's pruning hid this round, for the host's index and safety evaluation.
+public struct MiotTypePruneReport: Equatable, Sendable {
+    /// Capability scope the report belongs to (`mi:<region>:<digest>`; empty when no session is known).
+    public let scope: String
+    /// Identities of every card this round does not draw, so the write gate answers
+    /// 「该设备类型已关闭」 instead of「设备不存在」 (architecture.md §D 宿主写入门).
+    public let hiddenIndexedDevices: [CapabilityIndexedDevice]
+    public let hiddenDeviceIds: Set<String>
+    /// Hidden devices whose enabled safety alerts still need evaluating; they are synthesised with
+    /// the same values as the visible cards and never reach the panel.
+    public let safetyDevices: [SmartDevice]
+
+    public var isEmpty: Bool { hiddenIndexedDevices.isEmpty && hiddenDeviceIds.isEmpty && safetyDevices.isEmpty }
+}
+
+/// Host-owned view of the enabled device types and safety switches, read by the Mi provider off the
+/// main actor. `HomeStore` writes it whenever the selection, a safety switch or a favourite changes;
+/// a change therefore reaches the next poll without rebuilding the provider.
+public final class MiotTypePrunePolicyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var policy: MiotTypePrunePolicy
+
+    public init(policy: MiotTypePrunePolicy = .unpruned()) { self.policy = policy }
+
+    public func update(_ next: MiotTypePrunePolicy) {
+        lock.lock()
+        defer { lock.unlock() }
+        policy = next
+    }
+
+    public func get() -> MiotTypePrunePolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        return policy
+    }
+}
+
+/// One account's read plan: the cards to synthesise, the records kept only for alerts, and the keys
+/// to poll. Built from the shared partition verdict, so the visible and retained sets follow the
+/// same rules as `CapabilityReferenceEngine.partitionDevices`.
+public struct MiotTypePrunePlan: Equatable, Sendable {
+    public let isPruned: Bool
+    public let partition: DeviceSetPartition
+    public let readKeys: [MiotPropKey]
+    public let visibleRecords: [MiDeviceRecord]
+    public let safetyRecords: [MiDeviceRecord]
+    public let visibleDeviceIds: Set<String>
+    public let safetyRetainedDeviceIds: Set<String>
+    public let hiddenDeviceIds: Set<String>
+    public let hiddenIndexedDevices: [CapabilityIndexedDevice]
+
+    /// A plan that prunes nothing keeps `propKeys(of:)`'s historical key list byte for byte.
+    public static func unpruned(devices: [MiDeviceRecord], specs: [String: MiotDeviceSpec]) -> MiotTypePrunePlan {
+        MiotTypePrunePlan(
+            isPruned: false,
+            partition: DeviceSetPartition(
+                availableDeviceIds: devices.map(\.did), hiddenSafetyRetainedDeviceIds: [],
+                safetyEvaluationDeviceIds: [], readPlanKeys: [], showsHiddenSafetyNotice: false
+            ),
+            readKeys: MiotSynthesizer.legacyPropKeys(devices: devices, specs: specs),
+            visibleRecords: devices, safetyRecords: [],
+            visibleDeviceIds: Set(devices.map(\.did)), safetyRetainedDeviceIds: [],
+            hiddenDeviceIds: [], hiddenIndexedDevices: []
+        )
+    }
+}
+
+extension MiotSynthesizer {
+    /// One card a record becomes, with the alert signals that card can raise. Category and signals
+    /// follow the builder and the spec's own services, never a category whitelist: a smart door that
+    /// is drawn as a camera still reports motion and lock (#290 review).
+    struct MiotCardShape: Equatable, Sendable {
+        let id: String
+        let name: String
+        let category: DeviceCategoryID
+        let signals: Set<SafetySignalKind>
+    }
+
+    /// The read keys this synthesizer polled before pruning existed — the plan's no-op answer.
+    static func legacyPropKeys(devices: [MiDeviceRecord], specs: [String: MiotDeviceSpec]) -> [MiotPropKey] {
+        var keys: [MiotPropKey] = []
+        for record in devices {
+            guard let spec = specs[record.model] else { continue }
+            keys.append(contentsOf: requiredProps(for: record, spec: spec))
+            keys.append(contentsOf: facetProps(for: record, spec: spec))
+        }
+        return keys
+    }
+
+    static func propIdentifier(_ key: MiotPropKey) -> String { "\(key.did)|\(key.siid)|\(key.piid)" }
+
+    /// Which alerts this card could report. The actuator alerts read a card's own state, so they
+    /// follow the card kind. The alarm alerts follow the spec's services: `submersion-sensor`,
+    /// `magnet-sensor`, `motion-detection` and friends. Only a `lock`/`door` service (or a
+    /// `lock-…` family such as `lock-manage`) makes a lock — `child-lock` and
+    /// `physical-controls-locked` lock the buttons of a fish tank or a washer, so they never count.
+    static func safetySignals(category: DeviceCategoryID, spec: MiotDeviceSpec) -> Set<SafetySignalKind> {
+        // Every card can go offline, and `partitionDevices` keeps a hidden card only when the host
+        // also lists it in `starredDeviceIds`, so a favourite of a closed type keeps its offline alert.
+        var signals: Set<SafetySignalKind> = [.starredOffline]
+        switch category {
+        case .plug: signals.formUnion([.longRunningPlug, .highPower])
+        case .climate: signals.insert(.longRunningClimate)
+        case .camera: signals.insert(.doorbell)
+        case .sensor:
+            // The evaluator reads a battery from the sensor card only (`SafetyMonitor`), so a ring
+            // camera's battery does not keep an otherwise pruned card alive.
+            if spec.services.contains(where: { service in
+                service.properties.contains { $0.shortName == "battery-level" }
+            }) { signals.insert(.lowBattery) }
+        default: break
+        }
+        signals.formUnion(serviceSignals(spec: spec))
+        return signals
+    }
+
+    /// Which alarm alerts the spec's own shape can report. The macOS evaluator reads properties by
+    /// short name (`submersion-state`, `contact-state`, …) and device class, never a free-text
+    /// label, so a service *type* is the identity here; a description cannot raise an alert it has
+    /// no property for. That also keeps `Physical Control Locked` and `child-lock` from counting as
+    /// a lock while a real `lock` service still does.
+    static func serviceSignals(spec: MiotDeviceSpec) -> Set<SafetySignalKind> {
+        var signals: Set<SafetySignalKind> = []
+        for service in spec.services {
+            switch service.shortName {
+            case "submersion-sensor", "water-leak-sensor", "flood-sensor": signals.insert(.leak)
+            case "smoke-sensor": signals.insert(.smoke)
+            case "gas-sensor": signals.insert(.gas)
+            case "magnet-sensor", "door-sensor", "contact-sensor": signals.insert(.contact)
+            case "motion-sensor", "occupancy-sensor", "presence-sensor", "motion-detection": signals.insert(.motion)
+            case "vibration-sensor", "shock-sensor": signals.insert(.vibration)
+            case "video-doorbell", "doorbell": signals.insert(.doorbell)
+            case "door":
+                signals.insert(.lock)
+                signals.insert(.contact)
+            default:
+                // A lock family (`lock`, `lock-manage`, `lock-volume-management`) names the device's
+                // own lock service. `child-lock` / `physical-controls-locked` deliberately do not.
+                if service.shortName == "lock" || service.shortName.hasPrefix("lock-") { signals.insert(.lock) }
+            }
+        }
+        return signals
+    }
+
+    static func cardShapes(record: MiDeviceRecord, spec: MiotDeviceSpec, room: MiRoom?) -> [MiotCardShape] {
+        let roomName = DeviceSynthesizer.normalizeRoomName(room?.name ?? "")
+        let name = DeviceSynthesizer.cleanDeviceName(record.name, roomName: roomName, model: record.model)
+        let scoped = specForRecord(record, spec: spec)
+        let plans = plans(for: record, spec: spec)
+        guard !plans.isEmpty else {
+            // The generic facet card (or a mains breaker, which draws nothing) has no builder.
+            return [MiotCardShape(id: record.did, name: name, category: .generic, signals: safetySignals(category: .generic, spec: spec))]
+        }
+        // Kinds and their category come from the spec's shape, never from a value, so an empty
+        // value map classifies the card exactly as the next snapshot will draw it.
+        let reader = MiotReader(did: record.miotDid, spec: scoped, values: [:])
+        let splitPerService = plans.count > 1
+        return plans.map { service, build in
+            let kind = attachCameraLenses(build(reader, service), model: record.model, name: record.name)
+            let category = kind.capabilityCategoryID
+            return MiotCardShape(
+                id: splitPerService ? trackID(record: record, siid: service.iid) : record.did,
+                name: splitPerService ? trackName(service: service, fallback: name) : name,
+                category: category,
+                signals: safetySignals(category: category, spec: spec)
+            )
+        }
+    }
+
+    /// Splits one account's records into the cards to synthesise, the records a closed type must
+    /// keep for enabled alerts, and the records to skip entirely — plus the single read plan for the
+    /// round, so cloud batching and LAN routing poll the same keys.
+    ///
+    /// Records with no spec stay visible and contribute no keys: `propKeys(of:)` reads nothing for
+    /// them, and inventing keys would change the plan whenever a spec is still missing.
+    public static func typePrunePlan(
+        devices: [MiDeviceRecord],
+        rooms: [MiRoom],
+        specs: [String: MiotDeviceSpec],
+        policy: MiotTypePrunePolicy
+    ) -> MiotTypePrunePlan {
+        guard !policy.prunesNothing else {
+            return .unpruned(devices: devices, specs: specs)
+        }
+        var roomByDid: [String: MiRoom] = [:]
+        for room in rooms {
+            for did in room.dids where roomByDid[did] == nil { roomByDid[did] = room }
+        }
+        // A split parent is drawn through its keys only, so its whole-spec plan must not add reads
+        // or index entries of its own.
+        let splitParents = Set(devices.compactMap(\.splitParentDid))
+        var entries: [CapabilityIndexedDevice] = []
+        var shapesByDid: [String: [MiotCardShape]] = [:]
+        var keyIndex: [String: MiotPropKey] = [:]
+        var unprunedDeviceIds: Set<String> = []
+        for record in devices where !splitParents.contains(record.did) {
+            guard let spec = specs[record.model] else {
+                unprunedDeviceIds.insert(record.did)
+                continue
+            }
+            let room = roomByDid[record.did] ?? record.splitParentDid.flatMap { roomByDid[$0] }
+            let shapes = cardShapes(record: record, spec: spec, room: room)
+            shapesByDid[record.did] = shapes
+            let keys = requiredProps(for: record, spec: spec) + facetProps(for: record, spec: spec)
+            for key in keys { keyIndex[propIdentifier(key)] = key }
+            let keyIds = keys.map(propIdentifier)
+            for shape in shapes {
+                entries.append(CapabilityIndexedDevice(
+                    id: shape.id, name: shape.name, category: shape.category,
+                    connection: .xiaomiCloud, sourceScope: policy.sourceScope,
+                    isSourceAvailable: true, upstreamHiddenOrDisabled: false, participatesInAllOff: false,
+                    safetySignals: shape.signals, readKeys: keyIds, safetyReadKeys: keyIds
+                ))
+            }
+        }
+        let partition = CapabilityReferenceEngine.partitionDevices(
+            devices: entries, selection: policy.selection, safetyPolicy: policy.safetyPolicy
+        )
+        let available = Set(partition.availableDeviceIds).union(unprunedDeviceIds)
+        let retained = Set(partition.hiddenSafetyRetainedDeviceIds)
+        var visibleRecords: [MiDeviceRecord] = []
+        var safetyRecords: [MiDeviceRecord] = []
+        var hiddenDeviceIds: Set<String> = []
+        for record in devices where !splitParents.contains(record.did) {
+            if unprunedDeviceIds.contains(record.did) {
+                visibleRecords.append(record)
+                continue
+            }
+            let ids = (shapesByDid[record.did] ?? []).map(\.id)
+            if ids.contains(where: available.contains) {
+                visibleRecords.append(record)
+            } else if ids.contains(where: retained.contains) {
+                safetyRecords.append(record)
+            } else {
+                hiddenDeviceIds.formUnion(ids)
+            }
+        }
+        return MiotTypePrunePlan(
+            isPruned: true,
+            partition: partition,
+            readKeys: partition.readPlanKeys.compactMap { keyIndex[$0] },
+            visibleRecords: visibleRecords,
+            safetyRecords: safetyRecords,
+            visibleDeviceIds: available,
+            safetyRetainedDeviceIds: retained,
+            hiddenDeviceIds: hiddenDeviceIds,
+            hiddenIndexedDevices: entries.filter { !available.contains($0.id) }
+        )
+    }
+}
+
 // MARK: - Recording Property Reader
 
 /// Resolves properties by short name and records every readable (did, siid, piid) it touches,
