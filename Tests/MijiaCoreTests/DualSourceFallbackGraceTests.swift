@@ -271,6 +271,7 @@ struct DualSourceFallbackGraceTests {
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        await waitUntil { await rig.haMock.stoppedCameraIDs == [Self.haID] }
         #expect(await rig.haMock.stoppedCameraIDs == [Self.haID], "The dead source's stream must be closed")
 
         // Recovery: the next resolve routes the same card onto the Mi cloud copy.
@@ -303,6 +304,7 @@ struct DualSourceFallbackGraceTests {
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+        await waitUntil { await rig.miMock.stoppedCameraIDs == [Self.did] }
         #expect(await rig.miMock.stoppedCameraIDs == [Self.did])
     }
 
@@ -484,6 +486,7 @@ struct DualSourceFallbackGraceTests {
         rig.clock.advance(10)
         await rig.gate.releaseLatest()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        await waitUntil { await rig.haMock.stoppedCameraIDs == [Self.haID] }
         #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
     }
 
@@ -533,6 +536,7 @@ struct DualSourceFallbackGraceTests {
         rig.clock.advance(2)
         await rig.gate.releaseLatest()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        await waitUntil { await rig.haMock.stoppedCameraIDs == [Self.haID] }
         #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
 
         // A later sleep/wake cycle must not resurrect an outage whose grace already expired.
