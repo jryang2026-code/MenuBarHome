@@ -109,14 +109,17 @@ struct OnboardingChecklistCard: View {
         case .connectAccount:
             return L10n.tr("去连接账号", "Connect an account")
         case .searchDevice:
-            return L10n.tr("把光标放进搜索框", "Focus the search field")
+            return L10n.tr(
+                "把光标放进搜索框；磁贴左侧开关、右侧打开调节",
+                "Focus the search field; tile left toggles, right opens controls"
+            )
         case .allOffAndUndo:
             if store.allOffTargets.isEmpty {
                 return L10n.tr("当前没有开启的设备", "No active devices are currently on")
             }
             return L10n.tr(
-                "按住全关，只预览会关闭哪些设备，不会真的发送",
-                "Hold All Off to preview the devices. Nothing is sent."
+                "演练只预览将关闭的设备，不会实际发送；正式操作按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒",
+                "Practice only previews devices without sending; hold All Off for 0.6s to confirm, with 10s undo (15s for 3+ devices)"
             )
         }
     }

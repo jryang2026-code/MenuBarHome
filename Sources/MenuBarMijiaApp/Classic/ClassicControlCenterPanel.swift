@@ -112,12 +112,14 @@ public struct ClassicControlCenterPanel: View {
                 LaunchAtLoginCoordinator.live(store: store).refresh()
                 prioritySnapshot = .capture(from: store)
                 isPresented = true
+                registerTransientUIHandlers()
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
                 activitiesExpanded = false
+                isOfflineDrawerExpanded = false
                 PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
@@ -174,6 +176,12 @@ public struct ClassicControlCenterPanel: View {
                     .transition(.opacity)
                     .zIndex(3)
             }
+        }
+        .onChange(of: activitiesExpanded) { _, expanded in
+            if isPanelVisible { PanelTransientUIState.shared.hasExpandedReminders = expanded }
+        }
+        .onChange(of: isOfflineDrawerStateActive) { _, expanded in
+            if isPanelVisible { PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded }
         }
         .onChange(of: store.favoriteOrder) { _, favOrder in
             guard !favOrder.isEmpty else { return }
@@ -250,12 +258,33 @@ public struct ClassicControlCenterPanel: View {
         store.visibleDevices.contains { !$0.isOnline }
     }
 
+    private var isOfflineDrawerStateActive: Bool {
+        isOfflineDrawerExpanded && hasVisibleOfflineDevices
+    }
+
+    private func registerTransientUIHandlers() {
+        guard isPanelVisible else { return }
+        PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
+        PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerStateActive
+        PanelTransientUIState.shared.collapseRemindersHandler = {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)) {
+                activitiesExpanded = false
+            }
+        }
+        PanelTransientUIState.shared.collapseOfflineDrawerHandler = {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.86)) {
+                isOfflineDrawerExpanded = false
+            }
+        }
+    }
+
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
         syncMenuBarWindowSize()
         prioritySnapshot = .capture(from: store)
         isPresented = true
+        registerTransientUIHandlers()
     }
 
     private func handlePanelDidHide() {

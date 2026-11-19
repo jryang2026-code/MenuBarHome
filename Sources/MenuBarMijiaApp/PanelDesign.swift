@@ -364,7 +364,12 @@ struct HoldToConfirmButton: View {
     let onTap: () -> Void
 
     @State private var holding = false
+    /// Rehearsal-or-live decision, latched at press-down: SwiftUI can deliver
+    /// `onPressingChanged(false)` immediately before `perform`.
     @State private var holdLatch = AllOffHoldLatch()
+    /// The panel-wide hold session: Esc, focus loss and hiding invalidate it so a cancelled press
+    /// cannot confirm, and `shouldSuppressTap` keeps the mouse-up from becoming a tap.
+    @State private var holdSessionId: UInt64?
 
     var body: some View {
         let capsule = Capsule(style: .continuous)
@@ -391,18 +396,41 @@ struct HoldToConfirmButton: View {
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
         .scaleEffect(holding ? 0.95 : 1)
         .contentShape(capsule)
-        .onTapGesture(perform: onTap)
+        .onTapGesture {
+            guard !PanelTransientUIState.shared.shouldSuppressTap() else { return }
+            onTap()
+        }
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
             holding = false
+            let session = holdSessionId
+            holdSessionId = nil
+            // A release kept the session consumable; only Esc, focus loss or hiding void it.
+            guard PanelTransientUIState.shared.consumeConfirmedHold(session: session) else {
+                holdLatch.reset()
+                return
+            }
             let mode = holdLatch.consumeOnConfirm(fallback: onBeginHold)
             // #54: a confirm that turns off the whole room deserves a level-change tap.
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             onConfirm(mode)
         } onPressingChanged: { pressing in
             holdLatch.pressingChanged(pressing, beginHold: onBeginHold)
+            if pressing {
+                holdSessionId = PanelTransientUIState.shared.beginAllOffHold {
+                    holdSessionId = nil
+                    holdLatch.reset()
+                    withAnimation(.easeOut(duration: 0.15)) { holding = false }
+                }
+            } else {
+                // A release is not a cancel: `perform` still needs the session.
+                PanelTransientUIState.shared.releaseAllOffHold(session: holdSessionId)
+            }
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
         }
         .onDisappear {
+            // Leaving the tree is an explicit cancel: a late `perform` must not fire.
+            PanelTransientUIState.shared.cancelAllOffHold()
+            holdSessionId = nil
             holding = false
             holdLatch.reset()
         }

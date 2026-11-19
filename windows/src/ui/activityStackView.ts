@@ -187,6 +187,42 @@ function aliasedHostDevices(host: MenuMijiaWindowsApp): SmartDevice[] {
   });
 }
 
+/**
+ * Devices whose category is turned off but whose enabled alerts still need their signal (P3a-W).
+ * They are read and synthesized by the Mi refresh but never enter `host.devices`, so they can only
+ * reach alert evaluation — never a card, a search hit, an AI target or a control entry. A source
+ * that is no longer live drops them, so a signed-out account cannot keep alerting from stale data.
+ */
+function safetyRetainedDeviceIds(host: MenuMijiaWindowsApp): Set<string> {
+  const retained = host.safetyRetainedDevices ?? [];
+  if (retained.length === 0) return new Set<string>();
+  const miLive =
+    host.settings.connectionMode === "xiaomiCloud" || isDualSourceEnabled(host);
+  return new Set(miLive ? retained.map((device) => device.id) : []);
+}
+
+/** Cards plus the alert-only devices, and the facets of both, for `SafetyMonitor` only. */
+function safetyEvaluationDevices(host: MenuMijiaWindowsApp, cards: readonly SmartDevice[]): {
+  readonly devices: SmartDevice[];
+  readonly facets: Readonly<Record<string, readonly FacetControl[]>>;
+} {
+  const devices = [...cards];
+  const retainedIds = safetyRetainedDeviceIds(host);
+  if (retainedIds.size === 0) return { devices, facets: host.deviceFacets };
+  const retained = (host.safetyRetainedDevices ?? []).filter((device) => retainedIds.has(device.id));
+  return {
+    devices: [...devices, ...retained],
+    facets: { ...host.deviceFacets, ...(host.safetyRetainedDeviceFacets ?? {}) },
+  };
+}
+
+/** Ids the alert feed may still show: the visible cards plus their alert-only siblings. */
+function alertDeviceIds(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): Set<string> {
+  const ids = new Set(devices.map((device) => device.id));
+  for (const id of safetyRetainedDeviceIds(host)) ids.add(id);
+  return ids;
+}
+
 function deviceTelemetrySignature(devices: readonly SmartDevice[]): string {
   return devices
     .map((d) => `${d.id}:${d.isOnline ? 1 : 0}:${d.kind.kind === "plug" ? (d.kind.powerWatts ?? "") : ""}`)
@@ -195,7 +231,10 @@ function deviceTelemetrySignature(devices: readonly SmartDevice[]): string {
 
 function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
   const mode = host.settings.connectionMode;
-  if (mode === "demo" || host.devices.length === 0) return false;
+  if (mode === "demo") return false;
+  // A home whose kept types are all turned off has no cards left, yet its retained sensors must
+  // still be evaluated, so an alert-only snapshot counts as live (P3a-W).
+  if (host.devices.length === 0 && safetyRetainedDeviceIds(host).size === 0) return false;
   if (host.valuesAreStale) return false;
   if (mode === "homeAssistant" && Boolean(host.haConnectionError)) return false;
   if (mode === "xiaomiCloud" && Boolean(host.miSessionExpired)) return false;
@@ -432,7 +471,7 @@ export function pruneOrphanedDeviceActivities(
     return changed;
   }
 
-  const presentIds = new Set(host.devices.map((d) => d.id));
+  const presentIds = alertDeviceIds(host, host.devices);
   const keptSafety: RecordedSafetyAlert[] = [];
   for (const entry of center.recentSafetyAlerts) {
     if (entry.scope !== center.scopeKey || !presentIds.has(entry.alert.deviceId)) {
@@ -1732,6 +1771,7 @@ export function tickSafetyHealthAndAutomation(
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);
+    const evaluation = safetyEvaluationDevices(host, aliased);
     const guardPrefs = loadSafetyGuardPrefs(center.storage);
     const effectivePolicy: SensorAlertPolicy = {
       ...baseSensorPolicy,
@@ -1744,16 +1784,16 @@ export function tickSafetyHealthAndAutomation(
     const favorites =
       guardPrefs.enableSafetyAlerts && guardPrefs.favoriteOffline ? rawFavorites : new Set<string>();
     const rawAlerts = center.safetyMonitor.evaluate({
-      devices: aliased,
+      devices: evaluation.devices,
       favorites,
       sensorPolicy: effectivePolicy,
       nowMs,
       scope: center.scopeKey,
-      deviceFacets: host.deviceFacets,
+      deviceFacets: evaluation.facets,
       observationsByDeviceId: center.observationsOverride ?? undefined,
       language: host.settings.interfaceLanguage,
     });
-    const newAlerts = filterSafetyAlertsByGuardPrefs(rawAlerts, aliased, guardPrefs);
+    const newAlerts = filterSafetyAlertsByGuardPrefs(rawAlerts, evaluation.devices, guardPrefs);
     if (recordSafetyAlerts(host, newAlerts, nowMs)) {
       needsRender = true;
     }
@@ -1833,7 +1873,10 @@ export function buildActivityFeed(
   }
 
   const aliased = aliasedHostDevices(host);
-  const presentIds = new Set(aliased.map((d) => d.id));
+  const presentIds = alertDeviceIds(host, aliased);
+  // A device of a turned-off type is only read for its alert: it has no card, so "立即关闭" would
+  // name a control the panel no longer offers (architecture.md §D).
+  const controllableIds = new Set(aliased.map((device) => device.id));
   for (const entry of center.doorbellCoordinator.recentRings) {
     if (entry.scope !== center.scopeKey || !presentIds.has(entry.ring.deviceId)) continue;
     const itemId = `doorbell:${entry.ring.key}`;
@@ -1880,7 +1923,7 @@ export function buildActivityFeed(
       title: recorded.alert.title,
       subtitle: recorded.alert.body,
       tone: isDanger ? "danger" : "warning",
-      ...(recorded.alert.turnOffCommand
+      ...(recorded.alert.turnOffCommand && controllableIds.has(recorded.alert.deviceId)
         ? {
             actionLabel: tr3("立即关闭", "立即關閉", "Turn Off Now", undefined, pref),
             actionAttr: "data-activity-safety-off",

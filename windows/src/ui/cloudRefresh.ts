@@ -1,7 +1,7 @@
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec, type MiotPropKey } from "../core/miCloudClient.js";
+import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
 import { adoptPairedDevicePreferences, applyOrder, homeOptions, scopedKey, spans, tr3 } from "./panelPrefs.js";
@@ -9,7 +9,7 @@ import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, shows
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { hasPendingMiVaultDeletion } from "./speechGuard.js";
-import { environmentReadingPriority, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
+import { environmentReadingPriority, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   DUAL_SOURCE_ENABLED_STORAGE_KEY,
@@ -67,6 +67,10 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
+import { buildMiotTypePrunePlan, miotSafetySignalsForPrefs } from "../core/miotTypePruning.js";
+import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
+import { loadSafetyGuardPrefs } from "./automationSettingsView.js";
+import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
 import {
   getHaScopeLifecyclePhase,
   isHaBlockedRequestError,
@@ -126,6 +130,85 @@ export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts?
   const resolved = hostKnownMiAccounts(host, accounts);
   return filterEnabledMiAccounts(resolved, resolveHostMiSelectionState(host, resolved));
 };
+
+/**
+ * Device-type pruning inputs for one Mi refresh round (P3a-W): the host selection plus every safety
+ * signal that is currently on, so a closed category keeps exactly the reads its alerts need.
+ */
+export interface HostMiotTypePruneOptions {
+  readonly selection: CapabilitySelection;
+  readonly safetySignals: readonly SafetySignalKind[];
+  /** Pinned cards, whose offline alert keeps only their topology record. */
+  readonly starredDeviceIds: readonly string[];
+}
+
+export function hostMiotTypePruneOptions(
+  host: MiSelectionHost & {
+    readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+    readonly settings: DualSourceInspectableHost["settings"] & {
+      readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+    };
+  },
+): HostMiotTypePruneOptions {
+  return {
+    selection: resolveHostMiSelectionState(host).selection,
+    // "安全与提醒" owns these: the master switch drops the long-run, battery and pinned-offline
+    // alerts, and each keeps only its own signal. The sensor alerts have their own switches below
+    // it, so they stay on (architecture.md §D, ruling 3).
+    safetySignals: miotSafetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
+    starredDeviceIds: [...new Set([
+      ...(host.layout?.pinnedDeviceIds ?? []),
+      ...(host.settings.layout?.pinnedDeviceIds ?? []),
+    ])],
+  };
+}
+
+/**
+ * The off-panel half of a Mi snapshot. `safetyDevices` are read and synthesized only so enabled
+ * alerts keep their signal; `hiddenDevices` let the host write gate answer "该设备类型已关闭"
+ * instead of "设备不存在" for a closed type. Neither ever becomes a card, search hit, AI target or
+ * control entry (architecture.md §D, ruling 3).
+ */
+export interface HostMiotTypePruneSnapshot {
+  readonly safetyDevices?: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+}
+
+/** The three host fields the off-panel Mi snapshot owns; every production host is wider. */
+export interface MiotTypePruneHostSlice {
+  safetyRetainedDevices?: SmartDevice[];
+  safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+}
+
+export function applyMiotTypePruneSnapshot(
+  host: MiotTypePruneHostSlice,
+  snapshot: HostMiotTypePruneSnapshot | null | undefined,
+): void {
+  host.safetyRetainedDevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
+  host.safetyRetainedDeviceFacets = snapshot?.safetyDeviceFacets ?? {};
+  host.hiddenMiDevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+}
+
+/**
+ * Drops one Mi account's off-panel devices right after it is disabled: until the next refresh
+ * rewrites the snapshot, its retained sensors would otherwise keep evaluating (P3a-W).
+ */
+export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice, accountId: string): void {
+  const scope = miAccountScope(accountId);
+  const ownedByAccount = (device: { readonly id: string; readonly accountId?: string }): boolean =>
+    device.accountId === accountId || device.id.startsWith(`${accountId}/`);
+  const retained = host.safetyRetainedDevices ?? [];
+  const dropped = new Set(retained.filter(ownedByAccount).map((device) => device.id));
+  const facets: Record<string, readonly FacetControl[]> = { ...(host.safetyRetainedDeviceFacets ?? {}) };
+  for (const id of dropped) delete facets[id];
+  applyMiotTypePruneSnapshot(host, {
+    safetyDevices: retained.filter((device) => !dropped.has(device.id)),
+    safetyDeviceFacets: facets,
+    hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
+  });
+}
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
   Boolean(session && isMiSessionEnabledInState(session, resolveHostMiSelectionState(host, [makeMiAccount(session)])));
@@ -210,7 +293,7 @@ export function collectHostKnownScenes(
 }
 
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
@@ -218,6 +301,7 @@ export function buildHostCapabilityContext(
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   return {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
+    ...(host.hiddenMiDevices?.length ? { hiddenDevices: host.hiddenMiDevices } : {}),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
     ...(dualRoutes ? { dualRoutes } : {}),
     haBaseURL: host.settings.haBaseURL ?? "", haToken: host.settings.haToken ?? "",
@@ -276,30 +360,6 @@ export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDe
       : [...devices];
   }
 
-function collectMiotPropKeys(
-  rawDevices: readonly MiDeviceRecord[],
-  specs: Readonly<Record<string, MiotDeviceSpec>>,
-): MiotPropKey[] {
-  const propKeys: MiotPropKey[] = [];
-  const propKeySeen = new Set<string>();
-  const addPropKeys = (keys: readonly MiotPropKey[]) => {
-    for (const key of keys) {
-      const id = `${key.did}.${key.siid}.${key.piid}`;
-      if (propKeySeen.has(id)) continue;
-      propKeySeen.add(id);
-      propKeys.push(key);
-    }
-  };
-  for (const dev of rawDevices) {
-    const spec = specs[dev.model];
-    if (spec) {
-      addPropKeys(MiotSynthesizer.requiredProps(dev, spec));
-      addPropKeys(MiotSynthesizer.facetProps(dev, spec));
-    }
-  }
-  return propKeys;
-}
-
 export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
     if (!isHostAttachedToActiveWindow(host)) return;
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
@@ -311,6 +371,15 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       const store = getHostMiAccountsStore(host);
       const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
       if ((await storeToken.guard(adoptRecoveredPrimarySession(host, store, storeAccounts))) === STALE) return;
+      // A host whose every Mi account is turned off or signed out must not keep evaluating the alert
+      // signals it left behind. A multi-account host with any enabled account keeps its snapshot:
+      // its own refresh rewrites the per-account retained set, so clearing here would drop the
+      // sibling accounts' sensors until that refresh returns (P3a-W). The verdict needs the loaded
+      // list: judging it before `store.load()` would clear a multi-account host's snapshot.
+      const knownAccounts = hostKnownMiAccounts(host, storeAccounts);
+      if (knownAccounts.length > 0 && resolveEnabledMiAccountsForHost(host, storeAccounts).length === 0) {
+        applyMiotTypePruneSnapshot(host, null);
+      }
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -376,6 +445,20 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     const previousPresentation = cloudPresentationFingerprint(host);
     const previousStructure = cloudPanelStructureFingerprint(host);
     const staleBefore = host.cloudValuesStale;
+    // Device-type pruning inputs for this round (P3a-W). One plan feeds the early paint, the cloud
+    // read batch and the final synthesis, so a turned-off type costs no reads anywhere.
+    const pruneOptions = hostMiotTypePruneOptions(host);
+    const accountId = miAccountId(session);
+    const scope = miAccountScope(accountId);
+    const prunePlanFor = (records: readonly MiDeviceRecord[], planSpecs: Readonly<Record<string, MiotDeviceSpec>>) =>
+      buildMiotTypePrunePlan({
+        rawDevices: records,
+        specs: planSpecs,
+        selection: pruneOptions.selection,
+        connectionScope: scope,
+        safetySignals: pruneOptions.safetySignals,
+        starredDeviceIds: pruneOptions.starredDeviceIds,
+      });
     const stateToken = host.sourceEpoch.capture();
     const selectedHomeAtStart = host.settings.selectedHomeId;
     const sourceRevisionAtStart = host.sourceRevision;
@@ -452,7 +535,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
         const stage1Specs = host.specResolver.exportCachedSpecs();
         const stage1Home = MiotSynthesizer.synthesize(
-          rawDevices,
+          prunePlanFor(rawDevices, stage1Specs).visibleRecords,
           rooms,
           stage1Specs,
           new Map<string, unknown>(),
@@ -469,8 +552,10 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
       }
 
-      // Card properties plus the 更多设置 rows (#5), deduped so one snapshot covers both.
-      const propKeys = collectMiotPropKeys(rawDevices, specs);
+      // Card properties plus the 更多设置 rows (#5), deduped so one snapshot covers both, and minus
+      // the keys of a turned-off device type that no consumer reads any more (architecture.md §D).
+      const prunePlan = prunePlanFor(rawDevices, specs);
+      const propKeys = prunePlan.readKeys;
 
       let values: Map<string, unknown>;
       try {
@@ -485,7 +570,12 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         throw error;
       }
 
-      const home = MiotSynthesizer.synthesize(rawDevices, rooms, specs, values);
+      const home = MiotSynthesizer.synthesize(prunePlan.visibleRecords, rooms, specs, values);
+      // A closed category still evaluates its enabled alerts, but only as the minimal shape those
+      // alerts read; these devices never join `host.devices`, so no card or control can reach them.
+      const safetyHome = prunePlan.safetyRecords.length > 0
+        ? MiotSynthesizer.synthesize(prunePlan.safetyRecords, rooms, specs, values)
+        : null;
       if (cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) return;
       if (allDevicesForCache !== null && allRoomsForCache !== null) {
         storeCachedXiaomiTopology(host, {
@@ -526,6 +616,13 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       presentationChanged =
         presentationChanged || cloudPresentationFingerprint(host) !== previousPresentation;
 
+      applyMiotTypePruneSnapshot(host, {
+        // Stamp the owning account like `stampAccountSnapshot` does, so disabling or signing this
+        // account out drops exactly its retained sensors (`dropMiotTypePruneSnapshotForAccount`).
+        safetyDevices: safetyHome?.devices.map((device) => ({ ...device, accountId })),
+        safetyDeviceFacets: safetyHome?.deviceFacets,
+        hiddenDevices: prunePlan.hiddenIndexedDevices.filter((device) => device.sourceScope === scope),
+      });
       markTimerSnapshotReady(host);
       if (completePendingMiRevalidation(host, [miAccountId(session)])) {
         presentationChanged = true;
@@ -659,6 +756,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
+      applyMiotTypePruneSnapshot(host, null);
       host.scenes = home.scenes;
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
@@ -1244,6 +1342,7 @@ export async function refreshMultiAccountXiaomiDevices(
       selectedHomeId: host.settings.selectedHomeId,
       silent,
       previousSnapshots: prevState?.children,
+      prune: hostMiotTypePruneOptions(host),
     });
     const latestAccounts = host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
     const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, latestAccounts).map((a) => a.id));
@@ -1282,6 +1381,11 @@ export async function refreshMultiAccountXiaomiDevices(
     }
 
     host.multiAccountState = { accounts, merged, children };
+    applyMiotTypePruneSnapshot(host, {
+      safetyDevices: merged.safetyDevices,
+      safetyDeviceFacets: merged.safetyDeviceFacets,
+      hiddenDevices: merged.hiddenDevices,
+    });
     if (merged.resetSelectedHome) {
       host.settings.selectedHomeId = null;
     }
@@ -1572,6 +1676,7 @@ export async function refreshDualSourceDevices(
           selectedHomeId: host.settings.selectedHomeId,
           silent,
           previousSnapshots: prevMiState?.children,
+          prune: hostMiotTypePruneOptions(host),
         });
         nextMultiAccountState = { accounts, merged, children };
         if (merged.aggregateStatus.kind === "disconnected") {
@@ -1593,6 +1698,9 @@ export async function refreshDualSourceDevices(
           lightGroupOwners: merged.lightGroupOwners,
           homes: merged.homes,
           accountStatuses: merged.accountStatuses,
+          safetyDevices: merged.safetyDevices ?? [],
+          safetyDeviceFacets: merged.safetyDeviceFacets ?? {},
+          hiddenDevices: merged.hiddenDevices ?? [],
         };
       },
     });
@@ -1632,6 +1740,12 @@ export async function refreshDualSourceDevices(
     host.haConnectionError = haEnabledAtStart ? outcome.haError : null;
     host.markCloudValuesFresh();
     applyDualSourceMergeToHost(host, outcome.merged);
+    const lastMiSnapshot = coordinator.getLastMiSnapshot();
+    applyMiotTypePruneSnapshot(host, {
+      safetyDevices: lastMiSnapshot?.safetyDevices,
+      safetyDeviceFacets: lastMiSnapshot?.safetyDeviceFacets,
+      hiddenDevices: lastMiSnapshot?.hiddenDevices,
+    });
     if (haEnabledAtStart && haRawSnapshot && typeof haRawSnapshot === "object") {
       void ingestHostHASnapshotForDoorbell(host, haRawSnapshot as HASnapshotLike);
     }

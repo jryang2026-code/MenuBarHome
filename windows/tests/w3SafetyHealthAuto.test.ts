@@ -582,6 +582,71 @@ describe("B4 Active Safety Guard, 7-Kind Security Sensor Alerts & Offline/Health
 });
 
 describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack UI", () => {
+  it("shows a retained plug's long-run alert without a「立即关闭」it cannot reach", () => {
+    const app = createCloudApp();
+    // The plug's type is off: the host reads it for the alert but draws no card, so there is no
+    // control entry to offer (architecture.md §D).
+    app.devices = [];
+    app.safetyRetainedDevices = [makePlug({ id: "p.hidden", name: "浴室暖风机", powerWatts: 1900 })];
+    recordSafetyAlerts(app, [
+      {
+        id: "longrun:p.hidden",
+        deviceId: "p.hidden",
+        title: "浴室暖风机 已开启超过 45 分钟",
+        body: "当前功率 1900W",
+        category: "longRun",
+        priority: "high",
+        turnOffCommand: { kind: "setSwitch", entityId: "switch.p.hidden", isOn: false },
+      },
+    ]);
+    app.render();
+
+    // The alert itself still shows: its name, cause and signal stay visible on the hidden card's
+    // behalf, but the write path is not offered.
+    assert.match(document.body.textContent ?? "", /浴室暖风机 已开启超过 45 分钟/);
+    assert.equal(Boolean(document.querySelector('[data-activity-safety-off="longrun:p.hidden"]')), false);
+    assert.deepEqual(
+      buildActivityFeed(app).filter((item) => item.kind === "safety").map((item) => item.actionAttr ?? null),
+      [null],
+    );
+
+    // ...and a drawn plug keeps its button.
+    app.devices = [makePlug({ id: "p.hidden", name: "浴室暖风机", powerWatts: 1900 })];
+    app.render();
+    assert.equal(Boolean(document.querySelector('[data-activity-safety-off="longrun:p.hidden"]')), true);
+  });
+
+  it("prunes a retained plug's long-run alert when the plug switch is turned off", async () => {
+    const app = createCloudApp();
+    app.devices = [];
+    app.safetyRetainedDevices = [makePlug({ id: "p.hidden", name: "浴室暖风机", powerWatts: 1900 })];
+    recordSafetyAlerts(app, [
+      {
+        id: "longrun:p.hidden",
+        deviceId: "p.hidden",
+        title: "浴室暖风机 已开启超过 45 分钟",
+        body: "当前功率 1900W",
+        category: "longRun",
+        priority: "high",
+        turnOffCommand: { kind: "setSwitch", entityId: "switch.p.hidden", isOn: false },
+      },
+    ]);
+    app.openSettingsSheet("system");
+    // The alert-only device is not a card, so the plug/climate lookup must still find it; otherwise
+    // its long-run alert reads as a climate rule and survives a plug switch that is now off.
+    const master = element("#settings-safety-master") as HTMLInputElement;
+    assert.equal(master.checked, true);
+    const plugSwitch = element("#settings-safety-plug") as HTMLInputElement;
+    plugSwitch.checked = false;
+    plugSwitch.dispatchEvent(new window.Event("change", { bubbles: true }));
+    await setImmediate();
+
+    assert.deepEqual(getHostActivityCenter(app).recentSafetyAlerts, []);
+    app.activeSheet = "none";
+    app.render();
+    assert.doesNotMatch(document.body.textContent ?? "", /浴室暖风机 已开启超过 45 分钟/);
+  });
+
   it("intercepts「立即关闭」on a safety alert card while workstation is locked, and executes once unlocked", async () => {
     const app = createCloudApp({ blockControlWhileLocked: true });
     const heaterPlug = makePlug({ id: "p.heater", name: "浴室暖风机", powerWatts: 1900 });
