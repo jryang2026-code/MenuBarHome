@@ -808,6 +808,25 @@ struct MiAccountDisableTestsReview {
         #expect(relaunched.scheduledCommands.map(\.id) == [timer.id])
     }
 
+    @Test("A queued Home Assistant scope completes on its first complete snapshot")
+    func haScopeRevalidationCompletes() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.hasHASource = true
+        store.serverURLString = "http://192.168.1.10:8123"
+        store.pendingRevalidationScopes = [store.homeAssistantScopeIdentifier]
+
+        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
+        snapshot.isInitialLoadComplete = true
+        // A Mi provider is present, so Mi freshness stamps exist; the HA scope must not wait on them.
+        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
+        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+
+        #expect(store.pendingRevalidationScopes.isEmpty)
+    }
+
     // MARK: H3 – Only a connected, authoritative snapshot may resolve a pause
 
     @Test("Reconciliation ignores a scope whose account is still disconnected")
@@ -847,6 +866,82 @@ struct MiAccountDisableTestsReview {
         #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
         #expect(store.pausedScheduledCommands.count == 1)
         #expect(store.scheduledCommands.isEmpty)
+    }
+
+    @Test("A paused timer waits for its own account to be fresh again")
+    func pausedTimerWaitsForItsOwnAccount() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        let deLight = Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id)
+        store.devices = [deLight]
+        let timer = ScheduledCommand(
+            reply: "10 分钟后关闭书房灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(
+                intents: [DeviceIntent(targetId: "de-light", operation: .power(false))],
+                reply: "关闭书房灯", source: .local
+            ),
+            sourceScope: Self.de.id,
+            sourceScopes: [Self.de.id]
+        )
+        store.pausedScheduledCommands = [PausedScheduledCommand(
+            command: timer, originalPartition: .waiting, pausedCapabilities: [.connection(.xiaomiCloud)]
+        )]
+
+        // A still-disabled account keeps its timer paused instead of partitioning it away as foreign.
+        store.setMiAccountEnabled(
+            false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
+        )
+        #expect(!store.isMiAccountEnabled(Self.de.id))
+        store.pendingRevalidationScopes = []
+        store.revalidatePausedItems()
+        #expect(store.pausedScheduledCommands.count == 1)
+        #expect(store.foreignScheduledCommands.isEmpty)
+
+        // Re-enabled but not fresh yet: a fresh snapshot from the other account must not move it.
+        var selection = store.capabilitySelection
+        selection.enabledConnectionScopes.insert(Self.de.id)
+        store.capabilitySelection = selection
+        store.pendingRevalidationScopes = [Self.cn.id, Self.de.id]
+
+        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
+        snapshot.isInitialLoadComplete = true
+        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
+        snapshot.freshAccountIds = [Self.cn.id]
+        snapshot.accountStatuses = [Self.cn.id: .connected, Self.de.id: .disconnected("登录已过期")]
+        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+
+        #expect(store.pendingRevalidationScopes == [Self.de.id])
+        #expect(store.pausedScheduledCommands.count == 1)
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.foreignScheduledCommands.isEmpty)
+    }
+
+    @Test("Another account's selected home delays revalidation instead of pruning the hidden account")
+    func selectedHomeDelaysRevalidation() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
+        store.selectedMiHomeId = Self.de.id + "/home-de"
+        store.pendingRevalidationScopes = [Self.cn.id]
+
+        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
+        snapshot.isInitialLoadComplete = true
+        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
+        snapshot.freshAccountIds = [Self.cn.id]
+        snapshot.accountStatuses = [Self.cn.id: .connected]
+        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+
+        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
+        #expect(store.indexedDevicesById["cn-light"] != nil)
     }
 
     @Test("A non-authoritative snapshot never clears a paused rule's markers")

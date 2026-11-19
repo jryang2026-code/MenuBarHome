@@ -386,16 +386,22 @@ extension HomeStore {
         let presentIds = Set(snapshot.devices.map(\.id))
         var completedScopes: Set<String> = []
         for scope in pendingRevalidationScopes {
-            if !isMiAccountEnabled(scope) {
+            // Covers every connection kind: a Mi account the user turned off again, or a Home
+            // Assistant address that is no longer enabled, needs no revalidation anymore.
+            if !capabilitySelection.isSourceEnabled(connection: nil, scope: scope) {
                 completedScopes.insert(scope)
                 continue
             }
             let accountReady: Bool
-            if CapabilityReferenceEngine.connectionCapability(forScope: scope) == nil {
-                // No Mi account owns this scope (a Home Assistant address, or a LAN source), so the
-                // Mi-only freshness signals below can never name it. Its first complete snapshot is
+            if CapabilityReferenceEngine.connectionCapability(forScope: scope) != .xiaomiCloud {
+                // No Mi account owns this scope (a Home Assistant address, or a LAN source): the
+                // Mi-only freshness signals below can never name it, so its first complete snapshot is
                 // the authority instead.
                 accountReady = snapshot.isInitialLoadComplete
+            } else if selectedHomeHidesScope(scope) {
+                // Another account's home is selected, so this child intentionally hides its devices.
+                // A connected, fresh snapshot is not an inventory of the account in that state.
+                accountReady = false
             } else if activeMiAccountsProvider != nil || snapshot.miAccountsEpoch != nil {
                 // A buffered pre-rebuild snapshot, or one whose account never connected (expired
                 // session, failed refresh), proves nothing about that account's targets (H3).
@@ -414,6 +420,37 @@ extension HomeStore {
         guard !completedScopes.isEmpty else { return }
         pendingRevalidationScopes.subtract(completedScopes)
         revalidatePausedItems(snapshot: snapshot)
+    }
+
+    /// True while another account's Mi home is selected: the provider hides this account's devices
+    /// even when it polls fine, so its snapshot cannot prove anything about them.
+    private func selectedHomeHidesScope(_ scope: String) -> Bool {
+        guard CapabilityReferenceEngine.connectionCapability(forScope: scope) == .xiaomiCloud,
+              let home = selectedMiHomeId, let owner = MiAccountScope.owner(of: home) else { return false }
+        return owner != scope
+    }
+
+    /// The scope still exists in the user's configuration, whether or not it is turned on.
+    private func isCapabilityScopeConfigured(_ connection: ConnectionCapabilityID, scope: String) -> Bool {
+        switch connection {
+        case .xiaomiCloud:
+            return miAccounts.isEmpty ? miSessionScopeIdentifier == scope : miAccounts.contains { $0.id == scope }
+        case .homeAssistant:
+            return hasHASource && homeAssistantScopeIdentifier == scope
+        }
+    }
+
+    /// A paused timer waits until its own scopes are settled: fresh when enabled, or left alone when
+    /// the scope is configured but turned off. Otherwise a fresh snapshot from one account would arm,
+    /// move or hide timers that belong to another account still reconnecting (review #275).
+    private func pausedTimerWaitsForItsScopes(_ command: ScheduledCommand) -> Bool {
+        guard let scopes = command.effectiveSourceScopes else { return false }
+        return scopes.contains { scope in
+            if pendingRevalidationScopes.contains(scope) { return true }
+            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return false }
+            return isCapabilityScopeConfigured(connection, scope: scope)
+                && !capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
+        }
     }
 
     private func persistIndexedDevices() {
@@ -754,6 +791,10 @@ extension HomeStore {
             var stillPaused: [PausedScheduledCommand] = []
             var timersChanged = false
             for paused in pausedScheduledCommands {
+                if pausedTimerWaitsForItsScopes(paused.command) {
+                    stillPaused.append(paused)
+                    continue
+                }
                 let cmd = paused.command
                 let ref = makeTimerReference(
                     for: cmd, partition: paused.originalPartition,
@@ -816,6 +857,9 @@ extension HomeStore {
                 capabilitySelection.isSourceEnabled(connection: nil, scope: $0)
             }
             guard scopesSatisfied else { continue }
+            // A scope still waiting for its own fresh snapshot cannot prove this rule's targets came
+            // back, even when another account has already polled.
+            guard Set(rules[idx].pausedScopes).isDisjoint(with: pendingRevalidationScopes) else { continue }
             let capsSatisfied = rules[idx].pausedCapabilities.allSatisfy { cap in
                 switch cap {
                 case .connection(let conn): capabilitySelection.enabledConnections.contains(conn)
@@ -860,7 +904,9 @@ extension HomeStore {
             onAutomationRulesChanged?()
         }
 
-        if !pausedQuickActionIDs.isEmpty {
+        // Quick actions have no scope of their own; only a settled configuration can say whether
+        // enough of their targets are back.
+        if !pausedQuickActionIDs.isEmpty, pendingRevalidationScopes.isEmpty {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
                 if qaId.hasPrefix("group:") {

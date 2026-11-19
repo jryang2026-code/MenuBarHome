@@ -114,16 +114,10 @@ public struct MiAccountSection: View {
         switch verdict.disposition {
         case .allowed:
             let applied = store.setMiAccountEnabled(false, id: account.id, expectedGeneration: generation)
-            switch applied.disposition {
-            case .allowed:
-                break
-            case .requiresPauseConfirmation:
-                // A reference appeared between the preview and the apply: confirm the list first.
-                pendingDisableConfirmation = DisableConnectionConfirmation(
-                    account: account, itemsToPause: applied.itemsToPause, generation: store.capabilityGeneration
-                )
-            case .blocked:
+            if applied.disposition == .blocked {
                 reportBlockedDisable(applied)
+            } else {
+                presentConfirmationIfStillNeeded(applied, account: account)
             }
         case .requiresPauseConfirmation:
             pendingDisableConfirmation = DisableConnectionConfirmation(
@@ -134,6 +128,20 @@ public struct MiAccountSection: View {
         case .blocked:
             reportBlockedDisable(verdict)
         }
+    }
+
+    /// Re-present the alert only when the disable did not apply. A successful apply returns the pause
+    /// verdict it just used, so presenting that again would offer Cancel for an account that is
+    /// already off (review #275). A real change of the list leaves the account enabled.
+    private func presentConfirmationIfStillNeeded(_ verdict: CapabilityDeactivationVerdict, account: MiAccount) {
+        guard verdict.disposition == .requiresPauseConfirmation,
+              store.isMiAccountEnabled(account.id) else { return }
+        let fresh = DisableConnectionConfirmation(
+            account: account, itemsToPause: verdict.itemsToPause, generation: store.capabilityGeneration
+        )
+        // Present on the next tick so SwiftUI does not drop an alert raised while the old one is
+        // still dismissing.
+        Task { @MainActor in pendingDisableConfirmation = fresh }
     }
 
     /// A blocked preview is never silent: name the reason and what to do about it (L2).
@@ -304,22 +312,8 @@ public struct MiAccountSection: View {
                     expectedGeneration: confirmation.generation,
                     expectedPauseItemKeys: confirmation.pauseItemKeys
                 )
-                switch verdict.disposition {
-                case .allowed:
-                    break
-                case .requiresPauseConfirmation:
-                    // The affected list changed after the preview. Show the fresh one instead of
-                    // pausing a set the user never confirmed; present it on the next tick so SwiftUI
-                    // does not drop an alert raised while this one is still dismissing.
-                    let fresh = DisableConnectionConfirmation(
-                        account: confirmation.account,
-                        itemsToPause: verdict.itemsToPause,
-                        generation: store.capabilityGeneration
-                    )
-                    Task { @MainActor in pendingDisableConfirmation = fresh }
-                case .blocked:
-                    reportBlockedDisable(verdict)
-                }
+                if verdict.disposition == .blocked { reportBlockedDisable(verdict) }
+                presentConfirmationIfStillNeeded(verdict, account: confirmation.account)
             }
         } message: { confirmation in
             Text(confirmation.messageText)
