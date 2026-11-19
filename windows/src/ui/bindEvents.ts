@@ -691,7 +691,45 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       void host.startXiaomiQRLogin();
     };
     host.root.querySelector("#btn-footer-qr")?.addEventListener("click", startQrLogin);
-    host.root.querySelector("#btn-footer-health")?.addEventListener("click", startQrLogin);
+
+    const focusConnectionTrigger = (): void => {
+      host.root.querySelector<HTMLButtonElement>("#btn-connection-status")?.focus();
+    };
+    const setConnectionDetails = (open: boolean): void => {
+      host.connectionDetailsOpen = open;
+      host.render();
+      if (open) host.root.querySelector<HTMLElement>("#cc-connection-details [data-close-connection-details]")?.focus();
+      else focusConnectionTrigger();
+    };
+    const runConnectionAction = (kind: string | undefined): void => {
+      setConnectionDetails(false);
+      if (kind === "qr") startQrLogin();
+      else if (kind === "retry") void host.refreshDevices(false);
+      else host.openSettingsSheet("connection");
+    };
+    const statusTrigger = host.root.querySelector<HTMLButtonElement>("#btn-connection-status");
+    const toggleConnectionDetails = (): void => setConnectionDetails(!host.connectionDetailsOpen);
+    statusTrigger?.addEventListener("click", toggleConnectionDetails);
+    statusTrigger?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      event.stopPropagation();
+      toggleConnectionDetails();
+    });
+    host.root.querySelector("[data-close-connection-details]")?.addEventListener("click", () => setConnectionDetails(false));
+    host.root.querySelector("[data-connection-settings]")?.addEventListener("click", () => runConnectionAction("settings"));
+    host.root.querySelector("[data-connection-retry]")?.addEventListener("click", () => runConnectionAction("retry"));
+    host.root.querySelector("#btn-connection-action")?.addEventListener("click", (event) => {
+      runConnectionAction((event.currentTarget as HTMLElement).dataset.connectionAction);
+    });
+    // Anywhere else in the panel dismisses the footer dialog instead of leaving it floating over the tiles.
+    host.root.querySelector(".cc-popover")?.addEventListener("click", (event) => {
+      if (!host.connectionDetailsOpen) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("#cc-connection-details, #btn-connection-status")) return;
+      host.connectionDetailsOpen = false;
+      host.render();
+    });
     host.root.querySelector("#btn-dismiss-banner")?.addEventListener("click", () => {
       host.replyBanner = null;
       host.render();
