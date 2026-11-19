@@ -4,7 +4,12 @@ import Testing
 
 /// GLOSSARY `BareCategoryCommand` through the store: chips, the all-off choice, undo, and the room
 /// the panel shows.
+///
+/// Serialized, and every test tears its store down: a batch of three commands echoes three
+/// progressive snapshots, and stores left running by earlier tests keep those echoes from landing
+/// inside this suite's budget (#135419668352).
 @MainActor
+@Suite(.serialized)
 struct BareCategoryCommandStoreTests {
     static func light(_ id: String, _ name: String, roomId: String, roomName: String, isOn: Bool) -> SmartDevice {
         SmartDevice(
@@ -26,23 +31,40 @@ struct BareCategoryCommandStoreTests {
 
     static func makeStore(
         _ devices: [SmartDevice] = [studyCeiling, studyDesk, bedroomLamp, kitchenLight]
-    ) async throws -> (HomeStore, MockHomeProvider) {
+    ) async throws -> (HomeStore, MockHomeProvider, String) {
         try await makeStore(devices, rooms: rooms)
     }
 
     static func makeStore(
         _ devices: [SmartDevice],
         rooms: [RoomArea]
-    ) async throws -> (HomeStore, MockHomeProvider) {
+    ) async throws -> (HomeStore, MockHomeProvider, String) {
+        let suite = "test.bare.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: SynthesizedHome(rooms: rooms, devices: devices))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.bare.\(UUID().uuidString)")
-        try await store.waitForTestSnapshot()
-        return (store, mock)
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        do {
+            try await store.waitForTestSnapshot()
+        } catch {
+            // A store that never saw a snapshot still holds a running event task and a suite.
+            Self.tearDown(store, suite)
+            throw error
+        }
+        return (store, mock, suite)
+    }
+
+    /// Stops the store before deleting its domain: `stop()` cancels the event task that would keep
+    /// consuming snapshots after the test. The suite is unique per store, so this only ever runs
+    /// in the `defer` of the test that created it — never before the store exists, which would let
+    /// the store's own writes re-create the domain.
+    static func tearDown(_ store: HomeStore, _ suite: String) {
+        store.stop()
+        UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 
     @Test("关灯 with several lights on asks with chips and runs nothing")
     func severalOnAsks() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         let plan = try #require(await store.runAssistantCommand("关灯"))
 
         #expect(plan.intents.isEmpty)
@@ -60,12 +82,16 @@ struct BareCategoryCommandStoreTests {
 
     @Test("全部关掉 runs every lit light, offers undo, and undo restores them")
     func allOffChoiceRunsAndUndoes() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         _ = await store.runAssistantCommand("关灯")
         let allOff = try #require(store.assistantSuggestions.last)
         #expect(allOff.title == "全部关掉")
 
         await store.applyAssistantSuggestion(allOff)
+        // Three commands echo three progressive snapshots and only the last has all three lights
+        // off. Read the store after that echo, never while a middle frame is still in flight.
+        await waitUntil { store.devices.filter { $0.isActiveOn }.isEmpty }
         let executed = await mock.executedCommands
         #expect(executed.count == 3)
         #expect(store.devices.filter { $0.isActiveOn }.isEmpty)
@@ -73,6 +99,7 @@ struct BareCategoryCommandStoreTests {
 
         let undo = try #require(store.undoTurnAllOff())
         await undo.value
+        await waitUntil { store.devices.filter { $0.isActiveOn }.count == 3 }
         #expect(store.devices.filter { $0.isActiveOn }.map(\.id) == [
             "dev_study_ceiling",
             "dev_study_desk",
@@ -91,7 +118,8 @@ struct BareCategoryCommandStoreTests {
             Self.studyCeiling.off(), Self.studyDesk.off(),
             Self.bedroomLamp.off(), Self.kitchenLight
         ]
-        let (store, mock) = try await Self.makeStore(allOff)
+        let (store, mock, suite) = try await Self.makeStore(allOff)
+        defer { Self.tearDown(store, suite) }
         let plan = try #require(await store.runAssistantCommand("关灯"))
 
         #expect(plan.intents.isEmpty)
@@ -102,11 +130,13 @@ struct BareCategoryCommandStoreTests {
 
     @Test("A room the panel shows decides which lit lights a bare 关灯 closes")
     func panelRoomDecides() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         #expect(store.selectRoom("study"))
         #expect(store.panelRoomName == "书房")
 
         let plan = try #require(await store.runAssistantCommand("关灯"))
+        await waitUntil { store.devices.filter { $0.isActiveOn }.map(\.id) == ["dev_bedroom_lamp"] }
         #expect(plan.intents.map(\.targetId) == ["dev_study_ceiling", "dev_study_desk"])
         let executed = await mock.executedCommands
         #expect(executed.count == 2)
@@ -116,7 +146,8 @@ struct BareCategoryCommandStoreTests {
 
     @Test("A delayed bare 关灯 that needs a choice sets no timer, runs nothing, and asks for a room")
     func delayedAmbiguitySchedulesNothing() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         let plan = try #require(await store.runAssistantCommand("10分钟后关灯"))
         #expect(plan.intents.isEmpty)
         #expect(store.scheduledCommands.isEmpty)
@@ -131,7 +162,8 @@ struct BareCategoryCommandStoreTests {
 
     @Test("An answer with no lights on replaces the previous bare 关灯 chips")
     func answerClearsStaleChips() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         _ = await store.runAssistantCommand("关灯")
         #expect(store.assistantSuggestions.contains { $0.id == "bare:off:all" })
 
@@ -140,9 +172,9 @@ struct BareCategoryCommandStoreTests {
             Self.bedroomLamp.off(), Self.kitchenLight
         ]
         await mock.updateSnapshot(SynthesizedHome(rooms: Self.rooms, devices: allOff))
-        for _ in 0..<50 where store.devices.contains(where: \.isActiveOn) {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        // The parser resolves against `store.devices`, so the answer needs the pushed snapshot
+        // consumed before the second 关灯 can see a dark home.
+        await waitUntil { store.devices.allSatisfy { $0.isActiveOn == false } }
         _ = await store.runAssistantCommand("关灯")
         #expect(store.assistantState == .done("灯都关着"))
         #expect(store.assistantSuggestions.contains { $0.id.hasPrefix("bare:off") } == false)
@@ -156,17 +188,19 @@ struct BareCategoryCommandStoreTests {
         let deCeiling = Self.light(
             "dev_de_ceiling", "客厅吊灯", roomId: "account-de/ke_ting", roomName: "客厅", isOn: true
         )
-        let (store, mock) = try await Self.makeStore(
+        let (store, mock, suite) = try await Self.makeStore(
             [cnCeiling, deCeiling],
             rooms: [
                 RoomArea(id: "account-cn/ke_ting", name: "客厅", sortOrder: 0),
                 RoomArea(id: "account-de/ke_ting", name: "客厅", sortOrder: 1)
             ]
         )
+        defer { Self.tearDown(store, suite) }
         #expect(store.selectRoom("account-cn/ke_ting"))
         #expect(store.panelRoom == BareCategoryCommand.Room(id: "account-cn/ke_ting", name: "客厅"))
 
         let plan = try #require(await store.runAssistantCommand("关灯"))
+        await waitUntil { store.devices.first { $0.id == "dev_cn_ceiling" }?.isActiveOn == false }
         #expect(plan.intents.map(\.targetId) == ["dev_cn_ceiling"])
         let executed = await mock.executedCommands
         #expect(executed == [.setLightPower(entityId: "light.dev_cn_ceiling", isOn: false)])
@@ -175,7 +209,8 @@ struct BareCategoryCommandStoreTests {
 
     @Test("A delayed bare 关灯 resolves against the panel room when the timer is set")
     func delayedCommandResolvesWhenScheduled() async throws {
-        let (store, mock) = try await Self.makeStore()
+        let (store, mock, suite) = try await Self.makeStore()
+        defer { Self.tearDown(store, suite) }
         #expect(store.selectRoom("study"))
         let gate = AsyncStream.makeStream(of: Void.self)
         store.assistantSleep = { _ in
@@ -191,9 +226,8 @@ struct BareCategoryCommandStoreTests {
 
         store.selectRoom(nil)
         gate.continuation.finish()
-        for _ in 0..<50 where await mock.executedCommands.count < 2 {
-            try await Task.sleep(for: .milliseconds(20))
-        }
+        await waitUntil { await mock.executedCommands.count == 2 }
+        await waitUntil { store.devices.filter { $0.isActiveOn }.map(\.id) == ["dev_bedroom_lamp"] }
         #expect(store.scheduledCommands.isEmpty)
         let executed = await mock.executedCommands
         #expect(executed.count == 2)
@@ -232,9 +266,10 @@ struct BareCategoryCommandStoreTests {
 
     @Test("开灯 with several lights off asks with chips and runs nothing")
     func openSeveralOffAsks() async throws {
-        let (store, mock) = try await Self.makeStore([
+        let (store, mock, suite) = try await Self.makeStore([
             Self.studyCeiling.off(), Self.studyDesk.off(), Self.bedroomLamp, Self.kitchenLight
         ])
+        defer { Self.tearDown(store, suite) }
         let plan = try #require(await store.runAssistantCommand("开灯"))
 
         #expect(plan.intents.isEmpty)
@@ -250,14 +285,16 @@ struct BareCategoryCommandStoreTests {
 
     @Test("全部打开 opens every dark light, offers undo, and undo restores them")
     func allOnChoiceRunsAndUndoes() async throws {
-        let (store, mock) = try await Self.makeStore([
+        let (store, mock, suite) = try await Self.makeStore([
             Self.studyCeiling.off(), Self.studyDesk.off(), Self.bedroomLamp, Self.kitchenLight
         ])
+        defer { Self.tearDown(store, suite) }
         _ = await store.runAssistantCommand("开灯")
         let allOn = try #require(store.assistantSuggestions.last)
         #expect(allOn.title == "全部打开")
 
         await store.applyAssistantSuggestion(allOn)
+        await waitUntil { store.devices.filter { $0.isActiveOn }.count == 4 }
         let executed = await mock.executedCommands
         #expect(executed.count == 3)
         #expect(executed.allSatisfy { command in
@@ -273,14 +310,16 @@ struct BareCategoryCommandStoreTests {
 
         let undo = try #require(store.undoTurnAllOff())
         await undo.value
+        await waitUntil { store.devices.filter { $0.isActiveOn }.map(\.id) == ["dev_bedroom_lamp"] }
         #expect(store.devices.filter { $0.isActiveOn }.map(\.id) == ["dev_bedroom_lamp"])
     }
 
     @Test("A room the panel shows decides which dark lights a bare 开灯 opens")
     func openPanelRoomDecides() async throws {
-        let (store, mock) = try await Self.makeStore([
+        let (store, mock, suite) = try await Self.makeStore([
             Self.studyCeiling.off(), Self.studyDesk.off(), Self.bedroomLamp, Self.kitchenLight
         ])
+        defer { Self.tearDown(store, suite) }
         #expect(store.selectRoom("study"))
         var prompts = 0
         store.manualControlConfirmationHandler = { _ in
@@ -289,6 +328,7 @@ struct BareCategoryCommandStoreTests {
         }
 
         let plan = try #require(await store.runAssistantCommand("开灯"))
+        await waitUntil { store.devices.filter { $0.isActiveOn }.count == 3 }
         #expect(plan.intents.map(\.targetId) == ["dev_study_ceiling", "dev_study_desk"])
         #expect(await mock.executedCommands.count == 2)
         #expect(prompts == 0, "低风险灯不应二次确认")
@@ -302,7 +342,8 @@ struct BareCategoryCommandStoreTests {
         let livingPlug = Self.plug(
             "dev_plug_living", "客厅插座", roomId: "living", roomName: "客厅", isOn: true
         )
-        let (store, mock) = try await Self.makeStore([studyPlug, livingPlug], rooms: [])
+        let (store, mock, suite) = try await Self.makeStore([studyPlug, livingPlug], rooms: [])
+        defer { Self.tearDown(store, suite) }
         var prompts: [ManualControlConfirmation] = []
         store.manualControlConfirmationHandler = { prompt in
             prompts.append(prompt)
@@ -327,12 +368,13 @@ struct BareCategoryCommandStoreTests {
         #expect(await mock.executedCommands == [
             .setSwitch(entityId: "switch.dev_plug_study", isOn: true)
         ])
+        await waitUntil { store.devices.first { $0.id == "dev_plug_study" }?.isActiveOn == true }
         #expect(store.devices.first { $0.id == "dev_plug_study" }?.isActiveOn == true)
     }
 
     @Test("A panel room auto-resolving several heaters asks for each one first")
     func openPanelRoomHeatersAskFirst() async throws {
-        let (store, mock) = try await Self.makeStore([
+        let (store, mock, suite) = try await Self.makeStore([
             Self.heater("dev_heat_study", "书房电暖器", roomId: "study", roomName: "书房"),
             Self.heater("dev_heat_study_desk", "书房暖风机", roomId: "study", roomName: "书房"),
             Self.heater("dev_heat_living", "客厅电暖器", roomId: "living", roomName: "客厅")
@@ -340,6 +382,7 @@ struct BareCategoryCommandStoreTests {
             RoomArea(id: "study", name: "书房", sortOrder: 0),
             RoomArea(id: "living", name: "客厅", sortOrder: 1)
         ])
+        defer { Self.tearDown(store, suite) }
         #expect(store.selectRoom("study"))
         var prompts = 0
         store.manualControlConfirmationHandler = { _ in
@@ -360,7 +403,8 @@ struct BareCategoryCommandStoreTests {
         let livingPlug = Self.plug(
             "dev_plug_living", "客厅插座", roomId: "living", roomName: "客厅", isOn: true
         )
-        let (store, mock) = try await Self.makeStore([studyPlug, livingPlug], rooms: [])
+        let (store, mock, suite) = try await Self.makeStore([studyPlug, livingPlug], rooms: [])
+        defer { Self.tearDown(store, suite) }
         var prompts = 0
         store.manualControlConfirmationHandler = { _ in
             prompts += 1
@@ -378,7 +422,8 @@ struct BareCategoryCommandStoreTests {
     func hazardousOpenCandidateAsks() async throws {
         let studyPlug = Self.plug("dev_plug_study", "书房插座", roomId: "study", roomName: "书房")
         let bedroomPlug = Self.plug("dev_plug_bedroom", "主卧插座", roomId: "bedroom", roomName: "主卧")
-        let (store, mock) = try await Self.makeStore([studyPlug, bedroomPlug], rooms: [])
+        let (store, mock, suite) = try await Self.makeStore([studyPlug, bedroomPlug], rooms: [])
+        defer { Self.tearDown(store, suite) }
         _ = await store.runAssistantCommand("打开插座")
         let candidate = try #require(store.assistantSuggestions.first { $0.title == "打开书房插座" })
         #expect(await mock.executedCommands.isEmpty)
@@ -398,6 +443,7 @@ struct BareCategoryCommandStoreTests {
         #expect(await mock.executedCommands == [
             .setSwitch(entityId: "switch.dev_plug_study", isOn: true)
         ])
+        await waitUntil { store.devices.first { $0.id == "dev_plug_study" }?.isActiveOn == true }
         #expect(store.devices.first { $0.id == "dev_plug_study" }?.isActiveOn == true)
     }
 }
