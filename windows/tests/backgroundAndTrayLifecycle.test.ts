@@ -733,8 +733,8 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
 
       nowMs += RESUME_BURST_DEBOUNCE_MS;
       debounceTimers[1]!.handler();
-      await Promise.resolve();
-      await Promise.resolve();
+      await app.endpointSubmission;
+      await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(haSnapshots, 1, "debounced visibility+focus burst triggers one HA recovery");
 
       // Idempotent dispose clears the timer loop and suppresses subsequent events.
