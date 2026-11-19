@@ -1,7 +1,230 @@
 import Foundation
 
+/// Hazard-classification dimensions of a device that govern manual confirmation policy.
+///
+/// Benign telemetry updates or non-reclassifying renames preserve the profile, whereas turning a
+/// light-eligible wall switch into a non-light load, changing `IntentDeviceCategory`, or escalating
+/// a cover/appliance hazard changes the profile and invalidates an in-flight modal approval.
+struct ManualControlHazardProfile: Equatable, Sendable {
+    let category: IntentDeviceCategory
+    let wallSwitchLightCandidate: Bool
+    let isMomentaryPlugButton: Bool
+    let coverSubtype: CoverSubtype?
+    let isClimateWaterHeater: Bool
+    let applianceHeats: Bool
+    let applianceHasStartAction: Bool
+    let genericDeviceType: String?
+
+    init(_ device: SmartDevice) {
+        self.category = IntentDeviceCategory(device)
+        self.wallSwitchLightCandidate = ManualControlPolicy.wallSwitchMayControlLight(device)
+        if case .plug(let spec) = device.kind {
+            self.isMomentaryPlugButton = spec.switchEntityId.hasPrefix("button.")
+        } else {
+            self.isMomentaryPlugButton = false
+        }
+        if case .cover(let spec) = device.kind {
+            self.coverSubtype = spec.subtype
+        } else {
+            self.coverSubtype = nil
+        }
+        if case .climate = device.kind {
+            self.isClimateWaterHeater = device.name.contains("热水器")
+        } else {
+            self.isClimateWaterHeater = false
+        }
+        if case .appliance(let spec) = device.kind {
+            self.applianceHeats = spec.heats
+            self.applianceHasStartAction = spec.startAction != nil
+        } else {
+            self.applianceHeats = false
+            self.applianceHasStartAction = false
+        }
+        if case .generic(let spec) = device.kind {
+            self.genericDeviceType = spec.deviceType
+        } else {
+            self.genericDeviceType = nil
+        }
+    }
+}
+
+/// Snapshot of a device's control identity and hazard profile before presenting a confirmation modal.
+///
+/// `NSAlert.runModal()` spins the main run loop synchronously, so provider snapshots, dual-source
+/// failovers, account changes, session expiry or screen lock can run before confirmation returns.
+struct ModalDeviceContext: Sendable {
+    let controlContextID: UUID
+    let deviceId: String
+    let backend: HomeBackend
+    let accountId: String?
+    let lgServed: Bool
+    let hazardProfile: ManualControlHazardProfile
+}
+
 // Manual-control safety: the screen-lock guard and the high-risk confirmation gate (#143).
 extension HomeStore {
+    func captureModalDeviceContext(for device: SmartDevice) -> ModalDeviceContext {
+        ModalDeviceContext(
+            controlContextID: controlContextID,
+            deviceId: device.id,
+            backend: deviceBackend(for: device.id),
+            accountId: device.accountId,
+            lgServed: lgClientServes(device),
+            hazardProfile: ManualControlHazardProfile(device)
+        )
+    }
+
+    /// Re-reads the live device after a confirmation gate and verifies that its home context and
+    /// backing source are unchanged, session/lock gates still allow control, and online state holds.
+    func resolvePostModalDevice(
+        _ captured: ModalDeviceContext,
+        requireOnline: Bool = false,
+        showOfflineToast: Bool = false
+    ) -> SmartDevice? {
+        guard controlContextID == captured.controlContextID,
+              let current = devices.first(where: { $0.id == captured.deviceId }),
+              deviceBackend(for: captured.deviceId) == captured.backend,
+              current.accountId == captured.accountId,
+              lgClientServes(current) == captured.lgServed else {
+            return nil
+        }
+        guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(current)) else { return nil }
+        guard !rejectControlWhileLocked() else { return nil }
+        if requireOnline, !current.isOnline {
+            if showOfflineToast {
+                showToast(
+                    L10n.tr("\(current.name) 当前离线（可能断电）", "\(current.name) is offline (unplugged)"),
+                    isError: true
+                )
+            }
+            return nil
+        }
+        return current
+    }
+
+    /// True while `deviceId` still exists on the exact control context and source captured in `captured`.
+    func matchesModalDeviceContext(_ captured: ModalDeviceContext) -> Bool {
+        guard controlContextID == captured.controlContextID,
+              let current = devices.first(where: { $0.id == captured.deviceId }) else {
+            return false
+        }
+        return deviceBackend(for: captured.deviceId) == captured.backend
+            && current.accountId == captured.accountId
+            && lgClientServes(current) == captured.lgServed
+    }
+
+    /// Verifies that after a confirmation gate on `captured`, `operation` on `current` neither
+    /// newly requires an unasked confirmation nor changed its hazard classification while still
+    /// requiring confirmation.
+    func postModalAllowsOperation(
+        _ operation: IntentOperation,
+        on current: SmartDevice,
+        captured: ModalDeviceContext,
+        didPresentModal: Bool,
+        ignoresSwitchLightMark: Bool = false
+    ) -> Bool {
+        let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
+        let stillNeedsConfirmation = ManualControlPolicy.requiresConfirmation(
+            operation,
+            for: current,
+            markedLightIds: marks
+        )
+        guard stillNeedsConfirmation else { return true }
+        guard didPresentModal else { return false }
+        return ManualControlHazardProfile(current) == captured.hazardProfile
+    }
+
+    /// Fails closed with a cancellation toast when post-modal state or mark changes invalidate the
+    /// confirmation decision for `operation`.
+    func rejectChangedPostModalHazard(
+        _ operation: IntentOperation,
+        on current: SmartDevice,
+        captured: ModalDeviceContext,
+        didPresentModal: Bool,
+        ignoresSwitchLightMark: Bool = false
+    ) -> Bool {
+        guard !postModalAllowsOperation(
+            operation,
+            on: current,
+            captured: captured,
+            didPresentModal: didPresentModal,
+            ignoresSwitchLightMark: ignoresSwitchLightMark
+        ) else {
+            return false
+        }
+        showToast(
+            L10n.format("已取消「%@」的操作", "Cancelled the action for %@", current.name),
+            isError: true
+        )
+        return true
+    }
+
+    /// Runs the manual confirmation gate for `operation` on `initial` and resolves the verified
+    /// post-modal device, failing closed if context, source, online/lock/session state, or hazard
+    /// classification changed incompatibly while the modal was open.
+    func confirmAndResolveManualControl(
+        _ operation: IntentOperation,
+        for initial: SmartDevice,
+        offersMarkAsLight: Bool = false,
+        ignoresSwitchLightMark: Bool = false,
+        requireOnline: Bool = false,
+        showOfflineToast: Bool = false
+    ) -> (device: SmartDevice, didPresentModal: Bool, context: ModalDeviceContext)? {
+        let modalContext = captureModalDeviceContext(for: initial)
+        let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
+        let didPresentModal = ManualControlPolicy.requiresConfirmation(
+            operation,
+            for: initial,
+            markedLightIds: marks
+        )
+        guard allowManualControl(
+            operation,
+            for: initial,
+            offersMarkAsLight: offersMarkAsLight,
+            ignoresSwitchLightMark: ignoresSwitchLightMark
+        ) else {
+            return nil
+        }
+        guard let current = resolvePostModalDevice(
+            modalContext,
+            requireOnline: requireOnline,
+            showOfflineToast: showOfflineToast
+        ) else {
+            return nil
+        }
+        guard !rejectChangedPostModalHazard(
+            operation,
+            on: current,
+            captured: modalContext,
+            didPresentModal: didPresentModal,
+            ignoresSwitchLightMark: ignoresSwitchLightMark
+        ) else {
+            return nil
+        }
+        return (current, didPresentModal, modalContext)
+    }
+
+    /// Validates and persists «这是灯，以后不再询问» from an active primary-power modal (#104).
+    ///
+    /// If the wall switch vanished, went offline, switched source/account, hit screen lock or Mi
+    /// session expiry, or changed into a non-light high-risk device while the modal was open,
+    /// neither persists the mark nor approves the write.
+    public func confirmSwitchAsLightFromModal(_ deviceId: String) -> Bool {
+        if let captured = activeModalContexts.last(where: { $0.deviceId == deviceId }) {
+            guard matchesModalDeviceContext(captured) else { return false }
+        }
+        guard let current = devices.first(where: { $0.id == deviceId }),
+              current.isOnline,
+              current.isPrimaryToggleable,
+              !isControlBlockedByScreenLock,
+              !(miSessionBlocksControl && !lgClientServes(current)),
+              ManualControlPolicy.wallSwitchMayControlLight(current) else {
+            return false
+        }
+        markSwitchAsLight(deviceId)
+        return isSwitchMarkedAsLight(deviceId)
+    }
+
     /// Shown wherever a user-initiated control is refused because the Mac is locked.
     public var screenLockBlockedMessage: String {
         L10n.tr(
@@ -78,9 +301,13 @@ extension HomeStore {
     }
 
     private func presentManualControlConfirmation(_ prompt: ManualControlConfirmation, for device: SmartDevice) -> Bool {
+        let context = captureModalDeviceContext(for: device)
+        activeModalContexts.append(context)
+        defer { _ = activeModalContexts.popLast() }
         guard let handler = manualControlConfirmationHandler, handler(prompt) else {
+            let currentName = devices.first(where: { $0.id == device.id })?.name ?? device.name
             showToast(
-                L10n.format("已取消「%@」的操作", "Cancelled the action for %@", device.name),
+                L10n.format("已取消「%@」的操作", "Cancelled the action for %@", currentName),
                 isError: true
             )
             return false

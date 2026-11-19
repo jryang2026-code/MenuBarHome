@@ -373,6 +373,8 @@ public final class HomeStore {
     /// Presents the second confirmation for a manual high-risk action. The app installs an AppKit
     /// alert; tests inject a closure so no window is needed.
     @ObservationIgnored public var manualControlConfirmationHandler: ((ManualControlConfirmation) -> Bool)?
+    /// Stack of active confirmation modal contexts while `manualControlConfirmationHandler` runs.
+    @ObservationIgnored var activeModalContexts: [ModalDeviceContext] = []
 
     /// Credential storage shared by the store and its views. An explicit vault takes precedence
     /// over suite storage; nil uses the Keychain for standard defaults and isolated suite storage otherwise.
@@ -806,6 +808,11 @@ public final class HomeStore {
     /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
     @ObservationIgnored var suppressNextLGConfigDidSetSave = false
     @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
+    /// True while `resetLGWebOSTrustAndPair` runs; pairing-key callbacks from LG clients are dropped meanwhile (#262).
+    @ObservationIgnored var lgTrustResetInFlight = false
+    /// Suspends `resetLGWebOSTrustAndPair` after the trust store was cleared and before the result is
+    /// committed, so tests can change LG settings exactly inside that window (#262).
+    @ObservationIgnored var lgTrustResetSuspensionHookForTesting: (@MainActor () async -> Void)?
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).
@@ -862,7 +869,7 @@ public final class HomeStore {
     struct DebouncedWriteState {
         let token: UUID
         let deviceId: String
-        let origin: SmartDevice
+        var origin: SmartDevice
         /// The revision this drag owns and the fields it changed, kept so a patch that can no
         /// longer be sent can put back exactly what it showed.
         let revision: UInt64

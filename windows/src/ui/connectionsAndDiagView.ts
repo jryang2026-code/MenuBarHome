@@ -256,6 +256,7 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
     closeCameraLiveView(): void;
     closeXiaomiCameraLiveView?(accountId?: string): void;
     activeLiveCameraUsesXiaomiCloud?(accountId?: string): boolean;
+    retargetActiveLiveCamera?(deviceId: string): boolean;
     discardRetainedCloudSessions?(): void;
   };
   readonly credentialVault?: CredentialVault;
@@ -792,6 +793,31 @@ function buildHAStateFromDualRoutes(
   return { devices: nextDevices, environmentReadings, deviceFacets };
 }
 
+/**
+ * Sign-out restores raw Home Assistant cards, so a live view opened under a paired card's canonical
+ * id keeps an id the device list no longer has (#254). Follow the camera to the HA card that
+ * replaced it while its stream stays open; close the view when no card is left to show it.
+ */
+function reconcileActiveCameraAfterDeviceRestore(
+  host: ConnectionsAndDiagHost,
+  dualRoutes: Readonly<Record<string, DeviceMergeRoute>> | undefined,
+): void {
+  const activeId = host.cameraLive?.activeLiveCameraId ?? null;
+  if (!activeId) return;
+  if (host.devices.some((d) => d.id === activeId)) return;
+  const route = dualRoutes?.[activeId];
+  const haCandidates = [
+    route?.backend === "homeAssistant" ? route.sourceDeviceId : null,
+    route?.alternateBackend === "homeAssistant" ? (route.alternateDevice?.id ?? null) : null,
+  ];
+  for (const candidateId of haCandidates) {
+    if (!candidateId) continue;
+    const dev = host.devices.find((d) => d.id === candidateId && d.kind.kind === "camera");
+    if (dev && host.cameraLive?.retargetActiveLiveCamera?.(dev.id)) return;
+  }
+  host.cameraLive?.closeCameraLiveView();
+}
+
 export function finishAllMiAccountsSignedOutOnHost(
   host: ConnectionsAndDiagHost,
   options: {
@@ -883,6 +909,7 @@ export function finishAllMiAccountsSignedOutOnHost(
       if (host.expandedDeviceId && !host.devices.some((d) => d.id === host.expandedDeviceId)) {
         host.expandedDeviceId = null;
       }
+      reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
     }
     return { transitionedToHASingleSource: wasDualSource };
   }
@@ -897,6 +924,7 @@ export function finishAllMiAccountsSignedOutOnHost(
     host.deviceFacets = {};
     host.selectRoom(null);
     if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
+    reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
   }
   return { transitionedToHASingleSource: false };
 }

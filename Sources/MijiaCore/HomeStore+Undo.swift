@@ -763,12 +763,21 @@ extension HomeStore {
         let takenOverDeviceIds = batch.map { running in
             Set(running.writes.filter { !ownsRow($0.value) }.keys)
         } ?? []
+        let contextBeforeModal = controlContextID
         let confirmation = confirmUndoTargets(
             banner.restoreCommands,
             previousDevices: banner.previousDevices,
             excludingDeviceIds: takenOverDeviceIds
         )
         if confirmation.abortUndo {
+            return nil
+        }
+        guard controlContextID == contextBeforeModal,
+              undoBanner?.id == banner.id,
+              !rejectControlWhileLocked() else {
+            return nil
+        }
+        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             return nil
         }
         let savedAssistantUndo = lastAssistantUndo?.actionId == banner.actionId ? lastAssistantUndo : nil
@@ -944,86 +953,162 @@ extension HomeStore {
         previousDevices: [SmartDevice] = [],
         excludingDeviceIds: Set<String> = []
     ) -> UndoConfirmationFilterResult {
+        var capturedContexts: [String: ModalDeviceContext] = [:]
+        var promptedProfiles: [String: ManualControlHazardProfile] = [:]
         var approvedDeviceIds: Set<String> = []
         var declinedDeviceIds: Set<String> = []
-        var checkedHighRiskDeviceIds: Set<String> = []
+        var contextInvalidatedDeviceIds: Set<String> = []
 
-        /// One prompt per device: whichever restore speaks for that device first decides, and a
-        /// refusal keeps all of its later commands unsent. An approval is recorded per device, so a
-        /// refusal on the same device later takes that device's approval back with it.
-        func settle(_ device: SmartDevice, requiresConfirmation: Bool, ask: () -> Bool) {
+        /// One prompt per device: whichever restore requires confirmation first asks, and a refusal
+        /// or context/category invalidation excludes all commands on that device. Re-running after a
+        /// sibling modal catches marks removed or categories escalated while the modal was open.
+        func settle(
+            _ device: SmartDevice,
+            requiresConfirmation: Bool,
+            postModalValid: (SmartDevice, ModalDeviceContext) -> Bool,
+            ask: () -> Bool
+        ) -> Bool {
+            if capturedContexts[device.id] == nil {
+                capturedContexts[device.id] = captureModalDeviceContext(for: device)
+            }
+            guard let initialContext = capturedContexts[device.id],
+                  matchesModalDeviceContext(initialContext) else {
+                approvedDeviceIds.remove(device.id)
+                contextInvalidatedDeviceIds.insert(device.id)
+                return false
+            }
             guard requiresConfirmation else {
                 approvedDeviceIds.insert(device.id)
-                return
+                return false
             }
-            guard checkedHighRiskDeviceIds.insert(device.id).inserted else { return }
-            if ask() { approvedDeviceIds.insert(device.id) } else { declinedDeviceIds.insert(device.id) }
+            if let promptedProfile = promptedProfiles[device.id] {
+                if ManualControlHazardProfile(device) != promptedProfile {
+                    approvedDeviceIds.remove(device.id)
+                    contextInvalidatedDeviceIds.insert(device.id)
+                }
+                return false
+            }
+            approvedDeviceIds.remove(device.id)
+            let prePromptContext = captureModalDeviceContext(for: device)
+            promptedProfiles[device.id] = prePromptContext.hazardProfile
+            if ask() {
+                if matchesModalDeviceContext(prePromptContext),
+                   let live = devices.first(where: { $0.id == device.id }),
+                   postModalValid(live, prePromptContext) {
+                    approvedDeviceIds.insert(device.id)
+                } else {
+                    contextInvalidatedDeviceIds.insert(device.id)
+                }
+            } else {
+                declinedDeviceIds.insert(device.id)
+            }
+            return true
         }
 
-        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
-        for command in commands {
-            if let target = Self.facetTarget(for: command),
-               let device = devices.first(where: {
-                   deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
-               }), device.isOnline,
-               let control = deviceFacets[device.id]?.first(where: { $0.target == target }),
-               !declinedDeviceIds.contains(device.id) {
-                // The facet row carries the meaning of the restore: an auxiliary switch turned back
-                // on, a mode restored away from off or a hotter setpoint is as hazardous as the tap
-                // that made the change. A row that cannot decode the restored value falls back to
-                // the device-level power hazard instead of passing silently.
-                if let value = Self.facetValue(for: command, control: control) {
-                    settle(device, requiresConfirmation: ManualControlPolicy.facetRequiresConfirmation(control, value: value, for: device)) {
-                        allowManualControl(facet: control, value: value, for: device)
+        var didPresentModalInPass = false
+        repeat {
+            didPresentModalInPass = false
+            for command in commands {
+                if let target = Self.facetTarget(for: command),
+                   let device = devices.first(where: {
+                       deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
+                   }), device.isOnline,
+                   let control = deviceFacets[device.id]?.first(where: { $0.target == target }),
+                   !declinedDeviceIds.contains(device.id),
+                   !contextInvalidatedDeviceIds.contains(device.id) {
+                    if let value = Self.facetValue(for: command, control: control) {
+                        let preKind = ManualControlPolicy.facetConfirmationKind(control, value: value, for: device)
+                        if settle(
+                            device,
+                            requiresConfirmation: preKind != nil,
+                            postModalValid: { live, preContext in
+                                guard let liveControl = deviceFacets[live.id]?.first(where: { $0.target == target }),
+                                      let liveVal = Self.facetValue(for: command, control: liveControl) else {
+                                    return false
+                                }
+                                guard let postKind = ManualControlPolicy.facetConfirmationKind(
+                                    liveControl, value: liveVal, for: live
+                                ) else { return true }
+                                return postKind == preKind
+                                    && ManualControlHazardProfile(live) == preContext.hazardProfile
+                                    && liveControl.serviceName == control.serviceName
+                                    && liveControl.name == control.name
+                            },
+                            ask: { allowManualControl(facet: control, value: value, for: device) }
+                        ) {
+                            didPresentModalInPass = true
+                        }
+                    } else if settle(
+                        device,
+                        requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: []),
+                        postModalValid: { live, preContext in
+                            postModalAllowsOperation(.power(true), on: live, captured: preContext, didPresentModal: true, ignoresSwitchLightMark: true)
+                        },
+                        ask: { allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true) }
+                    ) {
+                        didPresentModalInPass = true
                     }
+                    continue
+                }
+                if case .setMiotProperty(let entityId, _, _) = command {
+                    let did = MiotAddress.parse(entityId)?.did
+                    let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
+                    if let device = owners.count == 1 ? owners.first : nil, device.isOnline,
+                       !excludingDeviceIds.contains(device.id),
+                       !declinedDeviceIds.contains(device.id),
+                       !contextInvalidatedDeviceIds.contains(device.id),
+                       settle(
+                           device,
+                           requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: []),
+                           postModalValid: { live, preContext in
+                               postModalAllowsOperation(.power(true), on: live, captured: preContext, didPresentModal: true, ignoresSwitchLightMark: true)
+                           },
+                           ask: { allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true) }
+                       ) {
+                        didPresentModalInPass = true
+                    }
+                    continue
+                }
+                let resolved: (device: SmartDevice, restored: SmartDevice)?
+                if let idx = devices.indices.first(where: { !excludingDeviceIds.contains(devices[$0].id) && Self.undoEffect(of: command, on: devices[$0]) != nil }),
+                   let restored = Self.undoEffect(of: command, on: devices[idx]) {
+                    resolved = (devices[idx], restored)
+                } else if let prev = previousDevices.first(where: { !excludingDeviceIds.contains($0.id) && Self.undoEffect(of: command, on: $0) != nil }),
+                          let idx = devices.indices.first(where: { devices[$0].id == prev.id && devices[$0].isOnline }),
+                          let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) {
+                    resolved = (devices[idx], retargeted.updated)
                 } else {
-                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: [])) {
-                        allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true)
-                    }
+                    resolved = nil
                 }
-                continue
-            }
-            if case .setMiotProperty(let entityId, _, _) = command {
-                let did = MiotAddress.parse(entityId)?.did
-                let owners = devices.filter { device in did.map { device.id == $0 || device.miotCommandDids.contains($0) } == true }
-                if let device = owners.count == 1 ? owners.first : nil, device.isOnline,
-                   !excludingDeviceIds.contains(device.id), !declinedDeviceIds.contains(device.id) {
-                    // No facet row explains this restore, so only the device-level hazard can speak:
-                    // a high-risk card is treated as one the restore could turn back on.
-                    settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(.power(true), for: device, markedLightIds: [])) {
-                        allowManualControl(.power(true), for: device, ignoresSwitchLightMark: true)
-                    }
+                guard let (device, restored) = resolved,
+                      !declinedDeviceIds.contains(device.id),
+                      !contextInvalidatedDeviceIds.contains(device.id) else { continue }
+                let restoreOperation = IntentOperation.power(restored.isActiveOn)
+                let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
+                if settle(
+                    device,
+                    requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device, markedLightIds: markedLightIds),
+                    postModalValid: { live, preContext in
+                        postModalAllowsOperation(restoreOperation, on: live, captured: preContext, didPresentModal: true)
+                    },
+                    ask: { allowManualControl(restoreOperation, for: device) }
+                ) {
+                    didPresentModalInPass = true
                 }
-                continue
             }
-            let resolved: (device: SmartDevice, restored: SmartDevice)?
-            if let idx = devices.indices.first(where: { !excludingDeviceIds.contains(devices[$0].id) && Self.undoEffect(of: command, on: devices[$0]) != nil }),
-               let restored = Self.undoEffect(of: command, on: devices[idx]) {
-                resolved = (devices[idx], restored)
-            } else if let prev = previousDevices.first(where: { !excludingDeviceIds.contains($0.id) && Self.undoEffect(of: command, on: $0) != nil }),
-                      let idx = devices.indices.first(where: { devices[$0].id == prev.id && devices[$0].isOnline }),
-                      let retargeted = Self.retargetedUndoEffect(of: command, on: devices[idx]) {
-                resolved = (devices[idx], retargeted.updated)
-            } else {
-                resolved = nil
-            }
-            guard let (device, restored) = resolved, !declinedDeviceIds.contains(device.id) else { continue }
-            // The restore direction is the restored state's, not an assumed "back on": a garage
-            // door returning to closed is as hazardous as one returning to open (a cover keeps the
-            // off direction in the subtype hazard table), while a plug or heater restore that ends
-            // in off stays direct.
-            let restoreOperation = IntentOperation.power(restored.isActiveOn)
-            settle(device, requiresConfirmation: ManualControlPolicy.requiresConfirmation(restoreOperation, for: device, markedLightIds: markedLightIds)) {
-                allowManualControl(restoreOperation, for: device)
+        } while didPresentModalInPass
+
+        for deviceId in approvedDeviceIds {
+            if let captured = capturedContexts[deviceId], !matchesModalDeviceContext(captured) {
+                contextInvalidatedDeviceIds.insert(deviceId)
             }
         }
-        // A device approved by an earlier restore is not approved for this undo once a later restore
-        // on it is refused: its commands are excluded, and if no other device is left there is
-        // nothing to send. Aborting keeps the banner and the voice entry retryable instead of
-        // clearing them and reporting "the device state changed".
-        let abortUndo = !declinedDeviceIds.isEmpty && approvedDeviceIds.subtracting(declinedDeviceIds).isEmpty
+        let validApproved = approvedDeviceIds
+            .subtracting(declinedDeviceIds)
+            .subtracting(contextInvalidatedDeviceIds)
+        let abortUndo = (!declinedDeviceIds.isEmpty || !contextInvalidatedDeviceIds.isEmpty) && validApproved.isEmpty
         return UndoConfirmationFilterResult(
-            excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds),
+            excludedDeviceIds: excludingDeviceIds.union(declinedDeviceIds).union(contextInvalidatedDeviceIds),
             abortUndo: abortUndo
         )
     }
