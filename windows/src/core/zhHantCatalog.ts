@@ -789,4 +789,10 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "已将{name}目标湿度设为 {percent}%": "已將{name}目標濕度設為 {percent}%",
   "已切换{name}信源为 {source}": "已切換{name}信源為 {source}",
   "已切换{name}模式为 {mode}": "已切換{name}模式為 {mode}",
+  "Home Assistant 已停用": "Home Assistant 已停用",
+  "正在停止…": "正在停止…",
+  "还在停止 · 重试": "還在停止 · 重試",
+  "服务器地址与令牌已保留，重新启用后恢复同步": "伺服器位址與權杖已保留，重新啟用後恢復同步",
+  "重新启用": "重新啟用",
+  "连接设置": "連線設定",
 };

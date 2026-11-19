@@ -1,4 +1,4 @@
-export type HaConnectionLifecyclePhase = "enabled" | "stopping" | "disabled";
+export type HaConnectionLifecyclePhase = "enabled" | "stopping" | "stop_timeout" | "disabled";
 
 export interface HaGateStorageLike {
   getItem(key: string): string | null;
@@ -32,7 +32,15 @@ export function isHaBlockedRequestError(error: unknown): error is HaBlockedReque
   );
 }
 
-const CAPABILITY_SELECTION_STORAGE_KEY = "menumijia.windows.capabilitySelection.v1";
+export const CAPABILITY_SELECTION_STORAGE_KEY = "menumijia.windows.capabilitySelection.v1";
+
+/**
+ * User-facing Home Assistant disable toggle remains gated off until P2b-R ships
+ * native Rust HTTP/stream cancellation for in-flight Tauri HA commands.
+ */
+export const HA_NATIVE_CANCEL_READY = false;
+
+export const DEFAULT_HA_STOP_DRAIN_TIMEOUT_MS = 8_000;
 
 function defaultStorage(): HaGateStorageLike | null {
   try {
@@ -122,11 +130,19 @@ export function isHaScopeDisabledInStorage(
   }
 }
 
+export interface HaDrainReadyMeta {
+  readonly timedOut?: boolean;
+}
+
 interface ScopeLifecycleEntry {
   generation: number;
+  abandonedBeforeGen: number;
+  stopTimedOut: boolean;
+  drainTimer: ReturnType<typeof setTimeout> | null;
+  lastPhase: HaConnectionLifecyclePhase | null;
   controller: AbortController;
   readonly inFlightByGen: Map<number, number>;
-  pendingEnableCallbacks: Array<(ready: boolean) => void>;
+  pendingEnableCallbacks: Array<(ready: boolean, meta?: HaDrainReadyMeta) => void>;
 }
 
 type PhaseListener = (scope: string, phase: HaConnectionLifecyclePhase) => void;
@@ -134,6 +150,8 @@ type PhaseListener = (scope: string, phase: HaConnectionLifecyclePhase) => void;
 const fallbackEnvKey: object = {};
 const scopeEntriesByEnv = new WeakMap<object, Map<string, ScopeLifecycleEntry>>();
 const phaseListenersByEnv = new WeakMap<object, Set<PhaseListener>>();
+const nativeCancelReadyOverrideByEnv = new WeakMap<object, boolean>();
+const stopDrainTimeoutMsOverrideByEnv = new WeakMap<object, number>();
 
 function currentEnvKey(): object {
   try {
@@ -144,6 +162,34 @@ function currentEnvKey(): object {
     // Ignore restricted global window access.
   }
   return fallbackEnvKey;
+}
+
+export function isHaNativeCancelReady(): boolean {
+  const override = nativeCancelReadyOverrideByEnv.get(currentEnvKey());
+  return override !== undefined ? override : HA_NATIVE_CANCEL_READY;
+}
+
+export function setHaNativeCancelReadyForTests(ready: boolean | null): void {
+  const key = currentEnvKey();
+  if (ready === null) {
+    nativeCancelReadyOverrideByEnv.delete(key);
+  } else {
+    nativeCancelReadyOverrideByEnv.set(key, ready);
+  }
+}
+
+export function getHaStopDrainTimeoutMs(): number {
+  const override = stopDrainTimeoutMsOverrideByEnv.get(currentEnvKey());
+  return override !== undefined ? override : DEFAULT_HA_STOP_DRAIN_TIMEOUT_MS;
+}
+
+export function setHaStopDrainTimeoutMsForTests(ms: number | null): void {
+  const key = currentEnvKey();
+  if (ms === null) {
+    stopDrainTimeoutMsOverrideByEnv.delete(key);
+  } else {
+    stopDrainTimeoutMsOverrideByEnv.set(key, Math.max(1, Math.trunc(ms)));
+  }
 }
 
 function getScopeEntries(): Map<string, ScopeLifecycleEntry> {
@@ -166,12 +212,19 @@ function getPhaseListeners(): Set<PhaseListener> {
   return set;
 }
 
-function cancelPendingEnableCallbacks(entry: ScopeLifecycleEntry): void {
+function clearDrainTimer(entry: ScopeLifecycleEntry): void {
+  if (entry.drainTimer !== null) {
+    clearTimeout(entry.drainTimer);
+    entry.drainTimer = null;
+  }
+}
+
+function cancelPendingEnableCallbacks(entry: ScopeLifecycleEntry, meta?: HaDrainReadyMeta): void {
   if (entry.pendingEnableCallbacks.length === 0) return;
   const callbacks = entry.pendingEnableCallbacks.splice(0);
   for (const cb of callbacks) {
     try {
-      cb(false);
+      cb(false, meta);
     } catch {
       // Ignore callback errors during cancellation.
     }
@@ -184,6 +237,10 @@ function ensureEntry(scope: string): ScopeLifecycleEntry {
   if (!entry) {
     entry = {
       generation: 1,
+      abandonedBeforeGen: 0,
+      stopTimedOut: false,
+      drainTimer: null,
+      lastPhase: null,
       controller: new AbortController(),
       inFlightByGen: new Map(),
       pendingEnableCallbacks: [],
@@ -193,23 +250,28 @@ function ensureEntry(scope: string): ScopeLifecycleEntry {
   return entry;
 }
 
-function totalInFlight(entry: ScopeLifecycleEntry): number {
+function activeInFlight(entry: ScopeLifecycleEntry): number {
   let sum = 0;
-  for (const count of entry.inFlightByGen.values()) {
-    sum += count;
+  for (const [gen, count] of entry.inFlightByGen.entries()) {
+    if (gen >= entry.abandonedBeforeGen) sum += count;
   }
   return sum;
 }
 
-function olderInFlight(entry: ScopeLifecycleEntry): number {
+function activeOlderInFlight(entry: ScopeLifecycleEntry): number {
   let sum = 0;
   for (const [gen, count] of entry.inFlightByGen.entries()) {
-    if (gen < entry.generation) sum += count;
+    if (gen >= entry.abandonedBeforeGen && gen < entry.generation) sum += count;
   }
   return sum;
 }
 
 function notifyPhaseListeners(scope: string, phase: HaConnectionLifecyclePhase): void {
+  const entry = getScopeEntries().get(scope);
+  if (entry) {
+    if (entry.lastPhase === phase) return;
+    entry.lastPhase = phase;
+  }
   for (const listener of [...getPhaseListeners()]) {
     try {
       listener(scope, phase);
@@ -217,6 +279,20 @@ function notifyPhaseListeners(scope: string, phase: HaConnectionLifecyclePhase):
       // Listener errors must never disrupt transport draining.
     }
   }
+}
+
+function armDrainTimer(scope: string, entry: ScopeLifecycleEntry): void {
+  clearDrainTimer(entry);
+  if (activeInFlight(entry) <= 0) return;
+  const timer = setTimeout(() => {
+    entry.drainTimer = null;
+    if (activeInFlight(entry) <= 0) return;
+    entry.stopTimedOut = true;
+    cancelPendingEnableCallbacks(entry, { timedOut: true });
+    notifyPhaseListeners(scope, "stop_timeout");
+  }, getHaStopDrainTimeoutMs());
+  (timer as unknown as { unref?: () => void }).unref?.();
+  entry.drainTimer = timer;
 }
 
 export function getHaScopeGeneration(scope: string | null | undefined): number {
@@ -235,7 +311,14 @@ export function getHaScopeInFlightCount(scope: string | null | undefined): numbe
   const normalized = haConnectionScope(scope);
   if (!normalized) return 0;
   const entry = getScopeEntries().get(normalized);
-  return entry ? totalInFlight(entry) : 0;
+  return entry ? activeInFlight(entry) : 0;
+}
+
+export function isHaScopeStopTimedOut(scope: string | null | undefined): boolean {
+  const normalized = haConnectionScope(scope);
+  if (!normalized) return false;
+  const entry = getScopeEntries().get(normalized);
+  return Boolean(entry && entry.stopTimedOut && activeInFlight(entry) > 0);
 }
 
 export function getHaScopeLifecyclePhase(
@@ -247,8 +330,8 @@ export function getHaScopeLifecyclePhase(
   const entry = getScopeEntries().get(normalized);
   const disabled = isHaScopeDisabledInStorage(normalized, storage);
   if (entry) {
-    const draining = disabled ? totalInFlight(entry) : olderInFlight(entry);
-    if (draining > 0) return "stopping";
+    const draining = disabled ? activeInFlight(entry) : activeOlderInFlight(entry);
+    if (draining > 0) return entry.stopTimedOut ? "stop_timeout" : "stopping";
   }
   return disabled ? "disabled" : "enabled";
 }
@@ -260,19 +343,51 @@ export function beginHaScopeDisable(
   const normalized = haConnectionScope(scope);
   if (!normalized) return "disabled";
   const entry = ensureEntry(normalized);
+  clearDrainTimer(entry);
   cancelPendingEnableCallbacks(entry);
+  entry.stopTimedOut = false;
   entry.generation += 1;
   entry.controller.abort();
   entry.controller = new AbortController();
-  const phase: HaConnectionLifecyclePhase = totalInFlight(entry) > 0 ? "stopping" : "disabled";
+  const draining = activeInFlight(entry) > 0;
+  const phase: HaConnectionLifecyclePhase = draining ? "stopping" : "disabled";
+  if (draining) {
+    armDrainTimer(normalized, entry);
+  }
   void storage;
   notifyPhaseListeners(normalized, phase);
   return phase;
 }
 
+/**
+ * Abandons hung pre-timeout in-flight tracking so user-initiated retry / re-enable
+ * can recover from `stop_timeout` without allowing late settlement of abandoned
+ * generations (`lease.isCurrent() === false`) to write state.
+ */
+export function abandonHungHaScopeInFlight(
+  scope: string | null | undefined,
+  storage?: HaGateStorageLike | null,
+): HaConnectionLifecyclePhase {
+  const normalized = haConnectionScope(scope);
+  if (!normalized) return "disabled";
+  const entry = ensureEntry(normalized);
+  clearDrainTimer(entry);
+  cancelPendingEnableCallbacks(entry);
+  entry.abandonedBeforeGen = entry.generation;
+  entry.generation += 1;
+  entry.controller.abort();
+  entry.controller = new AbortController();
+  entry.stopTimedOut = false;
+  const nextPhase: HaConnectionLifecyclePhase = isHaScopeDisabledInStorage(normalized, storage)
+    ? "disabled"
+    : "enabled";
+  notifyPhaseListeners(normalized, nextPhase);
+  return nextPhase;
+}
+
 export function requestHaScopeEnableAfterDrain(
   scope: string | null | undefined,
-  onReady: (ready: boolean) => void,
+  onReady: (ready: boolean, meta?: HaDrainReadyMeta) => void,
   storage?: HaGateStorageLike | null,
 ): { readonly immediate: boolean; readonly generation: number } {
   const normalized = haConnectionScope(scope);
@@ -281,12 +396,16 @@ export function requestHaScopeEnableAfterDrain(
     return { immediate: true, generation: 0 };
   }
   const entry = ensureEntry(normalized);
-  if (totalInFlight(entry) > 0) {
+  if (activeInFlight(entry) > 0) {
+    entry.stopTimedOut = false;
     cancelPendingEnableCallbacks(entry);
     entry.pendingEnableCallbacks = [onReady];
+    armDrainTimer(normalized, entry);
     notifyPhaseListeners(normalized, "stopping");
     return { immediate: false, generation: entry.generation };
   }
+  clearDrainTimer(entry);
+  entry.stopTimedOut = false;
   cancelPendingEnableCallbacks(entry);
   entry.generation += 1;
   entry.controller = new AbortController();
@@ -303,6 +422,7 @@ export function clearHaScopeLifecycle(scope?: string | null): void {
   const entries = getScopeEntries();
   if (!scope) {
     for (const [key, entry] of entries.entries()) {
+      clearDrainTimer(entry);
       cancelPendingEnableCallbacks(entry);
       entry.generation += 1;
       entry.controller.abort();
@@ -315,6 +435,7 @@ export function clearHaScopeLifecycle(scope?: string | null): void {
   if (!normalized) return;
   const entry = entries.get(normalized);
   if (!entry) return;
+  clearDrainTimer(entry);
   cancelPendingEnableCallbacks(entry);
   entry.generation += 1;
   entry.controller.abort();
@@ -357,8 +478,9 @@ export function acquireHaTransportLease(
       const effectiveStorage = storage === undefined ? options?.storage : storage;
       return (
         !leaseSignal.aborted &&
+        leaseGeneration >= entry.abandonedBeforeGen &&
         entry.generation === leaseGeneration &&
-        olderInFlight(entry) === 0 &&
+        activeOlderInFlight(entry) === 0 &&
         !isHaScopeDisabledInStorage(scope, effectiveStorage)
       );
     },
@@ -371,7 +493,12 @@ export function acquireHaTransportLease(
       } else {
         entry.inFlightByGen.set(leaseGeneration, prev - 1);
       }
-      if (totalInFlight(entry) === 0) {
+      if (leaseGeneration < entry.abandonedBeforeGen) {
+        return;
+      }
+      if (activeInFlight(entry) === 0) {
+        clearDrainTimer(entry);
+        entry.stopTimedOut = false;
         if (entry.pendingEnableCallbacks.length > 0 && !isHaScopeDisabledInStorage(scope, options?.storage)) {
           const callbacks = entry.pendingEnableCallbacks.splice(0);
           entry.generation += 1;
@@ -403,9 +530,13 @@ export function subscribeHaScopeLifecycle(
 export function resetHaTransportGateForTests(): void {
   const entries = getScopeEntries();
   for (const entry of entries.values()) {
+    clearDrainTimer(entry);
     cancelPendingEnableCallbacks(entry);
     entry.controller.abort();
   }
   entries.clear();
   getPhaseListeners().clear();
+  const envKey = currentEnvKey();
+  nativeCancelReadyOverrideByEnv.delete(envKey);
+  stopDrainTimeoutMsOverrideByEnv.delete(envKey);
 }

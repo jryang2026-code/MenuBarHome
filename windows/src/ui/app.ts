@@ -1,4 +1,4 @@
-import { homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
+import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import {
   MiAccountsStore,
@@ -99,6 +99,7 @@ import {
 import {
   createDefaultHostConnDiagSession,
   isConnectionsAndDiagModalOpen,
+  syncHaDisconnectRowOnHost,
   type HostConnDiagSession,
 } from "./connectionsAndDiagView.js";
 import {
@@ -122,7 +123,7 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
 import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
@@ -438,12 +439,7 @@ export class MenuMijiaWindowsApp {
     this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
-    const haEnabledOnBoot = isHostHaEnabled(this);
-    const haCache =
-      haEnabledOnBoot &&
-      this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken)
-        ? this.settings.cachedHAHome.home
-        : null;
+    const haCache = haCacheIfEnabled(this, { requireIdentityMatch: true })?.home ?? null;
     const primaryDisabledOnly =
       this.settings.miSession !== null &&
       !isHostMiSessionEnabled(this, this.settings.miSession) &&
@@ -472,18 +468,10 @@ export class MenuMijiaWindowsApp {
     window.addEventListener("blur", onBlurCancelAllOff);
     const unsubscribeHaLifecycle = subscribeHaScopeLifecycle(() => {
       if (!this.root.isConnected) return;
-      if (this.activeSheet === "settings" || isConnectionsAndDiagModalOpen(this) || this.connectionDetailsOpen) {
-        const focusedTag = document.activeElement?.tagName;
-        const focusedType = (document.activeElement as HTMLInputElement | null)?.type;
-        const isTypingText =
-          focusedTag === "TEXTAREA" ||
-          (focusedTag === "INPUT" && focusedType !== "checkbox" && focusedType !== "radio" && focusedType !== "button");
-        if (!isTypingText) {
-          this.render();
-          return;
-        }
-      }
       this.queueBackgroundRender();
+      if (this.hasBlockingPanelInteraction()) {
+        syncHaDisconnectRowOnHost(this);
+      }
     });
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
@@ -1425,7 +1413,29 @@ export class MenuMijiaWindowsApp {
         ? `<div id="panel-search-results" class="cc-devices-grid is-flow">${results.map((device, index) => this.renderDeviceTile(device, this.settings.isCompactGridMode && this.expandedDeviceId !== device.id ? 3 : 6, index)).join("")}</div>`
         : `<div id="panel-search-results" class="cc-empty-state"><div class="cc-empty-title">${t("没有匹配的设备")}</div><div class="cc-empty-subtitle">${t("输入设备名、房间或拼音首字母；整句话按回车执行")}</div></div>`;
     }
-    if (this.settings.connectionMode === "homeAssistant" && this.devices.length === 0) return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
+    if (this.settings.connectionMode === "homeAssistant" && this.devices.length === 0) {
+      if (!isHostHaEnabled(this)) {
+        const haPhase = getHostHaLifecyclePhase(this);
+        const subtitle =
+          haPhase === "stop_timeout"
+            ? t("还在停止 · 重试")
+            : haPhase === "stopping"
+              ? t("正在停止…")
+              : t("服务器地址与令牌已保留，重新启用后恢复同步");
+        return `
+          <div class="cc-empty-state" id="empty-ha-disabled">
+            <div class="cc-empty-title">${t("Home Assistant 已停用")}</div>
+            <div class="cc-empty-subtitle">${subtitle}</div>
+            <div class="cc-empty-actions">
+              ${haPhase === "stop_timeout" ? `<button class="cc-btn-primary" id="btn-empty-ha-stop-retry">${t("还在停止 · 重试")}</button>` : ""}
+              ${haPhase !== "stopping" ? `<button class="cc-btn-primary" id="btn-empty-ha-reenable">${t("重新启用")}</button>` : ""}
+              <button class="cc-btn-secondary" id="btn-empty-settings">${t("连接设置")}</button>
+            </div>
+          </div>
+        `;
+      }
+      return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
+    }
     // A selected home the cloud no longer returns devices for is not an empty account (#67):
     // other homes still have devices, so offer the way back to all of them.
     if (

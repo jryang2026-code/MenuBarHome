@@ -34,7 +34,11 @@ import { normalizeSearch } from "../core/panelSearch.js";
 import { markSwitchAsLight, unmarkSwitchAsLight } from "../core/switchLightMarks.js";
 import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
-import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
+import {
+  bindConnectionsAndDiagPanelEvents,
+  retryTimedOutHaStopOnHost,
+  setHaConnectionEnabledOnHost,
+} from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import {
@@ -808,6 +812,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
       void host.refreshDevices(false);
+    });
+
+    host.root.querySelector("#btn-empty-ha-reenable")?.addEventListener("click", () => {
+      void setHaConnectionEnabledOnHost(host, true);
+    });
+
+    host.root.querySelector("#btn-empty-ha-stop-retry")?.addEventListener("click", () => {
+      retryTimedOutHaStopOnHost(host);
     });
 
     host.root.querySelector("#btn-empty-settings")?.addEventListener("click", () => {

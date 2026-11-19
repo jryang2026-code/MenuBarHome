@@ -5,7 +5,13 @@ import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
-import { buildHostCapabilityContext, isDualSourceEnabled, isHostHaEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import {
+  buildHostCapabilityContext,
+  isDualSourceEnabled,
+  isHostHaEnabled,
+  resolveEnabledMiAccountsForHost,
+  resolveHostMiSelectionState,
+} from "./cloudRefresh.js";
 import { evaluateDisabledUtteranceGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
@@ -25,7 +31,11 @@ export function scheduledCommandIdentity(settings: PersistedSettings): string | 
 export function scheduledCommandsReady(host: MenuMijiaWindowsApp): boolean {
   const identity = scheduledCommandIdentity(host.settings);
   if (identity === "demo") return true;
-  if (host.settings.connectionMode === "homeAssistant" && !isHostHaEnabled(host)) return false;
+  if (host.settings.connectionMode === "homeAssistant" && !isHostHaEnabled(host)) {
+    if (!isDualSourceEnabled(host) || resolveEnabledMiAccountsForHost(host).length === 0) {
+      return false;
+    }
+  }
   return host.timerCredentialsReady && identity !== null &&
     host.timerSnapshot?.identity === identity && host.timerSnapshot.sourceRevision === host.sourceRevision;
 }

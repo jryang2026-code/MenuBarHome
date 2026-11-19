@@ -51,7 +51,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
-import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsState, haCacheIfEnabled, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
@@ -207,7 +207,7 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
     const cached =
       mode === "xiaomiCloud"
         ? host.settings.cachedXiaomiDevices
-        : host.settings.cachedHAHome?.home?.devices;
+        : haCacheIfEnabled(host)?.home?.devices;
     if (
       Array.isArray(cached) &&
       cached.length > 0 &&

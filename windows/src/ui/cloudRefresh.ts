@@ -70,8 +70,10 @@ import {
 import {
   getHaScopeLifecyclePhase,
   isHaBlockedRequestError,
+  isHaScopeDisabledInStorage,
   type HaConnectionLifecyclePhase,
 } from "../core/haTransportGate.js";
+import type { PersistedSettings } from "./appTypes.js";
 
 type MiSelectionHost = DualSourceInspectableHost & { readonly miAccountsStore?: MiAccountsStore | null };
 
@@ -97,8 +99,10 @@ export function resolveHostMiSelectionState(host: MiSelectionHost, accounts?: re
   return state;
 }
 
-export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts: readonly MiAccount[]): MiAccount[] =>
-  filterEnabledMiAccounts(accounts, resolveHostMiSelectionState(host, accounts));
+export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts?: readonly MiAccount[]): MiAccount[] => {
+  const resolved = hostKnownMiAccounts(host, accounts);
+  return filterEnabledMiAccounts(resolved, resolveHostMiSelectionState(host, resolved));
+};
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
   Boolean(session && isMiSessionEnabledInState(session, resolveHostMiSelectionState(host, [makeMiAccount(session)])));
@@ -111,8 +115,44 @@ export function isHostHaEnabled(host: MiSelectionHost): boolean {
 
 export function getHostHaLifecyclePhase(host: MiSelectionHost): HaConnectionLifecyclePhase {
   const phase = getHaScopeLifecyclePhase(host.settings.haBaseURL ?? null);
-  if (phase === "stopping") return "stopping";
+  if (phase === "stopping" || phase === "stop_timeout") return phase;
   return isHostHaEnabled(host) ? "enabled" : "disabled";
+}
+
+export interface HaCacheReadSettings<
+  TCache extends { readonly identity: string } | null | undefined = PersistedSettings["cachedHAHome"],
+> {
+  readonly haBaseURL?: string | null;
+  readonly haToken?: string | null;
+  readonly cachedHAHome?: TCache;
+}
+
+export function settingsHaCacheIfEnabled<
+  TCache extends { readonly identity: string } | null | undefined = PersistedSettings["cachedHAHome"],
+>(
+  settings: HaCacheReadSettings<TCache>,
+  options?: { readonly requireIdentityMatch?: boolean },
+): NonNullable<TCache> | null {
+  const cache = settings.cachedHAHome ?? null;
+  const identityBaseUrl = cache?.identity ? (cache.identity.split("|", 1)[0] ?? null) : null;
+  const scope =
+    haConnectionScope(settings.haBaseURL ?? null, settings.haToken ?? null) ??
+    haConnectionScope(identityBaseUrl);
+  if (scope && isHaScopeDisabledInStorage(scope)) return null;
+  if (!cache) return null;
+  if (options?.requireIdentityMatch) {
+    const expected = homeAssistantIdentity(settings.haBaseURL ?? "", settings.haToken ?? "");
+    return expected !== null && cache.identity === expected ? (cache as NonNullable<TCache>) : null;
+  }
+  return cache as NonNullable<TCache>;
+}
+
+export function haCacheIfEnabled(
+  host: MiSelectionHost & { readonly settings: DualSourceInspectableHost["settings"] & Pick<HaCacheReadSettings, "cachedHAHome"> },
+  options?: { readonly requireIdentityMatch?: boolean },
+): NonNullable<PersistedSettings["cachedHAHome"]> | null {
+  if (!isHostHaEnabled(host)) return null;
+  return settingsHaCacheIfEnabled(host.settings, options);
 }
 
 export interface HostSceneSource {

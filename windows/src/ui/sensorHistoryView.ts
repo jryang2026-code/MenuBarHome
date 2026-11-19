@@ -30,6 +30,7 @@ import {
   getHostDualSourceState,
   getHostHaLifecyclePhase,
   getHostMiAccountsState,
+  haCacheIfEnabled,
   isDualSourceEnabled,
   isHostHaEnabled,
 } from "./cloudRefresh.js";
@@ -277,7 +278,7 @@ function canRecordLiveHostSensors(host: MenuMijiaWindowsApp): boolean {
     const cachedList =
       host.settings.connectionMode === "xiaomiCloud"
         ? host.settings.cachedXiaomiDevices
-        : (host.settings.cachedHAHome?.home.devices ?? []);
+        : (haCacheIfEnabled(host)?.home.devices ?? []);
     const cachedSig = sensorSnapshotSignature(cachedList);
     if (cachedSig !== "" && cachedSig === sensorSnapshotSignature(host.devices)) {
       return false;

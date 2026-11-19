@@ -5,11 +5,11 @@ import {
   QUICK_ACTION_TARGET_CATEGORIES, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
   partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
   type CapabilityDeactivationVerdict, type CapabilityIndexedDevice, type CapabilityInstallResolutionMode,
-  type CapabilityReferenceGraph, type CapabilitySelection, type ControlTargetKind, type QuickActionReference,
-  type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
+  type CapabilityReferenceGraph, type CapabilitySelection, type ControlTargetKind, type ControlTargetRejectionReason,
+  type QuickActionReference, type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
 } from "./capabilityReferenceVerdict.js";
 import type { DeviceMergeRoute } from "./dualSourceProvider.js";
-import { haConnectionScope } from "./haTransportGate.js";
+import { CAPABILITY_SELECTION_STORAGE_KEY, haConnectionScope } from "./haTransportGate.js";
 import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
@@ -18,7 +18,30 @@ import { planQuickAction, quickActionTitle, type QuickActionId } from "./quickAc
 import type { PausedScheduledCommand, ScheduledCommandStore } from "./scheduledCommands.js";
 
 export { haConnectionScope };
-export const MI_ACCOUNT_CAPABILITY_STORAGE_KEY = "menumijia.windows.capabilitySelection.v1";
+export const MI_ACCOUNT_CAPABILITY_STORAGE_KEY = CAPABILITY_SELECTION_STORAGE_KEY;
+
+export class CapabilityGateError extends Error {
+  public readonly code = "CAPABILITY_GATE_REJECTED" as const;
+  public readonly reason: ControlTargetRejectionReason;
+
+  constructor(reason: ControlTargetRejectionReason, preference?: LanguagePreference) {
+    super(controlTargetRejectionMessage(reason, preference && preference !== "system" ? preference : undefined));
+    this.name = "CapabilityGateError";
+    this.reason = reason;
+  }
+}
+
+export function isCapabilityGateError(error: unknown): error is CapabilityGateError {
+  return (
+    error instanceof CapabilityGateError ||
+    (typeof error === "object" &&
+      error !== null &&
+      (error as { code?: unknown }).code === "CAPABILITY_GATE_REJECTED" &&
+      typeof (error as { reason?: unknown }).reason === "object" &&
+      (error as { reason?: unknown }).reason !== null)
+  );
+}
+
 const BUILTIN_QUICK_ACTIONS: readonly QuickActionId[] = ["lightsOff", "softNightLight", "climateSleepOff"];
 const EMPTY_SAFETY_POLICY: SafetyRetentionPolicy = { enabledSignals: [] };
 const ENTITY_FIELDS = [
@@ -60,7 +83,7 @@ export interface MiAccountSelectionState {
   readonly knownDisabledHaScenes: readonly DisabledHaSceneSnapshot[];
   persistIfMigrationReady(): boolean;
 }
-export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; readonly disablingHaScope?: string | null; }
+export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const defaultStorage = (): StorageLike | null => { try { return typeof localStorage !== "undefined" ? localStorage : null; } catch { return null; } };
@@ -332,47 +355,6 @@ export function queueMiAccountReenableFromLogin(
         pendingRevalidationAccountIds: needsRevalidation
           ? [...new Set([...prev.pendingRevalidationAccountIds, targetScope])]
           : prev.pendingRevalidationAccountIds,
-      };
-    },
-  });
-}
-
-export function queueHaReenableFromEndpointSave(
-  haScope: string,
-  options: {
-    readonly storage?: StorageLike | null;
-    readonly scheduledCommandStore?: ScheduledCommandStore | null;
-    readonly ruleStore?: AutomationRuleStore | null;
-    readonly keepDisabled?: boolean;
-  } = {},
-): boolean {
-  const targetScope = normalizeHaScopeString(haScope);
-  const hasPausedTimers = options.scheduledCommandStore
-    ? [...options.scheduledCommandStore.entries()].some(([, q]) => (q.pausedScheduledCommands?.length ?? 0) > 0)
-    : false;
-  const effectiveRuleStore = options.ruleStore === undefined ? new AutomationRuleStore() : options.ruleStore;
-  const hasPausedRules = effectiveRuleStore
-    ? effectiveRuleStore.load().some((r) => Boolean(r.pausedByCapabilities?.length))
-    : false;
-  return writeMiAccountSelectionMutation({
-    storage: options.storage,
-    mutate: (prev) => {
-      const needsRevalidation =
-        prev.disabledHaScopes.some((s) => normalizeHaScopeString(s) === targetScope) ||
-        prev.pendingRevalidationHaScopes.some((s) => normalizeHaScopeString(s) === targetScope) ||
-        prev.knownDisabledHaDevices.some((d) => normalizeHaScopeString(d.scope) === targetScope) ||
-        prev.knownDisabledHaScenes.some((s) => normalizeHaScopeString(s.scope) === targetScope) ||
-        prev.pausedQuickActionIds.length > 0 ||
-        hasPausedTimers ||
-        hasPausedRules;
-      return {
-        ...prev,
-        disabledHaScopes: options.keepDisabled
-          ? prev.disabledHaScopes
-          : prev.disabledHaScopes.filter((s) => normalizeHaScopeString(s) !== targetScope),
-        pendingRevalidationHaScopes: needsRevalidation
-          ? [...new Set([...prev.pendingRevalidationHaScopes, targetScope])]
-          : prev.pendingRevalidationHaScopes,
       };
     },
   });
@@ -775,10 +757,7 @@ export function previewHaConnectionDisable(options: {
   const resolvedScope =
     (options.haScope ? normalizeHaScopeString(options.haScope) : null) ??
     haConnectionScope(options.context.haBaseURL, options.context.haToken);
-  const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices({
-    ...options.context,
-    disablingHaScope: resolvedScope,
-  });
+  const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
   const devById = new Map(indexedDevices.map((d) => [d.id, d] as const));
   const sceneById = new Map(sceneRefs.map((s) => [s.id, s] as const));
   const timers = collectTimerReferencesForDeactivation({
@@ -1360,18 +1339,55 @@ export function resolveDisabledHaSceneByTarget(
   );
 }
 
-export function evaluateDeviceEntityWriteGate(options: {
+export interface WriteGateRejectionVerdict {
+  readonly reason: ControlTargetRejectionReason;
+  readonly message: string;
+}
+
+function looksLikeUnattributedHaTarget(targetIdOrEntityId: string): boolean {
+  const trimmed = targetIdOrEntityId.trim();
+  if (!trimmed) return false;
+  if (
+    MiAccountScope.owner(trimmed) !== null ||
+    trimmed.startsWith("miot:") ||
+    trimmed.startsWith("lg:") ||
+    trimmed.startsWith("lgtv:") ||
+    /^\d+(?:\.\d+)*(?:#.*)?$/.test(trimmed)
+  ) {
+    return false;
+  }
+  if (trimmed.startsWith("ha:")) return true;
+  const base = trimmed.split("#", 1)[0] ?? trimmed;
+  return /^[a-z_][a-z0-9_]*\.[a-z0-9_]+$/i.test(base);
+}
+
+function toWriteGateVerdict(
+  reason: ControlTargetRejectionReason | null,
+  pref?: LanguagePreference,
+): WriteGateRejectionVerdict | null {
+  if (!reason) return null;
+  return {
+    reason,
+    message: controlTargetRejectionMessage(reason, pref),
+  };
+}
+
+export function evaluateDeviceEntityWriteGateVerdict(options: {
   readonly targetKind: ControlTargetKind;
   readonly targetIdOrEntityId: string;
   readonly resolvedActiveDeviceId: string | null;
   readonly context: HostCapabilityContextInput;
   readonly languagePreference?: LanguagePreference;
   readonly rejectUnknown?: boolean;
-}): string | null {
+}): WriteGateRejectionVerdict | null {
   const pref = effectivePref(options.languagePreference);
   const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
   const currentHaScope = haConnectionScope(options.context.haBaseURL, options.context.haToken);
   const isCurrentHaDisabled = Boolean(currentHaScope && options.context.state.disabledHaScopes.has(currentHaScope));
+  const hasNoHaSnapshotsForScope =
+    currentHaScope !== null &&
+    !options.context.state.knownDisabledHaDevices.some((d) => normalizeHaScopeString(d.scope) === currentHaScope) &&
+    !options.context.state.knownDisabledHaScenes.some((s) => normalizeHaScopeString(s.scope) === currentHaScope);
   if (options.targetKind === "scene") {
     const lowerTarget = options.targetIdOrEntityId.toLowerCase();
     const matched = options.context.scenes.find(
@@ -1396,20 +1412,21 @@ export function evaluateDeviceEntityWriteGate(options: {
     if (targetSceneId === null) {
       const scopedOwner = MiAccountScope.owner(options.targetIdOrEntityId);
       if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
-        return controlTargetRejectionMessage({ code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) }, pref);
+        return toWriteGateVerdict(
+          { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) },
+          pref,
+        );
       }
-      if (
-        isCurrentHaDisabled &&
-        options.targetIdOrEntityId.startsWith("ha:") &&
-        options.context.state.knownDisabledHaScenes.length === 0 &&
-        options.context.state.knownDisabledHaDevices.length === 0
-      ) {
-        return controlTargetRejectionMessage({ code: "connectionDisabled", connection: "home-assistant", scope: currentHaScope! }, pref);
+      if (isCurrentHaDisabled && hasNoHaSnapshotsForScope && looksLikeUnattributedHaTarget(options.targetIdOrEntityId)) {
+        return toWriteGateVerdict(
+          { code: "connectionScopeDisabled", connection: "home-assistant", scope: currentHaScope! },
+          pref,
+        );
       }
-      return options.rejectUnknown ? controlTargetRejectionMessage({ code: "sceneNotFound" }, pref) : null;
+      return options.rejectUnknown ? toWriteGateVerdict({ code: "sceneNotFound" }, pref) : null;
     }
     const v = evaluateControlTargetGate({ targetKind: "scene", targetId: targetSceneId, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
-    return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, pref);
+    return v.allowed ? null : toWriteGateVerdict(v.rejectionReason, pref);
   }
   const disabledMatch =
     options.resolvedActiveDeviceId === null
@@ -1427,26 +1444,50 @@ export function evaluateDeviceEntityWriteGate(options: {
   if (targetId === null) {
     const scopedOwner = MiAccountScope.owner(options.targetIdOrEntityId);
     if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
-      return controlTargetRejectionMessage({ code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) }, pref);
+      return toWriteGateVerdict(
+        { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) },
+        pref,
+      );
     }
-    if (
-      isCurrentHaDisabled &&
-      options.targetIdOrEntityId.startsWith("ha:") &&
-      options.context.state.knownDisabledHaDevices.length === 0 &&
-      options.context.state.knownDisabledHaScenes.length === 0
-    ) {
-      return controlTargetRejectionMessage({ code: "connectionDisabled", connection: "home-assistant", scope: currentHaScope! }, pref);
+    if (isCurrentHaDisabled && hasNoHaSnapshotsForScope && looksLikeUnattributedHaTarget(options.targetIdOrEntityId)) {
+      return toWriteGateVerdict(
+        { code: "connectionScopeDisabled", connection: "home-assistant", scope: currentHaScope! },
+        pref,
+      );
     }
-    return options.rejectUnknown ? controlTargetRejectionMessage({ code: "deviceNotFound" }, pref) : null;
+    return options.rejectUnknown ? toWriteGateVerdict({ code: "deviceNotFound" }, pref) : null;
   }
   const v = evaluateControlTargetGate({ targetKind: "device", targetId, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
-  return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, pref);
+  return v.allowed ? null : toWriteGateVerdict(v.rejectionReason, pref);
 }
 
-export function evaluateIntentsWriteGate(options: { readonly intents: readonly DeviceIntent[]; readonly context: HostCapabilityContextInput; readonly languagePreference?: LanguagePreference }): string | null {
+export function evaluateDeviceEntityWriteGate(options: {
+  readonly targetKind: ControlTargetKind;
+  readonly targetIdOrEntityId: string;
+  readonly resolvedActiveDeviceId: string | null;
+  readonly context: HostCapabilityContextInput;
+  readonly languagePreference?: LanguagePreference;
+  readonly rejectUnknown?: boolean;
+}): string | null {
+  return evaluateDeviceEntityWriteGateVerdict(options)?.message ?? null;
+}
+
+export function evaluateIntentsWriteGateVerdict(options: {
+  readonly intents: readonly DeviceIntent[];
+  readonly context: HostCapabilityContextInput;
+  readonly languagePreference?: LanguagePreference;
+}): WriteGateRejectionVerdict | null {
   if (options.intents.length === 0) return null;
+  const pref = effectivePref(options.languagePreference);
   const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
-  const targets = options.intents.map((i) => {
+  const currentHaScope = haConnectionScope(options.context.haBaseURL, options.context.haToken);
+  const isCurrentHaDisabled = Boolean(currentHaScope && options.context.state.disabledHaScopes.has(currentHaScope));
+  const hasNoHaSnapshotsForScope =
+    currentHaScope !== null &&
+    !options.context.state.knownDisabledHaDevices.some((d) => normalizeHaScopeString(d.scope) === currentHaScope) &&
+    !options.context.state.knownDisabledHaScenes.some((s) => normalizeHaScopeString(s.scope) === currentHaScope);
+  const targets: Array<{ readonly kind: ControlTargetKind; readonly id: string }> = [];
+  for (const i of options.intents) {
     if (i.operation.kind === "activateScene") {
       const lowerTarget = i.targetId.toLowerCase();
       const activeMatch = options.context.scenes.find(
@@ -1459,7 +1500,24 @@ export function evaluateIntentsWriteGate(options: { readonly intents: readonly D
         activeMatch || disabledMatch
           ? null
           : resolveDisabledHaSceneByTarget(i.targetId, options.context.state.knownDisabledHaScenes, options.context.state.disabledHaScopes);
-      return { kind: "scene" as ControlTargetKind, id: activeMatch?.id ?? disabledMatch?.id ?? disabledHaMatch?.id ?? i.targetId };
+      const resolvedId = activeMatch?.id ?? disabledMatch?.id ?? disabledHaMatch?.id ?? null;
+      if (resolvedId === null) {
+        const scopedOwner = MiAccountScope.owner(i.targetId);
+        if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
+          return toWriteGateVerdict(
+            { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) },
+            pref,
+          );
+        }
+        if (isCurrentHaDisabled && hasNoHaSnapshotsForScope && looksLikeUnattributedHaTarget(i.targetId)) {
+          return toWriteGateVerdict(
+            { code: "connectionScopeDisabled", connection: "home-assistant", scope: currentHaScope! },
+            pref,
+          );
+        }
+      }
+      targets.push({ kind: "scene", id: resolvedId ?? i.targetId });
+      continue;
     }
     const activeDev = options.context.devices.find((d) => d.id === i.targetId);
     const disabledDev = activeDev ? null : resolveDisabledDeviceByEntity(i.targetId, options.context.state.knownDisabledDevices);
@@ -1467,11 +1525,30 @@ export function evaluateIntentsWriteGate(options: { readonly intents: readonly D
       activeDev || disabledDev
         ? null
         : resolveDisabledHaDeviceByEntity(i.targetId, options.context.state.knownDisabledHaDevices, options.context.state.disabledHaScopes);
-    return { kind: "device" as ControlTargetKind, id: activeDev?.id ?? disabledDev?.id ?? disabledHaDev?.id ?? i.targetId };
-  });
+    const resolvedId = activeDev?.id ?? disabledDev?.id ?? disabledHaDev?.id ?? null;
+    if (resolvedId === null) {
+      const scopedOwner = MiAccountScope.owner(i.targetId);
+      if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
+        return toWriteGateVerdict(
+          { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) },
+          pref,
+        );
+      }
+      if (isCurrentHaDisabled && hasNoHaSnapshotsForScope && looksLikeUnattributedHaTarget(i.targetId)) {
+        return toWriteGateVerdict(
+          { code: "connectionScopeDisabled", connection: "home-assistant", scope: currentHaScope! },
+          pref,
+        );
+      }
+    }
+    targets.push({ kind: "device", id: resolvedId ?? i.targetId });
+  }
   const v = evaluatePlanTargetsGate({ targets, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
-  if (v.allowed || !v.rejectionReason) return null;
-  return controlTargetRejectionMessage(v.rejectionReason, effectivePref(options.languagePreference));
+  return v.allowed ? null : toWriteGateVerdict(v.rejectionReason, pref);
+}
+
+export function evaluateIntentsWriteGate(options: { readonly intents: readonly DeviceIntent[]; readonly context: HostCapabilityContextInput; readonly languagePreference?: LanguagePreference }): string | null {
+  return evaluateIntentsWriteGateVerdict(options)?.message ?? null;
 }
 
 function stubKindForDisabledCategory(category: DeviceCategoryID, entityId: string): DeviceKind {

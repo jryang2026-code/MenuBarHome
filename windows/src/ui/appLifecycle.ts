@@ -15,7 +15,6 @@ import {
   serializeUpdateState,
 } from "../core/updateChecker.js";
 import { credentialsFromSettings, hasCredentials } from "../core/secureStore.js";
-import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import {
   assistantEndpointIdentity,
@@ -63,6 +62,7 @@ import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import {
   buildHostCapabilityContext,
+  haCacheIfEnabled,
   isDualSourceEnabled,
   isHostHaEnabled,
   isHostMiSessionEnabled,
@@ -179,15 +179,13 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         }
       }
       if (host.settings.connectionMode === "homeAssistant") {
-        if (isHostHaEnabled(host)) {
-          const cache = host.settings.cachedHAHome;
-          if (cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken)) {
-            host.devices = structuredClone(cache.home.devices);
-            host.scenes = structuredClone(cache.home.scenes);
-            host.environmentReadings = structuredClone(cache.home.environmentReadings);
-            host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
-          }
-        } else {
+        const cache = haCacheIfEnabled(host, { requireIdentityMatch: true });
+        if (cache) {
+          host.devices = structuredClone(cache.home.devices);
+          host.scenes = structuredClone(cache.home.scenes);
+          host.environmentReadings = structuredClone(cache.home.environmentReadings);
+          host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
+        } else if (!isHostHaEnabled(host)) {
           host.devices = [];
           host.scenes = [];
           host.environmentReadings = [];

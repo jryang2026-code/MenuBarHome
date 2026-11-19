@@ -203,6 +203,9 @@ function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses
 function haSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
   if (!IS_ACTIVE_HA(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
   const haPhase = getHostHaLifecyclePhase(host);
+  if (haPhase === "stop_timeout") {
+    return { badge: "degraded", text: tr(host, "还在停止 · 重试", "還在停止 · 重試", "Still stopping · Retry") };
+  }
   if (haPhase === "stopping") {
     return { badge: "connecting", text: tr(host, "正在停止…", "正在停止…", "Stopping…") };
   }

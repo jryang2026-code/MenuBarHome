@@ -28,7 +28,11 @@ import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } 
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
-import { evaluateDisabledUtteranceGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
+import {
+  evaluateDisabledUtteranceGate,
+  evaluateIntentsWriteGate,
+  evaluateIntentsWriteGateVerdict,
+} from "../core/miAccountControl.js";
 
 function localParseOptions(host: MenuMijiaWindowsApp): LocalIntentParseOptions {
   const cut = host.listCut;
@@ -467,14 +471,15 @@ export function confirmDelayedSuggestion(
 
 export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): Promise<void> {
   if (item.intents && item.intents.length > 0) {
-    const gateMsg =
+    const gateFailure =
       host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)
-        ? evaluateIntentsWriteGate({
+        ? evaluateIntentsWriteGateVerdict({
             intents: item.intents,
             context: buildHostCapabilityContext(host),
             languagePreference: host.settings.interfaceLanguage,
           })
         : null;
+    const gateMsg = gateFailure?.message ?? null;
     const missingTargets = missingScheduledCommandTargets(item, host.devices, host.scenes);
     if (gateMsg !== null && missingTargets.length === 0) {
       host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
@@ -483,11 +488,9 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
     }
     if (missingTargets.length > 0) {
       const isNotFoundOnly =
-        gateMsg === null ||
-        gateMsg === "设备不存在" ||
-        gateMsg === "Device not found" ||
-        gateMsg === "场景不存在" ||
-        gateMsg === "Scene not found";
+        gateFailure === null ||
+        gateFailure.reason.code === "deviceNotFound" ||
+        gateFailure.reason.code === "sceneNotFound";
       if (!isNotFoundOnly && gateMsg !== null) {
         host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
         host.render();

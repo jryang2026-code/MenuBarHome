@@ -9,11 +9,13 @@ import {
   buildHostCapabilityContext,
   getHostHaLifecyclePhase,
   getHostMiAccountsStore,
+  haCacheIfEnabled,
   isHostHaEnabled,
   refreshDevices,
   setHostDeviceSourcePin,
   setHostDualSourceEnabled,
   setHostHAInvokeOverride,
+  settingsHaCacheIfEnabled,
 } from "../src/ui/cloudRefresh.js";
 import {
   disconnectHomeAssistantOnHost,
@@ -23,9 +25,11 @@ import {
 import { resolveConnectionStatus } from "../src/ui/connectionStatus.js";
 import {
   confirmMissedScheduledCommand,
+  enqueueScheduledCommand,
   markTimerSnapshotReady,
   processScheduledCommands,
   scheduledCommandIdentity,
+  scheduledCommandsReady,
 } from "../src/ui/scheduledCommands.js";
 import { executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
 import { onOpenURL, type AppURLCommandHost } from "../src/core/appUrlCommand.js";
@@ -38,9 +42,18 @@ import {
   dispatchSystemContextEvent,
   executeAutomationCardUndo,
   getHostActivityCenter,
+  tickSafetyHealthAndAutomation,
 } from "../src/ui/activityStackView.js";
 import { runUnsupportedDevicesScanOnHost } from "../src/ui/connectionsAndDiagView.js";
-import { HomeAssistantClient } from "../src/core/homeAssistant.js";
+import { controlFailureUserMessage } from "../src/core/controlFailure.js";
+import {
+  HaBlockedRequestError,
+  isHaNativeCancelReady,
+  resetHaTransportGateForTests,
+  setHaNativeCancelReadyForTests,
+  setHaStopDrainTimeoutMsForTests,
+} from "../src/core/haTransportGate.js";
+import { HomeAssistantClient, homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import { HomeAssistantProvider } from "../src/core/homeProvider.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { makeMiAccount } from "../src/core/miAccountsStore.js";
@@ -59,6 +72,7 @@ import {
   type HttpTransport,
   type MiSession,
 } from "../src/core/miCloudClient.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import { CredentialVault, type SecureInvoke } from "../src/core/secureStore.js";
 import { fetchHomeAssistantSensorHistory } from "../src/core/sensorHistory.js";
 import { syncSensorHistoryHost } from "../src/ui/sensorHistoryView.js";
@@ -323,9 +337,11 @@ beforeEach(() => {
   dom = mountTestWindow({ stubInterval: true });
   removeCssEscape = installCssEscape();
   setLanguage("zh-Hans");
+  setHaNativeCancelReadyForTests(true);
 });
 
 afterEach(async () => {
+  resetHaTransportGateForTests();
   removeCssEscape?.();
   if (dom) await closeTestWindow(dom);
   dom = null;
@@ -665,10 +681,12 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(previewIds.has("automationRule:r_ha_qa"), true);
     assert.equal(previewIds.has("quickAction:lightsOff"), true);
 
-    // Open Settings -> click toggle without confirmPause -> renders inline preview; clicking Cancel preserves everything!
+    // Open Settings -> click toggle without confirmPause -> renders inline preview while keeping checkbox checked; clicking Cancel preserves everything!
     app.openSettingsSheet("connection");
     const firstAsk = await setHaConnectionEnabledOnHost(app, false, { nowMs });
     assert.equal(firstAsk.status, "requiresPauseConfirmation");
+    const previewCheckbox = document.querySelector<HTMLInputElement>("[data-ha-connection-enabled]");
+    assert.equal(previewCheckbox?.checked, true, "HA checkbox must stay checked while confirmation preview is open");
     const cancelBtn = document.querySelector<HTMLButtonElement>("[data-ha-cancel-disable]");
     assert.ok(cancelBtn, "expected inline HA pause preview cancel button");
     cancelBtn.click();
@@ -676,9 +694,12 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(queue.scheduledCommands.length, 2);
     assert.equal(ruleStore.load().every((r) => r.isEnabled), true);
 
-    // Simulate storage write failure (both initial capability storage failure AND mid-commit ruleStore failure) -> atomic rollback leaves timers & rules unpaused!
+    // Simulate storage write failure (initial capability storage, timer storage, and mid-commit ruleStore failure) -> atomic byte-for-byte rollback!
+    const rawSelectionBefore = localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+    const rawTimersBefore = localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY);
+    const rawRulesBefore = localStorage.getItem(AutomationRuleStore.storageKey);
     const origSetItem = localStorage.setItem.bind(localStorage);
-    for (const failKey of [MI_ACCOUNT_CAPABILITY_STORAGE_KEY, AutomationRuleStore.storageKey]) {
+    for (const failKey of [MI_ACCOUNT_CAPABILITY_STORAGE_KEY, SCHEDULED_COMMANDS_STORAGE_KEY, AutomationRuleStore.storageKey]) {
       let activeFail = true;
       Object.defineProperty(localStorage, "setItem", {
         configurable: true,
@@ -696,6 +717,9 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
         Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: origSetItem });
       }
       assert.equal(isHostHaEnabled(app), true);
+      assert.equal(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY), rawSelectionBefore);
+      assert.equal(localStorage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY), rawTimersBefore);
+      assert.equal(localStorage.getItem(AutomationRuleStore.storageKey), rawRulesBefore);
       assert.equal(queue.scheduledCommands.length, 2);
       assert.equal(queue.pausedScheduledCommands?.length ?? 0, 0);
       assert.equal(ruleStore.load().every((r) => r.isEnabled), true);
@@ -840,6 +864,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(app.scenes.some((s) => s.name === "HA影院模式"), false);
     const pairedAfter = app.devices.find((d) => d.name === "吸顶主灯");
     assert.ok(pairedAfter, "paired Xiaomi+HA device must remain online via Xiaomi when HA is disabled");
+    assert.equal(pairedAfter.id, pairedBefore.id, "paired Xiaomi+HA device must retain canonical id across HA disable");
 
     const dualState = resolveMiAccountSelectionState({
       storage: localStorage,
@@ -1244,5 +1269,322 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
 
     assert.equal(h.countCmd("ha_execute"), haExecBaseline, "total ha_execute across all blocked entry points must be 0");
     assert.equal(h.miWritePaths.length, miWriteBaseline, "total Xiaomi writes across all blocked/partial plans must be 0");
+  });
+
+  it("gates the HA disable checkbox behind HA_NATIVE_CANCEL_READY === false by default while still exposing Re-enable recovery for persisted disabledHaScopes", async () => {
+    setHaNativeCancelReadyForTests(null);
+    assert.equal(isHaNativeCancelReady(), false, "production default must keep HA_NATIVE_CANCEL_READY === false until Rust cancellation lands");
+
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-gate";
+    await app.refreshHADevices(false);
+
+    app.openSettingsSheet("connection");
+    assert.equal(
+      document.querySelector("[data-ha-connection-enabled]"),
+      null,
+      "HA disable checkbox must remain hidden when HA_NATIVE_CANCEL_READY is false",
+    );
+    assert.ok(document.querySelector("#btn-disconnect-ha"), "Disconnect HA button must remain available");
+
+    // Simulate a persisted disabledHaScopes entry on disk under default HA_NATIVE_CANCEL_READY === false:
+    // both Settings ([data-ha-reenable]) and the main panel empty state (#btn-empty-ha-reenable) must still allow recovery!
+    writeMiAccountSelectionMutation({
+      storage: localStorage,
+      mutate: (prev) => ({
+        ...prev,
+        disabledHaScopes: [HA_SCOPE],
+      }),
+    });
+    app.devices = [];
+    app.scenes = [];
+    app.render();
+
+    assert.equal(document.querySelector("[data-ha-connection-enabled]"), null);
+    assert.equal(
+      document.querySelector("[data-ha-connection-status]")?.getAttribute("data-ha-connection-status"),
+      "disabled",
+    );
+    const settingsReenableBtn = document.querySelector<HTMLButtonElement>("[data-ha-reenable]");
+    assert.ok(settingsReenableBtn, "Settings must still render Re-enable recovery button when disabledHaScopes is persisted");
+
+    app.activeSheet = "none";
+    app.render();
+    assert.match(document.querySelector("#empty-ha-disabled")?.textContent ?? "", /Home Assistant 已停用/);
+    const emptyReenableBtn = document.querySelector<HTMLButtonElement>("#btn-empty-ha-reenable");
+    assert.ok(emptyReenableBtn, "Main panel empty state must render Re-enable recovery button");
+
+    emptyReenableBtn.click();
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(isHostHaEnabled(app), true, "clicking empty-state Re-enable must recover persisted disabled HA scope");
+    assert.equal(app.devices.some((d) => d.name === "HA灯带"), true);
+  });
+
+  it("bounds hung HA in-flight stop with stop_timeout, surfaces Still stopping · Retry without hanging setHaConnectionEnabledOnHost(true), and abandons stale leases cleanly", async () => {
+    setHaStopDrainTimeoutMsForTests(25);
+    const hungSnapshot = createDeferred<ReturnType<typeof makeHaSnapshotPayload>>();
+    let useHungSnapshot = true;
+
+    const h = makeHarness({
+      onHaSnapshot: async () => {
+        if (useHungSnapshot) return hungSnapshot.promise;
+        return makeHaSnapshotPayload({
+          devices: [{ id: "ha-dev-fresh", name: "恢复后新灯", area_id: "living" }],
+          entities: [{ entity_id: "light.ha_fresh", device_id: "ha-dev-fresh" }],
+          states: [{ entity_id: "light.ha_fresh", state: "on", attributes: { friendly_name: "恢复后新灯", brightness: 200 } }],
+        });
+      },
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-hung";
+
+    const inFlightRefresh = app.refreshHADevices(false);
+    await new Promise((r) => setTimeout(r, 0));
+
+    const dis = await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    assert.equal(dis.status, "applied");
+    assert.equal(getHostHaLifecyclePhase(app), "stopping");
+
+    // Attempt re-enable while the old snapshot is still hung: must NOT hang forever; must time out cleanly and keep HA disabled!
+    const blockedReenable = await setHaConnectionEnabledOnHost(app, true);
+    assert.equal(blockedReenable.status, "blocked");
+    assert.equal(isHostHaEnabled(app), false, "timed-out re-enable must preserve disabledHaScopes");
+    assert.equal(getHostHaLifecyclePhase(app), "stop_timeout");
+    assert.match(resolveConnectionStatus(app).text, /还在停止 · 重试/);
+
+    // Verify both empty-state and Settings surface Still stopping · Retry!
+    app.activeSheet = "none";
+    app.render();
+    assert.ok(document.querySelector("#btn-empty-ha-stop-retry"), "empty state must render retry button on stop_timeout");
+    assert.ok(document.querySelector("#btn-empty-ha-reenable"), "empty state must render re-enable button on stop_timeout");
+
+    app.openSettingsSheet("connection");
+    assert.equal(
+      document.querySelector("[data-ha-connection-status]")?.getAttribute("data-ha-connection-status"),
+      "stop_timeout",
+    );
+    const retryBtn = document.querySelector<HTMLButtonElement>("[data-ha-stop-retry]");
+    assert.ok(retryBtn, "Settings must render Still stopping · Retry button");
+
+    // Clicking Still stopping · Retry abandons the hung lease and completes transition to disabled!
+    retryBtn.click();
+    assert.equal(getHostHaLifecyclePhase(app), "disabled");
+    assert.equal(document.querySelector("[data-ha-stop-retry]"), null);
+    assert.equal(
+      document.querySelector("[data-ha-connection-status]")?.getAttribute("data-ha-connection-status"),
+      "disabled",
+    );
+
+    // Re-enabling now succeeds with fresh HA snapshot!
+    useHungSnapshot = false;
+    const recovered = await setHaConnectionEnabledOnHost(app, true);
+    assert.equal(recovered.status, "applied");
+    assert.equal(isHostHaEnabled(app), true);
+    assert.equal(getHostHaLifecyclePhase(app), "enabled");
+    assert.deepEqual(app.devices.map((d) => d.name), ["恢复后新灯"]);
+
+    // Late resolution of the ancient hung promise must be dropped because its abandoned generation is no longer current!
+    hungSnapshot.resolve(makeHaSnapshotPayload());
+    await inFlightRefresh;
+    assert.deepEqual(app.devices.map((d) => d.name), ["恢复后新灯"], "late hung response must not overwrite fresh state");
+  });
+
+  it("keeps dual-source Xiaomi timers ready and firing when HA is disabled, and uses structured verdict codes in zh-Hant", async () => {
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-dual-timer";
+    app.settings.miSession = SESS_A;
+    setHostDualSourceEnabled(app, true, { persist: true });
+    await getHostMiAccountsStore(app).upsertAccount(SESS_A);
+
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+    const haStripBefore = app.devices.find((d) => d.name === "HA灯带")!;
+    assert.ok(haStripBefore);
+
+    const nowMs = 1_760_500_000_000;
+    const identity = scheduledCommandIdentity(app.settings)!;
+    const queue = app.scheduledCommandStore.queue(identity);
+    queue.scheduledCommands = [
+      {
+        id: "t_pure_ha_paused",
+        command: "关闭HA灯带",
+        reply: "好",
+        delaySeconds: 60,
+        fireTimestampMs: nowMs + 60_000,
+        intents: [{ targetId: haStripBefore.id, operation: { kind: "power", isOn: false } }],
+      },
+    ];
+    app.scheduledCommands = queue.scheduledCommands;
+    app.scheduledCommandStore.persist();
+
+    const dis = await setHaConnectionEnabledOnHost(app, false, { confirmPause: true, nowMs });
+    assert.equal(dis.status, "applied");
+
+    // Dual-source with connectionMode === "homeAssistant" and HA disabled still has active Xiaomi SESS_A -> timers MUST stay ready!
+    assert.equal(scheduledCommandsReady(app), true, "dual-source Xiaomi timers must remain ready when HA is disabled");
+    const miLamp = app.devices.find((d) => d.name === "米家台灯")!;
+    assert.ok(miLamp);
+
+    const enqueued = enqueueScheduledCommand(app, {
+      id: "t_pure_mi_due",
+      command: "关闭米家台灯",
+      reply: "好",
+      delaySeconds: 30,
+      fireTimestampMs: nowMs + 30_000,
+      intents: [{ targetId: miLamp.id, operation: { kind: "power", isOn: false } }],
+    });
+    assert.equal(enqueued, true, "enqueuing a pure-Xiaomi timer must succeed while HA is disabled");
+
+    const miWritesBefore = h.miWritePaths.length;
+    const haExecBefore = h.countCmd("ha_execute");
+    processScheduledCommands(app, nowMs + 65_000);
+    await new Promise((r) => setTimeout(r, 25));
+
+    assert.equal(h.miWritePaths.length, miWritesBefore + 1, "due pure-Xiaomi timer must fire via Xiaomi Cloud");
+    assert.equal(h.countCmd("ha_execute"), haExecBefore, "paused pure-HA timer must make 0 HA writes");
+    assert.equal(app.missedScheduledCommands.length, 0, "due pure-Xiaomi timer must execute instead of parking in missed");
+    assert.equal(queue.pausedScheduledCommands?.some((p) => p.command.id === "t_pure_ha_paused"), true);
+
+    // Traditional Chinese (zh-Hant) structured verdict check: missing target parks in missed, disabled HA rejects without parking!
+    app.settings.interfaceLanguage = "zh-Hant";
+    setLanguage("zh-Hant");
+
+    await app.runScheduledCommand({
+      id: "t_zhhant_missing",
+      command: "關閉幽靈燈",
+      reply: "好",
+      delaySeconds: 10,
+      fireTimestampMs: nowMs + 70_000,
+      intents: [{ targetId: "missing_device_zhhant", operation: { kind: "power", isOn: false } }],
+    });
+    assert.equal(app.missedScheduledCommands.some((m) => m.id === "t_zhhant_missing"), true, "zh-Hant deviceNotFound must park in missedScheduledCommands");
+    assert.match(app.replyBanner?.text ?? "", /裝置不存在/);
+
+    app.missedScheduledCommands = [];
+    queue.missedScheduledCommands = [];
+    app.scheduledCommandStore.persist();
+
+    await app.runScheduledCommand({
+      id: "t_zhhant_disabled_ha",
+      command: "關閉HA燈帶",
+      reply: "好",
+      delaySeconds: 10,
+      fireTimestampMs: nowMs + 70_000,
+      intents: [{ targetId: haStripBefore.id, operation: { kind: "power", isOn: false } }],
+    });
+    assert.equal(app.missedScheduledCommands.length, 0, "disabled HA scope must reject immediately without parking in missed");
+    assert.match(app.replyBanner?.text ?? "", /Home Assistant.*已停用/);
+  });
+
+  it("prevents cachedHAHome leaks across UI views when HA is disabled, localizes gate errors on offline devices, and attributes snapshot-less raw HA entity IDs", async () => {
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-cache-leak";
+
+    const cachedPlug: SmartDevice = {
+      id: "switch.ha_cached_plug",
+      name: "缓存泄漏插座",
+      roomId: "study",
+      roomName: "书房",
+      model: PLUG_MODEL,
+      isOnline: false,
+      sourceBackend: "homeAssistant",
+      kind: {
+        kind: "plug",
+        switchEntityId: "switch.ha_cached_plug",
+        isOn: true,
+        powerWatts: 120,
+        energyKwh: 3.5,
+        childLockEntityId: null,
+        isChildLocked: false,
+      },
+    };
+    const cachedSensor: SmartDevice = {
+      id: "sensor.ha_cached_temp",
+      name: "缓存温湿度计",
+      roomId: "study",
+      roomName: "书房",
+      model: "miaomiaoce.sensor_ht.t2",
+      isOnline: true,
+      sourceBackend: "homeAssistant",
+      kind: { kind: "sensor", temperature: 24.5, humidity: 52, battery: 90 },
+    };
+    app.settings.cachedHAHome = {
+      identity: homeAssistantIdentity(HA_URL, "ha-tok-cache-leak")!,
+      home: {
+        devices: [cachedPlug, cachedSensor],
+        rooms: [{ id: "study", name: "书房", deviceCount: 2 }],
+        scenes: [{ id: "scene.ha_cached_scene", name: "缓存泄漏场景", entityId: "scene.ha_cached_scene" }],
+        environmentReadings: [],
+        deviceFacets: {},
+      },
+    };
+    app.saveSettings(true);
+
+    // Persist disabledHaScopes WITHOUT any knownDisabledHaDevices / knownDisabledHaScenes snapshots (cold-boot / snapshot-less state).
+    writeMiAccountSelectionMutation({
+      storage: localStorage,
+      mutate: (prev) => ({
+        ...prev,
+        disabledHaScopes: [HA_SCOPE],
+        knownDisabledHaDevices: [],
+        knownDisabledHaScenes: [],
+      }),
+    });
+    app.devices = [];
+    app.scenes = [];
+
+    assert.equal(settingsHaCacheIfEnabled(app.settings), null);
+    assert.equal(haCacheIfEnabled(app), null);
+
+    // Render Settings (which renders automation + energy + connection sections) -> cached HA scene & plug must NOT leak!
+    app.openSettingsSheet("connection");
+    const settingsHtml = app.root.innerHTML;
+    assert.equal(settingsHtml.includes("缓存泄漏场景"), false, "disabled HA cached scenes must not leak into automation settings");
+    assert.equal(settingsHtml.includes("缓存泄漏插座"), false, "disabled HA cached devices must not leak into energy settings");
+
+    syncSensorHistoryHost(app);
+    tickSafetyHealthAndAutomation(app);
+
+    // Cold-boot a brand-new app instance against the same persisted settings + disabledHaScopes -> 0 cached HA devices/scenes hydrated!
+    const bootRoot = document.createElement("div");
+    document.body.appendChild(bootRoot);
+    const coldApp = new MenuMijiaWindowsApp(bootRoot);
+    try {
+      assert.equal(coldApp.devices.length, 0, "cold-booted app must not hydrate cachedHAHome devices when HA is disabled");
+      assert.equal(coldApp.scenes.length, 0, "cold-booted app must not hydrate cachedHAHome scenes when HA is disabled");
+    } finally {
+      coldApp.dispose();
+      bootRoot.remove();
+    }
+
+    // Snapshot-less raw HA entity IDs (light.ha_strip & scene.ha_movie) must attribute to connectionScopeDisabled ("Home Assistant 连接已停用")!
+    const okLight = await app.applyCommand({ kind: "setLightPower", entityId: "light.ha_strip", isOn: true });
+    assert.equal(okLight, false);
+    assert.match(app.replyBanner?.text ?? "", /Home Assistant.*已停用/);
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /Home Assistant is turned off/);
+
+    const okScene = await app.applyCommand({ kind: "activateScene", entityId: "scene.ha_movie" });
+    assert.equal(okScene, false);
+    assert.match(app.replyBanner?.text ?? "", /Home Assistant.*已停用/);
+
+    // Direct transport gate error on an offline device must still report localized disabled HA (never misclassified as deviceOffline or English)!
+    const offlineBanner =
+      controlFailureUserMessage(new HaBlockedRequestError(HA_SCOPE, "ha_execute"), {
+        isDeviceOnline: false,
+        deviceName: cachedPlug.name,
+      }) ?? "";
+    assert.match(offlineBanner, /Home Assistant.*已停用/);
+    assert.doesNotMatch(offlineBanner, /离线|turned off/i);
   });
 });

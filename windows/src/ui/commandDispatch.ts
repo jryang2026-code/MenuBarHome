@@ -31,8 +31,15 @@ import {
   isHostMiSessionEnabled,
   resolveEnabledMiAccountsForHost,
 } from "./cloudRefresh.js";
-import { evaluateDeviceEntityWriteGate, haConnectionScope, miAccountScope } from "../core/miAccountControl.js";
-import { controlTargetRejectionMessage } from "../core/capabilityReferenceVerdict.js";
+import {
+  CapabilityGateError,
+  evaluateDeviceEntityWriteGate,
+  evaluateDeviceEntityWriteGateVerdict,
+  haConnectionScope,
+  isCapabilityGateError,
+  miAccountScope,
+} from "../core/miAccountControl.js";
+import { isHaBlockedRequestError } from "../core/haTransportGate.js";
 import {
   MiCloudClient,
   MiCloudError,
@@ -898,6 +905,20 @@ export async function applyCommand(
     const revertedCover = Boolean(coverWrite && stillOwnsWrite(host, claim));
     if (coverWrite && revertedCover) revertCoverOptimisticWrite(host, coverWrite);
 
+    if (isCapabilityGateError(error) || isHaBlockedRequestError(error)) {
+      const gateText =
+        controlFailureUserMessage(error, {
+          languagePreference: host.settings?.interfaceLanguage,
+        }) ?? (error instanceof Error ? error.message : String(error));
+      host.replyBanner = {
+        text: gateText,
+        source: t("控制失败"),
+        isError: true,
+      };
+      renderHostImmediate(host);
+      return false;
+    }
+
     const classified = classifyControlFailure(error, { isDeviceOnline: targetDev?.isOnline });
     if (classified?.isCancellation || isCancellationError(error)) {
       if (revertedCover) {
@@ -952,6 +973,7 @@ export async function applyCommand(
         isDeviceOnline: targetDev?.isOnline,
         adjustment: isAdjustmentCommand(originalCommand),
         fallback: rawFallback,
+        languagePreference: host.settings?.interfaceLanguage,
       }) ?? rawFallback;
     host.replyBanner = {
       text: formattedMessage,
@@ -1163,7 +1185,7 @@ async function dispatchCloudCommand(
             host.deviceFacets ?? {},
             originalEntityId,
           );
-          const gateMsg = evaluateDeviceEntityWriteGate({
+          const gateFailure = evaluateDeviceEntityWriteGateVerdict({
             targetKind: command.kind === "activateScene" ? "scene" : "device",
             targetIdOrEntityId: originalEntityId,
             resolvedActiveDeviceId: currentTargetId,
@@ -1171,7 +1193,9 @@ async function dispatchCloudCommand(
             rejectUnknown: true,
             languagePreference: host.settings?.interfaceLanguage,
           });
-          if (gateMsg !== null) throw new Error(gateMsg);
+          if (gateFailure !== null) {
+            throw new CapabilityGateError(gateFailure.reason, host.settings?.interfaceLanguage);
+          }
         }
       },
     });
@@ -1204,15 +1228,13 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
   const session = host.settings.miSession ?? accounts[0]?.session ?? null;
   if (!session) throw new Error(t("请先扫码登录米家"));
   if (!isHostMiSessionEnabled(host, session)) {
-    const pref =
-      host.settings.interfaceLanguage && host.settings.interfaceLanguage !== "system"
-        ? host.settings.interfaceLanguage
-        : undefined;
-    throw new Error(
-      controlTargetRejectionMessage(
-        { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(miAccountId(session)) },
-        pref,
-      ),
+    throw new CapabilityGateError(
+      {
+        code: "connectionScopeDisabled",
+        connection: "xiaomi-cloud",
+        scope: miAccountScope(miAccountId(session)),
+      },
+      host.settings.interfaceLanguage,
     );
   }
   return new MiCloudProvider({
@@ -1224,19 +1246,13 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
 
 function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
   if (!isHostHaEnabled(host)) {
-    const pref =
-      host.settings.interfaceLanguage && host.settings.interfaceLanguage !== "system"
-        ? host.settings.interfaceLanguage
-        : undefined;
-    throw new Error(
-      controlTargetRejectionMessage(
-        {
-          code: "connectionDisabled",
-          connection: "home-assistant",
-          scope: haConnectionScope(host.settings.haBaseURL, host.settings.haToken) ?? "home-assistant",
-        },
-        pref,
-      ),
+    throw new CapabilityGateError(
+      {
+        code: "connectionDisabled",
+        connection: "home-assistant",
+        scope: haConnectionScope(host.settings.haBaseURL, host.settings.haToken) ?? "home-assistant",
+      },
+      host.settings.interfaceLanguage,
     );
   }
   return new HomeAssistantProvider(

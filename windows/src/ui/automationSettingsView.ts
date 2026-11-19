@@ -48,7 +48,7 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { buildHostCapabilityContext, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostMiAccountsState, isDualSourceEnabled, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
 import { evaluateAutomationRuleWriteGate } from "../core/miAccountControl.js";
 import {
   MAX_RECENT_AUTOMATION_RUNS,
@@ -407,7 +407,7 @@ function aliasedDevicesFor(devices: readonly SmartDevice[], layout: LayoutPrefs 
 
 function resolveScenesForContext(ctx: Pick<SettingsViewContext, "settings" | "scenes">): readonly HomeScene[] {
   if (ctx.scenes && ctx.scenes.length > 0) return ctx.scenes;
-  if (ctx.settings.connectionMode === "homeAssistant") return ctx.settings.cachedHAHome?.home.scenes ?? [];
+  if (ctx.settings.connectionMode === "homeAssistant") return settingsHaCacheIfEnabled(ctx.settings)?.home.scenes ?? [];
   if (ctx.settings.connectionMode === "demo") return demoScenes();
   return ctx.scenes ?? [];
 }
