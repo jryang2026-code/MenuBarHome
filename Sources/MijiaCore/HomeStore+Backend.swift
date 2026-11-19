@@ -622,6 +622,10 @@ extension HomeStore {
                 syncIndexedDevices(from: devices)
             }
             adoptPairedDevicePreferences(snapshot.preferenceAdoptions)
+            if let expandedId = expandedDeviceId,
+               devices.first(where: { $0.id == expandedId })?.isOnline != true {
+                expandedDeviceId = nil
+            }
             reconcileReenabledScopesAfterSnapshot(snapshot)
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
@@ -1213,7 +1217,7 @@ extension HomeStore {
         return cleared
     }
 
-    /// The single destructive entry point behind Settings → 隐私 → 退出并吊销令牌 (#143): signs out
+    /// The single destructive entry point behind Settings → 关于与诊断 → 高级排障与重置 → 退出并清除所有账号与密钥 (#143): signs out
     /// every Mi account, deletes the Home Assistant token and drops that connection, forgets saved AI
     /// keys and cloud-consent records. Local preferences, aliases and history stay untouched.
     /// Returns false and shows an error when any credential survived the deletion.

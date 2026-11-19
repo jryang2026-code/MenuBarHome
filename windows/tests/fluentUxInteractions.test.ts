@@ -278,6 +278,7 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
         availableFanModes: [],
       },
     });
+    app.isLongTailExpanded = true;
     app.waitingDeviceIds.add("light.living_ceiling");
     app.render();
 

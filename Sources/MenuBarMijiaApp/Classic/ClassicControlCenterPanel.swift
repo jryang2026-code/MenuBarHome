@@ -52,6 +52,12 @@ public struct ClassicControlCenterPanel: View {
     @State var kindScrollTrigger = 0
     /// The kind-chip row stays hidden until the user taps the active 全部 pill again.
     @State var kindChipsRevealed = false
+    /// Inline >8-device long-tail expansion in the All (`全部`) overview; resets on panel close.
+    @State var isLongTailExpanded = false
+    /// Bottom offline/unpowered drawer expansion; resets on panel close.
+    @State var isOfflineDrawerExpanded = false
+    /// Frozen habit/active ordering for the current open session so toggling a tile does not jump it away from the pointer.
+    @State var prioritySnapshot: PanelPrioritySnapshot?
     /// Expansion ends on panel close, backend change, or an empty activity feed.
     @State var activitiesExpanded = false
     /// Measured by the transient surface; reset when that surface disappears.
@@ -78,9 +84,15 @@ public struct ClassicControlCenterPanel: View {
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
+    public init(
+        store: HomeStore,
+        initialActivitiesExpanded: Bool = false,
+        initialTransientExpanded: Bool = false,
+        initialOfflineExpanded: Bool = false
+    ) {
         self.store = store
         _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        _isOfflineDrawerExpanded = State(initialValue: initialOfflineExpanded)
         self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
@@ -98,6 +110,7 @@ public struct ClassicControlCenterPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
+                prioritySnapshot = .capture(from: store)
                 isPresented = true
             }
             .onAppear { handlePanelAppear() }
@@ -111,6 +124,9 @@ public struct ClassicControlCenterPanel: View {
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
             .onChange(of: store.homeBackend) { _, _ in
                 activitiesExpanded = false
+                isLongTailExpanded = false
+                isOfflineDrawerExpanded = false
+                prioritySnapshot = .capture(from: store)
                 PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             .onChange(of: store.panelActivities.count) { _, _ in
@@ -197,6 +213,7 @@ public struct ClassicControlCenterPanel: View {
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
         // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
         .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
+        .onChange(of: hasVisibleOfflineDevices) { _, hasOffline in if !hasOffline { isOfflineDrawerExpanded = false } }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -229,10 +246,15 @@ public struct ClassicControlCenterPanel: View {
         }
     }
 
+    private var hasVisibleOfflineDevices: Bool {
+        store.visibleDevices.contains { !$0.isOnline }
+    }
+
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
         syncMenuBarWindowSize()
+        prioritySnapshot = .capture(from: store)
         isPresented = true
     }
 
@@ -245,6 +267,9 @@ public struct ClassicControlCenterPanel: View {
         dragLocation = nil
         activeResize = nil
         lastSwapTarget = nil
+        isLongTailExpanded = false
+        isOfflineDrawerExpanded = false
+        prioritySnapshot = nil
         layoutUI.dismissActivePrompt()
         search.end()
         isSearchFieldFocused = false
@@ -270,9 +295,15 @@ public struct ClassicControlCenterPanel: View {
     private func handleHomeContextChange() {
         layoutUI.commitRoomOrderIfNeeded()
         layoutUI.dismissActivePrompt()
+        isLongTailExpanded = false
+        isOfflineDrawerExpanded = false
+        prioritySnapshot = .capture(from: store)
     }
 
     private func pruneStalePrompts() {
+        if let snapshot = prioritySnapshot {
+            prioritySnapshot = snapshot.freezingNewDevices(from: store)
+        }
         layoutUI.pruneStalePrompts(
             deviceIds: Set(store.devices.map(\.id)),
             groupIds: Set(groups.map(\.id)),
@@ -387,13 +418,37 @@ public struct ClassicControlCenterPanel: View {
 
             footerBar
                 .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.vertical, 6)
         }
         .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
         .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
         .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
         .onChange(of: roomScrollTrigger) { _, value in handleAllPillReselect(value) }
+        .onChange(of: store.focusedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
+        .onChange(of: store.expandedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
+    }
+
+    func revealClassicDeviceIfNeeded(_ deviceId: String?) {
+        guard let deviceId, !isEditingLayout else { return }
+        let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: currentOrder)
+        if partition.offline.contains(where: { $0.id == deviceId }), !isOfflineDrawerExpanded {
+            withAnimation(AppleMotion.snappySpring) { isOfflineDrawerExpanded = true }
+            return
+        }
+        if partition.online.contains(where: { $0.id == deviceId }), !isLongTailExpanded {
+            let unkeptSlice = PanelDeviceOrganizer.overviewSlice(
+                orderedOnline: pageSections.flatMap(\.devices),
+                listCut: store.listCut,
+                isExpanded: isLongTailExpanded,
+                keepingVisibleIds: []
+            )
+            let isInCurrentOverview = unkeptSlice.visible.contains(where: { $0.id == deviceId })
+                && classicDeviceLayoutState.sections.flatMap(\.devices).contains(where: { $0.id == deviceId })
+            if !isInCurrentOverview {
+                withAnimation(AppleMotion.snappySpring) { isLongTailExpanded = true }
+            }
+        }
     }
 
     /// Re-tapping the already-selected 全部 pill increments `roomScrollTrigger`. That second tap
@@ -444,8 +499,8 @@ public struct ClassicControlCenterPanel: View {
     private var deviceGrid: some View {
         Group {
             ScrollViewReader { scrollProxy in
-                let sections = pageSections
-                let quickIndex = classicQuickIndexOrder(sections)
+                let layoutState = classicDeviceLayoutState
+                let quickIndex = classicQuickIndexOrder(layoutState)
                 let quickIndexMap = quickIndex.badges
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
@@ -458,7 +513,7 @@ public struct ClassicControlCenterPanel: View {
                             } else if store.visibleDevices.isEmpty {
                                 emptyStateView
                             } else {
-                                ForEach(sections) { section in
+                                ForEach(layoutState.sections) { section in
                                     if section.title != nil {
                                         groupHeader(section)
                                     }
@@ -472,6 +527,54 @@ public struct ClassicControlCenterPanel: View {
                                             insertion: .opacity.combined(with: .offset(y: -8)),
                                             removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
                                         ))
+                                    }
+                                }
+
+                                if layoutState.showsLongTailControl {
+                                    PanelLongTailBar(
+                                        hiddenCount: layoutState.hiddenOnlineCount,
+                                        isExpanded: isLongTailExpanded,
+                                        rooms: classicRoomBrowseOptions,
+                                        theme: .classic,
+                                        onToggleExpand: {
+                                            withAnimation(AppleMotion.snappySpring) {
+                                                isLongTailExpanded.toggle()
+                                            }
+                                        },
+                                        onSelectRoom: { roomId in
+                                            selectRoom(roomId, animation: AppleMotion.snappySpring)
+                                        }
+                                    )
+                                    .transition(.opacity)
+                                }
+
+                                if !layoutState.offlineDevices.isEmpty {
+                                    VStack(alignment: .leading, spacing: 7) {
+                                        ClassicOfflineDrawerHeader(
+                                            count: layoutState.offlineDevices.count,
+                                            summary: PanelDeviceOrganizer.offlineStackSummary(
+                                                devices: layoutState.offlineDevices,
+                                                aliases: GroupPrefs.map(aliasesRaw)
+                                            ),
+                                            isExpanded: isOfflineDrawerExpanded
+                                        ) {
+                                            withAnimation(AppleMotion.snappySpring) {
+                                                isOfflineDrawerExpanded.toggle()
+                                            }
+                                        }
+
+                                        if isOfflineDrawerExpanded {
+                                            deviceCollectionView(
+                                                devices: layoutState.offlineDevices,
+                                                showRoomBadge: store.selectedRoomId == nil,
+                                                quickIndexMap: quickIndexMap,
+                                                allowsLayoutEditing: false
+                                            )
+                                            .transition(.asymmetric(
+                                                insertion: .opacity.combined(with: .offset(y: -8)),
+                                                removal: .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                                            ))
+                                        }
                                     }
                                 }
                             }
@@ -508,14 +611,17 @@ public struct ClassicControlCenterPanel: View {
         }
     }
 
-    private func classicQuickIndexOrder(_ sections: [PageSection]) -> PanelQuickIndexOrder {
+    private func classicQuickIndexOrder(_ layoutState: ClassicDeviceLayoutState) -> PanelQuickIndexOrder {
         if search.isSearching {
             return PanelQuickIndexOrder(deviceIds: searchResults.map(\.id))
         }
-        let ids = sections
+        var ids = layoutState.sections
             .filter { !collapsedGroups.contains(collapseKey($0)) }
             .flatMap { DeviceLayoutPrefs.apply(order: currentOrder, to: $0.devices) }
             .map(\.id)
+        if isOfflineDrawerExpanded {
+            ids.append(contentsOf: layoutState.offlineDevices.map(\.id))
+        }
         return PanelQuickIndexOrder(deviceIds: ids)
     }
 
@@ -548,11 +654,12 @@ public struct ClassicControlCenterPanel: View {
     private var omnibar: some View {
         let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let listening = speech.isListening
-        return HStack(spacing: 7) {
+        return HStack(spacing: 4) {
             OmnibarLeadingSymbol(
                 listening: listening,
                 isThinking: store.assistantState == .thinking
             )
+            .padding(.trailing, 3)
 
             TextField(
                 omnibarPlaceholder,
@@ -580,9 +687,12 @@ public struct ClassicControlCenterPanel: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("清空输入", "Clear input")))
+                .panelHelp(L10n.tr("清空输入", "Clear input"))
             }
 
             if store.assistantState == .thinking {
@@ -590,10 +700,10 @@ public struct ClassicControlCenterPanel: View {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.7)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 } else {
                     Color.clear
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 }
             } else if store.enableVoiceInput {
                 Button {
@@ -604,20 +714,22 @@ public struct ClassicControlCenterPanel: View {
                     Image(systemName: listening ? "stop.circle.fill" : "mic.fill")
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(listening ? Color.red : Color.accentColor)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(listening
                     ? L10n.tr("停止聆听", "Stop listening")
                     : L10n.tr("语音输入", "Voice input")))
-                .help(listening
+                .panelHelp(listening
                     ? L10n.tr("停止聆听并执行", "Stop listening and run")
                     : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.leading, 10)
+        .padding(.trailing, 4)
+        .padding(.vertical, 2)
+        .frame(minHeight: 32)
         .classicAdaptiveGlass(in: shape, interactive: true)
         .overlay(
             shape.strokeBorder(

@@ -75,7 +75,7 @@ export type TileRenderMode =
 
 export interface ResolvedTilePresentation {
   readonly mode: TileRenderMode;
-  readonly cssColumnSpan: 3 | 4 | 6 | 12;
+  readonly cssColumnSpan: 3 | 6 | 12;
   readonly cssRowSpan: 1 | 2;
   readonly mountsSubpage: boolean;
   readonly spansFullRow: boolean;
@@ -97,7 +97,7 @@ export function resolveTilePresentation(input: {
       return { mode: "fluentSubpage", cssColumnSpan: 12, cssRowSpan: 1, mountsSubpage: true, spansFullRow: true };
     }
     if (!input.isExpanded && isCompactGridMode && input.size === "half") {
-      return { mode: "fluentCapsule", cssColumnSpan: 4, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false };
+      return { mode: "fluentCapsule", cssColumnSpan: 6, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false };
     }
     return { mode: "bentoFull", cssColumnSpan: 12, cssRowSpan: 1, mountsSubpage: false, spansFullRow: true };
   }

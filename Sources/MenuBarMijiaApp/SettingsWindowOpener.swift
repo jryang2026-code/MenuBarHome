@@ -20,14 +20,21 @@ final class SettingsWindowOpener {
 
     @ObservationIgnored var open: (() -> Void)?
     var requestedTab: SettingsTab?
+    var requestedAnchor: SettingsAnchor?
 
     private init() {}
 
-    func show(tab: SettingsTab? = nil) {
-        if let tab {
-            requestedTab = tab
+    func show(tab: SettingsTab? = nil, anchor: SettingsAnchor? = nil) {
+        if let anchor {
+            requestedTab = (tab ?? anchor.tab).canonicalTab
+            requestedAnchor = anchor
+        } else {
+            requestedAnchor = nil
+            if let tab {
+                requestedTab = tab
+            }
         }
-        NSApp.activate()
+        NSApp?.activate()
         // Both paths are attempted because either can be inert: this app hosts the control center in
         // a plain `NSHostingView`, which is not part of a scene, so the `openSettings` action it sees
         // can be a no-op; and the app menu has no Settings item until SwiftUI builds it. Calling both
@@ -39,7 +46,7 @@ final class SettingsWindowOpener {
     /// Runs the app menu's Settings… item. Returns whether such an item existed.
     @discardableResult
     func performSettingsMenuItem() -> Bool {
-        guard let mainMenu = NSApp.mainMenu else { return false }
+        guard let mainMenu = NSApp?.mainMenu else { return false }
         let menus = [mainMenu] + mainMenu.items.compactMap(\.submenu)
         for menu in menus {
             guard let index = menu.items.firstIndex(where: Self.isSettingsItem) else { continue }

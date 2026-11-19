@@ -60,6 +60,7 @@ public struct DeviceCardView: View {
     }
 
     private var isExpanded: Bool {
+        guard device.isOnline else { return false }
         if resolvedSize == .panel { return true }
         if isEditingLayout { return false }
         return store.expandedDeviceId == device.id
@@ -435,96 +436,26 @@ public struct DeviceCardView: View {
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
 
     private var compactHeaderRow: some View {
-        HStack(spacing: 10) {
-            Button {
-                guard !isEditingLayout else { return }
-                if case .camera(let cam) = device.kind {
-                    withAnimation(AppleMotion.snappySpring) {
-                        if device.kind.canTogglePower, !cam.isOn {
-                            _ = store.togglePrimary(device)
-                        }
-                        store.openCameraLiveView(device.id)
-                    }
-                    if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
-                    return
+        SplitDeviceTileHeader(
+            device: device,
+            store: store,
+            statusText: compactStatusLine,
+            nameColor: nameColor,
+            statusColor: statusColor,
+            accessibilitySummary: accessibilitySummary,
+            isExpanded: isExpanded,
+            isHeroTile: resolvedSize == .hero,
+            leadingPadding: 8,
+            trailingPadding: 10,
+            verticalPadding: 8,
+            orb: { iconBadge },
+            readOnlyBadge: { genericReadOnlyBadge },
+            quickBadge: {
+                if let quickIndex, shouldShowQuickBadge {
+                    QuickIndexPill(index: quickIndex, tint: statusColor)
                 }
-                if device.isPrimaryToggleable {
-                    withAnimation(AppleMotion.snappySpring) {
-                        _ = store.togglePrimary(device)
-                    }
-                    if device.isOnline { SoundFeedback.playSuccess() }
-                } else if store.hasDetailDrawer(for: device) {
-                    withAnimation(AppleMotion.snappySpring) {
-                        store.toggleExpanded(device.id)
-                    }
-                }
-            } label: {
-                iconBadge
             }
-            .buttonStyle(PressableCardButtonStyle())
-            .accessibilityLabel(Text(device.isPrimaryToggleable
-                ? L10n.tr("\(device.name) 开关", "\(device.name) power")
-                : accessibilitySummary))
-            .panelHelp(
-                isCameraDevice
-                    ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
-                    : device.isPrimaryToggleable
-                        ? L10n.tr("点击直接切换开关", "Click to toggle power")
-                        : store.hasDetailDrawer(for: device)
-                            ? L10n.tr("点击展开详细控制", "Click to expand controls")
-                            : L10n.tr("只读状态", "Read only")
-            )
-
-            Button {
-                guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
-                    if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
-                    } else if device.kind.canTogglePower {
-                        _ = store.togglePrimary(device)
-                        if device.isOnline { SoundFeedback.playSuccess() }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(device.name)
-                                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                                .foregroundStyle(nameColor)
-                                .lineLimit(1)
-
-                            genericReadOnlyBadge
-                        }
-
-                        Text(compactStatusLine)
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
-                            .monospacedDigit()
-                            .foregroundStyle(statusColor)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 2)
-
-                    if let quickIndex, shouldShowQuickBadge {
-                        QuickIndexPill(index: quickIndex, tint: statusColor)
-                    } else if store.hasDetailDrawer(for: device) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
-                            .foregroundStyle(Color.secondary.opacity(0.7))
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(store.hasDetailDrawer(for: device)
-                ? L10n.tr("\(device.name)，详细控制", "\(device.name), controls")
-                : accessibilitySummary))
-            .panelHelp(store.hasDetailDrawer(for: device) ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
-        }
-        .padding(.leading, 8)
-        .padding(.trailing, 12)
-        .padding(.vertical, 8)
+        )
     }
 
     // MARK: - Generic Read-Only Badge (#6)
@@ -534,7 +465,7 @@ public struct DeviceCardView: View {
     private var genericReadOnlyBadge: some View {
         if case .generic(let spec) = device.kind, spec.isReadOnly {
             Text(L10n.tr("只读", "Read only"))
-                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                 .foregroundStyle(nameColor.opacity(0.72))
                 .padding(.horizontal, 5.5)
                 .padding(.vertical, 1.5)
@@ -549,44 +480,45 @@ public struct DeviceCardView: View {
     // MARK: - Full-Row Header (Orb Toggles, Text or Chevron Expands)
 
     private var headerRow: some View {
-        HStack(spacing: 10) {
+        let canAdjust = device.isOnline && store.hasDetailDrawer(for: device)
+        return HStack(spacing: 10) {
             Button {
                 guard !isEditingLayout else { return }
                 withAnimation(AppleMotion.snappySpring) {
-                    if case .camera(let cam) = device.kind {
-                        if device.kind.canTogglePower, !cam.isOn {
-                            _ = store.togglePrimary(device)
-                        }
-                        store.openCameraLiveView(device.id)
-                    } else if device.kind.canTogglePower {
-                        _ = store.togglePrimary(device)
-                    } else if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
+                    if device.isPrimaryToggleable || (isCameraDevice && device.isOnline) {
+                        _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
+                    } else if canAdjust {
+                        DeviceTileActionLayout.performAdjust(for: device, store: store)
                     }
                 }
-                if device.isOnline, device.isPrimaryToggleable { SoundFeedback.playSuccess() }
             } label: {
                 iconBadge
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(accessibilitySummary))
-            .accessibilityHint(Text(isCameraDevice
+            .accessibilityHint(Text(isCameraDevice && device.isOnline
                 ? L10n.tr("打开实时画面", "Open live view")
                 : device.isPrimaryToggleable
                     ? L10n.tr("切换开关", "Toggle power")
-                    : store.hasDetailDrawer(for: device)
+                    : canAdjust
                         ? L10n.tr("展开详细控制", "Expand controls")
                         : L10n.tr("只读状态", "Read only")))
+            .panelHelp(isCameraDevice && device.isOnline
+                ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
+                : device.isPrimaryToggleable
+                    ? L10n.tr("点击直接切换开关", "Click to toggle power")
+                    : canAdjust
+                        ? L10n.tr("展开调节", "Adjust controls")
+                        : L10n.tr("只读状态", "Read only"))
 
             // The text block opens the drawer; only a card without one falls back to the switch.
             Button {
                 guard !isEditingLayout else { return }
                 withAnimation(AppleMotion.snappySpring) {
-                    if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
-                    } else if device.kind.canTogglePower {
-                        _ = store.togglePrimary(device)
-                        if device.isOnline { SoundFeedback.playSuccess() }
+                    if canAdjust {
+                        DeviceTileActionLayout.performAdjust(for: device, store: store)
+                    } else if device.isPrimaryToggleable {
+                        _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                     }
                 }
             } label: {
@@ -626,12 +558,13 @@ public struct DeviceCardView: View {
 
                     Spacer(minLength: 2)
                 }
+                .frame(minHeight: DesignTokens.minHitTarget)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(accessibilitySummary))
-            .panelHelp(store.hasDetailDrawer(for: device)
-                ? L10n.tr("点击展开详细控制", "Click to expand controls")
+            .panelHelp(canAdjust
+                ? DeviceTileActionLayout.adjustTooltip(isExpanded: isExpanded)
                 : device.isPrimaryToggleable
                     ? L10n.tr("点击直接切换开关", "Click to toggle power")
                     : device.name)
@@ -640,7 +573,7 @@ public struct DeviceCardView: View {
                 QuickIndexPill(index: quickIndex, tint: statusColor)
             }
 
-            if case .camera = device.kind {
+            if case .camera = device.kind, device.isOnline {
                 Button {
                     guard !isEditingLayout else { return }
                     store.openCameraLiveView(device.id)
@@ -648,33 +581,32 @@ public struct DeviceCardView: View {
                     Image(systemName: "pip.enter")
                         .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
                         .foregroundStyle(accent)
-                        .frame(width: 24, height: 24)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .background(Circle().fill(accent.opacity(0.12)))
-                        .contentShape(Rectangle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("打开 \(device.name) 实时画面小窗", "Open \(device.name) floating live view")))
+                .panelHelp(L10n.tr("打开实时画面小窗", "Open floating live view"))
             }
 
-            if store.hasDetailDrawer(for: device) {
+            if canAdjust {
                 Button {
                     guard !isEditingLayout else { return }
                     withAnimation(AppleMotion.snappySpring) {
-                        store.toggleExpanded(device.id)
+                        DeviceTileActionLayout.performAdjust(for: device, store: store)
                     }
                 } label: {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(nameColor.opacity(0.68))
-                        .frame(width: 28, height: 28)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .adaptiveGlass(in: Circle(), interactive: true)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text(isExpanded
-                    ? L10n.tr("收起 \(device.name) 详细控制", "Collapse \(device.name) controls")
-                    : L10n.tr("展开 \(device.name) 详细控制", "Expand \(device.name) controls")))
-                .panelHelp(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
+                .accessibilityLabel(Text(DeviceTileActionLayout.adjustAccessibilityLabel(deviceName: device.name, isExpanded: isExpanded)))
+                .panelHelp(DeviceTileActionLayout.adjustTooltip(isExpanded: isExpanded))
             }
         }
         .padding(.horizontal, 11)

@@ -218,4 +218,70 @@ struct DeviceStackPolicyTests {
             )
         }
     }
+
+    @MainActor
+    @Test("Sole online Favorites stack keeps its header when accompanied by the bottom offline drawer, and manually opened >8 single-device stacks remain collapsible")
+    func favoritesHeaderWithOfflineDrawerAndOverviewFoldedCollapse() async throws {
+        let suiteName = "com.menubarmijia.tests.stackpolicy.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let favLight = Self.makeLight("fav_1", name: "客厅主灯", roomId: "living", roomName: "客厅")
+        var offlineLight = Self.makeLight("off_1", name: "离线筒灯", roomId: "bedroom", roomName: "卧室")
+        offlineLight.isOnline = false
+
+        let rooms = [
+            RoomArea(id: "living", name: "客厅", sortOrder: 0),
+            RoomArea(id: "bedroom", name: "卧室", sortOrder: 1),
+            RoomArea(id: "study", name: "书房", sortOrder: 2),
+        ]
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: rooms,
+            devices: [favLight, offlineLight],
+            scenes: []
+        ))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        try await store.waitForTestSnapshot()
+        store.favoriteDeviceIds = ["fav_1"]
+        store.favoriteOrder = ["fav_1"]
+
+        // Bugbot 4623917115: onlineStacks has 1 item (`fav`), but total stacks is 2 (`fav` + `offline`),
+        // so `常用` keeps its section header to contrast against `离线或未通电` below it.
+        let panelWithOffline = ControlCenterPanel(store: store)
+        let stacksWithOffline = panelWithOffline.deviceStacks
+        let onlineStacks = stacksWithOffline.filter { $0.source != .offline }
+        #expect(onlineStacks.map(\.id) == ["fav"])
+        #expect(stacksWithOffline.map(\.id) == ["fav", PanelDeviceOrganizer.offlineSectionId])
+        #expect(onlineStacks[0].showsHeader(totalStacks: stacksWithOffline.count) == true)
+
+        // P2-4: 7 pinned favorites + 2 single-device rooms (total 9 > 8):
+        // room:bedroom (8th) opens in initial overview, while room:study (9th) folds into overviewFolded.
+        // Even if the user expands stacks (e.g. initialOfflineExpanded or manual expand), overviewFolded
+        // stays independent of expandedStacks so room:study keeps its collapsible header without displacing room:bedroom.
+        var nineDevices: [SmartDevice] = (1...7).map { idx in
+            Self.makeLight("fav_\(idx)", name: "常用灯 \(idx)", roomId: "living", roomName: "客厅")
+        }
+        nineDevices.append(Self.makeLight("bed_single", name: "卧室床头灯", roomId: "bedroom", roomName: "卧室"))
+        nineDevices.append(Self.makeLight("study_single", name: "书房台灯", roomId: "study", roomName: "书房"))
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(rooms: rooms, devices: nineDevices, scenes: [])))
+        let favIds = (1...7).map { "fav_\($0)" }
+        store.favoriteDeviceIds = Set(favIds)
+        store.favoriteOrder = favIds
+
+        let overEightPanel = ControlCenterPanel(store: store)
+        let nineStacks = overEightPanel.deviceStacks
+        let folded = overEightPanel.overviewFoldedStackIds(in: nineStacks)
+        #expect(folded == ["room:study"])
+        let bedroomStack = try #require(nineStacks.first(where: { $0.id == "room:bedroom" }))
+        let studyStack = try #require(nineStacks.first(where: { $0.id == "room:study" }))
+        #expect(overEightPanel.isStackOpen(bedroomStack, overviewFolded: folded) == true)
+        #expect(overEightPanel.isStackOpen(studyStack, overviewFolded: folded) == false)
+        // Once manually expanded, `folded.contains(studyStack.id)` remains true -> header + Collapse button stay shown.
+        let showsHeaderWhenExpanded = studyStack.showsHeader(totalStacks: nineStacks.count, listCut: store.listCut)
+            || folded.contains(studyStack.id)
+        let canCollapseWhenExpanded = studyStack.canCollapse(listCut: store.listCut)
+            || folded.contains(studyStack.id)
+        #expect(showsHeaderWhenExpanded == true)
+        #expect(canCollapseWhenExpanded == true)
+    }
 }

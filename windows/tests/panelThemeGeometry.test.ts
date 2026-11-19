@@ -69,7 +69,7 @@ describe("PanelTheme profile domain, persistence, Settings UI, and dynamic 472px
   it("resolves Bento tile presentations across small, half, hero, full, and panel in both themes", () => {
     assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "small", isExpanded: false, hasDrawer: true }), { mode: "smallOrb", cssColumnSpan: 3, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false });
     assert.deepEqual(resolveTilePresentation({ theme: "classic", size: "small", isExpanded: false, hasDrawer: true }), { mode: "smallOrb", cssColumnSpan: 3, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false });
-    assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "half", isExpanded: false, hasDrawer: true }), { mode: "fluentCapsule", cssColumnSpan: 4, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false });
+    assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "half", isExpanded: false, hasDrawer: true }), { mode: "fluentCapsule", cssColumnSpan: 6, cssRowSpan: 1, mountsSubpage: false, spansFullRow: false });
     assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "half", isExpanded: true, hasDrawer: true }), { mode: "fluentSubpage", cssColumnSpan: 12, cssRowSpan: 1, mountsSubpage: true, spansFullRow: true });
     assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "hero", isExpanded: false, hasDrawer: true }), { mode: "bentoFull", cssColumnSpan: 12, cssRowSpan: 1, mountsSubpage: false, spansFullRow: true });
     assert.deepEqual(resolveTilePresentation({ theme: "fluent", size: "full", isExpanded: false, hasDrawer: true }), { mode: "bentoFull", cssColumnSpan: 12, cssRowSpan: 1, mountsSubpage: false, spansFullRow: true });

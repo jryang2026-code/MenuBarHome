@@ -326,6 +326,13 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.render();
       return true;
     }
+    if (host.isRoomBrowseMenuOpen) {
+      event.preventDefault();
+      host.isRoomBrowseMenuOpen = false;
+      host.render();
+      host.root.querySelector<HTMLButtonElement>("[data-browse-room-toggle]")?.focus();
+      return true;
+    }
     // Temporary footer/popover state closes before search and before the panel hides, and gives focus back.
     if (host.connectionDetailsOpen) {
       event.preventDefault();
@@ -370,6 +377,30 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.expandedDeviceId = null;
       host.render();
       return true;
+    }
+    if (!inInput && !host.panelSearch.query) {
+      if (host.isLongTailExpanded) {
+        const toggle = host.root.querySelector<HTMLButtonElement>("[data-long-tail-toggle]");
+        if (toggle) {
+          event.preventDefault();
+          host.isLongTailExpanded = false;
+          host.render();
+          host.root.querySelector<HTMLButtonElement>("[data-long-tail-toggle]")?.focus();
+          return true;
+        }
+        host.isLongTailExpanded = false;
+      }
+      if (host.isOfflineDrawerExpanded) {
+        const toggle = host.root.querySelector<HTMLButtonElement>("[data-offline-drawer-toggle]");
+        if (toggle) {
+          event.preventDefault();
+          host.isOfflineDrawerExpanded = false;
+          host.render();
+          host.root.querySelector<HTMLButtonElement>("[data-offline-drawer-toggle]")?.focus();
+          return true;
+        }
+        host.isOfflineDrawerExpanded = false;
+      }
     }
     if (host.panelSearch.query || inInput) {
       event.preventDefault();
