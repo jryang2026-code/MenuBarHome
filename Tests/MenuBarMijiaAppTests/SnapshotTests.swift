@@ -1968,6 +1968,134 @@ struct SnapshotTests {
         )
     }
 
+    @Test("Safety & Alerts renders expanded All Off Scope and always-visible amber high-risk warning copy")
+    func settingsSafetyAllOffAndRiskWarningsSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.setJoinsAllOff(true, deviceId: "demo_living_plug")
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(
+                    store: fixture.store,
+                    selectedTab: .privacy,
+                    safetyDisclosure: .init(isAllOffScopeExpanded: true)
+                )
+                .environment(\.colorScheme, scheme)
+                .environment(\.reduceMotionOverride, true)
+                .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1420),
+                named: "settings-safety-alloff-risk-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("Settings show top update prompt banner on non-About pages and expanded reset disclosure on About & Diagnostics")
+    func settingsTopUpdateBannerAndAboutResetSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        let releasePageURL = try #require(URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v9.9.9"))
+        let dmgDownloadURL = try #require(URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/download/v9.9.9/MenuBarHome.dmg"))
+        fixture.store.updateState = .available(AppRelease(
+            version: "9.9.9",
+            pageURL: releasePageURL,
+            notes: "- **安全与提醒**：新增全关范围与高风险控制常显提示",
+            packageAsset: AppRelease.PackageAsset(
+                name: "MenuBarHome.dmg",
+                downloadURL: dmgDownloadURL,
+                sizeBytes: 14_680_064,
+                kind: .dmg
+            )
+        ))
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .privacy)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-top-update-banner-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+            assertRendered(
+                SettingsWindowView(
+                    store: fixture.store,
+                    selectedTab: .about,
+                    aboutDisclosure: .init(isResetExpanded: true)
+                )
+                .environment(\.colorScheme, scheme)
+                .environment(\.reduceMotionOverride, true)
+                .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1240),
+                named: "settings-about-reset-expanded-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("General settings renders ContinueOnboardingSection when initial setup is incomplete")
+    func settingsGeneralContinueOnboardingSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false, completedOnboarding: false)
+        defer { fixture.restore() }
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .general)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-general-continue-onboarding-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("About & Diagnostics renders UnsupportedDeviceScanner results grouped by reason")
+    func settingsAboutUnsupportedDevicesGroupedSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        UnsupportedDeviceScanner.shared.seedForTesting(
+            devices: [
+                UnsupportedDevice(
+                    id: "skip_1",
+                    name: "智能香薰机",
+                    model: "hl.aromatherapy.v2",
+                    reason: .unknownModel
+                ),
+                UnsupportedDevice(
+                    id: "skip_2",
+                    name: "卧室蓝牙音箱",
+                    model: "xiaomi.speaker.v3",
+                    reason: .unknownModel
+                ),
+                UnsupportedDevice(
+                    id: "skip_3",
+                    name: "厨房燃气表",
+                    model: "miot.meter.v1",
+                    reason: .noControllableItems
+                ),
+                UnsupportedDevice(
+                    id: "skip_4",
+                    name: "客厅蓝牙网关",
+                    model: "xiaomi.gateway.v1",
+                    reason: .filteredDuplicate
+                ),
+            ],
+            for: fixture.store
+        )
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .about)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1420),
+                named: "settings-about-unsupported-grouped-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     // MARK: - Camera live HUD audio states (#29)
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
@@ -2458,6 +2586,8 @@ struct SnapshotFixture {
     private let previousAliases: String?
     private let previousPanelTheme: String?
     private let previousPanelHeight: String?
+    private let previousAllowURLDirectControl: Bool?
+    private let previousErrorTimestamps: [Date]
 
     /// - Parameters:
     ///   - roomCount: builds a home with that many rooms instead of the demo's three, so the
@@ -2469,7 +2599,8 @@ struct SnapshotFixture {
         editMode: PanelEditMode = .none,
         includeCamera: Bool = false,
         includeDualLensCamera: Bool = false,
-        configuredHASource: Bool = true
+        configuredHASource: Bool = true,
+        completedOnboarding: Bool = true
     ) async throws {
         previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         previousTemperatureUnit = UserDefaults.standard.string(forKey: TemperatureUnitPreference.storageKey)
@@ -2486,6 +2617,8 @@ struct SnapshotFixture {
         // own panel choice cannot leak into a baseline, and `restore()` puts them back.
         previousPanelTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
         previousPanelHeight = UserDefaults.standard.string(forKey: PanelHeight.storageKey)
+        previousAllowURLDirectControl = UserDefaults.standard.object(forKey: URLDirectControl.allowDirectControlKey) as? Bool
+        previousErrorTimestamps = AppDiagnosticsLog.shared.errorTimestamps
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         UserDefaults.standard.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
         UserDefaults.standard.set(PanelTheme.classic.rawValue, forKey: PanelTheme.storageKey)
@@ -2496,9 +2629,12 @@ struct SnapshotFixture {
         UserDefaults.standard.removeObject(forKey: KindOrderPrefs.orderKey)
         UserDefaults.standard.removeObject(forKey: GroupPrefs.groupsKey)
         UserDefaults.standard.removeObject(forKey: GroupPrefs.aliasesKey)
+        UserDefaults.standard.removeObject(forKey: URLDirectControl.allowDirectControlKey)
+        UnsupportedDeviceScanner.shared.reset()
         // The session state is a process-wide observable: a previous test's draft must not leak in.
         #if DEBUG
         LayoutUIState.shared.resetForTesting()
+        AppDiagnosticsLog.shared.replaceTimestampsForTesting([])
         #endif
 
         let suiteName = "MenuBarMijiaSnapshotTests-\(UUID().uuidString)"
@@ -2506,7 +2642,7 @@ struct SnapshotFixture {
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             throw MissingDefaults()
         }
-        defaults.set(true, forKey: "has_completed_onboarding")
+        defaults.set(completedOnboarding, forKey: "has_completed_onboarding")
         defaults.set(AppLanguagePreference.zhHans.rawValue, forKey: "app_language")
         defaults.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
         // The panel's `.task` checks for updates; keep the snapshot offline and deterministic.
@@ -2662,8 +2798,15 @@ struct SnapshotFixture {
         } else {
             UserDefaults.standard.removeObject(forKey: PanelHeight.storageKey)
         }
+        if let previousAllowURLDirectControl {
+            UserDefaults.standard.set(previousAllowURLDirectControl, forKey: URLDirectControl.allowDirectControlKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: URLDirectControl.allowDirectControlKey)
+        }
+        UnsupportedDeviceScanner.shared.reset()
         #if DEBUG
         LayoutUIState.shared.resetForTesting()
+        AppDiagnosticsLog.shared.replaceTimestampsForTesting(previousErrorTimestamps)
         #endif
         store.userDefaults.removePersistentDomain(forName: suiteName)
     }

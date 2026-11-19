@@ -11,7 +11,7 @@ import MijiaCore
 /// the row itself attaches the anchor through `settingsRow(anchor:)`, which both registers the scroll
 /// target and draws the landing highlight.
 enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
-    // 通用
+    // 常规
     case language
     case temperatureUnit
     case dashboardTitle
@@ -24,20 +24,10 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case voiceInput
     case soundFeedback
     case launchAtLogin
-    case advancedDeviceWrites
     case globalHotkey
-    case safetyAlerts
-    case sensorAlerts
-    case alertsOnlyWhenAway
-    case doorbellAutoView
-    case doorbellChime
-    case doorbellAutoCloseSeconds
     case weeklyReport
-    case notificationPermission
     case hiddenDevices
-    case setupGuide
     case automationRules
-    case allowURLControl
     case raycast
     case energyHistory
 
@@ -51,7 +41,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case miMultiAccounts
     case dualSourceFusion
 
-    // 助手
+    // AI 助手
     case askWhenUnsure
     case confidenceThreshold
     case assistantProvider
@@ -65,16 +55,27 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case panelHeight
     case climatePanelModule
 
-    // 隐私
-    case copyDiagnostics
-    case scanUnsupportedDevices
-    case privacyNotes
+    // 安全与提醒
     case blockControlWhileLocked
-    case signOut
+    case safetyAlerts
+    case sensorAlerts
+    case alertsOnlyWhenAway
+    case doorbellAutoView
+    case doorbellChime
+    case doorbellAutoCloseSeconds
+    case notificationPermission
+    case allOffScope
+    case advancedDeviceWrites
+    case allowURLControl
 
-    // 关于
+    // 关于与诊断
     case aboutVersion
     case softwareUpdate
+    case setupGuide
+    case privacyNotes
+    case copyDiagnostics
+    case scanUnsupportedDevices
+    case signOut
     case quitApp
 
     /// The category page that renders this row.
@@ -82,10 +83,8 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         switch self {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .compactGrid,
              .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .grokBall, .voiceInput,
-             .soundFeedback, .launchAtLogin, .advancedDeviceWrites, .globalHotkey, .safetyAlerts,
-             .sensorAlerts, .alertsOnlyWhenAway, .doorbellAutoView, .doorbellChime,
-             .doorbellAutoCloseSeconds, .weeklyReport, .notificationPermission, .hiddenDevices,
-             .setupGuide, .automationRules, .allowURLControl, .raycast, .energyHistory,
+             .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
+             .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
             return .general
         case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
@@ -94,10 +93,12 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .askWhenUnsure, .confidenceThreshold, .assistantProvider, .assistantAPIKey,
              .assistantTest, .habitMemory:
             return .assistant
-        case .copyDiagnostics, .scanUnsupportedDevices, .privacyNotes, .blockControlWhileLocked,
-             .signOut:
+        case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
+             .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
+             .allOffScope, .advancedDeviceWrites, .allowURLControl:
             return .privacy
-        case .aboutVersion, .softwareUpdate, .quitApp:
+        case .aboutVersion, .softwareUpdate, .setupGuide, .privacyNotes, .copyDiagnostics,
+             .scanUnsupportedDevices, .signOut, .quitApp:
             return .about
         }
     }
@@ -286,49 +287,18 @@ enum SettingsSearch {
                   enTitle: "Launch at Login",
                   synonyms: ["开机启动", "自动启动", "登录项", "启动项", "launch at login", "login item",
                              "startup", "autostart", "boot"]),
-            entry(.advancedDeviceWrites, section: generalSection,
-                  zhTitle: "允许「更多设置」写入次要控件", enTitle: "Allow Secondary Controls Under More Settings",
-                  synonyms: ["更多设置", "次要控件", "高级写入", "more settings", "advanced", "secondary",
-                             "writes"]),
             entry(.globalHotkey, section: generalSection, zhTitle: "全局快捷键", enTitle: "Global Shortcut",
                   synonyms: ["快捷键", "热键", "组合键", "hotkey", "shortcut", "keyboard", "key chord"]),
-            entry(.safetyAlerts, section: generalSection, zhTitle: "主动安全与低电量提醒",
-                  enTitle: "Safety & Low Battery Alerts",
-                  synonyms: ["安全提醒", "低电量", "告警", "safety", "battery", "low battery", "alert"]),
-            entry(.sensorAlerts, section: generalSection, zhTitle: "传感器提醒", enTitle: "Sensor Alerts",
-                  synonyms: ["门窗", "移动", "烟感", "漏水", "水浸", "sensor", "door", "window", "motion",
-                             "smoke", "leak"]),
-            entry(.alertsOnlyWhenAway, section: generalSection,
-                  zhTitle: "门窗和移动只在离开时提醒", enTitle: "Door and Motion Only When Away",
-                  synonyms: ["离开", "锁屏", "睡眠", "away", "locked", "asleep", "switched away"]),
-            entry(.doorbellAutoView, section: generalSection,
-                  zhTitle: "门铃响时自动弹出摄像头画面", enTitle: "Show the Doorbell Camera When It Rings",
-                  synonyms: ["门铃", "摄像头", "弹出", "doorbell", "camera", "popup", "ring"]),
-            entry(.doorbellChime, section: generalSection, zhTitle: "门铃响时播放提示音",
-                  enTitle: "Play a Chime When the Doorbell Rings",
-                  synonyms: ["门铃提示音", "门铃声音", "doorbell chime", "bell sound"]),
-            entry(.doorbellAutoCloseSeconds, section: generalSection, zhTitle: "门铃画面自动收起",
-                  enTitle: "Close the Doorbell View After",
-                  synonyms: ["自动收起", "门铃时长", "auto close", "doorbell timeout", "seconds"]),
             entry(.weeklyReport, section: generalSection, zhTitle: "每周家庭健康周报",
                   enTitle: "Weekly Home Health Report",
                   synonyms: ["周报", "健康报告", "weekly", "report", "digest", "health"]),
-            entry(.notificationPermission, section: generalSection, zhTitle: "通知权限",
-                  enTitle: "Notification Permission",
-                  synonyms: ["通知", "权限", "提醒", "notification", "permission", "allow", "authorize"]),
             entry(.hiddenDevices, section: generalSection, zhTitle: "已隐藏的设备", enTitle: "Hidden Devices",
                   synonyms: ["隐藏设备", "恢复显示", "取消隐藏", "hidden", "unhide", "restore", "show"]),
-            entry(.setupGuide, section: generalSection, zhTitle: "首次设置与新手引导",
-                  enTitle: "Setup Guide",
-                  synonyms: ["新手引导", "引导", "教程", "onboarding", "guide", "tutorial", "setup"]),
             entry(.automationRules, section: automationSection,
                   zhTitle: "Mac 状态自动化规则", enTitle: "Mac State Automation Rules",
                   synonyms: ["自动化", "规则", "合盖", "休眠", "唤醒", "外接显示器", "专注模式", "日历",
                              "电量阈值", "wifi", "automation", "rule", "trigger", "lid", "sleep",
                              "wake", "focus", "calendar"]),
-            entry(.allowURLControl, section: automationSection,
-                  zhTitle: "允许 URL 直控（跳过确认）", enTitle: "Allow URL Control Without Confirmation",
-                  synonyms: ["url", "直控", "链接", "menumijia", "deeplink", "confirmation"]),
             entry(.raycast, section: automationSection, zhTitle: "Raycast 集成",
                   enTitle: "Raycast Integration",
                   synonyms: ["raycast", "集成", "integration", "extension"]),
@@ -398,20 +368,44 @@ enum SettingsSearch {
                   zhTitle: "空调使用整行面板模块", enTitle: "Full-Width Climate Panel",
                   synonyms: ["空调", "整行", "高级显示", "climate", "module", "full width", "panel module"]),
 
-            entry(.copyDiagnostics, section: privacySection, zhTitle: "复制诊断信息",
-                  enTitle: "Copy Diagnostics",
-                  synonyms: ["诊断", "复制", "反馈", "diagnostics", "copy", "report", "debug"]),
-            entry(.scanUnsupportedDevices, section: privacySection, zhTitle: "扫描不支持的设备",
-                  enTitle: "Scan Skipped Devices",
-                  synonyms: ["不支持", "跳过", "未识别", "unsupported", "skipped", "scan", "missing"]),
-            entry(.privacyNotes, section: privacySection, zhTitle: "隐私说明", enTitle: "Privacy Notes",
-                  synonyms: ["隐私", "本机", "privacy", "local", "data", "offline"]),
-            entry(.blockControlWhileLocked, section: securitySection,
+            entry(.blockControlWhileLocked, section: safetySection,
                   zhTitle: "锁屏时禁止控制设备", enTitle: "Block Device Control While Locked",
                   synonyms: ["锁屏", "禁止控制", "安全", "lock", "locked", "block", "security"]),
-            entry(.signOut, section: securitySection, zhTitle: "退出并吊销令牌",
-                  enTitle: "Sign Out & Revoke Tokens",
-                  synonyms: ["退出登录", "吊销", "注销", "sign out", "logout", "revoke", "token"]),
+            entry(.safetyAlerts, section: safetySection, zhTitle: "主动安全与低电量提醒",
+                  enTitle: "Safety & Low Battery Alerts",
+                  synonyms: ["安全提醒", "守护提醒", "低电量", "告警", "safety", "battery", "low battery", "alert"]),
+            entry(.sensorAlerts, section: safetySection, zhTitle: "传感器提醒", enTitle: "Sensor Alerts",
+                  synonyms: ["门窗", "移动", "烟感", "漏水", "水浸", "sensor", "door", "window", "motion",
+                             "smoke", "leak"]),
+            entry(.alertsOnlyWhenAway, section: safetySection,
+                  zhTitle: "门窗和移动只在离开时提醒", enTitle: "Door and Motion Only When Away",
+                  synonyms: ["离开", "锁屏", "睡眠", "away", "locked", "asleep", "switched away"]),
+            entry(.doorbellAutoView, section: safetySection,
+                  zhTitle: "门铃响时自动弹出摄像头画面", enTitle: "Show the Doorbell Camera When It Rings",
+                  synonyms: ["门铃", "摄像头", "弹出", "doorbell", "camera", "popup", "ring"]),
+            entry(.doorbellChime, section: safetySection, zhTitle: "门铃响时播放提示音",
+                  enTitle: "Play a Chime When the Doorbell Rings",
+                  synonyms: ["门铃提示音", "门铃声音", "doorbell chime", "bell sound"]),
+            entry(.doorbellAutoCloseSeconds, section: safetySection, zhTitle: "门铃画面自动收起",
+                  enTitle: "Close the Doorbell View After",
+                  synonyms: ["自动收起", "门铃时长", "高级门铃选项", "auto close", "doorbell timeout",
+                             "advanced doorbell", "seconds"]),
+            entry(.notificationPermission, section: safetySection, zhTitle: "通知权限",
+                  enTitle: "Notification Permission",
+                  synonyms: ["通知", "权限", "提醒", "notification", "permission", "allow", "authorize"]),
+            entry(.allOffScope, section: safetySection, zhTitle: "全关范围",
+                  enTitle: "All Off Scope",
+                  synonyms: ["全关", "一键全关", "全关范围", "排除", "包含", "插座", "扫地机", "阀门",
+                             "all off", "turn all off", "all off scope", "exclude", "include", "plug", "vacuum", "valve"]),
+            entry(.advancedDeviceWrites, section: highRiskSection,
+                  zhTitle: "打开高风险设备的额外控制", enTitle: "Extra Controls for High-Risk Devices",
+                  synonyms: ["更多设置", "次要控件", "高级写入", "高风险", "门锁", "阀门", "加热", "高级控制权限",
+                             "允许「更多设置」写入次要控件", "more settings", "advanced", "secondary", "writes",
+                             "high risk", "lock", "valve", "heating"]),
+            entry(.allowURLControl, section: highRiskSection,
+                  zhTitle: "允许外部链接直接控制设备", enTitle: "Allow External Links to Control Devices Directly",
+                  synonyms: ["url", "直控", "外部链接", "链接", "跳过确认", "二次确认", "高级控制权限",
+                             "menumijia", "deeplink", "confirmation", "direct control"]),
 
             entry(.aboutVersion, section: aboutSection, zhTitle: "版本与更新",
                   enTitle: "Version & Updates",
@@ -421,8 +415,26 @@ enum SettingsSearch {
                   enTitle: "Check for Updates Automatically",
                   synonyms: ["检查更新", "自动更新", "软件更新", "下载安装", "check for updates",
                              "auto update", "software update", "download"]),
+            entry(.setupGuide, section: aboutSection, zhTitle: "重新查看初始设置引导",
+                  enTitle: "Reopen Setup Guide",
+                  synonyms: ["首次设置", "初始设置", "继续初始设置", "新手引导", "引导", "教程",
+                             "onboarding", "guide", "tutorial", "setup"]),
+            entry(.privacyNotes, section: aboutSection, zhTitle: "隐私说明", enTitle: "Privacy Notes",
+                  synonyms: ["隐私", "本机", "privacy", "local", "data", "offline"]),
+            entry(.copyDiagnostics, section: diagnosticsSection, zhTitle: "复制排障信息",
+                  enTitle: "Copy Diagnostics",
+                  synonyms: ["诊断", "排障", "复制", "反馈", "隐去账号", "错误", "崩溃",
+                             "diagnostics", "troubleshooting", "copy", "report", "debug", "redacted", "crash"]),
+            entry(.scanUnsupportedDevices, section: diagnosticsSection, zhTitle: "未能显示在面板的设备",
+                  enTitle: "Devices Not Shown in the Panel",
+                  synonyms: ["不支持", "跳过", "未识别", "扫描", "原因", "unsupported", "skipped", "scan",
+                             "missing", "reason"]),
+            entry(.signOut, section: resetSection, zhTitle: "退出并清除所有账号与密钥",
+                  enTitle: "Sign Out & Clear All Accounts and Keys",
+                  synonyms: ["退出登录", "吊销", "注销", "清除账号", "重置", "高级排障", "退出并吊销",
+                             "sign out", "logout", "revoke", "token", "clear accounts", "reset"]),
             entry(.quitApp, section: aboutSection, zhTitle: "退出应用", enTitle: "Quit the App",
-                  synonyms: ["退出", "关闭应用", "quit", "exit", "terminate"])
+                  synonyms: ["退出", "关闭应用", "完全退出", "quit", "exit", "terminate"])
         ]
     }
 
@@ -575,9 +587,11 @@ enum SettingsSearch {
     private static var connectionSection: String { L10n.tr("家居连接", "Connections") }
     private static var assistantSection: String { L10n.tr("AI 助手", "AI Assistant") }
     private static var energySection: String { L10n.tr("插座用电统计", "Plug Energy") }
-    private static var privacySection: String { L10n.tr("隐私与诊断", "Privacy & Diagnostics") }
-    private static var securitySection: String { L10n.tr("安全", "Security") }
-    private static var aboutSection: String { L10n.tr("关于与更新", "About & Updates") }
+    private static var safetySection: String { L10n.tr("安全与提醒", "Safety & Alerts") }
+    private static var highRiskSection: String { L10n.tr("高级控制权限", "High-Risk Control Permissions") }
+    private static var aboutSection: String { L10n.tr("关于与诊断", "About & Diagnostics") }
+    private static var diagnosticsSection: String { L10n.tr("排障与诊断", "Troubleshooting & Diagnostics") }
+    private static var resetSection: String { L10n.tr("高级排障与重置", "Advanced Troubleshooting & Reset") }
 }
 
 // MARK: - Focus State

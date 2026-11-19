@@ -151,24 +151,27 @@ struct SettingsGlyphShape: Shape {
                 path.addEllipse(in: box(3.8, 3.8, 16.4, 16.4))
 
             case .privacy:
-                // A padlock: shackle, body, keyhole.
-                path.move(to: point(8.2, 10.4))
-                path.addLine(to: point(8.2, 8.6))
-                path.addArc(center: point(12, 8.6), radius: 3.8 * scale,
-                            startAngle: .degrees(180), endAngle: .degrees(360), clockwise: false)
-                path.addLine(to: point(15.8, 10.4))
-                path.addRoundedRect(in: box(5.6, 10.4, 12.8, 9.6),
-                                    cornerSize: CGSize(width: 2.4 * scale, height: 2.4 * scale),
-                                    style: .continuous)
-                path.addEllipse(in: dot((12, 14.3), 3.0))
-                path.move(to: point(12, 15.8))
-                path.addLine(to: point(12, 17.3))
+                // A shield with a checkmark: reads as safety & guardian alerts at both 11 pt and 22 pt.
+                path.move(to: point(12, 3.8))
+                path.addLine(to: point(19.0, 6.3))
+                path.addLine(to: point(19.0, 11.4))
+                path.addQuadCurve(to: point(12, 20.3), control: point(18.6, 17.2))
+                path.addQuadCurve(to: point(5.0, 11.4), control: point(5.4, 17.2))
+                path.addLine(to: point(5.0, 6.3))
+                path.closeSubpath()
+                path.move(to: point(9.1, 12.1))
+                path.addLine(to: point(11.2, 14.2))
+                path.addLine(to: point(15.2, 9.9))
 
             case .about:
+                // A circle framing a diagnostic pulse wave for About & Diagnostics.
                 path.addEllipse(in: box(3.8, 3.8, 16.4, 16.4))
-                path.addEllipse(in: dot((12, 7.9), 2.6))
-                path.move(to: point(12, 11.3))
-                path.addLine(to: point(12, 16.3))
+                path.move(to: point(6.5, 12.2))
+                path.addLine(to: point(9.1, 12.2))
+                path.addLine(to: point(10.8, 8.6))
+                path.addLine(to: point(13.2, 15.6))
+                path.addLine(to: point(14.9, 12.2))
+                path.addLine(to: point(17.5, 12.2))
             }
             return path
         }

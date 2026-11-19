@@ -2,7 +2,7 @@ import Foundation
 import MijiaCore
 import Observation
 
-/// App-local ring buffer of *when* errors happened, used by "复制诊断信息" (#45).
+/// App-local ring buffer of *when* errors happened, used by Settings → About & Diagnostics → "复制排障信息" (#45).
 ///
 /// Only timestamps are stored: error strings can embed a host or device payload, so the raw text is
 /// never persisted. The diagnostics report therefore shows a count and the latest time, nothing else.
@@ -32,6 +32,18 @@ final class AppDiagnosticsLog {
         }
         UserDefaults.standard.set(errorTimestamps.map(\.timeIntervalSince1970), forKey: Self.storageKey)
     }
+
+    #if DEBUG
+    func replaceTimestampsForTesting(_ timestamps: [Date]) {
+        errorTimestamps = timestamps
+        lastRecordedToastId = nil
+        if timestamps.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.storageKey)
+        } else {
+            UserDefaults.standard.set(timestamps.map(\.timeIntervalSince1970), forKey: Self.storageKey)
+        }
+    }
+    #endif
 
     // MARK: - Local crash files (#17)
 

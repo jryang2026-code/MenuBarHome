@@ -362,8 +362,8 @@ extension SettingsTab {
     var paneSubtitle: String? {
         switch self {
         case .general:
-            return L10n.tr("菜单栏外观、设备卡片、快捷键与提醒。",
-                           "Menu bar readout, device cards, shortcuts and alerts.")
+            return L10n.tr("菜单栏外观、设备卡片、面板主题与快捷键。",
+                           "Menu bar readout, device cards, panel theme and shortcuts.")
         case .connection:
             return L10n.tr("连接 Home Assistant、米家云端与局域网电视。",
                            "Connect Home Assistant, Xiaomi Cloud and LAN TVs.")
@@ -374,11 +374,11 @@ extension SettingsTab {
             return L10n.tr("面板的明暗、主题与布局。",
                            "The panel's light or dark look, theme and layout.")
         case .privacy:
-            return L10n.tr("诊断、安全与退出登录。",
-                           "Diagnostics, security and signing out.")
+            return L10n.tr("锁屏控制、守护提醒、全关范围与高风险控制权限；设备类型关闭后仍可管理对应提醒。",
+                           "Lock-screen protection, safety alerts, All Off scope, and high-risk control permissions; alerts stay manageable even if a device type is turned off.")
         case .about:
-            return L10n.tr("版本、更新与退出。",
-                           "Version, updates and quitting.")
+            return L10n.tr("版本更新、隐私说明、排障信息、重置与退出。",
+                           "Software updates, privacy notes, diagnostics, reset, and quitting.")
         }
     }
 }
