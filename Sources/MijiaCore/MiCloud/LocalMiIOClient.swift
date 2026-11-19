@@ -545,6 +545,11 @@ public actor LocalMiIOClient {
         let reservedNonNumericBudget: Duration = hasUnresolvedNonNumericCandidates
             ? min(handshakeTimeout, probeBudget / 2)
             : .zero
+        // Reserve part of the probe cap for the non-numeric phase for the same reason its time slice is
+        // reserved: fast, successful matching can otherwise spend every probe on numeric DIDs and return
+        // before `lumi.*`/`blt.*` recovery runs, even though the reserved time is still available.
+        let reservedNonNumericProbes = hasUnresolvedNonNumericCandidates ? max(1, maxTotalUnclaimedProbes / 4) : 0
+        let matchingProbeCap = max(1, maxTotalUnclaimedProbes - reservedNonNumericProbes)
         let matchingDeadline = discoveryDeadline.advanced(by: .zero - reservedNonNumericBudget)
         func remainingMatchingBudget() -> Duration? {
             let remaining = matchingDeadline - ContinuousClock.now
@@ -577,7 +582,7 @@ public actor LocalMiIOClient {
                 triedIPsByDid: &matchingTriedIPsByDid,
                 discovered: &discovered,
                 claimedIPs: &claimedIPs,
-                maxTotalProbes: maxTotalUnclaimedProbes,
+                maxTotalProbes: matchingProbeCap,
                 remainingBudget: remainingMatchingBudget
             )
         }

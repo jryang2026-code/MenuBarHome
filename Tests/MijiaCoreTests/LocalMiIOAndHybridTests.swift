@@ -1031,6 +1031,64 @@ struct LocalMiIOClientTests {
         await client.shutdown()
     }
 
+    @Test("Matching probes cannot spend the whole unclaimed probe cap and starve non-numeric recovery")
+    func matchingProbeCapReservesProbesForNonNumericRecovery() async throws {
+        let tokenHexes = ["00112233445566778899aabbccddeeff", "112233445566778899aabbccddeeff00", "2233445566778899aabbccddeeff0011", "33445566778899aabbccddeeff001122"]
+        let tokenLumiHex = "445566778899aabbccddeeff00112233"
+        let tokens = try tokenHexes.map { try #require(MiIOPacket.validateToken($0)) }
+        let tokenLumi = try #require(MiIOPacket.validateToken(tokenLumiHex))
+
+        // Three numeric candidates, one retired non-numeric candidate, and a cap of four probes. Matching
+        // replies are abundant, so unless the cap keeps a probe back for the reserved non-numeric slice the
+        // `lumi.*` device is never probed even though the discovery budget still has time for it.
+        let probedHosts = LockedBox<[String]>([])
+        let transport = MockUDPTransport { packet, host, _ in
+            probedHosts.withValue { $0.append(host) }
+            switch host {
+            case "192.168.1.41", "192.168.1.42", "192.168.1.43", "192.168.1.44":
+                let index = Int(host.suffix(1)).map { $0 - 1 } ?? 0
+                let did = String(101 + index)
+                return try self.encodeRPCReply(packet, token: tokens[index], resultOrError: #""result":[{"did":"\#(did)","siid":1,"piid":1,"value":true,"code":0}]"#)
+            case "192.168.1.45":
+                return try self.encodeRPCReply(packet, token: tokenLumi, resultOrError: #""result":[{"did":"lumi.sensor.v1","siid":1,"piid":1,"value":1,"code":0}]"#)
+            default:
+                throw MiIOError.timeout
+            }
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.41", packet: makeHelloResponse(deviceId: 101, stamp: 10)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.42", packet: makeHelloResponse(deviceId: 102, stamp: 11)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.43", packet: makeHelloResponse(deviceId: 103, stamp: 12)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.44", packet: makeHelloResponse(deviceId: 104, stamp: 13)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.45", packet: makeHelloResponse(deviceId: 0x0AAA_0009, stamp: 14)),
+            ]
+        }
+
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .milliseconds(200),
+            maxRetries: 0,
+            maxTotalUnclaimedProbes: 4
+        )
+        let discovered = try await client.discoverEndpoints(
+            for: [
+                MiIODeviceCandidate(did: "101", token: tokenHexes[0]),
+                MiIODeviceCandidate(did: "102", token: tokenHexes[1]),
+                MiIODeviceCandidate(did: "103", token: tokenHexes[2]),
+                MiIODeviceCandidate(did: "104", token: tokenHexes[3]),
+                MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex),
+            ],
+            broadcastTimeout: .milliseconds(20)
+        )
+
+        #expect(discovered["lumi.sensor.v1"] == "192.168.1.45")
+        #expect(probedHosts.withValue { $0.contains("192.168.1.45") })
+        #expect(probedHosts.withValue { $0.count } <= 4)
+        #expect(discovered.count == 4)
+        await client.shutdown()
+    }
+
     @Test("Token-echo HELLOs outrank unknown checksums so a truncated unclaimed probe queue keeps the real device")
     func tokenEchoHelloRanksAboveUnknownChecksumsInUnclaimedProbeQueue() async throws {
         let tokenLumiHex = "112233445566778899aabbccddeeff00"
