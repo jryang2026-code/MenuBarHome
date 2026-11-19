@@ -1719,22 +1719,8 @@ public actor MiCloudProvider: HomeProvider {
         let (visibleDevices, visibleRooms) = scopedDevicesAndRooms()
         let plan = typePrunePlan(for: (visibleDevices, visibleRooms))
         let cloudBackingOff = cloudRetryNotBefore != nil
-        let synthDevices: [MiDeviceRecord]
-        if cloudBackingOff {
-            synthDevices = plan.visibleRecords.map { record in
-                guard !lanSucceededDids.contains(record.miotDid),
-                      !everObservedPropDids.contains(record.miotDid) else {
-                    return record
-                }
-                var copy = record
-                copy.isOnline = false
-                return copy
-            }
-        } else {
-            synthDevices = plan.visibleRecords
-        }
         var home = MiotSynthesizer.synthesize(
-            devices: synthDevices,
+            devices: backingOffRecords(plan.visibleRecords),
             rooms: visibleRooms,
             specs: specsByModel,
             values: values
@@ -1772,8 +1758,23 @@ public actor MiCloudProvider: HomeProvider {
             spec.availableEffects = []
             home.devices[i].kind = .light(spec)
         }
-        continuation?.yield(.snapshotUpdated(stamp(home)))
+        // The report lands first: `handleProviderEvent` evaluates safety at the end of the snapshot,
+        // so a hidden device's fresh state (and its monitor baseline) must already be adopted.
         emitTypePruneReport(for: plan, rooms: visibleRooms)
+        continuation?.yield(.snapshotUpdated(stamp(home)))
+    }
+
+    /// During cloud backoff a device the cloud has not confirmed since wake keeps its last cached
+    /// values; the card must not claim them fresh. Hidden safety records take the same path.
+    private func backingOffRecords(_ records: [MiDeviceRecord]) -> [MiDeviceRecord] {
+        guard cloudRetryNotBefore != nil else { return records }
+        return records.map { record in
+            guard !lanSucceededDids.contains(record.miotDid),
+                  !everObservedPropDids.contains(record.miotDid) else { return record }
+            var copy = record
+            copy.isOnline = false
+            return copy
+        }
     }
 
     /// Hands the host what this round hid: the identities the write gate answers
@@ -1782,13 +1783,29 @@ public actor MiCloudProvider: HomeProvider {
     /// retained set, so re-enabling a type or disabling the account leaves nothing behind.
     private func emitTypePruneReport(for plan: MiotTypePrunePlan, rooms: [MiRoom]) {
         let scope = account?.id ?? typePrunePolicyLoader().sourceScope
-        let safetyDevices: [SmartDevice]
-        if !plan.isPruned || plan.safetyRecords.isEmpty {
-            safetyDevices = []
-        } else {
-            safetyDevices = stampDevices(MiotSynthesizer.synthesize(
-                devices: plan.safetyRecords, rooms: rooms, specs: specsByModel, values: values
-            ).devices)
+        var safetyDevices: [SmartDevice] = []
+        if plan.isPruned, !plan.safetyRecords.isEmpty {
+            let records = backingOffRecords(plan.safetyRecords)
+            var safetyHome = MiotSynthesizer.synthesize(
+                devices: records, rooms: rooms, specs: specsByModel, values: values
+            )
+            if cloudRetryNotBefore != nil {
+                // A hidden card needs the same reachability guard as a visible one, or a cached "on"
+                // keeps its long-run timer counting.
+                var didsByDeviceId: [String: Set<String>] = [:]
+                for record in records {
+                    didsByDeviceId[record.did, default: []].insert(record.miotDid)
+                }
+                for i in safetyHome.devices.indices {
+                    let candidateDids = (didsByDeviceId[safetyHome.devices[i].id].map(Array.init) ?? [])
+                        + safetyHome.devices[i].miotCommandDids
+                        + [safetyHome.devices[i].id]
+                    if !candidateDids.contains(where: { lanSucceededDids.contains($0) }) {
+                        safetyHome.devices[i].telemetryStale = true
+                    }
+                }
+            }
+            safetyDevices = stampDevices(safetyHome.devices)
         }
         continuation?.yield(.miotTypePruneChanged(MiotTypePruneReport(
             scope: scope,

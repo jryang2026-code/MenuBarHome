@@ -11,7 +11,8 @@ extension HomeStore {
     /// home, or an alert recorded in another home, is not this home's activity and stays out.
     public var panelActivities: [PanelActivity] {
         let scope = connectionScopeIdentifier
-        let presentDeviceIds = Set(devices.map(\.id))
+        // A closed type's retained safety devices still own their alert rows (P3a-M).
+        let presentDeviceIds = Set(devices.map(\.id)).union(typeHiddenSafetyDevices.map(\.id))
         return PanelActivityFeed.items(
             notices: panelNoticeKinds,
             safety: recentSafetyAlerts.filter { recorded in

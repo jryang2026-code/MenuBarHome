@@ -132,9 +132,13 @@ extension HomeStore {
     /// Publishes the enabled types and safety switches to the Mi provider. It reads the box before
     /// every plan, so a closed type stops being polled on the next refresh (P3a-M).
     func syncMiotTypePrunePolicy() {
+        var safetyPolicy = currentSafetyRetentionPolicy()
+        // The doorbell is its own switch, not part of the safety master switch (#308), so a closed
+        // camera type keeps ring detection and its chime even with safety alerts off.
+        if doorbellAutoPopup || doorbellChime { safetyPolicy.enabledSignals.insert(.doorbell) }
         miotTypePruneBox.update(MiotTypePrunePolicy(
             selection: capabilitySelection,
-            safetyPolicy: currentSafetyRetentionPolicy(),
+            safetyPolicy: safetyPolicy,
             sourceScope: miSessionScopeIdentifier ?? ""
         ))
     }

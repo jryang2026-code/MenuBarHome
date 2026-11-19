@@ -81,6 +81,27 @@ struct MiotTypePruneProviderTests {
         await provider.shutdown()
     }
 
+    @Test("The report reaches the host before the snapshot that triggers safety evaluation")
+    func reportArrivesBeforeTheSnapshot() async throws {
+        let api = StubMiCloudAPI(
+            devices: [MiotFixtures.lightRecord, Self.leak], rooms: [],
+            values: MiotFixtures.lightValues.merging([MiotFixtures.key("leak-1", 2, 1006): .bool(true)]) { $1 }
+        )
+        let provider = try makeProvider(api, MiotTypePrunePolicyBox(policy: Self.policy([.light], signals: [.leak])))
+        let (log, task) = start(provider)
+        defer { task.cancel() }
+        #expect(await log.wait { await $0.typePruneReports.contains { !$0.safetyDevices.isEmpty } })
+        let order = await log.events.map { event -> String in
+            switch event {
+            case .miotTypePruneChanged: "report"
+            case .snapshotUpdated: "snapshot"
+            default: "other"
+            }
+        }
+        #expect(order.firstIndex(of: "report")! < order.firstIndex(of: "snapshot")!)
+        await provider.shutdown()
+    }
+
     @Test("With every type on the poll is byte for byte the historical key list")
     func everyTypeOnKeepsThePolledKeys() async throws {
         let specs = try Self.specs()

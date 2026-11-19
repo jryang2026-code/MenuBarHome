@@ -104,6 +104,33 @@ struct MiotTypePruneStoreTests {
         #expect(store.evaluateSafetyAlerts(now: Date()).contains { $0.deviceId == Self.leakSensor.id })
     }
 
+    @Test("The doorbell is its own switch: a closed camera keeps ringing with safety alerts off")
+    @MainActor
+    func doorbellRetentionIgnoresTheSafetyMasterSwitch() async throws {
+        let (store, _) = try await makeStore()
+        enableMiScope([.camera], in: store)
+        store.enableSafetyAlerts = false
+        store.doorbellChime = true
+        store.syncMiotTypePrunePolicy()
+        #expect(store.miotTypePruneBox.get().safetyPolicy.enabledSignals == [.doorbell])
+
+        store.doorbellChime = false
+        #expect(store.miotTypePruneBox.get().safetyPolicy.enabledSignals.isEmpty)
+    }
+
+    @Test("A retained sensor's alert still reaches the activity feed")
+    @MainActor
+    func retainedAlertAppearsInTheActivityFeed() async throws {
+        let (store, _) = try await makeStore()
+        enableMiScope([.sensor], in: store)
+        store.applyMiotTypePruneReport(report([Self.leakSensor], safety: [Self.leakSensor]))
+        #expect(store.evaluateSafetyAlerts(now: Date()).contains { $0.deviceId == Self.leakSensor.id })
+        #expect(store.panelActivities.contains { activity in
+            if case .safety(let recorded) = activity.kind { recorded.alert.deviceId == Self.leakSensor.id }
+            else { false }
+        })
+    }
+
     @Test("Retention is per account, and a provider swap or a sign-out clears every account")
     @MainActor
     func retentionIsPerAccountAndClearedOnSwap() async throws {
