@@ -1,21 +1,21 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
 
 /// P2b-M app-layer tests: Shortcuts/App Intents, `menumijia://` URLCommandHandler,
 /// `UnsupportedDeviceScanner`, `CameraLivePanelController` teardown, and HA disable confirmation copy.
+///
+/// `makeHAStore` hands the store the same `InMemoryUserDefaults` the test seeds and the camera panel
+/// persists frames into, so no assertion reads a second `UserDefaults(suiteName:)` instance.
 @Suite(.serialized)
 @MainActor
 struct HAConnectionAppGateTests {
     private static let haURL = "http://192.168.1.60:8123"
     private static let haScope = "ha:\(haURL)"
     private static let haToken = "ha-app-test-token"
-
-    private static func makeSuite() -> String {
-        "com.jryang1997.MenuBarMijia.ha-app-gate.\(UUID().uuidString)"
-    }
 
     private actor AsyncGate {
         private var entered = false
@@ -62,14 +62,14 @@ struct HAConnectionAppGateTests {
         }
     }
 
-    private static func makeHAStore(suite: String, snapshot: SynthesizedHome) throws -> (HomeStore, MockHomeProvider, UserDefaults) {
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private static func makeHAStore(snapshot: SynthesizedHome) throws -> (HomeStore, MockHomeProvider, InMemoryUserDefaults) {
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         defaults.set(haURL, forKey: "ha_server_url")
         defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
         _ = KeychainHelper.saveToken(haToken, defaults: defaults, vault: vault)
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         return (store, mock, defaults)
     }
 
@@ -77,9 +77,6 @@ struct HAConnectionAppGateTests {
 
     @Test("App Intents reject disabled HA devices and scenes with distinct copy and zero writes")
     func appIntentsRejectDisabledHADevicesAndScenes() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haLamp = SmartDevice(
             id: "ha-lamp-1",
             name: "书房台灯",
@@ -93,7 +90,7 @@ struct HAConnectionAppGateTests {
         var snapshot = SynthesizedHome(devices: [haLamp], scenes: [movieScene])
         snapshot.isInitialLoadComplete = true
 
-        let (store, mock, _) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        let (store, mock, _) = try Self.makeHAStore(snapshot: snapshot)
         try await store.waitForTestSnapshot()
         #expect(store.visibleScenes.map(\.id) == ["scene.cinema"])
 
@@ -142,9 +139,6 @@ struct HAConnectionAppGateTests {
 
     @Test("URLCommandHandler blocks menumijia:// toggle, power, and scene links before confirmation and if HA is disabled mid-modal")
     func urlCommandHandlerBlocksDisabledHAAndMidModalDisable() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haLamp = SmartDevice(
             id: "ha-lamp-1",
             name: "客厅灯",
@@ -158,7 +152,7 @@ struct HAConnectionAppGateTests {
         var snapshot = SynthesizedHome(devices: [haLamp], scenes: [movieScene])
         snapshot.isInitialLoadComplete = true
 
-        let (store, mock, _) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        let (store, mock, _) = try Self.makeHAStore(snapshot: snapshot)
         try await store.waitForTestSnapshot()
 
         let handler = URLCommandHandler()
@@ -221,12 +215,9 @@ struct HAConnectionAppGateTests {
 
     @Test("UnsupportedDeviceScanner skips disabled Home Assistant and drops in-flight HA scan findings when disabled mid-scan")
     func unsupportedDeviceScannerSkipsDisabledHAAndDropsMidFlightScan() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         var snapshot = SynthesizedHome(devices: [])
         snapshot.isInitialLoadComplete = true
-        let (store, _, _) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        let (store, _, _) = try Self.makeHAStore(snapshot: snapshot)
 
         let scanner = UnsupportedDeviceScanner.shared
         scanner.reset()
@@ -275,9 +266,6 @@ struct HAConnectionAppGateTests {
 
     @Test("CameraLivePanelController tears down active HA camera on disable and HADisableConnectionConfirmation renders exact copy")
     func cameraTeardownAndConfirmationCopy() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haCam = SmartDevice(
             id: "ha-cam-1",
             name: "门廊摄像头",
@@ -290,7 +278,7 @@ struct HAConnectionAppGateTests {
         let haScene = HomeScene(id: "scene.movie", name: "观影模式", entityId: "scene.movie")
         var snapshot = SynthesizedHome(devices: [haCam], scenes: [haScene])
         snapshot.isInitialLoadComplete = true
-        let (store, _, defaults) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        let (store, _, defaults) = try Self.makeHAStore(snapshot: snapshot)
         try await store.waitForTestSnapshot()
 
         let now = Date(timeIntervalSince1970: 1_760_000_000)
@@ -367,9 +355,6 @@ struct HAConnectionAppGateTests {
 
     @Test("CameraLivePanelController closes active HA live camera window on disconnectHomeAssistant")
     func cameraLivePanelClosesOnDisconnectHomeAssistant() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haCam = SmartDevice(
             id: "ha-cam-disconnect-app",
             name: "后院摄像头",
@@ -381,7 +366,7 @@ struct HAConnectionAppGateTests {
         )
         var snapshot = SynthesizedHome(devices: [haCam])
         snapshot.isInitialLoadComplete = true
-        let (store, _, defaults) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        let (store, _, defaults) = try Self.makeHAStore(snapshot: snapshot)
         try await store.waitForTestSnapshot()
 
         let controller = CameraLivePanelController()
