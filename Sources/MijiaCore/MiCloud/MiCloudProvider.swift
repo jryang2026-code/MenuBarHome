@@ -1824,6 +1824,22 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
+    func canExecute(_ command: DeviceCommand) -> Bool {
+        guard !isShutDown, !isSessionRejected, api != nil else { return false }
+        let entityId = command.targetEntityId
+        guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
+              let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.did == did })
+                  ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.miotDid == did }),
+              record.isOnline,
+              let spec = specsByModel[record.model],
+              (try? MiotCommandMapper.map(command, spec: spec)) != nil else {
+            return false
+        }
+        return true
+    }
+
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }

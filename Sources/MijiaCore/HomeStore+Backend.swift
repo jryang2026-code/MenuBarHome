@@ -441,26 +441,27 @@ extension HomeStore {
                     }
                 }
             }
-            let hasSuppressedMiScope = miAccounts.contains {
-                shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch)
-            } || (!hasEnabledMiSource && (hasMiSource || !miAccounts.isEmpty))
+            let hasSuppressedMiScope = !revokedMiAccountScopes.isEmpty
+                || miAccounts.contains {
+                    shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch)
+                }
+                || (!hasEnabledMiSource && (hasMiSource || !miAccounts.isEmpty))
             if hasSuppressedMiScope {
                 // Some MIoT rows carry no `accountId`; the persisted index still knows which account
-                // unites them, so a disabled account's devices cannot come back through them.
-                // Dual-source paired cards backed or taken over by an enabled Home Assistant source
-                // must survive Xiaomi account disable seamlessly.
+                // unites them, so a disabled or signed-out account's devices cannot come back through
+                // them. Only paired cards genuinely driven by Home Assistant in this snapshot survive;
+                // a Xiaomi-backed paired row carrying a suppressed account's device content is dropped
+                // rather than relabeled to Home Assistant.
                 let disabledDeviceIds = Set(snapshot.devices.compactMap { device -> String? in
-                    let effectiveBackend = snapshot.deviceBackends[device.id] ?? deviceBackends[device.id]
-                    if effectiveBackend == .homeAssistant {
-                        return nil
-                    }
-                    let isPairedWithEnabledHA = hasEnabledHASource
-                        && (snapshot.pairedDeviceIDs.contains(device.id) || pairedDeviceIDs.contains(device.id))
-                    if isPairedWithEnabledHA {
+                    if snapshot.deviceBackends[device.id] == .homeAssistant {
                         return nil
                     }
                     if let acc = device.accountId {
                         return shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) ? device.id : nil
+                    }
+                    if let roomOwner = MiAccountScope.owner(of: device.roomId),
+                       shouldSuppressMiAccountInSnapshot(roomOwner, snapshotEpoch: snapshotEpoch) {
+                        return device.id
                     }
                     if let indexed = indexedDevicesById[device.id],
                        CapabilityReferenceEngine.connectionCapability(forScope: indexed.sourceScope) == .xiaomiCloud,
@@ -488,21 +489,20 @@ extension HomeStore {
                     snapshot.deviceBackends.removeValue(forKey: id)
                     snapshot.deviceTransportDiagnostics.removeValue(forKey: id)
                 }
-                for surviving in snapshot.devices {
-                    if snapshot.deviceBackends[surviving.id] == .xiaomiCloud,
-                       let acc = surviving.accountId,
-                       shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch),
-                       hasEnabledHASource,
-                       (snapshot.pairedDeviceIDs.contains(surviving.id) || pairedDeviceIDs.contains(surviving.id)),
-                       pinnedSource(for: surviving.id) != .xiaomiCloud {
-                        snapshot.deviceBackends[surviving.id] = .homeAssistant
+                for index in snapshot.devices.indices {
+                    let survivingId = snapshot.devices[index].id
+                    if snapshot.deviceBackends[survivingId] == .homeAssistant,
+                       let acc = snapshot.devices[index].accountId,
+                       shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) {
+                        snapshot.devices[index].accountId = nil
+                        snapshot.devices[index].accountLabel = nil
                     }
-                    if let existingFacets = snapshot.deviceFacets[surviving.id] {
+                    if let existingFacets = snapshot.deviceFacets[survivingId] {
                         let kept = existingFacets.filter { !shouldSuppressMiotFacet($0, snapshotEpoch: snapshotEpoch) }
                         if kept.isEmpty {
-                            snapshot.deviceFacets.removeValue(forKey: surviving.id)
+                            snapshot.deviceFacets.removeValue(forKey: survivingId)
                         } else if kept.count != existingFacets.count {
-                            snapshot.deviceFacets[surviving.id] = kept
+                            snapshot.deviceFacets[survivingId] = kept
                         }
                     }
                 }
@@ -1094,13 +1094,22 @@ extension HomeStore {
             nextHAReplacement = (true, nil)
         }
         var nextMiReplacement: (shouldReplace: Bool, provider: MiAccountsProvider?) = (false, nil)
-        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool)?
+        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revokedIDs: Set<String>)?
         var miAccountsChanged = false
         if wantsMi {
             let latestAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
             miAccounts = latestAccounts
             let enabledAccounts = enabledMiAccounts
             let previousAccounts = activeMiProviderAccounts
+            for account in enabledAccounts {
+                dual.markXiaomiAccountEnabled(account.id)
+                activeMiAccountsProvider?.markAccountEnabled(account.id)
+            }
+            let revokedIDs = Set(previousAccounts.map(\.id)).subtracting(enabledAccounts.map(\.id))
+            if !revokedIDs.isEmpty {
+                dual.markXiaomiAccountsDisabled(revokedIDs)
+                activeMiAccountsProvider?.markAccountsDisabled(revokedIDs)
+            }
             miAccountsChanged = enabledAccounts.count != previousAccounts.count
                 || !zip(enabledAccounts, previousAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
             let keptAnyAccount = enabledAccounts.contains { next in
@@ -1109,7 +1118,7 @@ extension HomeStore {
             if let existingMi = activeMiAccountsProvider {
                 if miAccountsChanged {
                     activeMiProviderAccounts = enabledAccounts
-                    miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty)
+                    miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty, revokedIDs)
                 }
             } else {
                 let createdMi = makeMiAccountsProvider()
@@ -1117,6 +1126,11 @@ extension HomeStore {
                 nextMiReplacement = (true, createdMi)
             }
         } else if activeMiAccountsProvider != nil {
+            let revokedIDs = Set(activeMiProviderAccounts.map(\.id))
+            if !revokedIDs.isEmpty {
+                dual.markXiaomiAccountsDisabled(revokedIDs)
+                activeMiAccountsProvider?.markAccountsDisabled(revokedIDs)
+            }
             activeMiAccountsProvider = nil
             nextMiReplacement = (true, nil)
         }
@@ -1151,6 +1165,7 @@ extension HomeStore {
                 await dual.setSourceProvider(nil, for: .xiaomiCloud)
             }
             if let u = miAccountsUpdate {
+                if !u.revokedIDs.isEmpty { await dual.revokeXiaomiAccountsGrace(u.revokedIDs) }
                 if u.invalidateSnapshot { await dual.invalidateSnapshot(for: .xiaomiCloud) }
                 await u.provider.updateAccounts(u.accounts, configEpoch: targetMiEpoch)
             }
@@ -1269,6 +1284,9 @@ extension HomeStore {
         if let added = miAccounts.first(where: {
             $0.session.userId == session.userId && $0.session.region.caseInsensitiveCompare(session.region) == .orderedSame
         }) ?? miAccounts.first {
+            revokedMiAccountScopes.remove(added.id)
+            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markXiaomiAccountEnabled(added.id)
+            activeMiAccountsProvider?.markAccountEnabled(added.id)
             registerNewlyConfiguredScope(added.id, connection: .xiaomiCloud)
         }
         self.miSessionMaskedUserId = miAccounts.first?.maskedUserId
@@ -1309,6 +1327,16 @@ extension HomeStore {
         let removedScopes = Set(miAccounts.map(\.id))
         let cleared = MiSessionStore.clear(defaults: userDefaults, vault: credentialVault)
         topologyCache?.removeAll()
+        revokedMiAccountScopes.formUnion(removedScopes)
+        if let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider) {
+            if !removedScopes.isEmpty {
+                dual.markXiaomiAccountsDisabled(removedScopes)
+            }
+            dual.markBackendDisabled(.xiaomiCloud)
+        }
+        if !removedScopes.isEmpty {
+            activeMiAccountsProvider?.markAccountsDisabled(removedScopes)
+        }
         miAccounts = []
         purgeRemovedAccountCapabilities(scopes: removedScopes)
         miAccountStatuses = [:]
@@ -1429,8 +1457,15 @@ extension HomeStore {
         }
         topologyCache?.remove(accountID: id)
         invalidateUndoContext()
+        revokedMiAccountScopes.insert(id)
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
         purgeRemovedAccountCapabilities(scopes: [id])
+        let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
+        dual?.markXiaomiAccountDisabled(id)
+        if !hasEnabledMiSource {
+            dual?.markBackendDisabled(.xiaomiCloud)
+        }
+        activeMiAccountsProvider?.markAccountDisabled(id)
         miAccountStatuses.removeValue(forKey: id)
         self.miSessionMaskedUserId = miAccounts.first?.maskedUserId
         self.miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
@@ -1441,11 +1476,30 @@ extension HomeStore {
         }
         if homeBackend == .xiaomiCloud || provider is DualSourceHomeProvider {
             // Home Assistant keeps driving its paired cards: their copied `accountId` must not take
-            // them off the panel with the account they were paired with (ADR-0008).
+            // them off the panel with the account they were paired with (ADR-0008), but the signed-out
+            // account's copied metadata and MIoT facets must be scrubbed immediately.
             let removedDeviceIds = Set(devices.filter {
                 $0.accountId == id && deviceBackends[$0.id] != .homeAssistant
             }.map(\.id))
             devices.removeAll { $0.accountId == id && deviceBackends[$0.id] != .homeAssistant }
+            for index in devices.indices {
+                let deviceId = devices[index].id
+                if deviceBackends[deviceId] == .homeAssistant, devices[index].accountId == id {
+                    devices[index].accountId = nil
+                    devices[index].accountLabel = nil
+                }
+                if let existingFacets = deviceFacets[deviceId] {
+                    let kept = existingFacets.filter { !shouldSuppressMiotFacet($0) }
+                    if kept.count != existingFacets.count {
+                        cancelFacetWrites(for: deviceId)
+                        if kept.isEmpty {
+                            deviceFacets.removeValue(forKey: deviceId)
+                        } else {
+                            deviceFacets[deviceId] = kept
+                        }
+                    }
+                }
+            }
             for removedId in removedDeviceIds {
                 cancelFacetWrites(for: removedId)
                 deviceFacets.removeValue(forKey: removedId)
@@ -1467,7 +1521,19 @@ extension HomeStore {
             if miAccounts.isEmpty, hasHASource {
                 self.homeBackend = .homeAssistant
             }
-            rebuildLiveProvider()
+            if activeDualProvider != nil || !(provider is DualSourceHomeProvider) {
+                rebuildLiveProvider()
+            } else if let injectedDual = provider as? DualSourceHomeProvider {
+                let shouldRemoveMiSource = !hasEnabledMiSource
+                let previousShutdown = providerShutdownTask
+                providerShutdownTask = Task {
+                    await previousShutdown?.value
+                    await injectedDual.revokeXiaomiAccountGrace(accountID: id)
+                    if shouldRemoveMiSource {
+                        await injectedDual.setSourceProvider(nil, for: .xiaomiCloud)
+                    }
+                }
+            }
         }
         // The removed account's rows are gone; let its paused references move on (missed, foreign or
         // still paused for a remaining scope) instead of staying paused forever (H2).

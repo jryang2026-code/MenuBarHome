@@ -189,6 +189,41 @@ private final class DisabledBackendsGate: @unchecked Sendable {
     }
 }
 
+private final class DisabledXiaomiAccountsGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var disabled: Set<String> = []
+    private var revocationVersions: [String: UInt64] = [:]
+
+    func markDisabled(_ accountID: String) {
+        guard !accountID.isEmpty else { return }
+        lock.withLock {
+            disabled.insert(accountID)
+            revocationVersions[accountID] = (revocationVersions[accountID] ?? 0) &+ 1
+        }
+    }
+
+    func markDisabled(_ accountIDs: Set<String>) {
+        lock.withLock {
+            for accountID in accountIDs where !accountID.isEmpty {
+                disabled.insert(accountID)
+                revocationVersions[accountID] = (revocationVersions[accountID] ?? 0) &+ 1
+            }
+        }
+    }
+
+    func markEnabled(_ accountID: String) {
+        lock.withLock {
+            _ = disabled.remove(accountID)
+        }
+    }
+
+    func snapshot() -> (disabled: Set<String>, revocationVersions: [String: UInt64]) {
+        lock.withLock {
+            (disabled, revocationVersions)
+        }
+    }
+}
+
 /// Keeps both providers connected and publishes one merged home. Commands are routed by their
 /// target address, so an entity id decides the source without a second lookup table.
 public actor DualSourceHomeProvider: HomeProvider {
@@ -210,6 +245,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     private let graceNowProvider: @Sendable () -> SuspendingClock.Instant
     private let fallbackRecheckTimer: any FallbackRecheckTimer
     private let disabledBackendsGate = DisabledBackendsGate()
+    private let disabledXiaomiAccountsGate = DisabledXiaomiAccountsGate()
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var haTask: Task<Void, Never>?
@@ -235,6 +271,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var miAccountOfflineSince: [String: SuspendingClock.Instant] = [:]
     private var miAccountPreDropDevices: [String: [String: PreDropXiaomiDevice]] = [:]
     private var miExpiredAccountIDs: Set<String> = []
+    private var appliedXiaomiRevocationVersions: [String: UInt64] = [:]
     private var inactiveSince: SuspendingClock.Instant?
     private var haGraceActiveInLastRecompute = false
     private var miGraceActiveInLastRecompute = false
@@ -423,6 +460,55 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     public nonisolated func disableGeneration(for backend: HomeBackend) -> UInt64 {
         disabledBackendsGate.currentGeneration(for: backend)
+    }
+
+    /// Synchronously revokes grace eligibility for a disabled or signed-out Xiaomi account before
+    /// async provider updates reach the actor, preventing cached pre-drop copies from being picked.
+    public nonisolated func markXiaomiAccountDisabled(_ accountID: String) {
+        disabledXiaomiAccountsGate.markDisabled(accountID)
+    }
+
+    public nonisolated func markXiaomiAccountsDisabled(_ accountIDs: Set<String>) {
+        disabledXiaomiAccountsGate.markDisabled(accountIDs)
+    }
+
+    public nonisolated func markXiaomiAccountEnabled(_ accountID: String) {
+        disabledXiaomiAccountsGate.markEnabled(accountID)
+    }
+
+    public func revokeXiaomiAccountGrace(accountID: String) {
+        revokeXiaomiAccountsGrace([accountID])
+    }
+
+    public func revokeXiaomiAccountsGrace(_ accountIDs: Set<String>) {
+        guard !accountIDs.isEmpty else { return }
+        _ = pruneRevokedXiaomiAccountGraceState()
+        for accountID in accountIDs {
+            miAccountPreDropDevices.removeValue(forKey: accountID)
+            miAccountOfflineSince.removeValue(forKey: accountID)
+            miAccountStatuses.removeValue(forKey: accountID)
+            miExpiredAccountIDs.remove(accountID)
+            miGracedAccountsInLastRecompute.remove(accountID)
+        }
+        guard started, !isShutDown else { return }
+        emitStatus()
+        emitSourceStatuses()
+        emitLocalNetworkPermission()
+        recompute()
+    }
+
+    @discardableResult
+    private func pruneRevokedXiaomiAccountGraceState() -> Set<String> {
+        let (disabled, versions) = disabledXiaomiAccountsGate.snapshot()
+        for (accountID, version) in versions where appliedXiaomiRevocationVersions[accountID] != version {
+            appliedXiaomiRevocationVersions[accountID] = version
+            miAccountPreDropDevices.removeValue(forKey: accountID)
+            miAccountOfflineSince.removeValue(forKey: accountID)
+            miAccountStatuses.removeValue(forKey: accountID)
+            miExpiredAccountIDs.remove(accountID)
+            miGracedAccountsInLastRecompute.remove(accountID)
+        }
+        return disabled
     }
 
     public func setSourceProvider(
@@ -800,13 +886,14 @@ public actor DualSourceHomeProvider: HomeProvider {
         var home = home
         let now = effectiveGraceNow()
         let previousMiStatus = miStatus
-        let snapshotExpiredIDs = Set(home.expiredAccountIDs.filter { !$0.isEmpty })
+        let disabledAccountIDs = pruneRevokedXiaomiAccountGraceState()
+        let snapshotExpiredIDs = Set(home.expiredAccountIDs.filter { !$0.isEmpty && !disabledAccountIDs.contains($0) })
         for expiredID in snapshotExpiredIDs {
             miExpiredAccountIDs.insert(expiredID)
             miAccountOfflineSince.removeValue(forKey: expiredID)
             miAccountPreDropDevices.removeValue(forKey: expiredID)
         }
-        let knownIDs = knownXiaomiAccountIDs(in: home)
+        let knownIDs = knownXiaomiAccountIDs(in: home).union(disabledAccountIDs)
         if home.accountStatuses.isEmpty {
             if !miExpiredAccountIDs.isEmpty {
                 var deviceOwners = Set(
@@ -815,6 +902,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                 for owners in home.deviceAccountIDs.values {
                     deviceOwners.formUnion(owners.filter { !$0.isEmpty })
                 }
+                deviceOwners.subtract(disabledAccountIDs)
                 let hasNonExpiredDeviceOwner = deviceOwners.contains { !miExpiredAccountIDs.contains($0) }
                 let hasRecoveredAccount = snapshotExpiredIDs.isEmpty
                     && (home.closesAwayGap || hasNonExpiredDeviceOwner)
@@ -840,7 +928,8 @@ public actor DualSourceHomeProvider: HomeProvider {
             for expiredID in snapshotExpiredIDs where home.accountStatuses[expiredID] == nil {
                 home.accountStatuses[expiredID] = expiredStatus
             }
-            let presentIDs = Set(home.accountStatuses.keys)
+            let activeAccountStatuses = home.accountStatuses.filter { !disabledAccountIDs.contains($0.key) }
+            let presentIDs = Set(activeAccountStatuses.keys)
             for staleID in Set(miAccountStatuses.keys).union(miExpiredAccountIDs)
             where !presentIDs.contains(staleID) {
                 miAccountStatuses.removeValue(forKey: staleID)
@@ -848,7 +937,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                 miAccountPreDropDevices.removeValue(forKey: staleID)
                 miExpiredAccountIDs.remove(staleID)
             }
-            for (accountID, nextAccStatus) in home.accountStatuses {
+            for (accountID, nextAccStatus) in activeAccountStatuses {
                 let prevAccStatus = miAccountStatuses[accountID]
                 if nextAccStatus.isConnected, !snapshotExpiredIDs.contains(accountID) {
                     miExpiredAccountIDs.remove(accountID)
@@ -908,7 +997,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                miAccountStatuses.keys.allSatisfy({ miExpiredAccountIDs.contains($0) }) {
                 home.localNetworkBlockedFeatures = []
             }
-            let aggregate = Self.aggregateAccountStatus(home.accountStatuses)
+            let aggregate = Self.aggregateAccountStatus(activeAccountStatuses)
             recordXiaomiStatusTransition(aggregate, previous: miStatus, now: now)
             miStatus = aggregate
         }
@@ -935,16 +1024,70 @@ public actor DualSourceHomeProvider: HomeProvider {
         return .connecting
     }
 
-    /// Drops expired Xiaomi account candidates immediately so paired cards fail over to a
-    /// surviving source instead of letting offline/pinned tie-breakers keep a dead session winning,
-    /// while promoting surviving Xiaomi co-owners for shared devices and restoring pre-drop
-    /// freshness for non-expired accounts still in their grace window (#25).
+    /// Drops expired or disabled/signed-out Xiaomi account candidates immediately so paired cards
+    /// fail over to a surviving source instead of letting offline/pinned tie-breakers or cached
+    /// pre-drop copies keep a dead or revoked session winning, while promoting surviving Xiaomi
+    /// co-owners for shared devices and restoring pre-drop freshness for non-expired enabled
+    /// accounts still in their grace window (#25).
     private func effectiveXiaomiSnapshot(
         now: SuspendingClock.Instant
     ) -> (snapshot: SynthesizedHome?, gracedAccountIDs: Set<String>) {
-        guard var snapshot = miSnapshot else { return (nil, []) }
-        let knownIDs = knownXiaomiAccountIDs(in: snapshot)
-        let activeExpiredIDs = miExpiredAccountIDs.union(snapshot.expiredAccountIDs.filter { !$0.isEmpty })
+        let disabledAccountIDs = pruneRevokedXiaomiAccountGraceState()
+        guard !disabledBackendsGate.contains(.xiaomiCloud),
+              var snapshot = miSnapshot else {
+            return (nil, [])
+        }
+        let knownIDs = knownXiaomiAccountIDs(in: snapshot).union(disabledAccountIDs)
+        if !disabledAccountIDs.isEmpty {
+            snapshot.accountStatuses = snapshot.accountStatuses.filter { !disabledAccountIDs.contains($0.key) }
+            snapshot.expiredAccountIDs.subtract(disabledAccountIDs)
+            snapshot.freshAccountIds.subtract(disabledAccountIDs)
+            snapshot.devices.removeAll { device in
+                if let ownerID = Self.resolvedXiaomiAccountID(for: device, knownAccountIDs: knownIDs) {
+                    return disabledAccountIDs.contains(ownerID)
+                }
+                if let owners = snapshot.deviceAccountIDs[device.id], !owners.isEmpty {
+                    return owners.allSatisfy { disabledAccountIDs.contains($0) }
+                }
+                return false
+            }
+            let remainingDeviceIDs = Set(snapshot.devices.map(\.id))
+            var cleanedDeviceAccountIDs: [String: [String]] = [:]
+            for (deviceID, owners) in snapshot.deviceAccountIDs where remainingDeviceIDs.contains(deviceID) {
+                let kept = owners.filter { !disabledAccountIDs.contains($0) }
+                if !kept.isEmpty {
+                    cleanedDeviceAccountIDs[deviceID] = kept
+                }
+            }
+            snapshot.deviceAccountIDs = cleanedDeviceAccountIDs
+            snapshot.deviceIdentities = snapshot.deviceIdentities.filter { remainingDeviceIDs.contains($0.key) }
+            snapshot.deviceFacets = snapshot.deviceFacets.filter { remainingDeviceIDs.contains($0.key) }
+            snapshot.deviceTransportDiagnostics = snapshot.deviceTransportDiagnostics.filter {
+                remainingDeviceIDs.contains($0.key)
+            }
+            snapshot.lightGroupOwners = snapshot.lightGroupOwners.filter {
+                remainingDeviceIDs.contains($0.key) && remainingDeviceIDs.contains($0.value)
+            }
+            snapshot.environmentReadings = snapshot.environmentReadings.filter {
+                remainingDeviceIDs.contains($0.id)
+            }
+            snapshot.rooms.removeAll { room in
+                guard let roomOwner = MiAccountScope.owner(of: room.id) else { return false }
+                return disabledAccountIDs.contains(roomOwner)
+            }
+            snapshot.homes.removeAll { option in
+                let ownerID = (option.accountId?.isEmpty == false ? option.accountId : nil)
+                    ?? MiAccountScope.owner(of: option.id)
+                guard let ownerID else { return false }
+                return disabledAccountIDs.contains(ownerID)
+            }
+            if snapshot.devices.isEmpty, snapshot.accountStatuses.isEmpty {
+                snapshot.localNetworkBlockedFeatures = []
+            }
+        }
+        let activeExpiredIDs = miExpiredAccountIDs
+            .union(snapshot.expiredAccountIDs.filter { !$0.isEmpty })
+            .subtracting(disabledAccountIDs)
         if !activeExpiredIDs.isEmpty {
             let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
             for expiredID in activeExpiredIDs where snapshot.accountStatuses[expiredID] != nil {
@@ -952,7 +1095,9 @@ public actor DualSourceHomeProvider: HomeProvider {
                     snapshot.accountStatuses[expiredID] = miAccountStatuses[expiredID] ?? expiredStatus
                 }
             }
-            let statusAccountIDs = Set(snapshot.accountStatuses.keys).union(miAccountStatuses.keys)
+            let statusAccountIDs = Set(snapshot.accountStatuses.keys)
+                .union(miAccountStatuses.keys)
+                .subtracting(disabledAccountIDs)
             let hasNonExpiredAccount: Bool
             if !statusAccountIDs.isEmpty {
                 hasNonExpiredAccount = statusAccountIDs.contains { !activeExpiredIDs.contains($0) }
@@ -963,6 +1108,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                 for owners in snapshot.deviceAccountIDs.values {
                     deviceOwners.formUnion(owners.filter { !$0.isEmpty })
                 }
+                deviceOwners.subtract(disabledAccountIDs)
                 hasNonExpiredAccount = deviceOwners.contains { !activeExpiredIDs.contains($0) }
             }
 
@@ -1053,6 +1199,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         var gracedAccountIDs: Set<String> = []
         for (accountID, accStatus) in snapshot.accountStatuses where !accStatus.isConnected {
             guard !activeExpiredIDs.contains(accountID),
+                  !disabledAccountIDs.contains(accountID),
                   let since = miAccountOfflineSince[accountID],
                   let preDrop = miAccountPreDropDevices[accountID],
                   !preDrop.isEmpty,
@@ -1068,12 +1215,14 @@ public actor DualSourceHomeProvider: HomeProvider {
             let currentOwnerID = Self.resolvedXiaomiAccountID(for: current, knownAccountIDs: knownIDs)
             var bestDevice = current
             var bestIdentity: DeviceSourceIdentity?
+            var selectedCachedCopy = false
             var bestRank: Int
             if let currentOwnerID,
                gracedAccountIDs.contains(currentOwnerID),
                let restored = miAccountPreDropDevices[currentOwnerID]?[current.id] {
                 bestDevice = restored.device
                 bestIdentity = restored.identity
+                selectedCachedCopy = true
                 bestRank = Self.xiaomiDeviceFreshnessRank(restored.device, accountDisconnected: false)
             } else {
                 let currentDisconnected = currentOwnerID.map { ownerID in
@@ -1098,12 +1247,17 @@ public actor DualSourceHomeProvider: HomeProvider {
                 if candidateRank < bestRank {
                     bestDevice = preDrop.device
                     bestIdentity = preDrop.identity
+                    selectedCachedCopy = true
                     bestRank = candidateRank
                 }
             }
             snapshot.devices[index] = bestDevice
-            if let bestIdentity {
-                snapshot.deviceIdentities[bestDevice.id] = bestIdentity
+            if selectedCachedCopy {
+                if let bestIdentity {
+                    snapshot.deviceIdentities[bestDevice.id] = bestIdentity
+                } else {
+                    snapshot.deviceIdentities.removeValue(forKey: bestDevice.id)
+                }
             }
         }
         return (snapshot, gracedAccountIDs)
@@ -1177,6 +1331,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func earliestPendingFallbackDeadline(after now: SuspendingClock.Instant) -> SuspendingClock.Instant? {
+        let disabledBackends = disabledBackendsGate.snapshot()
+        let disabledAccountIDs = pruneRevokedXiaomiAccountGraceState()
         var deadline: SuspendingClock.Instant?
         func consider(_ since: SuspendingClock.Instant) {
             let expiry = since.advanced(by: Self.sourceFallbackGraceDuration)
@@ -1184,15 +1340,17 @@ public actor DualSourceHomeProvider: HomeProvider {
                 deadline = deadline.map { min($0, expiry) } ?? expiry
             }
         }
-        if homeAssistant != nil, !haStatus.isConnected, let since = haOfflineSince {
+        if homeAssistant != nil, !disabledBackends.contains(.homeAssistant), !haStatus.isConnected, let since = haOfflineSince {
             consider(since)
         }
-        if xiaomiCloud != nil, !miStatus.isConnected, let since = miOfflineSince {
+        if xiaomiCloud != nil, !disabledBackends.contains(.xiaomiCloud), !miStatus.isConnected, let since = miOfflineSince {
             consider(since)
         }
-        if xiaomiCloud != nil {
+        if xiaomiCloud != nil, !disabledBackends.contains(.xiaomiCloud) {
             for (accountID, since) in miAccountOfflineSince
-            where !(miAccountStatuses[accountID]?.isConnected ?? true) && !miExpiredAccountIDs.contains(accountID) {
+            where !(miAccountStatuses[accountID]?.isConnected ?? true)
+                && !miExpiredAccountIDs.contains(accountID)
+                && !disabledAccountIDs.contains(accountID) {
                 consider(since)
             }
         }
@@ -1227,8 +1385,10 @@ public actor DualSourceHomeProvider: HomeProvider {
             || !miGracedAccountsInLastRecompute.isEmpty else {
             return false
         }
+        let disabledBackends = disabledBackendsGate.snapshot()
         if haGraceActiveInLastRecompute {
             let haStillGraced = homeAssistant != nil
+                && !disabledBackends.contains(.homeAssistant)
                 && !haStatus.isConnected
                 && Self.effectiveConnected(
                     actual: false,
@@ -1241,6 +1401,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         let (effectiveMi, gracedMiAccounts) = effectiveXiaomiSnapshot(now: now)
         if miGraceActiveInLastRecompute {
             let miStillGraced = xiaomiCloud != nil
+                && !disabledBackends.contains(.xiaomiCloud)
                 && !miStatus.isConnected
                 && Self.effectiveConnected(
                     actual: false,
@@ -1373,9 +1534,10 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func aggregateStatus() -> ConnectionStatus? {
+        let disabledBackends = disabledBackendsGate.snapshot()
         var statuses: [ConnectionStatus] = []
-        if homeAssistant != nil { statuses.append(haStatus) }
-        if xiaomiCloud != nil { statuses.append(miStatus) }
+        if homeAssistant != nil, !disabledBackends.contains(.homeAssistant) { statuses.append(haStatus) }
+        if xiaomiCloud != nil, !disabledBackends.contains(.xiaomiCloud) { statuses.append(miStatus) }
         guard !statuses.isEmpty else { return nil }
         if statuses.contains(where: { $0.isConnected }) { return .connected }
         if statuses.contains(where: { status in
@@ -1402,27 +1564,32 @@ public actor DualSourceHomeProvider: HomeProvider {
             return
         }
         let now = overrideNow ?? effectiveGraceNow()
+        let disabledBackends = disabledBackendsGate.snapshot()
+        let disabledAccountIDs = pruneRevokedXiaomiAccountGraceState()
+        let haActive = homeAssistant != nil && !disabledBackends.contains(.homeAssistant)
+        let miActive = xiaomiCloud != nil && !disabledBackends.contains(.xiaomiCloud)
         // Hysteresis (#25): a source that just dropped keeps routing its cards for the grace
         // window, so a brief blip neither flips paired cards nor kills a live camera view. The
         // deadline task re-merges when the window lapses, even if no further event arrives.
-        let haGraceConnected = Self.effectiveConnected(
+        let effectiveHA = haActive ? haSnapshot : nil
+        let haGraceConnected = haActive && Self.effectiveConnected(
             actual: haStatus.isConnected,
-            snapshot: haSnapshot,
+            snapshot: effectiveHA,
             offlineSince: haOfflineSince,
             now: now
         )
-        let (effectiveMi, gracedMiAccounts) = effectiveXiaomiSnapshot(now: now)
-        let miGraceConnected = Self.effectiveConnected(
+        let (effectiveMi, gracedMiAccounts) = miActive ? effectiveXiaomiSnapshot(now: now) : (nil, [])
+        let miGraceConnected = miActive && Self.effectiveConnected(
             actual: miStatus.isConnected,
             snapshot: effectiveMi,
             offlineSince: miOfflineSince,
             now: now
         )
-        haGraceActiveInLastRecompute = homeAssistant != nil && !haStatus.isConnected && haGraceConnected
-        miGraceActiveInLastRecompute = xiaomiCloud != nil && !miStatus.isConnected && miGraceConnected
-        miGracedAccountsInLastRecompute = xiaomiCloud != nil ? gracedMiAccounts : []
+        haGraceActiveInLastRecompute = haActive && !haStatus.isConnected && haGraceConnected
+        miGraceActiveInLastRecompute = miActive && !miStatus.isConnected && miGraceConnected
+        miGracedAccountsInLastRecompute = miActive ? gracedMiAccounts : []
         let result = DeviceDeduplicator.merge(
-            homeAssistant: haSnapshot,
+            homeAssistant: effectiveHA,
             xiaomiCloud: effectiveMi,
             haConnected: haGraceConnected,
             miConnected: miGraceConnected,
@@ -1461,17 +1628,27 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
         }
         var home = result.home
-        home.accountStatuses = miSnapshot?.accountStatuses ?? [:]
-        home.expiredAccountIDs = xiaomiCloud != nil
-            ? miExpiredAccountIDs.union((miSnapshot?.expiredAccountIDs ?? []).filter { !$0.isEmpty })
-            : []
+        if miActive {
+            home.accountStatuses = (miSnapshot?.accountStatuses ?? [:]).filter {
+                !disabledAccountIDs.contains($0.key)
+            }
+            home.expiredAccountIDs = miExpiredAccountIDs
+                .union((miSnapshot?.expiredAccountIDs ?? []).filter { !$0.isEmpty })
+                .subtracting(disabledAccountIDs)
+        } else {
+            home.accountStatuses = [:]
+            home.expiredAccountIDs = []
+        }
         home.sourceStatuses = configuredSourceStatuses()
         home.localNetworkBlockedFeatures = currentLocalNetworkBlocks()
         continuation?.yield(.snapshotUpdated(home))
     }
 
     private func currentLocalNetworkBlocks() -> Set<LocalNetworkBlockedFeature> {
-        (homeAssistant != nil ? haLocalNetworkBlocks : []).union(xiaomiCloud != nil ? miLocalNetworkBlocks : [])
+        let disabledBackends = disabledBackendsGate.snapshot()
+        let haBlocks = (homeAssistant != nil && !disabledBackends.contains(.homeAssistant)) ? haLocalNetworkBlocks : []
+        let miBlocks = (xiaomiCloud != nil && !disabledBackends.contains(.xiaomiCloud)) ? miLocalNetworkBlocks : []
+        return haBlocks.union(miBlocks)
     }
 
     private func emitLocalNetworkPermission() {
@@ -1482,9 +1659,10 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func configuredSourceStatuses() -> [HomeBackend: ConnectionStatus] {
+        let disabledBackends = disabledBackendsGate.snapshot()
         var statuses: [HomeBackend: ConnectionStatus] = [:]
-        if homeAssistant != nil { statuses[.homeAssistant] = haStatus }
-        if xiaomiCloud != nil { statuses[.xiaomiCloud] = miStatus }
+        if homeAssistant != nil, !disabledBackends.contains(.homeAssistant) { statuses[.homeAssistant] = haStatus }
+        if xiaomiCloud != nil, !disabledBackends.contains(.xiaomiCloud) { statuses[.xiaomiCloud] = miStatus }
         return statuses
     }
 

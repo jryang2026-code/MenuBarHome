@@ -80,8 +80,30 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    private final class DisabledAccountsGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var disabled: Set<String> = []
+
+        func markDisabled(_ accountId: String) {
+            lock.withLock { _ = disabled.insert(accountId) }
+        }
+
+        func markDisabled(_ accountIds: Set<String>) {
+            lock.withLock { disabled.formUnion(accountIds) }
+        }
+
+        func markEnabled(_ accountId: String) {
+            lock.withLock { _ = disabled.remove(accountId) }
+        }
+
+        func contains(_ accountId: String) -> Bool {
+            lock.withLock { disabled.contains(accountId) }
+        }
+    }
+
     private var accounts: [MiAccount]
     private let scopeBox: AccountScopeBox
+    private let disabledAccountsGate = DisabledAccountsGate()
     private let apiFactory: MiCloudProvider.APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
@@ -773,6 +795,27 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    public nonisolated func markAccountDisabled(_ accountId: String) {
+        disabledAccountsGate.markDisabled(accountId)
+    }
+
+    public nonisolated func markAccountsDisabled(_ accountIds: Set<String>) {
+        disabledAccountsGate.markDisabled(accountIds)
+    }
+
+    public nonisolated func markAccountEnabled(_ accountId: String) {
+        disabledAccountsGate.markEnabled(accountId)
+    }
+
+    private func hasFreshOnlineDevice(accountId: String, did: String) -> Bool {
+        guard let home = snapshots[accountId] else { return false }
+        return home.devices.contains { device in
+            (device.id == did || device.miotCommandDids.contains(did))
+                && device.isOnline
+                && !device.telemetryStale
+        }
+    }
+
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
@@ -780,9 +823,36 @@ public actor MiAccountsProvider: HomeProvider {
         }
         let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
-        var lastFallbackError: (any Error)?
+
+        var writableOwners: [(ownerId: String, child: MiCloudProvider)] = []
+        writableOwners.reserveCapacity(owners.count)
         for ownerId in owners {
-            guard let child = childProvider(for: ownerId) else { continue }
+            guard accounts.contains(where: { $0.id == ownerId }),
+                  !disabledAccountsGate.contains(ownerId),
+                  !expiredAccounts.contains(ownerId),
+                  !isDisconnected(ownerId),
+                  let child = childProvider(for: ownerId),
+                  hasFreshOnlineDevice(accountId: ownerId, did: did),
+                  await child.canExecute(command) else {
+                continue
+            }
+            writableOwners.append((ownerId, child))
+        }
+
+        if writableOwners.isEmpty {
+            if owners.allSatisfy({ expiredAccounts.contains($0) }) {
+                throw MiCloudError.sessionExpired
+            }
+            if owners.allSatisfy({ ownerId in
+                !accounts.contains(where: { $0.id == ownerId }) || disabledAccountsGate.contains(ownerId)
+            }) {
+                throw MiCloudError.notLoggedIn
+            }
+            throw MiotCommandError.noWritableSession(did)
+        }
+
+        var lastFallbackError: (any Error)?
+        for (_, child) in writableOwners {
             let nonIdempotent: Bool
             if !command.isIdempotentForAccountFallback {
                 nonIdempotent = true

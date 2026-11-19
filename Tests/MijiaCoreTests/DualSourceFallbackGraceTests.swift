@@ -1,5 +1,6 @@
 import Dispatch
 import Foundation
+import KeychainTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -232,7 +233,13 @@ struct DualSourceFallbackGraceTests {
             pump: pump
         )
         track(teardown, rig)
-        await waitUntil { await collector.backend(forCard: Self.haID) != nil }
+        await waitUntil {
+            guard let latest = await collector.latestHome else { return false }
+            return latest.deviceBackends[Self.haID] != nil
+                && latest.pairedDeviceIDs.contains(Self.haID)
+                && latest.sourceStatuses[.homeAssistant]?.isConnected == true
+                && latest.sourceStatuses[.xiaomiCloud]?.isConnected == true
+        }
         return rig
     }
 
@@ -702,10 +709,14 @@ struct DualSourceFallbackGraceTests {
         let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
-        let card = try #require(
-            await rig.collector.latestHome?.devices.first { $0.id == Self.haID }
-        )
+        let baseline = try #require(await rig.collector.latestHome)
+        #expect(baseline.pairedDeviceIDs.contains(Self.haID))
+        #expect(baseline.sourceStatuses[.homeAssistant]?.isConnected == true)
+        #expect(baseline.sourceStatuses[.xiaomiCloud]?.isConnected == true)
+        let card = try #require(baseline.devices.first { $0.id == Self.haID })
         _ = try await rig.provider.resolveCameraStream(for: card)
+        let initialParks = rig.gate.parkCount
+        #expect(initialParks == 0)
 
         // HA drops: first fallback sleeper parks for the full 15s grace window.
         await rig.haMock.sendStatus(.disconnected("blip"))
@@ -713,7 +724,7 @@ struct DualSourceFallbackGraceTests {
             let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
             let parks = rig.gate.parkCount
             let waiting = rig.gate.waiting
-            return disconnected && parks == 1 && waiting == 1
+            return disconnected && parks == initialParks + 1 && waiting == 1
         }
 
         // Four seconds in, a Xiaomi snapshot arrives while HA is still inside grace.
@@ -2475,6 +2486,509 @@ struct DualSourceFallbackGraceTests {
             await waitUntil { await provider.discardedFallbackWakeCountForTesting == 1 }
             #expect(await collector.snapshotCount == snapshotsBeforeShutdown)
             #expect(await provider.isShutDownForTesting)
+        }
+    }
+
+    @Test("Graced display account keeps live stream alive while writes route only to enabled online writable sessions")
+    func gracedDisplayAccountSeparatesFromWriteRouting() async throws {
+        try await withTeardown { teardown in
+            try await gracedDisplayAccountSeparatesFromWriteRoutingBody(teardown)
+        }
+    }
+
+    private func gracedDisplayAccountSeparatesFromWriteRoutingBody(_ teardown: Teardown) async throws {
+        let writableCameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:writable","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let viewOnlyCameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:readonly","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let writableSpec = MiotFixtures.decode(writableCameraSpecJSON)
+        let viewOnlySpec = MiotFixtures.decode(viewOnlyCameraSpecJSON)
+        struct PermissionedCameraSpecSource: MiotSpecSource {
+            let writableSpec: MiotDeviceSpec
+            let viewOnlySpec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                guard model == "chuangmi.camera.061a01" else { return nil }
+                return specType == viewOnlySpec.type ? viewOnlySpec : writableSpec
+            }
+        }
+        let specSource = PermissionedCameraSpecSource(writableSpec: writableSpec, viewOnlySpec: viewOnlySpec)
+
+        // 1. Account A (streaming owner) drops into grace while co-owner B stays connected but
+        // reports the camera offline (and in part 2, online with read-only permissions): live
+        // stream grace holds on Xiaomi, yet writes must not hit disconnected A or non-writable B
+        // and must fail with `.noWritableSession`.
+        let accountA = MiAccount(session: MiSession(
+            userId: "10020011", cUserId: "c-a1", ssecurity: "ssec-a1", serviceToken: "tok-a1", region: "cn"
+        ))
+        let accountB = MiAccount(session: MiSession(
+            userId: "10020022", cUserId: "c-b1", ssecurity: "ssec-b1", serviceToken: "tok-b1", region: "cn"
+        ))
+        let apiA = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                specType: writableSpec.type,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rA", name: "门口", dids: [Self.did], homeId: "hA", homeName: "家A")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let apiBOffline = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: false,
+                specType: viewOnlySpec.type,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rB", name: "门口", dids: [Self.did], homeId: "hB", homeName: "家B")],
+            values: [:]
+        )
+        let bridge1 = StubXiaomiCameraBridge()
+        let miAccounts1 = MiAccountsProvider(
+            accounts: [accountA, accountB],
+            apiFactory: { session in session.userId == accountA.session.userId ? apiA : apiBOffline },
+            specSource: specSource,
+            cameraBridge: bridge1,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let haHome = home(
+            [camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)],
+            identityID: Self.haID
+        )
+        let haMock1 = MockHomeProvider(snapshot: haHome)
+        let clock1 = TestClock()
+        let gate1 = GraceTimerGate()
+        let provider1 = DualSourceHomeProvider(
+            homeAssistant: haMock1,
+            xiaomiCloud: miAccounts1,
+            graceNow: { clock1.now },
+            fallbackRecheckTimer: gate1
+        )
+        let collector1 = RouteCollector()
+        let pump1 = Task {
+            for await event in provider1.events() {
+                await collector1.append(event)
+            }
+        }
+        track(teardown, provider: provider1, gate: gate1, pump: pump1)
+
+        await waitUntil {
+            let backend = await collector1.backend(forCard: Self.haID)
+            let aConnected = await collector1.accountIsConnected(accountA.id)
+            let bConnected = await collector1.accountIsConnected(accountB.id)
+            return backend == .xiaomiCloud && aConnected && bConnected
+        }
+        let card1 = try #require(await collector1.latestHome?.devices.first { $0.id == Self.haID })
+        _ = try await provider1.resolveCameraStream(for: card1)
+        #expect(await bridge1.startCalls.count == 1)
+
+        await apiA.setGetPropsFailure(.http(502))
+        await miAccounts1.refreshNow()
+        await waitUntil {
+            let aDisconnected = await collector1.accountIsDisconnected(accountA.id)
+            let bConnected = await collector1.accountIsConnected(accountB.id)
+            return aDisconnected && bConnected && gate1.waiting == 1
+        }
+        #expect(await collector1.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge1.stopCalls.isEmpty, "Live stream grace must remain active while A is transiently dropped")
+
+        await #expect(throws: MiotCommandError.noWritableSession(Self.did)) {
+            try await provider1.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: false))
+        }
+        #expect(await apiA.setPropsCalls.isEmpty, "Disconnected graced owner A must not receive writes")
+        #expect(await apiBOffline.setPropsCalls.isEmpty, "Offline co-owner B must not receive writes")
+
+        // 2. Account A drops into grace, co-owner B is online with view-only spec (cannot write),
+        // and co-owner C is online and writable: writes must route exclusively to C (never A or B),
+        // then return to A after A recovers.
+        let accountC = MiAccount(session: MiSession(
+            userId: "10020033", cUserId: "c-c1", ssecurity: "ssec-c1", serviceToken: "tok-c1", region: "cn"
+        ))
+        let apiA2 = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                specType: writableSpec.type,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rA2", name: "门口", dids: [Self.did], homeId: "hA2", homeName: "家A")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let apiBViewOnly = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                specType: viewOnlySpec.type,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rB2", name: "门口", dids: [Self.did], homeId: "hB2", homeName: "家B")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let apiCWritable = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                specType: writableSpec.type,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "rC2", name: "门口", dids: [Self.did], homeId: "hC2", homeName: "家C")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let bridge2 = StubXiaomiCameraBridge()
+        let miAccounts2 = MiAccountsProvider(
+            accounts: [accountA, accountB, accountC],
+            apiFactory: { session in
+                switch session.userId {
+                case accountA.session.userId: return apiA2
+                case accountB.session.userId: return apiBViewOnly
+                default: return apiCWritable
+                }
+            },
+            specSource: specSource,
+            cameraBridge: bridge2,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let haMock2 = MockHomeProvider(snapshot: haHome)
+        let clock2 = TestClock()
+        let gate2 = GraceTimerGate()
+        let provider2 = DualSourceHomeProvider(
+            homeAssistant: haMock2,
+            xiaomiCloud: miAccounts2,
+            graceNow: { clock2.now },
+            fallbackRecheckTimer: gate2
+        )
+        let collector2 = RouteCollector()
+        let pump2 = Task {
+            for await event in provider2.events() {
+                await collector2.append(event)
+            }
+        }
+        track(teardown, provider: provider2, gate: gate2, pump: pump2)
+
+        await waitUntil {
+            let backend = await collector2.backend(forCard: Self.haID)
+            let aConnected = await collector2.accountIsConnected(accountA.id)
+            let bConnected = await collector2.accountIsConnected(accountB.id)
+            let cConnected = await collector2.accountIsConnected(accountC.id)
+            return backend == .xiaomiCloud && aConnected && bConnected && cConnected
+        }
+        let card2 = try #require(await collector2.latestHome?.devices.first { $0.id == Self.haID })
+        _ = try await provider2.resolveCameraStream(for: card2)
+
+        // Drop A into grace while B (online, view-only) and C (online, writable) stay connected.
+        await apiA2.setGetPropsFailure(.http(502))
+        await miAccounts2.refreshNow()
+        await waitUntil {
+            let aDisconnected = await collector2.accountIsDisconnected(accountA.id)
+            let bConnected = await collector2.accountIsConnected(accountB.id)
+            let cConnected = await collector2.accountIsConnected(accountC.id)
+            return aDisconnected && bConnected && cConnected
+        }
+        #expect(await collector2.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge2.stopCalls.isEmpty)
+
+        // Write must bypass disconnected A and view-only B and land on writable C.
+        try await provider2.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: false))
+        #expect(await apiA2.setPropsCalls.isEmpty, "Disconnected owner A must not receive the write")
+        #expect(await apiBViewOnly.setPropsCalls.isEmpty, "View-only co-owner B must not receive the write")
+        #expect(await apiCWritable.setPropsCalls == [[MiotPropWrite(did: Self.did, siid: 2, piid: 1, value: .bool(false))]])
+
+        // If C is also disabled synchronously, no writable session remains and B still receives nothing.
+        miAccounts2.markAccountDisabled(accountC.id)
+        await #expect(throws: MiotCommandError.noWritableSession(Self.did)) {
+            try await provider2.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: true))
+        }
+        #expect(await apiA2.setPropsCalls.isEmpty)
+        #expect(await apiBViewOnly.setPropsCalls.isEmpty)
+        #expect(await apiCWritable.setPropsCalls.count == 1)
+
+        // Once A recovers, writes route back to A.
+        await apiA2.setGetPropsFailure(nil)
+        await miAccounts2.refreshNow()
+        await waitUntil { await collector2.accountIsConnected(accountA.id) }
+        try await provider2.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: true))
+        #expect(await apiA2.setPropsCalls == [[MiotPropWrite(did: Self.did, siid: 2, piid: 1, value: .bool(true))]])
+        #expect(await apiBViewOnly.setPropsCalls.isEmpty)
+        #expect(await apiCWritable.setPropsCalls.count == 1)
+    }
+
+    @MainActor
+    @Test("Signing out or disabling a Xiaomi account during grace revokes its cached copy and never keeps its content on paired cards")
+    func revokingOrDisablingMiAccountDuringGraceEvictsCachedCopyAndFailsOverToHA() async throws {
+        let accountA = MiAccount(session: MiSession(
+            userId: "10030011", cUserId: "c-grace-a", ssecurity: "ssec-a", serviceToken: "tok-a", region: "cn"
+        ))
+        let accountB = MiAccount(session: MiSession(
+            userId: "10030022", cUserId: "c-grace-b", ssecurity: "ssec-b", serviceToken: "tok-b", region: "de"
+        ))
+
+        @MainActor
+        func runScenario(signOut: Bool) async throws {
+            let suite = "com.jryang1997.MenuBarMijia.grace-revoke.\(UUID().uuidString)"
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let defaults = try #require(UserDefaults(suiteName: suite))
+            let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+            MiSessionStore.saveAccounts([accountA, accountB], defaults: defaults, vault: vault)
+            defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+            defaults.set("http://192.168.1.10:8123", forKey: "ha_server_url")
+            _ = KeychainHelper.saveToken("test-ha-token", defaults: defaults, vault: vault)
+
+            var camA = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+            camA.name = "A账号门禁摄像机"
+            camA.accountId = accountA.id
+            camA.accountLabel = accountA.maskedUserId
+            camA.roomId = MiAccountScope.id("door", account: accountA.id)
+            let plugB = SmartDevice(
+                id: "de-plug-grace",
+                name: "B账号书房插座",
+                roomId: MiAccountScope.id("study", account: accountB.id),
+                roomName: "书房",
+                model: "cuco.plug.v3",
+                isOnline: true,
+                kind: .plug(PlugSpec(switchEntityId: "miot:de-plug-grace:2", isOn: true)),
+                accountId: accountB.id,
+                accountLabel: accountB.maskedUserId
+            )
+            var miConnected = home([camA, plugB], identityID: Self.did)
+            miConnected.isInitialLoadComplete = true
+            miConnected.accountStatuses = [accountA.id: .connected, accountB.id: .connected]
+            miConnected.deviceAccountIDs = [Self.did: [accountA.id], "de-plug-grace": [accountB.id]]
+
+            var haCam = camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)
+            haCam.name = "HA门口摄像机"
+            var haInitial = home([haCam], identityID: Self.haID)
+            haInitial.isInitialLoadComplete = true
+
+            let haMock = MockHomeProvider(snapshot: haInitial)
+            let miMock = MockHomeProvider(snapshot: miConnected)
+            let clock = TestClock()
+            let gate = GraceTimerGate()
+            let dual = DualSourceHomeProvider(
+                homeAssistant: haMock,
+                xiaomiCloud: miMock,
+                graceNow: { clock.now },
+                fallbackRecheckTimer: gate
+            )
+            let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+
+            @MainActor
+            func cleanup() async {
+                store.eventTask?.cancel()
+                await store.providerShutdownTask?.value
+                gate.shutdown()
+                await dual.shutdown()
+            }
+
+            do {
+                await waitUntil {
+                    store.deviceBackends[Self.haID] == .xiaomiCloud
+                        && store.pairedDeviceIDs.contains(Self.haID)
+                        && store.devices.contains(where: { $0.id == "de-plug-grace" })
+                }
+                let initialCard = try #require(store.devices.first { $0.id == Self.haID })
+                #expect(initialCard.accountId == accountA.id)
+                _ = try await dual.resolveCameraStream(for: initialCard)
+
+                // Account A drops into grace while B stays connected; paired card stays on A's cached copy.
+                var miADropped = miConnected
+                miADropped.accountStatuses = [accountA.id: .disconnected("HTTP 502"), accountB.id: .connected]
+                var staleCamA = camA
+                staleCamA.isOnline = false
+                staleCamA.telemetryStale = true
+                miADropped.devices = [staleCamA, plugB]
+                await miMock.updateSnapshot(miADropped)
+                await waitUntil {
+                    let disconnected: Bool
+                    if case .disconnected = store.miAccountStatuses[accountA.id] ?? .connecting {
+                        disconnected = true
+                    } else {
+                        disconnected = false
+                    }
+                    return disconnected && gate.waiting == 1
+                }
+                #expect(store.deviceBackends[Self.haID] == .xiaomiCloud)
+
+                // Sign out or disable A while A is still inside its grace window.
+                if signOut {
+                    store.logoutMiAccount(id: accountA.id)
+                } else {
+                    let verdict = store.setMiAccountEnabled(false, id: accountA.id)
+                    #expect(verdict.disposition == .allowed)
+                }
+
+                // Another source event triggers `recompute()` while `miMock` still holds A's snapshot:
+                // A's cached grace copy must be revoked and never selected again.
+                var haRefreshedCam = haCam
+                haRefreshedCam.name = "HA门口摄像机(更新)"
+                var haUpdated = home([haRefreshedCam], identityID: Self.haID)
+                haUpdated.isInitialLoadComplete = true
+                await haMock.updateSnapshot(haUpdated)
+
+                await waitUntil(timeout: .seconds(5)) {
+                    guard let card = store.devices.first(where: { $0.id == Self.haID }) else { return false }
+                    if case .camera(let spec) = card.kind {
+                        return store.deviceBackends[Self.haID] == .homeAssistant
+                            && spec.entityId == "switch.door_cam_power"
+                            && card.accountId == nil
+                            && card.name == "HA门口摄像机(更新)"
+                    }
+                    return false
+                }
+                await waitUntil(timeout: .seconds(5)) { await miMock.stoppedCameraIDs.contains(Self.did) }
+                #expect(store.devices.contains(where: { $0.id == "de-plug-grace" }))
+
+                // Even if an older Xiaomi-backed paired snapshot carrying A's device arrives late,
+                // HomeStore must drop A's device content rather than keeping it under `.homeAssistant`.
+                var lateStalePaired = SynthesizedHome(devices: [camA, plugB])
+                lateStalePaired.isInitialLoadComplete = true
+                lateStalePaired.deviceBackends = [Self.did: .xiaomiCloud, "de-plug-grace": .xiaomiCloud]
+                lateStalePaired.pairedDeviceIDs = [Self.did]
+                lateStalePaired.accountStatuses = [accountA.id: .connected, accountB.id: .connected]
+                store.handleProviderEvent(.snapshotUpdated(lateStalePaired))
+                #expect(!store.devices.contains(where: { $0.id == Self.did }))
+                #expect(!store.devices.contains(where: { $0.accountId == accountA.id }))
+                #expect(store.devices.contains(where: { $0.id == "de-plug-grace" }))
+
+                await cleanup()
+            } catch {
+                await cleanup()
+                throw error
+            }
+        }
+
+        try await runScenario(signOut: true)
+        try await runScenario(signOut: false)
+    }
+
+    @Test("Closing the HA disabled gate prevents a queued grace timer from selecting the stale HA snapshot before provider teardown")
+    func disabledHAGatePreventsQueuedTimerFromSelectingStaleHASnapshot() async throws {
+        try await withTeardown { teardown in
+            let rig = await makeRig(teardown)
+
+            await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+            let card = try #require(await rig.collector.latestHome?.devices.first { $0.id == Self.haID })
+            _ = try await rig.provider.resolveCameraStream(for: card)
+            #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
+
+            // HA drops into grace and parks a fallback timer while keeping the card on HA.
+            await rig.haMock.sendStatus(.disconnected("blip"))
+            await waitUntil {
+                let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
+                return disconnected && rig.gate.waiting == 1
+            }
+            #expect(await rig.collector.backend(forCard: Self.haID) == .homeAssistant)
+
+            // Exact sequence:
+            // 1. Close the HA gate first (without clearing the source provider or expiring grace).
+            rig.provider.markBackendDisabled(.homeAssistant)
+            // 2. Release the parked fallback timer while `homeAssistant` provider is still attached.
+            let snapshotsBeforeTimer = await rig.collector.snapshotCount
+            rig.gate.releaseLatest()
+            await waitUntil(timeout: .seconds(5)) {
+                let count = await rig.collector.snapshotCount
+                let backend = await rig.collector.backend(forCard: Self.haID)
+                return count > snapshotsBeforeTimer && backend == .xiaomiCloud
+            }
+            #expect(await rig.collector.latestHome?.sourceStatuses[.homeAssistant] == nil)
+            await waitUntil(timeout: .seconds(5)) { await rig.haMock.stoppedCameraIDs == [Self.haID] }
+
+            // 3. Clear the HA provider last; routing remains cleanly on Xiaomi Cloud.
+            await rig.provider.setSourceProvider(nil, for: .homeAssistant)
+            #expect(await rig.collector.backend(forCard: Self.haID) == .xiaomiCloud)
+            #expect(await rig.collector.latestHome?.sourceStatuses[.homeAssistant] == nil)
+        }
+    }
+
+    @Test("Selecting a cached graced Xiaomi copy with nil identity clears the original copy's identity entry")
+    func cachedGracedCopyWithNilIdentityClearsOriginalIdentityEntry() async throws {
+        try await withTeardown { teardown in
+            let accAID = "cn:10040011"
+            let accBID = "cn:10040022"
+            var camA = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+            camA.accountId = accAID
+            camA.roomId = MiAccountScope.id("door", account: accAID)
+            // Initial connected snapshot has A as primary owner with NO identity entry for `Self.did`.
+            var miInitial = SynthesizedHome(devices: [camA])
+            miInitial.accountStatuses = [accAID: .connected, accBID: .connected]
+            miInitial.deviceAccountIDs = [Self.did: [accAID, accBID]]
+            miInitial.deviceIdentities = [:]
+
+            let haMock = MockHomeProvider(snapshot: SynthesizedHome(devices: []))
+            let miMock = MockHomeProvider(snapshot: miInitial)
+            let clock = TestClock()
+            let gate = GraceTimerGate()
+            let provider = DualSourceHomeProvider(
+                homeAssistant: haMock,
+                xiaomiCloud: miMock,
+                graceNow: { clock.now },
+                fallbackRecheckTimer: gate
+            )
+            let collector = RouteCollector()
+            let pump = Task {
+                for await event in provider.events() {
+                    await collector.append(event)
+                }
+            }
+            track(teardown, provider: provider, gate: gate, pump: pump)
+
+            await waitUntil {
+                let latest = await collector.latestHome
+                return latest?.devices.first(where: { $0.id == Self.did })?.accountId == accAID
+                    && latest?.deviceIdentities[Self.did] == nil
+            }
+
+            // Account A transiently drops; B's offline copy overwrites `Self.did` and attaches an
+            // identity entry. Grace restores A's cached copy (which had `identity == nil`), so the
+            // stale identity entry from B's copy must be removed.
+            var camBOffline = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+            camBOffline.isOnline = false
+            camBOffline.accountId = accBID
+            camBOffline.roomId = MiAccountScope.id("door", account: accBID)
+            var miADropped = SynthesizedHome(devices: [camBOffline])
+            miADropped.accountStatuses = [accAID: .disconnected("HTTP 502"), accBID: .connected]
+            miADropped.deviceAccountIDs = [Self.did: [accBID, accAID]]
+            miADropped.deviceIdentities = [
+                Self.did: DeviceSourceIdentity(
+                    dids: [Self.did],
+                    model: "chuangmi.camera.061a01",
+                    name: "B副本",
+                    roomName: "门口",
+                    kindTag: .camera
+                )
+            ]
+            let snapshotsBeforeDrop = await collector.snapshotCount
+            await miMock.updateSnapshot(miADropped)
+            await waitUntil(timeout: .seconds(5)) {
+                let count = await collector.snapshotCount
+                let disconnected = await collector.accountIsDisconnected(accAID)
+                return count > snapshotsBeforeDrop && disconnected && gate.waiting == 1
+            }
+
+            let latest = try #require(await collector.latestHome)
+            let restored = try #require(latest.devices.first(where: { $0.id == Self.did }))
+            #expect(restored.accountId == accAID)
+            #expect(restored.isOnline)
+            #expect(latest.deviceIdentities[Self.did] == nil)
         }
     }
 

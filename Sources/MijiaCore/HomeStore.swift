@@ -1165,6 +1165,7 @@ public final class HomeStore {
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
+    @ObservationIgnored var revokedMiAccountScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
     @ObservationIgnored var indexedScenesById: [String: SceneReference] = [:]
     @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]
