@@ -70,7 +70,6 @@ import { normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
 import {
   t,
 } from "../core/i18n.js";
-import { miSessionExpiryState } from "../core/miCloud/session.js";
 import {
   KIND_CHIP,
   filterByListCut,
@@ -92,6 +91,7 @@ import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt,
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
+  releaseActivityWindowLifecycle,
   type HostActivityCenter,
 } from "./activityStackView.js";
 import {
@@ -124,7 +124,9 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { foldGrouped, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
+import { queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
@@ -147,13 +149,6 @@ import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from 
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
-
-export type PanelHealth =
-  | { readonly kind: "demo"; readonly dot: "is-demo"; readonly label: string }
-  | { readonly kind: "syncing"; readonly dot: "is-syncing"; readonly label: string }
-  | { readonly kind: "online"; readonly dot: "is-online"; readonly label: string }
-  | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
-  | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -200,7 +195,7 @@ export class MenuMijiaWindowsApp {
   );
   public sensorHistoryUi: SensorHistoryUiState = createSensorHistoryUiState();
   public activityCenter: HostActivityCenter | null = null;
-  public activityWindowLifecycleBound = false;
+  public activityWindowLifecycleAbort: AbortController | null = null;
   public miAccountsStore: MiAccountsStore | null = null;
   public miAccountsOverride: readonly MiAccount[] | null = null;
   public multiAccountState: HostMultiAccountState | null = null;
@@ -385,6 +380,8 @@ export class MenuMijiaWindowsApp {
   // Personalisation / layout editing state (see panelPrefs.ts).
   public homes: HomeOption[] = [];
   public isHomeMenuOpen = false;
+  /** Footer connection card; cleared on hide so the next open starts collapsed. */
+  public connectionDetailsOpen = false;
   public isEditingLayout = false;
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
@@ -425,8 +422,12 @@ export class MenuMijiaWindowsApp {
     this.applyTemperatureSetting();
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
+    const primaryDisabledOnly =
+      this.settings.miSession !== null &&
+      !isHostMiSessionEnabled(this, this.settings.miSession) &&
+      !hasSecondaryMiAccountsInIndex();
     this.devices = this.settings.connectionMode === "xiaomiCloud"
-      ? structuredClone(this.settings.cachedXiaomiDevices)
+      ? (primaryDisabledOnly ? [] : structuredClone(this.settings.cachedXiaomiDevices))
       : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : demoDevices();
     this.scenes = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.scenes ?? []) : this.settings.connectionMode === "demo" ? demoScenes() : [];
     this.environmentReadings = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.environmentReadings ?? []) : [];
@@ -475,7 +476,7 @@ export class MenuMijiaWindowsApp {
     this.restoreUpdateState();
     this.render();
 
-    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
+    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession && !primaryDisabledOnly) {
       void this.refreshDevices();
     }
     // At most one GitHub request per local day, and only inside the packaged app (#39).
@@ -544,6 +545,7 @@ export class MenuMijiaWindowsApp {
   /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
   public dispose(): void {
     disposeAppLifecycle(this);
+    releaseActivityWindowLifecycle(this);
     this.pipeline.clearTransientState();
     this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
@@ -565,6 +567,7 @@ export class MenuMijiaWindowsApp {
     return (
       this.activeSheet !== "none" ||
       isConnectionsAndDiagModalOpen(this) ||
+      this.connectionDetailsOpen ||
       this.pointerIsDown ||
       this.isListeningVoice ||
       this.allOffHoldTimer !== null ||
@@ -1085,7 +1088,16 @@ export class MenuMijiaWindowsApp {
       if (this.sourceRevision !== sourceRevAtStart) return;
       switchSource(this, "qr-login-success");
       // The account-level passToken is never persisted (#27).
-      this.settings.miSession = sessionWithoutPassToken(session);
+      const cleanScanned = sessionWithoutPassToken(session);
+      const scannedAccountId = miAccountId(cleanScanned);
+      const miStore = this.miAccountsStore;
+      if (miStore && miStore.getAccounts().some((acc) => acc.id === scannedAccountId)) {
+        await miStore.upsertAccount(cleanScanned);
+      }
+      queueMiAccountReenableFromLogin(scannedAccountId, {
+        scheduledCommandStore: this.scheduledCommandStore,
+      });
+      this.settings.miSession = cleanScanned;
       this.miSessionExpired = false;
       this.settings.miCloudRegion = normalizeMiCloudRegion(session.region);
       const regionSwitched = this.settings.miCloudRegion !== requestedRegion;
@@ -1153,66 +1165,6 @@ export class MenuMijiaWindowsApp {
     return undoButtonVisible(this, now);
   }
 
-  public panelHealth(): PanelHealth {
-    const mode = this.settings.connectionMode;
-    if (mode === "demo") {
-      return { kind: "demo", dot: "is-demo", label: t("演示模式") };
-    }
-    if (
-      mode === "xiaomiCloud" &&
-      this.settings.miSession &&
-      (this.miSessionExpired || miSessionExpiryState(this.settings.miSession).kind === "expired")
-    ) {
-      return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
-    }
-    if (mode === "homeAssistant") {
-      const block = haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "");
-      if (block === "plaintext") {
-        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
-      }
-      if (block === "auth") {
-        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 认证被拒绝"), recovery: "none" };
-      }
-    }
-    if (this.sourceIsMissing()) {
-      const recovery = mode === "xiaomiCloud" ? "qr" : "none";
-      return { kind: "offline", dot: "is-offline", label: t("未配置数据源"), recovery };
-    }
-    const label = this.connectionFooterLabel();
-    if (this.isSyncingCloud) {
-      return { kind: "syncing", dot: "is-syncing", label };
-    }
-    const cloudFailed = mode === "xiaomiCloud" && this.cloudValuesStale;
-    const haFailed = mode === "homeAssistant" && this.haConnectionError !== null;
-    if (cloudFailed || haFailed || this.valuesAreStale) {
-      const stale = this.valuesAreStale ? `${label} · ${t("可能过期")}` : label;
-      return { kind: "degraded", dot: "is-degraded", label: stale };
-    }
-    return { kind: "online", dot: "is-online", label };
-  }
-
-  private connectionFooterLabel(): string {
-    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
-      return t("米家账号 {user} · {count} 台设备", {
-        user: maskedMiUserId(this.settings.miSession.userId),
-        count: this.devices.length,
-      });
-    }
-    if (this.settings.connectionMode === "homeAssistant") {
-      return `Home Assistant · ${this.devices.length}`;
-    }
-    return t("演示模式");
-  }
-
-  private sourceIsMissing(): boolean {
-    const mode = this.settings.connectionMode;
-    if (mode === "xiaomiCloud") return this.settings.miSession === null;
-    if (mode === "homeAssistant") {
-      return this.settings.haBaseURL.trim() === "" || this.settings.haToken.trim() === "";
-    }
-    return false;
-  }
-
   /** The native endpoint dialog rejected a public Home Assistant address. Keep it on the connection, not only the banner. */
   public noteServiceEndpointFailure(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
@@ -1270,6 +1222,14 @@ export class MenuMijiaWindowsApp {
   }
 
   public render(): void {
+    // The footer connection dialog belongs to the panel surface: any sheet, menu or prompt that opens over it
+    // closes it instead of leaving a ghost dialog (and its focus target) behind (CODING_STANDARDS §13).
+    if (
+      this.connectionDetailsOpen &&
+      (this.activeSheet !== "none" || this.isHomeMenuOpen || this.ctxMenu !== null || this.prompt !== null)
+    ) {
+      this.connectionDetailsOpen = false;
+    }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
   }

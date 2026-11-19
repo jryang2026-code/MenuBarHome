@@ -41,13 +41,15 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case raycast
     case energyHistory
 
-    // 连接
+    // 家居连接
     case demoMode
     case haServerAddress
     case haToken
     case haDiscovery
     case miAccount
     case lgTV
+    case miMultiAccounts
+    case dualSourceFusion
 
     // 助手
     case askWhenUnsure
@@ -57,7 +59,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case assistantTest
     case habitMemory
 
-    // 外观
+    // 显示与面板主题（合并入常规）
     case appearanceMode
     case panelTheme
     case panelHeight
@@ -83,15 +85,15 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .soundFeedback, .launchAtLogin, .advancedDeviceWrites, .globalHotkey, .safetyAlerts,
              .sensorAlerts, .alertsOnlyWhenAway, .doorbellAutoView, .doorbellChime,
              .doorbellAutoCloseSeconds, .weeklyReport, .notificationPermission, .hiddenDevices,
-             .setupGuide, .automationRules, .allowURLControl, .raycast, .energyHistory:
+             .setupGuide, .automationRules, .allowURLControl, .raycast, .energyHistory,
+             .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
             return .general
-        case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
+        case .demoMode, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
+             .miMultiAccounts, .dualSourceFusion:
             return .connection
         case .askWhenUnsure, .confidenceThreshold, .assistantProvider, .assistantAPIKey,
              .assistantTest, .habitMemory:
             return .assistant
-        case .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
-            return .appearance
         case .copyDiagnostics, .scanUnsupportedDevices, .privacyNotes, .blockControlWhileLocked,
              .signOut:
             return .privacy
@@ -141,7 +143,7 @@ enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
 struct SettingsSearchAvailability: Equatable, Sendable {
     var backend: HomeBackend
     var hiddenDeviceCount: Int
-    /// The stored `panel_theme` value, not an already-resolved theme: `AppearanceSettingsTab` reads
+    /// The stored `panel_theme` value, not an already-resolved theme: `GeneralSettingsTab` reads
     /// the stored value and resolves it, so the height control follows the *resolved* theme. Taking
     /// the raw string here keeps that resolution in one place instead of trusting each caller.
     var storedPanelTheme: String?
@@ -159,7 +161,7 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         self.liquidGlassAvailable = liquidGlassAvailable
     }
 
-    /// The theme the appearance pane actually renders, the same value the height control branches on.
+    /// The theme the general pane actually renders, the same value the height control branches on.
     var panelTheme: PanelTheme {
         PanelTheme.resolved(from: storedPanelTheme, liquidGlassAvailable: liquidGlassAvailable)
     }
@@ -169,7 +171,8 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         // Rendered inside `if store.homeBackend != .demo` in `ConnectionSettingsTab`, including
         // `haToken` (attached inside `homeAssistantForm`, which only that branch calls) and `lgTV`
         // (`LGWebOSSettingsSection`, whose call site is inside the same branch).
-        case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV:
+        case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
+             .miMultiAccounts, .dualSourceFusion:
             return backend == .demo ? .demoMode : nil
         case .hiddenDevices:
             return hiddenDeviceCount > 0 ? nil : .nothingHidden
@@ -335,24 +338,36 @@ enum SettingsSearch {
                              "electricity", "kwh"]),
 
             entry(.demoMode, section: connectionSection,
-                  zhTitle: "演示模式", enTitle: "Demo Mode",
-                  synonyms: ["演示", "虚拟设备", "离线模式", "demo", "virtual", "sample"]),
+                  zhTitle: "先逛逛示例家庭", enTitle: "Explore Demo Home",
+                  synonyms: ["演示", "演示模式", "示例", "示例家庭", "虚拟设备", "离线模式", "先逛逛",
+                             "demo", "demo mode", "explore", "virtual", "sample"]),
             entry(.haServerAddress, section: connectionSection,
-                  zhTitle: "Home Assistant 服务器地址", enTitle: "Home Assistant Server URL",
+                  zhTitle: "Home Assistant 地址 (URL)", enTitle: "Home Assistant URL",
                   synonyms: ["服务器", "地址", "home assistant", "server", "url", "nabu casa", "ha"]),
             entry(.haToken, section: connectionSection,
-                  zhTitle: "长期访问令牌", enTitle: "Long-Lived Access Token",
-                  synonyms: ["令牌", "密钥", "token", "key", "access token", "credential"]),
-            entry(.haDiscovery, section: connectionSection, zhTitle: "扫描局域网 HA",
-                  enTitle: "Scan LAN for HA",
-                  synonyms: ["扫描", "局域网", "发现", "scan", "discover", "lan", "mdns", "bonjour"]),
-            entry(.miAccount, section: connectionSection, zhTitle: "米家云端直连",
-                  enTitle: "Xiaomi Cloud Direct",
-                  synonyms: ["米家", "小米", "账号", "登录", "mi", "xiaomi", "account", "sign in",
-                             "cloud"]),
-            entry(.lgTV, section: connectionSection, zhTitle: "LG webOS 电视局域网直连",
-                  enTitle: "LG webOS TV Direct LAN",
-                  synonyms: ["电视", "lg", "webos", "ssap", "wake on lan", "wol", "tv"]),
+                  zhTitle: "专属连接钥匙 (Access Token)", enTitle: "Dedicated Connection Key (Access Token)",
+                  synonyms: ["令牌", "长期访问令牌", "密钥", "钥匙", "专属连接钥匙", "连接钥匙",
+                             "token", "key", "access token", "dedicated connection key", "credential"]),
+            entry(.haDiscovery, section: connectionSection, zhTitle: "查找家中的 Home Assistant",
+                  enTitle: "Find Home Assistant on LAN",
+                  synonyms: ["查找", "扫描", "局域网", "发现", "find", "scan", "discover", "lan", "mdns", "bonjour"]),
+            entry(.miAccount, section: connectionSection, zhTitle: "米家",
+                  enTitle: "Xiaomi Home",
+                  synonyms: ["米家", "米家云端直连", "小米", "账号", "登录", "地区", "服务器地区",
+                             "mi", "xiaomi", "account", "sign in", "cloud", "region"]),
+            entry(.lgTV, section: connectionSection, zhTitle: "LG 电视",
+                  enTitle: "LG TV",
+                  synonyms: ["电视", "lg", "webos", "ssap", "wake on lan", "wol", "tv", "mac",
+                             "网络硬件地址", "远程开机", "网络唤醒"]),
+            entry(.miMultiAccounts, section: connectionSection, zhTitle: "添加更多米家账号",
+                  enTitle: "Add More Xiaomi Accounts",
+                  synonyms: ["多账号", "更多账号", "添加账号", "第二个账号", "添加更多米家账号",
+                             "multi account", "multiple accounts", "add account", "more xiaomi"]),
+            entry(.dualSourceFusion, section: connectionSection,
+                  zhTitle: "同时连接多个家居平台（相同设备自动合并）",
+                  enTitle: "Connect Multiple Home Platforms Simultaneously (Auto-Merge Identical Devices)",
+                  synonyms: ["双源", "双源融合", "多个平台", "多个家居平台", "自动合并", "合并", "同时连接",
+                             "dual source", "multiple platforms", "auto merge", "merge"]),
 
             entry(.askWhenUnsure, section: assistantSection, zhTitle: "AI 不确定时先问我",
                   enTitle: "Ask Me When Unsure",
@@ -372,16 +387,16 @@ enum SettingsSearch {
             entry(.habitMemory, section: assistantSection, zhTitle: "习惯记忆", enTitle: "Habit Memory",
                   synonyms: ["习惯", "记忆", "偏好", "习惯学习", "habit", "memory", "learn"]),
 
-            entry(.appearanceMode, section: appearanceSection, zhTitle: "外观模式", enTitle: "Appearance",
-                  synonyms: ["外观", "浅色", "深色", "跟随系统", "appearance", "light", "dark", "system",
-                             "day", "night"]),
-            entry(.panelTheme, section: appearanceSection, zhTitle: "面板主题", enTitle: "Panel Theme",
-                  synonyms: ["主题", "玻璃", "经典", "theme", "liquid glass", "classic", "panel style"]),
-            entry(.panelHeight, section: appearanceSection, zhTitle: "面板高度", enTitle: "Panel Height",
-                  synonyms: ["高度", "面板大小", "height", "size", "compact", "tall", "max"]),
-            entry(.climatePanelModule, section: appearanceSection,
+            entry(.appearanceMode, section: generalSection, zhTitle: "外观模式", enTitle: "Appearance",
+                  synonyms: ["外观", "浅色", "深色", "跟随系统", "基础显示", "appearance", "light", "dark",
+                             "system", "day", "night"]),
+            entry(.panelTheme, section: generalSection, zhTitle: "面板主题", enTitle: "Panel Theme",
+                  synonyms: ["主题", "玻璃", "经典", "高级显示", "theme", "liquid glass", "classic", "panel style"]),
+            entry(.panelHeight, section: generalSection, zhTitle: "面板高度", enTitle: "Panel Height",
+                  synonyms: ["高度", "面板大小", "高级显示", "height", "size", "compact", "tall", "max"]),
+            entry(.climatePanelModule, section: generalSection,
                   zhTitle: "空调使用整行面板模块", enTitle: "Full-Width Climate Panel",
-                  synonyms: ["空调", "整行", "climate", "module", "full width", "panel module"]),
+                  synonyms: ["空调", "整行", "高级显示", "climate", "module", "full width", "panel module"]),
 
             entry(.copyDiagnostics, section: privacySection, zhTitle: "复制诊断信息",
                   enTitle: "Copy Diagnostics",
@@ -555,11 +570,10 @@ enum SettingsSearch {
     }
 
     // Section names are read through `L10n` so the second line of a hit matches the card it jumps to.
-    private static var generalSection: String { L10n.tr("通用", "General") }
+    private static var generalSection: String { L10n.tr("常规", "General") }
     private static var automationSection: String { L10n.tr("自动化与外部控制", "Automation & External Control") }
-    private static var connectionSection: String { L10n.tr("连接", "Connections") }
+    private static var connectionSection: String { L10n.tr("家居连接", "Connections") }
     private static var assistantSection: String { L10n.tr("AI 助手", "AI Assistant") }
-    private static var appearanceSection: String { L10n.tr("外观", "Appearance") }
     private static var energySection: String { L10n.tr("插座用电统计", "Plug Energy") }
     private static var privacySection: String { L10n.tr("隐私与诊断", "Privacy & Diagnostics") }
     private static var securitySection: String { L10n.tr("安全", "Security") }

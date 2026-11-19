@@ -1144,6 +1144,9 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     assert.equal(pairedCam.id, "ha-dev-cam", "paired card keeps the HA device id as its canonical id");
     assert.equal(pairedCam.sourceBackend, "xiaomiCloud", "Xiaomi serves the paired live view while signed in");
 
+    const preSignOutMerged = getHostDualSourceCoordinator(app).getLastMerged();
+    assert.equal(preSignOutMerged?.routes["ha-dev-cam"]?.backend, "xiaomiCloud");
+
     holdNextHASnapshot = true;
     const inFlightRefresh = refreshDevices(app, false);
     await secondHASnapshotHeld;
@@ -1154,8 +1157,14 @@ describe("W4 Multi-Account UI: account cards, token health badges, non-overwriti
     await settleUi(10);
 
     assert.equal(isDualSourceEnabled(app), false, "dual-source disabled by Xiaomi sign-out");
+    assert.equal(
+      getHostDualSourceCoordinator(app).getLastMerged(),
+      null,
+      "coordinator epoch/shouldCommit blocks the late refresh from republishing routes after dual-source ended",
+    );
+    // Also exercise CameraLiveController's defense-in-depth if a coordinator still holds a stale route (#254).
+    (getHostDualSourceCoordinator(app) as unknown as { lastMerged: unknown }).lastMerged = preSignOutMerged;
     const staleRoute = getHostDualSourceCoordinator(app).getLastMerged()?.routes["ha-dev-cam"];
-    assert.ok(staleRoute, "the late refresh republished routes after dual-source ended");
     assert.equal(staleRoute?.backend, "xiaomiCloud");
 
     const haCam = app.devices.find((d) => d.id === "ha-dev-cam");

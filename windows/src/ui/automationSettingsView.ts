@@ -1215,7 +1215,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
   };
 
   const commitRuleEnable = (ruleId: string): void => {
-    ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true, highRiskApproved: true } : r)));
+    ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: true, highRiskApproved: true, pausedByCapabilities: [] } : r)));
     session.pendingHighRiskConfirm = null;
     host.render();
   };
@@ -1276,7 +1276,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       if (!target.checked && session.pendingHighRiskConfirm?.kind === "enable" && session.pendingHighRiskConfirm.rule.id === ruleId) {
         session.pendingHighRiskConfirm = null;
       }
-      ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: target.checked, ...(target.checked ? { highRiskApproved: true } : {}) } : r)));
+      ruleStore.save(ruleStore.load().map((r) => (r.id === ruleId ? { ...r, isEnabled: target.checked, pausedByCapabilities: [], ...(target.checked ? { highRiskApproved: true } : {}) } : r)));
       host.render();
       return;
     }

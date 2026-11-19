@@ -253,6 +253,10 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var deviceFacets: [String: [FacetControl]] = [:]
     public var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
     public var localNetworkBlockedFeatures: Set<LocalNetworkBlockedFeature> = []
+    /// Paired cards whose other source's id also carries stored view preferences: canonical card
+    /// id → the orphaned source id. The store merges the orphan's hidden / favorite / alias / tile
+    /// preferences onto the canonical id (#24). Empty on single-source snapshots.
+    public var preferenceAdoptions: [String: String] = [:]
 
     public init(
         rooms: [RoomArea] = [],

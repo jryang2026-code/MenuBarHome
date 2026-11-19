@@ -6377,9 +6377,11 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => element(".cc-status-dot").classList.contains("is-offline"));
-    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.match(textOf("#btn-connection-status"), /登录已过期 · 重新扫码/);
     assert.equal(app.miSessionExpired, true);
-    await click("#btn-footer-health");
+    await click("#btn-connection-status");
+    assert.equal(element("#btn-connection-status").getAttribute("aria-expanded"), "true");
+    await click('[data-connection-action="qr"]');
     assert.equal(app.activeSheet, "settings");
   });
 
@@ -6394,13 +6396,13 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(element(".cc-live-banner").getAttribute("role"), "alert");
     assert.match(textOf(".cc-feedback-text"), /登录已过期/);
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "a 401 from a command means the login is dead");
-    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.match(textOf("#btn-connection-status"), /登录已过期 · 重新扫码/);
     assert.equal(app.miSessionExpired, true);
 
     await click("#btn-dismiss-banner");
     assertMissing(document.querySelector(".cc-live-banner"));
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"), "the expiry outlives the banner");
-    assert.match(textOf("#btn-footer-health"), /登录已过期/);
+    assert.match(textOf("#btn-connection-status"), /登录已过期 · 重新扫码/);
 
     // A later successful refresh clears the expiry the same way a fresh login does.
     await click("#btn-refresh");
@@ -6424,7 +6426,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     app.isSyncingCloud = false;
     app.render();
     assert.ok(element(".cc-status-dot").classList.contains("is-degraded"));
-    assert.match(textOf(".cc-footer-label"), /可能过期/);
+    assert.match(textOf(".cc-footer-label"), /米家暂不可用/);
 
     app.settings.connectionMode = "homeAssistant";
     app.settings.miSession = null;
@@ -6434,7 +6436,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     app.haConnectionError = null;
     app.render();
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
-    assert.match(textOf(".cc-footer-label"), /未配置数据源/);
+    assert.match(textOf(".cc-footer-label"), /还没连接家居平台/);
   });
 
   function cachedHaHome(baseURL: string, token: string) {
@@ -6472,7 +6474,8 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.match(footer, /已拒绝明文/);
     assert.doesNotMatch(footer, /可能过期/);
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
-    assertMissing(document.querySelector("#btn-footer-health"));
+    assert.equal(element("#btn-connection-action").dataset.connectionAction, "settings");
+    assertMissing(document.querySelector('[data-connection-action="qr"]'));
     await click("#btn-dismiss-banner");
     assert.match(textOf(".cc-footer-label"), /已拒绝明文/);
     assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
@@ -6496,11 +6499,10 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       cachedHAHome: cachedHaHome(baseURL, token),
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("认证被拒绝"));
+    await waitFor(() => (document.querySelector(".cc-footer-label")?.textContent ?? "").includes("凭据或地址需更新"));
     assert.ok(element(".cc-status-dot").classList.contains("is-offline"));
-    assert.doesNotMatch(textOf(".cc-footer-label"), /可能过期/);
     assert.doesNotMatch(textOf(".cc-footer-label"), /已拒绝明文/);
-    assertMissing(document.querySelector("#btn-footer-health"));
+    assert.equal(element("#btn-connection-action").dataset.connectionAction, "settings");
   });
 
   it("marks a failed refresh of an accepted Home Assistant connection as stale", async () => {
@@ -6519,8 +6521,8 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       cachedHAHome: cachedHaHome(baseURL, token),
     }));
     new MenuMijiaWindowsApp(element("#app"));
-    await waitFor(() => element(".cc-status-dot").classList.contains("is-degraded"));
-    assert.match(textOf(".cc-footer-label"), /可能过期/);
+    await waitFor(() => element(".cc-status-dot").classList.contains("is-offline"));
+    assert.match(textOf(".cc-footer-label"), /Home Assistant 暂不可用/);
     assert.match(textOf("[data-ha-error]"), /Home Assistant disconnected/);
   });
 
@@ -6957,7 +6959,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.equal(document.querySelectorAll(".win-island--bottom .cc-room-bar").length, 1);
     assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-room="全部"]'));
     assert.ok(document.querySelector('.win-island--bottom .cc-room-bar [data-kind="light"]'));
-    assert.equal(textOf(".cc-footer-label"), "演示模式");
+    assert.equal(textOf(".cc-footer-label"), "示例家庭，不会控制真实设备");
 
     const camCard = element('.win-island--top details.win-camera-card') as HTMLDetailsElement;
     camCard.open = true;
@@ -7066,7 +7068,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     );
     document.body.innerHTML = '<div id="app"></div>';
     new MenuMijiaWindowsApp(element("#app"));
-    assert.equal(textOf(".cc-footer-label"), "Demo mode");
+    assert.equal(textOf(".cc-footer-label"), "Demo home; won't control real devices");
     assert.equal(textOf("#btn-footer-qr span"), "QR Login");
   });
 });

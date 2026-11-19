@@ -1549,6 +1549,7 @@ public final class HomeStore {
     @ObservationIgnored var debouncedResumeCoordinator: DebouncedResumeCoordinator?
     @ObservationIgnored var resumeSyncTask: Task<Void, Never>?
     @ObservationIgnored var isNetworkSatisfiedForResume: Bool = true
+    @ObservationIgnored var knownNetworkSatisfied: Bool?
     @ObservationIgnored var isResumeShutdown: Bool = false
     @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
     @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)

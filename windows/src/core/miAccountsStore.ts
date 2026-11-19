@@ -1010,8 +1010,14 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
       readings.push(reading);
     }
 
-    for (const scene of child.home.scenes) { if (!sceneIds.has(scene.id)) { sceneIds.add(scene.id);
-        scenes.push(scene);
+    for (const scene of child.home.scenes) {
+      if (!sceneIds.has(scene.id)) {
+        sceneIds.add(scene.id);
+        scenes.push({
+          ...scene,
+          accountId: scene.accountId ?? account.id,
+          sourceBackend: scene.sourceBackend ?? "xiaomiCloud",
+        });
       }
     }
 

@@ -177,7 +177,7 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
     public let sourceScope: String?
 
     /// What the timer is matched against: the recorded set, the older single scope, or nil for entries
-    /// written before scopes existed (adopted once at restore).
+    /// written before scopes existed (those wait visibly for confirmation instead of arming, #22).
     public var effectiveSourceScopes: [String]? {
         if let sourceScopes { return sourceScopes }
         return sourceScope.map { [$0] }
@@ -197,11 +197,6 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
         self.plan = plan
         self.sourceScope = sourceScope
         self.sourceScopes = sourceScopes
-    }
-
-    /// The same timer, claimed by the source that is connected now. Used only for legacy entries.
-    func adoptingScope(_ scope: String) -> ScheduledCommand {
-        ScheduledCommand(id: id, reply: reply, fireDate: fireDate, plan: plan, sourceScope: scope)
     }
 
     public static func load(from defaults: UserDefaults) -> [ScheduledCommand] {
