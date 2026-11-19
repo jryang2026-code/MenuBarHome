@@ -179,11 +179,35 @@ public enum MiIOPacket {
         )
     }
 
-    public static func helloChecksumMatches(_ packet: Data, token: Data) -> Bool? {
-        guard packet.count >= headerSize, token.count == 16, let header = try? decodeHeader(packet) else { return nil }
-        if header.checksum.allSatisfy({ $0 == 0xFF }) || header.checksum.allSatisfy({ $0 == 0x00 }) || header.checksum == token { return nil }
+    /// How a HELLO reply's 16-byte checksum field relates to one candidate's token. Cold-start discovery
+    /// ranks these so `maxUnclaimedProbesPerCandidate` truncation keeps the replies that carry the most
+    /// evidence for a candidate instead of whichever HELLOs the LAN happened to answer with first.
+    public enum HelloChecksumVerdict: Sendable, Equatable {
+        /// `MD5(header[0..<16] + token)` matches the checksum field.
+        case md5Match
+        /// The checksum field literally is the token: the legacy miIO HELLO form. Same proof of token
+        /// knowledge as `md5Match`, so it must rank with it instead of being treated as unknown.
+        case tokenEcho
+        /// All-zero or all-0xFF checksum: the sender published no evidence for any candidate.
+        case inconclusive
+        /// A digest that does not match this token, so the reply cannot belong to this candidate.
+        case mismatch
+    }
+
+    public static func helloChecksumVerdict(_ packet: Data, token: Data) -> HelloChecksumVerdict {
+        guard packet.count >= headerSize, token.count == 16, let header = try? decodeHeader(packet) else { return .inconclusive }
+        if header.checksum == token { return .tokenEcho }
+        if header.checksum.allSatisfy({ $0 == 0xFF }) || header.checksum.allSatisfy({ $0 == 0x00 }) { return .inconclusive }
         let base = packet.startIndex
-        return Data(Insecure.MD5.hash(data: packet[base..<(base + 16)] + token)) == header.checksum
+        return Data(Insecure.MD5.hash(data: packet[base..<(base + 16)] + token)) == header.checksum ? .md5Match : .mismatch
+    }
+
+    public static func helloChecksumMatches(_ packet: Data, token: Data) -> Bool? {
+        switch helloChecksumVerdict(packet, token: token) {
+        case .md5Match: return true
+        case .mismatch: return false
+        case .tokenEcho, .inconclusive: return nil
+        }
     }
 
     public static func encode(

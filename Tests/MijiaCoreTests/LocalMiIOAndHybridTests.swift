@@ -51,6 +51,65 @@ actor MockUDPTransport: MiIOUDPTransport {
     }
 }
 
+/// Rendezvous for a bounded-concurrency assertion. Unresponsive probes park here until the sampling
+/// probe has observed them, and the sampler waits until every parked probe has arrived, so neither side
+/// depends on which task the cooperative pool runs first and no test needs to sleep against a product timer.
+actor ProbeConcurrencyGate {
+    private let expectedParkedProbes: Int
+    private var parkedProbes = 0
+    private var arrivalWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var isReleased = false
+    private var isAbandoned = false
+
+    init(expectedParkedProbes: Int) {
+        self.expectedParkedProbes = max(1, expectedParkedProbes)
+    }
+
+    /// Counts the caller as in flight and holds it until the sampler releases it.
+    func park() async {
+        parkedProbes += 1
+        if parkedProbes >= expectedParkedProbes {
+            resumeAll(&arrivalWaiters)
+        }
+        guard !isReleased else { return }
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { releaseWaiters.append($0) }
+        } onCancel: {
+            Task { await self.release() }
+        }
+    }
+
+    /// Blocks until every expected probe is parked, so the caller samples a complete in-flight set.
+    /// Returns early when the caller is cancelled; the count assertion then fails instead of hanging.
+    func waitUntilAllParked() async {
+        while parkedProbes < expectedParkedProbes && !isAbandoned {
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { arrivalWaiters.append($0) }
+            } onCancel: {
+                Task { await self.abandon() }
+            }
+        }
+    }
+
+    func release() {
+        guard !isReleased else { return }
+        isReleased = true
+        resumeAll(&releaseWaiters)
+    }
+
+    private func abandon() {
+        isAbandoned = true
+        resumeAll(&arrivalWaiters)
+    }
+
+    private func resumeAll(_ waiters: inout [CheckedContinuation<Void, Never>]) {
+        let pending = waiters
+        waiters.removeAll()
+        for waiter in pending { waiter.resume() }
+    }
+}
+
 actor HybridMockCloudAPI: MiCloudAPI {
     var devicesList: [MiDeviceRecord]
     var roomsList: [MiRoom]
@@ -938,6 +997,76 @@ struct LocalMiIOClientTests {
         await floodClient.shutdown()
     }
 
+    @Test("Probe replies are never cancelled by a duplicate client-side timer, so scheduling latency cannot lose a device")
+    func probeRepliesAreNotPreemptedByADuplicateClientTimeout() async throws {
+        let tokenHex = "00112233445566778899aabbccddeeff"
+        let token = try #require(MiIOPacket.validateToken(tokenHex))
+
+        // The transport owns the per-probe timeout (`send(..., timeout:)`): a real transport fails the call
+        // itself when the deadline passes. The client must not race a second timer against it, because that
+        // timer cancels probes the cooperative pool has merely not scheduled yet, which is how a loaded
+        // runner used to lose a device that had already answered. A reply that arrives after the client's
+        // `handshakeTimeout` but inside the discovery budget therefore still binds.
+        let transport = MockUDPTransport { packet, host, _ in
+            guard host == "192.168.1.180" else { throw MiIOError.timeout }
+            try await Task.sleep(for: .milliseconds(150))
+            return try self.encodeRPCReply(
+                packet,
+                token: token,
+                resultOrError: #""result":[{"did":"lumi.curtain.v1","siid":1,"piid":1,"value":"aqara","code":0}]"#
+            )
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            [
+                MiIOBroadcastReply(sourceIP: "192.168.1.30", packet: makeHelloResponse(deviceId: 900, stamp: 40)),
+                MiIOBroadcastReply(sourceIP: "192.168.1.180", packet: makeHelloResponse(deviceId: 0x0AAA_0001, stamp: 41)),
+            ]
+        }
+
+        let client = LocalMiIOClient(transport: transport, handshakeTimeout: .milliseconds(60), maxRetries: 0)
+        let discovered = try await client.discoverEndpoints(for: [
+            MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenHex),
+        ])
+        #expect(discovered == ["lumi.curtain.v1": "192.168.1.180"])
+        await client.shutdown()
+    }
+
+    @Test("Token-echo HELLOs outrank unknown checksums so a truncated unclaimed probe queue keeps the real device")
+    func tokenEchoHelloRanksAboveUnknownChecksumsInUnclaimedProbeQueue() async throws {
+        let tokenLumiHex = "112233445566778899aabbccddeeff00"
+        let tokenLumi = try #require(MiIOPacket.validateToken(tokenLumiHex))
+
+        // Legacy miIO HELLOs echo the token in the 16-byte checksum field instead of carrying an MD5 digest.
+        // That is the strongest per-candidate evidence a cold-start reply can hold, so the unclaimed probe
+        // queue must rank it above unknown 0xFF/0x00 HELLOs and keep it when the per-candidate cap truncates.
+        let tokenEchoHello = Data(makeHelloResponse(deviceId: 0x0AAA_0101, stamp: 70).prefix(16)) + tokenLumi
+        let fillerReplies = (1...4).map { idx in
+            MiIOBroadcastReply(sourceIP: "192.168.1.\(40 + idx)", packet: makeHelloResponse(deviceId: UInt32(7000 + idx), stamp: UInt32(10 + idx)))
+        }
+
+        let probedHosts = LockedBox<[String]>([])
+        let transport = MockUDPTransport { packet, host, _ in
+            probedHosts.withValue { $0.append(host) }
+            guard host == "192.168.1.77" else { throw MiIOError.timeout }
+            return try self.encodeRPCReply(packet, token: tokenLumi, resultOrError: #""result":[{"did":"lumi.sensor.v1","siid":1,"piid":1,"value":1,"code":0}]"#)
+        }
+        await transport.setBroadcastHandler { _, _, _ in
+            fillerReplies + [MiIOBroadcastReply(sourceIP: "192.168.1.77", packet: tokenEchoHello)]
+        }
+
+        // A two-slot queue only keeps two replies, and the token-echo device is published last.
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .milliseconds(200),
+            maxRetries: 0,
+            maxUnclaimedProbesPerCandidate: 2
+        )
+        let discovered = try await client.discoverEndpoints(for: [MiIODeviceCandidate(did: "lumi.sensor.v1", token: tokenLumiHex)])
+        #expect(discovered == ["lumi.sensor.v1": "192.168.1.77"])
+        #expect(probedHosts.withValue { $0.contains("192.168.1.77") })
+        await client.shutdown()
+    }
+
     @Test("Broadcast matching probes use bounded concurrency and preserve budget for non-numeric discovery without duplicate IP binding")
     func broadcastDiscoveryMatchingConcurrencyAndNonNumericBudgetPreservation() async throws {
         let token1Hex = "00112233445566778899aabbccddeeff"
@@ -954,8 +1083,11 @@ struct LocalMiIOClientTests {
         let did4 = String((UInt64(1) << 32) | UInt64(sharedLow32))
         let didCollision = String((UInt64(2) << 32) | UInt64(sharedLow32))
 
-        // Synchronize deterministically: when the 4th matching probe arrives at 192.168.1.14,
-        // verify that the 3 unresponsive matching probes (192.168.1.11..13) are already in flight concurrently.
+        // Concurrency is observed through a rendezvous gate, never a sleep: the three unresponsive matching
+        // probes park on it, and the probe aimed at 192.168.1.14 waits until all three are parked before it
+        // samples the in-flight count. Task-group children are not guaranteed to reach the transport in
+        // creation order, so an ungated sample could legitimately see one or two of them.
+        let concurrencyGate = ProbeConcurrencyGate(expectedParkedProbes: 3)
         let activeUnresponsiveProbes = LockedBox(0)
         let concurrentUnresponsiveObservedByFourth = LockedBox(0)
         let sentHosts = LockedBox<[String]>([])
@@ -966,12 +1098,14 @@ struct LocalMiIOClientTests {
             case "192.168.1.11", "192.168.1.12", "192.168.1.13", "192.168.1.53":
                 activeUnresponsiveProbes.withValue { $0 += 1 }
                 defer { activeUnresponsiveProbes.withValue { $0 -= 1 } }
-                try await Task.sleep(for: .milliseconds(80))
+                await concurrencyGate.park()
                 throw MiIOError.timeout
             case "192.168.1.14":
+                await concurrencyGate.waitUntilAllParked()
                 concurrentUnresponsiveObservedByFourth.withValue {
                     $0 = activeUnresponsiveProbes.withValue { count in count }
                 }
+                await concurrencyGate.release()
                 return try self.encodeRPCReply(
                     packet,
                     token: token4,
@@ -999,10 +1133,10 @@ struct LocalMiIOClientTests {
             ]
         }
 
-        // Budget: handshakeTimeout = 200ms, maxDiscoveryDuration = 500ms.
-        // Sequential matching of 3 unresponsive candidates (3 * 200ms = 600ms > 500ms) would exhaust the budget
-        // before reaching the 4th candidate or the non-numeric phase.
-        // Bounded concurrent matching finishes the matching wave in ~200ms, leaving ~300ms for the non-numeric phase.
+        // Budget: handshakeTimeout = 200ms, maxDiscoveryDuration = 500ms. A sequential matching phase
+        // waits out each unresponsive candidate (3 * 200ms = 600ms) and never reaches the 4th candidate
+        // inside the budget; the bounded wave keeps all four in flight at once, and the reserved
+        // non-numeric budget still lets the non-numeric candidate resolve afterwards.
         let client = LocalMiIOClient(
             transport: transport,
             handshakeTimeout: .milliseconds(200),
@@ -1034,7 +1168,9 @@ struct LocalMiIOClientTests {
         await client.shutdown()
 
         // Also verify that even across multiple waves of unresponsive matching candidates (e.g. concurrency = 2,
-        // 4 unresponsive matching candidates), the matching phase reserves remaining budget for the non-numeric phase.
+        // 4 unresponsive matching candidates), the non-numeric phase still runs and resolves the non-numeric
+        // candidate. The unresponsive probes now fail as soon as they reach the transport (the gate is already
+        // released), so the reserve is genuinely left for the non-numeric phase instead of being burned by sleeps.
         await transport.setBroadcastHandler { _, _, _ in
             [
                 MiIOBroadcastReply(sourceIP: "192.168.1.11", packet: makeHelloResponse(deviceId: 101, stamp: 10)),

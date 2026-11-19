@@ -557,7 +557,7 @@ public actor LocalMiIOClient {
         for candidate in validCandidates {
             let matching = parsedReplies.filter { r in
                 guard !claimedIPs.contains(r.sourceIP) else { return false }
-                if MiIOPacket.helloChecksumMatches(r.packet, token: candidate.tokenData) == false { return false }
+                if MiIOPacket.helloChecksumVerdict(r.packet, token: candidate.tokenData) == .mismatch { return false }
                 if let known = knownHardwareIdsByDid[candidate.did], known.matches(r.header) { return true }
                 guard let did64 = UInt64(candidate.did) else { return false }
                 return r.header.deviceId64 == did64 || ((r.header.unknown == 0 || r.header.unknown == UInt32.max) && UInt32(truncatingIfNeeded: did64) == r.header.deviceId)
@@ -612,14 +612,19 @@ public actor LocalMiIOClient {
             var tier1: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)] = []
             var tier2: [(sourceIP: String, packet: Data, header: MiIOPacketHeader)] = []
             for reply in unclaimedPool {
-                let checksumMatch = MiIOPacket.helloChecksumMatches(reply.packet, token: candidate.tokenData)
-                if checksumMatch == false { continue }
-                if checksumMatch == true {
+                switch MiIOPacket.helloChecksumVerdict(reply.packet, token: candidate.tokenData) {
+                case .mismatch:
+                    continue
+                case .md5Match, .tokenEcho:
+                    // Both forms prove knowledge of this candidate's token, so they outrank HELLOs that
+                    // carry no evidence before the per-candidate probe cap truncates the queue.
                     tier0.append(reply)
-                } else if !matchesKnownNumeric(reply.header) {
-                    tier1.append(reply)
-                } else {
-                    tier2.append(reply)
+                case .inconclusive:
+                    if !matchesKnownNumeric(reply.header) {
+                        tier1.append(reply)
+                    } else {
+                        tier2.append(reply)
+                    }
                 }
             }
             queuesByDid[candidate.did] = Array((tier0 + tier1 + tier2).prefix(maxUnclaimedProbesPerCandidate))
@@ -649,6 +654,9 @@ public actor LocalMiIOClient {
         case response(PreparedProbe, Data, Int)
         case noMatch
         case fatal(MiIOError)
+        /// The wave stopped before this probe resolved: the discovery budget ran out for the whole wave or
+        /// the wave was cancelled.
+        case waveStopped
     }
 
     private func runBoundedProbeWaves(
@@ -704,34 +712,52 @@ public actor LocalMiIOClient {
             let perProbeTimeout = min(handshakeTimeout, waveBudget)
             let transport = self.transport
             let port = self.port
+            // The per-probe timeout belongs to the transport (`send(..., timeout:)`), which is the only
+            // component that knows when the datagram actually went out. Racing a second timer here used to
+            // cancel probes that were merely starved of a cooperative-pool thread, so a loaded runner
+            // discarded replies the mock had already produced. The client keeps exactly one clock: the
+            // wave deadline, which cancels whatever is still in flight when the discovery budget runs out.
             let outcomes = try await withThrowingTaskGroup(of: ProbeOutcome.self) { group in
                 for probe in preparedBatch {
                     group.addTask {
-                        try await Self.runBoundedDiscoveryProbe(
-                            timeout: perProbeTimeout,
-                            sendBody: {
-                                let sendStart = ContinuousClock.now
-                                let response = try await transport.send(probe.probePacket, to: probe.sourceIP, port: port, timeout: perProbeTimeout)
-                                return (response, Self.milliseconds(since: sendStart))
-                            },
-                            makeOutcome: { response, rtt in .response(probe, response, rtt) },
-                            noMatch: .noMatch,
-                            fatal: { .fatal($0) }
-                        )
+                        do {
+                            let sendStart = ContinuousClock.now
+                            let response = try await transport.send(probe.probePacket, to: probe.sourceIP, port: port, timeout: perProbeTimeout)
+                            return .response(probe, response, Self.milliseconds(since: sendStart))
+                        } catch is CancellationError {
+                            return .waveStopped
+                        } catch let error as MiIOError where error == .shutDown || error == .localNetworkDenied {
+                            return .fatal(error)
+                        } catch {
+                            return .noMatch
+                        }
                     }
+                }
+                group.addTask {
+                    try? await Task.sleep(for: waveBudget)
+                    return .waveStopped
                 }
                 var collected: [ProbeOutcome] = []
-                for try await outcome in group {
-                    if case .fatal(let fatalErr) = outcome {
+                var awaitedProbes = preparedBatch.count
+                while awaitedProbes > 0, let outcome = try await group.next() {
+                    switch outcome {
+                    case .response, .noMatch:
+                        collected.append(outcome)
+                        awaitedProbes -= 1
+                    case .fatal(let fatalErr):
                         group.cancelAll()
                         throw fatalErr
+                    case .waveStopped:
+                        awaitedProbes = 0
+                        group.cancelAll()
                     }
-                    collected.append(outcome)
                 }
+                group.cancelAll()
                 return collected
             }
 
             guard !isShutDown else { throw MiIOError.shutDown }
+            try Task.checkCancellation()
             for outcome in outcomes {
                 guard case .response(let probe, let responsePacket, let rttMs) = outcome,
                       discovered[probe.did] == nil,
@@ -754,41 +780,6 @@ public actor LocalMiIOClient {
         let probeStamp: UInt32
         let reqId: Int
         let probePacket: Data
-    }
-
-    private static func runBoundedDiscoveryProbe<Outcome: Sendable>(
-        timeout: Duration,
-        sendBody: @escaping @Sendable () async throws -> (Data, Int),
-        makeOutcome: @escaping @Sendable (Data, Int) -> Outcome,
-        noMatch: Outcome,
-        fatal: @escaping @Sendable (MiIOError) -> Outcome
-    ) async throws -> Outcome {
-        try await withThrowingTaskGroup(of: Outcome?.self) { race in
-            race.addTask {
-                do {
-                    let (data, rtt) = try await sendBody()
-                    return makeOutcome(data, rtt)
-                } catch is CancellationError {
-                    return nil
-                } catch let error as MiIOError where error == .shutDown || error == .localNetworkDenied {
-                    return fatal(error)
-                } catch {
-                    return noMatch
-                }
-            }
-            race.addTask {
-                try await Task.sleep(for: timeout)
-                return noMatch
-            }
-            while let first = try await race.next() {
-                if let resolved = first {
-                    race.cancelAll()
-                    return resolved
-                }
-            }
-            try Task.checkCancellation()
-            return noMatch
-        }
     }
 
     private func prepareBroadcastProbe(
