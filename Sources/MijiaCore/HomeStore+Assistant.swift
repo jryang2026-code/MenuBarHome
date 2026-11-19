@@ -664,6 +664,14 @@ extension HomeStore {
         return reply
     }
 
+    /// True when the rows on screen were produced by the connected sources. `startListening()` marks
+    /// the generation at the switch and only the next snapshot advances it, so the list left over from
+    /// the previous home is exactly the equality `schedule()` refuses. LG rows come from the LAN client,
+    /// so an all-LG plan is current without a cloud snapshot.
+    private func rowsBelongToConnectedSources(for plan: IntentPlan) -> Bool {
+        planHasOnlyLGTargets(plan) || snapshotGeneration != listeningSnapshotGeneration
+    }
+
     /// True when every target is a local LG card. Those rows come from the LAN client rather than a
     /// cloud snapshot, so a stale `snapshotGeneration` says nothing about their freshness.
     private func planHasOnlyLGTargets(_ plan: IntentPlan) -> Bool {
@@ -902,6 +910,18 @@ extension HomeStore {
             guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
         } else {
             guard currentLegacyTimerOwner() == tappedOwner else { return nil }
+            // The previous home's rows are still on screen right after a switch; running against them
+            // would check the targets in one home and send to the other (#22).
+            guard rowsBelongToConnectedSources(for: entry.plan) else {
+                showToast(
+                    L10n.tr(
+                        "数据源尚未就绪，定时未执行",
+                        "The home source is not ready; the timer did not run"
+                    ),
+                    isError: true
+                )
+                return nil
+            }
         }
         guard missingPlanTargets(entry.plan).isEmpty else {
             showToast(
@@ -933,7 +953,8 @@ extension HomeStore {
     /// on screen at the tap, and from then on the ADR-0019 rules apply: a timer still ahead arms for
     /// its own time, and one that fell due meanwhile becomes an ordinary missed timer that still needs
     /// 立即补执行. Confirming never sends a command. Returns false and keeps the entry unconfirmed when
-    /// the source or home changed during the snapshot wait, or the plan's devices are not here.
+    /// the source or home changed during the snapshot wait, when the device rows still come from the
+    /// previous home, or when the plan's devices are not here.
     @discardableResult
     public func confirmScheduledCommandSource(id: UUID) async -> Bool {
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }),
@@ -941,6 +962,18 @@ extension HomeStore {
               let tappedOwner = currentLegacyTimerOwner() else { return false }
         await waitForInitialSnapshotIfNeeded()
         guard currentLegacyTimerOwner() == tappedOwner else { return false }
+        // Confirming stamps the newly connected sources; it must not do that while the device rows
+        // still come from the previous home (#22).
+        guard rowsBelongToConnectedSources(for: entry.plan) else {
+            showToast(
+                L10n.tr(
+                    "数据源尚未就绪，定时未确认",
+                    "The home source is not ready; the timer was not confirmed"
+                ),
+                isError: true
+            )
+            return false
+        }
         guard missingPlanTargets(entry.plan).isEmpty else {
             showToast(
                 L10n.tr(

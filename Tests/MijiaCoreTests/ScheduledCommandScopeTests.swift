@@ -556,6 +556,45 @@ struct ScheduledCommandScopeTests {
         #expect(await mock.executedCommands.isEmpty)
     }
 
+    @Test("A legacy timer is refused while the switched-to home's first snapshot is still loading (#22)")
+    @MainActor
+    func legacyTimerRefusedUntilTheNewSourcesSnapshotLands() async throws {
+        let (store, mock) = try await makeStore()
+        let legacy = ScheduledCommand(
+            reply: "关闭书房吸顶灯", fireDate: Date().addingTimeInterval(-120), plan: Self.plan
+        )
+        ScheduledCommand.save([legacy], to: store.userDefaults)
+        store.restoreScheduledCommands()
+        let staleDevices = store.devices
+        #expect(!staleDevices.isEmpty)
+
+        // The user points the app at another Home Assistant. The previous home's rows stay on
+        // screen until the next snapshot, so neither a run nor a confirmation may validate the
+        // plan against that list and then send it to the newly connected home.
+        await mock.holdSnapshots()
+        store.serverURLString = Self.otherHomeURL
+        store.startListening()
+        #expect(store.snapshotGeneration == store.listeningSnapshotGeneration)
+        #expect(store.devices == staleDevices)
+
+        #expect(await store.runMissedScheduledCommand(id: legacy.id) == nil)
+        #expect(store.toastNotice?.isError == true, "A refusal must say why nothing happened")
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id])
+
+        #expect(await store.confirmScheduledCommandSource(id: legacy.id) == false)
+        #expect(store.missedScheduledCommands.map(\.id) == [legacy.id])
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(ScheduledCommand.load(from: store.userDefaults).first?.effectiveSourceScopes == nil)
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Once the new source's snapshot lands, the same tap is allowed.
+        await mock.emitSnapshot()
+        await waitUntil { store.snapshotGeneration != store.listeningSnapshotGeneration }
+        #expect(await store.runMissedScheduledCommand(id: legacy.id) != nil)
+        #expect(await mock.executedCommands.count == 1)
+    }
+
     @Test("A timer firing while the Mac is locked still runs")
     @MainActor
     func timerRunsWhileLocked() async throws {
