@@ -98,6 +98,7 @@ extension HomeStore {
     ) -> Bool {
         guard !isResumeShutdown,
               homeBackend != .demo,
+              !shouldSuppressBackgroundNetworkWork,
               !isScreenLocked,
               pollingContext.systemActive,
               isNetworkSatisfiedForResume,
@@ -114,6 +115,7 @@ extension HomeStore {
         guard !isResumeShutdown,
               !isPerformingResumeRefresh,
               homeBackend != .demo,
+              !shouldSuppressBackgroundNetworkWork,
               !isScreenLocked,
               pollingContext.systemActive,
               isNetworkSatisfiedForResume else {

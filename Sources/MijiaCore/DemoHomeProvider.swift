@@ -575,9 +575,19 @@ public actor DemoHomeProvider: HomeProvider {
                 }
 
             case .tv(var spec):
+                let isLG = LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
                 switch command {
-                case .setSwitch(let entityId, let isOn) where entityId == spec.mediaEntityId:
+                case .setSwitch(let entityId, let isOn)
+                    where entityId == spec.mediaEntityId
+                    || (isLG && entityId == LGWebOSProtocol.powerEntityId):
                     spec.state = isOn ? "on" : "standby"
+                    if isOn { spec.isScreenOff = false }
+                case .setSwitch(let entityId, let isOn)
+                    where isLG && entityId == LGWebOSProtocol.muteEntityId:
+                    spec.isMuted = isOn
+                case .setSwitch(let entityId, let isOn)
+                    where isLG && entityId == LGWebOSProtocol.screenOffEntityId:
+                    spec.isScreenOff = isOn
                 case .mediaSelectSource(let entityId, let source) where entityId == spec.mediaEntityId:
                     spec.currentSource = source
                 case .mediaSetVolume(let entityId, let volumeLevel) where entityId == spec.mediaEntityId:

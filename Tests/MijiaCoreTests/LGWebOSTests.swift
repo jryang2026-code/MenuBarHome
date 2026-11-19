@@ -67,9 +67,18 @@ struct LGWebOSTests {
         try await store.waitForTestSnapshot()
 
         // 1. Voice command "打开电视"
+        let generationBeforePowerOn = store.snapshotGeneration
         let onPlan = try #require(await store.runAssistantCommand("打开电视"))
         #expect(onPlan.source == .local)
         #expect(onPlan.reply == "已打开LG C2 电视")
+        // Wait for command delivery and the provider snapshot to converge rather than asserting
+        // a transient optimistic lock immediately after `runAssistantCommand` returns (#304).
+        let powerDeadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while (await !mock.executedCommands.contains(.setSwitch(entityId: LGWebOSProtocol.powerEntityId, isOn: true))
+               || store.snapshotGeneration == generationBeforePowerOn),
+              ContinuousClock.now < powerDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         #expect(store.devices.first?.isActiveOn == true)
 
         // 2. Mute, OLED Screen Off, and HDMI Source Switch

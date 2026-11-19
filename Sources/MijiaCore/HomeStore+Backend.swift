@@ -44,7 +44,7 @@ extension HomeStore {
     // MARK: - LG TV & Provider Events
 
     func startLGWebOSIfNeeded() {
-        guard homeBackend != .demo else { return }
+        guard homeBackend != .demo, !isIdentityUncertain else { return }
         let trustStore: LGCertificateTrust = if let credentialVault {
             LGCertificateTrust(vault: credentialVault)
         } else if userDefaults !== UserDefaults.standard {
@@ -81,7 +81,7 @@ extension HomeStore {
         }
         self.lgWebOSClient = client
         self.lgWebOSClientID = clientID
-        if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
+        if !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
         }
     }
@@ -998,6 +998,18 @@ extension HomeStore {
     }
 
     func makeLiveProvider() -> any HomeProvider {
+        guard !isIdentityUncertain else {
+            activeHAProvider = nil
+            activeHAConfig = nil
+            activeMiAccountsProvider = nil
+            activeDualProvider = nil
+            return Self.makeComposite(
+                homeAssistant: nil,
+                xiaomiCloud: nil,
+                defaults: userDefaults,
+                pinBox: pinnedDeviceSourcesBox
+            )
+        }
         let token = loadHAToken()
         let active = activeBackends
         let wantsHA = active.contains(.homeAssistant)
@@ -1054,6 +1066,23 @@ extension HomeStore {
 
     func rebuildLiveProvider(forceHAReconnect: Bool = false) {
         haPlaintextPrompt = nil
+        guard !isIdentityUncertain else {
+            eventTask?.cancel()
+            eventTask = nil
+            shutdownCurrentProvider()
+            activeHAProvider = nil
+            activeHAConfig = nil
+            activeMiAccountsProvider = nil
+            activeDualProvider = nil
+            miAccountsConfigEpoch = 0
+            self.provider = Self.makeComposite(
+                homeAssistant: nil,
+                xiaomiCloud: nil,
+                defaults: userDefaults,
+                pinBox: pinnedDeviceSourcesBox
+            )
+            return
+        }
         guard let dual = activeDualProvider,
               provider as AnyObject === dual,
               homeBackend != .demo else {
@@ -1227,6 +1256,11 @@ extension HomeStore {
         invalidateUndoContext()
 
         let previousBackend = homeBackend
+        if backend == .demo, previousBackend != .demo {
+            preDemoBackend = (hasHASource || hasMiSource || !miAccounts.isEmpty) ? previousBackend : nil
+        } else if backend != .demo {
+            preDemoBackend = nil
+        }
         self.homeBackend = backend
         if backend == .demo {
             clearHATeardownState()
@@ -1266,7 +1300,7 @@ extension HomeStore {
     /// config is disabled or has no host. A launch in demo mode never created the client, so
     /// create it now instead of leaving a configured TV missing until relaunch.
     private func resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: Bool) {
-        guard wasDemo, homeBackend != .demo else { return }
+        guard wasDemo, homeBackend != .demo, !isIdentityUncertain else { return }
         if let lgClient = lgWebOSClient {
             Task { await lgClient.start() }
         } else {
@@ -1280,13 +1314,24 @@ extension HomeStore {
         miLoginStartBackend = homeBackend
     }
 
-    public func completeMiLogin(_ session: MiSession) {
+    @discardableResult
+    public func completeMiLogin(_ session: MiSession) -> Bool {
+        if identityMigrationDiagnostic != nil, !retryIdentityMigration() {
+            showToast(
+                L10n.tr(
+                    "无法确认现有配置或凭据，未保存本次米家登录，请检查钥匙串授权后重试",
+                    "Could not verify existing settings or credentials; sign-in was not saved. Check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
         guard MiSessionStore.upsert(session, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
                 isError: true
             )
-            return
+            return false
         }
         // The primary (first) account drives the summary and the history scope, so signing in a
         // second account must not relabel the panel with the newcomer.
@@ -1310,7 +1355,7 @@ extension HomeStore {
         let regionChanged = miCloudRegion != previousRegion
         let superseded = miLoginStartBackend.map { $0 != homeBackend } ?? false
         miLoginStartBackend = nil
-        if superseded { return }
+        if superseded { return true }
         let wasDemo = homeBackend == .demo
         invalidateUndoContext()
         self.hasHASource = !loadHAToken()
@@ -1328,6 +1373,7 @@ extension HomeStore {
                 )
                 : L10n.tr("已登录米家账号 (\(session.maskedUserId))", "Signed in to Xiaomi Home (\(session.maskedUserId))")
         )
+        return true
     }
 
     /// Returns false when the Keychain/vault refused to delete the stored Mi session; the in-memory
@@ -1570,14 +1616,18 @@ extension HomeStore {
         }
     }
 
-    public func updateConnection(serverURL: String, token: String) {
+    @discardableResult
+    public func updateConnection(serverURL: String, token: String) -> Bool {
+        if identityMigrationDiagnostic != nil, !retryIdentityMigration() {
+            return false
+        }
         // A refused Keychain write must not report "Saved": the token would be gone after relaunch.
         guard KeychainHelper.saveToken(token, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
                 isError: true
             )
-            return
+            return false
         }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
@@ -1621,7 +1671,7 @@ extension HomeStore {
                 "已保存 Home Assistant 配置（连接仍处于停用状态）",
                 "Saved Home Assistant settings (connection remains turned off)"
             ))
-            return
+            return true
         }
         invalidateUndoContext()
         if self.hasHASource {
@@ -1643,6 +1693,7 @@ extension HomeStore {
         rebuildLiveProvider()
         resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
+        return true
     }
 
     /// The user chose `instance` (a tap in setup or settings, or 切换 on a suggestion).
@@ -1675,6 +1726,9 @@ extension HomeStore {
     }
 
     public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
+        guard capabilityResolutionMode != .freshInstall,
+              identityMigrationDiagnostic == nil,
+              hasCompletedOnboarding else { return false }
         guard homeBackend != .demo, homeBackend != .xiaomiCloud, isHAConnectionEnabled else { return false }
         guard !hasHASource, !hasMiSource else { return false }
         if let lastAutoHADiscoveryAt,
@@ -1754,12 +1808,21 @@ extension HomeStore {
             )
             return true
         }
-        if let lgClient = lgWebOSClient {
-            Task {
-                await lgClient.updateConfig(newConfig)
+        var lgStartedDuringRetry = false
+        if identityMigrationDiagnostic != nil {
+            guard retryIdentityMigration() else {
+                return true
             }
-        } else {
-            startLGWebOSIfNeeded()
+            lgStartedDuringRetry = lgWebOSClient != nil
+        }
+        if !lgStartedDuringRetry {
+            if let lgClient = lgWebOSClient {
+                Task {
+                    await lgClient.updateConfig(newConfig)
+                }
+            } else {
+                startLGWebOSIfNeeded()
+            }
         }
         if newConfig.isEnabled {
             showToast(
@@ -1927,7 +1990,7 @@ extension HomeStore {
     }
 
     public func refreshNow() {
-        guard !allConfiguredSourcesTurnedOff else { return }
+        guard !allConfiguredSourcesTurnedOff, !isIdentityUncertain else { return }
         Task {
             await provider.refreshNow()
             if homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {
@@ -2118,7 +2181,8 @@ extension HomeStore {
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus,
             localNetworkBlocks: effectiveLocalNetworkBlocks,
-            allConfiguredSourcesTurnedOff: allConfiguredSourcesTurnedOff
+            allConfiguredSourcesTurnedOff: allConfiguredSourcesTurnedOff,
+            identityMigrationDiagnostic: identityMigrationDiagnostic
         ))
     }
 }
@@ -2128,6 +2192,7 @@ public enum PanelHealthAction: Equatable, Sendable {
     case presentMiReauth
     case openConnectionSettings
     case openLocalNetworkSettings
+    case retryIdentityMigration
 }
 
 /// Connection health for every status surface. Derived, never stored.
@@ -2160,13 +2225,22 @@ struct PanelHealthInput: Equatable, Sendable {
     /// Every configured source exists but the user turned it off. Distinct from "nothing connected
     /// yet": the panel must not claim the user never configured anything (L1).
     var allConfiguredSourcesTurnedOff: Bool = false
+    /// Non-nil when persisted capability selection or Keychain credentials failed to read at launch.
+    /// Surfaces a retryable blocked state instead of claiming "nothing connected".
+    var identityMigrationDiagnostic: String? = nil
 }
 
 /// Priority is the thing the user must deal with first.
-/// A blocked Mi login hides a declined Home Assistant address, and a declined address hides
-/// "nothing configured", because each of those has its own recovery.
+/// An uncertain identity read fails closed ahead of demo and "nothing configured"; a blocked Mi
+/// login hides a declined Home Assistant address, because each has its own recovery.
 enum PanelHealthResolver {
     static func resolve(_ input: PanelHealthInput) -> PanelHealth {
+        if input.identityMigrationDiagnostic != nil {
+            return .blocked(
+                reason: L10n.tr("配置或凭据读取受阻 · 点此重试", "Could not read settings or credentials · Retry"),
+                action: .retryIdentityMigration
+            )
+        }
         if input.miSessionBlocksControl {
             return .blocked(
                 reason: L10n.tr("米家登录已过期 · 点此扫码", "Xiaomi Home session expired · Scan to sign in"),

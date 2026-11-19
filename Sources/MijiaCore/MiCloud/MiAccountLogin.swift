@@ -400,27 +400,75 @@ public enum MiSessionStore {
     }
     private static let envelopeVersion = 2
 
+    /// Distinguishes an unreadable/corrupt Keychain read from an empty account list so launch
+    /// capability resolution and legacy home-ID migration never diverge on a transient read failure.
+    public enum AccountsLoadResult: Equatable, Sendable {
+        case loaded([MiAccount])
+        case unavailable
+
+        public var accounts: [MiAccount] {
+            switch self {
+            case .loaded(let accounts): return accounts
+            case .unavailable: return []
+            }
+        }
+    }
+
     public static func loadAccounts(
         defaults: UserDefaults = .standard,
         vault: CredentialVault? = nil
     ) -> [MiAccount] {
-        guard let data = storedData(defaults: defaults, vault: vault) else { return [] }
+        loadAccountsResult(
+            defaults: defaults,
+            vault: vault,
+            retryingUnavailable: false,
+            migrateLegacyEnvelope: true
+        ).accounts
+    }
+
+    static func loadAccountsResult(
+        defaults: UserDefaults = .standard,
+        vault: CredentialVault? = nil,
+        retryingUnavailable: Bool = false,
+        migrateLegacyEnvelope: Bool = true
+    ) -> AccountsLoadResult {
+        let data: Data
+        if vault != nil || defaults === UserDefaults.standard {
+            switch (vault ?? .shared).lookup(keychainAccount, retryingUnavailable: retryingUnavailable) {
+            case .missing:
+                return .loaded([])
+            case .unavailable:
+                return .unavailable
+            case .value(let stored):
+                data = stored
+            }
+        } else {
+            if defaults.object(forKey: fallbackDefaultsKey) == nil {
+                return .loaded([])
+            }
+            guard let stored = defaults.data(forKey: fallbackDefaultsKey) else {
+                return .unavailable
+            }
+            data = stored
+        }
         // Every earlier build wrote one bare session here; rewrite the slot in the v2 envelope once
         // (#27, ADR-0004). A v2 envelope is never re-encoded, so a normal launch does not write the
         // Keychain just because JSONEncoder's key order changed.
         if let envelope = try? JSONDecoder().decode(Envelope.self, from: data),
            envelope.version == envelopeVersion {
             let sessions = deduped(envelope.accounts)
-            if sessions.count != envelope.accounts.count, let canonical = encode(sessions) {
+            if migrateLegacyEnvelope, sessions.count != envelope.accounts.count, let canonical = encode(sessions) {
                 store(canonical, defaults: defaults, vault: vault)
             }
-            return sessions.map { MiAccount(session: $0) }
+            return .loaded(sessions.map { MiAccount(session: $0) })
         }
-        guard let legacy = try? JSONDecoder().decode(MiSession.self, from: data) else { return [] }
-        if let canonical = encode([legacy]) {
+        guard let legacy = try? JSONDecoder().decode(MiSession.self, from: data) else {
+            return .unavailable
+        }
+        if migrateLegacyEnvelope, let canonical = encode([legacy]) {
             store(canonical, defaults: defaults, vault: vault)
         }
-        return [MiAccount(session: legacy)]
+        return .loaded([MiAccount(session: legacy)])
     }
 
     @discardableResult
@@ -530,22 +578,16 @@ public enum MiSessionStore {
         defaults: UserDefaults,
         vault: CredentialVault?
     ) -> [MiAccount]? {
-        guard vault != nil || defaults === UserDefaults.standard else {
-            if defaults.object(forKey: fallbackDefaultsKey) == nil { return [] }
-            guard let data = defaults.data(forKey: fallbackDefaultsKey),
-                  let sessions = decodeSessions(from: data) else {
-                return nil
-            }
-            return deduped(sessions).map { MiAccount(session: $0) }
-        }
-        switch (vault ?? .shared).lookup(keychainAccount, retryingUnavailable: true) {
-        case .missing:
-            return []
+        switch loadAccountsResult(
+            defaults: defaults,
+            vault: vault,
+            retryingUnavailable: true,
+            migrateLegacyEnvelope: false
+        ) {
+        case .loaded(let accounts):
+            return accounts
         case .unavailable:
             return nil
-        case .value(let data):
-            guard let sessions = decodeSessions(from: data) else { return nil }
-            return deduped(sessions).map { MiAccount(session: $0) }
         }
     }
 
@@ -567,13 +609,6 @@ public enum MiSessionStore {
     private static func deduped(_ sessions: [MiSession]) -> [MiSession] {
         var seen = Set<String>()
         return sessions.filter { seen.insert(MiAccount(session: $0).id).inserted }
-    }
-
-    private static func storedData(defaults: UserDefaults, vault: CredentialVault?) -> Data? {
-        guard vault != nil || defaults === UserDefaults.standard else {
-            return defaults.data(forKey: fallbackDefaultsKey)
-        }
-        return KeychainHelper.readKeychainData(account: keychainAccount, vault: vault ?? .shared)
     }
 
     /// `data` is already re-encoded through `MiSession` in a v2 envelope, so no `passToken` reaches the store.

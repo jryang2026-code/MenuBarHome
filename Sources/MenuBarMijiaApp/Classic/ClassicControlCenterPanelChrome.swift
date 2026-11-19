@@ -812,10 +812,28 @@ extension ClassicControlCenterPanel {
 
     var emptyStateView: some View {
         VStack(spacing: 8) {
-            Image(systemName: store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles")
+            Image(systemName: store.identityMigrationDiagnostic != nil
+                ? "exclamationmark.triangle"
+                : (store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles"))
                 .font(.system(size: DesignTokens.TypeSize.reading))
-                .foregroundStyle(.secondary)
-            if store.allConfiguredSourcesTurnedOff {
+                .foregroundStyle(store.identityMigrationDiagnostic != nil ? .orange : .secondary)
+            if store.identityMigrationDiagnostic != nil {
+                Text(L10n.tr("配置或凭据读取受阻", "Could not read settings or credentials"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(L10n.tr(
+                    "暂时无法确认历史连接与凭据，已保持现有配置不变，不会清空或覆盖原设置。",
+                    "Existing connections or credentials could not be read. Your settings were left untouched."
+                ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                Button(L10n.tr("重试读取", "Retry Reading")) {
+                    _ = store.retryIdentityMigration()
+                }
+                .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .orange))
+                .padding(.top, 2)
+            } else if store.allConfiguredSourcesTurnedOff {
                 Text(L10n.tr("已停用当前连接", "Connections turned off"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(.primary)

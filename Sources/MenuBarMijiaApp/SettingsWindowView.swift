@@ -1281,12 +1281,16 @@ enum HAConnectionSaveGuard {
     }
 
     @MainActor
+    @discardableResult
     static func save(
         serverURL: String,
         tokenDraft: inout String,
         initialLookupWasUnavailable: inout Bool,
         in store: HomeStore
-    ) {
+    ) -> Bool {
+        if store.identityMigrationDiagnostic != nil, !store.retryIdentityMigration() {
+            return false
+        }
         let activeVault = vault(for: store)
         let decision = resolve(
             draftToken: tokenDraft,
@@ -1301,7 +1305,7 @@ enum HAConnectionSaveGuard {
             if tokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !resolvedToken.isEmpty {
                 tokenDraft = resolvedToken
             }
-            store.updateConnection(serverURL: serverURL, token: resolvedToken)
+            return store.updateConnection(serverURL: serverURL, token: resolvedToken)
         case .blockedKeychainUnavailable:
             store.showToast(
                 L10n.tr(
@@ -1310,6 +1314,7 @@ enum HAConnectionSaveGuard {
                 ),
                 isError: true
             )
+            return false
         }
     }
 }
@@ -1405,12 +1410,14 @@ private struct ConnectionSettingsTab: View {
     /// refused Keychain write leaves the edits flagged as unsaved.
     @discardableResult
     private func saveHomeAssistant() -> Bool {
-        HAConnectionSaveGuard.save(
+        guard HAConnectionSaveGuard.save(
             serverURL: HAConnectionSaveGuard.effectiveURL(urlDraft),
             tokenDraft: &tokenDraft,
             initialLookupWasUnavailable: &tokenLookupWasUnavailable,
             in: store
-        )
+        ) else {
+            return false
+        }
         let urlSaved = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
             == HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(urlDraft))
         let tokenSaved = store.loadHAToken().trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1716,19 +1723,6 @@ private struct ConnectionSettingsTab: View {
             haBaselineURL = urlDraft
             haBaselineToken = tokenDraft
             registerUnsavedForm()
-            if store.discoveredHAInstances.isEmpty,
-               store.shouldAutoDiscoverHomeAssistantOnLAN,
-               !store.isDiscoveringHA {
-                Task {
-                    let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
-                    if let first = found.first,
-                       urlDraft.isEmpty || HAWebSocketProvider.normalizeBaseURL(urlDraft) == KeychainHelper.defaultNASURL {
-                        urlDraft = first.baseURL
-                        // An automatic suggestion is not an edit the user would lose.
-                        haBaselineURL = urlDraft
-                    }
-                }
-            }
         }
         .alert(
             pendingHADisableConfirmation?.title ?? "",

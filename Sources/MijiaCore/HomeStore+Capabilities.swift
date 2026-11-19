@@ -208,16 +208,87 @@ extension HomeStore {
     }
 
     @discardableResult
-    func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
-        let saved = CapabilitySelectionStore.save(
+    func persistCapabilitySelection(
+        removingScopes: Set<String> = [],
+        patch: CapabilitySelectionPatch? = nil
+    ) -> Bool {
+        let configured = configuredConnectionScopes()
+        let effectivePatch: CapabilitySelectionPatch = if let patch {
+            patch
+        } else {
+            CapabilitySelectionPatch.diff(
+                from: lastPersistedCapabilitySelection ?? capabilitySelection,
+                baseDisabledConnections: lastPersistedDisabledConnections,
+                baseDisabledScopes: lastPersistedDisabledScopes,
+                to: capabilitySelection,
+                targetDisabledConnections: explicitlyDisabledConnections,
+                targetDisabledScopes: explicitlyDisabledScopes,
+                configuredScopes: configured,
+                removingScopes: removingScopes
+            )
+        }
+        let result = CapabilitySelectionStore.saveMergingConflicts(
             selection: capabilitySelection,
-            configuredScopes: configuredConnectionScopes(),
+            configuredScopes: configured,
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
+            patch: effectivePatch,
+            expectedRevision: capabilityStoreRevision,
             defaults: userDefaults
         )
-        if saved { syncMiotTypePrunePolicy() }
-        return saved
+        if result.succeeded {
+            capabilityStoreRevision = result.revision
+            if let persisted = result.persistedState {
+                applyPersistedCapabilityState(
+                    persisted,
+                    configuredScopes: configured
+                )
+            } else {
+                lastPersistedCapabilitySelection = capabilitySelection
+                lastPersistedDisabledConnections = explicitlyDisabledConnections
+                lastPersistedDisabledScopes = explicitlyDisabledScopes
+            }
+            if result.hadConflict {
+                capabilityMergeConflictCount &+= 1
+                lastCapabilityMergeDiagnostic = result.diagnostic
+            }
+            syncMiotTypePrunePolicy()
+        } else if let diagnostic = result.diagnostic {
+            lastCapabilityMergeDiagnostic = diagnostic
+        }
+        return result.succeeded
+    }
+
+    private func applyPersistedCapabilityState(
+        _ persisted: CapabilitySelectionPersistedState,
+        configuredScopes: Set<String>
+    ) {
+        explicitlyDisabledConnections = persisted.disabledConnections
+        explicitlyDisabledScopes = persisted.disabledScopes
+        for scope in persisted.disabledScopes {
+            dropMiotTypePruneReport(scope: scope)
+        }
+        let enabledConnections = persisted.enabledConnections.subtracting(persisted.disabledConnections)
+        let candidateScopes = configuredScopes
+            .union(capabilitySelection.enabledConnectionScopes)
+            .subtracting(persisted.disabledScopes)
+        let enabledScopes = candidateScopes.filter { scope in
+            CapabilityReferenceEngine.connectionCapability(forScope: scope)
+                .map { enabledConnections.contains($0) && !persisted.disabledConnections.contains($0) } ?? true
+        }
+        let synced = CapabilitySelection(
+            enabledConnections: enabledConnections,
+            enabledConnectionScopes: enabledScopes,
+            enabledFeatures: persisted.enabledFeatures,
+            enabledCategories: persisted.enabledCategories
+        ).normalized(with: .shared)
+        if synced != capabilitySelection {
+            capabilitySelection = synced
+            capabilityGeneration &+= 1
+        }
+        lastPersistedCapabilitySelection = capabilitySelection
+        lastPersistedDisabledConnections = explicitlyDisabledConnections
+        lastPersistedDisabledScopes = explicitlyDisabledScopes
     }
 
     /// Commit order for a disable: the selection must be writable before any reference is paused, or
@@ -410,7 +481,16 @@ extension HomeStore {
         // be a re-added account whose paused quick actions lost their targets when it was removed, and
         // that removal already cleared the explicit-disable marker this check used to look at.
         pendingRevalidationScopes.insert(scope)
-        persistCapabilitySelection()
+        // Explicit re-login/re-connect must emit a non-empty re-enable patch even when the local
+        // baseline already had this scope enabled, so a cross-store revision conflict after another
+        // store disabled the scope still re-enables it.
+        persistCapabilitySelection(
+            patch: CapabilitySelectionPatch(
+                addedConnections: [connection],
+                removedDisabledConnections: [connection],
+                enabledScopes: [scope]
+            )
+        )
     }
 
     /// Carries the Home Assistant scope over when the saved address changes. The stored selection

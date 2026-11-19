@@ -2,16 +2,25 @@ import SwiftUI
 import AppKit
 import MijiaCore
 
-/// First launch teaches three things only (#180): connect an account, find a device with the
-/// global shortcut, and try All Off + Undo. Everything else — AI, GrokBall, cameras, automation,
-/// URL control — lives behind the collapsed "Advanced" disclosure.
+/// Route inside `OnboardingGuideView`: three-card platform chooser, platform setup, or dual-source summary.
+public enum OnboardingRoute: Equatable, Sendable {
+    case choosePlatform
+    case connectMi
+    case connectHA
+    case connectedSummary
+}
+
+/// First-run three-card platform onboarding (WP4a): Xiaomi Home, Home Assistant (manual entry),
+/// or offline Demo, with zero background/LAN probes before the user connects. Advanced features
+/// remain collapsed behind the "Advanced" disclosure until asked for.
 public struct OnboardingGuideView: View {
     @Environment(\.colorScheme) private var colorScheme
     public let store: HomeStore
 
+    @State private var route: OnboardingRoute
     @State private var haURLDraft: String = ""
     @State private var haTokenDraft: String = ""
-    @State private var haTokenLookupWasUnavailable: Bool = false
+    @State private var haConnectError: (reason: String, impact: String, action: String)?
     @State private var selectedPreset: AssistantProviderPreset = .openRouterJev
     @State private var baseURLDraft: String = ""
     @State private var modelDraft: String = ""
@@ -26,9 +35,11 @@ public struct OnboardingGuideView: View {
     public init(
         store: HomeStore,
         initialAdvancedExpanded: Bool = false,
-        initialPresetOverride: AssistantProviderPreset? = nil
+        initialPresetOverride: AssistantProviderPreset? = nil,
+        initialRoute: OnboardingRoute? = nil
     ) {
         self.store = store
+        self._route = State(initialValue: initialRoute ?? .choosePlatform)
         self._isAdvancedExpanded = State(initialValue: initialAdvancedExpanded)
         self.initialPresetOverride = initialPresetOverride
         if let initialPresetOverride {
@@ -39,7 +50,6 @@ public struct OnboardingGuideView: View {
 
     public var body: some View {
         let _ = store.effectiveLanguage
-        let checklist = store.onboardingChecklist
         VStack(alignment: .leading, spacing: 0) {
             headerBar
                 .padding(.horizontal, 14)
@@ -51,13 +61,19 @@ public struct OnboardingGuideView: View {
 
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 10) {
-                    if store.homeBackend != .demo, !store.hasConnectedHomeSource {
-                        demoHeroCard
+                    switch route {
+                    case .choosePlatform:
+                        platformChooserSection
+                        launchAtLoginCard
+                        advancedDisclosure
+                    case .connectMi:
+                        miConnectSection
+                    case .connectHA:
+                        haConnectSection
+                    case .connectedSummary:
+                        connectedSummarySection
+                        launchAtLoginCard
                     }
-                    step1ConnectionCard
-                    step2SearchCard(checklist: checklist)
-                    step3AllOffUndoCard(checklist: checklist)
-                    advancedDisclosure
                 }
                 .padding(.horizontal, 13)
                 .padding(.vertical, 11)
@@ -76,7 +92,6 @@ public struct OnboardingGuideView: View {
             haURLDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             haTokenDraft = initialHAToken.token
-            haTokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
             let config = store.assistantConfig
             let initialPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
             if let initialPresetOverride {
@@ -103,20 +118,17 @@ public struct OnboardingGuideView: View {
                 apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
             }
             voiceAuthorized = SpeechInputController.shared.hasVoicePermissions
-            if store.miSessionMaskedUserId == nil,
-               haTokenDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-               store.homeBackend == .homeAssistant {
-                // Never pull a user who chose the offline demo back into a cloud login (#47).
-                store.switchBackend(.xiaomiCloud)
-            }
-            Task {
-                let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
-                if let first = found.first {
-                    let normDraft = HAWebSocketProvider.normalizeBaseURL(haURLDraft)
-                    if haURLDraft.isEmpty || normDraft == KeychainHelper.defaultNASURL {
-                        haURLDraft = first.baseURL
-                    }
+        }
+        .onDisappear {
+            store.cancelPendingHAOnboardingVerification()
+            store.isKeepingOnboardingGuideOpenForDualSource = false
+        }
+        .onChange(of: store.miAccounts.count) { oldCount, newCount in
+            if route == .connectMi, newCount > oldCount {
+                withAnimation(AppleMotion.snappySpring) {
+                    route = .connectedSummary
                 }
+                announceLiveRegion(L10n.tr("已连接米家账号，可继续添加 Home Assistant 启用双源或开始使用。", "Xiaomi Home connected. You can add Home Assistant for dual-source or start using the app."))
             }
         }
     }
@@ -142,13 +154,13 @@ public struct OnboardingGuideView: View {
             }
 
             VStack(alignment: .leading, spacing: 1.5) {
-                Text(L10n.tr("三步上手", "Three Steps to Start"))
+                Text(L10n.tr("选择你的智能家居", "Choose Your Smart Home"))
                     .font(.system(size: 14, weight: .bold))
                     .tracking(-0.2)
 
                 Text(L10n.tr(
-                    "连接账号 · 按 \(hotkeyLabel) 搜设备 · 全关后还能撤销",
-                    "Connect an account · Search with \(hotkeyLabel) · Turn all off, then undo"
+                    "按需连接平台，未连接前不会发起任何后台或局域网请求",
+                    "Connect on demand; zero background or LAN requests until you connect"
                 ))
                 .font(.system(size: 11.5))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -166,7 +178,7 @@ public struct OnboardingGuideView: View {
 
             Button(L10n.tr("跳过", "Skip")) {
                 withAnimation(AppleMotion.snappySpring) {
-                    store.completeOnboarding()
+                    store.finishOnboardingGuide()
                 }
             }
             .buttonStyle(PillActionButtonStyle())
@@ -179,212 +191,333 @@ public struct OnboardingGuideView: View {
         return URL(string: "https://github.com/jryang2026-code/MenuBarHome/blob/main/docs/\(page)")
     }
 
-    // MARK: - Demo entry (#144)
+    // MARK: - 3-Card Platform Chooser (WP4a)
 
-    /// The fastest way to see what this is: no account, no network. It sits above the connect form,
-    /// in view without scrolling, instead of being a small pill inside step 1.
-    private var demoHeroCard: some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "play.rectangle.fill")
-                .font(.system(size: 20))
-                .foregroundStyle(.orange)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L10n.tr("先看看效果，不用账号", "See it first, no account needed"))
-                    .font(.system(size: 12, weight: .semibold))
-                Text(L10n.tr(
-                    "用一套虚拟家庭体验面板、搜索和全关。完全离线，随时可以连接真实家庭。",
-                    "Try the panel, search and All Off on a virtual home. Fully offline; connect a real home any time."
-                ))
-                .font(.system(size: 11.5))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+    private var platformChooserSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            platformCard(
+                icon: "qrcode",
+                tint: .orange,
+                title: L10n.tr("米家", "Xiaomi Home"),
+                badge: L10n.tr("推荐手机扫码", "QR Login Recommended"),
+                detail: L10n.tr(
+                    "手机「米家」扫码即可同步设备，支持多账号，稍后也可再添加 Home Assistant 组成双源。",
+                    "Scan with the Mi Home app to sync devices. Multi-account supported; add Home Assistant later for dual-source."
+                ),
+                accessibilityHint: L10n.tr("打开米家扫码登录步骤", "Opens Xiaomi Home QR sign-in")
+            ) {
+                store.isKeepingOnboardingGuideOpenForDualSource = true
+                withAnimation(AppleMotion.snappySpring) { route = .connectMi }
             }
 
-            Spacer(minLength: 6)
+            platformCard(
+                icon: "server.rack",
+                tint: .accentColor,
+                title: "Home Assistant",
+                badge: L10n.tr("手动填写地址", "Manual Address"),
+                detail: L10n.tr(
+                    "填写你的服务器地址与长期访问令牌，验证快照后再保存，不主动扫描局域网。",
+                    "Enter your server URL and Long-Lived Access Token. Verified before saving with no automatic LAN scan."
+                ),
+                accessibilityHint: L10n.tr("打开 Home Assistant 地址与令牌填写表单", "Opens Home Assistant URL and token form")
+            ) {
+                haConnectError = nil
+                store.isKeepingOnboardingGuideOpenForDualSource = true
+                withAnimation(AppleMotion.snappySpring) { route = .connectHA }
+            }
 
-            Button {
+            platformCard(
+                icon: "play.rectangle.fill",
+                tint: .secondary,
+                title: L10n.tr("先逛逛（不连接设备）", "Explore First (No Devices Connected)"),
+                badge: L10n.tr("完全离线", "Offline"),
+                detail: L10n.tr(
+                    "示例家庭，不会控制真实设备。零网络请求，随时可返回连接真实家庭。",
+                    "Demo home; won't control real devices. Zero network requests; connect a real home anytime."
+                ),
+                accessibilityHint: L10n.tr("进入离线示例家庭预览界面", "Enters the offline demo home preview")
+            ) {
+                store.cancelPendingHAOnboardingVerification()
+                store.isKeepingOnboardingGuideOpenForDualSource = false
                 withAnimation(AppleMotion.snappySpring) {
                     store.switchBackend(.demo)
-                    // No `completeOnboarding()`: once demo devices arrive the guide hides by
-                    // itself, and "Connect a Real Home" brings it back.
                     store.showToast(L10n.tr("已进入演示模式，随时可以连接真实家庭", "Demo mode on; connect a real home any time"))
                 }
-            } label: {
-                Text(L10n.tr("试试演示", "Try the Demo"))
-                    .font(.system(size: 11.5, weight: .semibold))
-            }
-            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
-        }
-        .padding(11)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
-    }
-
-    // MARK: - Step 1: Connect Devices
-
-    private var step1ConnectionCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
-                stepBadge("1", isDone: store.hasConnectedHomeSource)
-                Text(L10n.tr("连接账号（米家扫码 / Home Assistant）", "Connect an Account (Mi QR / Home Assistant)"))
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                if store.hasConnectedHomeSource {
-                    Label(L10n.tr("已连接", "Connected"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.green)
-                } else if let firstHA = store.discoveredHAInstances.first {
-                    Button {
-                        withAnimation(AppleMotion.snappySpring) {
-                            haURLDraft = firstHA.baseURL
-                            store.applyDiscoveredHAInstance(firstHA, reconnectProvider: false)
-                            store.switchBackend(.homeAssistant)
-                        }
-                    } label: {
-                        Label(
-                            L10n.tr("已发现局域网 HA · \(firstHA.hostAndPort)", "Found LAN HA · \(firstHA.hostAndPort)"),
-                            systemImage: "dot.radiowaves.left.and.right"
-                        )
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.green)
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Text(L10n.tr("推荐手机扫码", "QR Login Recommended"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.orange)
-                }
             }
 
-            Picker(
-                "",
-                selection: Binding(
-                    get: { store.homeBackend },
-                    set: { newBackend in
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.switchBackend(newBackend)
-                        }
-                    }
-                )
-            ) {
-                // #143: the recommended path first; Home Assistant is the "I already run it" option.
-                ForEach([HomeBackend.xiaomiCloud, .demo, .homeAssistant]) { backend in
-                    Text(backend.title).tag(backend)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-
-            Text(L10n.tr(
-                "Home Assistant 与米家云端可以同时配置；这里只切换当前填写的连接表单，已配置的另一端会继续连接。",
-                "Home Assistant and Xiaomi Cloud can be configured together. This only switches the form below; the other configured source keeps running."
-            ))
-            .font(.system(size: 11))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
-            // #154: before anyone signs in, answer "will my devices even work?".
             if !store.hasConnectedHomeSource, let supportedDevicesURL {
                 Link(destination: supportedDevicesURL) {
                     Label(L10n.tr("我的设备支持吗？", "Will my devices work?"), systemImage: "questionmark.circle")
                         .font(.system(size: 11, weight: .medium))
                 }
+                .padding(.top, 2)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(Text(L10n.tr("选择要连接的智能家居平台", "Choose a smart home platform")))
+    }
+
+    private func platformCard(
+        icon: String,
+        tint: Color,
+        title: String,
+        badge: String,
+        detail: String,
+        accessibilityHint: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .frame(width: 24, height: 24)
+                    .padding(.top, 1)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.system(size: 12.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Text(badge)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(tint == .secondary ? DesignTokens.secondaryText : tint)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                    Text(detail)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(11)
+            .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
+            .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text("\(title)，\(badge)。\(detail)"))
+        .accessibilityHint(Text(accessibilityHint))
+        .accessibilityAddTraits(.isButton)
+    }
+
+    // MARK: - Connect Mi Home
+
+    private var miConnectSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            stepBackHeader(
+                title: L10n.tr("连接米家", "Connect Xiaomi Home"),
+                backTitle: store.hasHASource
+                    ? L10n.tr("返回", "Back")
+                    : L10n.tr("返回选择平台", "Choose Platform")
+            ) {
+                withAnimation(AppleMotion.snappySpring) {
+                    if store.hasHASource {
+                        route = .connectedSummary
+                    } else {
+                        store.isKeepingOnboardingGuideOpenForDualSource = false
+                        route = .choosePlatform
+                    }
+                }
             }
 
-            // #47: let people try the panel before signing any account in.
-            if store.homeBackend == .demo {
-                HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 11))
+            Label(
+                L10n.tr(
+                    "非米家官方客户端；扫码登录凭证仅保存在本机钥匙串，随时可在设置中退出并吊销。",
+                    "Unofficial client; sign-in credentials stay in your local Keychain and can be revoked anytime in Settings."
+                ),
+                systemImage: "exclamationmark.triangle.fill"
+            )
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityLabel(Text(L10n.tr("风险提示：非米家官方客户端；扫码登录凭证仅保存在本机钥匙串。", "Notice: unofficial client; sign-in credentials stay in your local Keychain.")))
+
+            MiAccountSection(store: store)
+        }
+        .padding(11)
+        .glassTile(isActive: store.hasEnabledMiSource, cornerRadius: DesignTokens.Radius.card)
+    }
+
+    // MARK: - Connect Home Assistant (Manual Entry + Verified Save)
+
+    private var haConnectSection: some View {
+        let normalizedDraft = HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(haURLDraft))
+        let securityPageURL = URL(string: "\(normalizedDraft)/profile/security")
+        let canOpenSecurityPage = securityPageURL?.scheme.map { $0 == "http" || $0 == "https" } == true
+            && !(securityPageURL?.host?.isEmpty ?? true)
+
+        return VStack(alignment: .leading, spacing: 8) {
+            stepBackHeader(
+                title: store.hasEnabledMiSource
+                    ? L10n.tr("添加 Home Assistant（双源）", "Add Home Assistant (Dual-Source)")
+                    : L10n.tr("连接 Home Assistant", "Connect Home Assistant"),
+                backTitle: store.hasEnabledMiSource
+                    ? L10n.tr("返回", "Back")
+                    : L10n.tr("返回选择平台", "Choose Platform")
+            ) {
+                store.cancelPendingHAOnboardingVerification()
+                haConnectError = nil
+                withAnimation(AppleMotion.snappySpring) {
+                    if store.hasEnabledMiSource {
+                        route = .connectedSummary
+                    } else {
+                        store.isKeepingOnboardingGuideOpenForDualSource = false
+                        route = .choosePlatform
+                    }
+                }
+            }
+
+            Text(L10n.tr(
+                "手动输入服务器地址并粘贴长期访问令牌；只有在收到 Home Assistant 状态快照后才会保存配置。",
+                "Enter your server URL and Long-Lived Access Token. Settings are saved only after Home Assistant returns a snapshot."
+            ))
+            .font(.system(size: 11.5))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            TextField("https://your-home.ui.nabu.casa", text: $haURLDraft)
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .font(.system(size: 11.5, design: .monospaced))
+                .accessibilityLabel(Text(L10n.tr("Home Assistant 服务器地址", "Home Assistant server URL")))
+
+            if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: haURLDraft) {
+                Label(
+                    L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."),
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 6) {
+                SecureField(L10n.tr("粘贴 HA 长期访问令牌", "Paste HA Long-Lived Access Token"), text: $haTokenDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .controlSize(.small)
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .accessibilityLabel(Text(L10n.tr("Home Assistant 长期访问令牌", "Home Assistant Long-Lived Access Token")))
+
+                Button {
+                    submitHAOnboarding()
+                } label: {
+                    Text(store.isVerifyingHAOnboarding
+                        ? L10n.tr("正在验证…", "Verifying…")
+                        : L10n.tr("验证并连接", "Verify & Connect"))
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                .disabled(store.isVerifyingHAOnboarding)
+            }
+
+            if canOpenSecurityPage, let securityPageURL {
+                Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
+                    NSWorkspace.shared.open(securityPageURL)
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+            }
+
+            if let error = haConnectError {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(error.reason, systemImage: "exclamationmark.circle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(.orange)
-                        .padding(.top, 1)
-                    Text(L10n.tr(
-                        "演示模式已开启：内置虚拟家庭，完全离线，不发起任何网络请求。选择上方「米家云端直连」或「Home Assistant」即可切回真实账号。",
-                        "Demo mode is on: a built-in virtual home, fully offline, no network requests. Pick Xiaomi Cloud or Home Assistant above to switch back to a real account."
-                    ))
-                    .font(.system(size: 11))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(error.impact)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.primary.opacity(0.85))
+                    Text(error.action)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
                 }
                 .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel(Text("\(error.reason)。\(error.impact) \(error.action)"))
             }
+        }
+        .padding(11)
+        .glassTile(isActive: store.hasEnabledHASource, cornerRadius: DesignTokens.Radius.card)
+    }
 
-            if store.homeBackend == .xiaomiCloud {
-                MiAccountSection(store: store)
-            } else if store.homeBackend == .homeAssistant {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        TextField("https://your-home.ui.nabu.casa", text: $haURLDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .controlSize(.small)
-                            .font(.system(size: 11, design: .monospaced))
-
-                        Button(store.isDiscoveringHA ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("自动扫描", "Auto Scan")) {
-                            Task {
-                                let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
-                                if let first = found.first {
-                                    haURLDraft = first.baseURL
-                                    store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
-                                } else {
-                                    store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
-                                }
-                            }
-                        }
-                        .buttonStyle(PillActionButtonStyle())
-                        .disabled(store.isDiscoveringHA)
-                    }
-
-                    if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: haURLDraft) {
-                        Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.orange)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-
-                    if let firstHA = store.discoveredHAInstances.first {
-                        HStack(spacing: 5) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.green)
-                            Text(L10n.tr("已自动识别局域网 HA：\(firstHA.displaySummary)", "Detected LAN HA: \(firstHA.displaySummary)"))
-                                .font(.system(size: 11))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .lineLimit(1)
-                            Spacer()
-                            if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(haURLDraft)))/profile/security") {
-                                Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
-                                    NSWorkspace.shared.open(secURL)
-                                }
-                                .buttonStyle(.plain)
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
-                            }
-                        }
-                    }
-
-                    HStack(spacing: 6) {
-                        SecureField(L10n.tr("粘贴 HA 长期访问令牌", "Paste HA Long-Lived Access Token"), text: $haTokenDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .controlSize(.small)
-                            .font(.system(size: 11, design: .monospaced))
-
-                        Button(L10n.tr("连接", "Connect")) {
-                            HAConnectionSaveGuard.save(
-                                serverURL: HAConnectionSaveGuard.effectiveURL(haURLDraft),
-                                tokenDraft: &haTokenDraft,
-                                initialLookupWasUnavailable: &haTokenLookupWasUnavailable,
-                                in: store
-                            )
-                        }
-                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-                    }
+    private func submitHAOnboarding() {
+        haConnectError = nil
+        let url = haURLDraft
+        let token = haTokenDraft
+        Task { @MainActor in
+            let outcome = await store.connectHomeAssistantForOnboarding(serverURL: url, token: token)
+            switch outcome {
+            case .connected:
+                haConnectError = nil
+                withAnimation(AppleMotion.snappySpring) {
+                    route = .connectedSummary
                 }
+                announceLiveRegion(L10n.tr("Home Assistant 验证并连接成功。", "Home Assistant verified and connected."))
+            case .cancelled:
+                break
+            case .failed(let reason, let impact, let action):
+                haConnectError = (reason, impact, action)
+                announceLiveRegion("\(reason)。\(impact) \(action)")
+            }
+        }
+    }
+
+    // MARK: - Connected Summary & Dual-Source Step
+
+    private var connectedSummarySection: some View {
+        let hasMi = store.hasEnabledMiSource
+        let hasHA = store.hasEnabledHASource
+        return VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.green)
+                Text(hasMi && hasHA
+                    ? L10n.tr("双源已连接（米家 + Home Assistant）", "Dual-Source Connected (Xiaomi Home + Home Assistant)")
+                    : L10n.tr("平台已连接", "Platform Connected"))
+                    .font(.system(size: 12.5, weight: .semibold))
             }
 
-            Divider().padding(.vertical, 2)
+            Text(hasMi && hasHA
+                ? L10n.tr("两套平台的设备会自动合并去重，随时可在设置里调整优先级或单端停用。", "Devices from both platforms merge automatically. Adjust priority or pause either source anytime in Settings.")
+                : L10n.tr("现在就能开始控制设备，或者顺手再添加另一个平台启用双源。", "You can start controlling devices now, or add the other platform for dual-source."))
+                .font(.system(size: 11.5))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
+            if hasMi && !hasHA {
+                Button {
+                    haConnectError = nil
+                    withAnimation(AppleMotion.snappySpring) { route = .connectHA }
+                } label: {
+                    Label(L10n.tr("再添加 Home Assistant（启用双源）", "Add Home Assistant (Dual-Source)"), systemImage: "plus.circle")
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(PillActionButtonStyle())
+            } else if hasHA && !hasMi {
+                Button {
+                    withAnimation(AppleMotion.snappySpring) { route = .connectMi }
+                } label: {
+                    Label(L10n.tr("再添加米家（启用双源）", "Add Xiaomi Home (Dual-Source)"), systemImage: "plus.circle")
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassTile(isActive: true, cornerRadius: DesignTokens.Radius.card)
+    }
+
+    // MARK: - Launch at Login Card
+
+    private var launchAtLoginCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 9) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(L10n.tr("登录 Mac 时自动启动", "Launch at Login"))
@@ -432,111 +565,37 @@ public struct OnboardingGuideView: View {
             }
         }
         .padding(11)
-        .glassTile(isActive: store.hasConnectedHomeSource, cornerRadius: DesignTokens.Radius.card)
-    }
-
-    // MARK: - Step 2: Search with the global shortcut
-
-    private func step2SearchCard(checklist: OnboardingChecklist) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                stepBadge("2", isDone: checklist.isComplete(.searchDevice))
-                Text(L10n.tr("按 \(hotkeyLabel) 搜一个设备", "Press \(hotkeyLabel) to Find a Device"))
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                if checklist.isComplete(.searchDevice) {
-                    Label(L10n.tr("已试过", "Tried"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.green)
-                }
-            }
-
-            Text(L10n.tr(
-                "短按 \(hotkeyLabel) 打开面板，直接输入设备名或拼音首字母；↑↓ 选择，回车开关。长按 \(hotkeyLabel) 可以直接说话。",
-                "Tap \(hotkeyLabel) to open the panel, then type a device name or pinyin initials. ↑↓ chooses, Return toggles. Hold \(hotkeyLabel) to speak instead."
-            ))
-            .font(.system(size: 11.5))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 5) {
-                shortcutTipRow(
-                    icon: "magnifyingglass",
-                    title: L10n.tr("打字就是搜索", "Typing Is the Search"),
-                    detail: L10n.tr(
-                        "「书房灯」和 sfd 都能找到，房间名也会匹配；隐藏的设备不会出现。",
-                        "\"Study light\" and sfd both match, room names work too, and hidden devices stay out."
-                    )
-                )
-                shortcutTipRow(
-                    icon: "arrow.up.arrow.down",
-                    title: L10n.tr("↑↓ 选中，回车开关", "↑↓ to Choose, Return to Toggle"),
-                    detail: L10n.tr(
-                        "搜索结果按最匹配排序；按 Esc 退出搜索，再按一次关闭面板。",
-                        "Results rank the best match first. Esc leaves search; a second Esc closes the panel."
-                    )
-                )
-                shortcutTipRow(
-                    icon: "rectangle.split.2x1",
-                    title: L10n.tr("磁贴左侧开关，右侧打开调节", "Left Half Toggles, Right Half Adjusts"),
-                    detail: L10n.tr(
-                        "分体磁贴点左侧直接开关，点右侧打开亮度、温度或模式调节；键盘按 → 也能展开。",
-                        "Click the left half of a split tile to toggle power, or the right half to open brightness, temperature, or mode controls; → expands from the keyboard."
-                    )
-                )
-            }
-        }
-        .padding(11)
         .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
     }
 
-    // MARK: - Step 3: All Off + Undo
-
-    private func step3AllOffUndoCard(checklist: OnboardingChecklist) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(spacing: 6) {
-                stepBadge("3", isDone: checklist.isComplete(.allOffAndUndo))
-                Text(L10n.tr("演练一次全关", "Practice All Off"))
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                if checklist.isComplete(.allOffAndUndo) {
-                    Label(L10n.tr("已试过", "Tried"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(.green)
+    private func stepBackHeader(title: String, backTitle: String, onBack: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Button(action: onBack) {
+                HStack(spacing: 3) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(backTitle)
+                        .font(.system(size: 11.5, weight: .medium))
                 }
             }
+            .buttonStyle(PillActionButtonStyle())
 
-            Text(L10n.tr(
-                "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。引导演练只会列出将关闭的设备，不会实际发送；以后真的全关，这一步也算完成。",
-                "Hold All Off for 0.6s to confirm; undo stays available for 10s, or 15s for 3+ devices. Practicing here only previews what would turn off without sending commands; a real All Off later completes this step too."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.primary.opacity(0.85))
-            .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 5) {
-                shortcutTipRow(
-                    icon: "power",
-                    title: L10n.tr("全关只碰当前能关的设备", "All Off Only Touches What Is On"),
-                    detail: L10n.tr(
-                        "隐藏的设备、插座和扫地机默认不动，避免关掉路由器和还在工作的家电。",
-                        "Hidden devices, plugs and vacuums stay as they are, so a router or a working appliance is not switched off."
-                    ),
-                    statesConsequence: true
-                )
-                shortcutTipRow(
-                    icon: "arrow.uturn.backward",
-                    title: L10n.tr("撤销是一次性的", "Undo Is One Shot"),
-                    detail: L10n.tr(
-                        "1–2 台保留 10 秒、3 台起保留 15 秒；撤销后横幅消失，再想改回来点磁贴左侧即可。",
-                        "Undo stays up for 10s (15s for 3+ devices) and disappears once used; click the left half of a tile to toggle again."
-                    ),
-                    statesConsequence: true
-                )
-            }
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+            Spacer(minLength: 0)
         }
-        .padding(11)
-        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
+    }
+
+    private func announceLiveRegion(_ message: String) {
+        guard let window = NSApp?.keyWindow ?? NSApp?.mainWindow else { return }
+        NSAccessibility.post(
+            element: window,
+            notification: .announcementRequested,
+            userInfo: [
+                .announcement: message,
+                .priority: NSAccessibilityPriorityLevel.high.rawValue
+            ]
+        )
     }
 
     // MARK: - Advanced (collapsed by default)
@@ -886,7 +945,7 @@ public struct OnboardingGuideView: View {
                     _ = saveOnboardingAssistantDraft(showErrorToast: false)
                 }
                 withAnimation(AppleMotion.snappySpring) {
-                    store.completeOnboarding()
+                    store.finishOnboardingGuide()
                 }
             } label: {
                 HStack(spacing: 4) {
@@ -906,45 +965,6 @@ public struct OnboardingGuideView: View {
     }
 
     @MainActor private var launchAtLogin: LaunchAtLoginCoordinator { .live(store: store) }
-
-    private func stepBadge(_ number: String, isDone: Bool) -> some View {
-        ZStack {
-            Circle()
-                .fill(isDone ? Color.green.opacity(0.2) : Color.accentColor.opacity(0.18))
-                .frame(width: 18, height: 18)
-            if isDone {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(.green)
-            } else {
-                Text(number)
-                    .font(.system(size: 11.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.accentColor)
-            }
-        }
-    }
-
-    /// `statesConsequence` is for text that says what a control will not do or what an action costs
-    /// (the All Off exclusions, that Undo is one shot): CODING_STANDARDS §18 puts it at 12 pt in the
-    /// primary colour. Ordinary how-to lines (search tips) stay small and secondary.
-    private func shortcutTipRow(icon: String, title: String, detail: String, statesConsequence: Bool = false) -> some View {
-        HStack(alignment: .top, spacing: 7) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 16, alignment: .center)
-                .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: statesConsequence ? DesignTokens.TypeSize.caption : 11))
-                    .foregroundStyle(statesConsequence ? AnyShapeStyle(.primary.opacity(0.85)) : AnyShapeStyle(.secondary))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
 
     private func advancedPointerRow(
         icon: String,

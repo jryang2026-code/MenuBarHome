@@ -235,6 +235,7 @@ struct OnboardingChecklistTests {
     func blockedSessionSkipsTheRehearsal() async throws {
         let suite = "test.onboarding.blocked.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(false, forKey: "has_completed_onboarding")
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(
             MiSession(
@@ -507,6 +508,7 @@ struct PanelNoticeTests {
         let suite = "test.onboarding.midhold.lntcc.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(false, forKey: "has_completed_onboarding")
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(
             MiSession(

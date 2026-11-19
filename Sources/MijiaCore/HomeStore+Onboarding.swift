@@ -1,5 +1,12 @@
 import Foundation
 
+/// Outcome of verifying and connecting Home Assistant from the onboarding guide.
+public enum HAOnboardingConnectOutcome: Equatable, Sendable {
+    case connected
+    case cancelled
+    case failed(reason: String, impact: String, action: String)
+}
+
 extension HomeStore {
     static let onboardingMilestonesKey = "onboarding_milestones"
     static let askWhenUnsureKey = "assistant_ask_when_unsure"
@@ -25,19 +32,372 @@ extension HomeStore {
         return false
     }
 
-    /// #144: leave the offline demo for a real home. A configured source takes over directly; with none
-    /// configured the guide's connect form opens, so the virtual devices do not linger and the user
-    /// lands on the Xiaomi QR path. Returns whether a configured source took over.
+    /// Whether launch identity/capability reads failed closed and have not yet recovered.
+    var isIdentityUncertain: Bool {
+        identityMigrationDiagnostic != nil
+    }
+
+    /// Whether passive background network work (auto update checks, debounced resume refresh) must
+    /// stay silent: true on uncertain identity reads and on unconfigured live installs (P4a-M).
+    var shouldSuppressBackgroundNetworkWork: Bool {
+        if isIdentityUncertain { return true }
+        if usesInjectedProvider { return false }
+        return !hasEnabledConfiguredSource
+    }
+
+    /// Resolves the persisted Xiaomi home selection. A bare home ID saved before multi-account has
+    /// no account prefix; only migrate or drop it once account reads are confirmed reliable
+    /// (`canMigrateLegacySelection == true` and `accountsResult` is `.loaded`), so a transient
+    /// Keychain failure never deletes it.
+    static func resolveSelectedMiHomeId(
+        defaults: UserDefaults,
+        accountsResult: MiSessionStore.AccountsLoadResult,
+        canMigrateLegacySelection: Bool
+    ) -> String? {
+        let stored = defaults.string(forKey: MiCloudProvider.selectedHomeKey)
+        guard let selection = stored, MiAccountScope.owner(of: selection) == nil else {
+            return stored
+        }
+        guard canMigrateLegacySelection, case .loaded(let accounts) = accountsResult else {
+            return stored
+        }
+        if accounts.count == 1, let onlyAccount = accounts.first {
+            let scoped = MiAccountScope.id(selection, account: onlyAccount.id)
+            defaults.set(scoped, forKey: MiCloudProvider.selectedHomeKey)
+            return scoped
+        }
+        defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+        return nil
+    }
+
+    /// #144: leave the offline demo for a real home. A configured source takes over directly
+    /// (restoring the source active before demo when still configured); with none configured the
+    /// guide's connect form opens, so the virtual devices do not linger.
     @discardableResult
     public func leaveDemo() -> Bool {
         guard homeBackend == .demo else { return false }
+        let prior = preDemoBackend
+        preDemoBackend = nil
         if hasHASource || hasMiSource || !miAccounts.isEmpty {
-            switchBackend(preferredLiveBackend)
+            let target: HomeBackend = if let prior,
+                (prior == .homeAssistant && hasHASource)
+                    || (prior == .xiaomiCloud && (hasMiSource || !miAccounts.isEmpty)) {
+                prior
+            } else {
+                preferredLiveBackend
+            }
+            switchBackend(target)
             return true
         }
         switchBackend(.xiaomiCloud)
         reopenOnboarding()
         return false
+    }
+
+    static func resolveLaunchCapabilities(
+        defaults: UserDefaults,
+        vault: CredentialVault?,
+        accountsResult: MiSessionStore.AccountsLoadResult,
+        hasHASource: Bool,
+        serverURLString: String,
+        lgHasConfiguredHost: Bool,
+        isTestEnvironment: Bool,
+        checkHATokenVault: Bool,
+        legacyVoiceInput: Bool,
+        legacyGrokBall: Bool
+    ) -> CapabilityInstallResolution {
+        var scopes = accountsResult.accounts.map(\.id)
+        if hasHASource {
+            scopes.append("ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))")
+        }
+        let hasLegacySettings = defaults.bool(forKey: "has_completed_onboarding")
+            || defaults.object(forKey: "home_backend") != nil
+            || defaults.object(forKey: "ha_server_url") != nil
+            || defaults.object(forKey: "mi_cloud_region") != nil
+            || defaults.object(forKey: Self.onboardingMilestonesKey) != nil
+            || defaults.object(forKey: "home_name") != nil
+            || lgHasConfiguredHost
+        let hasLocalData = !DevicePreferenceIndex.referencedIDs(defaults: defaults).isEmpty
+            || defaults.object(forKey: ScheduledCommand.storageKey) != nil
+            || defaults.object(forKey: AutomationRuleStore.storageKey) != nil
+        let checkMiVault = vault != nil || (!isTestEnvironment && defaults === UserDefaults.standard)
+        return CapabilitySelectionStore.resolveAtLaunch(
+            defaults: defaults,
+            vault: vault,
+            configuredScopes: scopes,
+            miAccountsResult: accountsResult,
+            checkMiVault: checkMiVault,
+            checkHATokenVault: checkHATokenVault,
+            hasLegacySettingsOrOnboarding: hasLegacySettings,
+            hasPersistedLocalData: hasLocalData,
+            legacyFeatureFlags: [.voiceInput: legacyVoiceInput, .grokball: legacyGrokBall]
+        )
+    }
+
+    /// Retries reading persisted capability selection and Keychain credentials after a fail-closed
+    /// `uncertainFallback` launch. Returns true once reads succeed and migration/state are resolved.
+    @discardableResult
+    public func retryIdentityMigration() -> Bool {
+        if let vault = credentialVault {
+            _ = vault.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
+        } else if !isTestEnvironment && userDefaults === UserDefaults.standard {
+            _ = CredentialVault.shared.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
+        }
+        let reloadedAccountsResult = MiSessionStore.loadAccountsResult(
+            defaults: userDefaults,
+            vault: credentialVault,
+            retryingUnavailable: false
+        )
+        let reloadedAccounts = reloadedAccountsResult.accounts
+        let needsHAToken = homeBackend != .demo && (!usesInjectedProvider || credentialVault != nil)
+        let reloadedHAToken = needsHAToken
+            ? KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
+            : ""
+        let reloadedHasHA = !reloadedHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let hasExplicitOnboardingFlag = userDefaults.object(forKey: "has_completed_onboarding") != nil
+        let resolution = Self.resolveLaunchCapabilities(
+            defaults: userDefaults,
+            vault: credentialVault,
+            accountsResult: reloadedAccountsResult,
+            hasHASource: reloadedHasHA,
+            serverURLString: serverURLString,
+            lgHasConfiguredHost: lgConfig.hasConfiguredHost,
+            isTestEnvironment: isTestEnvironment,
+            checkHATokenVault: needsHAToken,
+            legacyVoiceInput: enableVoiceInput,
+            legacyGrokBall: enableGrokBall
+        )
+        capabilitySelection = resolution.selection
+        capabilityResolutionMode = resolution.mode
+        identityMigrationDiagnostic = resolution.retryDiagnostic
+        capabilityStoreRevision = CapabilitySelectionStore.currentRevision(defaults: userDefaults)
+        explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: userDefaults)
+        explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: userDefaults)
+        lastPersistedCapabilitySelection = capabilitySelection
+        lastPersistedDisabledConnections = explicitlyDisabledConnections
+        lastPersistedDisabledScopes = explicitlyDisabledScopes
+
+        guard resolution.retryDiagnostic == nil else {
+            showToast(
+                L10n.tr(
+                    "仍无法读取历史配置或凭据，请检查钥匙串授权后重试",
+                    "Still unable to read settings or credentials; check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
+
+        miAccounts = reloadedAccounts
+        hasHASource = reloadedHasHA
+        selectedMiHomeId = Self.resolveSelectedMiHomeId(
+            defaults: userDefaults,
+            accountsResult: reloadedAccountsResult,
+            canMigrateLegacySelection: true
+        )
+        miSessionMaskedUserId = reloadedAccounts.first?.maskedUserId
+        miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
+        miSessionScopeIdentifier = enabledMiAccounts.first?.session.historyScopeIdentifier
+        switch resolution.mode {
+        case .freshInstall:
+            if !hasExplicitOnboardingFlag {
+                userDefaults.set(false, forKey: "has_completed_onboarding")
+            }
+        case .legacyPreserved, .explicit:
+            if !hasExplicitOnboardingFlag {
+                hasCompletedOnboarding = true
+            }
+        case .uncertainFallback:
+            break
+        }
+        syncHistoryConnectionScopes()
+        syncMiotTypePrunePolicy()
+        scheduleMiSessionExpiryTransition()
+        if !usesInjectedProvider && homeBackend != .demo {
+            rebuildLiveProvider()
+            startLGWebOSIfNeeded()
+        }
+        showToast(L10n.tr("已恢复历史配置与凭据读取", "Restored settings and credential access"))
+        return true
+    }
+
+    /// Cancels any in-flight Home Assistant onboarding verification so closing or navigating back
+    /// while verification is pending never commits credentials or flips dual-source.
+    public func cancelPendingHAOnboardingVerification() {
+        activeHAOnboardingAttemptID = nil
+        activeHAOnboardingTask?.cancel()
+        activeHAOnboardingTask = nil
+        isVerifyingHAOnboarding = false
+    }
+
+    /// Verifies a Home Assistant URL and token against a live HA snapshot (not total device count)
+    /// before committing via `updateConnection`, rolling back cleanly on failure or cancellation
+    /// without overwriting any previously saved valid token.
+    public func connectHomeAssistantForOnboarding(
+        serverURL: String,
+        token: String
+    ) async -> HAOnboardingConnectOutcome {
+        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let impact = hasEnabledMiSource
+            ? L10n.tr("原有米家连接与已保存令牌保持不变，双源未启用。", "Your Xiaomi Home connection and saved token are unchanged; dual-source was not enabled.")
+            : L10n.tr("未写入令牌，原有连接配置保持不变。", "No token was saved; your existing connection settings are unchanged.")
+        guard !trimmedURL.isEmpty else {
+            return .failed(
+                reason: L10n.tr("请填写 Home Assistant 地址", "Enter your Home Assistant address"),
+                impact: impact,
+                action: L10n.tr("填写完整的 http:// 或 https:// 地址后重试。", "Enter a full http:// or https:// address and try again.")
+            )
+        }
+        let normalized = HAWebSocketProvider.normalizeBaseURL(trimmedURL)
+        guard let parsed = URL(string: normalized),
+              let scheme = parsed.scheme?.lowercased(),
+              (scheme == "http" || scheme == "https"),
+              let host = parsed.host, !host.isEmpty else {
+            return .failed(
+                reason: L10n.tr("Home Assistant 地址格式无效", "Invalid Home Assistant address"),
+                impact: impact,
+                action: L10n.tr("请检查地址（例如 https://your-home.ui.nabu.casa）后重试。", "Check the address (for example https://your-home.ui.nabu.casa) and try again.")
+            )
+        }
+        guard !trimmedToken.isEmpty else {
+            return .failed(
+                reason: L10n.tr("请粘贴 Home Assistant 长期访问令牌", "Paste your Home Assistant Long-Lived Access Token"),
+                impact: impact,
+                action: L10n.tr("在 Home Assistant 个人资料 → 安全页面生成长期访问令牌后重试。", "Create a Long-Lived Access Token on Home Assistant Profile → Security and try again.")
+            )
+        }
+        guard HAPlaintextConsent.allowsToken(to: normalized, defaults: userDefaults) else {
+            return .failed(
+                reason: HAPlaintextConsent.waitingMessage(normalized),
+                impact: impact,
+                action: L10n.tr("请改用 https:// 或局域网地址，或在连接设置中确认后连接。", "Use an https:// or local-network address, or confirm in Connection Settings.")
+            )
+        }
+
+        cancelPendingHAOnboardingVerification()
+        let attemptID = UUID()
+        activeHAOnboardingAttemptID = attemptID
+        isVerifyingHAOnboarding = true
+        let verifier: @Sendable (String, String) async throws -> Void = haOnboardingVerifier ?? { url, tok in
+            try await Self.verifyHomeAssistantSnapshot(baseURLString: url, token: tok)
+        }
+        let task = Task<HAOnboardingConnectOutcome, Never> { @MainActor [weak self] in
+            do {
+                try await verifier(normalized, trimmedToken)
+            } catch is CancellationError {
+                return .cancelled
+            } catch {
+                return .failed(
+                    reason: error.localizedDescription,
+                    impact: impact,
+                    action: L10n.tr("请核对地址、网络连通性与长期访问令牌后重试。", "Verify the address, network reachability, and Long-Lived Access Token, then retry.")
+                )
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  self.activeHAOnboardingAttemptID == attemptID else {
+                return .cancelled
+            }
+            let saved = self.updateConnection(serverURL: normalized, token: trimmedToken)
+            guard saved else {
+                return .failed(
+                    reason: L10n.tr("无法写入钥匙串", "Could not save to Keychain"),
+                    impact: impact,
+                    action: L10n.tr("请授权钥匙串访问后重试。", "Allow Keychain access and try again.")
+                )
+            }
+            if !self.isHAConnectionEnabled {
+                _ = self.setHAConnectionEnabled(true)
+                if !self.usesInjectedProvider && self.homeBackend != .demo && !self.hasManagedHAProvider {
+                    self.rebuildLiveProvider()
+                }
+            }
+            return .connected
+        }
+        activeHAOnboardingTask = task
+        let outcome = await task.value
+        if activeHAOnboardingAttemptID == attemptID {
+            activeHAOnboardingAttemptID = nil
+            activeHAOnboardingTask = nil
+            isVerifyingHAOnboarding = false
+        }
+        return outcome
+    }
+
+    enum HAOnboardingVerifyError: LocalizedError, Equatable {
+        case failed(String)
+        case timedOut
+
+        var errorDescription: String? {
+            switch self {
+            case .failed(let message):
+                return message
+            case .timedOut:
+                return L10n.tr("连接 Home Assistant 超时，未收到状态快照", "Timed out waiting for a Home Assistant snapshot")
+            }
+        }
+    }
+
+    nonisolated static func verifyHomeAssistantSnapshot(
+        baseURLString: String,
+        token: String,
+        probeFactory: @Sendable (String, String) async -> HAWebSocketProvider = { url, tok in
+            HAWebSocketProvider(baseURLString: url, token: tok)
+        },
+        timeoutSleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(12))
+        }
+    ) async throws {
+        let probe = await probeFactory(baseURLString, token)
+        do {
+            try await withTaskCancellationHandler {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        let stream = probe.events()
+                        for await event in stream {
+                            try Task.checkCancellation()
+                            switch event {
+                            case .snapshotUpdated:
+                                return
+                            case .statusChanged(.disconnected(let reason)):
+                                let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !detail.isEmpty {
+                                    throw HAOnboardingVerifyError.failed(detail)
+                                }
+                            case .statusChanged(.connecting),
+                                 .statusChanged(.connected),
+                                 .sourceStatusesChanged,
+                                 .localNetworkPermissionChanged,
+                                 .sessionExpired,
+                                 .doorbellRang,
+                                 .miotTypePruneChanged:
+                                break
+                            }
+                        }
+                        try Task.checkCancellation()
+                        throw HAOnboardingVerifyError.failed(
+                            L10n.tr("Home Assistant 连接提前中断", "Home Assistant connection closed before sending a snapshot")
+                        )
+                    }
+                    group.addTask {
+                        try await timeoutSleep()
+                        throw HAOnboardingVerifyError.timedOut
+                    }
+                    defer { group.cancelAll() }
+                    _ = try await group.next()
+                }
+            } onCancel: {
+                Task { await probe.shutdown() }
+            }
+            await probe.shutdown()
+        } catch {
+            await probe.shutdown()
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
     }
 
     /// The three-step checklist shown by the guide and the dashboard card (#180).
