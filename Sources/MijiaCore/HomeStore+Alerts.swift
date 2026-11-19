@@ -10,6 +10,8 @@ extension HomeStore {
     public func setSensorAlertEnabled(_ kind: SensorAlertKind, _ enabled: Bool) {
         sensorAlertPreferences[kind] = enabled
         userDefaults.set(enabled, forKey: kind.defaultsKey)
+        // Turning an alert off ends its exclusive reads; a closed type keeps only the ones still on.
+        syncMiotTypePrunePolicy()
     }
 
     public var awayGapIncludesAway: Bool {
@@ -18,7 +20,8 @@ extension HomeStore {
 
     public var menuBarShowsHazard: Bool {
         guard enableSafetyAlerts else { return false }
-        for device in devices {
+        // A closed type keeps its hazard sensors evaluating, so the menu bar must still colour.
+        for device in devices + typeHiddenSafetyDevices {
             guard case .sensor(let spec) = device.kind else { continue }
             for observation in spec.observations
             where observation.alarming && observation.kind.colorsMenuBar && isSensorAlertEnabled(observation.kind) {
@@ -33,7 +36,7 @@ extension HomeStore {
         guard enableSafetyAlerts else { return [] }
         let enabled = Dictionary(uniqueKeysWithValues: SensorAlertKind.allCases.map { ($0, isSensorAlertEnabled($0)) })
         let alerts = safetyMonitor.evaluate(
-            devices: devices,
+            devices: devices + typeHiddenSafetyDevices,
             favorites: favoriteDeviceIds,
             sensorPolicy: SensorAlertPolicy(
                 enabled: enabled,

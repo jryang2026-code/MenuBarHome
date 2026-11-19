@@ -280,6 +280,8 @@ actor EventCollector {
             state.statuses.append(status)
         case .localNetworkPermissionChanged(let blocked):
             state.localNetworkPermissions.append(blocked)
+        case .miotTypePruneChanged:
+            break
         case .sessionExpired, .sourceStatusesChanged:
             break
         }

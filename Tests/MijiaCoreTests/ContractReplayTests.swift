@@ -594,7 +594,8 @@ private actor ReplayEventCollector {
             state.snapshots.append(home)
         case .statusChanged(let status):
             state.statuses.append(status)
-        case .doorbellRang, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged:
+        case .doorbellRang, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged,
+             .miotTypePruneChanged:
             break
         }
         resolveWaiters()

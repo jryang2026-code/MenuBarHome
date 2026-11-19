@@ -119,6 +119,7 @@ extension HomeStore {
         }
         let normalized = next.normalized(with: .shared)
         if normalized != capabilitySelection { capabilitySelection = normalized }
+        syncMiotTypePrunePolicy()
     }
 
     func configuredConnectionScopes() -> Set<String> {
@@ -128,15 +129,77 @@ extension HomeStore {
         return scopes
     }
 
+    /// Publishes the enabled types and safety switches to the Mi provider. It reads the box before
+    /// every plan, so a closed type stops being polled on the next refresh (P3a-M).
+    func syncMiotTypePrunePolicy() {
+        miotTypePruneBox.update(MiotTypePrunePolicy(
+            selection: capabilitySelection,
+            safetyPolicy: currentSafetyRetentionPolicy(),
+            sourceScope: miSessionScopeIdentifier ?? ""
+        ))
+    }
+
+    /// A closed Mi type keeps its hidden identities in the index so every write entry answers
+    /// 「该设备类型已关闭」 instead of「设备不存在」, and keeps the hidden devices whose enabled alerts
+    /// still need evaluating. Keyed by account scope: one account's empty report never clears another.
+    func applyMiotTypePruneReport(_ report: MiotTypePruneReport) {
+        let key = report.scope.isEmpty ? (miSessionScopeIdentifier ?? "") : report.scope
+        // No owner means no session to attribute this to; guessing could clear a live account's set.
+        guard !key.isEmpty else { return }
+        if report.isEmpty {
+            miotTypePruneReports.removeValue(forKey: key)
+        } else {
+            miotTypePruneReports[key] = report
+        }
+        var changed = false
+        for entry in report.hiddenIndexedDevices where indexedDevicesById[entry.id] != entry {
+            indexedDevicesById[entry.id] = entry
+            changed = true
+        }
+        if changed { persistIndexedDevices() }
+    }
+
+    /// Drops one account's retained safety set. Its index entries stay: a disabled account must keep
+    /// answering「该米家账号已停用」 for its devices.
+    func dropMiotTypePruneReport(scope: String) {
+        miotTypePruneReports.removeValue(forKey: scope)
+    }
+
+    /// Drops every account's retained set; called when the Mi provider is rebuilt or replaced, and
+    /// when the store leaves for Home Assistant or the demo home.
+    func clearMiotTypePruneReports() {
+        guard !miotTypePruneReports.isEmpty else { return }
+        miotTypePruneReports.removeAll()
+    }
+
+    /// Devices a closed type keeps only for enabled alerts: evaluated for safety, never drawn, listed
+    /// or controlled (architecture.md §D 安全保留集).
+    public var typeHiddenSafetyDevices: [SmartDevice] {
+        guard !miotTypePruneReports.isEmpty else { return [] }
+        let visible = Set(devices.map(\.id))
+        var seen: Set<String> = []
+        var hidden: [SmartDevice] = []
+        for scope in miotTypePruneReports.keys.sorted() {
+            guard let report = miotTypePruneReports[scope] else { continue }
+            for device in report.safetyDevices
+            where !visible.contains(device.id) && seen.insert(device.id).inserted {
+                hidden.append(device)
+            }
+        }
+        return hidden
+    }
+
     @discardableResult
     func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
-        CapabilitySelectionStore.save(
+        let saved = CapabilitySelectionStore.save(
             selection: capabilitySelection,
             configuredScopes: configuredConnectionScopes(),
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
             defaults: userDefaults
         )
+        if saved { syncMiotTypePrunePolicy() }
+        return saved
     }
 
     /// Commit order for a disable: the selection must be writable before any reference is paused, or
@@ -349,6 +412,7 @@ extension HomeStore {
 
     func purgeRemovedAccountCapabilities(scopes: Set<String>) {
         guard !scopes.isEmpty else { return }
+        for scope in scopes { dropMiotTypePruneReport(scope: scope) }
         pendingRevalidationScopes.subtract(scopes)
         explicitlyDisabledScopes.subtract(scopes)
         var next = capabilitySelection
@@ -635,6 +699,7 @@ extension HomeStore {
     }
 
     private func applyMiAccountDisabledRuntimeState(id: String) {
+        dropMiotTypePruneReport(scope: id)
         if !hasEnabledMiSource {
             (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.xiaomiCloud)
         }

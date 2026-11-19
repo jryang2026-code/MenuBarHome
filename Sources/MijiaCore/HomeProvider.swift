@@ -47,6 +47,9 @@ public enum HomeProviderEvent: Sendable {
     case sessionExpired(MiSession)
     /// A Home Assistant doorbell was pressed (#308).
     case doorbellRang(DoorbellRing)
+    /// One Mi account's device-type pruning result (P3a-M): the identities a closed type keeps for
+    /// the write gate and the hidden devices whose enabled safety alerts still need evaluating.
+    case miotTypePruneChanged(MiotTypePruneReport)
 }
 
 public enum HomeProviderError: LocalizedError, Equatable, Sendable {

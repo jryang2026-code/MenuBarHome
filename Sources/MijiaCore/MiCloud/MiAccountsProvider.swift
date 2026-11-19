@@ -95,6 +95,8 @@ public actor MiAccountsProvider: HomeProvider {
     private let cameraSessionReleaseDelay: Duration
     private let selectedHomeLoader: @Sendable () -> String?
     private let clearSelectedHome: @Sendable () -> Void
+    /// Every child reads the same host policy; each one fills in its own account scope (P3a-M).
+    private let typePrunePolicyLoader: @Sendable () -> MiotTypePrunePolicy
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var children: [(account: MiAccount, provider: MiCloudProvider)] = []
@@ -147,7 +149,8 @@ public actor MiAccountsProvider: HomeProvider {
         },
         clearSelectedHome: @escaping @Sendable () -> Void = {
             UserDefaults.standard.removeObject(forKey: MiCloudProvider.selectedHomeKey)
-        }
+        },
+        typePrunePolicyLoader: @escaping @Sendable () -> MiotTypePrunePolicy = { .unpruned() }
     ) {
         self.accounts = accounts
         self.scopeBox = AccountScopeBox(accounts: accounts)
@@ -164,6 +167,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.cameraSessionReleaseDelay = cameraSessionReleaseDelay
         self.selectedHomeLoader = selectedHomeLoader
         self.clearSelectedHome = clearSelectedHome
+        self.typePrunePolicyLoader = typePrunePolicyLoader
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -221,7 +225,8 @@ public actor MiAccountsProvider: HomeProvider {
             deviceRefreshEveryPolls: deviceRefreshEveryPolls,
             followUpDelay: followUpDelay,
             cameraSessionReleaseDelay: cameraSessionReleaseDelay,
-            selectedHomeLoader: scopedSelection(for: account)
+            selectedHomeLoader: scopedSelection(for: account),
+            typePrunePolicyLoader: typePrunePolicyLoader
         )
         children.append((account: account, provider: provider))
         let stream = provider.events()
@@ -460,6 +465,8 @@ public actor MiAccountsProvider: HomeProvider {
             }
         case .doorbellRang(let ring):
             continuation?.yield(.doorbellRang(ring))
+        case .miotTypePruneChanged(let report):
+            continuation?.yield(.miotTypePruneChanged(report))
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
             localNetworkBlocksByAccount[accountId] = home.localNetworkBlockedFeatures

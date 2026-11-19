@@ -70,7 +70,8 @@ extension HomeStore {
 
     /// Snapshot removal ends the record, so reconnecting a device cannot revive an old warning.
     func removeActivitiesForMissingDevices() {
-        let presentIds = Set(devices.map(\.id))
+        // A closed type's retained sensors still own their alert rows.
+        let presentIds = Set(devices.map(\.id)).union(typeHiddenSafetyDevices.map(\.id))
         recentSafetyAlerts.removeAll { recorded in
             guard !presentIds.contains(recorded.alert.deviceId) else { return false }
             dismissedActivityIds.remove(recorded.id)
