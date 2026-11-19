@@ -2088,6 +2088,125 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Panel renders Local Network blocked banner in both themes")
+    func panelLocalNetworkBlockedSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            configuredHASource: true
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.localNetworkBlocks = [.xiaomiLAN, .homeAssistant]
+        #expect(fixture.store.panelActivities.count == 1)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-local-network-blocked-zh-light")
+            )
+        }
+    }
+
+    @Test("Expanded plug drawer shows LAN direct RTT with broadcast recovery badge and cooldown fallback")
+    func expandedPlugTransportDiagnosticsSnapshots() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        let spec = PlugSpec(
+            switchEntityId: "miot:snapshot-plug:2", isOn: true, powerWatts: 12,
+            childLockEntityId: "miot:snapshot-plug:7", isChildLocked: true
+        )
+        let device = SmartDevice(
+            id: "snapshot-plug-transport", name: "客厅插座", roomId: "living", roomName: "客厅",
+            model: "cuco.plug.v3", isOnline: true, kind: .plug(spec)
+        )
+        fixture.store.expandedDeviceId = device.id
+
+        fixture.store.deviceTransportDiagnostics[device.id] = DeviceTransportDiagnostics(
+            route: .lan,
+            rttMs: 15,
+            consecutiveFailures: 0,
+            usedBroadcastRecovery: true
+        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedCard(theme, device: device, store: fixture.store).padding(8).frame(width: 360)),
+                size: CGSize(width: 376, height: 280),
+                named: themedName(theme, "expanded-plug-lan-rtt-zh-light")
+            )
+        }
+
+        fixture.store.deviceTransportDiagnostics[device.id] = DeviceTransportDiagnostics(
+            route: .cooldown,
+            rttMs: nil,
+            consecutiveFailures: 3,
+            usedBroadcastRecovery: false
+        )
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedCard(theme, device: device, store: fixture.store).padding(8).frame(width: 360)),
+                size: CGSize(width: 376, height: 280),
+                named: themedName(theme, "expanded-plug-lan-cooldown-zh-light")
+            )
+        }
+    }
+
+    @Test("Connection settings render Local Network banner and Xiaomi LAN transport summary in light and dark")
+    func settingsConnectionLocalNetworkBlockedSnapshots() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        fixture.store.localNetworkBlocks = [.xiaomiLAN]
+        fixture.store.deviceTransportDiagnostics = [
+            "demo_living_light": DeviceTransportDiagnostics(
+                route: .lan,
+                rttMs: 15,
+                consecutiveFailures: 0,
+                usedBroadcastRecovery: true
+            ),
+            "demo_living_plug": DeviceTransportDiagnostics(
+                route: .cloud,
+                rttMs: nil,
+                consecutiveFailures: 0,
+                usedBroadcastRecovery: false
+            ),
+            "demo_bedroom_light": DeviceTransportDiagnostics(
+                route: .cooldown,
+                rttMs: nil,
+                consecutiveFailures: 3,
+                usedBroadcastRecovery: false
+            )
+        ]
+
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-local-network-blocked-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("About shows rendered release notes instead of raw markdown")
     func settingsAboutNotesSnapshot() async throws {
         let fixture = try await SnapshotFixture()

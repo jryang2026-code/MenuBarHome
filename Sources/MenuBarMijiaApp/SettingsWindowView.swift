@@ -122,7 +122,8 @@ public struct SettingsWindowView: View {
             backend: store.homeBackend,
             hiddenDeviceCount: store.hiddenDevices.count,
             storedPanelTheme: panelThemeRaw,
-            liquidGlassAvailable: PanelTheme.isLiquidGlassAvailable
+            liquidGlassAvailable: PanelTheme.isLiquidGlassAvailable,
+            hasLocalNetworkBlock: !store.effectiveLocalNetworkBlocks.isEmpty
         )
     }
 
@@ -1439,8 +1440,24 @@ private struct ConnectionSettingsTab: View {
             }
 
             if store.homeBackend != .demo {
+                if !store.effectiveLocalNetworkBlocks.isEmpty {
+                    SettingsSection(title: L10n.tr("本地网络权限", "Local Network Permission")) {
+                        LocalNetworkPermissionBannerView(
+                            blockedFeatures: store.effectiveLocalNetworkBlocks,
+                            store: store,
+                            theme: .liquidGlass,
+                            inSettings: true
+                        )
+                        .settingsRow(anchor: .localNetwork)
+                    }
+                }
+
                 SettingsSection(title: L10n.tr("米家", "Xiaomi Home"), anchor: .miAccount) {
                     MiAccountSection(store: store, showsInlineAddAccountButton: false, addAccountTrigger: addMiAccountTrigger)
+                    if !store.deviceTransportDiagnostics.isEmpty {
+                        Divider().overlay(Color.primary.opacity(0.06))
+                        XiaomiLANTransportSummaryRow(store: store)
+                    }
                 }
 
                 if showsHomeAssistantForm {
@@ -2762,7 +2779,11 @@ private struct AboutSettingsTab: View {
             ],
             miHomeCount: store.hasMiSource ? store.homes.count : nil,
             miSharedHomeCount: store.hasMiSource ? store.homes.filter(\.isSharedHome).count : nil,
-            isMiHomeFiltered: store.hasMiSource && store.selectedMiHomeId != nil
+            isMiHomeFiltered: store.hasMiSource && store.selectedMiHomeId != nil,
+            transportSummary: DeviceTransportSummary.summarize(
+                store.deviceTransportDiagnostics,
+                localNetworkBlocks: store.effectiveLocalNetworkBlocks
+            )
         )
         return DiagnosticsReportBuilder.markdown(input)
     }

@@ -432,6 +432,132 @@ struct PanelNoticeTests {
         })
     }
 
+    @Test("Local Network blocked notice can be dismissed, resurfaces on new block, and rejects stale dismiss")
+    @MainActor
+    func localNetworkBlockedNoticeDismissAndResurface() throws {
+        let suite = "test.notice.lntcc.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            defaults: defaults
+        ))
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])),
+            defaultsSuiteName: suite
+        )
+        store.hasHASource = true
+        store.localNetworkBlocks = [.homeAssistant]
+
+        #expect(store.panelNoticeKinds == [.localNetworkBlocked([.homeAssistant])])
+        let activity = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        #expect(activity.isDismissible)
+
+        store.dismissActivity(activity)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.localNetworkBlocks = [.homeAssistant, .xiaomiLAN]
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        store.dismissActivity(activity)
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" }, "stale activity snapshot must not dismiss widened block set")
+
+        let widened = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(widened)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.localNetworkBlocks = []
+        store.localNetworkBlocks = [.homeAssistant]
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        // Dismiss again, then toggle source / backend / LG config so `effectiveLocalNetworkBlocks`
+        // empties and restores without reassigning `localNetworkBlocks`.
+        let reblocked = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(reblocked)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.hasHASource = false
+        #expect(store.effectiveLocalNetworkBlocks.isEmpty)
+        store.hasHASource = true
+        #expect(store.effectiveLocalNetworkBlocks == [.homeAssistant])
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+
+        // Widening `effectiveLocalNetworkBlocks` via LG config without mutating `localNetworkBlocks`
+        // also resurfaces a dismissed notice.
+        store.localNetworkBlocks = [.homeAssistant, .lgWebOS]
+        store.lgConfig = LGWebOSConfig(isEnabled: false, host: "192.168.1.50")
+        let haOnlyActivity = try #require(store.panelActivities.first { $0.id == "notice.localNetworkBlocked" })
+        store.dismissActivity(haOnlyActivity)
+        #expect(store.panelActivities.allSatisfy { $0.id != "notice.localNetworkBlocked" })
+
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.168.1.50")
+        #expect(store.effectiveLocalNetworkBlocks == [.homeAssistant, .lgWebOS])
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+    }
+
+    @Test("LAN blocked notice coexists with onboarding checklist and mid-hold notices never turn a rehearsed All Off into a live write")
+    @MainActor
+    func midHoldLocalNetworkBlockNeverCausesLiveAllOffWrite() async throws {
+        let suite = "test.onboarding.midhold.lntcc.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            defaults: defaults
+        ))
+        let snapshot = SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [OnboardingChecklistTests.livingLight, OnboardingChecklistTests.studyLight],
+            scenes: []
+        )
+        let mock = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.showsLessonRow)
+        #expect(store.allOffLessonIsActive)
+
+        // Press-down latches rehearsal mode.
+        let latchedMode = store.beginAllOffHold()
+        #expect(latchedMode == .rehearsal)
+
+        // Inject a LAN blocked event mid-hold: the banner coexists with the onboarding checklist
+        // instead of hiding it mid-gesture.
+        store.localNetworkBlocks = [.xiaomiLAN]
+        #expect(store.panelNoticeKinds.contains(.localNetworkBlocked([.xiaomiLAN])))
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+        #expect(store.showsLessonRow)
+        #expect(store.allOffLessonIsActive)
+
+        // Even if a checklist-hiding notice (e.g. HA plaintext prompt) arrives before the 0.6s
+        // hold completes, confirming the latched mode still runs the rehearsal with zero writes.
+        store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
+        #expect(!store.showsLessonRow)
+        #expect(!store.allOffLessonIsActive)
+
+        let task = store.confirmAllOffHold(mode: latchedMode)
+        #expect(task == nil)
+        #expect(store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(!store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        await Task.yield()
+        let executed = await mock.executedCommands
+        #expect(executed.isEmpty)
+    }
+
     // MARK: - #144: the demo is a doorway
 
     @Test("Leaving the demo with nothing configured reopens the connect guide on the Xiaomi path")
