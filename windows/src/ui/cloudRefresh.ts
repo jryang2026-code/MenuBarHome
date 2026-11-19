@@ -878,6 +878,7 @@ export function getHostMiAccountsState(host: DualSourceInspectableHost): HostMul
 
 export function hasMultipleMiAccountsForHost(host: DualSourceInspectableHost): boolean {
   if (host.miAccountsOverride != null) return host.miAccountsOverride.length > 1;
+  if ((host.multiAccountState?.accounts.length ?? 0) > 1) return true;
   // A corrupt index cannot prove there is only one account; `store.load()` must run to rebuild it.
   return hasSecondaryMiAccountsInIndex() || hasCorruptMiAccountIndex();
 }
@@ -1007,6 +1008,8 @@ export async function refreshMultiAccountXiaomiDevices(
     const prevState = host.multiAccountState;
     const { merged, children } = await refreshMiAccountsConcurrently({
       accounts: enabledAccounts,
+      namespaceSingleAccount:
+        accounts.length > 1 || (host.miAccountsOverride == null && hasSecondaryMiAccountsInIndex()),
       transport: host.transport,
       specResolver: host.specResolver,
       selectedHomeId: host.settings.selectedHomeId,
@@ -1313,6 +1316,8 @@ export async function refreshDualSourceDevices(
         }
         const { merged, children } = await refreshMiAccountsConcurrently({
           accounts: enabledAccounts,
+          namespaceSingleAccount:
+            accounts.length > 1 || (host.miAccountsOverride == null && hasSecondaryMiAccountsInIndex()),
           transport: host.transport,
           specResolver: host.specResolver,
           selectedHomeId: host.settings.selectedHomeId,

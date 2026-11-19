@@ -241,24 +241,66 @@ export function resolveDeviceMiAccountOwner(options: {
   readonly dualRoute?: DeviceMergeRoute;
   readonly connectionMode?: string;
   readonly dualSourceEnabled?: boolean;
+  readonly disabledAccountIds?: ReadonlySet<string>;
+  readonly disablingAccountId?: string | null;
 }): string | null {
-  const { device, accounts, deviceOwners, dualRoute, connectionMode, dualSourceEnabled } = options;
+  const { device, accounts, deviceOwners, dualRoute, connectionMode, dualSourceEnabled, disabledAccountIds, disablingAccountId } = options;
   if (!dualSourceEnabled && connectionMode !== undefined && connectionMode !== "xiaomiCloud") {
     return null;
   }
   if ((device.sourceBackend === "homeAssistant" || device.id.startsWith("ha:")) && !dualRoute) {
     return null;
   }
-  if (device.accountId) return device.accountId;
   const scoped = MiAccountScope.owner(device.id);
   if (scoped) return scoped;
-  const fromOwners = deviceOwners?.[device.id]?.[0] ?? deviceOwners?.[MiAccountScope.localId(device.id)]?.[0];
-  if (fromOwners) return fromOwners;
+
+  const candidates: string[] = [];
+  const addCandidate = (id: string | null | undefined): void => {
+    if (id && !candidates.includes(id)) candidates.push(id);
+  };
+  const addOwnersForId = (id: string | null | undefined): void => {
+    if (!id || !deviceOwners) return;
+    for (const owner of deviceOwners[id] ?? []) addCandidate(owner);
+    const local = MiAccountScope.localId(id);
+    if (local !== id) {
+      for (const owner of deviceOwners[local] ?? []) addCandidate(owner);
+    }
+  };
+
+  if (device.accountId) addCandidate(device.accountId);
+  addOwnersForId(device.id);
   if (dualRoute) {
-    if (dualRoute.backend === "xiaomiCloud") return dualRoute.sourceDevice.accountId ?? MiAccountScope.owner(dualRoute.sourceDeviceId) ?? accounts[0]?.id ?? null;
-    if (dualRoute.alternateBackend === "xiaomiCloud" && dualRoute.alternateDevice) return dualRoute.alternateDevice.accountId ?? MiAccountScope.owner(dualRoute.alternateDevice.id) ?? accounts[0]?.id ?? null;
-    return null;
+    if (dualRoute.backend === "xiaomiCloud") {
+      addCandidate(dualRoute.sourceDevice.accountId ?? MiAccountScope.owner(dualRoute.sourceDeviceId));
+      addOwnersForId(dualRoute.sourceDevice.id);
+      addOwnersForId(dualRoute.sourceDeviceId);
+    }
+    if (dualRoute.alternateBackend === "xiaomiCloud" && dualRoute.alternateDevice) {
+      addCandidate(dualRoute.alternateDevice.accountId ?? MiAccountScope.owner(dualRoute.alternateDevice.id));
+      addOwnersForId(dualRoute.alternateDevice.id);
+    }
+    if (candidates.length === 0) {
+      if (dualRoute.backend === "xiaomiCloud" || (dualRoute.alternateBackend === "xiaomiCloud" && dualRoute.alternateDevice)) {
+        return accounts[0]?.id ?? null;
+      }
+      return null;
+    }
   }
+
+  if (candidates.length > 0) {
+    const disabledScopes = new Set([...(disabledAccountIds ?? [])].map(miAccountScope));
+    const disablingScope = disablingAccountId ? miAccountScope(disablingAccountId) : null;
+    const knownScopes = new Set(accounts.map((acc) => miAccountScope(acc.id)));
+    const isKnown = (id: string): boolean => knownScopes.size === 0 || knownScopes.has(miAccountScope(id));
+    const survivingEnabled = candidates.find(
+      (id) => isKnown(id) && !disabledScopes.has(miAccountScope(id)) && miAccountScope(id) !== disablingScope,
+    );
+    if (survivingEnabled) return survivingEnabled;
+    const enabledBefore = candidates.find((id) => isKnown(id) && !disabledScopes.has(miAccountScope(id)));
+    if (enabledBefore) return enabledBefore;
+    return candidates[0]!;
+  }
+
   if (dualSourceEnabled && connectionMode === "homeAssistant" && device.sourceBackend !== "xiaomiCloud") {
     return null;
   }
@@ -292,6 +334,7 @@ const toAutomationReference = (
 
 export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput): { readonly indexedDevices: CapabilityIndexedDevice[]; readonly sceneRefs: SceneReference[] } {
   const haScope = haConnectionScope(input.haBaseURL, input.haToken);
+  const disablingScope = input.disablingAccountId ? miAccountScope(input.disablingAccountId) : null;
   const indexedDevices: CapabilityIndexedDevice[] = [];
   const seenIds = new Set<string>();
   for (const dev of input.devices) {
@@ -302,11 +345,15 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
       accounts: input.accounts,
       connectionMode: input.connectionMode,
       dualSourceEnabled: input.dualSourceEnabled,
+      disabledAccountIds: input.state.disabledAccountIds,
+      disablingAccountId: input.disablingAccountId ?? null,
       ...(input.deviceOwners ? { deviceOwners: input.deviceOwners } : {}),
       ...(route ? { dualRoute: route } : {}),
     });
     const hasHaFallback = Boolean(input.dualSourceEnabled && haScope && (route?.backend === "homeAssistant" || (route?.alternateBackend === "homeAssistant" && route.alternateDevice !== null) || (!route && dev.sourceBackend === "homeAssistant")));
-    const useHa = input.connectionMode === "homeAssistant" && !input.dualSourceEnabled ? true : hasHaFallback && (!miOwner || miOwner === input.disablingAccountId || input.state.disabledAccountIds.has(miOwner));
+    const useHa = input.connectionMode === "homeAssistant" && !input.dualSourceEnabled
+      ? true
+      : hasHaFallback && (!miOwner || miAccountScope(miOwner) === disablingScope || input.state.disabledAccountIds.has(miAccountScope(miOwner)));
     const ownerId = miOwner ?? input.accounts[0]?.id ?? null;
     const connection = input.connectionMode === "demo" ? null : useHa ? (haScope ? ("home-assistant" as const) : null) : (ownerId ? ("xiaomi-cloud" as const) : null);
     const sourceScope = connection === null ? "demo" : connection === "home-assistant" ? haScope! : miAccountScope(ownerId!);
@@ -478,8 +525,33 @@ export function revalidateAfterMiAccountReenable(options: {
     completedScopes.size > 0
       ? new Set([...options.context.state.pendingRevalidationAccountIds].filter((s) => !completedScopes.has(miAccountScope(s))))
       : options.context.state.pendingRevalidationAccountIds;
+  const hasLiveXiaomiSnapshot =
+    options.context.connectionMode === "xiaomiCloud" ||
+    options.context.dualSourceEnabled ||
+    options.context.connectionMode === "demo";
+  const configuredMiScopes = options.context.accounts.map((acc) => miAccountScope(acc.id));
+  const unverifiedMiScopes = new Set<string>([
+    ...options.context.state.disabledAccountIds,
+    ...effectivePendingScopes,
+    ...(!hasLiveXiaomiSnapshot ? configuredMiScopes : []),
+  ]);
+  const effectiveEnabledScopes = options.context.state.selection.enabledConnectionScopes.filter(
+    (s) => !unverifiedMiScopes.has(s),
+  );
+  const effectiveSelection: CapabilitySelection = {
+    ...options.context.state.selection,
+    enabledConnections: options.context.state.selection.enabledConnections.filter(
+      (c) =>
+        c !== "xiaomi-cloud" ||
+        effectiveEnabledScopes.some((s) => s.startsWith("mi:")) ||
+        options.context.connectionMode === "demo",
+    ),
+    enabledConnectionScopes: effectiveEnabledScopes,
+  };
   const effectiveState: MiAccountSelectionState = {
     ...options.context.state,
+    selection: effectiveSelection,
+    disabledAccountIds: unverifiedMiScopes,
     knownDisabledDevices: effectiveKnownDisabled,
     pendingRevalidationAccountIds: effectivePendingScopes,
   };
@@ -513,16 +585,29 @@ export function revalidateAfterMiAccountReenable(options: {
     const queueScope = parseTimerIdentityScope(identity);
     const activeScopes =
       identity === options.activeTimerIdentity
-        ? (identity === "demo" ? ["demo", ...selection.enabledConnectionScopes] : selection.enabledConnectionScopes)
+        ? (identity === "demo"
+            ? ["demo", ...selection.enabledConnectionScopes]
+            : [...new Set([...selection.enabledConnectionScopes, ...configuredMiScopes])])
         : queueScope && selection.enabledConnectionScopes.includes(queueScope)
           ? [queueScope]
           : [];
     const stillPaused: PausedScheduledCommand[] = [];
     for (const paused of pausedList) {
+      const timerScopes = paused.sourceScopes.length > 0 ? paused.sourceScopes : queueScope ? [queueScope] : [];
+      const waitsOnPendingMi =
+        (queueScope !== null && effectivePendingScopes.has(queueScope)) ||
+        timerScopes.some((s) => effectivePendingScopes.has(s)) ||
+        (paused.pausedCapabilities ?? []).some(
+          (c) => effectivePendingScopes.has(c) || (c === "xiaomi-cloud" && effectivePendingScopes.size > 0),
+        );
+      if (waitsOnPendingMi) {
+        stillPaused.push(paused);
+        continue;
+      }
       const disp = revalidatePausedTimer({
         timer: {
           id: paused.command.id, name: paused.command.command, partition: identity === options.activeTimerIdentity ? paused.originalPartition : "foreign",
-          targetIds: (paused.command.intents ?? []).map((i) => i.targetId), sourceScopes: paused.sourceScopes.length > 0 ? paused.sourceScopes : queueScope ? [queueScope] : [],
+          targetIds: (paused.command.intents ?? []).map((i) => i.targetId), sourceScopes: timerScopes,
           pausedCapabilities: paused.pausedCapabilities as readonly CapabilityID[],
         },
         fireAtEpochSeconds: Math.floor(paused.command.fireTimestampMs / 1000), nowEpochSeconds, activeConnectionScopes: activeScopes, selection, devices: indexedDevices, scenes: sceneRefs,
@@ -543,16 +628,25 @@ export function revalidateAfterMiAccountReenable(options: {
   const resumedRules = options.ruleStore.load().map((rule) => {
     if (!rule.pausedByCapabilities?.length) return rule;
     const scopes = rule.pausedByCapabilities.filter((c) => c.startsWith("mi:") || c.startsWith("ha:"));
-    if (scopes.some((s) => effectiveState.disabledAccountIds.has(s) || effectivePendingScopes.has(s))) return rule;
+    if (scopes.some((s) => unverifiedMiScopes.has(s))) return rule;
+    if (
+      rule.pausedByCapabilities.includes("xiaomi-cloud") &&
+      (effectivePendingScopes.size > 0 || (!hasLiveXiaomiSnapshot && configuredMiScopes.length > 0))
+    ) {
+      return rule;
+    }
     if (rule.action.kind === "devices" && !rule.action.deviceIds.some((id) => availSet.has(id))) return rule;
     if (rule.action.kind === "scene" && !enabledSceneIds.has(rule.action.sceneId)) return rule;
     if (rule.action.kind === "quickAction") {
+      if (effectivePendingScopes.size > 0) return rule;
       const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[rule.action.quickAction] ?? [];
       const hasCat = [...availSet].some((id) => {
-        const cat = devById.get(id)?.category;
-        return cat !== undefined && cats.includes(cat);
+        const dev = devById.get(id);
+        return dev !== undefined && cats.includes(dev.category) && (hasLiveXiaomiSnapshot || dev.connection !== "home-assistant");
       });
-      const remainingDisabledHasCat = effectiveKnownDisabled.some((d) => cats.includes(d.category));
+      const remainingDisabledHasCat =
+        effectiveKnownDisabled.some((d) => cats.includes(d.category)) ||
+        (!hasLiveXiaomiSnapshot && options.context.state.disabledAccountIds.size > 0);
       if (!hasCat && remainingDisabledHasCat) return rule;
     }
     rulesMutated = true;
@@ -564,14 +658,18 @@ export function revalidateAfterMiAccountReenable(options: {
   }
 
   const restoredQa = new Set<string>();
-  for (const qaId of effectiveState.pausedQuickActionIds) {
-    const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[qaId as QuickActionReferenceKind] ?? [];
-    const availHasCategory = [...availSet].some((id) => {
-      const cat = devById.get(id)?.category;
-      return cat !== undefined && cats.includes(cat);
-    });
-    const remainingDisabledHasCategory = effectiveKnownDisabled.some((d) => cats.includes(d.category));
-    if (availHasCategory || !remainingDisabledHasCategory) restoredQa.add(qaId);
+  if (effectivePendingScopes.size === 0) {
+    for (const qaId of effectiveState.pausedQuickActionIds) {
+      const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[qaId as QuickActionReferenceKind] ?? [];
+      const availHasCategory = [...availSet].some((id) => {
+        const dev = devById.get(id);
+        return dev !== undefined && cats.includes(dev.category) && (hasLiveXiaomiSnapshot || dev.connection !== "home-assistant");
+      });
+      const remainingDisabledHasCategory =
+        effectiveKnownDisabled.some((d) => cats.includes(d.category)) ||
+        (!hasLiveXiaomiSnapshot && options.context.state.disabledAccountIds.size > 0);
+      if (availHasCategory || !remainingDisabledHasCategory) restoredQa.add(qaId);
+    }
   }
   if (completedScopes.size > 0 || restoredQa.size > 0) {
     const wroteSelection = writeMiAccountSelectionMutation({

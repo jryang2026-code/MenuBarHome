@@ -1144,6 +1144,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     options: {
       readonly remainingEnabledCount?: number;
       readonly reason?: "disabled" | "signedOut";
+      readonly survivingDevices?: ReadonlyMap<string, AccountScopedSmartDevice>;
+      readonly survivingDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+      readonly survivingReadings?: readonly EnvironmentReading[];
     } = {},
   ): DeviceMergeResult | null {
     if (!accountId) return null;
@@ -1165,13 +1168,16 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       return null;
     }
 
+    const isSurviving = (id: string): boolean => Boolean(options.survivingDevices?.has(id));
     const removedDeviceIds = new Set<string>();
-    const isRemovedMiDevice = (id: string, devAccountId?: string): boolean =>
-      devAccountId === accountId || removedDeviceIds.has(id) || MiAccountScope.isOwned(id, accountId);
+    const isRemovedMiDevice = (id: string, devAccountId?: string): boolean => {
+      if (isSurviving(id)) return false;
+      return devAccountId === accountId || removedDeviceIds.has(id) || MiAccountScope.isOwned(id, accountId);
+    };
 
     for (const dev of this.lastMi.home.devices) {
       const scoped = dev as AccountScopedSmartDevice;
-      if (scoped.accountId === accountId || MiAccountScope.isOwned(scoped.id, accountId)) {
+      if (!isSurviving(scoped.id) && (scoped.accountId === accountId || MiAccountScope.isOwned(scoped.id, accountId))) {
         removedDeviceIds.add(scoped.id);
       }
     }
@@ -1180,12 +1186,13 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         route.backend === "xiaomiCloud" &&
         (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
       ) {
-        removedDeviceIds.add(route.sourceDeviceId);
-        removedDeviceIds.add(route.sourceDevice.id);
+        if (!isSurviving(route.sourceDeviceId)) removedDeviceIds.add(route.sourceDeviceId);
+        if (!isSurviving(route.sourceDevice.id)) removedDeviceIds.add(route.sourceDevice.id);
       }
       if (
         route.alternateBackend === "xiaomiCloud" &&
         route.alternateDevice &&
+        !isSurviving(route.alternateDevice.id) &&
         (route.alternateDevice.accountId === accountId ||
           MiAccountScope.isOwned(route.alternateDevice.id, accountId))
       ) {
@@ -1193,14 +1200,19 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
-    const nextDevices = this.lastMi.home.devices.filter((dev) => {
-      const scoped = dev as AccountScopedSmartDevice;
-      return !isRemovedMiDevice(scoped.id, scoped.accountId);
-    });
+    const nextDevices = this.lastMi.home.devices
+      .filter((dev) => {
+        const scoped = dev as AccountScopedSmartDevice;
+        return !isRemovedMiDevice(scoped.id, scoped.accountId);
+      })
+      .map((dev) => options.survivingDevices?.get(dev.id) ?? dev);
     const nextRooms = this.lastMi.home.rooms.filter((room) => !MiAccountScope.isOwned(room.id, accountId));
-    const nextReadings = this.lastMi.home.environmentReadings.filter(
-      (reading) => !isRemovedMiDevice(reading.id),
-    );
+    const survivingReadingById = options.survivingReadings
+      ? new Map(options.survivingReadings.map((r) => [r.id, r] as const))
+      : null;
+    const nextReadings = this.lastMi.home.environmentReadings
+      .filter((reading) => !isRemovedMiDevice(reading.id))
+      .map((reading) => survivingReadingById?.get(reading.id) ?? reading);
     const nextScenes = this.lastMi.home.scenes.filter(
       (scene) =>
         scene.accountId !== accountId &&
@@ -1208,10 +1220,16 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         !MiAccountScope.isOwned(scene.entityId, accountId),
     );
     let nextDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
-    if (this.lastMi.home.deviceFacets) {
+    if (this.lastMi.home.deviceFacets || options.survivingDeviceFacets) {
       nextDeviceFacets = {};
-      for (const [id, controls] of Object.entries(this.lastMi.home.deviceFacets)) {
-        if (!isRemovedMiDevice(id)) nextDeviceFacets[id] = controls;
+      for (const [id, controls] of Object.entries(this.lastMi.home.deviceFacets ?? {})) {
+        if (isRemovedMiDevice(id)) continue;
+        if (isSurviving(id) && options.survivingDeviceFacets) {
+          const updated = options.survivingDeviceFacets[id];
+          if (updated && updated.length > 0) nextDeviceFacets[id] = updated;
+        } else {
+          nextDeviceFacets[id] = controls;
+        }
       }
     }
     let nextIdentities: Record<string, DeviceSourceIdentity> | undefined;

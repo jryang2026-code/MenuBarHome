@@ -644,14 +644,14 @@ export async function setMiAccountEnabledOnHost(
     resetHostUnsupportedScanner(host);
     if (isDualSourceEnabled(host) || host.settings.connectionMode === "xiaomiCloud") {
       switchHome(host);
-    }
-    host.render();
-    const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
-    if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
-    try {
-      await host.refreshDevices(false);
-    } finally {
-      delete hostWithReenableTs.pendingReenableNowMs;
+      host.render();
+      const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
+      if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
+      try {
+        await host.refreshDevices(false);
+      } finally {
+        delete hostWithReenableTs.pendingReenableNowMs;
+      }
     }
     host.render();
     return { status: "applied" };
@@ -728,8 +728,19 @@ export async function setMiAccountEnabledOnHost(
     accounts: allAccounts,
     connectionMode: host.settings.connectionMode,
     dualSourceEnabled: wasDualSource,
+    disabledAccountIds: context.state.disabledAccountIds,
+    disablingAccountId: accountId,
     ...(deviceOwners ? { deviceOwners } : {}),
     ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
+  });
+  const cachedOwnerOf = (dev: SmartDevice): string | null => resolveDeviceMiAccountOwner({
+    device: dev,
+    accounts: allAccounts,
+    connectionMode: "xiaomiCloud",
+    dualSourceEnabled: false,
+    disabledAccountIds: context.state.disabledAccountIds,
+    disablingAccountId: accountId,
+    ...(deviceOwners ? { deviceOwners } : {}),
   });
   const hasHaAlternate = (dev: SmartDevice): boolean => {
     const route = dualRoutes?.[dev.id];
@@ -742,7 +753,7 @@ export async function setMiAccountEnabledOnHost(
         .filter((d) => !hasHaAlternate(d))
         .map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []))
     : host.settings.cachedXiaomiDevices
-        .filter((d) => d.accountId === accountId || MiAccountScope.isOwned(d.id, accountId))
+        .filter((d) => cachedOwnerOf(d) === accountId)
         .map((d) => snapshotDisabledMiDevice(d, accountId));
   const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
   const prevRawSelection = (() => {
@@ -812,6 +823,25 @@ export async function setMiAccountEnabledOnHost(
     clearXiaomiRateLimitBackoff(host);
     clearCachedXiaomiTopology(host);
   }
+  if (host.settings.selectedHomeId && MiAccountScope.isOwned(host.settings.selectedHomeId, accountId)) {
+    host.settings.selectedHomeId = null;
+  }
+
+  const nextChildren =
+    enabledAfter.length > 0 && host.multiAccountState
+      ? (() => {
+          const copy = { ...host.multiAccountState.children };
+          delete copy[accountId];
+          return copy;
+        })()
+      : null;
+  const nextMerged =
+    nextChildren && enabledAfter.length > 0
+      ? mergeMiAccountSnapshots(enabledAfter, nextChildren)
+      : null;
+  const survivingById = nextMerged
+    ? new Map(nextMerged.home.devices.map((d) => [d.id, d] as const))
+    : undefined;
 
   const hadTimerSnapshot = Boolean((host as { readonly timerSnapshot?: { readonly identity: string; readonly sourceRevision: number } | null }).timerSnapshot);
   if (isXiaomiSnapshot) {
@@ -823,6 +853,9 @@ export async function setMiAccountEnabledOnHost(
     ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage, {
         remainingEnabledCount: enabledAfter.length,
         reason: "disabled",
+        ...(survivingById ? { survivingDevices: survivingById } : {}),
+        ...(nextMerged?.home.deviceFacets ? { survivingDeviceFacets: nextMerged.home.deviceFacets } : {}),
+        ...(nextMerged ? { survivingReadings: nextMerged.home.environmentReadings } : {}),
       }) ?? null)
     : null;
   if (isXiaomiSnapshot && host.waitingDeviceIds) {
@@ -841,12 +874,29 @@ export async function setMiAccountEnabledOnHost(
     host.devices = []; host.scenes = []; host.environmentReadings = []; host.homes = [];
     host.groupOwnerByMemberDid = new Map(); host.deviceFacets = {}; host.cloudValuesStale = false; host.selectRoom(null);
   } else if (isXiaomiSnapshot) {
-    if (removedIds.size > 0) {
-      host.devices = host.devices.filter((d) => !removedIds.has(d.id));
-      host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
-      const nextFacets = { ...host.deviceFacets };
-      for (const id of removedIds) delete nextFacets[id];
-      host.deviceFacets = nextFacets;
+    host.devices = host.devices
+      .filter((d) => !removedIds.has(d.id))
+      .map((d) => survivingById?.get(d.id) ?? d);
+    const survivingReadingById = nextMerged
+      ? new Map(nextMerged.home.environmentReadings.map((r) => [r.id, r] as const))
+      : null;
+    host.environmentReadings = host.environmentReadings
+      .filter((r) => !removedIds.has(r.id))
+      .map((r) => survivingReadingById?.get(r.id) ?? r);
+    const nextFacets = { ...host.deviceFacets };
+    for (const id of removedIds) delete nextFacets[id];
+    if (nextMerged?.home.deviceFacets && survivingById) {
+      for (const id of survivingById.keys()) {
+        const updated = nextMerged.home.deviceFacets[id];
+        if (updated && updated.length > 0) nextFacets[id] = updated;
+      }
+    }
+    host.deviceFacets = nextFacets;
+    if (nextMerged) {
+      host.homes = applyOrder(host.homes.map((h) => h.id), nextMerged.homes);
+      host.groupOwnerByMemberDid = new Map(nextMerged.lightGroupOwners);
+    } else {
+      host.homes = host.homes.filter((h) => !MiAccountScope.isOwned(h.id, accountId));
     }
     host.scenes = host.scenes.filter(
       (s) => s.accountId !== accountId && !MiAccountScope.isOwned(s.id, accountId) && !MiAccountScope.isOwned(s.entityId, accountId),
@@ -856,12 +906,16 @@ export async function setMiAccountEnabledOnHost(
   if (enabledAfter.length === 0) {
     host.settings.cachedXiaomiDevices = []; host.multiAccountState = null;
   } else {
-    host.settings.cachedXiaomiDevices = host.settings.cachedXiaomiDevices.filter((d) => d.accountId !== accountId && !MiAccountScope.isOwned(d.id, accountId) && !removedIds.has(d.id));
-    if (host.multiAccountState) {
-      const nextChildren = { ...host.multiAccountState.children };
-      delete nextChildren[accountId];
-      host.multiAccountState = { accounts: enabledAfter, children: nextChildren, merged: mergeMiAccountSnapshots(enabledAfter, nextChildren) };
+    host.settings.cachedXiaomiDevices = host.settings.cachedXiaomiDevices
+      .filter((d) => survivingById?.has(d.id) || (d.accountId !== accountId && !MiAccountScope.isOwned(d.id, accountId) && !removedIds.has(d.id)))
+      .map((d) => survivingById?.get(d.id) ?? d);
+    if (nextChildren && nextMerged) {
+      host.multiAccountState = { accounts: allAccounts, children: nextChildren, merged: nextMerged };
     }
+  }
+  const maybeListCut = (host as { readonly listCut?: { readonly kind: string; readonly roomId?: string } }).listCut;
+  if (isXiaomiSnapshot && maybeListCut?.kind === "room" && maybeListCut.roomId && MiAccountScope.isOwned(maybeListCut.roomId, accountId)) {
+    host.selectRoom(null);
   }
   if (isXiaomiSnapshot && host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) {
     host.expandedDeviceId = null;
