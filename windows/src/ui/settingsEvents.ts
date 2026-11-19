@@ -17,7 +17,6 @@ import {
   type HabitLastAction,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
-import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion, type HttpTransport } from "../core/miCloudClient.js";
 import {
   joinsAllOffByDefault,
@@ -42,6 +41,12 @@ import { normalizePanelTheme } from "./panelTheme.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
+import { buildHostCapabilityContext, haCacheIfEnabled, isHostHaEnabled } from "./cloudRefresh.js";
+import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
+import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import { ScheduledCommandStore } from "../core/scheduledCommands.js";
+import { scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   importAmbientAssistantKey,
@@ -438,6 +443,10 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
     "点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。",
   );
 
+  const oldHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  clearHaScopeLifecycle(oldHaScope);
+  removeDisconnectedHaFromSelection(null);
+
   host.settings.haBaseURL = "";
   host.settings.haToken = "";
   host.settings.cachedHAHome = null;
@@ -572,6 +581,8 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   const haUrl = host.root.querySelector<HTMLInputElement>("#settings-ha-url");
   const haToken = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
 
+  const prevHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+
   if (haUrl) {
     let endpoint = haUrl.value.trim();
     if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
@@ -604,6 +615,29 @@ function commitSettingsSave(host: SettingsEventsHost): void {
       }
     }
     host.settings.haToken = token;
+  }
+
+  const nextHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  const nextHaToken = host.settings.haToken.trim();
+  const appHost = host as unknown as MenuMijiaWindowsApp;
+  if (prevHaScope && (prevHaScope !== nextHaScope || nextHaToken === "")) {
+    clearHaScopeLifecycle(prevHaScope);
+    removeDisconnectedHaFromSelection(prevHaScope);
+    const maybeConnSession = (host as { connDiagSession?: { pendingHaDisablePreview: unknown; haDisableError: unknown } }).connDiagSession;
+    if (maybeConnSession) {
+      maybeConnSession.pendingHaDisablePreview = null;
+      maybeConnSession.haDisableError = null;
+    }
+    const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+    const scheduledCommandStore =
+      (appHost as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ??
+      new ScheduledCommandStore(fallbackStorage);
+    revalidateAfterMiAccountReenable({
+      context: buildHostCapabilityContext(appHost),
+      scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(host.settings) ?? null,
+      ruleStore: new AutomationRuleStore(),
+    });
   }
 
   const isCustomPillActive = Boolean(
@@ -655,7 +689,7 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   }
 
   host.saveSettings(true);
-  if (host.settings.connectionMode === "homeAssistant") {
+  if (host.settings.connectionMode === "homeAssistant" && isHostHaEnabled(appHost)) {
     void host.refreshHADevices();
   }
   closeSettingsSheetImmediate(host);
@@ -1130,12 +1164,13 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
           void host.refreshDevices(false);
         }
       } else if (mode === "homeAssistant") {
-        const cache = host.settings.cachedHAHome;
-        const matches = cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
-        host.devices = matches && cache ? structuredClone(cache.home.devices) : [];
-        host.scenes = matches && cache ? structuredClone(cache.home.scenes) : [];
-        host.environmentReadings = matches && cache ? structuredClone(cache.home.environmentReadings) : [];
-        if (host.settings.haBaseURL && host.settings.haToken) {
+        const inspectable = host as unknown as MenuMijiaWindowsApp;
+        const cache = haCacheIfEnabled(inspectable, { requireIdentityMatch: true });
+        host.devices = cache ? structuredClone(cache.home.devices) : [];
+        host.scenes = cache ? structuredClone(cache.home.scenes) : [];
+        host.environmentReadings = cache ? structuredClone(cache.home.environmentReadings) : [];
+        host.deviceFacets = cache ? structuredClone(cache.home.deviceFacets ?? {}) : {};
+        if (isHostHaEnabled(inspectable) && host.settings.haBaseURL && host.settings.haToken) {
           void host.refreshHADevices(false);
         }
       }

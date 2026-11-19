@@ -11,7 +11,7 @@ import {
 } from "../core/energyHistory.js";
 import type { SmartDevice } from "../core/models.js";
 import type { ReplyBannerState } from "./appTypes.js";
-import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
 import { withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
 
@@ -146,7 +146,7 @@ function cachedDevicesForMode(settings: EnergyTrackableSettings): readonly Smart
     return settings.cachedXiaomiDevices ?? [];
   }
   if (settings.connectionMode === "homeAssistant") {
-    return settings.cachedHAHome?.home.devices ?? [];
+    return settingsHaCacheIfEnabled(settings)?.home.devices ?? [];
   }
   return [];
 }

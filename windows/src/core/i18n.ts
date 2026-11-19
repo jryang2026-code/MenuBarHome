@@ -902,6 +902,15 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "已将{name}目标湿度设为 {percent}%": ["已将{name}目标湿度设为 {percent}%", "Set {name} target humidity to {percent}%"],
   "已切换{name}信源为 {source}": ["已切换{name}信源为 {source}", "Switched {name} source to {source}"],
   "已切换{name}模式为 {mode}": ["已切换{name}模式为 {mode}", "Switched {name} mode to {mode}"],
+  "Home Assistant 已停用": ["Home Assistant 已停用", "Home Assistant is turned off"],
+  "正在停止…": ["正在停止…", "Stopping…"],
+  "还在停止 · 重试": ["还在停止 · 重试", "Still stopping · Retry"],
+  "服务器地址与令牌已保留，重新启用后恢复同步": [
+    "服务器地址与令牌已保留，重新启用后恢复同步",
+    "Server URL and token are kept; re-enable to resume sync",
+  ],
+  "重新启用": ["重新启用", "Re-enable"],
+  "连接设置": ["连接设置", "Connection Settings"],
 };
 
 /** Every catalog key, for tests and tooling. */
