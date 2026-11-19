@@ -1,6 +1,7 @@
 import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../core/dualSourceProvider.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import type { LanguagePreference } from "../core/i18n.js";
+import type { ConnectionStatus } from "../core/models.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -75,47 +76,80 @@ function unavailableText(host: MenuMijiaWindowsApp, platform = platformName(host
   const gap = /^[\x00-\x7f]/.test(platform) ? " " : "";
   return tr(host, `{platform}${gap}暂不可用，部分设备暂无数据`, `{platform}${gap}暫時不可用，部分裝置暫無資料`, "{platform} unavailable; some devices have no data", { platform });
 }
-function miStatusText(host: MenuMijiaWindowsApp, dual: boolean): string {
-  if (!IS_ACTIVE_MI(host) && !dual) return tr(host, "未启用", "未啟用", "Not in use");
-  if (miExpired(host)) return tr(host, "登录已过期 · 需要重新扫码", "登入已過期 · 需要重新掃碼", "Session expired · re-scan required");
-  if (host.isSyncingCloud) return tr(host, "正在连接…", "正在連線…", "Connecting…");
-  if (host.cloudValuesStale) return tr(host, "暂不可用 · 设备状态可能过期", "暫時不可用 · 裝置狀態可能過期", "Unavailable · device states may be stale");
-  return dual
-    ? tr(host, "已连接", "已連線", "Connected")
-    : tr(host, "已连接 · {count} 台设备", "已連線 · {count} 台裝置", "Connected · {count} devices", { count: host.devices.length });
-}
 const haErrorMessage = (host: MenuMijiaWindowsApp): string => host.haConnectionError ?? "";
-function haStatusText(host: MenuMijiaWindowsApp, dual: boolean): string {
-  if (!IS_ACTIVE_HA(host) && !dual) return tr(host, "未启用", "未啟用", "Not in use");
+
+interface SourcePresentation {
+  readonly badge: ConnectionBadge;
+  readonly text: string;
+}
+
+/**
+ * Every configured Xiaomi account reports its own connection, so one broken account can never hide behind a
+ * healthy first entry. `undefined` means "no per-account data" (single legacy session).
+ */
+function miAccountStatuses(host: MenuMijiaWindowsApp): readonly { readonly kind: string }[] {
+  const dual = host.dualSourceCoordinator?.getLastMerged()?.accountStatuses;
+  const statuses = dual && Object.keys(dual).length > 0 ? dual : host.multiAccountState?.merged?.accountStatuses;
+  return statuses ? Object.values(statuses) : [];
+}
+
+function miAccountsConnected(host: MenuMijiaWindowsApp): number {
+  return miAccountStatuses(host).filter((status) => status.kind === "connected").length;
+}
+
+/**
+ * `cloudValuesStale` belongs to Xiaomi Cloud alone. Home Assistant reads its own coordinator status or its own
+ * error message, never this flag and never `valuesAreStale` (which follows the active connection mode).
+ */
+function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
+  if (!IS_ACTIVE_MI(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
+  if (miExpired(host)) return { badge: "reauth", text: tr(host, "登录已过期 · 需要重新扫码", "登入已過期 · 需要重新掃碼", "Session expired · re-scan required") };
+  if (host.isSyncingCloud) return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
+  const cloud = dual ? statuses?.xiaomiCloud ?? null : null;
+  if (cloud?.kind === "connecting") return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
+  if (cloud?.kind === "disconnected") return { badge: "offline", text: unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) };
+  if (host.cloudValuesStale) return { badge: "degraded", text: tr(host, "暂不可用 · 设备状态可能过期", "暫時不可用 · 裝置狀態可能過期", "Unavailable · device states may be stale") };
+  const total = miAccountStatuses(host).length;
+  if (total > 0) {
+    const connected = miAccountsConnected(host);
+    if (connected === 0) return { badge: "offline", text: unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) };
+    if (connected < total) {
+      return {
+        badge: "degraded",
+        text: tr(host, "部分米家账号异常 · 部分设备暂无数据", "部分米家帳號異常 · 部分裝置暫無資料", "Some Xiaomi Home accounts unavailable · some devices have no data"),
+      };
+    }
+  }
+  return dual
+    ? { badge: "online", text: tr(host, "已连接", "已連線", "Connected") }
+    : { badge: "online", text: tr(host, "已连接 · {count} 台设备", "已連線 · {count} 台裝置", "Connected · {count} devices", { count: host.devices.length }) };
+}
+
+/** Home Assistant owns only its own coordinator status, error message and sync state. */
+function haSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
+  if (!IS_ACTIVE_HA(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
   const message = haErrorMessage(host);
   if (message.includes("Home Assistant authentication rejected")) {
-    return tr(host, "凭据或地址需更新", "憑證或地址需更新", "Credentials or address need attention");
+    return { badge: "reauth", text: tr(host, "凭据或地址需更新", "憑證或地址需更新", "Credentials or address need attention") };
   }
   if (message.includes("Home Assistant endpoint has not been approved") || message.includes("未授权的网络来源")) {
-    return tr(host, "未连接（已拒绝明文 http）", "未連線（已拒絕明文 http）", "Not connected (plaintext http declined)");
+    return { badge: "offline", text: tr(host, "未连接（已拒绝明文 http）", "未連線（已拒絕明文 http）", "Not connected (plaintext http declined)") };
   }
-  if (message !== "") return unavailableText(host, "Home Assistant");
-  if (host.isSyncingCloud) return tr(host, "正在连接…", "正在連線…", "Connecting…");
+  const status = dual ? statuses?.homeAssistant ?? null : null;
+  if (status?.kind === "connecting") return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
+  if (status?.kind === "disconnected") return { badge: "offline", text: unavailableText(host, "Home Assistant") };
+  if (!dual) {
+    if (message !== "") return { badge: "offline", text: unavailableText(host, "Home Assistant") };
+    // In single-source Home Assistant mode `valuesAreStale` is Home Assistant's own staleness, never Xiaomi's.
+    if (IS_ACTIVE_HA(host) && host.valuesAreStale) {
+      return { badge: "degraded", text: tr(host, "设备状态可能过期，正在等待同步", "裝置狀態可能過期，正在等待同步", "Device states may be stale; waiting to sync") };
+    }
+  }
+  if (host.isSyncingCloud) return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
   return dual
-    ? tr(host, "已连接", "已連線", "Connected")
-    : tr(host, "已连接 · {count} 台设备", "已連線 · {count} 台裝置", "Connected · {count} devices", { count: host.devices.length });
+    ? { badge: "online", text: tr(host, "已连接", "已連線", "Connected") }
+    : { badge: "online", text: tr(host, "已连接 · {count} 台设备", "已連線 · {count} 台裝置", "Connected · {count} devices", { count: host.devices.length }) };
 }
-const sourceBadge = (host: MenuMijiaWindowsApp, id: "mi" | "ha", dual: boolean): ConnectionBadge => {
-  const message = haErrorMessage(host);
-  if (id === "mi") {
-    if (!IS_ACTIVE_MI(host) && !dual) return "unconfigured";
-    if (miExpired(host)) return "reauth";
-    if (host.isSyncingCloud) return "connecting";
-    return host.cloudValuesStale ? "degraded" : "online";
-  }
-  if (!IS_ACTIVE_HA(host) && !dual) return "unconfigured";
-  if (message.includes("Home Assistant authentication rejected")) return "reauth";
-  if (message.includes("Home Assistant endpoint has not been approved") || message.includes("未授权的网络来源")) return "offline";
-  if (message !== "" || host.valuesAreStale) return "degraded";
-  return host.isSyncingCloud ? "connecting" : "online";
-};
-const miConnectionKind = (statuses: Readonly<Record<string, { readonly kind: string }>>): string =>
-  Object.entries(statuses).find(([key]) => key !== "homeAssistant")?.[1].kind ?? "connected";
 export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionStatusPresentation {
   if (host.settings.connectionMode === "demo") {
     return {
@@ -136,9 +170,12 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     };
   }
   const dual = usesDualSource(host);
+  const dualStatuses = dual ? host.dualSourceCoordinator?.getSourceStatuses() ?? null : null;
+  const miView = hasMi(host) ? miSourcePresentation(host, dual, dualStatuses) : null;
+  const haView = hasHA(host) ? haSourcePresentation(host, dual, dualStatuses) : null;
   const sources: ConnectionSourceItem[] = [];
-  if (hasMi(host)) sources.push({ id: "mi", name: tr(host, "米家", "米家", "Xiaomi Home"), statusText: miStatusText(host, dual), badge: sourceBadge(host, "mi", dual) });
-  if (hasHA(host)) sources.push({ id: "ha", name: "Home Assistant", statusText: haStatusText(host, dual), badge: sourceBadge(host, "ha", dual) });
+  if (miView) sources.push({ id: "mi", name: tr(host, "米家", "米家", "Xiaomi Home"), statusText: miView.text, badge: miView.badge });
+  if (haView) sources.push({ id: "ha", name: "Home Assistant", statusText: haView.text, badge: haView.badge });
   const actions = {
     retry: { kind: "retry" as const, label: tr(host, "重试连接", "重試連線", "Retry connection") },
     settings: { kind: "settings" as const, label: tr(host, "查看连接", "查看連線", "Check connection") },
@@ -157,29 +194,51 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     return present("offline", SF_ICONS.wifiSlash, tr(host, "Home Assistant 未连接（已拒绝明文 http）", "Home Assistant 未連線（已拒絕明文 http）", "Home Assistant not connected (plaintext http declined)"), actions.settings);
   }
   if (dual) {
-    const statuses = host.dualSourceCoordinator?.getSourceStatuses();
-    if (statuses) {
-      const haDown = statuses.homeAssistant.kind !== "connected";
-      const miDown = miConnectionKind(statuses) !== "connected";
-      if (haDown !== miDown) {
-        return present("degraded", SF_ICONS.wifi, unavailableText(host, haDown ? "Home Assistant" : tr(host, "米家", "米家", "Xiaomi Home")), actions.retry);
-      }
-      if (haDown) {
-        return present("offline", SF_ICONS.wifiSlash, tr(host, "米家与 Home Assistant 均不可用", "米家與 Home Assistant 均不可用", "Xiaomi Home and Home Assistant are both unavailable"), actions.settings);
-      }
-      if (host.isSyncingCloud) return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在同步家居平台…", "正在同步家居平台…", "Syncing smart home platforms…"), null);
-      return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
+    // Each platform stands on its own status; `cloudValuesStale` and `valuesAreStale` never cross over here.
+    const miBadge = miView?.badge ?? "online";
+    const haBadge = haView?.badge ?? "online";
+    const miUp = miBadge === "online";
+    const haUp = haBadge === "online";
+    // A stale Xiaomi cache names Xiaomi in the footer; partial accounts keep their own specific copy.
+    const miDegradedText = host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView?.text ?? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home"));
+    if (!miUp && haUp) {
+      if (miBadge === "connecting") return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接米家…", "正在連線米家…", "Connecting to Xiaomi Home…"), null);
+      return present("degraded", SF_ICONS.wifi, miDegradedText, actions.retry);
     }
+    if (miUp && !haUp) {
+      if (haBadge === "connecting") return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接 Home Assistant…", "正在連線 Home Assistant…", "Connecting to Home Assistant…"), null);
+      return present("degraded", SF_ICONS.wifi, haView?.text ?? unavailableText(host, "Home Assistant"), actions.retry);
+    }
+    if (!miUp && !haUp) {
+      if (miBadge === "connecting" || haBadge === "connecting") {
+        return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接家居平台…", "正在連線家居平台…", "Connecting to smart home platforms…"), null);
+      }
+      // A partially reachable account is not a total outage: keep the degraded tone and name the dead platform.
+      if (miBadge === "degraded" || haBadge === "degraded") {
+        return present("degraded", SF_ICONS.wifi, unavailableText(host, haBadge === "offline" ? "Home Assistant" : tr(host, "米家", "米家", "Xiaomi Home")), actions.retry);
+      }
+      return present("offline", SF_ICONS.wifiSlash, tr(host, "米家与 Home Assistant 均不可用", "米家與 Home Assistant 均不可用", "Xiaomi Home and Home Assistant are both unavailable"), actions.settings);
+    }
+    if (host.isSyncingCloud) return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在同步家居平台…", "正在同步家居平台…", "Syncing smart home platforms…"), null);
+    return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
-  if (IS_ACTIVE_HA(host) && haMessage !== "") {
-    return present("offline", SF_ICONS.wifiSlash, unavailableText(host), actions.settings);
+  if (IS_ACTIVE_HA(host) && haView) {
+    if (haView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, unavailableText(host), actions.settings);
+    if (haView.badge === "degraded") return present("degraded", SF_ICONS.wifi, haView.text, actions.retry);
+    if (haView.badge === "connecting") {
+      return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接{platform}…", "正在連線{platform}…", "Connecting to {platform}…", { platform: platformName(host) }), null);
+    }
+    return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
-  if (host.cloudValuesStale) return present("degraded", SF_ICONS.wifi, unavailableText(host), actions.retry);
-  if (host.isSyncingCloud) {
-    return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接{platform}…", "正在連線{platform}…", "Connecting to {platform}…", { platform: platformName(host) }), null);
-  }
-  if (host.valuesAreStale) {
-    return present("degraded", SF_ICONS.wifi, tr(host, "设备状态可能过期，正在等待同步", "裝置狀態可能過期，正在等待同步", "Device states may be stale; waiting to sync"), actions.retry);
+  if (miView) {
+    if (miView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, miView.text, actions.retry);
+    if (miView.badge === "degraded") {
+      const text = host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView.text;
+      return present("degraded", SF_ICONS.wifi, text, actions.retry);
+    }
+    if (miView.badge === "connecting") {
+      return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接{platform}…", "正在連線{platform}…", "Connecting to {platform}…", { platform: platformName(host) }), null);
+    }
   }
   return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
 }

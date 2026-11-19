@@ -7,6 +7,7 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { getHostActivityCenter, recordSafetyAlerts } from "../src/ui/activityStackView.js";
 import { resolveConnectionStatus } from "../src/ui/connectionStatus.js";
+import { isVerboseConnectionFooter } from "../src/ui/panelView.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 let dom: Window;
 let app: MenuMijiaWindowsApp | null = null;
@@ -38,6 +39,24 @@ function useHA(host: MenuMijiaWindowsApp): void {
   host.settings.haToken = "controlled-token";
   host.render();
 }
+const connectionKind = (kind: string) => (kind === "disconnected" ? { kind, reason: "offline" } : { kind });
+/** Dual-source stub: the footer must read each platform plus every Xiaomi account from here, not from globals. */
+function useDualSource(
+  host: MenuMijiaWindowsApp,
+  input: { readonly ha: string; readonly mi: string; readonly accounts?: Readonly<Record<string, string>> },
+): void {
+  host.settings.haBaseURL = "http://localhost:8123";
+  host.settings.haToken = "controlled-token";
+  host.dualSourceEnabledOverride = true;
+  host.dualSourceCoordinator = {
+    getSourceStatuses: () => ({ homeAssistant: connectionKind(input.ha), xiaomiCloud: connectionKind(input.mi) }),
+    getLastMerged: () => (input.accounts
+      ? { accountStatuses: Object.fromEntries(Object.entries(input.accounts).map(([id, kind]) => [id, connectionKind(kind)])) }
+      : null),
+  } as unknown as typeof host.dualSourceCoordinator;
+}
+const badge = (id: "mi" | "ha"): string =>
+  el(`[data-connection-source='${id}'] [data-connection-badge]`).getAttribute("data-connection-badge") ?? "";
 const offline = (seq: number) => ({ id: `offline:plug.entry_socket:${seq}`, deviceId: "plug.entry_socket", category: "offline" as const, priority: "normal" as const, title: "玄关插座已离线", body: "" });
 const battery = { id: "battery:sensor.living_env", deviceId: "sensor.living_env", category: "lowBattery" as const, priority: "normal" as const, title: "温湿度计电量低", body: "" };
 const smoke = { id: "sensor:smoke:sensor.living_env:1700000000", deviceId: "sensor.living_env", category: "sensor" as const, priority: "high" as const, title: "厨房烟雾告警", body: "" };
@@ -92,6 +111,44 @@ describe("WP5b-1 · activity alert tiering", () => {
     assert.ok(document.querySelector('[data-dismiss-missed="missed-1"]'));
     assert.equal(document.querySelector("[data-ordinary-alerts]")?.contains(document.querySelector("[data-run-missed]")), false);
     assert.match(host.root.textContent ?? "", /已错过定时/);
+  });
+  it("names a single ordinary reminder by its title and counts only the extras", () => {
+    const host = startDemo();
+    recordSafetyAlerts(host, [offline(1)]);
+    host.render();
+    assert.equal(text("[data-ordinary-alerts] .cc-ordinary-summary"), "玄关插座已离线");
+    assert.doesNotMatch(text("[data-ordinary-alerts] .cc-ordinary-summary"), /等 1 条|and 0 more/);
+    recordSafetyAlerts(host, [offline(2)]);
+    host.settings.interfaceLanguage = "zh-Hant";
+    host.render();
+    assert.equal(text("[data-ordinary-alerts] .cc-ordinary-summary"), "玄关插座已离线 等 2 條提醒");
+    host.settings.interfaceLanguage = "en";
+    host.render();
+    assert.equal(text("[data-ordinary-alerts] .cc-ordinary-summary"), "玄关插座已离线 and 1 more");
+  });
+  it("drops the dead Classic collapse control while two pinned cards force the stack open", () => {
+    const host = startDemo();
+    host.settings.panelTheme = "classic";
+    recordSafetyAlerts(host, [smoke, longrun]);
+    host.render();
+    assert.equal(el("[data-upper-stack]").classList.contains("is-expanded"), true);
+    assert.equal(Boolean(document.querySelector("[data-activity-toggle-expand]")), false, "forced-open Classic cannot offer a collapse pill");
+    assert.ok(document.querySelector("[data-activity-clear-all]"), "dismiss all stays available");
+    assert.equal(getHostActivityCenter(host).isExpanded, true);
+    // One pinned card plus the ordinary capsule still collapses and expands on demand.
+    const single: MenuMijiaWindowsApp = host;
+    single.settings.panelTheme = "classic";
+    recordSafetyAlerts(single, [offline(1)]);
+    getHostActivityCenter(single).recentSafetyAlerts = getHostActivityCenter(single).recentSafetyAlerts.filter((row) => row.alert.id !== longrun.id);
+    getHostActivityCenter(single).isExpanded = false;
+    single.render();
+    assert.equal(el("[data-upper-stack]").classList.contains("is-collapsed"), true);
+    click("[data-activity-toggle-expand]");
+    assert.equal(el("[data-upper-stack]").classList.contains("is-expanded"), true);
+    assert.ok(document.querySelector("[data-activity-toggle-expand]"));
+    assert.ok(document.querySelector("[data-activity-clear-all]"));
+    click("[data-activity-toggle-expand]");
+    assert.equal(el("[data-upper-stack]").classList.contains("is-collapsed"), true, "collapse works when nothing forces the stack open");
   });
 });
 
@@ -150,6 +207,79 @@ describe("WP5b-1 · honest plain-language footer status", () => {
     assert.equal(resolveConnectionStatus(host).text, "Home Assistant 凭据或地址需更新");
     assert.equal(text("#btn-connection-action"), "查看连接");
   });
+  it("keeps Home Assistant online while Xiaomi values are stale and per-account data is healthy", () => {
+    const host = startDemo();
+    useMi(host);
+    useDualSource(host, { ha: "connected", mi: "connected", accounts: { acc1: "connected", acc2: "connected" } });
+    host.cloudValuesStale = true;
+    host.render();
+    assert.equal(host.valuesAreStale, true, "valuesAreStale follows the active Xiaomi mode");
+    assert.equal(text(".cc-footer-label"), "米家暂不可用，部分设备暂无数据");
+    assert.equal(el(".cc-status-dot").classList.contains("is-degraded"), true);
+    click("#btn-connection-status");
+    assert.equal(badge("ha"), "online", "a stale Xiaomi cache must not degrade Home Assistant");
+    assert.equal(text("[data-connection-source='ha'] .cc-conn-state"), "已连接");
+    assert.equal(badge("mi"), "degraded");
+  });
+  it("does not blame Home Assistant for a stale Xiaomi cache in single-source Home Assistant mode", () => {
+    const host = startDemo();
+    useHA(host);
+    host.cloudValuesStale = true;
+    host.render();
+    assert.equal(resolveConnectionStatus(host).tone, "online");
+    assert.equal(text(".cc-footer-label"), "设备同步正常");
+    click("#btn-connection-status");
+    assert.equal(badge("ha"), "online");
+  });
+  it("surfaces a partially disconnected Xiaomi account in dual mode", () => {
+    const host = startDemo();
+    useMi(host);
+    useDualSource(host, { ha: "connected", mi: "connected", accounts: { acc1: "connected", acc2: "disconnected" } });
+    host.render();
+    assert.equal(el(".cc-status-dot").classList.contains("is-degraded"), true);
+    assert.equal(text(".cc-footer-label"), "部分米家账号异常 · 部分设备暂无数据");
+    assert.equal(text("#btn-connection-action"), "重试连接");
+    click("#btn-connection-status");
+    assert.equal(badge("mi"), "degraded");
+    assert.equal(text("[data-connection-source='mi'] .cc-conn-state"), "部分米家账号异常 · 部分设备暂无数据");
+    assert.equal(badge("ha"), "online");
+  });
+});
+
+describe("WP5b-1 · footer wrap threshold", () => {
+  it("keeps healthy English copy on one row and wraps only long warnings", () => {
+    const host = startDemo();
+    useMi(host);
+    host.settings.interfaceLanguage = "en";
+    host.render();
+    assert.equal(text(".cc-footer-label"), "Devices synced");
+    assert.equal(el(".cc-footer").classList.contains("is-verbose-status"), false);
+    assert.equal(isVerboseConnectionFooter(resolveConnectionStatus(host)), false);
+    host.settings.interfaceLanguage = "zh-Hans";
+    host.render();
+    assert.equal(text(".cc-footer-label"), "设备同步正常");
+    assert.equal(el(".cc-footer").classList.contains("is-verbose-status"), false);
+    host.cloudValuesStale = true;
+    host.settings.interfaceLanguage = "en";
+    host.render();
+    assert.match(text(".cc-footer-label"), /Xiaomi Home unavailable/);
+    assert.equal(el(".cc-footer").classList.contains("is-verbose-status"), true);
+    assert.equal(isVerboseConnectionFooter(resolveConnectionStatus(host)), true);
+  });
+  it("measures visual columns so a long Chinese warning wraps but a short healthy row does not", () => {
+    assert.equal(isVerboseConnectionFooter({ tone: "online", icon: "", text: "Devices synced", action: null, sources: [] }), false);
+    assert.equal(isVerboseConnectionFooter({ tone: "online", icon: "", text: "设备同步正常", action: null, sources: [] }), false);
+    assert.equal(isVerboseConnectionFooter({
+      tone: "offline", icon: "", text: "米家暂不可用，部分设备暂无数据", action: { kind: "retry", label: "重试连接" }, sources: [],
+    }), true);
+    assert.equal(isVerboseConnectionFooter({
+      tone: "degraded", icon: "", text: "Xiaomi Home unavailable; some devices have no data", action: { kind: "retry", label: "Retry connection" }, sources: [],
+    }), true);
+    assert.equal(isVerboseConnectionFooter({
+      tone: "degraded", icon: "", text: "设备状态可能过期，正在等待同步", action: { kind: "retry", label: "重试连接" }, sources: [],
+    }), true);
+    assert.equal(isVerboseConnectionFooter({ tone: "unconfigured", icon: "", text: "还没连接家居平台", action: { kind: "settings", label: "去连接" }, sources: [] }), false);
+  });
 });
 
 describe("WP5b-1 · keyboard-reachable details and Escape routing", () => {
@@ -171,6 +301,31 @@ describe("WP5b-1 · keyboard-reachable details and Escape routing", () => {
     assert.equal(el("#cc-connection-details").getAttribute("role"), "dialog");
     trigger.dispatchEvent(new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
     assert.equal(document.querySelector("#cc-connection-details"), null);
+  });
+  it("clears the ordinary flag once every reminder is dismissed so Escape still reaches search and hide", () => {
+    const host = startDemo();
+    useMi(host);
+    recordSafetyAlerts(host, [offline(4), battery]);
+    host.render();
+    const input = el<HTMLInputElement>("#command-input");
+    input.value = "灯";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    click("[data-ordinary-alerts-toggle]");
+    assert.equal(getHostActivityCenter(host).ordinaryExpanded, true);
+    while (document.querySelector("[data-ordinary-list] [data-activity-dismiss]")) {
+      click("[data-ordinary-list] [data-activity-dismiss]");
+    }
+    assert.equal(Boolean(document.querySelector("[data-ordinary-alerts]")), false);
+    assert.equal(getHostActivityCenter(host).ordinaryExpanded, false, "an empty capsule cannot stay expanded");
+    escape();
+    assert.equal(host.panelSearch.query, "", "Escape clears search instead of being swallowed");
+    // A stale flag with no mounted capsule toggle must never consume the key either.
+    input.value = "灯";
+    input.dispatchEvent(new window.Event("input", { bubbles: true }));
+    getHostActivityCenter(host).ordinaryExpanded = true;
+    escape();
+    assert.equal(getHostActivityCenter(host).ordinaryExpanded, false);
+    assert.equal(host.panelSearch.query, "");
   });
   it("routes Escape through the connection card, then the ordinary capsule, then search and hide", () => {
     const host = startDemo();

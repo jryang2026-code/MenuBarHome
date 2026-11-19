@@ -1936,9 +1936,26 @@ export function partitionActivityFeed(host: MenuMijiaWindowsApp, items: readonly
   );
 }
 
+/**
+ * macOS `ActivityStackView.ordinaryCapsuleSummary` parity: a lone reminder is its own title, and the English
+ * plural counts the reminders *after* the first one so the leading title is never counted twice.
+ */
 export function ordinaryCapsuleSummary(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): string {
-  return tr3("{first} 等 {count} 条提醒", "{first} 等 {count} 條提醒", "{first} and {count} alerts",
-    { first: ordinary[0]?.title ?? "", count: ordinary.length }, host.settings.interfaceLanguage);
+  const first = ordinary[0]?.title ?? "";
+  if (first === "") return "";
+  if (ordinary.length === 1) return first;
+  return tr3("{first} 等 {count} 条提醒", "{first} 等 {count} 條提醒", "{first} and {more} more",
+    { first, count: ordinary.length, more: ordinary.length - 1 }, host.settings.interfaceLanguage);
+}
+
+/**
+ * Every ordinary reminder can disappear while the capsule stays open (a device recovers, or the user dismisses
+ * each row). A leftover `ordinaryExpanded` would then swallow Escape and leave focus nowhere, so the flag falls
+ * with the list (`panelKeyboard.ts` also re-checks the mounted toggle before consuming the key).
+ */
+function syncOrdinaryExpansion(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): void {
+  if (ordinary.length > 0) return;
+  getHostActivityCenter(host).ordinaryExpanded = false;
 }
 
 function renderOrdinaryAlertCapsule(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): string {
@@ -2052,6 +2069,7 @@ export function renderActivityStack(host: MenuMijiaWindowsApp, nowMs = Date.now(
   const items = buildActivityFeed(host, nowMs);
   if (items.length === 0) return "";
   const tiered = partitionActivityFeed(host, items);
+  syncOrdinaryExpansion(host, tiered.ordinary);
   const pinnedHtml = tiered.pinned
     .map((item) => renderSingleActivityRow(host, item, { stackCount: tiered.pinned.length, showStackControls: false }))
     .join("");
@@ -2134,6 +2152,7 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
 
   let replyConsumedByArmedAuto = false;
   const tieredFeed = partitionActivityFeed(host, buildActivityFeed(host, nowMs));
+  syncOrdinaryExpansion(host, tieredFeed.ordinary);
   for (const item of tieredFeed.pinned) {
     const isArmedHighRisk = item.kind === "automation" && Boolean(center.pendingHighRiskUndoRunId) && (item.actionValue === center.pendingHighRiskUndoRunId || item.id === `auto:${center.pendingHighRiskUndoRunId}`);
     const isDismissible = !isArmedHighRisk;
@@ -2235,10 +2254,18 @@ export function collectUpperStackCards(host: MenuMijiaWindowsApp, nowMs = Date.n
   const center = getHostActivityCenter(host);
   const factories = buildUpperCardFactories(host, nowMs);
   // Classic keeps the unified stack, but two or more urgent cards may never hide behind the peak card.
-  if (partitionActivityFeed(host, buildActivityFeed(host, nowMs)).pinned.length > 1) center.isExpanded = true;
+  if (classicStackForcedExpanded(host, nowMs)) center.isExpanded = true;
   if (factories.length <= 1) center.isExpanded = false;
   const showCollapsedControls = !center.isExpanded && factories.length > 1;
   return factories.map((f, idx) => ({ id: f.id, kind: f.kind, isDismissible: f.isDismissible, html: f.render({ stackCount: factories.length, showStackControls: showCollapsedControls && idx === 0 }) }));
+}
+
+/**
+ * Safety and urgent cards stay visible: with two or more pinned cards the Classic stack is pinned open, so the
+ * header must not offer a 收起/Collapse control that the next render would immediately undo.
+ */
+export function classicStackForcedExpanded(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
+  return partitionActivityFeed(host, buildActivityFeed(host, nowMs)).pinned.length > 1;
 }
 
 export function renderClassicUnifiedUpperStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
@@ -2256,7 +2283,10 @@ export function renderClassicUnifiedUpperStack(host: MenuMijiaWindowsApp, nowMs 
   const collapseLabel = tr3("收起", "收起", "Collapse", undefined, pref);
   const clearAllText = tr3("全部忽略", "全部忽略", "Dismiss All", undefined, pref);
   const anyDismissible = cards.some((card) => card.isDismissible);
-  return `<section class="cc-upper-stack cc-activity-stack is-expanded" data-upper-stack data-activity-stack data-activity-count="${cards.length}" data-activity-expanded="true"><div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;"><strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong><div style="display:inline-flex;gap:6px;"><button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>${anyDismissible ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>` : ""}</div></div><div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${cards.map((c) => c.html).join("")}</div></section>`;
+  const collapseControl = classicStackForcedExpanded(host, nowMs)
+    ? ""
+    : `<button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>`;
+  return `<section class="cc-upper-stack cc-activity-stack is-expanded" data-upper-stack data-activity-stack data-activity-count="${cards.length}" data-activity-expanded="true"><div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;"><strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong><div style="display:inline-flex;gap:6px;">${collapseControl}${anyDismissible ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>` : ""}</div></div><div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${cards.map((c) => c.html).join("")}</div></section>`;
 }
 
 export const renderUnifiedUpperStack = renderClassicUnifiedUpperStack;
@@ -2305,8 +2335,10 @@ export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: strin
       center.weeklyReportCard = null;
     }
   }
-  const remaining = host.settings.panelTheme === "classic" ? collectUpperStackCards(host).length : buildActivityFeed(host).length;
+  const feed = buildActivityFeed(host);
+  const remaining = host.settings.panelTheme === "classic" ? collectUpperStackCards(host).length : feed.length;
   if (remaining <= 1) center.isExpanded = false;
+  syncOrdinaryExpansion(host, partitionActivityFeed(host, feed).ordinary);
 }
 
 export const dismissUpperStackCard = dismissActivityById;

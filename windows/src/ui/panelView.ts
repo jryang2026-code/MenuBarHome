@@ -10,7 +10,7 @@ import {
   renderClassicUnifiedUpperStack,
 } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
-import { renderConnectionStatus, resolveConnectionStatus } from "./connectionStatus.js";
+import { renderConnectionStatus, resolveConnectionStatus, type ConnectionStatusPresentation } from "./connectionStatus.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
@@ -22,6 +22,39 @@ import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+
+/** A full-width status row costs two footer lines; footer actions need more headroom than a bare label. */
+const FULL_WIDTH_STATUS_COLUMNS = 20;
+const ACTION_STATUS_COLUMNS = 16;
+
+/** CJK and emoji glyphs take roughly two Latin columns, so `String.length` is the wrong wrap threshold. */
+function visualColumns(text: string): number {
+  let columns = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const wide = (code >= 0x1100 && code <= 0x115f)
+      || code === 0x2329 || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff00 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6)
+      || (code >= 0x1f300 && code <= 0x1f64f)
+      || (code >= 0x1f900 && code <= 0x1f9ff);
+    columns += wide ? 2 : 1;
+  }
+  return columns;
+}
+
+/**
+ * Healthy copy must stay on the same row as the footer actions in every language: `Devices synced` is 14 ASCII
+ * characters while 设备同步正常 measures 12 visual columns, so a character count cannot drive the threshold.
+ */
+export function isVerboseConnectionFooter(status: ConnectionStatusPresentation): boolean {
+  if (status.tone === "online" && !status.action) return false;
+  return visualColumns(status.text) > (status.action ? ACTION_STATUS_COLUMNS : FULL_WIDTH_STATUS_COLUMNS);
+}
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
@@ -194,7 +227,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
         </main>`;
-  const verboseFooter = resolveConnectionStatus(host).text.length > 10;
+  const verboseFooter = isVerboseConnectionFooter(resolveConnectionStatus(host));
   const footerHtml = `
         <footer class="cc-footer${verboseFooter ? " is-verbose-status" : ""}">
           <div class="cc-footer-status">

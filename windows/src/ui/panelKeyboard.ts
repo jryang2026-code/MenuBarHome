@@ -333,12 +333,18 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.root.querySelector<HTMLButtonElement>("#btn-connection-status")?.focus();
       return true;
     }
+    // A leftover `ordinaryExpanded` without a mounted capsule toggle has nothing to close: drop it and keep
+    // routing Escape to search/hide instead of swallowing the key with no place to return focus (WP5b-1 review).
     if (host.activityCenter?.ordinaryExpanded) {
-      event.preventDefault();
+      const toggle = host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]");
+      if (toggle) {
+        event.preventDefault();
+        host.activityCenter.ordinaryExpanded = false;
+        host.render();
+        host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
+        return true;
+      }
       host.activityCenter.ordinaryExpanded = false;
-      host.render();
-      host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
-      return true;
     }
     if (isEditable && !inInput) return true;
     if (host.expandedDeviceId !== null && (hasSubpage || !inInput || !host.panelSearch.query)) {
