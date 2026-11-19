@@ -15,10 +15,13 @@ import Foundation
 ///
 /// Each pair merges once. Afterwards the canonical card's preferences belong to the user: an
 /// unhide, an unstar or a cleared alias must not be undone by the orphan's still-stored entries.
-/// `ViewPreferenceKeys.adoptedPreferencePairs` records finished pairs and is written after the
-/// preference writes. A crash between the two re-runs the merge on the next launch; every rule is a
-/// union or a copy-if-absent, and nothing the user could have changed sits between them, so that
-/// re-run adds nothing.
+/// `ViewPreferenceKeys.adoptedPreferencePairs` records finished pairs as a flat `canonical\u{1F}orphan`
+/// string array — a shape `stringArray(forKey:)` returns exactly as written, without the bridging
+/// casts a nested dictionary needs after a relaunch — and is written after the preference writes. A
+/// crash between the two re-runs the merge on the next launch; every rule is a union or a
+/// copy-if-absent, and nothing the user could have changed sits between them, so that re-run adds
+/// nothing. A record that exists but cannot be read is not treated as empty: merging again would
+/// undo the user's edits, so such a pair is left alone.
 public enum DevicePreferenceMigrator {
     /// Which preference kinds this adoption carried over from the orphaned side. The store uses the
     /// kind flags to update its in-memory sets. `changed` reports preference writes only; recording
@@ -40,12 +43,12 @@ public enum DevicePreferenceMigrator {
         orphanedID: String,
         defaults: UserDefaults
     ) -> Outcome {
-        guard !canonicalID.isEmpty, !orphanedID.isEmpty, canonicalID != orphanedID else {
+        guard !canonicalID.isEmpty, !orphanedID.isEmpty, canonicalID != orphanedID,
+              let pairKey = encodedPair(canonicalID, orphanedID),
+              let adopted = storedPairs(in: defaults) else {
             return .none
         }
-        var ledger = defaults.dictionary(forKey: ViewPreferenceKeys.adoptedPreferencePairs) as? [String: [String]] ?? [:]
-        let adopted = ledger[canonicalID] ?? []
-        guard !adopted.contains(orphanedID) else { return .none }
+        guard !adopted.contains(pairKey) else { return .none }
 
         var hidden = false
         var favorite = false
@@ -113,8 +116,7 @@ public enum DevicePreferenceMigrator {
 
         // Last write. Recorded even when nothing was copied, so a canonical alias the user clears
         // later is not refilled from the orphan.
-        ledger[canonicalID] = adopted + [orphanedID]
-        defaults.set(ledger, forKey: ViewPreferenceKeys.adoptedPreferencePairs)
+        defaults.set(adopted + [pairKey], forKey: ViewPreferenceKeys.adoptedPreferencePairs)
 
         return Outcome(
             hidden: hidden,
@@ -123,6 +125,53 @@ public enum DevicePreferenceMigrator {
             tileSize: tileSize,
             wroteDefaults: wroteDefaults
         )
+    }
+
+    /// `"<canonical id>" + separator + "<orphaned id>"`; a unit separator never appears in a Home
+    /// Assistant entity id or a Mi did.
+    private static let pairSeparator: Character = "\u{1F}"
+
+    /// Finished pairs in the flat persisted form, or nil when a value exists but cannot be understood.
+    /// The previous build of this fix stored `[canonical id: [orphaned id]]`; that shape is still read
+    /// and rewritten flat on the next merge, so an upgrade never loses the record.
+    private static func storedPairs(in defaults: UserDefaults) -> [String]? {
+        guard let raw = defaults.object(forKey: ViewPreferenceKeys.adoptedPreferencePairs) else {
+            return []
+        }
+        if let flat = raw as? [String] {
+            return flat.allSatisfy { decodedPair($0) != nil } ? flat : nil
+        }
+        if let legacy = raw as? [String: Any] {
+            var migrated: [String] = []
+            for canonicalID in legacy.keys.sorted() {
+                let orphans: [String]
+                switch legacy[canonicalID] {
+                case let list as [String]: orphans = list
+                case let single as String: orphans = [single]
+                default: return nil
+                }
+                for orphanedID in orphans {
+                    guard let encoded = encodedPair(canonicalID, orphanedID) else { return nil }
+                    migrated.append(encoded)
+                }
+            }
+            return migrated
+        }
+        return nil
+    }
+
+    private static func encodedPair(_ canonicalID: String, _ orphanedID: String) -> String? {
+        guard !canonicalID.isEmpty, !orphanedID.isEmpty, canonicalID != orphanedID,
+              !canonicalID.contains(pairSeparator), !orphanedID.contains(pairSeparator) else {
+            return nil
+        }
+        return "\(canonicalID)\(pairSeparator)\(orphanedID)"
+    }
+
+    private static func decodedPair(_ encoded: String) -> (canonicalID: String, orphanedID: String)? {
+        let parts = encoded.split(separator: pairSeparator, omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return nil }
+        return (String(parts[0]), String(parts[1]))
     }
 
     /// `true` for `"<device id>"` and `"<page>|<device id>"` (the last `|` segment is the id).

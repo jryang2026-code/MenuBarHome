@@ -7,10 +7,32 @@ import Testing
 @MainActor
 struct DevicePreferenceMigrationTests {
     private func makeDefaults() -> UserDefaults {
+        makeSuiteDefaults().defaults
+    }
+
+    private func makeSuiteDefaults() -> (defaults: UserDefaults, suite: String) {
         let suite = "test.prefmigration.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
-        return defaults
+        return (defaults, suite)
+    }
+
+    /// What a new process decodes from the persisted suite: the property-list object graph
+    /// (`NSDictionary` / `NSArray`) handed to a fresh `UserDefaults` instance. The in-process
+    /// defaults cache keeps the original Swift values, so only this shape proves a relaunch still
+    /// reads the adoption ledger (#24).
+    private func relaunchedSuite(suite: String, from defaults: UserDefaults) throws -> (defaults: UserDefaults, suite: String) {
+        let domain = try #require(defaults.persistentDomain(forName: suite))
+        let data = try PropertyListSerialization.data(fromPropertyList: domain, format: .binary, options: 0)
+        let decoded = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        let persisted = try #require(decoded as? [String: Any])
+        let restartedSuite = "test.prefmigration.relaunch.\(UUID().uuidString)"
+        let restarted = try #require(UserDefaults(suiteName: restartedSuite))
+        restarted.removePersistentDomain(forName: restartedSuite)
+        for (key, value) in persisted {
+            restarted.set(value, forKey: key)
+        }
+        return (restarted, restartedSuite)
     }
 
     private func setAliases(_ aliases: [String: String], defaults: UserDefaults) {
@@ -203,6 +225,63 @@ struct DevicePreferenceMigrationTests {
         #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
     }
 
+    @Test("A relaunch decodes the persisted adoption ledger and keeps the user's edits (#24)")
+    func persistedLedgerSurvivesARelaunch() throws {
+        let (defaults, suite) = makeSuiteDefaults()
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111", "ha-light-a"])
+
+        // The user unhides the merged card. The orphaned entry stays on disk for a Mi-only home.
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+
+        let relaunched = try relaunchedSuite(suite: suite, from: defaults)
+        let again = DevicePreferenceMigrator.adopt(
+            canonicalID: "ha-light-a", orphanedID: "111000111", defaults: relaunched.defaults
+        )
+        #expect(again == .none, "The ledger written before the relaunch must still be readable")
+        #expect(relaunched.defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+    }
+
+    @Test("Bookkeeping that cannot be read never re-applies preferences the user cleared (#24)")
+    func unreadableLedgerNeverReapplies() {
+        let defaults = makeDefaults()
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
+        // A damaged or foreign ledger: present, but not pairs this build can name. Treating it as
+        // empty would merge the still-stored orphan entries and undo the user's edits.
+        defaults.set(["ha-light-a": 42], forKey: ViewPreferenceKeys.adoptedPreferencePairs)
+
+        let outcome = DevicePreferenceMigrator.adopt(
+            canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults
+        )
+        #expect(outcome == .none, "An unreadable ledger is not permission to merge again")
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.favoriteDeviceIds) == ["111000111"])
+        #expect(defaults.object(forKey: ViewPreferenceKeys.adoptedPreferencePairs) as? [String: Int] == ["ha-light-a": 42])
+    }
+
+    @Test("A ledger written by the previous build still counts and is upgraded on the next merge (#24)")
+    func legacyDictionaryLedgerStillCounts() {
+        let defaults = makeDefaults()
+        defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
+        // The shape the first version of this fix wrote: canonical id -> orphaned ids.
+        defaults.set(["ha-light-a": ["111000111"]], forKey: ViewPreferenceKeys.adoptedPreferencePairs)
+
+        let first = DevicePreferenceMigrator.adopt(
+            canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults
+        )
+        #expect(first == .none)
+        #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+
+        // A new pair migrates the record to the shape a relaunch always reads back.
+        _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-b", orphanedID: "222000222", defaults: defaults)
+        let stored = defaults.object(forKey: ViewPreferenceKeys.adoptedPreferencePairs) as? [String]
+        #expect(stored?.count == 2)
+        #expect(stored?.contains { $0.hasSuffix("111000111") } == true)
+        #expect(stored?.contains { $0.hasSuffix("222000222") } == true)
+    }
+
     // MARK: - Store wiring
 
     private func pairableLight(id: String, did: String, room: String) -> SmartDevice {
@@ -303,14 +382,16 @@ struct DevicePreferenceMigrationTests {
         #expect(!store.favoriteDeviceIds.contains("ha-light-a"), "The orphan's star must not come back")
         #expect(!store.favoriteOrder.contains("ha-light-a"))
 
-        // A relaunch reads the same defaults and must not redo the finished adoption either.
+        // A relaunch decodes the persisted suite (property-list object graph) into a fresh defaults
+        // instance and must not redo the finished adoption either.
+        let persisted = try relaunchedSuite(suite: suite, from: defaults)
         let relaunched = HomeStore(
             provider: HomeStore.makeComposite(
                 homeAssistant: MockHomeProvider(snapshot: pairableHome(id: "ha-light-a", did: "111000111")),
                 xiaomiCloud: MockHomeProvider(snapshot: miHome),
-                defaults: defaults
+                defaults: persisted.defaults
             ),
-            defaultsSuiteName: suite
+            defaultsSuiteName: persisted.suite
         )
         try await relaunched.waitForTestSnapshot()
         await waitUntil { relaunched.pairedDeviceIDs.contains("ha-light-a") }
