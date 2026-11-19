@@ -4523,6 +4523,8 @@ describe("只显示在线设备 (#158)", () => {
     assert.equal(toggle.getAttribute("aria-label"), "只显示在线设备");
     assert.equal(toggle.getAttribute("aria-pressed"), "false");
     assert.equal(toggle.getAttribute("title"), "点击隐藏未通电/离线设备");
+    assert.deepEqual(tileIds(), ["online-living"]);
+    await click("[data-offline-drawer-toggle]");
     assert.deepEqual(tileIds(), ["offline-living", "offline-study", "online-living"]);
     assert.match(element("#btn-all-off").textContent ?? "", /全关 \(3\)/);
 
@@ -4532,6 +4534,7 @@ describe("只显示在线设备 (#158)", () => {
     assert.equal(enabled.classList.contains("is-selected"), true);
     assert.equal(enabled.getAttribute("title"), "当前只显示在线设备（点击显示全部）");
     assert.deepEqual(tileIds(), ["online-living"]);
+    assert.equal(document.querySelector("[data-offline-drawer]"), null);
     assert.match(element("#btn-all-off").textContent ?? "", /全关 \(1\)/);
     const stored = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as { hideOfflineDevices?: boolean };
     assert.equal(stored.hideOfflineDevices, true);
@@ -4542,6 +4545,7 @@ describe("只显示在线设备 (#158)", () => {
     assert.deepEqual(tileIds(), ["online-living"]);
 
     await click("#btn-toggle-hide-offline");
+    await click("[data-offline-drawer-toggle]");
     assert.deepEqual(tileIds(), ["offline-living", "offline-study", "online-living"]);
     const cleared = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as { hideOfflineDevices?: boolean };
     assert.equal(cleared.hideOfflineDevices, false);
@@ -4553,6 +4557,7 @@ describe("只显示在线设备 (#158)", () => {
     assert.deepEqual(tileIds(), []);
     assert.equal(element(".cc-empty-title").textContent, "该房间暂无通电在线的设备");
     await click("#btn-show-offline");
+    await click("[data-offline-drawer-toggle]");
     assert.deepEqual(tileIds(), ["offline-study"]);
     assert.equal(element("#btn-toggle-hide-offline").getAttribute("aria-pressed"), "false");
     const stored = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as { hideOfflineDevices?: boolean };
@@ -4748,6 +4753,7 @@ describe("light-group folding (#214)", () => {
     await readyGroupApp({ groupOnline: false, hideOffline: true });
     assert.deepEqual(tileIds(), [memberA, memberB, "fixture-light"].sort());
     await click("#btn-toggle-hide-offline");
+    await click("[data-offline-drawer-toggle]");
     assert.deepEqual(tileIds(), ["fixture-light", groupDid].sort());
   });
 

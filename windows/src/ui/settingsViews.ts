@@ -320,7 +320,7 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.updateProgress ?? getUpdateProgressForSettings(ctx.settings), ctx.settings.autoCheckUpdates,
       ctx.settings.appearance, ctx.settings.panelTheme, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
       ctx.settings.temperatureUnit, ctx.settings.panelHeight, ctx.panelAnchor, ctx.settings.climatePanel,
-      ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
+      ctx.settings.isCompactGridMode, ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
       readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
@@ -578,6 +578,13 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
             ${PANEL_ANCHORS.map((a) => `<button class="cc-seg-pill ${ctx.panelAnchor === a.id ? "is-active" : ""}" data-panel-anchor="${a.id}" aria-pressed="${ctx.panelAnchor === a.id}">${ctx.escapeHtml(a.title)}</button>`).join("")}
           </div>
           <p class="cc-field-hint">${t("拖动面板顶部即可移动，松开后吸附到最近的角落。")}</p>
+        </div>
+
+        <div class="cc-field cc-field-row" data-settings-anchor="compactGridMode">
+          <label for="settings-compact-grid">${ctx.escapeHtml(
+            tr3("紧凑双列分体磁贴", "緊湊雙列分體磁貼", "Compact 2-column split tiles"),
+          )}</label>
+          <input id="settings-compact-grid" type="checkbox" ${ctx.settings.isCompactGridMode ? "checked" : ""} />
         </div>
 
         <div class="cc-field cc-field-row" data-settings-anchor="climatePanelModule">

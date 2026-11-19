@@ -417,7 +417,7 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
         isChildLocked: false,
       },
     };
-    app.devices.push(wallSwitch);
+    app.devices.unshift(wallSwitch);
     app.layout.aliases[wallSwitch.id] = "厨房灯";
     app.render();
     await flushAsync();
@@ -488,7 +488,7 @@ describe("menumijia:// execution, confirmation lifecycle & high-risk guard", () 
           isChildLocked: false,
         },
       };
-      app.devices.push(wallSwitch);
+      app.devices.unshift(wallSwitch);
       app.render();
       await flushAsync();
       assert.equal(
