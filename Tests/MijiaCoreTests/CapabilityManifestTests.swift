@@ -14,6 +14,7 @@ struct CapabilityManifestTests {
         let docs = try JSONDecoder().decode(DocsCapabilities.self, from: loadRepoData("docs/capabilities.json"))
         let docIDs = Set(docs.rows.map(\.id))
 
+        #expect(CapabilityManifest.shared == manifest)
         #expect(manifest.schemaVersion == 1)
         #expect(manifest.entries.count == CapabilityID.allCases.count)
         #expect(manifest.entry(for: .feature(.cameraLive)).dependsOn == [.deviceCategory(.camera)])
@@ -78,6 +79,29 @@ struct CapabilityManifestTests {
         edit(&caps)
         root["capabilities"] = caps
         return try JSONSerialization.data(withJSONObject: root)
+    }
+
+    @Test("Production sources carry no compile-time file paths into the release binary")
+    func productionSourcesHaveNoCompileTimeFilePaths() throws {
+        var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 where !FileManager.default.fileExists(atPath: dir.appendingPathComponent("Shared/capability-manifest.json").path) {
+            dir.deleteLastPathComponent()
+        }
+        let sources = dir.appendingPathComponent("Sources")
+        var offenders: [String] = []
+        let enumerator = FileManager.default.enumerator(at: sources, includingPropertiesForKeys: nil)
+        while let url = enumerator?.nextObject() as? URL {
+            guard url.pathExtension == "swift" else { continue }
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            for (index, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+            where line.contains("#filePath") || line.contains("= #file") {
+                offenders.append("\(url.lastPathComponent):\(index + 1)")
+            }
+        }
+        // `scripts/build_app.sh` rejects a release binary containing "/Users/"; a compile-time
+        // `#filePath` fallback is how that path gets in (#275).
+        #expect(offenders.isEmpty, "compile-time file paths in production sources: \(offenders)")
+        #expect(CapabilityManifest.bundledData() != nil)
     }
 
     private func loadRepoData(_ relative: String) throws -> Data {

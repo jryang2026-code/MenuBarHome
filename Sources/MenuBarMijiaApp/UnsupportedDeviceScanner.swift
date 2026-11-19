@@ -49,9 +49,9 @@ final class UnsupportedDeviceScanner {
         @MainActor
         init(store: HomeStore) {
             self.backend = store.homeBackend
-            self.hasHASource = store.hasHASource
+            self.hasHASource = store.hasEnabledHASource
             self.normalizedServerURL = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
-            self.miAccountIds = store.miAccounts.map(\.id)
+            self.miAccountIds = store.enabledMiAccounts.map(\.id)
         }
     }
 
@@ -110,10 +110,9 @@ final class UnsupportedDeviceScanner {
         var errors: [String] = []
 
         if active.contains(.xiaomiCloud) {
-            // Every signed-in account, not just the first: a second account's devices are merged into
-            // the panel too, so its skipped devices belong in this list. A device shared between two
-            // accounts appears once.
-            let sessions: [MiSession?] = store.miAccounts.isEmpty ? [nil] : store.miAccounts.map(\.session)
+            // Every enabled signed-in account, not disabled ones: disabled accounts must not send
+            // Xiaomi cloud scan requests or pollute cached scan results.
+            let sessions: [MiSession?] = store.miAccounts.isEmpty ? [nil] : store.enabledMiAccounts.map(\.session)
             var seen = Set<String>()
             for session in sessions {
                 do {

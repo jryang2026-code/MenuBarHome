@@ -453,10 +453,28 @@ extension ControlCenterPanel {
 
     var emptyStateView: some View {
         VStack(spacing: 8) {
-            Image(systemName: "sparkles")
+            Image(systemName: store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles")
                 .font(.system(size: DesignTokens.TypeSize.reading))
                 .foregroundStyle(.secondary)
-            if case .disconnected = store.connectionStatus {
+            if store.allConfiguredSourcesTurnedOff {
+                Text(L10n.tr("已停用当前连接", "Connections turned off"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(L10n.tr(
+                    "需要时可在连接设置中重新启用，收藏、别名与历史数据均已保留",
+                    "Turn a connection back on anytime in Settings. Favorites, aliases, and history are kept."
+                ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Button(L10n.tr("连接设置", "Connection Settings")) {
+                        SettingsWindowOpener.shared.show(tab: .connection)
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                }
+                .padding(.top, 2)
+            } else if case .disconnected = store.connectionStatus {
                 Text(
                     store.isDualSourceActive
                         ? L10n.tr("尚未连接到 Home Assistant 或米家云端", "Not connected to Home Assistant or Xiaomi Cloud")
@@ -785,7 +803,7 @@ struct PanelConnectionSourceItem: Equatable, Identifiable, Sendable {
 }
 
 enum PanelConnectionBadgeKind: Equatable, Sendable {
-    case online, connecting, degraded, reauthRequired, disconnected, notConfigured, demo
+    case online, connecting, degraded, reauthRequired, disconnected, notConfigured, turnedOff, demo
 
     var iconName: String {
         switch self {
@@ -795,6 +813,7 @@ enum PanelConnectionBadgeKind: Equatable, Sendable {
         case .reauthRequired: "qrcode"
         case .disconnected: "wifi.slash"
         case .notConfigured: "link.badge.plus"
+        case .turnedOff: "pause.circle.fill"
         case .demo: "sparkles"
         }
     }
@@ -804,7 +823,7 @@ enum PanelConnectionBadgeKind: Equatable, Sendable {
         case .online: .green
         case .connecting, .degraded, .reauthRequired: .orange
         case .disconnected, .notConfigured: .red
-        case .demo: .secondary
+        case .turnedOff, .demo: .secondary
         }
     }
 }
@@ -859,15 +878,15 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
 
-        let hasMi = store.hasMiSource
+        let hasMi = store.hasMiSource || !store.miAccounts.isEmpty
         let hasHA = store.hasHASource
-        let hasLGTV = store.lgConfig.isEnabled && store.lgConfig.hasConfiguredHost
+        let hasLGTV = store.hasConfiguredLGTVSource
         let lgOnline = hasLGTV && !store.effectiveLocalNetworkBlocks.contains(.lgWebOS) && store.devices.contains { device in
             guard device.isOnline, case .tv(let spec) = device.kind else { return false }
             return LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
         }
 
-        if !hasMi && !hasHA {
+        if !hasMi && !hasHA && !hasLGTV {
             return PanelConnectionStatusPresentation(
                 badge: .notConfigured,
                 text: L10n.tr("还没连接家居平台", "No smart home platform connected"),
@@ -880,6 +899,16 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
         let haItem = hasHA ? resolveHASource(store: store) : nil
         let lgItem = hasLGTV ? resolveLGSource(store: store, isOnline: lgOnline) : nil
         let sources = [miItem, haItem, lgItem].compactMap { $0 }
+
+        if store.allConfiguredSourcesTurnedOff {
+            return PanelConnectionStatusPresentation(
+                badge: .turnedOff,
+                text: L10n.tr("连接已停用 · 点此重新启用", "Connections turned off · Turn one back on"),
+                inlineActionTitle: L10n.tr("去启用", "Turn On"),
+                inlineAction: .openConnectionSettings,
+                sources: sources
+            )
+        }
 
         if store.miSessionBlocksControl {
             if lgOnline {
@@ -900,7 +929,10 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
 
-        if let miItem, let haItem {
+        let activeMiItem = store.hasEnabledMiSource ? miItem : nil
+        let activeHAItem = store.hasEnabledHASource ? haItem : nil
+
+        if let miItem = activeMiItem, let haItem = activeHAItem {
             if !miItem.isOnline && haItem.isOnline {
                 if miItem.badge == .connecting {
                     return PanelConnectionStatusPresentation(
@@ -974,7 +1006,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             }
         }
 
-        if let miItem, haItem == nil, !miItem.isOnline {
+        if let miItem = activeMiItem, activeHAItem == nil, !miItem.isOnline {
             if lgOnline {
                 return PanelConnectionStatusPresentation(
                     badge: .degraded,
@@ -998,7 +1030,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
 
-        if let haItem, miItem == nil, !haItem.isOnline {
+        if let haItem = activeHAItem, activeMiItem == nil, !haItem.isOnline {
             if lgOnline {
                 return PanelConnectionStatusPresentation(
                     badge: .degraded,
@@ -1048,7 +1080,14 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
     @MainActor
     private static func resolveMiSource(store: HomeStore) -> PanelConnectionSourceItem {
         let name = L10n.tr("米家", "Xiaomi Home")
-        if store.miSessionBlocksControl || (store.miSessionShowsExpired && !store.miAccounts.contains { $0.session.expiryState(at: Date()) != .expired }) {
+        if !store.hasEnabledMiSource {
+            return PanelConnectionSourceItem(
+                id: "mi", name: name,
+                statusText: L10n.tr("连接已停用", "Connection turned off"),
+                isOnline: false, badge: .turnedOff
+            )
+        }
+        if store.miSessionBlocksControl || (store.miSessionShowsExpired && !store.enabledMiAccounts.contains { $0.session.expiryState(at: Date()) != .expired }) {
             return PanelConnectionSourceItem(
                 id: "mi", name: name,
                 statusText: L10n.tr("登录已过期 · 需要重新扫码", "Session expired · Re-scan required"),
@@ -1056,7 +1095,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
         let status = store.sourceStatuses[.xiaomiCloud]
-            ?? (store.connectedBackends.contains(.xiaomiCloud) || !store.hasHASource ? store.connectionStatus : .connecting)
+            ?? (store.connectedBackends.contains(.xiaomiCloud) || !store.hasEnabledHASource ? store.connectionStatus : .connecting)
         switch status {
         case .connected:
             if store.effectiveLocalNetworkBlocks.contains(.xiaomiLAN) {
@@ -1079,6 +1118,13 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
     @MainActor
     private static func resolveHASource(store: HomeStore) -> PanelConnectionSourceItem {
         let name = "Home Assistant"
+        if !store.isHAConnectionEnabled {
+            return PanelConnectionSourceItem(
+                id: "ha", name: name,
+                statusText: L10n.tr("连接已停用", "Connection turned off"),
+                isOnline: false, badge: .turnedOff
+            )
+        }
         if case .declined = store.haPlaintextPrompt {
             return PanelConnectionSourceItem(
                 id: "ha", name: name,
@@ -1094,7 +1140,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
         let status = store.sourceStatuses[.homeAssistant]
-            ?? (store.connectedBackends.contains(.homeAssistant) || !store.hasMiSource ? store.connectionStatus : .connecting)
+            ?? (store.connectedBackends.contains(.homeAssistant) || !store.hasEnabledMiSource ? store.connectionStatus : .connecting)
         switch status {
         case .connected:
             return PanelConnectionSourceItem(id: "ha", name: name, statusText: L10n.tr("在线", "Online"), isOnline: true, badge: .online)
@@ -1137,7 +1183,7 @@ struct PanelConnectionStatusControl: View {
 
     var body: some View {
         let status = PanelConnectionStatusPresentation.resolve(store: store)
-        let isMuted = status.badge == .online || status.badge == .demo
+        let isMuted = status.badge == .online || status.badge == .demo || status.badge == .turnedOff
         HStack(spacing: 6) {
             Button {
                 detailState.toggle()
@@ -1229,7 +1275,7 @@ struct PanelConnectionDetailPopover: View {
                             Spacer(minLength: 8)
                             Text(item.statusText)
                                 .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(item.isOnline ? Color.secondary : item.badge.color)
+                                .foregroundStyle((item.isOnline || item.badge == .turnedOff) ? Color.secondary : item.badge.color)
                                 .lineLimit(1)
                         }
                     }
@@ -1239,7 +1285,7 @@ struct PanelConnectionDetailPopover: View {
             Divider()
 
             HStack(spacing: 8) {
-                if store.homeBackend != .demo, (store.hasMiSource || store.hasHASource) {
+                if store.homeBackend != .demo, (store.hasEnabledMiSource || store.hasEnabledHASource) {
                     Button(L10n.tr("重试连接", "Retry Connection")) { store.refreshNow() }
                         .themedPillButtonStyle(theme)
                 }
