@@ -498,6 +498,7 @@ export interface AutomationRule {
   readonly triggerOptions: AutomationTriggerOptions;
   readonly conditions: AutomationConditions;
   readonly highRiskApproved?: boolean;
+  readonly pausedByCapabilities?: readonly string[];
 }
 
 let fallbackRuleCounter = 1;
@@ -652,6 +653,9 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
     parseStoredWiFiCondition(condObj.wifi),
     parseStoredTimeWindow(condObj.timeWindow),
   );
+  const pausedByCapabilities = Array.isArray(obj.pausedByCapabilities)
+    ? obj.pausedByCapabilities.filter((x): x is string => typeof x === "string" && x.length > 0)
+    : [];
   return {
     id: obj.id,
     isEnabled: obj.isEnabled,
@@ -660,6 +664,7 @@ function parseStoredRule(raw: unknown): AutomationRule | null {
     triggerOptions,
     conditions,
     ...(obj.highRiskApproved === true ? { highRiskApproved: true } : {}),
+    ...(pausedByCapabilities.length > 0 ? { pausedByCapabilities } : {}),
   };
 }
 
@@ -679,7 +684,7 @@ export class AutomationRuleStore {
     }
   }
 
-  public save(rules: readonly AutomationRule[]): void {
+  public save(rules: readonly AutomationRule[]): boolean {
     try {
       const serializable = rules.map((r) => ({
         id: r.id,
@@ -698,9 +703,12 @@ export class AutomationRuleStore {
         },
         conditions: r.conditions,
         ...(r.highRiskApproved ? { highRiskApproved: true } : {}),
+        ...(r.pausedByCapabilities?.length ? { pausedByCapabilities: r.pausedByCapabilities } : {}),
       }));
       this.storage.setItem(AutomationRuleStore.storageKey, JSON.stringify(serializable));
+      return true;
     } catch {
+      return false;
     }
   }
 }

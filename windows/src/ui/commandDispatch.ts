@@ -19,14 +19,19 @@ import {
   DualSourceHomeProvider,
   commandTargetBackend,
 } from "../core/dualSourceProvider.js";
-import { MultiAccountMiCloudProvider } from "../core/miAccountsStore.js";
+import { MultiAccountMiCloudProvider, miAccountId } from "../core/miAccountsStore.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
+  buildHostCapabilityContext,
   getHostDualSourceState,
   getHostMiAccountsState,
   hasMultipleMiAccountsForHost,
   isDualSourceEnabled,
+  isHostMiSessionEnabled,
+  resolveEnabledMiAccountsForHost,
 } from "./cloudRefresh.js";
+import { evaluateDeviceEntityWriteGate, miAccountScope } from "../core/miAccountControl.js";
+import { controlTargetRejectionMessage } from "../core/capabilityReferenceVerdict.js";
 import {
   MiCloudClient,
   MiCloudError,
@@ -598,6 +603,10 @@ export function scheduleEchoReadBack(
       : accounts[0];
     const resolvedSession = matchedAccount?.session ?? host.settings?.miSession ?? null;
 
+    if (isXiaomiDevice && (!resolvedSession || !isHostMiSessionEnabled(host, resolvedSession))) {
+      return;
+    }
+
     if (
       isXiaomiDevice &&
       resolvedSession &&
@@ -608,7 +617,7 @@ export function scheduleEchoReadBack(
       const session = resolvedSession;
       const record = buildSingleDeviceMiRecord(currentDev, host.deviceFacets?.[deviceId]);
       const spec = await host.specResolver.resolve(record);
-      if (!isStillCurrent()) return;
+      if (!isStillCurrent() || !isHostMiSessionEnabled(host, session)) return;
 
       const propKeys = dedupeMiotPropKeys([
         ...MiotSynthesizer.requiredProps(record, spec),
@@ -617,7 +626,7 @@ export function scheduleEchoReadBack(
       const client = new MiCloudClient(session, host.transport);
       const values =
         propKeys.length > 0 ? await client.getProps(propKeys) : new Map<string, unknown>();
-      if (!isStillCurrent()) return;
+      if (!isStillCurrent() || !isHostMiSessionEnabled(host, session)) return;
 
       const latestExisting = host.devices.find((d) => d.id === deviceId);
       if (!latestExisting) return;
@@ -853,6 +862,20 @@ export async function applyCommand(
     host.deviceFacets ?? {},
     command.entityId,
   );
+  if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateDeviceEntityWriteGate({
+      targetKind: command.kind === "activateScene" ? "scene" : "device",
+      targetIdOrEntityId: command.entityId,
+      resolvedActiveDeviceId: targetDeviceId,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings?.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      renderHostImmediate(host);
+      return false;
+    }
+  }
   if (targetDeviceId !== null) {
     invalidateEchoReadBackForDevice(host, targetDeviceId);
   }
@@ -1147,9 +1170,10 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
   };
   const multiState = getHostMiAccountsState(host);
   const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
+  const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
   if (hasMultipleMiAccountsForHost(host) && accounts.length > 0) {
     return new MultiAccountMiCloudProvider({
-      accounts,
+      accounts: enabledAccounts,
       deviceOwners: multiState?.merged?.deviceOwners ?? {},
       specsByModel: multiState?.merged?.specsByModel ?? {},
       devices: host.devices,
@@ -1160,6 +1184,18 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
   }
   const session = host.settings.miSession ?? accounts[0]?.session ?? null;
   if (!session) throw new Error(t("请先扫码登录米家"));
+  if (!isHostMiSessionEnabled(host, session)) {
+    const pref =
+      host.settings.interfaceLanguage && host.settings.interfaceLanguage !== "system"
+        ? host.settings.interfaceLanguage
+        : undefined;
+    throw new Error(
+      controlTargetRejectionMessage(
+        { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(miAccountId(session)) },
+        pref,
+      ),
+    );
+  }
   return new MiCloudProvider({
     client: new MiCloudClient(session, host.transport),
     specResolver: host.specResolver,
@@ -1182,8 +1218,14 @@ function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
 export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
   if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
   if (isDualSourceEnabled(host)) {
+    let cachedMiProvider: HomeProvider | null = null;
     return new DualSourceHomeProvider({
-      miProvider: buildXiaomiHomeProvider(host),
+      miProvider: {
+        execute: (command, options) => {
+          cachedMiProvider ??= buildXiaomiHomeProvider(host);
+          return cachedMiProvider.execute(command, options);
+        },
+      },
       haProvider: buildHomeAssistantProvider(host),
       routes: getHostDualSourceState(host)?.routes,
       deviceIdForEntity: (entityId) => deviceOwningEntityId(host.devices, host.deviceFacets, entityId),

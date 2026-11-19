@@ -398,6 +398,8 @@ export interface DeviceMergeResult {
   readonly rooms: RoomIdentityRegistry;
   readonly haCanonicalIds: Readonly<Record<string, string>>;
   readonly miCanonicalIds: Readonly<Record<string, string>>;
+  /** Canonical card id → the paired source id whose stored preferences lost the card (#24). */
+  readonly preferenceAdoptions: Readonly<Record<string, string>>;
   readonly lightGroupOwners: Map<string, string>;
   readonly homes: readonly AccountScopedHomeOption[];
   readonly accountStatuses: Readonly<Record<string, ConnectionStatus>>;
@@ -796,6 +798,7 @@ export const DeviceDeduplicator = {
     const mergedDevices: MergedSmartDevice[] = []; const routes: Record<string, DeviceMergeRoute> = {};
     const deviceBackends: Record<string, HomeBackend> = {}; const pairedDeviceIds = new Set<string>();
     const miCanonicalIds: Record<string, string> = {}; const haCanonicalIds: Record<string, string> = {};
+    const preferenceAdoptions: Record<string, string> = {};
     const usedCanonicalIds = new Set<string>(); 
     for (const card of resolvedCards) { const canUseCanonical = card.chosenCanonical
         ? card.other !== null
@@ -820,6 +823,20 @@ export const DeviceDeduplicator = {
       } else { canonicalId = `${card.winner.backend}:${card.winner.device.id}`;
       }
       usedCanonicalIds.add(canonicalId);
+
+      // Both sides of a pair can carry history (an HA-only period and a Mi-only period). Whichever
+      // native id lost the canonical choice keeps its stored preferences orphaned; report it so the
+      // host merges those onto the card (#24). A canonical id that is neither native id is
+      // ambiguous, so nothing is reported.
+      if (card.other !== null) {
+        const winnerId = card.winner.device.id;
+        const otherId = card.other.device.id;
+        if (canonicalId === winnerId && knownPrefIds.has(otherId)) {
+          preferenceAdoptions[canonicalId] = otherId;
+        } else if (canonicalId === otherId && knownPrefIds.has(winnerId)) {
+          preferenceAdoptions[canonicalId] = winnerId;
+        }
+      }
 
       const wasPaired = card.other !== null; const pinned = pinnedBackends[canonicalId] ?? null;
       if (pinned && card.other) { const pairList = [card.winner, card.other];
@@ -968,6 +985,7 @@ export const DeviceDeduplicator = {
       rooms: updatedRooms,
       haCanonicalIds,
       miCanonicalIds,
+      preferenceAdoptions,
       lightGroupOwners: translatedGroupOwners,
       homes: miInput?.homes ?? [],
       accountStatuses: miInput?.accountStatuses ?? {},
@@ -999,6 +1017,7 @@ export interface DualSourceRefreshOutcome { readonly merged: DeviceMergeResult;
   readonly sourceStatuses: Readonly<Record<HomeBackend, ConnectionStatus>>;
   readonly haError: string | null;
   readonly miError: string | null;
+  readonly aborted?: boolean;
 }
 
 export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
@@ -1008,6 +1027,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   private lastMi: DualSourceInputSnapshot | null = null;
   private lastKnownPrefIds: ReadonlySet<string> = new Set();
   private lastMerged: DeviceMergeResult | null = null;
+  private mutationEpoch = 0;
   private sourceStatuses: Record<HomeBackend, ConnectionStatus> = {
     homeAssistant: { kind: "connecting" },
     xiaomiCloud: { kind: "connecting" },
@@ -1029,7 +1049,13 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getLastHASnapshot(): DualSourceInputSnapshot | null { return this.lastHA;
   }
 
+  /** Last Xiaomi input committed by `refreshParallel`. Dual-source merge only forwards Home
+   * Assistant scenes to `merged.home.scenes`, so callers that need Xiaomi scenes read them here. */
+  getLastMiSnapshot(): DualSourceInputSnapshot | null { return this.lastMi;
+  }
+
   reset(): void {
+    this.mutationEpoch += 1;
     this.lastHA = null;
     this.lastMi = null;
     this.lastMerged = null;
@@ -1042,20 +1068,33 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getSourceStatuses(): Readonly<Record<HomeBackend, ConnectionStatus>> { return { ...this.sourceStatuses };
   }
 
-    async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot>;
-    readonly fetchMi: () => Promise<DualSourceInputSnapshot>;
+  async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot>;
+    readonly fetchMi: () => Promise<DualSourceInputSnapshot | null>;
     readonly knownPreferenceIds?: ReadonlySet<string>;
     readonly languagePreference?: LanguagePreference;
-  }): Promise<DualSourceRefreshOutcome> { if (options.knownPreferenceIds) {
-      this.lastKnownPrefIds = options.knownPreferenceIds;
-    }
-
+    readonly shouldCommit?: () => boolean;
+  }): Promise<DualSourceRefreshOutcome> {
+    const epochAtStart = this.mutationEpoch;
     const [haSettled, miSettled] = await Promise.allSettled([
       options.fetchHA(),
       options.fetchMi(),
     ]);
 
-    let haError: string | null = null; let miError: string | null = null; 
+    if (this.mutationEpoch !== epochAtStart || (options.shouldCommit && !options.shouldCommit())) {
+      return {
+        merged: this.lastMerged ?? DeviceDeduplicator.merge({}),
+        sourceStatuses: { ...this.sourceStatuses },
+        haError: null,
+        miError: null,
+        aborted: true,
+      };
+    }
+
+    if (options.knownPreferenceIds) {
+      this.lastKnownPrefIds = options.knownPreferenceIds;
+    }
+
+    let haError: string | null = null; let miError: string | null = null;
     if (haSettled.status === "fulfilled") { this.lastHA = haSettled.value;
       this.sourceStatuses.homeAssistant = { kind: "connected" };
     } else { haError =
@@ -1070,21 +1109,29 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     if (miSettled.status === "fulfilled") {
-      const statuses = Object.values(miSettled.value.accountStatuses ?? {});
-      const allDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
-      if (allDisconnected) {
-        const firstDisc = statuses.find(
-          (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
-        );
-        miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
+      if (miSettled.value === null) {
         this.lastMi = null;
         this.sourceStatuses.xiaomiCloud = {
           kind: "disconnected",
-          reason: miError,
+          reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, options.languagePreference),
         };
       } else {
-        this.lastMi = miSettled.value;
-        this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        const statuses = Object.values(miSettled.value.accountStatuses ?? {});
+        const allDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
+        if (allDisconnected) {
+          const firstDisc = statuses.find(
+            (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
+          );
+          miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
+          this.lastMi = null;
+          this.sourceStatuses.xiaomiCloud = {
+            kind: "disconnected",
+            reason: miError,
+          };
+        } else {
+          this.lastMi = miSettled.value;
+          this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        }
       }
     } else { miError =
         miSettled.reason instanceof Error
@@ -1117,16 +1164,43 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   removeXiaomiAccount(
     accountId: string,
     languagePreference?: LanguagePreference,
+    options: {
+      readonly remainingEnabledCount?: number;
+      readonly reason?: "disabled" | "signedOut";
+      readonly survivingDevices?: ReadonlyMap<string, AccountScopedSmartDevice>;
+      readonly survivingDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+      readonly survivingReadings?: readonly EnvironmentReading[];
+    } = {},
   ): DeviceMergeResult | null {
-    if (!accountId || !this.lastMi) return null;
+    if (!accountId) return null;
+    this.mutationEpoch += 1;
+    const defaultEmptyMiReason =
+      options.reason === "signedOut"
+        ? tr3("米家连接已断开", "米家連線已中斷", "Xiaomi Home is disconnected", undefined, languagePreference)
+        : tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference);
+    if (!this.lastMi) {
+      if (
+        this.sourceStatuses.xiaomiCloud.kind === "connecting" ||
+        options.remainingEnabledCount === 0
+      ) {
+        this.sourceStatuses.xiaomiCloud = {
+          kind: "disconnected",
+          reason: defaultEmptyMiReason,
+        };
+      }
+      return null;
+    }
 
+    const isSurviving = (id: string): boolean => Boolean(options.survivingDevices?.has(id));
     const removedDeviceIds = new Set<string>();
-    const isRemovedMiDevice = (id: string, devAccountId?: string): boolean =>
-      devAccountId === accountId || removedDeviceIds.has(id) || MiAccountScope.isOwned(id, accountId);
+    const isRemovedMiDevice = (id: string, devAccountId?: string): boolean => {
+      if (isSurviving(id)) return false;
+      return devAccountId === accountId || removedDeviceIds.has(id) || MiAccountScope.isOwned(id, accountId);
+    };
 
     for (const dev of this.lastMi.home.devices) {
       const scoped = dev as AccountScopedSmartDevice;
-      if (scoped.accountId === accountId || MiAccountScope.isOwned(scoped.id, accountId)) {
+      if (!isSurviving(scoped.id) && (scoped.accountId === accountId || MiAccountScope.isOwned(scoped.id, accountId))) {
         removedDeviceIds.add(scoped.id);
       }
     }
@@ -1135,12 +1209,13 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         route.backend === "xiaomiCloud" &&
         (route.sourceDevice.accountId === accountId || MiAccountScope.isOwned(route.sourceDeviceId, accountId))
       ) {
-        removedDeviceIds.add(route.sourceDeviceId);
-        removedDeviceIds.add(route.sourceDevice.id);
+        if (!isSurviving(route.sourceDeviceId)) removedDeviceIds.add(route.sourceDeviceId);
+        if (!isSurviving(route.sourceDevice.id)) removedDeviceIds.add(route.sourceDevice.id);
       }
       if (
         route.alternateBackend === "xiaomiCloud" &&
         route.alternateDevice &&
+        !isSurviving(route.alternateDevice.id) &&
         (route.alternateDevice.accountId === accountId ||
           MiAccountScope.isOwned(route.alternateDevice.id, accountId))
       ) {
@@ -1148,19 +1223,36 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
-    const nextDevices = this.lastMi.home.devices.filter((dev) => {
-      const scoped = dev as AccountScopedSmartDevice;
-      return !isRemovedMiDevice(scoped.id, scoped.accountId);
-    });
+    const nextDevices = this.lastMi.home.devices
+      .filter((dev) => {
+        const scoped = dev as AccountScopedSmartDevice;
+        return !isRemovedMiDevice(scoped.id, scoped.accountId);
+      })
+      .map((dev) => options.survivingDevices?.get(dev.id) ?? dev);
     const nextRooms = this.lastMi.home.rooms.filter((room) => !MiAccountScope.isOwned(room.id, accountId));
-    const nextReadings = this.lastMi.home.environmentReadings.filter(
-      (reading) => !isRemovedMiDevice(reading.id),
+    const survivingReadingById = options.survivingReadings
+      ? new Map(options.survivingReadings.map((r) => [r.id, r] as const))
+      : null;
+    const nextReadings = this.lastMi.home.environmentReadings
+      .filter((reading) => !isRemovedMiDevice(reading.id))
+      .map((reading) => survivingReadingById?.get(reading.id) ?? reading);
+    const nextScenes = this.lastMi.home.scenes.filter(
+      (scene) =>
+        scene.accountId !== accountId &&
+        !MiAccountScope.isOwned(scene.id, accountId) &&
+        !MiAccountScope.isOwned(scene.entityId, accountId),
     );
     let nextDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
-    if (this.lastMi.home.deviceFacets) {
+    if (this.lastMi.home.deviceFacets || options.survivingDeviceFacets) {
       nextDeviceFacets = {};
-      for (const [id, controls] of Object.entries(this.lastMi.home.deviceFacets)) {
-        if (!isRemovedMiDevice(id)) nextDeviceFacets[id] = controls;
+      for (const [id, controls] of Object.entries(this.lastMi.home.deviceFacets ?? {})) {
+        if (isRemovedMiDevice(id)) continue;
+        if (isSurviving(id) && options.survivingDeviceFacets) {
+          const updated = options.survivingDeviceFacets[id];
+          if (updated && updated.length > 0) nextDeviceFacets[id] = updated;
+        } else {
+          nextDeviceFacets[id] = controls;
+        }
       }
     }
     let nextIdentities: Record<string, DeviceSourceIdentity> | undefined;
@@ -1195,16 +1287,19 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
+    const remainingStatuses = Object.values(nextAccountStatuses ?? {});
     const noRemainingAccounts =
-      (!hadAccountStatuses || Object.keys(nextAccountStatuses ?? {}).length === 0) &&
-      nextDevices.length === 0 &&
-      (nextHomes?.length ?? 0) === 0;
+      options.remainingEnabledCount !== undefined
+        ? options.remainingEnabledCount <= 0
+        : (!hadAccountStatuses || remainingStatuses.length === 0) &&
+          nextDevices.length === 0 &&
+          (nextHomes?.length ?? 0) === 0;
 
     if (noRemainingAccounts) {
       this.lastMi = null;
       this.sourceStatuses.xiaomiCloud = {
         kind: "disconnected",
-        reason: "Signed out of Xiaomi account",
+        reason: defaultEmptyMiReason,
       };
     } else {
       this.lastMi = {
@@ -1213,7 +1308,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
           rooms: nextRooms,
           devices: nextDevices,
           environmentReadings: nextReadings,
-          scenes: this.lastMi.home.scenes,
+          scenes: nextScenes,
           ...(nextDeviceFacets !== undefined ? { deviceFacets: nextDeviceFacets } : {}),
         },
         ...(nextIdentities !== undefined ? { identities: nextIdentities } : {}),
@@ -1221,6 +1316,23 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         ...(nextHomes !== undefined ? { homes: nextHomes } : {}),
         ...(nextAccountStatuses !== undefined ? { accountStatuses: nextAccountStatuses } : {}),
       };
+      if (remainingStatuses.length > 0) {
+        if (remainingStatuses.some((s) => s.kind === "connected")) {
+          this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        } else if (remainingStatuses.some((s) => s.kind === "connecting")) {
+          this.sourceStatuses.xiaomiCloud = { kind: "connecting" };
+        } else {
+          const firstDisc = remainingStatuses.find(
+            (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
+          );
+          this.sourceStatuses.xiaomiCloud = {
+            kind: "disconnected",
+            reason:
+              firstDisc?.reason ||
+              tr3("米家连接已断开", "米家連線已中斷", "Xiaomi Home is disconnected", undefined, languagePreference),
+          };
+        }
+      }
     }
 
     if (!this.lastHA && !this.lastMi) {
