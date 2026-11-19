@@ -38,6 +38,7 @@ struct SensorCardView: View {
     }
 
     private var isExpanded: Bool {
+        guard device.isOnline else { return false }
         if forceExpanded { return true }
         return store?.expandedDeviceId == device.id
     }
@@ -64,7 +65,7 @@ struct SensorCardView: View {
         .frame(minHeight: (isCompact && !isExpanded) ? 58 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isEditingLayout, !forceExpanded, let store else { return }
+            guard !isEditingLayout, !forceExpanded, device.isOnline, let store else { return }
             withAnimation(AppleMotion.snappySpring) {
                 store.toggleExpanded(device.id)
             }

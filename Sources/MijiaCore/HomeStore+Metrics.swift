@@ -147,10 +147,8 @@ extension HomeStore {
     }
 
     public var orderedVisibleDevices: [SmartDevice] {
-        if selectedRoomId == nil {
-            return favoriteDevices + nonFavoriteDevices
-        }
-        return visibleDevices
+        let base = selectedRoomId == nil ? (favoriteDevices + nonFavoriteDevices) : visibleDevices
+        return base.filter(\.isOnline) + base.filter { !$0.isOnline }
     }
 
     public var menuBarSymbolName: String {

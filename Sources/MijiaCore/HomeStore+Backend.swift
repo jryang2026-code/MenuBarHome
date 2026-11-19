@@ -531,6 +531,10 @@ extension HomeStore {
             // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
             if devices != nextDevices { devices = nextDevices }
+            if let expandedId = expandedDeviceId,
+               devices.first(where: { $0.id == expandedId })?.isOnline == false {
+                expandedDeviceId = nil
+            }
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
             isApplyingProviderSnapshot = false

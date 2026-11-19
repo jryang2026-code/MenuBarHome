@@ -218,30 +218,147 @@ extension ClassicControlCenterPanel {
     /// Collapse state is per page: folding "更多设备" in All must not hide "其他" in a room.
     func collapseKey(_ section: PageSection) -> String { "\(layoutScope)|\(section.id)" }
 
-    /// "All": 常用 first, then each custom group, then the rest. A room: custom groups then 其他;
-    /// without any group in the room it is one untitled section, as before.
+    struct ClassicDeviceLayoutState {
+        let sections: [PageSection]
+        let showsLongTailControl: Bool
+        let hiddenOnlineCount: Int
+        let offlineDevices: [SmartDevice]
+    }
+
+    var classicRoomBrowseOptions: [PanelRoomBrowseOption] {
+        let visibleByRoom = Dictionary(grouping: store.visibleDevices, by: \.roomId)
+        return displayRooms.compactMap { room in
+            guard let members = visibleByRoom[room.id], !members.isEmpty else { return nil }
+            return PanelRoomBrowseOption(
+                id: room.id,
+                title: roomDisplayTitle(room),
+                onlineCount: members.filter(\.isOnline).count
+            )
+        }
+    }
+
+    /// "All": 常用 + habit-frequent first, then custom groups, then remaining online devices ranked
+    /// by habit & active state. Offline/unpowered devices sink into the bottom drawer outside edit mode.
     var pageSections: [PageSection] {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
         let order = currentOrder
+        let habitOrder = store.userHabitMemory.usageOrder()
+        func prioritized(_ devices: [SmartDevice]) -> [SmartDevice] {
+            PanelDeviceOrganizer.prioritizePool(
+                devices,
+                habitOrder: habitOrder,
+                customOrder: order,
+                isActive: { store.presentsAsActive($0) }
+            )
+        }
+
+        if isEditingLayout {
+            var editSections: [PageSection] = []
+            let editPool: [SmartDevice]
+            if store.selectedRoomId == nil {
+                if !store.favoriteDevices.isEmpty {
+                    let orderedFavs = DeviceLayoutPrefs.apply(order: order, to: store.favoriteDevices)
+                    editSections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: orderedFavs, groupId: nil))
+                }
+                editPool = store.nonFavoriteDevices
+            } else {
+                editPool = store.visibleDevices
+            }
+            appendClassicGroupAndRestSections(
+                from: editPool,
+                map: map,
+                orderFn: { DeviceLayoutPrefs.apply(order: order, to: $0) },
+                into: &editSections
+            )
+            return editSections
+        }
+
+        let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: order)
         var sections: [PageSection] = []
         let pool: [SmartDevice]
         if store.selectedRoomId == nil {
-            if !store.favoriteDevices.isEmpty {
-                let orderedFavs = DeviceLayoutPrefs.apply(order: order, to: store.favoriteDevices)
-                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: orderedFavs, groupId: nil))
+            let onlineIdSet = Set(partition.online.map(\.id))
+            let starredRaw = store.favoriteDevices.filter { onlineIdSet.contains($0.id) }
+            let starredIds = Set(starredRaw.map(\.id))
+            let favDevices = PanelDeviceOrganizer.prioritizeOnline(
+                starredRaw,
+                favoriteIds: starredIds,
+                favoriteOrder: store.favoriteOrder,
+                habitOrder: habitOrder,
+                customOrder: order,
+                isActive: { store.presentsAsActive($0) }
+            )
+            if !favDevices.isEmpty {
+                sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: favDevices, groupId: nil))
             }
-            pool = store.nonFavoriteDevices
+            pool = partition.online.filter { !starredIds.contains($0.id) }
         } else {
-            pool = store.visibleDevices
+            pool = PanelDeviceOrganizer.prioritizeOnline(
+                partition.online,
+                favoriteIds: store.favoriteDeviceIds,
+                favoriteOrder: store.favoriteOrder,
+                habitOrder: habitOrder,
+                customOrder: order,
+                isActive: { store.presentsAsActive($0) }
+            )
         }
+
+        appendClassicGroupAndRestSections(from: pool, map: map, orderFn: prioritized, into: &sections)
+        return sections
+    }
+
+    var classicDeviceLayoutState: ClassicDeviceLayoutState {
+        let rawSections = pageSections
+        if isEditingLayout {
+            return ClassicDeviceLayoutState(
+                sections: rawSections,
+                showsLongTailControl: false,
+                hiddenOnlineCount: 0,
+                offlineDevices: []
+            )
+        }
+        let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: currentOrder)
+        let allOrderedOnline = rawSections.flatMap(\.devices)
+        let keepIds = Set([store.focusedDeviceId, store.expandedDeviceId].compactMap { $0 })
+        let slice = PanelDeviceOrganizer.overviewSlice(
+            orderedOnline: allOrderedOnline,
+            listCut: store.listCut,
+            isExpanded: isLongTailExpanded,
+            keepingVisibleIds: keepIds
+        )
+        let visibleSet = Set(slice.visible.map(\.id))
+        let slicedSections: [PageSection] = rawSections.compactMap { section in
+            let visibleDevices = section.devices.filter { visibleSet.contains($0.id) }
+            guard !visibleDevices.isEmpty else { return nil }
+            return PageSection(
+                id: section.id,
+                title: section.title,
+                devices: visibleDevices,
+                groupId: section.groupId
+            )
+        }
+        return ClassicDeviceLayoutState(
+            sections: slicedSections,
+            showsLongTailControl: slice.showsLongTailControl,
+            hiddenOnlineCount: slice.hiddenCount,
+            offlineDevices: partition.offline
+        )
+    }
+
+    private func appendClassicGroupAndRestSections(
+        from pool: [SmartDevice],
+        map: [String: String],
+        orderFn: ([SmartDevice]) -> [SmartDevice],
+        into sections: inout [PageSection]
+    ) {
         for group in groups {
-            let members = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == group.id })
+            let members = orderFn(pool.filter { map[$0.id] == group.id })
             if !members.isEmpty {
                 sections.append(PageSection(id: group.id, title: group.name, devices: members, groupId: group.id))
             }
         }
-        let rest = DeviceLayoutPrefs.apply(order: order, to: pool.filter { map[$0.id] == nil })
+        let rest = orderFn(pool.filter { map[$0.id] == nil })
         if !rest.isEmpty {
             // Several Mi Cloud accounts in one panel: devices stay grouped under the account that
             // owns them. Other backends have no account to group by, even when Mi accounts remain
@@ -281,7 +398,6 @@ extension ClassicControlCenterPanel {
                 sections.append(PageSection(id: "rest", title: title, devices: rest, groupId: nil))
             }
         }
-        return sections
     }
 
     /// Section key used to detect a drag into a different section.
@@ -339,11 +455,16 @@ extension ClassicControlCenterPanel {
                 }
             }
             .padding(.horizontal, 3)
+            .frame(minHeight: DesignTokens.minHitTarget)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hoveredHeader = $0 ? section.id : (hoveredHeader == section.id ? nil : hoveredHeader) }
         .animation(.easeOut(duration: 0.15), value: hoveredHeader)
+        .accessibilityLabel(Text(section.title ?? ""))
+        .panelHelp(collapsed
+            ? L10n.tr("展开分组", "Expand group")
+            : L10n.tr("收起分组", "Collapse group"))
         .contextMenu {
             if let gid = section.groupId {
                 Button { layoutUI.renamingGroupId = gid } label: { Label(L10n.tr("重命名", "Rename"), systemImage: "pencil") }
@@ -353,7 +474,8 @@ extension ClassicControlCenterPanel {
                 Button(role: .destructive) { deleteGroup(gid) } label: { Label(L10n.tr("删除分组", "Delete Group"), systemImage: "trash") }
             }
         }
-        .padding(.bottom, -3)
+        .padding(.top, -7)
+        .padding(.bottom, -10)
     }
 
     func moveGroup(_ id: String, by delta: Int) {
@@ -771,7 +893,8 @@ extension ClassicControlCenterPanel {
         showRoomBadge: Bool,
         quickIndexMap: [String: Int],
         highlightId: String? = nil,
-        sortByUserOrder: Bool = true
+        sortByUserOrder: Bool = true,
+        allowsLayoutEditing: Bool = true
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
         let currentRoomAliases = roomAliases
@@ -801,7 +924,7 @@ extension ClassicControlCenterPanel {
                     quickIndex: quickIndexMap[dev.id]
                 )
                 .frame(maxHeight: .infinity, alignment: .top)
-                .modifier(editable(dev))
+                .modifier(OptionalModifier(allowsLayoutEditing ? editable(dev) : nil))
                 .overlay {
                     if highlightId == dev.id {
                         RoundedRectangle(
@@ -828,7 +951,7 @@ extension ClassicControlCenterPanel {
                         Color.clear
                             .preference(
                                 key: TileFramesKey.self,
-                                value: [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                                value: allowsLayoutEditing ? [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())] : [:]
                             )
                             #if DEBUG
                             .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])

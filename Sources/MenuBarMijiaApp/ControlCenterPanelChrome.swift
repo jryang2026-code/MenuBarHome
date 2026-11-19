@@ -59,11 +59,12 @@ extension ControlCenterPanel {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("关闭", "Close")))
+                    .panelHelp(L10n.tr("关闭", "Close"))
                 }
 
                 MiAccountSection(store: store, autoStartsQRLogin: true, showsRegionPicker: false)
@@ -88,7 +89,7 @@ extension ControlCenterPanel {
                         .lineLimit(1)
                     if store.homeBackend == .demo {
                         Text(L10n.tr("演示", "Demo"))
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                            .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -169,7 +170,7 @@ extension ControlCenterPanel {
                 }
             }
             Divider()
-            Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
+            Toggle(L10n.tr("双列分体磁贴", "Two-column split tiles"), isOn: Binding(
                 get: { store.isCompactGridMode },
                 set: { value in withAnimation(AppleMotion.reveal) { store.isCompactGridMode = value } }
             ))
@@ -214,6 +215,7 @@ extension ControlCenterPanel {
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
+        .panelHelp(L10n.tr("更多操作", "More actions"))
     }
 
     private func updateCapsule(for release: AppRelease) -> some View {

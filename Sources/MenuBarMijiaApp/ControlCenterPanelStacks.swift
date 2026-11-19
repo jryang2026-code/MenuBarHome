@@ -26,6 +26,7 @@ struct DeviceStack: Identifiable, Equatable {
         /// `nil` collects devices whose room the store does not know.
         case room(String?)
         case kind(DeviceKindTag)
+        case offline
     }
 
     let id: String
@@ -47,14 +48,21 @@ struct DeviceStack: Identifiable, Equatable {
         }
     }
 
-    /// Pinned favorites, single-device groups, and a stack matching the active list cut never fold.
+    /// Pinned favorites, single-device online groups, and a stack matching the active list cut open
+    /// by default; the bottom `.offline` drawer always starts folded until explicitly opened.
     func isOpen(expandedStacks: Set<String>, listCut: DeviceListCut = .all) -> Bool {
-        isPinned || devices.count == 1 || matches(listCut: listCut) || expandedStacks.contains(id)
+        if source == .offline {
+            return expandedStacks.contains(id)
+        }
+        return isPinned || devices.count == 1 || matches(listCut: listCut) || expandedStacks.contains(id)
     }
 
-    /// Only a multi-device unpinned stack outside a matching list cut can fold back up.
+    /// Multi-device unpinned stacks outside a matching list cut — and the `.offline` drawer — can fold back up.
     func canCollapse(listCut: DeviceListCut = .all, isEditingLayout: Bool = false) -> Bool {
-        !isPinned && devices.count > 1 && !matches(listCut: listCut) && !isEditingLayout
+        if source == .offline {
+            return !isEditingLayout
+        }
+        return !isPinned && devices.count > 1 && !matches(listCut: listCut) && !isEditingLayout
     }
 
     /// Whether an open stack draws a section header row above its cards:
@@ -63,13 +71,12 @@ struct DeviceStack: Identifiable, Equatable {
     /// - A room/kind group already named by the active `listCut` pill omits the duplicate header.
     /// - When `常用` is the only group on screen (`totalStacks == 1`), there is no lower section
     ///   to contrast with, so it omits the `"常用"` header as well.
-    /// - Custom user groups (`.group`) always keep their header: the group name lives nowhere on
-    ///   the card, and the header's context menu owns Rename / Reorder / Delete Group.
+    /// - Custom user groups (`.group`) and the `.offline` drawer always keep their header.
     func showsHeader(totalStacks: Int, listCut: DeviceListCut = .all) -> Bool {
         switch source {
         case .favorites:
             return totalStacks > 1
-        case .group:
+        case .group, .offline:
             return true
         case .room, .kind:
             return devices.count > 1 && !matches(listCut: listCut)
@@ -85,7 +92,7 @@ struct DeviceStack: Identifiable, Equatable {
     /// - Never when `listCut` already scopes the entire panel to one room.
     /// - For a `.room` stack, omitted when `showsHeader` already names the room above, but shown
     ///   when a single-device room renders headerless so the card still identifies its room.
-    /// - Shown for `.favorites`, `.group`, and `.kind` outside a room cut.
+    /// - Shown for `.favorites`, `.group`, `.kind`, and `.offline` outside a room cut.
     func showsRoomBadge(totalStacks: Int, listCut: DeviceListCut = .all) -> Bool {
         if case .room = listCut { return false }
         if case .room = source {
@@ -119,7 +126,7 @@ struct DeviceStack: Identifiable, Equatable {
                 title: L10n.tr("类型：\(title)", "Type: \(title)"),
                 symbol: devices.first?.sfSymbolName ?? "square.stack"
             )
-        case .favorites, .group, .room(nil):
+        case .favorites, .group, .room(nil), .offline:
             return nil
         }
     }
@@ -176,29 +183,94 @@ extension ControlCenterPanel {
 
     // MARK: - Building the stacks
 
-    /// Favorites first, then each custom group, then one stack per room or per kind.
+    /// Favorites & habit-frequent devices first, then custom groups, then online room/kind stacks
+    /// ranked by habit & active state, with offline/unpowered devices sunk into a bottom drawer.
     var deviceStacks: [DeviceStack] {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
         let order = currentOrder
+        let habitOrder = store.userHabitMemory.usageOrder()
         func ordered(_ devices: [SmartDevice]) -> [SmartDevice] {
             DeviceLayoutPrefs.apply(order: order, to: devices)
         }
+        func prioritized(_ devices: [SmartDevice]) -> [SmartDevice] {
+            PanelDeviceOrganizer.prioritizePool(
+                devices,
+                habitOrder: habitOrder,
+                customOrder: order,
+                isActive: { store.presentsAsActive($0) }
+            )
+        }
+
+        if isEditingLayout {
+            var editStacks: [DeviceStack] = []
+            var editPool = store.visibleDevices
+            if !store.favoriteDevices.isEmpty {
+                editStacks.append(DeviceStack(
+                    id: "fav",
+                    source: .favorites,
+                    title: L10n.tr("常用", "Favorites"),
+                    devices: ordered(store.favoriteDevices)
+                ))
+                editPool = store.nonFavoriteDevices
+            }
+            appendOnlineGroupAndCategoryStacks(from: editPool, map: map, orderFn: ordered, into: &editStacks)
+            return editStacks
+        }
+
+        let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: order)
+        let onlineIdSet = Set(partition.online.map(\.id))
+        let starredRaw = store.favoriteDevices.filter { onlineIdSet.contains($0.id) }
+        let starredIds = Set(starredRaw.map(\.id))
+        let favDevices = PanelDeviceOrganizer.prioritizeOnline(
+            starredRaw,
+            favoriteIds: starredIds,
+            favoriteOrder: store.favoriteOrder,
+            habitOrder: habitOrder,
+            customOrder: order,
+            isActive: { store.presentsAsActive($0) }
+        )
 
         var stacks: [DeviceStack] = []
-        var pool = store.visibleDevices
-        if !store.favoriteDevices.isEmpty {
+        var pool = partition.online
+        if !favDevices.isEmpty {
             stacks.append(DeviceStack(
-                id: "fav", source: .favorites,
+                id: "fav",
+                source: .favorites,
                 title: L10n.tr("常用", "Favorites"),
-                devices: ordered(store.favoriteDevices)
+                devices: favDevices
             ))
-            pool = store.nonFavoriteDevices
+            pool = partition.online.filter { !starredIds.contains($0.id) }
         }
+
+        appendOnlineGroupAndCategoryStacks(from: pool, map: map, orderFn: prioritized, into: &stacks)
+
+        if !partition.offline.isEmpty {
+            stacks.append(DeviceStack(
+                id: PanelDeviceOrganizer.offlineSectionId,
+                source: .offline,
+                title: PanelDeviceOrganizer.offlineDrawerTitle(),
+                devices: partition.offline
+            ))
+        }
+        return stacks
+    }
+
+    private func appendOnlineGroupAndCategoryStacks(
+        from pool: [SmartDevice],
+        map: [String: String],
+        orderFn: ([SmartDevice]) -> [SmartDevice],
+        into stacks: inout [DeviceStack]
+    ) {
         for group in groups {
             let members = pool.filter { map[$0.id] == group.id }
             if !members.isEmpty {
-                stacks.append(DeviceStack(id: "group:\(group.id)", source: .group(group.id), title: group.name, devices: ordered(members)))
+                stacks.append(DeviceStack(
+                    id: "group:\(group.id)",
+                    source: .group(group.id),
+                    title: group.name,
+                    devices: orderFn(members)
+                ))
             }
         }
         let rest = pool.filter { map[$0.id] == nil }
@@ -209,37 +281,129 @@ extension ControlCenterPanel {
             for room in rooms {
                 let members = rest.filter { $0.roomId == room.id }
                 if !members.isEmpty {
-                    stacks.append(DeviceStack(id: "room:\(room.id)", source: .room(room.id), title: roomDisplayTitle(room), devices: ordered(members)))
+                    stacks.append(DeviceStack(
+                        id: "room:\(room.id)",
+                        source: .room(room.id),
+                        title: roomDisplayTitle(room),
+                        devices: orderFn(members)
+                    ))
                 }
             }
             let roomIds = Set(rooms.map(\.id))
             let homeless = rest.filter { !roomIds.contains($0.roomId) }
             if !homeless.isEmpty {
-                stacks.append(DeviceStack(id: "room:-", source: .room(nil), title: L10n.tr("其他", "Other"), devices: ordered(homeless)))
+                stacks.append(DeviceStack(
+                    id: "room:-",
+                    source: .room(nil),
+                    title: L10n.tr("其他", "Other"),
+                    devices: orderFn(homeless)
+                ))
             }
         case .kind:
             for tag in displayKinds {
                 let members = rest.filter { $0.kind.tag == tag }
                 if !members.isEmpty {
-                    stacks.append(DeviceStack(id: "kind:\(tag.rawValue)", source: .kind(tag), title: tag.chipTitle, devices: ordered(members)))
+                    stacks.append(DeviceStack(
+                        id: "kind:\(tag.rawValue)",
+                        source: .kind(tag),
+                        title: tag.chipTitle,
+                        devices: orderFn(members)
+                    ))
                 }
             }
         }
-        return stacks
     }
 
-    /// Pinned favorites, single-device groups, and a stack matching the active list cut never fold.
+    /// Single-device non-favorite stacks beyond the initial 8-card overview fold into the long tail
+    /// until opened by the user.
+    func overviewFoldedStackIds(in stacks: [DeviceStack]) -> Set<String> {
+        guard !isEditingLayout, store.listCut == .all else { return [] }
+        let onlineStacks = stacks.filter { $0.source != .offline }
+        let totalOnline = onlineStacks.reduce(0) { $0 + $1.devices.count }
+        guard totalOnline > PanelDeviceOrganizer.initialOverviewLimit else { return [] }
+
+        var openCount = 0
+        var folded: Set<String> = []
+        for stack in onlineStacks {
+            if stack.isPinned || expandedStacks.contains(stack.id) {
+                openCount += stack.devices.count
+            } else if stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut) {
+                if openCount + stack.devices.count <= PanelDeviceOrganizer.initialOverviewLimit {
+                    openCount += stack.devices.count
+                } else {
+                    folded.insert(stack.id)
+                }
+            }
+        }
+        return folded
+    }
+
+    func isStackOpen(_ stack: DeviceStack, overviewFolded: Set<String>) -> Bool {
+        if overviewFolded.contains(stack.id), !expandedStacks.contains(stack.id) {
+            return false
+        }
+        return stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut)
+    }
+
+    /// Pinned favorites, single-device groups within the initial 8-card overview, and a stack matching
+    /// the active list cut open automatically.
     func isStackOpen(_ stack: DeviceStack) -> Bool {
-        stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut)
+        isStackOpen(stack, overviewFolded: overviewFoldedStackIds(in: deviceStacks))
     }
 
-    /// Devices below `常用` and custom groups — the only slice `按房间 / 按类型` actually regroups.
-    /// With 0 or 1 device here, both segments render identically, so the toggle would do nothing.
+    func longTailBarState(for stacks: [DeviceStack]) -> (shows: Bool, hiddenCount: Int, isExpanded: Bool) {
+        guard !isEditingLayout, store.listCut == .all else { return (false, 0, false) }
+        let onlineStacks = stacks.filter { $0.source != .offline }
+        let totalOnline = onlineStacks.reduce(0) { $0 + $1.devices.count }
+        guard totalOnline > PanelDeviceOrganizer.initialOverviewLimit else { return (false, 0, false) }
+
+        let collapsible = onlineStacks.filter { !$0.isPinned }
+        guard !collapsible.isEmpty else { return (false, 0, false) }
+
+        let foldedByCap = overviewFoldedStackIds(in: stacks)
+        let hiddenCount = onlineStacks.reduce(0) { sum, stack in
+            isStackOpen(stack, overviewFolded: foldedByCap) ? sum : (sum + stack.devices.count)
+        }
+        if hiddenCount > 0 {
+            return (true, hiddenCount, false)
+        }
+        let anyManuallyExpanded = collapsible.contains { expandedStacks.contains($0.id) }
+        return (anyManuallyExpanded, 0, anyManuallyExpanded)
+    }
+
+    func toggleLongTail(in stacks: [DeviceStack]) {
+        let state = longTailBarState(for: stacks)
+        let ids = stacks.filter { $0.source != .offline && !$0.isPinned }.map(\.id)
+        withAnimation(stackAnimation) {
+            if state.isExpanded {
+                expandedStacks.subtract(ids)
+            } else {
+                expandedStacks.formUnion(ids)
+            }
+        }
+    }
+
+    var roomBrowseOptions: [PanelRoomBrowseOption] {
+        let visibleByRoom = Dictionary(grouping: store.visibleDevices, by: \.roomId)
+        return displayRooms.compactMap { room in
+            guard let members = visibleByRoom[room.id], !members.isEmpty else { return nil }
+            let onlineCount = members.filter(\.isOnline).count
+            return PanelRoomBrowseOption(
+                id: room.id,
+                title: roomDisplayTitle(room),
+                onlineCount: onlineCount
+            )
+        }
+    }
+
+    /// Online devices below `常用` and custom groups — the slice `按房间 / 按类型` actually regroups.
+    /// With 0 or 1 online device here, both segments render identically, so the toggle hides.
     var unpinnedUngroupedDeviceCount: Int {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
-        let pool = store.favoriteDevices.isEmpty ? store.visibleDevices : store.nonFavoriteDevices
-        return pool.filter { map[$0.id] == nil }.count
+        let onlinePool = (store.favoriteDevices.isEmpty ? store.visibleDevices : store.nonFavoriteDevices)
+            .filter(\.isOnline)
+        return onlinePool.filter { map[$0.id] == nil }.count
     }
 
     var showsGroupingSegments: Bool {
@@ -253,13 +417,20 @@ extension ControlCenterPanel {
     /// The order the digit shortcuts and the card badges share: every card the column draws, in
     /// the order it draws them. Folded stacks draw one summary card and contribute no digits.
     func quickIndexOrder(_ stacks: [DeviceStack]) -> PanelQuickIndexOrder {
-        PanelQuickIndexOrder(stacks: stacks, isOpen: isStackOpen, cards: { cardOrder($0.devices) })
+        let folded = overviewFoldedStackIds(in: stacks)
+        return PanelQuickIndexOrder(
+            stacks: stacks,
+            isOpen: { isStackOpen($0, overviewFolded: folded) },
+            cards: { cardOrder($0.devices) }
+        )
     }
 
     func openStack(containing deviceId: String?) {
+        let stacks = deviceStacks
+        let folded = overviewFoldedStackIds(in: stacks)
         guard let deviceId,
-              let stack = deviceStacks.first(where: { $0.devices.contains { $0.id == deviceId } }),
-              !isStackOpen(stack) else { return }
+              let stack = stacks.first(where: { $0.devices.contains { $0.id == deviceId } }),
+              !isStackOpen(stack, overviewFolded: folded) else { return }
         withAnimation(stackAnimation) { _ = expandedStacks.insert(stack.id) }
     }
 
@@ -292,7 +463,7 @@ extension ControlCenterPanel {
                         Text(cut)
                             .lineLimit(1)
                         Image(systemName: "xmark")
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                            .font(.system(size: DesignTokens.TypeSize.footnote, weight: .bold))
                     }
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                     .padding(.horizontal, 10)
@@ -302,6 +473,7 @@ extension ControlCenterPanel {
                 .buttonStyle(.plain)
                 .fixedSize()
                 .accessibilityLabel(Text(L10n.tr("显示全部：取消只看\(cut)", "Show all: stop showing only \(cut)")))
+                .panelHelp(L10n.tr("取消筛选，返回全部设备", "Clear filter and show all devices"))
                 .transition(.opacity.combined(with: .scale(scale: 0.9)))
             }
             if !showsGroupingSegments {
@@ -324,9 +496,15 @@ extension ControlCenterPanel {
     // MARK: - A stack
 
     @ViewBuilder
-    func stackView(_ stack: DeviceStack, totalStacks: Int, quickIndexMap: [String: Int]) -> some View {
-        let open = isStackOpen(stack)
+    func stackView(
+        _ stack: DeviceStack,
+        totalStacks: Int,
+        overviewFolded: Set<String>,
+        quickIndexMap: [String: Int]
+    ) -> some View {
+        let open = isStackOpen(stack, overviewFolded: overviewFolded)
         let showsHeader = stack.showsHeader(totalStacks: totalStacks, listCut: store.listCut)
+            || (expandedStacks.contains(stack.id) && overviewFolded.contains(stack.id))
         let showRoomBadge = stack.showsRoomBadge(totalStacks: totalStacks, listCut: store.listCut)
         let dimmedInEdit = !stack.isPinned && isEditingLayout
         VStack(alignment: .leading, spacing: 8) {
@@ -339,7 +517,7 @@ extension ControlCenterPanel {
                     devices: stack.devices,
                     showRoomBadge: showRoomBadge,
                     quickIndexMap: quickIndexMap,
-                    asRows: !stack.isPinned
+                    allowsLayoutEditing: stack.isPinned
                 )
                 .environment(\.headerlessStackMenu, headerlessStackMenu(for: stack, showsHeader: showsHeader))
                 // The cards slide out of the stack's top edge, as an opened notification group does.
@@ -360,7 +538,9 @@ extension ControlCenterPanel {
     }
 
     private func stackHeader(_ stack: DeviceStack) -> some View {
-        HStack(alignment: .center, spacing: 6) {
+        let canCollapse = stack.canCollapse(listCut: store.listCut, isEditingLayout: isEditingLayout)
+            || (!stack.isPinned && !stack.matches(listCut: store.listCut) && !isEditingLayout && expandedStacks.contains(stack.id))
+        return HStack(alignment: .center, spacing: 6) {
             Text(stack.title)
                 .font(.system(size: DesignTokens.TypeSize.title, weight: .semibold))
                 .lineLimit(1)
@@ -372,25 +552,27 @@ extension ControlCenterPanel {
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            if stack.canCollapse(listCut: store.listCut, isEditingLayout: isEditingLayout) {
+            if canCollapse {
                 Button {
                     setStack(stack, open: false)
                 } label: {
                     HStack(spacing: 3) {
                         Text(L10n.tr("收起", "Show Less"))
                         Image(systemName: "chevron.up")
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
+                            .font(.system(size: DesignTokens.TypeSize.footnote, weight: .bold))
                     }
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10)
-                    .frame(height: 26)
+                    .frame(height: DesignTokens.minHitTarget)
                     .adaptiveGlass(in: Capsule(style: .continuous), interactive: true)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("收起 \(stack.title)", "Collapse \(stack.title)")))
+                .panelHelp(L10n.tr("收起分组", "Collapse group"))
             }
         }
-        .frame(minHeight: 26)
+        .frame(minHeight: DesignTokens.minHitTarget)
         .padding(.leading, 2)
         .contentShape(Rectangle())
         .contextMenu { stackMenu(stack) }
@@ -446,13 +628,15 @@ extension ControlCenterPanel {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(Text("\(stack.title)，\(stackSummary(stack, lit: lit))"))
         .accessibilityHint(Text(L10n.tr("展开查看 \(stack.devices.count) 台设备", "Expand to show \(stack.devices.count) devices")))
+        .panelHelp(L10n.tr("点击展开查看 \(stack.devices.count) 台设备", "Click to show \(stack.devices.count) devices"))
     }
 
     /// Colour only inside the orb: the family colour of the first running device, gray when all are off.
     private func stackOrb(_ stack: DeviceStack, lit: [SmartDevice]) -> some View {
-        let color = lit.first.map { DevicePalette.accentColor(for: $0) }
+        let color = stack.source == .offline ? nil : lit.first.map { DevicePalette.accentColor(for: $0) }
         let symbol: String = {
             switch stack.source {
+            case .offline: return "wifi.slash"
             case .kind, .group: return (lit.first ?? stack.devices.first)?.sfSymbolName ?? "square.stack.fill"
             case .room, .favorites: return "house.fill"
             }
@@ -471,6 +655,9 @@ extension ControlCenterPanel {
     /// What a notification body would say: which devices are on, plus the room's climate reading.
     private func stackSummary(_ stack: DeviceStack, lit: [SmartDevice]) -> String {
         let aliases = GroupPrefs.map(aliasesRaw)
+        if stack.source == .offline {
+            return PanelDeviceOrganizer.offlineStackSummary(devices: stack.devices, aliases: aliases)
+        }
         var parts: [String] = []
         if lit.isEmpty {
             parts.append(L10n.tr("全部关闭", "All off"))
@@ -511,7 +698,7 @@ extension ControlCenterPanel {
     @ViewBuilder
     private func stackMenu(_ stack: DeviceStack) -> some View {
         switch stack.source {
-        case .favorites:
+        case .favorites, .offline:
             EmptyView()
         case .group(let gid):
             Button { layoutUI.renamingGroupId = gid } label: { Label(L10n.tr("重命名", "Rename"), systemImage: "pencil") }

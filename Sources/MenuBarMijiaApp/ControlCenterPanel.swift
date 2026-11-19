@@ -421,6 +421,10 @@ public struct ControlCenterPanel: View {
     private var deviceColumn: some View {
         ScrollViewReader { scrollProxy in
             let stacks = deviceStacks
+            let onlineStacks = stacks.filter { $0.source != .offline }
+            let offlineStacks = stacks.filter { $0.source == .offline }
+            let overviewFolded = overviewFoldedStackIds(in: stacks)
+            let longTailState = longTailBarState(for: stacks)
             // The one order both the card badges and the digit/navigation shortcuts read: only cards
             // that are actually drawn take a number, in the order they are drawn.
             let quickIndex = search.isSearching
@@ -443,9 +447,40 @@ public struct ControlCenterPanel: View {
                     } else if store.visibleDevices.isEmpty {
                         emptyStateView
                     } else {
-                        ForEach(stacks) { stack in
-                            stackView(stack, totalStacks: stacks.count, quickIndexMap: quickIndexBadges)
-                                .transition(.opacity)
+                        ForEach(onlineStacks) { stack in
+                            stackView(
+                                stack,
+                                totalStacks: onlineStacks.count,
+                                overviewFolded: overviewFolded,
+                                quickIndexMap: quickIndexBadges
+                            )
+                            .transition(.opacity)
+                        }
+
+                        if longTailState.shows {
+                            PanelLongTailBar(
+                                hiddenCount: longTailState.hiddenCount,
+                                isExpanded: longTailState.isExpanded,
+                                rooms: roomBrowseOptions,
+                                theme: .liquidGlass,
+                                onToggleExpand: { toggleLongTail(in: stacks) },
+                                onSelectRoom: { roomId in
+                                    withAnimation(AppleMotion.snappySpring) {
+                                        _ = store.selectRoom(roomId)
+                                    }
+                                }
+                            )
+                            .transition(.opacity)
+                        }
+
+                        ForEach(offlineStacks) { stack in
+                            stackView(
+                                stack,
+                                totalStacks: stacks.count,
+                                overviewFolded: overviewFolded,
+                                quickIndexMap: quickIndexBadges
+                            )
+                            .transition(.opacity)
                         }
                     }
                 }
@@ -512,11 +547,12 @@ public struct ControlCenterPanel: View {
     private var omnibar: some View {
         let shape = Capsule(style: .continuous)
         let listening = speech.isListening
-        return HStack(spacing: 7) {
+        return HStack(spacing: 4) {
             OmnibarLeadingSymbol(
                 listening: listening,
                 isThinking: store.assistantState == .thinking
             )
+            .padding(.trailing, 3)
 
             TextField(
                 omnibarPlaceholder,
@@ -544,9 +580,12 @@ public struct ControlCenterPanel: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("清空输入", "Clear input")))
+                .panelHelp(L10n.tr("清空输入", "Clear input"))
             }
 
             if store.assistantState == .thinking {
@@ -554,10 +593,10 @@ public struct ControlCenterPanel: View {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.7)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 } else {
                     Color.clear
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 }
             } else if store.enableVoiceInput {
                 Button {
@@ -568,19 +607,20 @@ public struct ControlCenterPanel: View {
                     Image(systemName: listening ? "stop.circle.fill" : "mic.fill")
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(listening ? Color.red : Color.accentColor)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(listening
                     ? L10n.tr("停止聆听", "Stop listening")
                     : L10n.tr("语音输入", "Voice input")))
-                .help(listening
+                .panelHelp(listening
                     ? L10n.tr("停止聆听并执行", "Stop listening and run")
                     : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
         .frame(height: 32)
         .adaptiveGlass(in: shape, interactive: true)
         .overlay(
