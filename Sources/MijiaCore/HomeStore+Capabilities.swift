@@ -170,7 +170,6 @@ extension HomeStore {
         // connecting the same account again) still owns the paused timers, rules and quick actions
         // recorded before, so it has to go through the same fresh-snapshot revalidation as
         // `setMiAccountEnabled(true, ...)`. Without that the pause markers survive forever.
-        let wasExplicitlyDisabled = explicitlyDisabledScopes.contains(scope)
         explicitlyDisabledConnections.remove(connection)
         explicitlyDisabledScopes.remove(scope)
         var next = capabilitySelection
@@ -178,7 +177,10 @@ extension HomeStore {
         next.enabledConnectionScopes.insert(scope)
         capabilitySelection = next.normalized(with: .shared)
         capabilityGeneration &+= 1
-        if wasExplicitlyDisabled { pendingRevalidationScopes.insert(scope) }
+        // Always wait for this scope's first fresh snapshot before deciding about paused items: it may
+        // be a re-added account whose paused quick actions lost their targets when it was removed, and
+        // that removal already cleared the explicit-disable marker this check used to look at.
+        pendingRevalidationScopes.insert(scope)
         persistCapabilitySelection()
     }
 
@@ -242,9 +244,15 @@ extension HomeStore {
         return next
     }
 
+    /// A paired card copies the Xiaomi `accountId` even when Home Assistant drives it (ADR-0008).
+    /// Only rows the Mi account actually controls may be torn down or hidden with it.
+    private func isMiOwnedRow(_ device: SmartDevice, accountId: String) -> Bool {
+        device.accountId == accountId && deviceBackends[device.id] != .homeAssistant
+    }
+
     private func applyMiAccountDisabledRuntimeState(id: String) {
         invalidateUndoContext()
-        var disabledDeviceIds = Set(devices.filter { $0.accountId == id }.map(\.id))
+        var disabledDeviceIds = Set(devices.filter { isMiOwnedRow($0, accountId: id) }.map(\.id))
         for (devId, indexed) in indexedDevicesById where indexed.sourceScope == id {
             disabledDeviceIds.insert(devId)
         }
@@ -269,7 +277,7 @@ extension HomeStore {
             lastReportedDevices.removeValue(forKey: removedId)
             lastReportedFacets.removeValue(forKey: removedId)
         }
-        devices.removeAll { disabledDeviceIds.contains($0.id) || $0.accountId == id }
+        devices.removeAll { disabledDeviceIds.contains($0.id) || isMiOwnedRow($0, accountId: id) }
         environmentReadings.removeAll { disabledDeviceIds.contains($0.id) }
         rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
         homes.removeAll { $0.accountId == id }
@@ -681,7 +689,11 @@ extension HomeStore {
             if scopes.isEmpty { scopes = configuredConnectionScopes() }
             let summary = "\(rule.trigger.title) · \(rule.action.summary(devices: devices, scenes: scenes))"
             return AutomationReference(
-                id: rule.id.uuidString, name: summary, isEnabled: rule.isEnabled,
+                // A paused rule is inspected too: another disable can take away more of its targets,
+                // and its pause markers have to grow instead of being resumed by the first account
+                // that comes back (review #275).
+                id: rule.id.uuidString, name: summary,
+                isEnabled: rule.isEnabled || !rule.pausedCapabilities.isEmpty,
                 action: refAction, sourceScopes: scopes.sorted()
             )
         }
@@ -758,7 +770,8 @@ extension HomeStore {
             var rules = store.load()
             var changed = false
             for idx in rules.indices {
-                guard let pause = rulePauseById[rules[idx].id], rules[idx].isEnabled else { continue }
+                // Already-paused rules merge the newly lost scopes instead of being skipped.
+                guard let pause = rulePauseById[rules[idx].id] else { continue }
                 rules[idx].isEnabled = false
                 rules[idx].pausedCapabilities = Array(
                     Set(rules[idx].pausedCapabilities + (pause.caps.isEmpty ? [.connection(.xiaomiCloud)] : pause.caps))

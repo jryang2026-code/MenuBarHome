@@ -354,7 +354,10 @@ extension HomeStore {
                 // Some MIoT rows carry no `accountId`; the persisted index still knows which account
                 // unites them, so a disabled account's devices cannot come back through them.
                 let disabledDeviceIds = Set(snapshot.devices.compactMap { device -> String? in
-                    if let acc = device.accountId, shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) {
+                    // An HA-winning paired card copies the Mi `accountId` but is not controlled by it.
+                    if let acc = device.accountId,
+                       deviceBackends[device.id] != .homeAssistant,
+                       shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) {
                         return device.id
                     }
                     if let indexed = indexedDevicesById[device.id],
@@ -1217,8 +1220,12 @@ extension HomeStore {
             userDefaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
         }
         if homeBackend == .xiaomiCloud || provider is DualSourceHomeProvider {
-            let removedDeviceIds = Set(devices.filter { $0.accountId == id }.map(\.id))
-            devices.removeAll { $0.accountId == id }
+            // Home Assistant keeps driving its paired cards: their copied `accountId` must not take
+            // them off the panel with the account they were paired with (ADR-0008).
+            let removedDeviceIds = Set(devices.filter {
+                $0.accountId == id && deviceBackends[$0.id] != .homeAssistant
+            }.map(\.id))
+            devices.removeAll { $0.accountId == id && deviceBackends[$0.id] != .homeAssistant }
             for removedId in removedDeviceIds {
                 cancelFacetWrites(for: removedId)
                 deviceFacets.removeValue(forKey: removedId)

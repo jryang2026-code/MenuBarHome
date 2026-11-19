@@ -1371,6 +1371,99 @@ struct MiAccountDisableTestsReview {
         #expect(!(await mock.executedCommands.isEmpty))
     }
 
+    @Test("Disabling a Xiaomi account keeps the cards Home Assistant drives")
+    func disableKeepsHAPairedCards() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+
+        let paired = Self.indexedLight(id: "paired-light", name: "走廊灯", accountId: Self.cn.id)
+        var home = SynthesizedHome(rooms: [], devices: [paired], environmentReadings: [], scenes: [])
+        home.deviceBackends = ["paired-light": .homeAssistant]
+        let mock = MockHomeProvider(snapshot: home)
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        // A Home Assistant-winning card only exists while Home Assistant is configured.
+        store.hasHASource = true
+        store.serverURLString = "http://192.168.1.10:8123"
+        try await store.waitForTestSnapshot()
+        #expect(store.deviceBackends["paired-light"] == .homeAssistant)
+
+        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        #expect(store.devices.map(\.id) == ["paired-light"])
+
+        // Later snapshots keep the Home Assistant row even though its copied account id is off.
+        await mock.updateSnapshot(home)
+        await waitUntil { store.devices.map(\.id) == ["paired-light"] }
+        #expect(store.devices.map(\.id) == ["paired-light"])
+    }
+
+    @Test("Disabling a second account extends the pause markers of an already paused rule")
+    func secondDisableExtendsPausedScopes() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.devices = [
+            Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id),
+            Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id),
+        ]
+        let ruleStore = AutomationRuleStore(defaults: defaults)
+        ruleStore.save([AutomationRule(trigger: .away, action: .devices(ids: ["cn-light", "de-light"], isOn: false))])
+
+        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        #expect(try #require(ruleStore.load().first).pausedScopes == [Self.cn.id])
+
+        // The second account takes away the rule's remaining targets; its pause markers must grow.
+        let preview = store.previewSetMiAccountEnabled(false, id: Self.de.id)
+        #expect(preview.disposition == .requiresPauseConfirmation)
+        #expect(preview.itemsToPause.contains { $0.kind == .automationRule })
+        store.setMiAccountEnabled(false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        #expect(try #require(ruleStore.load().first).pausedScopes == [Self.cn.id, Self.de.id].sorted())
+
+        store.setMiAccountEnabled(true, id: Self.cn.id)
+        #expect(try #require(ruleStore.load().first).isEnabled == false)
+
+        store.setMiAccountEnabled(true, id: Self.de.id)
+        #expect(try #require(ruleStore.load().first).isEnabled == true)
+    }
+
+    @Test("Re-adding an account revalidates the paused quick actions it left behind")
+    func readdedAccountRevalidatesQuickActions() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        let store = Self.makeStore(suite: suite, vault: vault)
+        let light = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
+        store.devices = [light]
+
+        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
+        store.logoutMiAccount(id: Self.cn.id)
+        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
+
+        _ = MiSessionStore.upsert(MiAccountDisableFixture.cnSession, defaults: defaults, vault: vault)
+        store.miAccounts = MiSessionStore.loadAccounts(defaults: defaults, vault: vault)
+        store.registerNewlyConfiguredScope(Self.cn.id, connection: .xiaomiCloud)
+        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
+
+        store.devices = [light]
+        var snapshot = SynthesizedHome(rooms: [], devices: [light], environmentReadings: [], scenes: [])
+        snapshot.isInitialLoadComplete = true
+        snapshot.freshAccountIds = [Self.cn.id]
+        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
+        snapshot.accountStatuses = [Self.cn.id: .connected]
+        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+
+        #expect(!store.pausedQuickActionIDs.contains("lightsOff"))
+    }
+
     // MARK: L1 – All accounts turned off is not "not configured"
 
     @Test("Turning off the only Xiaomi account reports a turned-off connection, not an unconfigured home")

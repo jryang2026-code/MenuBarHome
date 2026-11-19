@@ -1636,6 +1636,44 @@ struct SnapshotTests {
         }
     }
 
+    @Test("A paused timer shows in the assistant bar with its cancel control")
+    func assistantPausedTimerSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok"
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+        let accountId = try #require(fixture.store.miAccounts.first?.id)
+        let paused = ScheduledCommand(
+            reply: "10 分钟后关闭客厅灯",
+            fireDate: Date(timeIntervalSince1970: 1_760_000_600),
+            plan: IntentPlan(intents: [], reply: "关闭客厅灯", source: .local),
+            sourceScope: accountId
+        )
+        fixture.store.pausedScheduledCommands = [PausedScheduledCommand(
+            command: paused, originalPartition: .waiting,
+            pausedCapabilities: [.connection(.xiaomiCloud)], pausedScopes: [accountId]
+        )]
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                snapshotReady(
+                    AssistantResponseArea(store: fixture.store)
+                        .padding(8)
+                        .frame(width: 360, alignment: .leading),
+                    scheme: scheme
+                ),
+                size: CGSize(width: 376, height: 60),
+                named: "assistant-paused-timer-zh-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Settings search suggestions remain readable in both appearances")
     func settingsSearchSuggestions() async throws {
         for scheme in [ColorScheme.light, .dark] {
