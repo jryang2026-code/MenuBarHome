@@ -435,12 +435,12 @@ extension HomeStore {
         revalidatePausedItems(snapshot: snapshot)
     }
 
-    /// True while another account's Mi home is selected: the provider hides this account's devices
-    /// even when it polls fine, so its snapshot cannot prove anything about them.
+    /// True while any Mi home is selected. A selected home filters the provider's device list to that
+    /// home — for the owning account and (with everything) for the others — so its snapshot is not an
+    /// inventory of the account. Only "all homes" can prune targets or finish pending revalidation.
     private func selectedHomeHidesScope(_ scope: String) -> Bool {
-        guard CapabilityReferenceEngine.connectionCapability(forScope: scope) == .xiaomiCloud,
-              let home = selectedMiHomeId, let owner = MiAccountScope.owner(of: home) else { return false }
-        return owner != scope
+        guard CapabilityReferenceEngine.connectionCapability(forScope: scope) == .xiaomiCloud else { return false }
+        return selectedMiHomeId != nil
     }
 
     /// The scope still exists in the user's configuration, whether or not it is turned on.

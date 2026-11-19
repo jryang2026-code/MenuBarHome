@@ -1006,6 +1006,12 @@ struct MiAccountDisableTestsReview {
 
         #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
         #expect(store.indexedDevicesById["cn-light"] != nil)
+
+        // The account's own selected home filters out its other homes too: still not an inventory.
+        store.selectedMiHomeId = Self.cn.id + "/home-cn"
+        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
+        #expect(store.indexedDevicesById["cn-light"] != nil)
     }
 
     @Test("A non-authoritative snapshot never clears a paused rule's markers")
