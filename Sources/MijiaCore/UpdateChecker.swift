@@ -881,13 +881,17 @@ public struct UpdateSystemDriver: Sendable {
             }
             let outReadHandle = outPipe.fileHandleForReading
             let errReadHandle = errPipe.fileHandleForReading
-            async let outData = Task.detached(priority: .userInitiated) {
+            // Drain both pipes concurrently, then await the handles in a fixed order. `async let`
+            // wrapping `Task.detached` around a tuple `await` aborts the test process with
+            // "freed pointer was not the last allocation" on x86_64 Debug builds (swiftlang/swift#87571).
+            let outTask = Task.detached(priority: .userInitiated) {
                 outReadHandle.readDataToEndOfFile()
-            }.value
-            async let errData = Task.detached(priority: .userInitiated) {
+            }
+            let errTask = Task.detached(priority: .userInitiated) {
                 errReadHandle.readDataToEndOfFile()
-            }.value
-            let (stdout, stderrData) = await (outData, errData)
+            }
+            let stdout = await outTask.value
+            let stderrData = await errTask.value
             #if os(macOS)
             while process.isRunning {
                 try? await Task.sleep(for: .milliseconds(5))

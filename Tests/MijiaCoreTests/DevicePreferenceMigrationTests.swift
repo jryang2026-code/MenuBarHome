@@ -357,6 +357,13 @@ struct DevicePreferenceMigrationTests {
         #expect(store.hiddenDeviceIds == ["111000111", "ha-light-a"])
         #expect(store.favoriteDeviceIds == ["ha-light-a"])
         #expect(store.devices == devicesAfterFirst)
+
+        // Awaited teardown, not just the `defer { store.stop() }`: `stop()` unwinds the dual-source
+        // provider on an unstructured `Task`, while the `defer` that drops the suite's persistent
+        // domain runs the moment this sync part of the test returns. The Mi snapshot it just took
+        // could still write the suite while cfprefsd is tearing it down, racing the next suite
+        // (#274). The `defer` stays as the fallback for an early `#require` throw.
+        await store.shutdown()
     }
 
     @Test("Unhiding or unstarring the merged card sticks across snapshots and a relaunch (#24)")
@@ -412,5 +419,12 @@ struct DevicePreferenceMigrationTests {
         await waitUntil { relaunched.pairedDeviceIDs.contains("ha-light-a") }
         #expect(!relaunched.hiddenDeviceIds.contains("ha-light-a"))
         #expect(!relaunched.favoriteDeviceIds.contains("ha-light-a"))
+
+        // Both stores are awaited so neither dual-source provider outlives the test: the two `defer
+        // { .stop() }` calls unwind them on unstructured tasks that would otherwise still be
+        // tearing down while the suite domains above are dropped (#274). `relaunched` goes first
+        // because it reads the snapshot `store` produced.
+        await relaunched.shutdown()
+        await store.shutdown()
     }
 }

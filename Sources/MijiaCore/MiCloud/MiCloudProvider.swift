@@ -1722,6 +1722,9 @@ public actor MiCloudProvider: HomeProvider {
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
         home.localNetworkBlockedFeatures = isLocalNetworkDenied ? [.xiaomiLAN] : []
+        if let rejected = rejectedSession, isRejected(session ?? currentSession()) {
+            home.expiredAccountIDs = [MiAccount(session: rejected).id]
+        }
         DeviceSynthesizer.reconcileLightGroups(&home)
         let currentNow = now()
         // Light groups advertise `mode` but their members reject it; hide scenes there too.
@@ -1819,6 +1822,22 @@ public actor MiCloudProvider: HomeProvider {
         case .setProps:
             return false
         }
+    }
+
+    func canExecute(_ command: DeviceCommand) -> Bool {
+        guard !isShutDown, !isSessionRejected, api != nil else { return false }
+        let entityId = command.targetEntityId
+        guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
+              let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.did == did })
+                  ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
+                  ?? devices.first(where: { $0.miotDid == did }),
+              record.isOnline,
+              let spec = specsByModel[record.model],
+              (try? MiotCommandMapper.map(command, spec: spec)) != nil else {
+            return false
+        }
+        return true
     }
 
     public func execute(_ command: DeviceCommand) async throws {
