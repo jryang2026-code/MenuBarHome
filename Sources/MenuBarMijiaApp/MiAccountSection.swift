@@ -114,7 +114,17 @@ public struct MiAccountSection: View {
         switch verdict.disposition {
         case .allowed:
             let applied = store.setMiAccountEnabled(false, id: account.id, expectedGeneration: generation)
-            if applied.disposition == .blocked { reportBlockedDisable(applied) }
+            switch applied.disposition {
+            case .allowed:
+                break
+            case .requiresPauseConfirmation:
+                // A reference appeared between the preview and the apply: confirm the list first.
+                pendingDisableConfirmation = DisableConnectionConfirmation(
+                    account: account, itemsToPause: applied.itemsToPause, generation: store.capabilityGeneration
+                )
+            case .blocked:
+                reportBlockedDisable(applied)
+            }
         case .requiresPauseConfirmation:
             pendingDisableConfirmation = DisableConnectionConfirmation(
                 account: account,
