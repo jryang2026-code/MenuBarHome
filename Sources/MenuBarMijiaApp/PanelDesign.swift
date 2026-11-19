@@ -330,16 +330,41 @@ extension View {
 
 // MARK: - Hold-to-Confirm All Off
 
+/// Latches whether an All Off hold is a rehearsal or live shutdown at press-down.
+/// SwiftUI's `onLongPressGesture` can deliver `onPressingChanged(false)` immediately before
+/// `perform`, so the latch stays set until `consumeOnConfirm`, the next press, or `reset()`.
+struct AllOffHoldLatch: Equatable, Sendable {
+    private(set) var latchedMode: HomeStore.AllOffHoldMode?
+
+    mutating func pressingChanged(_ pressing: Bool, beginHold: () -> HomeStore.AllOffHoldMode) {
+        if pressing {
+            latchedMode = beginHold()
+        }
+    }
+
+    mutating func consumeOnConfirm(fallback beginHold: () -> HomeStore.AllOffHoldMode) -> HomeStore.AllOffHoldMode {
+        let mode = latchedMode ?? beginHold()
+        latchedMode = nil
+        return mode
+    }
+
+    mutating func reset() {
+        latchedMode = nil
+    }
+}
+
 /// "All Off" control: press and hold 0.6s to fire, with a filling progress sweep. It wears the
 /// same quiet chip surface as its header neighbours; the sweep is the only accent.
 struct HoldToConfirmButton: View {
     let title: String
     let count: Int
     let helpText: String
-    let onConfirm: () -> Void
+    let onBeginHold: () -> HomeStore.AllOffHoldMode
+    let onConfirm: (HomeStore.AllOffHoldMode) -> Void
     let onTap: () -> Void
 
     @State private var holding = false
+    @State private var holdLatch = AllOffHoldLatch()
 
     var body: some View {
         let capsule = Capsule(style: .continuous)
@@ -369,11 +394,17 @@ struct HoldToConfirmButton: View {
         .onTapGesture(perform: onTap)
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
             holding = false
+            let mode = holdLatch.consumeOnConfirm(fallback: onBeginHold)
             // #54: a confirm that turns off the whole room deserves a level-change tap.
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(mode)
         } onPressingChanged: { pressing in
+            holdLatch.pressingChanged(pressing, beginHold: onBeginHold)
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
+        }
+        .onDisappear {
+            holding = false
+            holdLatch.reset()
         }
         .panelHelp(helpText)
         // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.
@@ -382,8 +413,9 @@ struct HoldToConfirmButton: View {
         .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices"))) {
+            holdLatch.reset()
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(onBeginHold())
         }
     }
 }

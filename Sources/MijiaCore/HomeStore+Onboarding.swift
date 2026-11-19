@@ -95,23 +95,47 @@ extension HomeStore {
     }
 
     /// Every pending notice in priority order: a blocked session, then the plaintext-token
-    /// decision, then an address suggestion, then a session that is only expiring. Each one is its
-    /// own row in the panel's activity stack.
+    /// decision, then a local-network permission block, then an address suggestion, then a session
+    /// that is only expiring. Each one is its own row in the panel's activity stack.
     public var panelNoticeKinds: [PanelNoticeSlot.Kind] {
         PanelNotice.kinds(
             miExpired: miSessionShowsExpired,
             expiringSoon: miSessionExpiringSoonDate,
             plaintext: haPlaintextPrompt,
+            localNetworkBlocks: effectiveLocalNetworkBlocks,
             address: pendingHAAddressSuggestion
         )
+    }
+
+    /// Whether a header All Off hold is a dry-run onboarding rehearsal or a real shutdown.
+    public enum AllOffHoldMode: Equatable, Sendable {
+        case rehearsal
+        case live
+    }
+
+    /// Captures the All Off mode at press-down so asynchronous notices arriving during the 0.6s
+    /// hold cannot turn a promised rehearsal into real device writes.
+    public func beginAllOffHold() -> AllOffHoldMode {
+        allOffLessonIsActive ? .rehearsal : .live
+    }
+
+    /// Completes a header All Off hold using the mode captured when the hold started.
+    @discardableResult
+    public func confirmAllOffHold(mode: AllOffHoldMode) -> Task<BulkWriteOutcome, Never>? {
+        switch mode {
+        case .rehearsal:
+            _ = performAllOffRehearsal()
+            return nil
+        case .live:
+            return turnAllOff()
+        }
     }
 
     /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
     /// App Intent scenes, uses `turnAllOff()` and really switches devices off.
     @discardableResult
     public func rehearseAllOff() -> Task<BulkWriteOutcome, Never>? {
-        if rehearseAllOffLessonIfNeeded() { return nil }
-        return turnAllOff()
+        confirmAllOffHold(mode: beginAllOffHold())
     }
 
     /// Whether a currently visible activity-stack notice hides the getting-started checklist.
@@ -137,10 +161,11 @@ extension HomeStore {
         return onboardingChecklist.nextStep == .allOffAndUndo
     }
 
-    /// Shows the rehearsal banner and marks the lesson done. Returns false when this hold should
-    /// really turn devices off.
-    func rehearseAllOffLessonIfNeeded() -> Bool {
-        guard allOffLessonIsActive else { return false }
+    /// Runs the dry-run All Off rehearsal without re-checking `allOffLessonIsActive`, so a hold
+    /// that started during the lesson never falls through to `turnAllOff()` if a notice arrives
+    /// mid-hold.
+    @discardableResult
+    func performAllOffRehearsal() -> Bool {
         let targets = allOffTargets
         guard !targets.isEmpty else { return false }
         scheduleUndoBanner(
@@ -152,6 +177,13 @@ extension HomeStore {
         )
         recordOnboardingMilestone(.rehearsedAllOff)
         return true
+    }
+
+    /// Shows the rehearsal banner and marks the lesson done. Returns false when this hold should
+    /// really turn devices off.
+    func rehearseAllOffLessonIfNeeded() -> Bool {
+        guard allOffLessonIsActive else { return false }
+        return performAllOffRehearsal()
     }
 
     static func rehearsalBannerTitle(names: [String]) -> String {
@@ -173,14 +205,17 @@ public enum PanelNoticeSlot {
     public enum Kind: Equatable, Sendable {
         case miBlocked
         case haPlaintext(HAPlaintextPrompt)
+        case localNetworkBlocked(Set<LocalNetworkBlockedFeature>)
         case haAddress(HADiscoveredInstance)
         case miExpiringSoon(Date)
 
         /// A blocked session or a plaintext-token decision hides the getting-started row.
+        /// Advisory notices — including local-network permission refusals — coexist with onboarding
+        /// so background probes never yank away an active lesson.
         public var hidesChecklist: Bool {
             switch self {
             case .miBlocked, .haPlaintext: true
-            case .haAddress, .miExpiringSoon: false
+            case .localNetworkBlocked, .haAddress, .miExpiringSoon: false
             }
         }
 
@@ -191,6 +226,7 @@ public enum PanelNoticeSlot {
             case .miBlocked: "notice.miBlocked"
             case .haPlaintext(.asking): "notice.haPlaintext.asking"
             case .haPlaintext(.declined): "notice.haPlaintext.declined"
+            case .localNetworkBlocked: "notice.localNetworkBlocked"
             case .haAddress: "notice.haAddress"
             case .miExpiringSoon(let expiry): "notice.miExpiringSoon.\(Int(expiry.timeIntervalSince1970))"
             }
@@ -201,7 +237,7 @@ public enum PanelNoticeSlot {
         public var isDismissible: Bool {
             switch self {
             case .miBlocked, .haPlaintext(.asking): false
-            case .haPlaintext(.declined), .haAddress, .miExpiringSoon: true
+            case .haPlaintext(.declined), .localNetworkBlocked, .haAddress, .miExpiringSoon: true
             }
         }
 
@@ -217,7 +253,7 @@ public enum PanelNoticeSlot {
             switch self {
             case .miBlocked:
                 return toast.persistent && toast.action?.kind == .presentMiReauth
-            case .haPlaintext, .haAddress, .miExpiringSoon:
+            case .haPlaintext, .localNetworkBlocked, .haAddress, .miExpiringSoon:
                 return false
             }
         }
@@ -230,11 +266,13 @@ public enum PanelNotice {
         miExpired: Bool,
         expiringSoon: Date?,
         plaintext: HAPlaintextPrompt?,
+        localNetworkBlocks: Set<LocalNetworkBlockedFeature> = [],
         address: HADiscoveredInstance?
     ) -> [PanelNoticeSlot.Kind] {
         var kinds: [PanelNoticeSlot.Kind] = []
         if miExpired { kinds.append(.miBlocked) }
         if let plaintext { kinds.append(.haPlaintext(plaintext)) }
+        if !localNetworkBlocks.isEmpty { kinds.append(.localNetworkBlocked(localNetworkBlocks)) }
         if let address { kinds.append(.haAddress(address)) }
         if let expiringSoon { kinds.append(.miExpiringSoon(expiringSoon)) }
         return kinds

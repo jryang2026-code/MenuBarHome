@@ -1674,6 +1674,20 @@ extension HomeStore {
             }
         }
     }
+
+    @discardableResult
+    public func retryDeviceLAN(_ deviceId: String) -> Task<Void, Never> {
+        let targetProvider = provider
+        let lgClient = (homeBackend != .demo && lgConfig.isEnabled && lgConfig.hasConfiguredHost && deviceId == LGWebOSProtocol.deviceId)
+            ? lgWebOSClient
+            : nil
+        return Task {
+            await targetProvider.retryLAN(deviceId: deviceId)
+            if let lgClient {
+                await lgClient.start()
+            }
+        }
+    }
 }
 
 // MARK: - Mi Session Expiry (#181)
@@ -1764,12 +1778,38 @@ extension HomeStore {
     }
 
     public var effectiveLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> {
-        guard homeBackend != .demo else { return [] }
-        var blocks = localNetworkBlocks
-        if !hasHASource || !isHAConnectionEnabled { blocks.remove(.homeAssistant) }
-        if !hasEnabledMiSource { blocks.remove(.xiaomiLAN) }
-        if !lgConfig.isEnabled || !lgConfig.hasConfiguredHost { blocks.remove(.lgWebOS) }
+        effectiveLocalNetworkBlocks(for: localNetworkBlocks)
+    }
+
+    /// Resolves the raw blocked set against the sources that are actually switched on. The optional
+    /// overrides let a `didSet` recompute the *previous* verdict after the stored value already
+    /// changed (#268).
+    func effectiveLocalNetworkBlocks(
+        for rawBlocks: Set<LocalNetworkBlockedFeature>,
+        backend: HomeBackend? = nil,
+        hasHA: Bool? = nil,
+        hasMi: Bool? = nil,
+        lgConfig: LGWebOSConfig? = nil
+    ) -> Set<LocalNetworkBlockedFeature> {
+        let resolvedBackend = backend ?? homeBackend
+        guard resolvedBackend != .demo else { return [] }
+        let resolvedHasHA = hasHA ?? hasHASource
+        let resolvedHasMi = hasMi ?? hasEnabledMiSource
+        let resolvedLG = lgConfig ?? self.lgConfig
+        var blocks = rawBlocks
+        // `isHAConnectionEnabled` already folds in `hasHASource`, so it stays meaningful when the
+        // caller overrides the source flag with the pre-change value.
+        if !resolvedHasHA || !isHAConnectionEnabled { blocks.remove(.homeAssistant) }
+        if !resolvedHasMi { blocks.remove(.xiaomiLAN) }
+        if !resolvedLG.isEnabled || !resolvedLG.hasConfiguredHost { blocks.remove(.lgWebOS) }
         return blocks
+    }
+
+    func syncLocalNetworkBlockedNoticeDismissal(from oldEffective: Set<LocalNetworkBlockedFeature>) {
+        let current = effectiveLocalNetworkBlocks
+        if current.isEmpty || !current.isSubset(of: oldEffective) {
+            dismissedActivityIds.remove("notice.localNetworkBlocked")
+        }
     }
 
     /// The one connection verdict the footer, the settings badge and the menu-bar tooltip share.
@@ -1825,6 +1865,7 @@ extension HomeStore {
 public enum PanelHealthAction: Equatable, Sendable {
     case presentMiReauth
     case openConnectionSettings
+    case openLocalNetworkSettings
 }
 
 /// Connection health for every status surface. Derived, never stored.
@@ -1900,7 +1941,7 @@ enum PanelHealthResolver {
             let miLANBlocked = input.hasMiSource && input.localNetworkBlocks.contains(.xiaomiLAN)
             let miWorking = input.hasMiSource && input.anotherMiAccountSignedIn && input.miStatus.isConnected && input.connectionStatus.isConnected
             let haWorking = input.hasHASource && !haBlocked && (input.haStatus.isConnected || (!input.hasMiSource && input.connectionStatus.isConnected))
-            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openConnectionSettings)
+            let blockedVerdict = PanelHealth.blocked(reason: L10n.tr("本地网络权限受阻 · 点此检查设置", "Local network access blocked · Check Settings"), action: .openLocalNetworkSettings)
             if haBlocked && miLANBlocked {
                 return miWorking ? .degraded(reason: L10n.tr("本地网络权限受阻，当前仅米家云端可用", "Local network access is blocked. Using Xiaomi Cloud fallback")) : blockedVerdict
             }

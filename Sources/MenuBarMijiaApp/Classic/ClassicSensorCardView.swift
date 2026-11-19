@@ -22,19 +22,34 @@ struct ClassicSensorCardView: View {
     @State private var selectedMetric: SensorMetricKind = .temperature
     @State private var hoveredSlotIndex: Int? = nil
 
+    private var isStale: Bool {
+        store?.deviceValuesAreStale == true || device.telemetryStale
+    }
+
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(device.name)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .lineLimit(1)
-            Text(L10n.tr("可能过期", "Possibly stale"))
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(device.name)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .lineLimit(1)
+                Text(L10n.tr("可能过期", "Possibly stale"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
+            if let store, SensorCardView.showsStaleTransportReadout(device: device, store: store) {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .classic
+                )
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: isCompact ? 72 : 120, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
+        // Kept separate so VoiceOver can read the channel state and reach its actions.
+        .accessibilityElement(children: .contain)
     }
 
     private var isExpanded: Bool {
@@ -52,10 +67,10 @@ struct ClassicSensorCardView: View {
 
     var body: some View {
         Group {
-            if store?.deviceValuesAreStale == true {
-                staleSensor
-            } else if isExpanded {
+            if isExpanded {
                 expandedContainer
+            } else if isStale {
+                staleSensor
             } else if isCompact {
                 compact
             } else {
@@ -65,7 +80,7 @@ struct ClassicSensorCardView: View {
         .frame(minHeight: (isCompact && !isExpanded) ? 50 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isEditingLayout, device.isOnline, let store else { return }
+            guard !isEditingLayout, !forceExpanded, device.isOnline, let store else { return }
             withAnimation(AppleMotion.snappySpring) {
                 store.toggleExpanded(device.id)
             }
@@ -76,30 +91,16 @@ struct ClassicSensorCardView: View {
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1 : 0.58)
-        // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
-        .accessibilityElement(children: isExpanded ? .contain : .ignore)
-        .accessibilityLabel(Text(accessibilitySummary))
-        .accessibilityAddTraits(.isButton)
+        // Display-only card when collapsed and fresh: VoiceOver reads one sentence instead of five
+        // loose labels (#41); expanded and stale states keep child controls reachable.
+        .sensorCardAccessibility(isExpanded: isExpanded, isStale: isStale, summary: accessibilitySummary)
         .panelHelp(isExpanded
             ? L10n.tr("点击卡片顶部收起折线图", "Click header to collapse chart")
             : L10n.tr("点击展开温湿度分时段折线", "Click to expand temperature & humidity chart"))
     }
 
     private var accessibilitySummary: String {
-        guard device.isOnline else {
-            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
-        }
-        var parts: [String] = [device.name]
-        if let t = spec.temperature {
-            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
-        }
-        if let h = spec.humidity {
-            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
-        }
-        if let b = spec.battery {
-            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
-        }
-        return parts.joined(separator: L10n.tr("，", ", "))
+        SensorCardView.accessibilitySummary(device: device, spec: spec, isStale: isStale)
     }
 
     // MARK: Layouts
@@ -161,19 +162,25 @@ struct ClassicSensorCardView: View {
                             .padding(.leading, 1)
                     }
                 }
-                temperatureText(size: DesignTokens.TypeSize.reading)
-                HStack(spacing: 6) {
-                    comfortChip
-                    if let b = spec.battery {
-                        Label("\(b)%", systemImage: batterySymbol(b))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(b <= 20 ? Color.red : muted)
+                if isStale {
+                    Text(L10n.tr("可能过期", "Possibly stale"))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                        .foregroundStyle(muted)
+                } else {
+                    temperatureText(size: DesignTokens.TypeSize.reading)
+                    HStack(spacing: 6) {
+                        comfortChip
+                        if let b = spec.battery {
+                            Label("\(b)%", systemImage: batterySymbol(b))
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(b <= 20 ? Color.red : muted)
+                        }
                     }
                 }
             }
             Spacer(minLength: 0)
-            if let h = spec.humidity { humidityRing(h) }
+            if !isStale, let h = spec.humidity { humidityRing(h) }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -250,6 +257,14 @@ struct ClassicSensorCardView: View {
                 .frame(height: 96)
 
             axisFooter(points: points)
+
+            if let store, store.deviceTransportDiagnostics[device.id] != nil {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .classic
+                )
+            }
         }
     }
 

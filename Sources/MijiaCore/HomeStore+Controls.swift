@@ -1277,7 +1277,13 @@ extension HomeStore {
     }
 
     public func hasDetailDrawer(for device: SmartDevice) -> Bool {
-        device.hasDetailDrawer || deviceFacets[device.id]?.isEmpty == false
+        if device.hasDetailDrawer || deviceFacets[device.id]?.isEmpty == false {
+            return true
+        }
+        if case .sensor = device.kind {
+            return false
+        }
+        return deviceTransportDiagnostics[device.id] != nil
     }
 
     // MARK: - Generic Facet Controls (#5)
