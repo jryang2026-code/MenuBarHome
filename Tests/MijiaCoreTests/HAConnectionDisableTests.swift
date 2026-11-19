@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -11,6 +12,11 @@ import Testing
 /// confirmation, atomic commit, M3 re-preview, fresh-snapshot revalidation), dual-source failover
 /// & pinned-source semantics, host write gate across every entry point (including multi-target
 /// atomic assistant rejection & post-modal generation races), and disable vs disconnect retention.
+///
+/// Each test owns one `InMemoryUserDefaults` and hands the same instance to the store, the rule
+/// store, `ScheduledCommand` and the history stores. A second `UserDefaults(suiteName:)` instance
+/// for the same suite reads through `cfprefsd` and can answer an emptied cache under CI load, which
+/// is how these assertions once read rules back as `[]` on an otherwise green run.
 @MainActor
 struct HAConnectionDisableTests {
     private static let haURL = "http://192.168.1.50:8123"
@@ -24,10 +30,6 @@ struct HAConnectionDisableTests {
         region: "cn"
     )
     private static let miAccount = MiAccount(session: miSession)
-
-    private static func makeSuite() -> String {
-        "com.jryang1997.MenuBarMijia.ha-disable.\(UUID().uuidString)"
-    }
 
     private actor AsyncGate {
         private var entered = false
@@ -156,14 +158,12 @@ struct HAConnectionDisableTests {
 
     @Test("Legacy upgrade keeps configured Home Assistant enabled, preserves unknown JSON fields, and survives relaunch")
     func legacyUpgradeKeepsHAEnabledAndPreservesUnknownFields() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         Self.seedHAConfig(defaults, vault)
 
-        let first = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let first = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         #expect(first.hasHASource)
         #expect(first.isHAConnectionEnabled)
         #expect(first.hasEnabledHASource)
@@ -195,7 +195,7 @@ struct HAConnectionDisableTests {
         #expect((updatedJSON["disabledConnections"] as? [String])?.contains("home-assistant") == true)
 
         // Relaunch preserves explicit HA disablement idempotently.
-        let second = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let second = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         #expect(second.hasHASource)
         #expect(!second.isHAConnectionEnabled)
         #expect(second.activeBackends.isEmpty)
@@ -204,9 +204,7 @@ struct HAConnectionDisableTests {
 
     @Test("Vault or selection read failure falls back safely while keeping explicit HA disablement once readable")
     func vaultAndSelectionFallbackBehavior() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         Self.seedHAConfig(defaults, vault)
@@ -215,8 +213,8 @@ struct HAConnectionDisableTests {
         mem.readResult = .unavailable
         let fallbackBeforeMigration = HomeStore(
             provider: MockHomeProvider(),
-            defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: mem.storage)
+            credentialVault: CredentialVault(storage: mem.storage),
+            defaults: defaults
         )
         #expect(!CapabilitySelectionStore.hasCompletedMigration(defaults: defaults))
         #expect(fallbackBeforeMigration.capabilityResolutionMode == .uncertainFallback)
@@ -225,8 +223,8 @@ struct HAConnectionDisableTests {
         mem.readResult = nil
         let recovered = HomeStore(
             provider: MockHomeProvider(),
-            defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: mem.storage)
+            credentialVault: CredentialVault(storage: mem.storage),
+            defaults: defaults
         )
         #expect(CapabilitySelectionStore.hasCompletedMigration(defaults: defaults))
         #expect(recovered.isHAConnectionEnabled)
@@ -237,8 +235,8 @@ struct HAConnectionDisableTests {
         mem.readResult = .unavailable
         let fallbackAfterDisable = HomeStore(
             provider: MockHomeProvider(),
-            defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: mem.storage)
+            credentialVault: CredentialVault(storage: mem.storage),
+            defaults: defaults
         )
         #expect(fallbackAfterDisable.capabilityResolutionMode == .uncertainFallback)
         fallbackAfterDisable.hasHASource = true
@@ -249,15 +247,13 @@ struct HAConnectionDisableTests {
 
     @Test("Panel health and connection summaries distinguish disabled HA from unconfigured and keep dual-source Mi healthy")
     func panelHealthAndSummariesReflectHADisabledState() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         Self.seedHAConfig(defaults, vault)
 
         // Single-HA: turning off HA reports turned-off connection (blocked), NOT unconfigured, and suppresses plaintext-declined warning.
-        let singleHA = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let singleHA = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         singleHA.haPlaintextPrompt = .declined("http://203.0.113.9:8123")
         #expect(singleHA.setHAConnectionEnabled(false).disposition == .allowed)
         #expect(singleHA.allConfiguredSourcesTurnedOff)
@@ -272,14 +268,12 @@ struct HAConnectionDisableTests {
         }
 
         // Dual-source: turning off HA while Xiaomi Cloud is connected keeps panelHealth == .ok!
-        let dualSuite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: dualSuite) }
-        let dualDefaults = try #require(UserDefaults(suiteName: dualSuite))
+        let dualDefaults = InMemoryUserDefaults()
         let dualVault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(dualDefaults, dualVault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: dualDefaults, vault: dualVault)
 
-        let dualStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: dualSuite, credentialVault: dualVault)
+        let dualStore = HomeStore(provider: MockHomeProvider(), credentialVault: dualVault, defaults: dualDefaults)
         dualStore.miAccountStatuses = [Self.miAccount.id: .connected]
         dualStore.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("LAN down")]
         dualStore.connectedBackends = [.xiaomiCloud]
@@ -299,9 +293,7 @@ struct HAConnectionDisableTests {
 
     @Test("Disabling Home Assistant awaits shutdown, clears HA runtime state, and drops late WS, LAN, doorbell, plaintext, and camera activity")
     func disablingHAProducesZeroPostDisableActivityAndDropsLateEvents() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         Self.seedHAConfig(defaults, vault)
@@ -350,7 +342,6 @@ struct HAConnectionDisableTests {
         let discoveryGate = AsyncGate()
         let store = HomeStore(
             provider: nil,
-            defaultsSuiteName: suite,
             credentialVault: vault,
             miAccountsProviderFactory: { accounts in
                 MiAccountsProvider(
@@ -361,7 +352,8 @@ struct HAConnectionDisableTests {
                     followUpDelay: .seconds(30)
                 )
             },
-            haProviderFactory: { _, _ in haStub }
+            haProviderFactory: { _, _ in haStub },
+            defaults: defaults
         )
         store.haLANDiscoverer = { _ in
             await discoveryGate.enterAndWait()
@@ -487,9 +479,7 @@ struct HAConnectionDisableTests {
 
     @Test("HA disable previews device and scene timers, automations, and quick actions, enforces M2/M3, and revalidates on fresh snapshot without silent overdue execution")
     func referencePreviewPauseAtomicCommitAndFreshSnapshotRevalidation() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
 
@@ -522,9 +512,9 @@ struct HAConnectionDisableTests {
         let haStub = StubHARuntimeProvider(initialSnapshot: initialHome)
         let store = HomeStore(
             provider: nil,
-            defaultsSuiteName: suite,
             credentialVault: vault,
-            haProviderFactory: { _, _ in haStub }
+            haProviderFactory: { _, _ in haStub },
+            defaults: defaults
         )
         defer { _ = store.disconnectHomeAssistant() }
         store.assistantNow = { clock.now }
@@ -699,9 +689,7 @@ struct HAConnectionDisableTests {
 
     @Test("Dual-source unpinned paired card fails over to Xiaomi Cloud without pausing references and strips HA facets, while HA-pinned card stays pinned and blocks writes")
     func dualSourceFailoverAndPinnedSourceSemantics() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -797,8 +785,8 @@ struct HAConnectionDisableTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.hasHASource = true
         store.serverURLString = Self.haURL
@@ -896,9 +884,7 @@ struct HAConnectionDisableTests {
 
     @Test("Host write gate blocks all HA control entry points, atomically rejects mixed multi-target assistant plans, and catches mid-modal disable races")
     func comprehensiveHostWriteGateAndAtomicPlanRejection() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -967,7 +953,7 @@ struct HAConnectionDisableTests {
         snapshot.deviceFacets = ["ha-lock": [haFacet, haActionFacet]]
 
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         store.hasHASource = true
         store.serverURLString = Self.haURL
         store.syncInMemoryConfiguredCapabilities()
@@ -1156,9 +1142,7 @@ struct HAConnectionDisableTests {
 
     @Test("Disabling Home Assistant retains token, URL, plaintext consent, favorites, aliases, pins, and history, while Disconnect wipes token and releases paused timers")
     func disableRetainsCredentialsAndHistoryWhileDisconnectWipesToken() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
 
@@ -1168,7 +1152,7 @@ struct HAConnectionDisableTests {
         HAPlaintextConsent.approve(publicHTTPURL, defaults: defaults)
         #expect(HAPlaintextConsent.allowsToken(to: publicHTTPURL, defaults: defaults))
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         store.haProviderFactory = { _, _ in MockHomeProvider() }
         let haSensor = SmartDevice(
             id: "ha-sensor-1",
@@ -1275,9 +1259,7 @@ struct HAConnectionDisableTests {
 
     @Test("Disabling HA then switching to demo preserves all demo scenes and connected status")
     func disablingHAThenSwitchingToDemoPreservesDemoScenesAndStatus() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
 
@@ -1297,7 +1279,7 @@ struct HAConnectionDisableTests {
                 scenes: [HomeScene(id: "scene.ha_only", name: "HA 观影", entityId: "scene.ha_only")]
             )
         )
-        let store = HomeStore(provider: haProvider, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: haProvider, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         let disabled = store.setHAConnectionEnabled(
@@ -1323,9 +1305,7 @@ struct HAConnectionDisableTests {
 
     @Test("Saving HA settings while disabled preserves disabled state and emits zero HA provider creations until explicitly re-enabled")
     func updateConnectionWhileHADisabledKeepsDisabledState() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
 
@@ -1333,8 +1313,8 @@ struct HAConnectionDisableTests {
         var createdTokens: [String] = []
         let store = HomeStore(
             provider: StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot()),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.haProviderFactory = { url, token in
             createdURLs.append(url)
@@ -1384,9 +1364,7 @@ struct HAConnectionDisableTests {
 
     @Test("Saving a new HA address over a stale scope-level turn-off reconnects instead of leaving an enabled connection without a provider")
     func updateConnectionRecoversScopeLevelDisableWithoutLosingProvider() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         // Residue from an earlier address: the connection itself is on, only its `ha:` scope is off.
@@ -1402,7 +1380,7 @@ struct HAConnectionDisableTests {
         defaults.set(residue, forKey: CapabilitySelectionStore.storageKey)
 
         var createdURLs: [String] = []
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         store.haProviderFactory = { url, _ in
             createdURLs.append(url)
             return MockHomeProvider()
@@ -1431,9 +1409,7 @@ struct HAConnectionDisableTests {
 
     @Test("Dual-source undo with HA disabled restores Mi items, retains blocked HA restore items and receipts, and reports partial undo")
     func dualSourceUndoPreservesBlockedHAItemsAndHabitReceipts() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -1485,7 +1461,7 @@ struct HAConnectionDisableTests {
         let miProvider = StubHARuntimeProvider(initialSnapshot: miSnapshot)
         let haProvider = StubHARuntimeProvider(initialSnapshot: haSnapshot)
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
-        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.devices = [miLamp, haLamp]
 
@@ -1563,9 +1539,7 @@ struct HAConnectionDisableTests {
 
     @Test("Disabling HA short-circuits DualSourceHomeProvider reads during slow shutdown and exposes teardown state")
     func dualSourceDisableShortCircuitsReadsDuringSlowShutdown() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -1610,7 +1584,7 @@ struct HAConnectionDisableTests {
         }
 
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
-        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         let haRefreshBefore = await haProvider.refreshCalls
@@ -1666,9 +1640,7 @@ struct HAConnectionDisableTests {
 
     @Test("Re-enabling HA after a completed teardown reopens the dual-source gate for commands, refresh and history")
     func reenableAfterTeardownReopensDualSourceGate() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
 
@@ -1695,12 +1667,12 @@ struct HAConnectionDisableTests {
         let newHA = StubHARuntimeProvider(initialSnapshot: haSnapshot)
         var createdProviders = 0
         let store = HomeStore(
-            defaultsSuiteName: suite,
             credentialVault: vault,
             haProviderFactory: { _, _ in
                 createdProviders += 1
                 return createdProviders == 1 ? firstHA : newHA
-            }
+            },
+            defaults: defaults
         )
         try await store.waitForTestSnapshot()
         let dual = try #require(store.activeDualProvider)
@@ -1757,14 +1729,12 @@ struct HAConnectionDisableTests {
 
     @Test("Single-device capabilityWriteRejection matches ID lookup across 200 mixed devices and preserves allOffTargets and RaycastSnapshot semantics")
     func singleDeviceCapabilityWriteRejectionMatchesIdLookup() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
 
         var devices: [SmartDevice] = []
         for index in 0..<100 {
@@ -1819,9 +1789,7 @@ struct HAConnectionDisableTests {
 
     @Test("disconnectHomeAssistant tears down active HA cameras while leaving Mi cameras untouched")
     func disconnectHomeAssistantTearsDownActiveHACameras() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -1846,7 +1814,7 @@ struct HAConnectionDisableTests {
             accountId: Self.miAccount.id
         )
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         store.devices = [haCam, miCam]
         store.activeLiveCameraDeviceId = haCam.id
 
@@ -1872,9 +1840,7 @@ struct HAConnectionDisableTests {
 
     @Test("Re-enabling HA on an injected DualSourceHomeProvider queues pendingRevalidationScopes symmetrically")
     func injectedDualSourceReenableQueuesPendingRevalidationScope() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         Self.seedHAConfig(defaults, vault)
         MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
@@ -1895,7 +1861,7 @@ struct HAConnectionDisableTests {
         let haProvider = StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot(devices: [haPlug]))
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
 
-        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         let now = Date(timeIntervalSince1970: 1_760_000_000)
