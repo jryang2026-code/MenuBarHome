@@ -857,14 +857,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         let token = fallbackRecheckGeneration
         let delay = max(.milliseconds(100), now.duration(to: deadline))
         let sleep = graceSleepProvider
-        // Detached on purpose: every recompute cancels and replaces this sleeper, so it is a
-        // cancelled-before-it-wakes task on a hot path. An `actor`-isolated `Task { }` here compiles
-        // to an `@isolated(any)` entry thunk and inherits the actor's executor and task-locals, and
-        // that shape aborts the x86_64 Debug test process with "freed pointer was not the last
-        // allocation" inside `swift_task_dealloc` (swiftlang/swift#87571, #274). The body needs
-        // neither: the sleep is `@Sendable` and the wake hops back with `await`, while the
-        // generation token decides whether the wake still counts.
-        fallbackRecheckTask = Task.detached { [weak self] in
+        fallbackRecheckTask = Task { [weak self] in
             guard !Task.isCancelled else { return }
             do {
                 try await sleep(delay)
