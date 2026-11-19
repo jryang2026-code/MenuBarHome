@@ -1,4 +1,143 @@
+import Dispatch
 import Foundation
+
+/// Synchronous single-slot timer handle used by `DualSourceHomeProvider` for fallback grace
+/// rechecks (#25).
+///
+/// Re-arming one `DispatchSourceTimer` in place avoids spawning and cancelling an `async` sleeper
+/// `Task` on every recompute, which tripped the Swift 6 `x86_64` concurrency runtime abort
+/// (`swift_task_dealloc`: "freed pointer was not the last allocation") under parallel CI (#274).
+protocol FallbackRecheckTimer: Sendable {
+    /// Replaces any currently armed deadline with a new one-shot fire after `delay`.
+    func schedule(after delay: Duration, onFire: @escaping @Sendable () -> Void)
+    /// Disarms any pending fire while keeping the timer reusable for later schedules.
+    func cancelPending()
+    /// Permanently cancels the timer during shutdown so no further callback can fire.
+    func invalidate()
+}
+
+final class DispatchFallbackRecheckTimer: FallbackRecheckTimer, @unchecked Sendable {
+    private static let queue = DispatchQueue(
+        label: "com.jryang1997.MenuBarMijia.DualSourceFallbackRecheck",
+        qos: .utility
+    )
+
+    private let lock = NSLock()
+    private var desiredID: UInt64 = 0
+    private var desiredHandler: (@Sendable () -> Void)?
+    private var isInvalidated = false
+
+    // Accessed only on `Self.queue` while `self` is alive, and once in `deinit` after the last
+    // strong reference drops.
+    private var timer: DispatchSourceTimer?
+    private var armedOnQueueID: UInt64 = 0
+
+    deinit {
+        timer?.cancel()
+    }
+
+    func schedule(after delay: Duration, onFire: @escaping @Sendable () -> Void) {
+        let deadline = DispatchTime.now() + Self.dispatchTimeInterval(from: delay)
+        let id: UInt64 = lock.withLock {
+            guard !isInvalidated else { return 0 }
+            desiredID &+= 1
+            if desiredID == 0 { desiredID = 1 }
+            desiredHandler = onFire
+            return desiredID
+        }
+        guard id != 0 else { return }
+        Self.queue.async { [weak self] in
+            self?.applyScheduleOnQueue(id: id, deadline: deadline)
+        }
+    }
+
+    func cancelPending() {
+        let shouldDisarm = lock.withLock { () -> Bool in
+            guard !isInvalidated, desiredHandler != nil else { return false }
+            desiredID &+= 1
+            if desiredID == 0 { desiredID = 1 }
+            desiredHandler = nil
+            return true
+        }
+        guard shouldDisarm else { return }
+        Self.queue.async { [weak self] in
+            self?.disarmIfIdleOnQueue()
+        }
+    }
+
+    func invalidate() {
+        let shouldCancel = lock.withLock { () -> Bool in
+            guard !isInvalidated else { return false }
+            isInvalidated = true
+            desiredID &+= 1
+            if desiredID == 0 { desiredID = 1 }
+            desiredHandler = nil
+            return true
+        }
+        guard shouldCancel else { return }
+        Self.queue.async { [weak self] in
+            guard let self else { return }
+            self.armedOnQueueID = 0
+            self.timer?.cancel()
+            self.timer = nil
+        }
+    }
+
+    private func applyScheduleOnQueue(id: UInt64, deadline: DispatchTime) {
+        let stillDesired = lock.withLock { !isInvalidated && desiredID == id }
+        guard stillDesired else { return }
+        armedOnQueueID = id
+        ensureTimerOnQueue().schedule(deadline: deadline)
+    }
+
+    private func disarmIfIdleOnQueue() {
+        let stillIdle = lock.withLock { !isInvalidated && desiredHandler == nil }
+        guard stillIdle else { return }
+        armedOnQueueID = 0
+        timer?.schedule(deadline: .distantFuture)
+    }
+
+    private func ensureTimerOnQueue() -> DispatchSourceTimer {
+        if let existing = timer {
+            return existing
+        }
+        let created = DispatchSource.makeTimerSource(queue: Self.queue)
+        created.setEventHandler { [weak self] in
+            self?.handleTimerEventOnQueue()
+        }
+        created.schedule(deadline: .distantFuture)
+        created.resume()
+        timer = created
+        return created
+    }
+
+    private func handleTimerEventOnQueue() {
+        let id = armedOnQueueID
+        guard id != 0 else { return }
+        let handler: (@Sendable () -> Void)? = lock.withLock {
+            guard !isInvalidated, desiredID == id else { return nil }
+            let next = desiredHandler
+            desiredHandler = nil
+            return next
+        }
+        guard let handler else { return }
+        armedOnQueueID = 0
+        handler()
+    }
+
+    private static func dispatchTimeInterval(from delay: Duration) -> DispatchTimeInterval {
+        let (seconds, attoseconds) = delay.components
+        if seconds < 0 || (seconds == 0 && attoseconds <= 0) {
+            return .nanoseconds(0)
+        }
+        let maxSecondsForNanos = Int64(Int.max / 1_000_000_000)
+        if seconds >= maxSecondsForNanos {
+            return .seconds(Int(min(seconds, Int64(Int.max))))
+        }
+        let totalNanos = seconds * 1_000_000_000 + attoseconds / 1_000_000_000
+        return .nanoseconds(Int(max(0, min(totalNanos, Int64(Int.max)))))
+    }
+}
 
 /// Keeps both providers connected and publishes one merged home. Commands are routed by their
 /// target address, so an entity id decides the source without a second lookup table.
@@ -19,7 +158,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     private let pinnedBackends: @Sendable () -> [String: HomeBackend]
     private let persistCanonicalIDs: CanonicalIDPersistence
     private let graceNowProvider: @Sendable () -> SuspendingClock.Instant
-    private let graceSleepProvider: @Sendable (Duration) async throws -> Void
+    private let fallbackRecheckTimer: any FallbackRecheckTimer
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var haTask: Task<Void, Never>?
@@ -43,8 +182,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var haGraceActiveInLastRecompute = false
     private var miGraceActiveInLastRecompute = false
     private var miGracedAccountsInLastRecompute: Set<String> = []
-    /// Re-schedules a recompute for the moment a deferred fallback would take over (#25).
-    private var fallbackRecheckTask: Task<Void, Never>?
+    /// Monotonic generation token guarding scheduled fallback recheck wakes (#25).
     private var fallbackRecheckGeneration: UInt64 = 0
     private(set) var discardedFallbackWakeCountForTesting = 0
     private var haSnapshot: SynthesizedHome?
@@ -98,16 +236,29 @@ public actor DualSourceHomeProvider: HomeProvider {
         initialCanonicalIDs: [String: String] = [:],
         knownPreferenceIDs: @escaping @Sendable () -> Set<String> = { [] },
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
+        persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in }
+    ) {
+        self.init(
+            homeAssistant: homeAssistant,
+            xiaomiCloud: xiaomiCloud,
+            initialCanonicalIDs: initialCanonicalIDs,
+            knownPreferenceIDs: knownPreferenceIDs,
+            pinnedBackends: pinnedBackends,
+            persistCanonicalIDs: persistCanonicalIDs,
+            graceNow: { SuspendingClock.now },
+            fallbackRecheckTimer: DispatchFallbackRecheckTimer()
+        )
+    }
+
+    init(
+        homeAssistant: (any HomeProvider)?,
+        xiaomiCloud: (any HomeProvider)?,
+        initialCanonicalIDs: [String: String] = [:],
+        knownPreferenceIDs: @escaping @Sendable () -> Set<String> = { [] },
+        pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
         persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in },
-        graceNow: @escaping @Sendable () -> SuspendingClock.Instant = { SuspendingClock.now },
-        // `graceNow` still measures active time on `SuspendingClock`, and `setPollingContext`
-        // cancels this recheck on system sleep and shifts the deadlines on wake, so the grace
-        // window stays frozen across sleep. Sleeping on `Task.sleep` instead of
-        // `SuspendingClock().sleep` keeps that behaviour while avoiding the x86_64 task-local
-        // allocator crash the clock sleeper hits when a pending recheck is cancelled (#274).
-        graceSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
-            try await Task.sleep(for: duration)
-        }
+        graceNow: @escaping @Sendable () -> SuspendingClock.Instant,
+        fallbackRecheckTimer: any FallbackRecheckTimer
     ) {
         self.homeAssistant = homeAssistant
         self.xiaomiCloud = xiaomiCloud
@@ -116,7 +267,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         self.pinnedBackends = pinnedBackends
         self.persistCanonicalIDs = persistCanonicalIDs
         self.graceNowProvider = graceNow
-        self.graceSleepProvider = graceSleep
+        self.fallbackRecheckTimer = fallbackRecheckTimer
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
@@ -842,43 +993,36 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     private func cancelFallbackRecheck() {
         fallbackRecheckGeneration &+= 1
-        fallbackRecheckTask?.cancel()
-        fallbackRecheckTask = nil
+        fallbackRecheckTimer.cancelPending()
     }
 
     /// Schedules the recompute that adopts the fallback once a deferred grace expires, so a silent
     /// line (no further events) still hands the cards to the surviving source (#25).
     private func scheduleFallbackRecheckIfNeeded(now: SuspendingClock.Instant) {
-        cancelFallbackRecheck()
-        guard pollingContext.systemActive,
+        fallbackRecheckGeneration &+= 1
+        guard !isShutDown,
+              pollingContext.systemActive,
               let deadline = earliestPendingFallbackDeadline(after: now) else {
+            fallbackRecheckTimer.cancelPending()
             return
         }
         let token = fallbackRecheckGeneration
         let delay = max(.milliseconds(100), now.duration(to: deadline))
-        let sleep = graceSleepProvider
-        fallbackRecheckTask = Task { [weak self] in
-            guard !Task.isCancelled else { return }
-            do {
-                try await sleep(delay)
-            } catch {
-                // A newer recompute cancelled this deadline and owns rescheduling now. Waking
-                // here to merge again would ping-pong cancelled sleepers into a recompute loop.
-                return
+        fallbackRecheckTimer.schedule(after: delay) { [weak self] in
+            guard let self else { return }
+            Task {
+                await self.completeScheduledFallbackRecheck(token: token)
             }
-            await self?.completeScheduledFallbackRecheck(token: token)
         }
     }
 
     private func completeScheduledFallbackRecheck(token: UInt64) {
         guard !isShutDown,
               pollingContext.systemActive,
-              !Task.isCancelled,
               token == fallbackRecheckGeneration else {
             discardedFallbackWakeCountForTesting += 1
             return
         }
-        fallbackRecheckTask = nil
         recompute()
     }
 
@@ -1472,19 +1616,18 @@ public actor DualSourceHomeProvider: HomeProvider {
         isShutDown = true
         let haForward = haTask
         let miForward = miTask
-        let recheck = fallbackRecheckTask
         haTask?.cancel()
         haTask = nil
         miTask?.cancel()
         miTask = nil
-        cancelFallbackRecheck()
+        fallbackRecheckGeneration &+= 1
+        fallbackRecheckTimer.invalidate()
         continuation?.finish()
         continuation = nil
-        // Await the cancelled children so no forwarding loop or grace recheck outlives teardown and
-        // races the next suite (#274). Cancelling finishes each `AsyncStream` and stops the clock
-        // sleeper; the only actor re-entry left is `handle`/`completeScheduledFallbackRecheck`,
-        // which return immediately because `isShutDown` is already set.
-        await recheck?.value
+        // Await the cancelled forwarding loops so no stream reader outlives teardown and races
+        // the next suite (#274). `fallbackRecheckTimer` is synchronously invalidated above, and
+        // any already-enqueued `completeScheduledFallbackRecheck` exits immediately because
+        // `isShutDown` is already set and `fallbackRecheckGeneration` has advanced.
         await haForward?.value
         await miForward?.value
         let ha = homeAssistant

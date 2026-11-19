@@ -25,157 +25,82 @@ struct DualSourceFallbackGraceTests {
         }
     }
 
-    /// Deterministic gate for `graceSleep`: parks scheduled fallback sleepers without wall-clock
-    /// waits, throws `CancellationError` when cancelled, and lets tests release sleepers on cue.
-    ///
-    /// Deliberately a lock-guarded `AsyncStream` gate rather than an `actor` parking a raw
-    /// continuation: nested cancellation-handler plus continuation frames inside an actor method
-    /// tripped the Swift 6 `x86_64` runtime abort (`freed pointer was not the last allocation`)
-    /// whenever parallel CI cancelled the sleepers across threads.
-    private final class GraceSleepGate: @unchecked Sendable {
-        private struct Sleeper {
-            let id: UUID
-            let continuation: AsyncStream<Bool>.Continuation
+    /// Deterministic `FallbackRecheckTimer` for tests: records armed delays and fire callbacks
+    /// synchronously under a lock without spawning any sleeping `Task` (#25, #274).
+    private final class GraceTimerGate: FallbackRecheckTimer, @unchecked Sendable {
+        private struct Entry {
+            let onFire: @Sendable () -> Void
             let ignoreCancel: Bool
         }
 
         private let lock = NSLock()
-        private var sleepers: [Sleeper] = []
-        private var ignoreCancelOnNextPark = false
-        private var isShutDown = false
-        private var storedParkCount = 0
-        private var storedCancelledWakeCount = 0
+        private var entries: [Entry] = []
+        private var ignoreCancelOnNextSchedule = false
+        private var isInvalidated = false
+        private var storedScheduleCount = 0
+        private var storedCancelledCount = 0
         private var storedRecordedDelays: [Duration] = []
 
-        /// `NSLock.lock()` is `noasync`: every locked section goes through this synchronous
-        /// wrapper so `sleep(_:)` never touches the lock directly from an async context.
-        private func withLocked<T>(_ body: () throws -> T) rethrows -> T {
-            lock.lock()
-            defer { lock.unlock() }
-            return try body()
-        }
-
-        var waiting: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return sleepers.count
-        }
-
-        var parkCount: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return storedParkCount
-        }
-
-        var cancelledWakeCount: Int {
-            lock.lock()
-            defer { lock.unlock() }
-            return storedCancelledWakeCount
-        }
-
-        var recordedDelays: [Duration] {
-            lock.lock()
-            defer { lock.unlock() }
-            return storedRecordedDelays
-        }
-
-        /// Resumes every parked sleeper and refuses new ones, so no continuation outlives the
-        /// test that parked it. A sleeper whose cancellation was deliberately ignored is resumed
-        /// here too: its continuation is exactly the one a plain cancel leaves behind, and leaving
-        /// it parked aborts the parallel run at teardown.
-        func shutdown() {
-            let parked = withLocked {
-                isShutDown = true
-                let parked = sleepers
-                sleepers.removeAll()
-                return parked
-            }
-            for sleeper in parked.reversed() {
-                sleeper.continuation.yield(false)
-                sleeper.continuation.finish()
-            }
-        }
+        var waiting: Int { lock.withLock { entries.count } }
+        var parkCount: Int { lock.withLock { storedScheduleCount } }
+        var cancelledWakeCount: Int { lock.withLock { storedCancelledCount } }
+        var recordedDelays: [Duration] { lock.withLock { storedRecordedDelays } }
 
         func ignoreCancellationOnNextSleep() {
-            withLocked { ignoreCancelOnNextPark = true }
+            lock.withLock { ignoreCancelOnNextSchedule = true }
         }
 
-        /// Parks a sleeper and returns its stream, or throws once the gate is shut down or the
-        /// caller is already cancelled. All state changes happen under the lock; nothing is left
-        /// half-registered when it throws.
-        private func park(_ duration: Duration) throws -> (stream: AsyncStream<Bool>, ignoreCancel: Bool) {
-            try withLocked {
-                if isShutDown { throw CancellationError() }
-                let ignoreCancel = ignoreCancelOnNextPark
-                ignoreCancelOnNextPark = false
-                if !ignoreCancel, Task.isCancelled {
-                    storedCancelledWakeCount += 1
-                    throw CancellationError()
-                }
-                let id = UUID()
-                let (stream, continuation) = AsyncStream<Bool>.makeStream()
-                if !ignoreCancel {
-                    // Installed here, under the lock, rather than after `park` returns: a cancel
-                    // landing between the return and the assignment finished the stream first, so
-                    // the wake counter either missed the cancel or the handler wrote back into
-                    // `sleepers` after the sleeper had already been released (#274). The
-                    // continuation is brand-new and `shutdown()`/`release*` need this same lock to
-                    // finish it, so the handler is only registered here, never invoked.
-                    continuation.onTermination = { [weak self] termination in
-                        if case .cancelled = termination { self?.handleStreamCancelled(id) }
-                    }
-                }
-                storedRecordedDelays.append(duration)
-                storedParkCount += 1
-                sleepers.append(Sleeper(id: id, continuation: continuation, ignoreCancel: ignoreCancel))
-                return (stream, ignoreCancel)
+        func schedule(after delay: Duration, onFire: @escaping @Sendable () -> Void) {
+            lock.withLock {
+                guard !isInvalidated else { return }
+                cancelCancellableEntriesLocked()
+                let ignoreCancel = ignoreCancelOnNextSchedule
+                ignoreCancelOnNextSchedule = false
+                storedRecordedDelays.append(delay)
+                storedScheduleCount += 1
+                entries.append(Entry(onFire: onFire, ignoreCancel: ignoreCancel))
             }
         }
 
-        func sleep(_ duration: Duration) async throws {
-            let parked = try park(duration)
-
-            if parked.ignoreCancel {
-                // Detached on purpose: a plain cancel must not resume this sleeper, so the test can
-                // verify the provider discards a stale wake through its own generation token.
-                let resumedNormally = await Task.detached {
-                    var iterator = parked.stream.makeAsyncIterator()
-                    return await iterator.next() ?? false
-                }.value
-                if !resumedNormally { throw CancellationError() }
-                return
+        func cancelPending() {
+            lock.withLock {
+                cancelCancellableEntriesLocked()
             }
+        }
 
-            // Cancelling the awaiting task terminates the stream with `.cancelled`, which wakes
-            // `iterator.next()` with `nil` and unregisters the sleeper (`park` already installed
-            // the termination handler) — no manual Task, no nested continuation frames.
-            var iterator = parked.stream.makeAsyncIterator()
-            let resumedNormally = await iterator.next() ?? false
-            if !resumedNormally { throw CancellationError() }
+        func invalidate() {
+            lock.withLock {
+                isInvalidated = true
+                entries.removeAll()
+            }
+        }
+
+        func shutdown() {
+            invalidate()
         }
 
         func releaseLatest() {
-            let sleeper = withLocked { sleepers.popLast() }
-            guard let sleeper else { return }
-            sleeper.continuation.yield(true)
-            sleeper.continuation.finish()
+            let entry = lock.withLock { entries.popLast() }
+            entry?.onFire()
         }
 
-        /// Simulates an older sleeper returning right as a newer recompute has already replaced it
-        /// (without throwing `CancellationError`), verifying actor-side token ownership.
+        /// Simulates an older timer firing right as a newer recompute has already replaced it,
+        /// verifying actor-side generation token ownership.
         func releaseOldestNormally() {
-            let sleeper = withLocked { sleepers.isEmpty ? nil : sleepers.removeFirst() }
-            guard let sleeper else { return }
-            sleeper.continuation.yield(true)
-            sleeper.continuation.finish()
+            let entry = lock.withLock { entries.isEmpty ? nil : entries.removeFirst() }
+            entry?.onFire()
         }
 
-        private func handleStreamCancelled(_ id: UUID) {
-            withLocked {
-                guard let index = sleepers.firstIndex(where: { $0.id == id }) else { return }
-                sleepers.remove(at: index)
-                storedCancelledWakeCount += 1
+        private func cancelCancellableEntriesLocked() {
+            var kept: [Entry] = []
+            for entry in entries {
+                if entry.ignoreCancel {
+                    kept.append(entry)
+                } else {
+                    storedCancelledCount += 1
+                }
             }
+            entries = kept
         }
     }
 
@@ -211,7 +136,7 @@ struct DualSourceFallbackGraceTests {
         let provider: DualSourceHomeProvider
         let collector: RouteCollector
         let clock: TestClock
-        let gate: GraceSleepGate
+        let gate: GraceTimerGate
         let pump: Task<Void, Never>
     }
 
@@ -283,12 +208,12 @@ struct DualSourceFallbackGraceTests {
         let haMock = MockHomeProvider(snapshot: haHome)
         let miMock = MockHomeProvider(snapshot: miHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miMock,
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -321,12 +246,8 @@ struct DualSourceFallbackGraceTests {
         }
     }
 
-    /// The providers, gates and event pumps one test builds, drained before the test returns.
-    ///
-    /// A test that returns while a sleeper is still parked in `GraceSleepGate` aborts the whole
-    /// parallel run (`signal code 6: freed pointer was not the last allocation`), and an `async`
-    /// test has no `defer` that can `await`. Bodies therefore run inside `withTeardown`, which
-    /// drains on the throwing path too (#274).
+    /// The providers, timer gates and event pumps one test builds, drained before the test returns
+    /// (including when `#require` throws) so no forwarding task outlives the test (#274).
     private final class Teardown {
         private var steps: [() async -> Void] = []
         private var finishes: [() -> Void] = []
@@ -352,12 +273,6 @@ struct DualSourceFallbackGraceTests {
     }
 
     /// Runs `body` and always drains its teardown, including when `#require` throws.
-    ///
-    /// Call sites pass an explicit closure (`{ teardown in try await someBody(teardown) }`) instead
-    /// of handing the unbound `async` instance method to this parameter. Both compile to the same
-    /// work, but the method form needs a curried partial-application `async` thunk on every call,
-    /// and those extra coroutine frames on `x86_64` Debug are one more thing the Swift runtime's
-    /// task-local allocator has to unwind in a run that already aborts there (#274).
     private func withTeardown(_ body: (Teardown) async throws -> Void) async throws {
         let teardown = Teardown()
         do {
@@ -369,13 +284,8 @@ struct DualSourceFallbackGraceTests {
         await teardown.drain()
     }
 
-    /// Shuts a rig down without leaving a parked sleeper behind: the gate force-resumes every
-    /// parked sleeper first (even one that ignores cancellation) so `graceSleep` returns and no
-    /// recheck stays alive, the provider is then shut down, and the pump is drained last.
-    ///
-    /// The gate must come first: `provider.shutdown()` awaits its pending fallback recheck, and a
-    /// sleeper still parked in the gate would leave that await in the test's teardown, racing the
-    /// next suite of the parallel run (#274).
+    /// Invalidates the timer gate, shuts down the provider (which drains its forwarding loops),
+    /// and drains the event pump.
     private func shutdownRig(_ rig: Rig) async {
         rig.gate.shutdown()
         await rig.provider.shutdown()
@@ -391,7 +301,7 @@ struct DualSourceFallbackGraceTests {
     private func track(
         _ teardown: Teardown,
         provider: DualSourceHomeProvider,
-        gate: GraceSleepGate,
+        gate: GraceTimerGate,
         pump: Task<Void, Never>
     ) {
         teardown.add {
@@ -557,12 +467,12 @@ struct DualSourceFallbackGraceTests {
         )
         let haMock = MockHomeProvider(snapshot: haHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miAccounts,
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -820,12 +730,12 @@ struct DualSourceFallbackGraceTests {
         let haMock2 = MockHomeProvider(snapshot: haNoStream)
         let miMock2 = MockHomeProvider(snapshot: miConnected)
         let clock2 = TestClock()
-        let gate2 = GraceSleepGate()
+        let gate2 = GraceTimerGate()
         let provider2 = DualSourceHomeProvider(
             homeAssistant: haMock2,
             xiaomiCloud: miMock2,
             graceNow: { clock2.now },
-            graceSleep: { duration in try await gate2.sleep(duration) }
+            fallbackRecheckTimer: gate2
         )
         let collector2 = RouteCollector()
         let pump2 = Task {
@@ -939,12 +849,12 @@ struct DualSourceFallbackGraceTests {
         )
         let haMock = MockHomeProvider(snapshot: haHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miAccounts,
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -1134,13 +1044,13 @@ struct DualSourceFallbackGraceTests {
         ]
         let haMock = MockHomeProvider(snapshot: haMultiHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miAccounts,
             pinnedBackends: { [Self.haID: .xiaomiCloud] },
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -1209,7 +1119,7 @@ struct DualSourceFallbackGraceTests {
             xiaomiCloud: singleMi,
             pinnedBackends: { [Self.haID: .xiaomiCloud] },
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let singleCollector = RouteCollector()
         let singlePump = Task {
@@ -1261,7 +1171,7 @@ struct DualSourceFallbackGraceTests {
             homeAssistant: scopedHAMock,
             xiaomiCloud: scopedMiMock,
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let scopedCollector = RouteCollector()
         let scopedPump = Task {
@@ -1319,7 +1229,7 @@ struct DualSourceFallbackGraceTests {
             xiaomiCloud: unattributedMiMock,
             knownPreferenceIDs: { [Self.did] },
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let unattributedCollector = RouteCollector()
         let unattributedPump = Task {
@@ -1498,12 +1408,12 @@ struct DualSourceFallbackGraceTests {
         ]
         let haMock = MockHomeProvider(snapshot: haMultiHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miAccounts,
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -1633,12 +1543,12 @@ struct DualSourceFallbackGraceTests {
             clearSelectedHome: {}
         )
         let followUpHAMock = MockHomeProvider(snapshot: home([haSharedDoorCam], identityID: Self.haID))
-        let followUpGate = GraceSleepGate()
+        let followUpGate = GraceTimerGate()
         let followUpDual = DualSourceHomeProvider(
             homeAssistant: followUpHAMock,
             xiaomiCloud: followUpAccounts,
             graceNow: { clock.now },
-            graceSleep: { duration in try await followUpGate.sleep(duration) }
+            fallbackRecheckTimer: followUpGate
         )
         let followUpCollector = RouteCollector()
         let followUpPump = Task {
@@ -1728,12 +1638,12 @@ struct DualSourceFallbackGraceTests {
         ]
         let directHAMock = MockHomeProvider(snapshot: home([haSharedDoorCam], identityID: Self.haID))
         let directMiMock = MockHomeProvider(snapshot: directMiHome)
-        let directGate = GraceSleepGate()
+        let directGate = GraceTimerGate()
         let directDual = DualSourceHomeProvider(
             homeAssistant: directHAMock,
             xiaomiCloud: directMiMock,
             graceNow: { clock.now },
-            graceSleep: { duration in try await directGate.sleep(duration) }
+            fallbackRecheckTimer: directGate
         )
         let directCollector = RouteCollector()
         let directPump = Task {
@@ -1827,13 +1737,13 @@ struct DualSourceFallbackGraceTests {
         let haMock = MockHomeProvider(snapshot: haHome)
         let miMock = MockHomeProvider(snapshot: initialMiHome)
         let clock = TestClock()
-        let gate = GraceSleepGate()
+        let gate = GraceTimerGate()
         let dual = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miMock,
             pinnedBackends: { [Self.haID: .xiaomiCloud] },
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -1970,7 +1880,7 @@ struct DualSourceFallbackGraceTests {
             xiaomiCloud: singleMi,
             pinnedBackends: { [Self.haID: .xiaomiCloud] },
             graceNow: { clock.now },
-            graceSleep: { duration in try await gate.sleep(duration) }
+            fallbackRecheckTimer: gate
         )
         let e2eCollector = RouteCollector()
         let e2ePump = Task {
@@ -2084,14 +1994,14 @@ struct DualSourceFallbackGraceTests {
             identityID: Self.haID
         )
         let clock = TestClock()
-        let directGate = GraceSleepGate()
+        let directGate = GraceTimerGate()
         let directHAMock = MockHomeProvider(snapshot: haHome)
         let directMiMock = MockHomeProvider(snapshot: initialMultiHome)
         let directDual = DualSourceHomeProvider(
             homeAssistant: directHAMock,
             xiaomiCloud: directMiMock,
             graceNow: { clock.now },
-            graceSleep: { duration in try await directGate.sleep(duration) }
+            fallbackRecheckTimer: directGate
         )
         let directCollector = RouteCollector()
         let directPump = Task {
@@ -2190,12 +2100,12 @@ struct DualSourceFallbackGraceTests {
             clearSelectedHome: {}
         )
         let e2eHAMock = MockHomeProvider(snapshot: haHome)
-        let e2eGate = GraceSleepGate()
+        let e2eGate = GraceTimerGate()
         let e2eDual = DualSourceHomeProvider(
             homeAssistant: e2eHAMock,
             xiaomiCloud: miAccounts,
             graceNow: { clock.now },
-            graceSleep: { duration in try await e2eGate.sleep(duration) }
+            fallbackRecheckTimer: e2eGate
         )
         let e2eCollector = RouteCollector()
         let e2ePump = Task {
@@ -2243,6 +2153,137 @@ struct DualSourceFallbackGraceTests {
             let connected = await e2eCollector.accountIsConnected(account1.id)
             let backend = await e2eCollector.backend(forCard: Self.haID)
             return connected && backend == .xiaomiCloud
+        }
+    }
+
+    @Test("DispatchFallbackRecheckTimer re-arms in place, suppresses cancelled deadlines, and stays silent after invalidate")
+    func dispatchFallbackRecheckTimerRearmsCancelsAndInvalidatesCleanly() async throws {
+        final class TagLog: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: [String] = []
+            private let cont: AsyncStream<String>.Continuation
+            let stream: AsyncStream<String>
+
+            init() {
+                let (stream, cont) = AsyncStream<String>.makeStream()
+                self.stream = stream
+                self.cont = cont
+            }
+
+            func record(_ tag: String) {
+                lock.withLock { stored.append(tag) }
+                cont.yield(tag)
+            }
+
+            var tags: [String] { lock.withLock { stored } }
+
+            func finish() { cont.finish() }
+        }
+
+        let timer = DispatchFallbackRecheckTimer()
+        defer { timer.invalidate() }
+        let log = TagLog()
+        defer { log.finish() }
+
+        // 1. Cancelled pending schedule never fires; a later schedule fires once.
+        timer.schedule(after: .milliseconds(10)) { log.record("cancelled") }
+        timer.cancelPending()
+        timer.schedule(after: .milliseconds(25)) { log.record("after-cancel") }
+        var iterator = log.stream.makeAsyncIterator()
+        let first = await iterator.next()
+        #expect(first == "after-cancel")
+        #expect(log.tags == ["after-cancel"])
+
+        // 2. High-frequency re-arming reuses the single timer and fires only the latest callback.
+        for index in 0..<200 {
+            timer.schedule(after: .milliseconds(10)) { log.record("stale-\(index)") }
+        }
+        timer.schedule(after: .milliseconds(25)) { log.record("latest") }
+        let second = await iterator.next()
+        #expect(second == "latest")
+        #expect(log.tags == ["after-cancel", "latest"])
+
+        // 3. Invalidate permanently disarms pending and future schedules.
+        timer.schedule(after: .milliseconds(10)) { log.record("before-invalidate") }
+        timer.invalidate()
+        timer.schedule(after: .zero) { log.record("after-invalidate") }
+        let probe = DispatchFallbackRecheckTimer()
+        defer { probe.invalidate() }
+        probe.schedule(after: .milliseconds(30)) { log.record("probe") }
+        let third = await iterator.next()
+        #expect(third == "probe")
+        #expect(log.tags == ["after-cancel", "latest", "probe"])
+    }
+
+    @Test("A late fallback wake arriving after shutdown is discarded without recomputing")
+    func shutdownDiscardsLateFallbackWake() async throws {
+        try await withTeardown { teardown in
+            let haHome = home(
+                [camera(id: Self.haID, entity: "switch.door_cam_power", stream: "camera.door_stream")],
+                identityID: Self.haID
+            )
+            let miHome = home(
+                [camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")],
+                identityID: Self.did
+            )
+            let haMock = MockHomeProvider(snapshot: haHome)
+            let miMock = MockHomeProvider(snapshot: miHome)
+            let clock = TestClock()
+            final class CapturingTimer: FallbackRecheckTimer, @unchecked Sendable {
+                private let lock = NSLock()
+                private var storedCallback: (@Sendable () -> Void)?
+                private var storedInvalidated = false
+                var hasCallback: Bool { lock.withLock { storedCallback != nil } }
+                var wasInvalidated: Bool { lock.withLock { storedInvalidated } }
+                func schedule(after delay: Duration, onFire: @escaping @Sendable () -> Void) {
+                    lock.withLock { storedCallback = onFire }
+                }
+                func cancelPending() {
+                    lock.withLock { storedCallback = nil }
+                }
+                func invalidate() {
+                    lock.withLock { storedInvalidated = true }
+                }
+                func fireRetainedCallback() {
+                    let cb = lock.withLock { storedCallback }
+                    cb?()
+                }
+            }
+            let timer = CapturingTimer()
+            let provider = DualSourceHomeProvider(
+                homeAssistant: haMock,
+                xiaomiCloud: miMock,
+                graceNow: { clock.now },
+                fallbackRecheckTimer: timer
+            )
+            let collector = RouteCollector()
+            let pump = Task {
+                for await event in provider.events() {
+                    await collector.append(event)
+                }
+            }
+            teardown.add {
+                await provider.shutdown()
+                pump.cancel()
+                await pump.value
+            }
+
+            await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
+            await haMock.sendStatus(.disconnected("blip"))
+            await waitUntil {
+                let disconnected = await collector.sourceIsDisconnected(.homeAssistant)
+                return disconnected && timer.hasCallback
+            }
+
+            let snapshotsBeforeShutdown = await collector.snapshotCount
+            await provider.shutdown()
+            #expect(timer.wasInvalidated)
+
+            // Simulate a timer callback that was already in flight right as shutdown ran.
+            timer.fireRetainedCallback()
+            await waitUntil { await provider.discardedFallbackWakeCountForTesting == 1 }
+            #expect(await collector.snapshotCount == snapshotsBeforeShutdown)
+            #expect(await provider.isShutDownForTesting)
         }
     }
 
