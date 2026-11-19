@@ -677,6 +677,14 @@ extension HomeStore {
         let timers = scheduledCommands.map { makeTimerReference(for: $0, partition: .waiting, indexedById: indexedById) }
             + missedScheduledCommands.map { makeTimerReference(for: $0, partition: .missed, indexedById: indexedById) }
             + foreignScheduledCommands.map { makeTimerReference(for: $0, partition: .foreign, indexedById: indexedById) }
+            // Already-paused timers participate as well: a second disable can take away more of their
+            // targets and has to extend their pause markers (review #275).
+            + pausedScheduledCommands.map {
+                makeTimerReference(
+                    for: $0.command, partition: $0.originalPartition,
+                    pausedCapabilities: $0.pausedCapabilities, indexedById: indexedById
+                )
+            }
 
         if let rawRulesData = userDefaults.data(forKey: AutomationRuleStore.storageKey),
            (try? JSONSerialization.jsonObject(with: rawRulesData) as? [Any]) == nil {
@@ -770,6 +778,16 @@ extension HomeStore {
             extractPaused(from: &scheduledCommands, partition: .waiting)
             extractPaused(from: &missedScheduledCommands, partition: .missed)
             extractPaused(from: &foreignScheduledCommands, partition: .foreign)
+            for idx in pausedScheduledCommands.indices {
+                guard let pause = timerPauseById[pausedScheduledCommands[idx].command.id] else { continue }
+                let caps = Set(pausedScheduledCommands[idx].pausedCapabilities).union(
+                    pause.caps.isEmpty ? [.connection(.xiaomiCloud)] : pause.caps
+                ).sorted { $0.rawValue < $1.rawValue }
+                let scopes = Set(pausedScheduledCommands[idx].pausedScopes).union(pause.scopes).sorted()
+                pausedScheduledCommands[idx].pausedCapabilities = caps
+                pausedScheduledCommands[idx].pausedScopes = scopes
+            }
+            // Freshly paused entries and extended markers both go to disk in one write.
             PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
             persistScheduledCommandsFromCapabilities()
         }

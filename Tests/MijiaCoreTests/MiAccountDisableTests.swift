@@ -1437,6 +1437,51 @@ struct MiAccountDisableTestsReview {
         #expect(try #require(ruleStore.load().first).isEnabled == true)
     }
 
+    @Test("Disabling a second account extends the pause markers of an already paused timer")
+    func secondDisableExtendsPausedTimers() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.devices = [
+            Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id),
+            Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id),
+        ]
+        let timer = ScheduledCommand(
+            reply: "10 分钟后关闭两盏灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(
+                intents: [
+                    DeviceIntent(targetId: "cn-light", operation: .power(false)),
+                    DeviceIntent(targetId: "de-light", operation: .power(false)),
+                ],
+                reply: "关闭两盏灯", source: .local
+            ),
+            sourceScope: Self.cn.id,
+            sourceScopes: [Self.cn.id, Self.de.id]
+        )
+        ScheduledCommand.save([timer], to: defaults)
+        store.restoreScheduledCommands()
+
+        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        let afterFirst = try #require(store.pausedScheduledCommands.first)
+        #expect(afterFirst.pausedScopes == [Self.cn.id])
+
+        // The second disable must grow the marker instead of leaving it pinned to the first account.
+        store.setMiAccountEnabled(false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        let afterSecond = try #require(store.pausedScheduledCommands.first)
+        #expect(afterSecond.pausedScopes == [Self.cn.id, Self.de.id].sorted())
+
+        store.setMiAccountEnabled(true, id: Self.cn.id)
+        #expect(store.pausedScheduledCommands.count == 1)
+        #expect(store.scheduledCommands.isEmpty)
+
+        store.setMiAccountEnabled(true, id: Self.de.id)
+        #expect(store.pausedScheduledCommands.isEmpty)
+    }
+
     @Test("Re-adding an account revalidates the paused quick actions it left behind")
     func readdedAccountRevalidatesQuickActions() throws {
         let suite = Self.makeSuite()
