@@ -76,6 +76,7 @@ extension HomeStore {
 
     @discardableResult
     public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) != nil { return nil }
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
@@ -1292,6 +1293,10 @@ extension HomeStore {
               let facets = deviceFacets[deviceId],
               let index = facets.firstIndex(where: { $0.id == controlId }) else { return }
         let control = facets[index]
+        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         guard facetWriteAllowed(control),
               control.target?.isAction == false,
               control.value != value,
@@ -1366,6 +1371,10 @@ extension HomeStore {
               currentControl.target?.isAction == false,
               didPresentModal || currentControl.value != value,
               let currentCommand = Self.facetCommand(for: currentControl, value: value) else { return }
+        if let reason = miotCommandWriteRejection(for: currentCommand.targetEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         let previous = facetWrites[key]
         let snapshotAdvancedDuringModal = didPresentModal && snapshotGeneration != preModalGeneration
         let origin: JSONValue?
@@ -1497,8 +1506,12 @@ extension HomeStore {
     /// other inputs fall back to the profile default (an enum input prefers the app/remote source).
     public func runFacetAction(_ deviceId: String, controlId: String, portion: Int? = nil) {
         guard let device = controllableDevice(deviceId), device.isOnline,
-              let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
-              facetWriteAllowed(control), let target = control.target else { return }
+              let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }) else { return }
+        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
+        guard facetWriteAllowed(control), let target = control.target else { return }
         switch target {
         case .action, .haAction:
             break
@@ -1536,6 +1549,10 @@ extension HomeStore {
         case .haAction(let entityId):
             command = .pressButton(entityId: entityId)
         case .property, .haProperty:
+            return
+        }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+            showToast(reason.userMessage, isError: true)
             return
         }
         extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.0))
@@ -2130,6 +2147,7 @@ extension HomeStore {
 
     @discardableResult
     public func sendSpeakerText(_ deviceId: String, text: String, asDirective: Bool) -> Bool {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return false }
         guard !rejectWritesBlockedByMiSession() else { return false }
         guard !rejectControlWhileLocked() else { return false }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2177,12 +2195,23 @@ extension HomeStore {
     }
 
     public func pressDeviceButton(_ buttonEntityId: String, label: String) {
+        let command = DeviceCommand.pressButton(entityId: buttonEntityId)
+        if let ownerId = owningDeviceIdForCommand(command),
+           rejectDeviceWriteIfCapabilityDisabled(deviceId: ownerId) != nil {
+            return
+        }
+        if let reason = miotCommandWriteRejection(for: buttonEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         Task {
             do {
-                try await executeDeviceCommand(.pressButton(entityId: buttonEntityId))
+                try await executeDeviceCommand(command)
                 showToast(L10n.tr("已触发：\(label)", "Triggered: \(label)"))
+            } catch let blocked as CapabilityControlBlockedError {
+                showToast(blocked.reason.userMessage, isError: true)
             } catch {
                 showToast(L10n.tr("\(label) 执行失败", "\(label) failed"), isError: true)
             }
@@ -2228,12 +2257,14 @@ extension HomeStore {
     }
 
     public func openCameraLiveView(_ deviceId: String) {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else { return }
         guard device.isOnline else {
             showToast(L10n.tr("\(device.name) 当前离线", "\(device.name) is offline"), isError: true)
             return
         }
+        guard !rejectControlWhileLocked() else { return }
         activeLiveCameraDeviceId = device.id
         onOpenCameraLiveView?(device)
     }
@@ -2274,6 +2305,9 @@ extension HomeStore {
     }
 
     public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
+        if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
+            throw CapabilityControlBlockedError(reason: reason)
+        }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("未找到该摄像头设备", "Camera device not found"))

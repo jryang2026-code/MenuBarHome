@@ -526,7 +526,7 @@ public enum MiSessionStore {
 
     /// Reads the current account list before a write (`upsert` / `remove`). Returns `nil` when the
     /// Keychain slot is unreadable or corrupt, so a failed read never overwrites existing accounts.
-    private static func readExistingAccounts(
+    static func readExistingAccounts(
         defaults: UserDefaults,
         vault: CredentialVault?
     ) -> [MiAccount]? {

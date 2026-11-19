@@ -112,6 +112,25 @@ struct MiAccountsProviderTests {
         await provider.shutdown()
     }
 
+    @Test("An account whose session already expired is never reported as fresh")
+    func startupExpiredAccountIsNotFresh() async throws {
+        var expired = Self.de
+        expired.session.expiresAt = .distantPast
+        let cnApi = StubMiCloudAPI(devices: [MiotFixtures.lightRecord], rooms: [], values: MiotFixtures.lightValues)
+        let deApi = StubMiCloudAPI(devices: [], rooms: [], values: [:])
+        let provider = Self.makeProvider([Self.cn, expired], cnAPI: cnApi, deAPI: deApi)
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        #expect(await log.wait { events in await events.snapshots.contains { $0.devices.map(\.id) == ["123"] } })
+        let snapshots = await log.snapshots
+        // A disconnected account that emits an empty snapshot must not look like a fresh poll: the
+        // host treats freshness as proof that its targets really are gone (H3).
+        #expect(snapshots.contains { $0.freshAccountIds.contains(Self.cn.id) })
+        #expect(snapshots.allSatisfy { !$0.freshAccountIds.contains(expired.id) })
+        await provider.shutdown()
+    }
+
     @Test("Expiry of the selected account resets its home and restores the other account")
     func selectedAccountExpiryRestoresAvailableHomes() async throws {
         let suite = "test.mi.selected-expiry.\(UUID().uuidString)"

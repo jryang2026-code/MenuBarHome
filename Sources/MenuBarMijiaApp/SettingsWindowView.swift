@@ -38,12 +38,55 @@ private enum SettingsSearchMemoCache {
     }
 }
 
+enum SettingsTopUpdateBanner {
+    enum Prompt: Equatable {
+        case release(AppRelease, readyToRelaunch: Bool)
+        case failure(AppUpdateFailure)
+    }
+
+    static func showsSidebarBadge(for updateState: AppUpdateState) -> Bool {
+        updateState.badgeRelease != nil || updateState.isFailure
+    }
+
+    static func prompt(for updateState: AppUpdateState, activeTab: SettingsTab) -> Prompt? {
+        guard activeTab.canonicalTab != .about else { return nil }
+        if let release = updateState.badgeRelease {
+            return .release(release, readyToRelaunch: updateState.isReadyToRelaunch)
+        }
+        if case .failed(let failure) = updateState {
+            return .failure(failure)
+        }
+        return nil
+    }
+
+    static func releaseToShow(updateState: AppUpdateState, activeTab: SettingsTab) -> AppRelease? {
+        guard activeTab.canonicalTab != .about else { return nil }
+        return updateState.badgeRelease
+    }
+
+    static var actionTitle: String {
+        L10n.tr("前往查看", "View Update")
+    }
+
+    static func actionTitle(for _: AppRelease, updateState _: AppUpdateState) -> String {
+        actionTitle
+    }
+
+    static func failureHeadline(for failure: AppUpdateFailure) -> String {
+        failure.release == nil
+            ? L10n.tr("更新检查失败", "Update Check Failed")
+            : L10n.tr("软件更新失败", "Software Update Failed")
+    }
+}
+
 public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
     @State private var advancedDisplay = GeneralSettingsDisclosure.State()
     @State private var connectionAdvancedDisclosure = ConnectionSettingsDisclosure.State()
     @State private var lgWakeDisclosure = LGWebOSSettingsSaveGuard.WakeDisclosureState()
+    @State private var safetyDisclosure = SafetySettingsDisclosure.State()
+    @State private var aboutDisclosure = AboutSettingsDisclosure.State()
     @State private var focus = SettingsSearchFocus()
     @State private var unsaved = SettingsUnsavedChanges()
     @State private var highlightedResult: Int?
@@ -58,12 +101,19 @@ public struct SettingsWindowView: View {
         self.store = store
     }
 
-    init(store: HomeStore, selectedTab: SettingsTab) {
+    init(
+        store: HomeStore,
+        selectedTab: SettingsTab,
+        safetyDisclosure: SafetySettingsDisclosure.State = .init(),
+        aboutDisclosure: AboutSettingsDisclosure.State = .init()
+    ) {
         self.store = store
         _tab = State(initialValue: selectedTab.canonicalTab)
         var initialDisclosure = GeneralSettingsDisclosure.State()
         initialDisclosure.expandIfNeeded(forRequestedTab: selectedTab)
         _advancedDisplay = State(initialValue: initialDisclosure)
+        _safetyDisclosure = State(initialValue: safetyDisclosure)
+        _aboutDisclosure = State(initialValue: aboutDisclosure)
     }
 
     /// Which rows this window is actually drawing, so search never offers a row that is not there.
@@ -98,7 +148,7 @@ public struct SettingsWindowView: View {
                     selection: guardedTab,
                     isSearching: focus.isSearching,
                     searchField: AnyView(searchField),
-                    hasUpdateBadge: store.updateState.badgeRelease != nil,
+                    hasUpdateBadge: SettingsTopUpdateBanner.showsSidebarBadge(for: store.updateState),
                     onSelectCategory: selectCategory
                 )
                 Divider()
@@ -150,23 +200,18 @@ public struct SettingsWindowView: View {
             // holds the row. Leaving search itself is `selectCategory`'s job: `onChange` does not
             // fire when the clicked category is already selected, which is how a query used to
             // survive a click on the category already on screen.
-            if let highlight = focus.highlight, highlight.tab != newTab {
+            if let highlight = focus.highlight, destinationTab(for: highlight) != newTab {
                 focus.endHighlight()
             }
         }
         .onAppear {
-            if let requested = opener.requestedTab {
-                advancedDisplay.expandIfNeeded(forRequestedTab: requested)
-                tab = requested.canonicalTab
-                opener.requestedTab = nil
-            }
+            consumeOpenerRequestIfNeeded(opener)
         }
-        .onChange(of: opener.requestedTab) { _, requested in
-            guard let requested else { return }
-            // A panel button asking for a pane is a category choice like a sidebar click, so it
-            // leaves search too; otherwise the result list keeps covering the rail.
-            selectCategory(requested)
-            opener.requestedTab = nil
+        .onChange(of: opener.requestedTab) { _, _ in
+            consumeOpenerRequestIfNeeded(opener)
+        }
+        .onChange(of: opener.requestedAnchor) { _, _ in
+            consumeOpenerRequestIfNeeded(opener)
         }
         .task {
             await store.checkForUpdatesIfNeeded()
@@ -214,6 +259,21 @@ public struct SettingsWindowView: View {
         highlightedResult = nil
     }
 
+    private func consumeOpenerRequestIfNeeded(_ opener: SettingsWindowOpener) {
+        if let requestedAnchor = opener.requestedAnchor {
+            opener.requestedTab = nil
+            opener.requestedAnchor = nil
+            jump(toAnchor: requestedAnchor)
+            return
+        }
+        if let requested = opener.requestedTab {
+            opener.requestedTab = nil
+            // A panel button asking for a pane is a category choice like a sidebar click, so it
+            // leaves search too; otherwise the result list keeps covering the rail.
+            selectCategory(requested)
+        }
+    }
+
     /// A click on a category in the rail. It leaves search *here*, not through `onChange(of: tab)`:
     /// clicking the category already on screen does not change `selection`, so the callback was never
     /// reached and a live query kept covering the rail with no selected row in sight.
@@ -239,19 +299,40 @@ public struct SettingsWindowView: View {
         Binding(get: { tab.canonicalTab }, set: { _ in })
     }
 
-    private func jump(to hit: SettingsSearchHit) {
+    private func destinationTab(for anchor: SettingsAnchor) -> SettingsTab {
+        if anchor == .setupGuide && !store.hasCompletedOnboarding {
+            return .general
+        }
+        return anchor.tab.canonicalTab
+    }
+
+    private func expandDisclosures(for anchor: SettingsAnchor) {
+        advancedDisplay.expandIfNeeded(forHighlight: anchor)
+        connectionAdvancedDisclosure.expandForHighlightIfNeeded(anchor)
+        lgWakeDisclosure.expandForHighlightIfNeeded(anchor)
+        safetyDisclosure.expandForHighlightIfNeeded(anchor)
+        aboutDisclosure.expandForHighlightIfNeeded(anchor)
+    }
+
+    private func jump(toAnchor anchor: SettingsAnchor) {
         // Order matters. `clearQuery()` hides the result list and ends any previous highlight, so
         // the landing highlight has to be requested *after* it; setting it first would be wiped by
         // the query change and the jump would arrive with nothing to scroll to or point at.
         focus.clearQuery()
         highlightedResult = nil
-        let destination = hit.anchor.tab.canonicalTab
+        let destination = destinationTab(for: anchor)
         guard leavesTabSafely(for: destination) else { return }
-        advancedDisplay.expandIfNeeded(forHighlight: hit.anchor)
-        connectionAdvancedDisclosure.expandForHighlightIfNeeded(hit.anchor)
-        lgWakeDisclosure.expandForHighlightIfNeeded(hit.anchor)
+        expandDisclosures(for: anchor)
         tab = destination
-        focus.jump(to: hit.anchor)
+        focus.jump(to: anchor)
+    }
+
+    private func jump(to hit: SettingsSearchHit) {
+        jump(toAnchor: hit.anchor)
+    }
+
+    private func jumpToSoftwareUpdate() {
+        jump(toAnchor: .softwareUpdate)
     }
 
     // MARK: Detail
@@ -275,6 +356,12 @@ public struct SettingsWindowView: View {
             // jump would silently do nothing and the lower cards would be unreachable.
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: DesignTokens.Settings.cardSpacing) {
+                    if let prompt = SettingsTopUpdateBanner.prompt(
+                        for: store.updateState,
+                        activeTab: tab
+                    ) {
+                        topUpdatePromptBanner(prompt)
+                    }
                     SettingsPaneHeader(tab: tab.canonicalTab, subtitle: tab.canonicalTab.paneSubtitle)
                     settingsPage
                 }
@@ -287,6 +374,15 @@ public struct SettingsWindowView: View {
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
             .onChange(of: focus.generation) { _, targetGeneration in
                 guard let anchor = focus.highlight else { return }
+                let destination = destinationTab(for: anchor)
+                if tab.canonicalTab != destination {
+                    guard leavesTabSafely(for: destination) else {
+                        focus.endHighlight()
+                        return
+                    }
+                    tab = destination
+                }
+                expandDisclosures(for: anchor)
                 scrollToAnchor(anchor, using: proxy)
                 // Cross-tab jumps and newly expanded disclosures mount their `.id(anchor)` row
                 // asynchronously after state changes, so re-scroll once the layout settles.
@@ -300,6 +396,48 @@ public struct SettingsWindowView: View {
                 }
             }
         }
+    }
+
+    private func topUpdatePromptBanner(_ prompt: SettingsTopUpdateBanner.Prompt) -> some View {
+        let isFailure: Bool = {
+            if case .failure = prompt { return true }
+            return false
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
+                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                .foregroundStyle(isFailure ? Color.orange : Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 1) {
+                switch prompt {
+                case .release(let release, let readyToRelaunch):
+                    Text(L10n.tr("发现新版本 v\(release.version)", "New version v\(release.version) available"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    if readyToRelaunch {
+                        Text(L10n.tr("更新已就绪，重启后生效。", "Ready to install — relaunch to finish updating."))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                case .failure(let failure):
+                    Text(SettingsTopUpdateBanner.failureHeadline(for: failure))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    Text(failure.message)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Button(SettingsTopUpdateBanner.actionTitle) {
+                jumpToSoftwareUpdate()
+            }
+            .buttonStyle(PillActionButtonStyle(isSelected: !isFailure, tintColor: .accentColor))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(SettingsCardBackground())
     }
 
     @ViewBuilder
@@ -316,9 +454,9 @@ public struct SettingsWindowView: View {
         case .assistant:
             AssistantSettingsTab(store: store)
         case .privacy:
-            PrivacySettingsTab(store: store)
+            PrivacySettingsTab(store: store, disclosure: $safetyDisclosure)
         case .about:
-            AboutSettingsTab(store: store)
+            AboutSettingsTab(store: store, disclosure: $aboutDisclosure)
         }
     }
 }
@@ -347,8 +485,8 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         case .connection: return L10n.tr("家居连接", "Connections")
         case .assistant: return L10n.tr("AI 助手", "AI Assistant")
         case .appearance: return L10n.tr("外观", "Appearance")
-        case .privacy: return L10n.tr("隐私与诊断", "Privacy & Diagnostics")
-        case .about: return L10n.tr("关于与更新", "About & Updates")
+        case .privacy: return L10n.tr("安全与提醒", "Safety & Alerts")
+        case .about: return L10n.tr("关于与诊断", "About & Diagnostics")
         }
     }
 }
@@ -543,12 +681,67 @@ enum GeneralSettingsDisclosure {
     }
 }
 
+struct ContinueOnboardingSection: View {
+    let store: HomeStore
+    var anchor: SettingsAnchor? = nil
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+
+    @MainActor
+    @discardableResult
+    static func reopenIfUnsavedResolved(
+        store: HomeStore,
+        unsaved: SettingsUnsavedChanges?,
+        ask: ((_ titles: [String], _ allowCancel: Bool) -> SettingsUnsavedChanges.Choice)? = nil
+    ) -> Bool {
+        if let unsaved {
+            let resolved = if let ask {
+                unsaved.resolveBeforeLeaving(allowCancel: true, ask: ask)
+            } else {
+                unsaved.resolveBeforeLeaving(allowCancel: true)
+            }
+            if !resolved {
+                return false
+            }
+        }
+        store.reopenOnboarding()
+        return true
+    }
+
+    var body: some View {
+        SettingsSection(title: L10n.tr("初始设置", "Initial Setup"), anchor: anchor) {
+            HStack(spacing: 12) {
+                Text(L10n.tr(
+                    "初始设置尚未完成，继续完成连接家庭数据源、搜索设备与全关撤销引导。",
+                    "Initial setup is still in progress. Continue the guide to connect your home, search devices, and practice All Off + Undo."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    guard Self.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else { return }
+                    NSApp.keyWindow?.orderOut(nil)
+                    HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text(L10n.tr("继续初始设置", "Continue Setup"))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+    }
+}
+
 private struct GeneralSettingsTab: View {
     let store: HomeStore
     @Binding var advancedDisplay: GeneralSettingsDisclosure.State
     @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var showNotificationRationale = false
-    @State private var confirmsAdvancedFacetWrites = false
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
@@ -568,10 +761,9 @@ private struct GeneralSettingsTab: View {
 
     var body: some View {
         let _ = store.effectiveLanguage
-        let hasActiveUpdate = store.updateState.badgeRelease != nil || store.updateState.isFailure
         VStack(alignment: .leading, spacing: 16) {
-            if hasActiveUpdate {
-                UpdateSection(store: store)
+            if !store.hasCompletedOnboarding {
+                ContinueOnboardingSection(store: store, anchor: .setupGuide)
             }
 
             SettingsSection(title: L10n.tr("基础显示", "Basic Display")) {
@@ -909,117 +1101,7 @@ private struct GeneralSettingsTab: View {
                 }
             }
 
-            SettingsSection(title: L10n.tr("设备控制", "Device Controls"), anchor: .advancedDeviceWrites) {
-                SettingsToggleRow(
-                    title: L10n.tr(
-                        "允许「更多设置」写入次要控件",
-                        "Allow secondary controls under More Settings"
-                    ),
-                    isOn: Binding(
-                        get: { store.allowAdvancedFacetWrites },
-                        set: { newValue in
-                            if newValue && !store.allowAdvancedFacetWrites {
-                                confirmsAdvancedFacetWrites = true
-                            } else {
-                                store.allowAdvancedFacetWrites = newValue
-                            }
-                        }
-                    )
-                )
-                .confirmationDialog(
-                    L10n.tr("允许写入次要控件？", "Allow secondary writes?"),
-                    isPresented: $confirmsAdvancedFacetWrites,
-                    titleVisibility: .visible
-                ) {
-                    Button(L10n.tr("允许写入", "Allow writes"), role: .destructive) {
-                        store.allowAdvancedFacetWrites = true
-                    }
-                    Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
-                } message: {
-                    Text(L10n.tr(
-                        "开启后，加热、门锁、阀门、路由器配置等高风险操作在执行前仍会再次确认。只修改你确认设备支持的项目。",
-                        "High-risk operations such as heating, locks, valves, and router configuration still ask for confirmation before they run. Only change settings you know the device supports."
-                    ))
-                }
-
-                Text(L10n.tr(
-                    "默认只放开亮度、模式、风速这类低风险写入。「更多设置」里的其他开关、滑块和按钮会显示为不可用；开启后它们也可以操作，请先确认设备确实支持该项。",
-                    "Brightness, mode and fan level are the only writes open by default. Other switches, sliders and buttons under More Settings stay disabled until you turn this on; check that the device really supports the setting first."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            SettingsSection(title: L10n.tr("守护提醒与通知", "Safety Alerts & Notifications")) {
-                SettingsToggleRow(
-                    title: L10n.tr("主动安全与低电量提醒", "Safety & Low Battery Alerts"),
-                    isOn: Binding(
-                        get: { store.enableSafetyAlerts },
-                        set: { enabled in
-                            store.enableSafetyAlerts = enabled
-                            if enabled { askForNotificationsIfNeeded() }
-                        }
-                    )
-                )
-                .settingsRow(anchor: .safetyAlerts)
-
-                ForEach(SensorAlertKind.allCases) { kind in
-                    SettingsToggleRow(
-                        title: kind.settingsTitle,
-                        isOn: Binding(
-                            get: { store.isSensorAlertEnabled(kind) },
-                            set: { enabled in
-                                store.setSensorAlertEnabled(kind, enabled)
-                                if enabled { askForNotificationsIfNeeded() }
-                            }
-                        )
-                    )
-                }
-                .settingsRow(anchor: .sensorAlerts)
-
-                SettingsToggleRow(
-                    title: L10n.tr(
-                        "门窗和移动只在这台 Mac 锁屏、睡眠或切换走时提醒",
-                        "Door and motion only when this Mac is locked, asleep, or switched away"
-                    ),
-                    isOn: Binding(
-                        get: { store.sensorAlertsOnlyWhenAway },
-                        set: { store.sensorAlertsOnlyWhenAway = $0 }
-                    )
-                )
-                .settingsRow(anchor: .alertsOnlyWhenAway)
-
-                SettingsToggleRow(
-                    title: L10n.tr("门铃响时自动弹出摄像头画面", "Show the doorbell camera when it rings"),
-                    isOn: Binding(get: { store.doorbellAutoPopup }, set: { store.doorbellAutoPopup = $0 })
-                )
-                .settingsRow(anchor: .doorbellAutoView)
-
-                SettingsToggleRow(
-                    title: L10n.tr("门铃响时播放提示音", "Play a chime when the doorbell rings"),
-                    isOn: Binding(get: { store.doorbellChime }, set: { store.doorbellChime = $0 })
-                )
-                .settingsRow(anchor: .doorbellChime)
-
-                HStack(spacing: 6) {
-                    Text(L10n.tr("门铃画面自动收起", "Close the doorbell view after"))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                    Spacer()
-                    Stepper(
-                        value: Binding(get: { store.doorbellPopupSeconds }, set: { store.doorbellPopupSeconds = $0 }),
-                        in: HomeStore.doorbellPopupSecondsRange,
-                        step: 15
-                    ) {
-                        Text(L10n.tr("\(store.doorbellPopupSeconds) 秒", "\(store.doorbellPopupSeconds) s"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                    }
-                    .fixedSize()
-                }
-                .disabled(!store.doorbellAutoPopup)
-                .settingsRow(anchor: .doorbellAutoCloseSeconds)
-
+            SettingsSection(title: L10n.tr("家庭健康周报", "Weekly Health Report")) {
                 SettingsToggleRow(
                     title: L10n.tr("每周日晚发送家庭健康周报", "Send a weekly home health report on Sunday evening"),
                     isOn: Binding(
@@ -1040,69 +1122,21 @@ private struct GeneralSettingsTab: View {
                     .buttonStyle(PillActionButtonStyle())
                 }
 
-                NotificationPermissionRow()
-                    .settingsRow(anchor: .notificationPermission)
-
                 if showNotificationRationale {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label(
-                            L10n.tr("为什么需要通知权限？", "Why do notifications need permission?"),
-                            systemImage: "bell.badge"
-                        )
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-
-                        Text(L10n.tr(
-                            "守护提醒（设备长时间开启、电量过低）和错过的定时任务要靠系统通知提醒你。通知只在本机显示，不会上传任何内容；不发通知时 App 其它功能照常使用。",
-                            "Safety alerts (a device left on too long, low battery) and missed timers are delivered as local macOS notifications. They stay on this Mac; the rest of the app works without them."
-                        ))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                        HStack(spacing: 8) {
-                            Spacer()
-                            Button(L10n.tr("暂不", "Not Now")) {
-                                showNotificationRationale = false
+                    NotificationRationaleCard(
+                        onDismiss: { showNotificationRationale = false },
+                        onAllow: {
+                            showNotificationRationale = false
+                            Task {
+                                _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization()
                             }
-                            .buttonStyle(PillActionButtonStyle())
-
-                            Button(L10n.tr("允许通知", "Allow Notifications")) {
-                                showNotificationRationale = false
-                                Task {
-                                    _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization()
-                                }
-                            }
-                            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
-                    }
-                    .padding(9)
-                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous))
+                    )
                 }
             }
 
             AutomationSettingsSection(store: store)
             EnergySettingsSection(store: store)
-
-            SettingsSection(title: L10n.tr("首次设置", "Setup"), anchor: .setupGuide) {
-                HStack {
-                    Text(L10n.tr("重新打开新手引导，再看一遍连接、搜索与全关撤销。", "Reopen the setup guide to review connecting, search and All Off + Undo."))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                    Spacer()
-                    Button {
-                        store.reopenOnboarding()
-                        NSApp.keyWindow?.orderOut(nil)
-                        HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "sparkles")
-                            Text(L10n.tr("打开新手引导", "Open Guide"))
-                        }
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                }
-            }
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {
@@ -1362,6 +1396,10 @@ private struct ConnectionSettingsTab: View {
     var body: some View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 16) {
+            if !store.hasCompletedOnboarding {
+                ContinueOnboardingSection(store: store)
+            }
+
             SettingsSection(title: L10n.tr("连接状态与示例家庭", "Connection Status & Demo Home")) {
                 HStack {
                     Text(store.connectionSourceSummary)
@@ -1778,134 +1816,109 @@ private struct AssistantSettingsTab: View {
     }
 }
 
-// MARK: - Privacy & Diagnostics (#45, #50)
+// MARK: - Shared Notification Rationale (#55)
+
+struct NotificationRationaleCard: View {
+    let onDismiss: () -> Void
+    let onAllow: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(
+                L10n.tr("为什么需要通知权限？", "Why do notifications need permission?"),
+                systemImage: "bell.badge"
+            )
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+
+            Text(L10n.tr(
+                "守护提醒（设备长时间开启、电量过低）和错过的定时任务要靠系统通知提醒你。通知只在本机显示，不会上传任何内容；不发通知时 App 其它功能照常使用。",
+                "Safety alerts (a device left on too long, low battery) and missed timers are delivered as local macOS notifications. They stay on this Mac; the rest of the app works without them."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 8) {
+                Spacer()
+                Button(L10n.tr("暂不", "Not Now"), action: onDismiss)
+                    .buttonStyle(PillActionButtonStyle())
+
+                Button(L10n.tr("允许通知", "Allow Notifications"), action: onAllow)
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+        }
+        .padding(9)
+        .background(
+            Color.primary.opacity(0.04),
+            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+        )
+    }
+}
+
+// MARK: - Safety & Alerts (WP3c)
+
+enum SafetySettingsDisclosure {
+    struct State: Equatable, Sendable {
+        var isDoorbellAdvancedExpanded: Bool = false
+        var isAllOffScopeExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(
+            isDoorbellAdvancedExpanded: Bool = false,
+            isAllOffScopeExpanded: Bool = false
+        ) {
+            self.isDoorbellAdvancedExpanded = isDoorbellAdvancedExpanded
+            self.isAllOffScopeExpanded = isAllOffScopeExpanded
+        }
+
+        mutating func applyInitialDefaultsIfNeeded(doorbellPopupSeconds: Int) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if SafetySettingsDisclosure.hasNonDefaultDoorbellPopupSeconds(doorbellPopupSeconds) {
+                isDoorbellAdvancedExpanded = true
+            }
+        }
+
+        mutating func expandForHighlightIfNeeded(_ anchor: SettingsAnchor?) {
+            if SafetySettingsDisclosure.shouldExpandDoorbellAdvanced(forHighlight: anchor) {
+                isDoorbellAdvancedExpanded = true
+            }
+            if SafetySettingsDisclosure.shouldExpandAllOffScope(forHighlight: anchor) {
+                isAllOffScopeExpanded = true
+            }
+        }
+    }
+
+    static func hasNonDefaultDoorbellPopupSeconds(_ seconds: Int) -> Bool {
+        seconds != HomeStore.defaultDoorbellPopupSeconds
+    }
+
+    static func shouldExpandDoorbellAdvanced(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor == .doorbellAutoCloseSeconds
+    }
+
+    static func shouldExpandAllOffScope(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor == .allOffScope
+    }
+}
 
 private struct PrivacySettingsTab: View {
     let store: HomeStore
-    @State private var didCopy = false
-    @State private var confirmsRevoke = false
+    @Binding var disclosure: SafetySettingsDisclosure.State
+    @Environment(\.settingsSearchFocus) private var searchFocus
+    @State private var showNotificationRationale = false
+    @State private var confirmsAdvancedFacetWrites = false
+    @AppStorage(URLDirectControl.allowDirectControlKey) private var allowDirectControl = false
 
-    private var scanner: UnsupportedDeviceScanner { .shared }
-    private var errorLog: AppDiagnosticsLog { .shared }
+    private var notifications: NotificationPermissionState { .shared }
 
     var body: some View {
         let _ = store.effectiveLanguage
-        let _ = errorLog.errorTimestamps
+        let configurableDevices = store.allOffConfigurableDevices
+        let includedCount = store.allOffIncludedDevices.count
+
         VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: L10n.tr("诊断信息", "Diagnostics"), anchor: .copyDiagnostics) {
-                Text(L10n.tr(
-                    "复制一段 Markdown 粘贴到 GitHub issue。内容只有版本、系统、后端、型号与未识别设备，不含设备 ID、令牌、服务器地址或账号信息。",
-                    "Copies Markdown for a GitHub issue: versions, OS, backend, models and skipped devices only. No device IDs, tokens, server addresses or account information."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 8) {
-                    Button {
-                        copyDiagnostics()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.on.doc")
-                            Text(L10n.tr("复制诊断信息", "Copy Diagnostics"))
-                        }
-                    }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-
-                    if didCopy {
-                        Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .foregroundStyle(.green)
-                    }
-
-                    Spacer()
-
-                    Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
-                        if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                }
-            }
-
-            SettingsSection(title: L10n.tr("未能显示在面板的设备", "Devices Not Shown in the Panel"), anchor: .scanUnsupportedDevices) {
-                Text(L10n.tr(
-                    "扫描当前账号的原始设备列表，找出被跳过的设备与原因。米家首次扫描会按型号拉取规格，可能需要几十秒；演示模式没有跳过项。",
-                    "Scans the raw device registry for devices the panel skipped, with the reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    if let scannedAt = scanner.lastScannedAt, !scanner.isScanning {
-                        Text(L10n.tr("上次扫描：\(scannedAt.formatted(date: .abbreviated, time: .shortened))", "Last scan: \(scannedAt.formatted(date: .abbreviated, time: .shortened))"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                    }
-                    Spacer()
-                    Button(scanner.isScanning
-                           ? L10n.tr("扫描中…", "Scanning…")
-                           : L10n.tr("扫描不支持的设备", "Scan Skipped Devices")) {
-                        Task { await scanner.scan(store: store) }
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                    .disabled(scanner.isScanning)
-                }
-
-                if let error = scanner.errorMessage {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if !scanner.isScanning && scanner.lastScannedAt != nil && scanner.devices.isEmpty && scanner.errorMessage == nil {
-                    Label(L10n.tr("没有发现被跳过的设备", "No skipped devices found"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(.green)
-                }
-
-                ForEach(scanner.devices) { device in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "questionmark.square.dashed")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                            .frame(width: 18)
-
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(device.name)
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            Text("\(device.model.isEmpty ? L10n.tr("未知型号", "Unknown model") : device.model) · \(device.reasonText)")
-                                .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-
-                        Spacer()
-
-                        if let url = UnsupportedDeviceFeedbackURL.make(for: device) {
-                            Link(destination: url) {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "arrow.up.right.square")
-                                    Text(L10n.tr("去 GitHub 反馈", "Report on GitHub"))
-                                }
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            }
-                        }
-                    }
-                }
-            }
-
-            SettingsSection(title: L10n.tr("隐私", "Privacy"), anchor: .privacyNotes) {
-                privacyBullet(L10n.tr("语音只在本机识别时可完全离线；不支持的语种会提示改用苹果服务器。", "On-device speech stays on this Mac; unsupported languages say they fall back to Apple's servers."))
-                privacyBullet(L10n.tr("诊断报告不含设备 ID、令牌、服务器地址或账号信息。", "Diagnostics never include device IDs, tokens, server addresses or account info."))
-                privacyBullet(L10n.tr("演示模式完全离线，不发起任何网络请求。", "Demo mode is fully offline and sends no requests."))
-                privacyBullet(L10n.tr("最近错误只记录次数与时间，不保存错误原文。", "Recent errors are counted by time only; the raw text is not stored."))
-            }
-
-            SettingsSection(title: L10n.tr("安全", "Security"), anchor: .blockControlWhileLocked) {
+            SettingsSection(title: L10n.tr("锁屏控制", "Lock-Screen Protection"), anchor: .blockControlWhileLocked) {
                 SettingsToggleRow(
                     title: L10n.tr("锁屏时禁止控制设备", "Block device control while locked"),
                     isOn: Binding(
@@ -1920,45 +1933,804 @@ private struct PrivacySettingsTab: View {
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
+            }
+
+            SettingsSection(title: L10n.tr("守护提醒与通知", "Safety Alerts & Notifications")) {
+                SettingsToggleRow(
+                    title: L10n.tr("主动安全与低电量提醒", "Safety & Low Battery Alerts"),
+                    isOn: Binding(
+                        get: { store.enableSafetyAlerts },
+                        set: { enabled in
+                            store.enableSafetyAlerts = enabled
+                            if enabled { askForNotificationsIfNeeded() }
+                        }
+                    )
+                )
+                .settingsRow(anchor: .safetyAlerts)
+
+                ForEach(SensorAlertKind.allCases) { kind in
+                    SettingsToggleRow(
+                        title: kind.settingsTitle,
+                        isOn: Binding(
+                            get: { store.isSensorAlertEnabled(kind) },
+                            set: { enabled in
+                                store.setSensorAlertEnabled(kind, enabled)
+                                if enabled { askForNotificationsIfNeeded() }
+                            }
+                        )
+                    )
+                }
+                .settingsRow(anchor: .sensorAlerts)
+
+                SettingsToggleRow(
+                    title: L10n.tr(
+                        "门窗和移动只在这台 Mac 锁屏、睡眠或切换走时提醒",
+                        "Door and motion only when this Mac is locked, asleep, or switched away"
+                    ),
+                    isOn: Binding(
+                        get: { store.sensorAlertsOnlyWhenAway },
+                        set: { store.sensorAlertsOnlyWhenAway = $0 }
+                    )
+                )
+                .settingsRow(anchor: .alertsOnlyWhenAway)
+
+                Text(L10n.tr(
+                    "即使今后关闭某类设备（包括摄像机实时画面），已开启的安全提醒与门铃提醒仍会正常工作；要停止提醒请在此处单独关闭。",
+                    "Even if you disable a device type later (including live camera views), enabled safety and doorbell alerts continue to work. Turn an alert off here when you want to stop it."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
                 Divider().overlay(Color.primary.opacity(0.06))
 
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(L10n.tr("退出并吊销令牌", "Sign Out & Revoke Tokens"))
-                            .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                SettingsToggleRow(
+                    title: L10n.tr("门铃响时自动弹出摄像头画面", "Show the doorbell camera when it rings"),
+                    isOn: Binding(get: { store.doorbellAutoPopup }, set: { store.doorbellAutoPopup = $0 })
+                )
+                .settingsRow(anchor: .doorbellAutoView)
+
+                SettingsToggleRow(
+                    title: L10n.tr("门铃响时播放提示音", "Play a chime when the doorbell rings"),
+                    isOn: Binding(get: { store.doorbellChime }, set: { store.doorbellChime = $0 })
+                )
+                .settingsRow(anchor: .doorbellChime)
+
+                if !store.hasMiSource && !store.hasHASource && store.homeBackend != .demo {
+                    Text(L10n.tr(
+                        "门铃事件由米家或 Home Assistant 连接提供；连接支持门铃与摄像头的家庭后自动生效。",
+                        "Doorbell events come from Xiaomi Home or Home Assistant connections and take effect once a supported home is connected."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                DisclosureGroup(isExpanded: $disclosure.isDoorbellAdvancedExpanded) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(L10n.tr("门铃画面自动收起", "Close the doorbell view after"))
+                                .font(.system(size: DesignTokens.TypeSize.caption))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                            Spacer()
+                            Stepper(
+                                value: Binding(get: { store.doorbellPopupSeconds }, set: { store.doorbellPopupSeconds = $0 }),
+                                in: HomeStore.doorbellPopupSecondsRange,
+                                step: 15
+                            ) {
+                                Text(L10n.tr("\(store.doorbellPopupSeconds) 秒", "\(store.doorbellPopupSeconds) s"))
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .monospacedDigit()
+                            }
+                            .fixedSize()
+                        }
+                        .disabled(!store.doorbellAutoPopup)
+
+                        if !store.doorbellAutoPopup {
+                            Text(L10n.tr(
+                                "请先开启「门铃响时自动弹出摄像头画面」。",
+                                "Turn on “Show the doorbell camera when it rings” first."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(.top, 4)
+                    .settingsRow(anchor: .doorbellAutoCloseSeconds)
+                } label: {
+                    Text(L10n.tr("高级门铃选项", "Advanced Doorbell Options"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
+                NotificationPermissionRow()
+                    .settingsRow(anchor: .notificationPermission)
+
+                if showNotificationRationale {
+                    NotificationRationaleCard(
+                        onDismiss: { showNotificationRationale = false },
+                        onAllow: {
+                            showNotificationRationale = false
+                            Task {
+                                _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization()
+                            }
+                        }
+                    )
+                }
+            }
+
+            SettingsSection(title: L10n.tr("全关范围", "All Off Scope"), anchor: .allOffScope) {
+                HStack(spacing: 12) {
+                    Text(L10n.tr("已包含 \(includedCount) 台设备", "\(includedCount) device(s) included"))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                        .monospacedDigit()
+
+                    Spacer(minLength: 8)
+
+                    Button(disclosure.isAllOffScopeExpanded
+                           ? L10n.tr("收起", "Done")
+                           : L10n.tr("修改", "Edit")) {
+                        disclosure.isAllOffScopeExpanded.toggle()
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+                .frame(minHeight: DesignTokens.Settings.rowHeight)
+
+                Text(L10n.tr(
+                    "面板执行「全关」时，仅关闭当前房间或筛选范围内已开启的参与设备。",
+                    "Running All Off in the panel only turns off participating devices that are currently on in the active room or filter."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Text(L10n.tr(
+                    "插座、扫地机、阀门、摄像机等默认不参与全关，避免断电路由器、冰箱或中断清扫；窗帘始终不参与全关。",
+                    "Plugs, robot vacuums, valves and cameras are excluded from All Off by default to avoid cutting power to routers or fridges; covers never join All Off."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if disclosure.isAllOffScopeExpanded {
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    if configurableDevices.isEmpty {
                         Text(L10n.tr(
-                            "退出全部米家账号、删除 Home Assistant 令牌并断开连接，同时清除已保存的 AI 密钥与云端授权。设备、房间与本地历史保留。",
-                            "Signs out every Xiaomi Home account, deletes the Home Assistant token and disconnects, and clears saved AI keys and cloud consent. Devices, rooms and local history stay."
+                            "当前没有可配置全关范围的设备。连接家庭并同步设备后，可在此单独调整每台设备是否参与全关。",
+                            "No configurable devices right now. Once your home is connected and synced, you can choose which devices join All Off here."
                         ))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        ForEach(configurableDevices) { dev in
+                            let defaultIncluded = HomeStore.joinsAllOffByDefault(dev)
+                            HStack(spacing: 8) {
+                                Image(systemName: dev.sfSymbolName)
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                    .frame(width: 18)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(dev.name)
+                                        .font(.system(size: DesignTokens.TypeSize.body))
+                                    Text(
+                                        "\(L10n.displayRoomName(dev.roomName)) · " +
+                                        (defaultIncluded
+                                            ? L10n.tr("默认包含", "Included by default")
+                                            : L10n.tr("默认排除", "Excluded by default"))
+                                    )
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                }
+
+                                Spacer(minLength: 12)
+
+                                Toggle(
+                                    dev.name,
+                                    isOn: Binding(
+                                        get: { store.joinsAllOff(dev) },
+                                        set: { store.setJoinsAllOff($0, deviceId: dev.id) }
+                                    )
+                                )
+                                .labelsHidden()
+                                .glassLabelHidden()
+                                .toggleStyle(.glass)
+                                .controlSize(.regular)
+                            }
+                            .frame(minHeight: DesignTokens.Settings.rowHeight)
+                        }
                     }
-                    Spacer(minLength: 12)
-                    Button(L10n.tr("退出并吊销", "Sign Out & Revoke")) {
-                        confirmsRevoke = true
-                    }
-                    .buttonStyle(PillActionButtonStyle())
                 }
-                .settingsRow(anchor: .signOut)
+            }
+
+            SettingsSection(title: L10n.tr("高级控制权限", "High-Risk Control Permissions")) {
+                VStack(alignment: .leading, spacing: 6) {
+                    SettingsToggleRow(
+                        title: L10n.tr(
+                            "允许「更多设置」写入次要控件",
+                            "Allow secondary controls under More Settings"
+                        ),
+                        isOn: Binding(
+                            get: { store.allowAdvancedFacetWrites },
+                            set: { newValue in
+                                if newValue && !store.allowAdvancedFacetWrites {
+                                    confirmsAdvancedFacetWrites = true
+                                } else {
+                                    store.allowAdvancedFacetWrites = newValue
+                                }
+                            }
+                        )
+                    )
+                    .confirmationDialog(
+                        L10n.tr("允许写入次要控件？", "Allow secondary writes?"),
+                        isPresented: $confirmsAdvancedFacetWrites,
+                        titleVisibility: .visible
+                    ) {
+                        Button(L10n.tr("允许写入", "Allow writes"), role: .destructive) {
+                            store.allowAdvancedFacetWrites = true
+                        }
+                        Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                    } message: {
+                        Text(L10n.tr(
+                            "开启后，加热、门锁、阀门、路由器配置等高风险操作在执行前仍会再次确认。只修改你确认设备支持的项目。",
+                            "High-risk operations such as heating, locks, valves, and router configuration still ask for confirmation before they run. Only change settings you know the device supports."
+                        ))
+                    }
+
+                    Label(
+                        L10n.tr(
+                            "打开高风险设备的额外控制（门锁、阀门、加热等），每次操作前仍会单独确认",
+                            "Enable extra controls for high-risk devices (locks, valves, heating, etc.); each action still asks for confirmation"
+                        ),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    Text(L10n.tr(
+                        "默认只放开亮度、模式、风速这类低风险写入。「更多设置」里的其他开关、滑块和按钮会显示为不可用；开启后它们也可以操作，请先确认设备确实支持该项。",
+                        "Brightness, mode and fan level are the only writes open by default. Other switches, sliders and buttons under More Settings stay disabled until you turn this on; check that the device really supports the setting first."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .settingsRow(anchor: .advancedDeviceWrites)
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    SettingsToggleRow(
+                        title: L10n.tr("允许外部链接直控（跳过确认）", "Allow external URL control without confirmation"),
+                        isOn: $allowDirectControl
+                    )
+
+                    Label(
+                        L10n.tr(
+                            "允许外部链接直接控制设备（跳过所有二次确认，含门锁、阀门）",
+                            "Allow external links to control devices directly (skips all secondary confirmations, including locks and valves)"
+                        ),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    Text(L10n.tr(
+                        "默认每次都会先列出设备与动作，确认后才执行；开启后任何网页或 App 打开链接都会立即执行，仅在完全信任来源时开启。链接格式：menumijia://toggle?device=<id>、menumijia://scene?name=<场景>、menumijia://ask?text=<一句话>。",
+                        "By default every link lists the device and action and waits for confirmation; when on, any web page or app opening a link executes immediately, so only turn this on for trusted sources. Formats: menumijia://toggle?device=<id>, menumijia://scene?name=<scene>, menumijia://ask?text=<sentence>."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .settingsRow(anchor: .allowURLControl)
             }
         }
-        .onAppear { scanner.invalidateIfContextChanged(for: store) }
-        .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
-        .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
-        .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
-        .alert(L10n.tr("退出并吊销所有令牌？", "Sign out and revoke all tokens?"), isPresented: $confirmsRevoke) {
-            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
-            Button(L10n.tr("退出并吊销", "Sign Out & Revoke"), role: .destructive) {
-                scanner.reset()
-                store.signOutAndRevokeAll()
+        .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
+        .onAppear {
+            disclosure.applyInitialDefaultsIfNeeded(doorbellPopupSeconds: store.doorbellPopupSeconds)
+            disclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            disclosure.expandForHighlightIfNeeded(highlight)
+        }
+    }
+
+    /// In-app explanation first, system prompt second (#55).
+    private func askForNotificationsIfNeeded() {
+        if HotkeyAndNotificationManager.hasRequestedNotificationAuthorization {
+            if notifications.canRequest {
+                Task { _ = await HotkeyAndNotificationManager.shared.requestNotificationAuthorization() }
             }
-        } message: {
+            return
+        }
+        if notifications.isDenied { return }
+        showNotificationRationale = true
+    }
+}
+
+// MARK: - About & Diagnostics (WP3c)
+
+enum AboutSettingsDisclosure {
+    struct State: Equatable, Sendable {
+        var isResetExpanded: Bool = false
+
+        init(isResetExpanded: Bool = false) {
+            self.isResetExpanded = isResetExpanded
+        }
+
+        mutating func expandForHighlightIfNeeded(_ anchor: SettingsAnchor?) {
+            if AboutSettingsDisclosure.shouldExpandReset(forHighlight: anchor) {
+                isResetExpanded = true
+            }
+        }
+    }
+
+    static func shouldExpandReset(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor == .signOut
+    }
+}
+
+enum UnsupportedDeviceGrouping {
+    struct Group: Identifiable, Equatable, Sendable {
+        let reason: UnsupportedDevice.Reason
+        let title: String
+        let devices: [UnsupportedDevice]
+
+        var id: String { reason.rawValue }
+        var count: Int { devices.count }
+    }
+
+    static func group(_ devices: [UnsupportedDevice]) -> [Group] {
+        guard !devices.isEmpty else { return [] }
+        let bucketed = Dictionary(grouping: devices, by: \.reason)
+        return UnsupportedDevice.Reason.allCases.compactMap { reason in
+            guard let items = bucketed[reason], let first = items.first else { return nil }
+            return Group(reason: reason, title: first.reasonText, devices: items)
+        }
+    }
+}
+
+private struct ScannerResetKey: Equatable {
+    let homeBackend: HomeBackend
+    let accountIDs: [String]
+    let hasEnabledHASource: Bool
+    let serverURL: String
+}
+
+private struct DiagnosticsRefreshKey: Equatable {
+    let hasHASource: Bool
+    let unsupportedDevices: [UnsupportedDevice]
+    let errorTimestamps: [Date]
+    let deviceCount: Int
+    let onlineCount: Int
+    let hiddenCount: Int
+    let language: AppLanguage
+}
+
+private struct AboutSettingsTab: View {
+    let store: HomeStore
+    @Binding var disclosure: AboutSettingsDisclosure.State
+    @Environment(\.settingsSearchFocus) private var searchFocus
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+    @State private var didCopy = false
+    @State private var showsDiagnosticsPreview = false
+    @State private var diagnosticsPreviewMarkdown = ""
+    @State private var confirmsRevoke = false
+
+    private var scanner: UnsupportedDeviceScanner { .shared }
+    private var errorLog: AppDiagnosticsLog { .shared }
+
+    private var scannerResetKey: ScannerResetKey {
+        ScannerResetKey(
+            homeBackend: store.homeBackend,
+            accountIDs: store.enabledMiAccounts.map(\.id),
+            hasEnabledHASource: store.hasEnabledHASource,
+            serverURL: store.serverURLString
+        )
+    }
+
+    private var diagnosticsRefreshKey: DiagnosticsRefreshKey {
+        DiagnosticsRefreshKey(
+            hasHASource: store.hasHASource,
+            unsupportedDevices: scanner.devices,
+            errorTimestamps: errorLog.errorTimestamps,
+            deviceCount: store.devices.count,
+            onlineCount: store.onlineDeviceCount,
+            hiddenCount: store.hiddenDevices.count,
+            language: store.effectiveLanguage
+        )
+    }
+
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+    }
+
+    private var buildNumber: String {
+        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"
+    }
+
+    var body: some View {
+        let _ = store.effectiveLanguage
+
+        aboutContent
+            .onAppear {
+                scanner.invalidateIfContextChanged(for: store)
+                refreshDiagnosticsPreviewIfNeeded()
+                disclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
+            }
+            .onChange(of: searchFocus?.highlight) { _, highlight in
+                disclosure.expandForHighlightIfNeeded(highlight)
+            }
+            .onChange(of: showsDiagnosticsPreview) { _, isExpanded in
+                guard isExpanded else { return }
+                scanner.invalidateIfContextChanged(for: store)
+                diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
+            }
+            .onChange(of: scannerResetKey) { _, _ in
+                scanner.reset()
+                refreshDiagnosticsPreviewIfNeeded()
+            }
+            .onChange(of: diagnosticsRefreshKey) { oldKey, newKey in
+                if oldKey.hasHASource != newKey.hasHASource {
+                    scanner.invalidateIfContextChanged(for: store)
+                }
+                refreshDiagnosticsPreviewIfNeeded()
+            }
+            .alert(L10n.tr("退出并清除所有账号与密钥？", "Sign out and clear all accounts and keys?"), isPresented: $confirmsRevoke) {
+                Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                Button(L10n.tr("退出并清除", "Sign Out & Clear"), role: .destructive) {
+                    scanner.reset()
+                    store.signOutAndRevokeAll()
+                    refreshDiagnosticsPreviewIfNeeded()
+                }
+            } message: {
+                Text(L10n.tr(
+                    "全部米家会话、Home Assistant 连接钥匙以及 AI 密钥与授权将从本机删除；用电与温湿度历史、房间与全关偏好会保留。需要时可重新扫码或填写钥匙连接。",
+                    "All Xiaomi Home sessions, the Home Assistant connection key, and saved AI keys and consent will be removed from this Mac; local power/climate history, rooms and All Off preferences stay. You can reconnect anytime."
+                ))
+            }
+    }
+
+    private var aboutContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            aboutHeader
+
+            UpdateSection(store: store)
+
+            if store.hasCompletedOnboarding {
+                aboutSetupGuide
+            }
+
+            aboutPrivacy
+
+            aboutDiagnostics
+
+            aboutUnsupportedDevices
+
+            aboutAdvancedReset
+
+            aboutQuit
+        }
+    }
+
+    private var aboutHeader: some View {
+        SettingsSection(title: L10n.tr("关于 MenuBarHome", "About MenuBarHome"), anchor: .aboutVersion) {
+            HStack(spacing: 10) {
+                Image(systemName: "house.fill")
+                    .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.orange, DesignTokens.active],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MenuBarHome")
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
+                    Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .monospacedDigit()
+                }
+
+                Spacer()
+
+                if store.homeBackend == .demo {
+                    Text(L10n.tr("演示模式", "Demo Mode"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(.orange)
+                }
+            }
+
+            HStack(spacing: 8) {
+                Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome")!)
+                Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues")!)
+                Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases")!)
+                Spacer()
+            }
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+        }
+    }
+
+    private var aboutSetupGuide: some View {
+        SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
+            HStack(spacing: 12) {
+                Text(L10n.tr(
+                    "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
+                    "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    guard ContinueOnboardingSection.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else {
+                        return
+                    }
+                    NSApp.keyWindow?.orderOut(nil)
+                    HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text(L10n.tr("重新查看初始设置引导", "Reopen Setup Guide"))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+        }
+    }
+
+    private var aboutPrivacy: some View {
+        SettingsSection(title: L10n.tr("隐私", "Privacy"), anchor: .privacyNotes) {
+            privacyBullet(L10n.tr("语音只在本机识别时可完全离线；不支持的语种会提示改用苹果服务器。", "On-device speech stays on this Mac; unsupported languages say they fall back to Apple's servers."))
+            privacyBullet(L10n.tr("诊断报告不含设备 ID、令牌、服务器地址或账号信息。", "Diagnostics never include device IDs, tokens, server addresses or account info."))
+            privacyBullet(L10n.tr("演示模式完全离线，不发起任何网络请求。", "Demo mode is fully offline and sends no requests."))
+            privacyBullet(L10n.tr("最近错误只记录次数与时间，不保存错误原文。", "Recent errors are counted by time only; the raw text is not stored."))
+        }
+    }
+
+    @ViewBuilder
+    private var aboutDiagnostics: some View {
+        let errorTimestamps = errorLog.errorTimestamps
+
+        SettingsSection(title: L10n.tr("排障与诊断", "Troubleshooting & Diagnostics"), anchor: .copyDiagnostics) {
             Text(L10n.tr(
-                "米家会话、Home Assistant 令牌和 AI 密钥会从本机删除。需要时可以重新扫码或粘贴令牌登录。",
-                "Xiaomi sessions, the Home Assistant token and AI keys are deleted from this Mac. You can scan or paste a token to sign in again."
+                "复制一段脱敏 Markdown 粘贴到 GitHub Issue。仅包含版本、系统、连接方式、设备型号计数、未显示设备与错误/崩溃时间计数，不含设备 ID、服务器地址、账号或密钥。",
+                "Copies redacted Markdown for a GitHub issue: versions, OS, backend, model counts, skipped devices, and error/crash timestamps only. No device IDs, server addresses, accounts or keys."
             ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let lastErrorAt = errorTimestamps.last {
+                Text(L10n.tr(
+                    "近期错误：\(errorTimestamps.count) 次（最近一次 \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))）",
+                    "Recent errors: \(errorTimestamps.count), latest \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))"
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .monospacedDigit()
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    copyDiagnostics()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                        Text(L10n.tr(
+                            "复制排障信息（已自动隐去账号与密钥）",
+                            "Copy Diagnostics (Accounts & Keys Redacted)"
+                        ))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+
+                if didCopy {
+                    Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(.green)
+                }
+
+                Spacer()
+
+                Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
+                    if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+
+            DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
+                Text(diagnosticsPreviewMarkdown)
+                    .font(.system(size: DesignTokens.TypeSize.control, design: .monospaced))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(
+                        Color.primary.opacity(0.04),
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+                    )
+                    .padding(.top, 4)
+            } label: {
+                Text(L10n.tr("预览排障报告内容", "Preview Diagnostics Report"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var aboutUnsupportedDevices: some View {
+        let unsupportedGroups = UnsupportedDeviceGrouping.group(scanner.devices)
+
+        SettingsSection(title: L10n.tr("未能显示在面板的设备", "Devices Not Shown in the Panel"), anchor: .scanUnsupportedDevices) {
+            Text(L10n.tr(
+                "扫描当前账号的原始设备列表，找出被跳过的设备并按原因分组。米家首次扫描会按型号拉取规格，可能需要几十秒；演示模式没有跳过项。",
+                "Scans the raw device registry for devices the panel skipped, grouped by reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                if let scannedAt = scanner.lastScannedAt, !scanner.isScanning {
+                    Text(L10n.tr("上次扫描：\(scannedAt.formatted(date: .abbreviated, time: .shortened))", "Last scan: \(scannedAt.formatted(date: .abbreviated, time: .shortened))"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
+                Spacer()
+                Button(scanner.isScanning
+                       ? L10n.tr("扫描中…", "Scanning…")
+                       : L10n.tr("扫描不支持的设备", "Scan Skipped Devices")) {
+                    Task { await scanner.scan(store: store) }
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .disabled(scanner.isScanning)
+            }
+
+            if let error = scanner.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !scanner.isScanning && scanner.lastScannedAt != nil && unsupportedGroups.isEmpty && scanner.errorMessage == nil {
+                Label(L10n.tr("没有发现被跳过的设备", "No skipped devices found"), systemImage: "checkmark.circle.fill")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.green)
+            }
+
+            ForEach(unsupportedGroups) { group in
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    HStack(spacing: 6) {
+                        Text(group.title)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        Spacer()
+                        Text(L10n.tr("\(group.count) 台", "\(group.count) device(s)"))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .monospacedDigit()
+                    }
+
+                    ForEach(group.devices) { device in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "questionmark.square.dashed")
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                                .frame(width: 18)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(device.name)
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                Text(device.model.isEmpty ? L10n.tr("未知型号", "Unknown model") : device.model)
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer()
+
+                            if let url = UnsupportedDeviceFeedbackURL.make(for: device) {
+                                Link(destination: url) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "arrow.up.right.square")
+                                        Text(L10n.tr("去 GitHub 反馈", "Report on GitHub"))
+                                    }
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var aboutAdvancedReset: some View {
+        SettingsSection(title: L10n.tr("高级排障与重置", "Advanced Troubleshooting & Reset")) {
+            DisclosureGroup(isExpanded: $disclosure.isResetExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(L10n.tr("退出并清除所有账号与密钥", "Sign Out & Clear All Accounts and Keys"))
+                                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+
+                            Text(L10n.tr(
+                                "清除范围：退出全部米家会话、删除 Home Assistant 连接钥匙并断开连接，同时清除已保存的 AI 服务密钥与云端发送授权。保留项：本机用电与温湿度历史、房间排序、隐藏与全关偏好不会删除。",
+                                "Clears: every Xiaomi Home session, the Home Assistant connection key (disconnecting it), and saved AI service keys and cloud consent. Keeps: local power and climate history, room order, and hidden/All Off preferences."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            Text(L10n.tr(
+                                "若只想移除某一个家庭平台连接，请前往「家居连接」操作；若只想关闭程序而不删除任何账号，请使用下方「退出 MenuBarHome」。",
+                                "To remove just one home connection, go to Connections; to close the app without deleting any accounts, use Quit MenuBarHome below."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Button(L10n.tr("退出并清除…", "Sign Out & Clear…")) {
+                            confirmsRevoke = true
+                        }
+                        .buttonStyle(PillActionButtonStyle())
+                    }
+                    .padding(.top, 6)
+                    .settingsRow(anchor: .signOut)
+                }
+            } label: {
+                Text(L10n.tr("清除全部本机登录凭据与授权", "Clear all local credentials and authorizations"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
+            }
+        }
+    }
+
+    private var aboutQuit: some View {
+        SettingsSection(title: L10n.tr("退出", "Quit"), anchor: .quitApp) {
+            HStack {
+                Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                Spacer()
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "power")
+                        Text(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(.red.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -1975,8 +2747,12 @@ private struct PrivacySettingsTab: View {
         }
     }
 
-    private func copyDiagnostics() {
-        scanner.invalidateIfContextChanged(for: store)
+    private func refreshDiagnosticsPreviewIfNeeded() {
+        guard showsDiagnosticsPreview else { return }
+        diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
+    }
+
+    private func buildDiagnosticsMarkdown() -> String {
         let info = Bundle.main.infoDictionary
         let models = Dictionary(grouping: store.devices, by: { $0.model })
             .map { DiagnosticsReportBuilder.ModelCount(model: $0.key, count: $0.value.count) }
@@ -2001,8 +2777,6 @@ private struct PrivacySettingsTab: View {
                 L10n.tr("快捷键", "Shortcut") + ": " + HotkeyPreferences.load().displayString,
                 L10n.tr("本机语音", "On-device speech") + ": " + (store.prefersOnDeviceSpeech ? "on" : "off"),
             ],
-            // Counts only: a home id or name would identify the account, and the report's privacy
-            // contract is structural (#76, #67).
             miHomeCount: store.hasMiSource ? store.homes.count : nil,
             miSharedHomeCount: store.hasMiSource ? store.homes.filter(\.isSharedHome).count : nil,
             isMiHomeFiltered: store.hasMiSource && store.selectedMiHomeId != nil,
@@ -2011,96 +2785,22 @@ private struct PrivacySettingsTab: View {
                 localNetworkBlocks: store.effectiveLocalNetworkBlocks
             )
         )
+        return DiagnosticsReportBuilder.markdown(input)
+    }
+
+    private func copyDiagnostics() {
+        scanner.invalidateIfContextChanged(for: store)
+        let markdown = buildDiagnosticsMarkdown()
+        if showsDiagnosticsPreview {
+            diagnosticsPreviewMarkdown = markdown
+        }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        pasteboard.setString(DiagnosticsReportBuilder.markdown(input), forType: .string)
+        pasteboard.setString(markdown, forType: .string)
         didCopy = true
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))
             didCopy = false
-        }
-    }
-}
-
-// MARK: - About
-
-private struct AboutSettingsTab: View {
-    let store: HomeStore
-
-    private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
-    }
-
-    private var buildNumber: String {
-        Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "-"
-    }
-
-    var body: some View {
-        let _ = store.effectiveLanguage
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: L10n.tr("关于 MenuBarHome", "About MenuBarHome"), anchor: .aboutVersion) {
-                HStack(spacing: 10) {
-                    Image(systemName: "house.fill")
-                        .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            LinearGradient(
-                                colors: [Color.orange, DesignTokens.active],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
-                        )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("MenuBarHome")
-                            .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
-                        Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                            .monospacedDigit()
-                    }
-
-                    Spacer()
-
-                    if store.homeBackend == .demo {
-                        Text(L10n.tr("演示模式", "Demo Mode"))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome")!)
-                    Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues")!)
-                    Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases")!)
-                    Spacer()
-                }
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-            }
-
-            UpdateSection(store: store)
-
-            SettingsSection(title: L10n.tr("退出", "Quit"), anchor: .quitApp) {
-                HStack {
-                    Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                    Spacer()
-                    Button {
-                        NSApplication.shared.terminate(nil)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "power")
-                            Text(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"))
-                        }
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(.red.opacity(0.85))
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
         }
     }
 }

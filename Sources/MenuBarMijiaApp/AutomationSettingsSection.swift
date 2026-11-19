@@ -9,7 +9,7 @@ import MijiaCore
 struct AutomationSettingsSection: View {
     let store: HomeStore
 
-    @AppStorage(URLDirectControl.allowDirectControlKey) private var allowDirectControl = false
+    @Environment(\.settingsSearchFocus) private var searchFocus
     @AppStorage(RaycastSnapshotExporter.integrationEnabledKey) private var raycastEnabled = false
     /// Loaded in `onAppear`; a `@State` initializer would re-decode `UserDefaults` on every render.
     @State private var rules: [AutomationRule] = []
@@ -108,23 +108,34 @@ struct AutomationSettingsSection: View {
 
             Divider().overlay(Color.primary.opacity(0.06))
 
-            SettingsToggleRow(
-                title: L10n.tr("允许 URL 直控（跳过确认）", "Allow URL control without confirmation"),
-                isOn: $allowDirectControl
-            )
-            .settingsRow(anchor: .allowURLControl)
-            Text(allowDirectControl
-                ? L10n.tr(
-                    "已关闭确认：任何网页或 App 只要打开 menumijia:// 链接就能立即控制设备。仅在你完全信任来源时使用。",
-                    "Confirmation is off: any web page or app that opens a menumijia:// link can control devices immediately. Only use this with trusted sources."
-                )
-                : L10n.tr(
-                    "默认每次都会先列出设备与动作，确认后才执行。链接格式：menumijia://toggle?device=<id>、menumijia://scene?name=<场景>、menumijia://ask?text=<一句话>。",
-                    "By default every link lists the device and action and waits for confirmation. Formats: menumijia://toggle?device=<id>, menumijia://scene?name=<scene>, menumijia://ask?text=<sentence>."
-                ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(allowDirectControl ? .orange : .secondary)
-            .fixedSize(horizontal: false, vertical: true)
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.tr("外部链接直控权限", "External Link Direct Control"))
+                        .font(.system(size: DesignTokens.TypeSize.body))
+                    Text(L10n.tr(
+                        "外部链接（menumijia://）跳过确认的高风险开关已归入「安全与提醒 › 高级控制权限」统一管理。",
+                        "The high-risk switch allowing menumijia:// links to skip confirmation is managed under Safety & Alerts › High-Risk Control Permissions."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    searchFocus?.jump(to: .allowURLControl)
+                } label: {
+                    HStack(spacing: 3) {
+                        Text(L10n.tr("前往设置", "Go to Settings"))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+
+            Divider().overlay(Color.primary.opacity(0.06))
 
             SettingsToggleRow(
                 title: L10n.tr("Raycast 集成", "Raycast integration"),
@@ -202,20 +213,43 @@ struct AutomationSettingsSection: View {
             get: { rules.first(where: { $0.id == rule.id })?.isEnabled ?? rule.isEnabled },
             set: { enabled in
                 guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
-                if enabled, !rules[index].isEnabled,
-                   let confirmation = rules[index].highRiskConfirmation(devices: store.devices) {
+                var updated = rules[index]
+                if enabled, !updated.isEnabled,
+                   let confirmation = updated.highRiskConfirmation(devices: store.devices) {
                     guard confirmHighRiskRule(confirmation) else { return }
-                    rules[index].highRiskApproved = true
+                    updated.highRiskApproved = true
                 }
-                rules[index].isEnabled = enabled
-                persist()
+                updated.isEnabled = enabled
+                // A manual switch overrides the pause bookkeeping: turning a paused rule on runs it
+                // now, and turning one off keeps it off even if the lost scope comes back (M5).
+                updated.pausedCapabilities = []
+                updated.pausedScopes = []
+                update(updated)
             }
         )
     }
 
     private func delete(_ rule: AutomationRule) {
         rules.removeAll { $0.id == rule.id }
-        persist()
+        var stored = AutomationRuleStore().load()
+        stored.removeAll { $0.id == rule.id }
+        AutomationRuleStore().save(stored)
+        rules = stored
+        AutomationEngine.shared.rulesDidChange()
+    }
+
+    /// Writes one rule against the current store instead of the array read on appear, so a background
+    /// revalidation that paused or resumed another rule is not overwritten with stale rows (M5).
+    private func update(_ rule: AutomationRule) {
+        var stored = AutomationRuleStore().load()
+        if let index = stored.firstIndex(where: { $0.id == rule.id }) {
+            stored[index] = rule
+        } else {
+            stored.append(rule)
+        }
+        AutomationRuleStore().save(stored)
+        rules = stored
+        AutomationEngine.shared.rulesDidChange()
     }
 
     /// One line under the action summary: the trigger's own parameter, then the conditions.
@@ -691,9 +725,12 @@ struct AutomationSettingsSection: View {
             guard confirmHighRiskRule(confirmation) else { return }
             rule.highRiskApproved = true
         }
-        rules.append(rule)
+        var stored = AutomationRuleStore().load()
+        stored.append(rule)
+        AutomationRuleStore().save(stored)
+        rules = stored
         newDeviceIds = []
-        persist()
+        AutomationEngine.shared.rulesDidChange()
     }
 
     private func confirmHighRiskRule(_ confirmation: ManualControlConfirmation) -> Bool {
@@ -705,10 +742,6 @@ struct AutomationSettingsSection: View {
         return approved
     }
 
-    private func persist() {
-        AutomationRuleStore().save(rules)
-        // #174: a newly enabled Wi-Fi/Focus/calendar rule asks for its permission now, not at the
-        // next app launch. Existing permissions are never re-prompted.
-        AutomationEngine.shared.rulesDidChange()
-    }
+    /// #174: a newly enabled Wi-Fi/Focus/calendar rule asks for its permission now, not at the next
+    /// app launch. Every write above calls `AutomationEngine.shared.rulesDidChange()` after saving.
 }

@@ -49,7 +49,9 @@ struct ClimatePanelModule: View {
     private var fg: Color { surface.ink }
     private var muted: Color { surface.secondaryInk }
 
-    private var isExpanded: Bool { forceExpanded || (!isEditingLayout && store.expandedDeviceId == device.id) }
+    private var isExpanded: Bool {
+        device.isOnline && (forceExpanded || (!isEditingLayout && store.expandedDeviceId == device.id))
+    }
 
     /// Auxiliary MIoT controls (#30): the shared drawer's rows are this card's only surface for
     /// fresh-air, louver, sleep and similar services, so the expanded state must show them.
@@ -62,7 +64,7 @@ struct ClimatePanelModule: View {
             || !spec.availableSwingModes.isEmpty || !facets.isEmpty || hasTransportDiagnostics
     }
 
-    private var canExpand: Bool { spec.powerWritable || hasAuxiliaryControls }
+    private var canExpand: Bool { device.isOnline && (spec.powerWritable || hasAuxiliaryControls) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -228,7 +230,10 @@ struct ClimatePanelModule: View {
     }
 
     private func stepButton(symbol: String, delta: Double) -> some View {
-        Button {
+        let label = delta > 0
+            ? L10n.tr("升高目标温度", "Raise target temperature")
+            : L10n.tr("降低目标温度", "Lower target temperature")
+        return Button {
             guard !isEditingLayout else { return }
             withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
                 store.stepClimateTemperature(device.id, delta: delta)
@@ -241,9 +246,8 @@ struct ClimatePanelModule: View {
                 .adaptiveGlass(in: Circle(), interactive: true)
         }
         .buttonStyle(PressableCardButtonStyle(scaleAmount: 0.86))
-        .accessibilityLabel(Text(delta > 0
-            ? L10n.tr("升高目标温度", "Raise target temperature")
-            : L10n.tr("降低目标温度", "Lower target temperature")))
+        .accessibilityLabel(Text(label))
+        .panelHelp(label)
     }
 
     // MARK: Modes

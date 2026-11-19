@@ -259,6 +259,8 @@ public enum DeactivationDisposition: String, CaseIterable, Codable, Hashable, Se
 public enum AffectedReferenceKind: String, CaseIterable, Codable, Hashable, Sendable { case waitingTimer, missedTimer, foreignTimer, automationRule, quickAction }
 public struct AffectedReferenceItem: Codable, Equatable, Sendable {
     public let kind: AffectedReferenceKind, id: String, name: String, connectionScopes: [String], affectedTargetIds: [String], affectedCapabilities: [CapabilityID]
+    /// Stable identity of one previewed item, so a confirmation can name exactly the list it showed.
+    public var pauseKey: String { "\(kind.rawValue):\(id)" }
 }
 
 public enum CapabilitySoftNoticeKind: String, CaseIterable, Codable, Hashable, Sendable {

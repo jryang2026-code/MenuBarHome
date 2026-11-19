@@ -821,6 +821,14 @@ extension HomeStore {
         ScheduledCommand.save(all.sorted { $0.fireDate < $1.fireDate }, to: userDefaults)
     }
 
+    func persistScheduledCommandsFromCapabilities() {
+        persistAllScheduledCommands()
+    }
+
+    func startScheduledTaskFromCapabilities(for entry: ScheduledCommand, delay: TimeInterval) {
+        startScheduledTask(for: entry, delay: delay)
+    }
+
     /// Re-partitions timers after the connected sources changed. Called from `startListening()`, where
     /// the new provider is already in place; re-arming from persisted data is the existing restore path.
     func syncScheduledCommandScopeIfNeeded() {
@@ -883,6 +891,8 @@ extension HomeStore {
     }
 
     private func timerScopeMatches(_ entry: ScheduledCommand) -> Bool {
+        // A plan whose targets are all LG LAN cards never depends on a cloud scope (ADR-0023).
+        if timerTargetsAreAllLGLan(entry.plan) { return true }
         guard let scopes = entry.effectiveSourceScopes else { return false }
         return Self.sourceScopesMatch(scopes, active: activeConnectionScopes)
     }
@@ -978,8 +988,10 @@ extension HomeStore {
                 continue
             }
             let entry = stored
-            guard let entryScopes = entry.effectiveSourceScopes,
-                  Self.sourceScopesMatch(entryScopes, active: scopes) else {
+            // Disabling the last Mi account empties the active scope set, but a timer that only
+            // targets LG LAN cards is still driven locally and must stay armed (ADR-0023).
+            let lgOnly = timerTargetsAreAllLGLan(entry.plan)
+            guard lgOnly || (entry.effectiveSourceScopes.map { Self.sourceScopesMatch($0, active: scopes) } ?? false) else {
                 foreign.append(entry)
                 continue
             }
@@ -1022,13 +1034,15 @@ extension HomeStore {
         // before anything else: a refused run stays in the list and can be retried after unlocking.
         if rejectControlWhileLocked() { return nil }
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
-        // A scoped entry must still match the connected sources. An unscoped legacy entry has no
-        // owner to match: the tap confirms that the home on screen owns it (#22), so the run is bound
-        // to that home. A legacy timer that is not due yet never runs early; it is confirmed instead.
+        // Same exemption as the armed path: a plan targeting only LG LAN cards is driven locally, so
+        // an unrelated cloud scope being off must not block "Run Now" either (ADR-0023).
+        // An unscoped legacy entry has no owner to match: the tap confirms that the home on screen
+        // owns it (#22), so the run is bound to that home once due.
+        let lgOnly = timerTargetsAreAllLGLan(entry.plan)
         let entryScopes = entry.effectiveSourceScopes
         let tappedOwner: LegacyTimerOwner?
         if let entryScopes {
-            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+            guard lgOnly || Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
             tappedOwner = nil
         } else {
             guard entry.fireDate <= assistantNow(), let owner = currentLegacyTimerOwner() else { return nil }
@@ -1039,7 +1053,7 @@ extension HomeStore {
         // entry: it is removed and persisted only once the run is actually going ahead.
         if rejectControlWhileLocked() { return nil }
         if let entryScopes {
-            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+            guard lgOnly || Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
         } else {
             guard currentLegacyTimerOwner() == tappedOwner else { return nil }
             // The previous home's rows are still on screen right after a switch; running against them
@@ -1160,6 +1174,7 @@ extension HomeStore {
     }
 
     /// Cancels one pending command, or all of them when `id` is nil. Returns how many were cancelled.
+    /// Paused timers count too: they are shown in the bar and "cancel every timer" has to include them.
     @discardableResult
     public func cancelScheduledCommands(id: UUID? = nil) -> Int {
         let targets = scheduledCommands.filter { id == nil || $0.id == id }
@@ -1174,8 +1189,15 @@ extension HomeStore {
             notifiedMissedTimerIds.remove(entry.id)
         }
         missedScheduledCommands.removeAll { entry in missedTargets.contains { $0.id == entry.id } }
+
+        let pausedTargets = pausedScheduledCommands.filter { id == nil || $0.command.id == id }
+        if !pausedTargets.isEmpty {
+            let removed = Set(pausedTargets.map(\.command.id))
+            pausedScheduledCommands.removeAll { removed.contains($0.command.id) }
+            PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
+        }
         persistAllScheduledCommands()
-        return targets.count + missedTargets.count
+        return targets.count + missedTargets.count + pausedTargets.count
     }
 
     /// Where an executed plan came from; only explicit user actions train habits (#34).
@@ -1372,6 +1394,10 @@ extension HomeStore {
     private func apply(_ intent: DeviceIntent, context: UUID) async -> AssistantApplyOutcome {
         guard context == controlContextID else { return .skipped }
         if intent.operation == .activateScene {
+            let gate = evaluateSceneControlGate(sceneId: intent.targetId)
+            if !gate.allowed {
+                return .failed(gate.rejectionReason?.userMessage ?? intent.targetId)
+            }
             guard let scene = scenes.first(where: { $0.id == intent.targetId }) else { return .skipped }
             do {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
@@ -1382,6 +1408,9 @@ extension HomeStore {
             }
         }
 
+        if let reason = capabilityWriteRejection(forDeviceId: intent.targetId) {
+            return .failed(reason.userMessage)
+        }
         guard let previous = devices.first(where: { $0.id == intent.targetId }) else { return .skipped }
         guard previous.isOnline else { return .offline(previous.name) }
         // Appliance cards are not assistant-controllable in this cut. Their `.power` effect exists

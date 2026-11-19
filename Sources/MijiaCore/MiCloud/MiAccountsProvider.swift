@@ -85,6 +85,7 @@ public actor MiAccountsProvider: HomeProvider {
     private let apiFactory: MiCloudProvider.APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
+    private let cameraBridgeFactory: (@Sendable (MiSession) -> any XiaomiCameraBridging)?
     private let localClientFactory: @Sendable () -> LocalMiIOClient?
     private let topologyCache: MiTopologyCache?
     private let pollInterval: Duration
@@ -110,7 +111,12 @@ public actor MiAccountsProvider: HomeProvider {
     private var lastLocalNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     private var lastStatus: ConnectionStatus?
     private var pollingContext = PollingContext()
+    private var configEpoch: Int = 0
     private var isShutDown = false
+
+    func setConfigEpoch(_ epoch: Int) {
+        configEpoch = epoch
+    }
 
     var isShutDownForTesting: Bool { isShutDown }
 
@@ -128,6 +134,7 @@ public actor MiAccountsProvider: HomeProvider {
         apiFactory: @escaping MiCloudProvider.APIFactory = { MiCloudClient(session: $0) },
         specSource: any MiotSpecSource = MiotSpecStore(),
         cameraBridge: any XiaomiCameraBridging = XiaomiCameraBridge.shared,
+        cameraBridgeFactory: (@Sendable (MiSession) -> any XiaomiCameraBridging)? = nil,
         localClientFactory: @escaping @Sendable () -> LocalMiIOClient? = { LocalMiIOClient() },
         topologyCache: MiTopologyCache? = nil,
         pollInterval: Duration = PollingPolicy.panelOpenInterval,
@@ -147,6 +154,7 @@ public actor MiAccountsProvider: HomeProvider {
         self.apiFactory = apiFactory
         self.specSource = specSource
         self.cameraBridge = cameraBridge
+        self.cameraBridgeFactory = cameraBridgeFactory
         self.localClientFactory = localClientFactory
         self.topologyCache = topologyCache
         self.pollInterval = pollInterval
@@ -205,7 +213,7 @@ public actor MiAccountsProvider: HomeProvider {
             account: account,
             apiFactory: apiFactory,
             specSource: specSource,
-            cameraBridge: cameraBridge,
+            cameraBridge: cameraBridgeFactory?(account.session) ?? cameraBridge,
             localClient: localClientFactory(),
             topologyCache: topologyCache,
             pollInterval: pollInterval,
@@ -226,8 +234,10 @@ public actor MiAccountsProvider: HomeProvider {
         return provider
     }
 
-    public func updateAccounts(_ nextAccounts: [MiAccount]) async {
+    public func updateAccounts(_ nextAccounts: [MiAccount], configEpoch: Int? = nil) async {
         guard !isShutDown else { return }
+        let epochChanged = configEpoch != nil && configEpoch != self.configEpoch
+        if let configEpoch { self.configEpoch = configEpoch }
         let now = Date()
         let nextById = Dictionary(uniqueKeysWithValues: nextAccounts.map { ($0.id, $0) })
         let hasNewlyExpiredChild = children.contains { entry in
@@ -237,7 +247,10 @@ public actor MiAccountsProvider: HomeProvider {
         let unchanged = !hasNewlyExpiredChild
             && accounts.count == nextAccounts.count
             && zip(accounts, nextAccounts).allSatisfy { $0.id == $1.id && $0.session == $1.session }
-        guard !unchanged else { return }
+        if unchanged {
+            if epochChanged, continuation != nil, !snapshots.isEmpty { publishSnapshot() }
+            return
+        }
         for account in accounts where nextById[account.id] == nil {
             resetSelection(ownedBy: account.id)
         }
@@ -291,6 +304,7 @@ public actor MiAccountsProvider: HomeProvider {
             }
             var empty = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
             empty.isInitialLoadComplete = true
+            empty.miAccountsEpoch = self.configEpoch
             continuation?.yield(.snapshotUpdated(empty))
             return
         }
@@ -460,7 +474,11 @@ public actor MiAccountsProvider: HomeProvider {
                     statuses[accountId] = .connected
                 }
             }
-            if home.closesAwayGap {
+            // An expired or disconnected account still emits a gap-closing snapshot, but its empty
+            // device list proves nothing: treating it as fresh lets a re-enable move its paused timers
+            // into "missed" and clear paused rules as if their targets were gone (H3).
+            let accountIsLive = !expiredAccounts.contains(accountId) && !isDisconnected(accountId)
+            if home.closesAwayGap, accountIsLive {
                 freshAccounts.insert(accountId)
             } else {
                 freshAccounts.remove(accountId)
@@ -654,6 +672,8 @@ public actor MiAccountsProvider: HomeProvider {
             effectiveStatuses[id] = disconnectedStatus
         }
         merged.accountStatuses = effectiveStatuses
+        merged.freshAccountIds = freshAccounts
+        merged.miAccountsEpoch = configEpoch
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
         merged.deviceTransportDiagnostics = transportDiagnosticsByDevice

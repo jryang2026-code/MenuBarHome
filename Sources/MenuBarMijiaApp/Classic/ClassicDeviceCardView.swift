@@ -53,6 +53,7 @@ public struct ClassicDeviceCardView: View {
     }
 
     private var isExpanded: Bool {
+        guard device.isOnline else { return false }
         if resolvedSize == .panel { return true }
         if isEditingLayout { return false }
         return store.expandedDeviceId == device.id
@@ -189,101 +190,26 @@ public struct ClassicDeviceCardView: View {
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
 
     private var compactHeaderRow: some View {
-        HStack(spacing: 8) {
-            Button {
-                guard !isEditingLayout else { return }
-                if case .camera(let cam) = device.kind {
-                    withAnimation(AppleMotion.snappySpring) {
-                        if device.kind.canTogglePower, !cam.isOn {
-                            _ = store.togglePrimary(device)
-                        }
-                        store.openCameraLiveView(device.id)
-                    }
-                    if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
-                    return
+        SplitDeviceTileHeader(
+            device: device,
+            store: store,
+            statusText: shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")),
+            nameColor: nameColor,
+            statusColor: statusColor,
+            accessibilitySummary: accessibilitySummary,
+            isExpanded: isExpanded,
+            isHeroTile: false,
+            leadingPadding: 9,
+            trailingPadding: 9,
+            verticalPadding: 8,
+            orb: { iconBadge },
+            readOnlyBadge: { genericReadOnlyBadge },
+            quickBadge: {
+                if let quickIndex, shouldShowQuickBadge {
+                    quickIndexPill(quickIndex)
                 }
-                if device.isPrimaryToggleable {
-                    withAnimation(AppleMotion.snappySpring) {
-                        _ = store.togglePrimary(device)
-                    }
-                    if device.isOnline { SoundFeedback.playSuccess() }
-                } else if store.hasDetailDrawer(for: device) {
-                    withAnimation(AppleMotion.snappySpring) {
-                        store.toggleExpanded(device.id)
-                    }
-                }
-            } label: {
-                iconBadge
             }
-            .buttonStyle(PressableCardButtonStyle())
-            .accessibilityLabel(Text(device.isPrimaryToggleable
-                ? L10n.tr("\(device.name) 开关", "\(device.name) power")
-                : accessibilitySummary))
-            .panelHelp(
-                isCameraDevice
-                    ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
-                    : device.isPrimaryToggleable
-                        ? L10n.tr("点击直接切换开关", "Click to toggle power")
-                        : store.hasDetailDrawer(for: device)
-                            ? L10n.tr("点击展开详细控制", "Click to expand controls")
-                            : L10n.tr("只读状态", "Read only")
-            )
-
-            Button {
-                guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
-                    if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
-                    } else if case .camera(let cam) = device.kind {
-                        if device.kind.canTogglePower, !cam.isOn {
-                            _ = store.togglePrimary(device)
-                        }
-                        store.openCameraLiveView(device.id)
-                        if device.isOnline, device.kind.canTogglePower { SoundFeedback.playSuccess() }
-                    } else if device.kind.canTogglePower {
-                        _ = store.togglePrimary(device)
-                        if device.isOnline { SoundFeedback.playSuccess() }
-                    }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Text(device.name)
-                                .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                                .foregroundStyle(nameColor)
-                                .lineLimit(1)
-
-                            genericReadOnlyBadge
-                        }
-
-                        Text(shownStatus.replacingOccurrences(of: " · ", with: L10n.tr("，", ", ")))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: device.isActiveOn ? .semibold : .regular))
-                            .monospacedDigit()
-                            .foregroundStyle(statusColor)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 2)
-
-                    if let quickIndex, shouldShowQuickBadge {
-                        quickIndexPill(quickIndex)
-                    } else if store.hasDetailDrawer(for: device) {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(statusColor)
-                    }
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(store.hasDetailDrawer(for: device)
-                ? L10n.tr("\(device.name)，详细控制", "\(device.name), controls")
-                : accessibilitySummary))
-            .panelHelp(store.hasDetailDrawer(for: device) ? L10n.tr("点击展开详细控制", "Click to expand controls") : device.name)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 8.5)
+        )
     }
 
     // MARK: - Generic Read-Only Badge (#6)
@@ -293,7 +219,7 @@ public struct ClassicDeviceCardView: View {
     private var genericReadOnlyBadge: some View {
         if case .generic(let spec) = device.kind, spec.isReadOnly {
             Text(L10n.tr("只读", "Read only"))
-                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                 .foregroundStyle(nameColor.opacity(0.72))
                 .padding(.horizontal, 5.5)
                 .padding(.vertical, 1.5)
@@ -308,22 +234,17 @@ public struct ClassicDeviceCardView: View {
     // MARK: - Standard Single-Column Row (1-Click Toggle + Expand Trigger)
 
     private var headerRow: some View {
-        HStack(spacing: 8) {
+        let canAdjust = device.isOnline && store.hasDetailDrawer(for: device)
+        return HStack(spacing: 6) {
             Button {
                 guard !isEditingLayout else { return }
                 withAnimation(AppleMotion.snappySpring) {
-                    if case .camera(let cam) = device.kind {
-                        if device.kind.canTogglePower, !cam.isOn {
-                            _ = store.togglePrimary(device)
-                        }
-                        store.openCameraLiveView(device.id)
-                    } else if device.kind.canTogglePower {
-                        _ = store.togglePrimary(device)
-                    } else if store.hasDetailDrawer(for: device) {
-                        store.toggleExpanded(device.id)
+                    if device.isPrimaryToggleable || (isCameraDevice && device.isOnline) {
+                        _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
+                    } else if canAdjust {
+                        DeviceTileActionLayout.performAdjust(for: device, store: store)
                     }
                 }
-                if device.isOnline, device.isPrimaryToggleable { SoundFeedback.playSuccess() }
             } label: {
                 HStack(spacing: 10) {
                     iconBadge
@@ -363,24 +284,32 @@ public struct ClassicDeviceCardView: View {
 
                     Spacer(minLength: 2)
                 }
+                .frame(minHeight: DesignTokens.minHitTarget)
                 .contentShape(Rectangle())
             }
             .buttonStyle(PressableCardButtonStyle())
             .accessibilityLabel(Text(accessibilitySummary))
-            .accessibilityHint(Text(isCameraDevice
+            .accessibilityHint(Text(isCameraDevice && device.isOnline
                 ? L10n.tr("打开实时画面", "Open live view")
                 : device.isPrimaryToggleable
                     ? L10n.tr("切换开关", "Toggle power")
-                    : store.hasDetailDrawer(for: device)
+                    : canAdjust
                         ? L10n.tr("展开详细控制", "Expand controls")
                         : L10n.tr("只读状态", "Read only")))
+            .panelHelp(isCameraDevice && device.isOnline
+                ? L10n.tr("点击打开摄像头实时小窗", "Click to open live camera window")
+                : device.isPrimaryToggleable
+                    ? L10n.tr("点击直接切换开关", "Click to toggle power")
+                    : canAdjust
+                        ? DeviceTileActionLayout.adjustTooltip(isExpanded: isExpanded)
+                        : device.name)
 
             // Quick Index Pill + Favorite Star + Drawer Chevron
-            HStack(spacing: 4) {
+            HStack(spacing: 2) {
                 if let quickIndex, shouldShowQuickBadge {
                     quickIndexPill(quickIndex)
                 }
-                if case .camera = device.kind {
+                if case .camera = device.kind, device.isOnline {
                     Button {
                         guard !isEditingLayout else { return }
                         store.openCameraLiveView(device.id)
@@ -388,14 +317,14 @@ public struct ClassicDeviceCardView: View {
                         Image(systemName: "pip.enter")
                             .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))
                             .foregroundStyle(accent)
-                            .frame(width: 24, height: 24)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .background(Circle().fill(accent.opacity(0.12)))
-                            .contentShape(Rectangle())
+                            .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("打开 \(device.name) 实时画面小窗", "Open \(device.name) floating live view")))
+                    .panelHelp(L10n.tr("打开实时画面小窗", "Open floating live view"))
                 }
-
 
                 if isHovered || isExpanded || isFavorite {
                     Button {
@@ -407,7 +336,7 @@ public struct ClassicDeviceCardView: View {
                         Image(systemName: isFavorite ? "star.fill" : "star")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(isFavorite ? favoriteStarColor : statusColor.opacity(0.75))
-                            .frame(width: 22, height: 22)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -417,18 +346,18 @@ public struct ClassicDeviceCardView: View {
                     .panelHelp(isFavorite ? L10n.tr("从常用中移除", "Remove from Favorites") : L10n.tr("加入常用", "Add to Favorites"))
                 }
 
-                if store.hasDetailDrawer(for: device) {
+                if canAdjust {
                     Button {
                         guard !isEditingLayout else { return }
                         withAnimation(AppleMotion.snappySpring) {
-                            store.toggleExpanded(device.id)
+                            DeviceTileActionLayout.performAdjust(for: device, store: store)
                         }
                     } label: {
                         Image(systemName: "chevron.right")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(nameColor.opacity(0.68))
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                            .frame(width: 24, height: 24)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .background {
                                 if isExpanded {
                                     Circle()
@@ -438,10 +367,8 @@ public struct ClassicDeviceCardView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(Text(isExpanded
-                        ? L10n.tr("收起 \(device.name) 详细控制", "Collapse \(device.name) controls")
-                        : L10n.tr("展开 \(device.name) 详细控制", "Expand \(device.name) controls")))
-                    .panelHelp(isExpanded ? L10n.tr("收起控制面板", "Collapse controls") : L10n.tr("展开详细控制", "Expand controls"))
+                    .accessibilityLabel(Text(DeviceTileActionLayout.adjustAccessibilityLabel(deviceName: device.name, isExpanded: isExpanded)))
+                    .panelHelp(DeviceTileActionLayout.adjustTooltip(isExpanded: isExpanded))
                 }
             }
         }

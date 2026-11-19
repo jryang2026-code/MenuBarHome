@@ -4,7 +4,7 @@ import { t } from "../core/i18n.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec, type MiotPropKey } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
-import { adoptPairedDevicePreferences, applyOrder, homeOptions, pageSections, scopedKey, spans, tr3, withAliases } from "./panelPrefs.js";
+import { adoptPairedDevicePreferences, applyOrder, homeOptions, scopedKey, spans, tr3 } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
@@ -40,7 +40,9 @@ import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./a
 import { energyScopeForHost, plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { availableQuickActions } from "../core/quickActions.js";
+import { normalizeSearch } from "../core/panelSearch.js";
 import { renderSliderDeck } from "./panelView.js";
+import { buildPanelDeviceGridModel, renderLongTailBarHtml } from "./panelSplitTiles.js";
 import { isWorkstationLocked } from "./transport.js";
 import {
   clearCachedXiaomiTopology,
@@ -714,6 +716,7 @@ export function cloudPanelStructureFingerprint(host: MenuMijiaWindowsApp): strin
           roomId: device.roomId,
           roomName: device.roomName,
           model: device.model,
+          isOnline: device.isOnline,
           category: kind.kind,
           capabilities,
           ...(facetIds.length > 0 ? { facetIds } : {}),
@@ -731,17 +734,17 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       host.isEditingLayout ||
       host.activeSheet !== "none" ||
       host.pointerIsDown ||
-      host.draggingId !== null
+      host.draggingId !== null ||
+      host.isRoomBrowseMenuOpen ||
+      Boolean(normalizeSearch(host.panelSearch.query))
     ) {
       return false;
     }
     syncSensorHistoryHost(host);
     syncEnergyHostOnRender(host);
 
-    const isAll = host.selectedRoom === "全部";
-    const ordered = withAliases(host.layout, applyOrder(host.layout.order, host.presentationDevices));
-    const sections = pageSections(host.layout, ordered, isAll);
-    const desiredHeaders = sections.filter((section) => section.title !== null);
+    const gridModel = buildPanelDeviceGridModel(host);
+    const desiredHeaders = gridModel.onlineSections.filter((section) => section.title !== null);
     const domHeaders = Array.from(host.root.querySelectorAll<HTMLElement>(".cc-group-header"));
     if (domHeaders.length !== desiredHeaders.length) return false;
     for (const section of desiredHeaders) {
@@ -749,15 +752,29 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       const count = header?.querySelector(".cc-group-count")?.textContent ?? "";
       if (!header || count !== String(section.devices.length)) return false;
     }
-    const tilePatches: Array<{ current: HTMLElement; desired: Element }> = [];
-    const tileElementsById = new Map<string, HTMLElement>();
-    for (const element of host.root.querySelectorAll<HTMLElement>("[data-tile-id]")) {
-      const tileId = element.dataset.tileId ?? "";
-      if (tileId) tileElementsById.set(tileId, element);
+
+    const domLongTailBar = host.root.querySelector<HTMLElement>("[data-long-tail-bar]");
+    if (Boolean(domLongTailBar) !== gridModel.showsLongTailBar) return false;
+
+    const domOfflineDrawer = host.root.querySelector<HTMLElement>("[data-offline-drawer]");
+    const wantsOfflineDrawer = gridModel.offlineDevices.length > 0;
+    if (Boolean(domOfflineDrawer) !== wantsOfflineDrawer) return false;
+    if (wantsOfflineDrawer) {
+      const domOfflineToggle = domOfflineDrawer?.querySelector<HTMLElement>("[data-offline-drawer-toggle]");
+      if (
+        !domOfflineToggle ||
+        domOfflineToggle.getAttribute("aria-expanded") !== String(gridModel.isOfflineDrawerExpanded)
+      ) {
+        return false;
+      }
     }
-    const unmatchedTileIds = new Set(tileElementsById.keys());
+
+    const domTileElements = Array.from(
+      host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])"),
+    );
+    const desiredRenders: Array<{ device: SmartDevice; span: number; index: number }> = [];
     let index = 0;
-    for (const section of sections) {
+    for (const section of gridModel.onlineSections) {
       const hasActiveSubpage =
         host.expandedDeviceId !== null && section.devices.some((device) => device.id === host.expandedDeviceId);
       if (host.layout.collapsed.includes(scopedKey(host.pageKey, section.id)) && !hasActiveSubpage) continue;
@@ -766,17 +783,60 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
         (device) => (host.expandedDeviceId === device.id ? "full" : host.tileSize(device)),
       );
       for (const device of section.devices) {
-        unmatchedTileIds.delete(device.id);
-        const current = tileElementsById.get(device.id);
-        const desired = parseSingleElement(
-          host.renderDeviceTile(device, spanMap.get(device.id) ?? 6, index++),
-        );
-        if (!current || !desired || !hasMatchingDomShape(current, desired)) return false;
-        tilePatches.push({ current, desired });
+        desiredRenders.push({
+          device,
+          span: spanMap.get(device.id) ?? 6,
+          index: index++,
+        });
       }
     }
-    if (unmatchedTileIds.size > 0) return false;
+    if (gridModel.isOfflineDrawerExpanded && gridModel.offlineDevices.length > 0) {
+      const offlineSpanMap = spans(gridModel.offlineDevices, (device) => host.tileSize(device));
+      for (const device of gridModel.offlineDevices) {
+        desiredRenders.push({
+          device,
+          span: offlineSpanMap.get(device.id) ?? 6,
+          index: index++,
+        });
+      }
+    }
+
+    if (domTileElements.length !== desiredRenders.length) return false;
+    const tilePatches: Array<{ current: HTMLElement; desired: Element }> = [];
+    for (let i = 0; i < desiredRenders.length; i += 1) {
+      const entry = desiredRenders[i]!;
+      const current = domTileElements[i]!;
+      if ((current.dataset.tileId ?? "") !== entry.device.id) return false;
+      const desired = parseSingleElement(
+        host.renderDeviceTile(entry.device, entry.span, entry.index),
+      );
+      if (!desired || !hasMatchingDomShape(current, desired)) return false;
+      tilePatches.push({ current, desired });
+    }
     for (const patch of tilePatches) morphMatchingDom(patch.current, patch.desired);
+
+    if (domLongTailBar && gridModel.showsLongTailBar) {
+      const desiredLongTail = parseSingleElement(
+        renderLongTailBarHtml(gridModel, host.isRoomBrowseMenuOpen, (v) => host.escapeHtml(v)),
+      );
+      if (desiredLongTail && hasMatchingDomShape(domLongTailBar, desiredLongTail)) {
+        morphMatchingDom(domLongTailBar, desiredLongTail);
+      }
+    }
+    if (domOfflineDrawer && wantsOfflineDrawer) {
+      const domOfflineBadge = domOfflineDrawer.querySelector<HTMLElement>(".cc-offline-drawer-badge");
+      const domOfflineSummary = domOfflineDrawer.querySelector<HTMLElement>(".cc-offline-drawer-summary");
+      if (domOfflineSummary && !gridModel.isOfflineDrawerExpanded) {
+        domOfflineSummary.textContent = gridModel.offlineSummary;
+      }
+      if (domOfflineBadge) {
+        domOfflineBadge.textContent = tr3(
+          `${gridModel.offlineDevices.length} 台`,
+          `${gridModel.offlineDevices.length} 台`,
+          `${gridModel.offlineDevices.length}`,
+        );
+      }
+    }
     if (host.settings.connectionMode === "homeAssistant") {
       const current = host.root.querySelector<HTMLElement>("#btn-all-off");
       const desired = parseSingleElement(host.renderAllOffControl());
