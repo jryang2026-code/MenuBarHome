@@ -1349,11 +1349,20 @@ struct HAConnectionDisableTests {
         #expect(!store.isHAConnectionEnabled)
         #expect(createdURLs.isEmpty)
 
+        // A banner captured against the old instance must not survive an address change.
+        store.lastAssistantUndo = AssistantUndoEntry(
+            reply: "已关闭客厅灯",
+            restore: [.setLightPower(entityId: "light.old_instance", isOn: true)],
+            previous: [],
+            at: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+
         let updatedURL = "http://192.168.1.99:8123"
         let updatedScope = "ha:\(updatedURL)"
         let updatedToken = "ha-updated-secret-token"
         store.updateConnection(serverURL: updatedURL, token: updatedToken)
 
+        #expect(store.lastAssistantUndo == nil)
         #expect(!store.isHAConnectionEnabled)
         #expect(store.hasHASource)
         #expect(store.serverURLString == updatedURL)
@@ -1371,6 +1380,53 @@ struct HAConnectionDisableTests {
         #expect(createdURLs == [updatedURL])
         #expect(createdTokens == [updatedToken])
         #expect(store.pendingRevalidationScopes.contains(updatedScope))
+    }
+
+    @Test("Saving a new HA address over a stale scope-level turn-off reconnects instead of leaving an enabled connection without a provider")
+    func updateConnectionRecoversScopeLevelDisableWithoutLosingProvider() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        // Residue from an earlier address: the connection itself is on, only its `ha:` scope is off.
+        // `migrateHomeAssistantScope` carries the connection's enablement to the freshly saved
+        // address, so a save must not be mistaken for a save while disabled.
+        let residue = try JSONSerialization.data(withJSONObject: [
+            "schemaVersion": CapabilitySelectionStore.schemaVersion,
+            "migrationComplete": true,
+            "enabledConnections": [ConnectionCapabilityID.homeAssistant.rawValue],
+            "disabledConnections": [String](),
+            "disabledConnectionScopes": [Self.haScope],
+        ] as [String: Any], options: [.sortedKeys])
+        defaults.set(residue, forKey: CapabilitySelectionStore.storageKey)
+
+        var createdURLs: [String] = []
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        store.haProviderFactory = { url, _ in
+            createdURLs.append(url)
+            return MockHomeProvider()
+        }
+        #expect(store.hasHASource)
+        #expect(!store.explicitlyDisabledConnections.contains(.homeAssistant))
+        #expect(store.explicitlyDisabledScopes.contains(Self.haScope))
+        #expect(!store.isHAConnectionEnabled)
+
+        let updatedURL = "http://192.168.1.99:8123"
+        store.updateConnection(serverURL: updatedURL, token: Self.haToken)
+
+        // Either it stays turned off consistently, or it connects. Never「已启用但没有 provider」:
+        // that state cannot be recovered from「启用连接」because the selection already reads enabled.
+        if store.isHAConnectionEnabled {
+            #expect(createdURLs == [updatedURL])
+            #expect(store.activeBackends == [.homeAssistant])
+            #expect(!store.explicitlyDisabledConnections.contains(.homeAssistant))
+        } else {
+            #expect(store.explicitlyDisabledConnections.contains(.homeAssistant)
+                || store.explicitlyDisabledScopes.contains("ha:\(updatedURL)"))
+            #expect(createdURLs.isEmpty)
+            #expect(store.activeBackends.isEmpty)
+        }
     }
 
     @Test("Dual-source undo with HA disabled restores Mi items, retains blocked HA restore items and receipts, and reports partial undo")
@@ -1606,6 +1662,97 @@ struct HAConnectionDisableTests {
         #expect(!store.isDisablingHAConnection)
         #expect(store.capabilityTeardownTask == nil)
         #expect(await haProvider.shutdownCalls == 1)
+    }
+
+    @Test("Re-enabling HA after a completed teardown reopens the dual-source gate for commands, refresh and history")
+    func reenableAfterTeardownReopensDualSourceGate() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+
+        let haLamp = SmartDevice(
+            id: "ha-lamp-reenable",
+            name: "书房台灯",
+            roomId: "ha-study",
+            roomName: "书房",
+            model: "ha.light",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study_reenable", isOn: true))
+        )
+        let haSensor = SmartDevice(
+            id: "ha-sensor-reenable",
+            name: "书房传感器",
+            roomId: "ha-study",
+            roomName: "书房",
+            model: "ha.sensor",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 22.5, humidity: 45))
+        )
+        let haSnapshot = Self.makeLoadedSnapshot(devices: [haLamp, haSensor])
+        let firstHA = StubHARuntimeProvider(initialSnapshot: haSnapshot)
+        let newHA = StubHARuntimeProvider(initialSnapshot: haSnapshot)
+        var createdProviders = 0
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            haProviderFactory: { _, _ in
+                createdProviders += 1
+                return createdProviders == 1 ? firstHA : newHA
+            }
+        )
+        try await store.waitForTestSnapshot()
+        let dual = try #require(store.activeDualProvider)
+        #expect(createdProviders == 1)
+        #expect(store.devices.map(\.id).sorted() == [haLamp.id, haSensor.id])
+        let firstRefreshBefore = await firstHA.refreshCalls
+
+        // The HA lamp owns a couple of quick-action references, so the disable is confirmed up front.
+        _ = store.setHAConnectionEnabled(false, pauseConfirmed: true)
+        #expect(store.explicitlyDisabledConnections.contains(.homeAssistant))
+        #expect(!store.isHAConnectionEnabled)
+        if let teardownTask = store.capabilityTeardownTask {
+            await teardownTask.value
+        }
+        #expect(!store.isDisablingHAConnection)
+        #expect(await firstHA.shutdownCalls == 1)
+        #expect(!store.devices.contains { $0.id == haSensor.id })
+
+        // The closed gate refuses the write before the async teardown even reaches the actor.
+        var closedGateRefusedExecute = false
+        do {
+            try await dual.execute(.setLightPower(entityId: "light.study_reenable", isOn: false))
+        } catch {
+            closedGateRefusedExecute = true
+        }
+        #expect(closedGateRefusedExecute)
+
+        let reenabled = store.setHAConnectionEnabled(true)
+        #expect(reenabled.disposition == .allowed)
+        #expect(store.isHAConnectionEnabled)
+        await store.providerShutdownTask?.value
+        // The gate only reopens once the replacement provider owns the backend again.
+        await waitUntil { store.devices.contains { $0.id == haSensor.id } }
+        #expect(createdProviders == 2)
+        #expect(store.isDisablingHAConnection == false)
+        #expect(store.capabilityTeardownTask == nil)
+
+        try await dual.execute(.setLightPower(entityId: "light.study_reenable", isOn: false))
+        #expect(await newHA.executedCommands == [.setLightPower(entityId: "light.study_reenable", isOn: false)])
+        #expect(await firstHA.executedCommands.isEmpty)
+
+        await dual.refreshNow()
+        #expect(await newHA.refreshCalls == 1)
+        #expect(await firstHA.refreshCalls == firstRefreshBefore)
+
+        let samples = await dual.fetchSensorHistory(
+            deviceId: haSensor.id,
+            window: .last24Hours,
+            now: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+        #expect(samples.isEmpty)
+        #expect(await newHA.sensorHistoryCalls == [haSensor.id])
     }
 
     @Test("Single-device capabilityWriteRejection matches ID lookup across 200 mixed devices and preserves allOffTargets and RaycastSnapshot semantics")

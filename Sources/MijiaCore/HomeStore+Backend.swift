@@ -1505,19 +1505,31 @@ extension HomeStore {
         }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
-        let keepHADisabled = hadHASource && !isHAConnectionEnabled && !trimmedToken.isEmpty
+        // Only the connection-level flag carries the user's decision. `isHAConnectionEnabled` also
+        // reads false for a scope-level turn-off left over from an earlier address, while adopting
+        // the address below migrates the `ha:` scope back into `enabledConnectionScopes`. Taking the
+        // settings-only path there would leave an enabled connection with no provider, and
+        // 「启用连接」could not rebuild it either because everything already reads enabled.
+        let keepHADisabled = hadHASource
+            && explicitlyDisabledConnections.contains(.homeAssistant)
+            && !trimmedToken.isEmpty
         let (_, cameraTeardownIds) = (hadHASource && trimmedToken.isEmpty && homeBackend != .demo)
             ? collectHADisabledDeviceIds()
             : (Set<String>(), Set<String>())
         let wasDemo = homeBackend == .demo
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
-        if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
+        let addressChanged = normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString)
+        if addressChanged {
             rememberHAInstanceId(forURL: normalized)
         }
         pendingHAAddressSuggestion = nil
         self.serverURLString = normalized
         self.hasHASource = !trimmedToken.isEmpty
-        if keepHADisabled {
+        // Re-read after the write above: migrating the scope can restore enablement on its own, so
+        // only the connection that is still turned off skips the reconnect.
+        if keepHADisabled, !isHAConnectionEnabled {
+            // A saved address decides which instance the paused rows and the banner belong to.
+            if addressChanged { invalidateUndoContext() }
             persistCapabilitySelection(removingScopes: [homeAssistantScopeIdentifier])
             self.completeOnboarding()
             if wasDemo {

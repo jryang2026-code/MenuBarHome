@@ -258,8 +258,12 @@ extension HomeStore {
                 if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
                     rebuildLiveProvider()
                 } else {
+                    // `provider is DualSourceHomeProvider` is the only remaining way into
+                    // `hasManagedHAProvider`, so this branch mirrors it: nothing to rebuild here, but
+                    // the paused references must still get the same revalidation as the neighbours.
                     syncHistoryConnectionScopes()
                     syncScheduledCommandScopeIfNeeded()
+                    revalidatePausedItems()
                 }
             } else {
                 syncHistoryConnectionScopes()
