@@ -910,6 +910,12 @@ struct DualSourceIntegrationTests {
             acc2Id: .connected,
         ]
         await miMock.updateSnapshot(miHomeAcc1Disconnected)
+        await waitUntil {
+            if case .disconnected = store.miAccountStatuses[acc1Id] ?? .connecting { return true }
+            return false
+        }
+        #expect(store.deviceBackend(for: haCamId) == .xiaomiCloud)
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
 
         await waitUntil {
             store.deviceBackend(for: haCamId) == .homeAssistant

@@ -9,18 +9,81 @@ struct DualSourceFallbackGraceTests {
     private static let did = "1105610385"
     private static let haID = "ha-door-cam"
 
-    /// A settable clock the provider reads; tests advance it instead of sleeping.
+    /// A settable suspending clock the provider reads; tests advance it instead of sleeping.
     private final class TestClock: @unchecked Sendable {
         private let lock = NSLock()
-        private var current: Date
-        init(_ start: Date) { current = start }
-        var now: Date {
+        private var current: SuspendingClock.Instant
+        init(_ start: SuspendingClock.Instant = SuspendingClock.now) { current = start }
+        var now: SuspendingClock.Instant {
             lock.lock(); defer { lock.unlock() }
             return current
         }
         func advance(_ interval: TimeInterval) {
             lock.lock(); defer { lock.unlock() }
-            current = current.addingTimeInterval(interval)
+            let millis = Int((interval * 1000).rounded())
+            current = current.advanced(by: .milliseconds(millis))
+        }
+    }
+
+    /// Deterministic gate for `graceSleep`: parks scheduled fallback sleepers without wall-clock
+    /// waits, throws `CancellationError` when cancelled, and lets tests release sleepers on cue.
+    private actor GraceSleepGate {
+        private var sleepers: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
+        private var cancelledBeforeParking: Set<UUID> = []
+        private var ignoreCancelOnNextPark = false
+        private var ignoreCancelIds: Set<UUID> = []
+        private(set) var parkCount = 0
+        private(set) var cancelledWakeCount = 0
+        private(set) var recordedDelays: [Duration] = []
+
+        var waiting: Int { sleepers.count }
+
+        func ignoreCancellationOnNextSleep() {
+            ignoreCancelOnNextPark = true
+        }
+
+        func sleep(_ duration: Duration) async throws {
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    if ignoreCancelOnNextPark {
+                        ignoreCancelOnNextPark = false
+                        ignoreCancelIds.insert(id)
+                    }
+                    if !ignoreCancelIds.contains(id), cancelledBeforeParking.remove(id) != nil {
+                        cancelledWakeCount += 1
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        recordedDelays.append(duration)
+                        parkCount += 1
+                        sleepers.append((id, continuation))
+                    }
+                }
+            } onCancel: {
+                Task { await self.cancel(id) }
+            }
+        }
+
+        func releaseLatest() {
+            guard !sleepers.isEmpty else { return }
+            sleepers.removeLast().continuation.resume()
+        }
+
+        /// Simulates an older sleeper returning right as a newer recompute has already replaced it
+        /// (without throwing `CancellationError`), verifying actor-side token ownership.
+        func releaseOldestNormally() {
+            guard !sleepers.isEmpty else { return }
+            sleepers.removeFirst().continuation.resume()
+        }
+
+        private func cancel(_ id: UUID) {
+            guard !ignoreCancelIds.contains(id) else { return }
+            if let index = sleepers.firstIndex(where: { $0.id == id }) {
+                cancelledWakeCount += 1
+                sleepers.remove(at: index).continuation.resume(throwing: CancellationError())
+            } else {
+                cancelledBeforeParking.insert(id)
+            }
         }
     }
 
@@ -56,15 +119,18 @@ struct DualSourceFallbackGraceTests {
         let provider: DualSourceHomeProvider
         let collector: RouteCollector
         let clock: TestClock
+        let gate: GraceSleepGate
         let pump: Task<Void, Never>
     }
 
     private actor RouteCollector {
         private(set) var latestHome: SynthesizedHome?
+        private(set) var snapshotCount = 0
 
         func append(_ event: HomeProviderEvent) {
             if case .snapshotUpdated(let home) = event {
                 latestHome = home
+                snapshotCount += 1
             }
         }
 
@@ -77,6 +143,19 @@ struct DualSourceFallbackGraceTests {
         func sourceIsDisconnected(_ backend: HomeBackend) -> Bool {
             if case .disconnected = latestHome?.sourceStatuses[backend] ?? .connecting { return true }
             return false
+        }
+
+        func sourceIsConnected(_ backend: HomeBackend) -> Bool {
+            latestHome?.sourceStatuses[backend]?.isConnected == true
+        }
+
+        func accountIsDisconnected(_ accountID: String) -> Bool {
+            if case .disconnected = latestHome?.accountStatuses[accountID] ?? .connecting { return true }
+            return false
+        }
+
+        func accountIsConnected(_ accountID: String) -> Bool {
+            latestHome?.accountStatuses[accountID]?.isConnected == true
         }
     }
 
@@ -94,11 +173,13 @@ struct DualSourceFallbackGraceTests {
         )
         let haMock = MockHomeProvider(snapshot: haHome)
         let miMock = MockHomeProvider(snapshot: miHome)
-        let clock = TestClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let clock = TestClock()
+        let gate = GraceSleepGate()
         let provider = DualSourceHomeProvider(
             homeAssistant: haMock,
             xiaomiCloud: miMock,
-            now: { clock.now }
+            graceNow: { clock.now },
+            graceSleep: { duration in try await gate.sleep(duration) }
         )
         let collector = RouteCollector()
         let pump = Task {
@@ -106,7 +187,15 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        let rig = Rig(haMock: haMock, miMock: miMock, provider: provider, collector: collector, clock: clock, pump: pump)
+        let rig = Rig(
+            haMock: haMock,
+            miMock: miMock,
+            provider: provider,
+            collector: collector,
+            clock: clock,
+            gate: gate,
+            pump: pump
+        )
         await waitUntil { await collector.backend(forCard: Self.haID) != nil }
         return rig
     }
@@ -135,14 +224,16 @@ struct DualSourceFallbackGraceTests {
         _ = try await rig.provider.resolveCameraStream(for: card)
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
 
-        // The websocket drops for a moment. Within the grace window the winner must not flip and
-        // the live view must keep playing on the old route.
+        // The websocket drops for a moment. Observe the disconnect snapshot first so assertions do
+        // not pass against the pre-drop snapshot.
         await rig.haMock.sendStatus(.disconnected("connection lost"))
+        await waitUntil { await rig.collector.sourceIsDisconnected(.homeAssistant) }
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty, "A brief blip must not kill the live view")
 
         // The source comes back before the window ends: nothing ever flipped, nothing closed.
         await rig.haMock.sendStatus(.connected)
+        await waitUntil { await rig.collector.sourceIsConnected(.homeAssistant) }
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
         #expect(await rig.miMock.stoppedCameraIDs.isEmpty)
@@ -160,14 +251,13 @@ struct DualSourceFallbackGraceTests {
         _ = try await rig.provider.resolveCameraStream(for: card)
 
         await rig.haMock.sendStatus(.disconnected("connection lost"))
-        // Still inside the window: routing holds.
+        await waitUntil { await rig.collector.sourceIsDisconnected(.homeAssistant) }
+        // Still inside the window after the drop is recorded: routing holds.
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
 
         // The outage outlasts the window: the fallback to Mi cloud is adopted and the truly
-        // unavailable HA stream is closed explicitly. The clock only advances once a merged
-        // snapshot has recorded the drop, so the window cannot start at the advanced time.
-        await waitUntil { await rig.collector.sourceIsDisconnected(.homeAssistant) }
+        // unavailable HA stream is closed explicitly.
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
@@ -200,11 +290,249 @@ struct DualSourceFallbackGraceTests {
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
         #expect(await rig.miMock.stoppedCameraIDs.isEmpty, "A brief Mi blip must not kill the live view")
 
-        await waitUntil { await rig.collector.sourceIsDisconnected(.xiaomiCloud) }
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
         rig.provider.requestRecompute()
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         #expect(await rig.miMock.stoppedCameraIDs == [Self.did])
+    }
+
+    @Test("A brief MiAccountsProvider account disconnect holds the paired camera and live stream through grace, then fails over on real outage")
+    func miAccountsProviderBlipHoldsPairedCameraAndLiveStream() async throws {
+        let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]},{"iid":2,"type":"urn:miot-spec-v2:property:night-shot:00000057:chuangmi-061a01:1","format":"uint8","access":["read","write","notify"],"value-list":[{"value":0,"description":"Off"},{"value":1,"description":"On"},{"value":2,"description":"Auto"}]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let camSpec = MiotFixtures.decode(cameraSpecJSON)
+        struct CameraSpecSource: MiotSpecSource {
+            let spec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                model == "chuangmi.camera.061a01" ? spec : nil
+            }
+        }
+
+        let account = MiAccount(session: MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec", serviceToken: "tok-cn", region: "cn"
+        ))
+        let api = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did], homeId: "h1", homeName: "家")],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: Self.did, siid: 2, piid: 2): .number(2),
+            ]
+        )
+        let bridge = StubXiaomiCameraBridge()
+        let miAccounts = MiAccountsProvider(
+            accounts: [account],
+            apiFactory: { _ in api },
+            specSource: CameraSpecSource(spec: camSpec),
+            cameraBridge: bridge,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            cameraSessionReleaseDelay: .milliseconds(5),
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let haHome = home(
+            [camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)],
+            identityID: Self.haID
+        )
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let clock = TestClock()
+        let gate = GraceSleepGate()
+        let provider = DualSourceHomeProvider(
+            homeAssistant: haMock,
+            xiaomiCloud: miAccounts,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await gate.sleep(duration) }
+        )
+        let collector = RouteCollector()
+        let pump = Task {
+            for await event in provider.events() {
+                await collector.append(event)
+            }
+        }
+        defer {
+            pump.cancel()
+            Task { await provider.shutdown() }
+        }
+
+        await waitUntil { await collector.backend(forCard: Self.haID) == .xiaomiCloud }
+        let initialCard = try #require(
+            await collector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await provider.resolveCameraStream(for: initialCard)
+        #expect(await bridge.startCalls.count == 1)
+        #expect(await bridge.stopCalls.isEmpty)
+
+        // Single poll failure: MiAccountsProvider emits both `.statusChanged(.disconnected)` and a
+        // disconnect snapshot marking the account's devices offline+stale.
+        await api.setGetPropsFailure(.http(502))
+        await miAccounts.refreshNow()
+        await waitUntil { await collector.accountIsDisconnected(account.id) }
+        #expect(await collector.sourceIsDisconnected(.xiaomiCloud))
+        #expect(await collector.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge.stopCalls.isEmpty, "A brief account-level Mi blip must not stop the live stream")
+
+        // Recovery within grace keeps the stream alive without ever flipping.
+        await api.setGetPropsFailure(nil)
+        await miAccounts.refreshNow()
+        await waitUntil { await collector.accountIsConnected(account.id) }
+        #expect(await collector.backend(forCard: Self.haID) == .xiaomiCloud)
+        #expect(await bridge.stopCalls.isEmpty)
+
+        // A second outage that outlasts the grace window fails over automatically via the scheduled
+        // fallback recheck (without external events) and closes the dead Mi camera stream.
+        await api.setGetPropsFailure(.http(502))
+        await miAccounts.refreshNow()
+        await waitUntil {
+            let disconnected = await collector.accountIsDisconnected(account.id)
+            let waiting = await gate.waiting
+            return disconnected && waiting == 1
+        }
+        clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
+        await gate.releaseLatest()
+        await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
+        await waitUntil { await bridge.stopCalls == [Self.did] }
+
+        // Auth expiry (`sessionExpired`) after recovery skips the grace window immediately.
+        await api.setGetPropsFailure(nil)
+        await miAccounts.refreshNow()
+        await waitUntil {
+            let connected = await collector.accountIsConnected(account.id)
+            let backend = await collector.backend(forCard: Self.haID)
+            return connected && backend == .xiaomiCloud
+        }
+        await api.setGetPropsFailure(.sessionExpired)
+        await miAccounts.refreshNow()
+        await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
+    }
+
+    @Test("Other source events during grace cancel superseded fallback tasks without recompute loops")
+    func cancelledFallbackTaskDoesNotRecomputeOrReschedule() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel() }
+
+        await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+        let card = try #require(
+            await rig.collector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await rig.provider.resolveCameraStream(for: card)
+
+        // HA drops: first fallback sleeper parks for the full 15s grace window.
+        await rig.haMock.sendStatus(.disconnected("blip"))
+        await waitUntil {
+            let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
+            let parks = await rig.gate.parkCount
+            let waiting = await rig.gate.waiting
+            return disconnected && parks == 1 && waiting == 1
+        }
+
+        // Four seconds in, a Xiaomi snapshot arrives while HA is still inside grace.
+        // The first sleeper must wake via cancellation and exit without recomputing or rescheduling;
+        // only the single replacement sleeper (11s remaining) stays parked.
+        rig.clock.advance(4)
+        await rig.gate.ignoreCancellationOnNextSleep()
+        let updatedMiHome = home(
+            [camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")],
+            identityID: Self.did
+        )
+        await rig.miMock.updateSnapshot(updatedMiHome)
+        await waitUntil {
+            let cancelled = await rig.gate.cancelledWakeCount
+            let parks = await rig.gate.parkCount
+            let waiting = await rig.gate.waiting
+            return cancelled == 1 && parks == 2 && waiting == 1
+        }
+        #expect(await rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
+
+        // Simulate a second recompute at +6s where sleeper #2 finishes its sleep just as #3
+        // supersedes it (without throwing CancellationError): token check must still make #2 a no-op.
+        rig.clock.advance(2)
+        await rig.miMock.updateSnapshot(updatedMiHome)
+        await waitUntil {
+            let parks = await rig.gate.parkCount
+            let waiting = await rig.gate.waiting
+            return parks == 3 && waiting == 2
+        }
+        let snapshotsBeforeStaleWake = await rig.collector.snapshotCount
+        await rig.gate.releaseOldestNormally()
+        await waitUntil { await rig.provider.discardedFallbackWakeCountForTesting == 1 }
+        let markerAfterStaleWake = await rig.collector.snapshotCount
+        #expect(markerAfterStaleWake == snapshotsBeforeStaleWake)
+        #expect(await rig.gate.parkCount == 3)
+        #expect(await rig.gate.waiting == 1)
+        #expect(await rig.collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
+
+        // Silent line from here on: once the remaining 9s expire and sleeper #3 fires, the card
+        // flips to Mi Cloud and closes the dead HA stream without `requestRecompute()`.
+        rig.clock.advance(10)
+        await rig.gate.releaseLatest()
+        await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
+    }
+
+    @Test("System sleep pauses the fallback grace so wake does not immediately flip paired cards")
+    func systemSleepFreezesGraceUntilWake() async throws {
+        let rig = await makeRig()
+        defer { rig.pump.cancel() }
+
+        await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+        let card = try #require(
+            await rig.collector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await rig.provider.resolveCameraStream(for: card)
+
+        // HA drops 3 seconds before the Mac goes to sleep.
+        await rig.haMock.sendStatus(.disconnected("lid closing"))
+        await waitUntil {
+            let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
+            let waiting = await rig.gate.waiting
+            return disconnected && waiting == 1
+        }
+        rig.clock.advance(3)
+        await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
+        await waitUntil { await rig.gate.waiting == 0 }
+
+        // Sixty seconds pass while asleep — far longer than the 15-second grace.
+        rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace * 4)
+        await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
+        await waitUntil { await rig.gate.waiting == 1 }
+        let beforeWakeRecompute = await rig.collector.snapshotCount
+        rig.provider.requestRecompute()
+        await waitUntil { await rig.collector.snapshotCount > beforeWakeRecompute }
+
+        // On wake only 3 active seconds have elapsed, so HA keeps the card and live camera.
+        #expect(await rig.collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await rig.haMock.stoppedCameraIDs.isEmpty, "Wake must not immediately flip or stop the camera")
+
+        // Eleven more active seconds (14s total awake < 15s grace) still keep HA active.
+        rig.clock.advance(11)
+        let beforeNearExpiry = await rig.collector.snapshotCount
+        rig.provider.requestRecompute()
+        await waitUntil { await rig.collector.snapshotCount > beforeNearExpiry }
+        #expect(await rig.collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
+
+        // Two more active seconds (16s total awake > 15s grace) let the post-wake sleeper flip to Mi.
+        rig.clock.advance(2)
+        await rig.gate.releaseLatest()
+        await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
+
+        // A later sleep/wake cycle must not resurrect an outage whose grace already expired.
+        await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
+        rig.clock.advance(30)
+        await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
+        let beforePostExpiryWake = await rig.collector.snapshotCount
+        rig.provider.requestRecompute()
+        await waitUntil { await rig.collector.snapshotCount > beforePostExpiryWake }
+        #expect(await rig.collector.backend(forCard: Self.haID) == .xiaomiCloud)
     }
 
     @Test("A source reconfigured or invalidated skips the grace entirely")
@@ -216,6 +544,7 @@ struct DualSourceFallbackGraceTests {
 
         // A credential change invalidates the snapshot: the fallback is immediate, not deferred.
         await rig.haMock.sendStatus(.disconnected("connection lost"))
+        await waitUntil { await rig.collector.sourceIsDisconnected(.homeAssistant) }
         await rig.provider.invalidateSnapshot(for: .homeAssistant)
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
     }
