@@ -42,6 +42,8 @@ public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
     @State private var advancedDisplay = GeneralSettingsDisclosure.State()
+    @State private var connectionAdvancedDisclosure = ConnectionSettingsDisclosure.State()
+    @State private var lgWakeDisclosure = LGWebOSSettingsSaveGuard.WakeDisclosureState()
     @State private var focus = SettingsSearchFocus()
     @State private var unsaved = SettingsUnsavedChanges()
     @State private var highlightedResult: Int?
@@ -245,6 +247,8 @@ public struct SettingsWindowView: View {
         let destination = hit.anchor.tab.canonicalTab
         guard leavesTabSafely(for: destination) else { return }
         advancedDisplay.expandIfNeeded(forHighlight: hit.anchor)
+        connectionAdvancedDisclosure.expandForHighlightIfNeeded(hit.anchor)
+        lgWakeDisclosure.expandForHighlightIfNeeded(hit.anchor)
         tab = destination
         focus.jump(to: hit.anchor)
     }
@@ -303,7 +307,11 @@ public struct SettingsWindowView: View {
         case .general, .appearance:
             GeneralSettingsTab(store: store, advancedDisplay: $advancedDisplay)
         case .connection:
-            ConnectionSettingsTab(store: store)
+            ConnectionSettingsTab(
+                store: store,
+                advancedConnections: $connectionAdvancedDisclosure,
+                lgWakeDisclosure: $lgWakeDisclosure
+            )
         case .assistant:
             AssistantSettingsTab(store: store)
         case .privacy:
@@ -1263,13 +1271,29 @@ enum HAConnectionSaveGuard {
 enum ConnectionSettingsDisclosure {
     static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts, .dualSourceFusion]
 
-    static func shouldExpandAdvancedConnections(
-        forHighlight highlight: SettingsAnchor?,
-        accountCount: Int = 1
-    ) -> Bool {
-        if accountCount > 1 { return true }
-        guard let highlight else { return false }
-        return advancedConnectionAnchors.contains(highlight)
+    struct State: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
+        }
+
+        mutating func applyInitialDefaultsIfNeeded(accountCount: Int, isDualSourceActive: Bool) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if accountCount > 1 || isDualSourceActive {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandForHighlightIfNeeded(_ highlight: SettingsAnchor?) {
+            guard let highlight, ConnectionSettingsDisclosure.advancedConnectionAnchors.contains(highlight) else {
+                return
+            }
+            isExpanded = true
+        }
     }
 
     @MainActor
@@ -1281,12 +1305,13 @@ enum ConnectionSettingsDisclosure {
 
 private struct ConnectionSettingsTab: View {
     let store: HomeStore
+    @Binding var advancedConnections: ConnectionSettingsDisclosure.State
+    @Binding var lgWakeDisclosure: LGWebOSSettingsSaveGuard.WakeDisclosureState
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
     @State private var tokenLookupWasUnavailable = false
     /// #143: Home Assistant is the second path, so its form stays folded until it is needed.
     @State private var haExpanded = false
-    @State private var showsAdvancedConnections = false
     @State private var addMiAccountTrigger = 0
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
@@ -1456,10 +1481,10 @@ private struct ConnectionSettingsTab: View {
                     }
                 }
 
-                LGWebOSSettingsSection(store: store)
+                LGWebOSSettingsSection(store: store, wakeDisclosure: $lgWakeDisclosure)
 
                 SettingsSection(title: L10n.tr("高级连接选项", "Advanced Connection Options")) {
-                    DisclosureGroup(isExpanded: $showsAdvancedConnections) {
+                    DisclosureGroup(isExpanded: $advancedConnections.isExpanded) {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .top, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 3) {
@@ -1482,7 +1507,7 @@ private struct ConnectionSettingsTab: View {
                                 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "plus.circle")
-                                        Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))
+                                        Text(L10n.tr("继续扫码添加", "Scan Another Account"))
                                     }
                                 }
                                 .buttonStyle(PillActionButtonStyle())
@@ -1517,17 +1542,17 @@ private struct ConnectionSettingsTab: View {
         .onDisappear { unsaved?.unregister("home-assistant") }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
-            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: highlight, accountCount: store.miAccounts.count) {
-                showsAdvancedConnections = true
-            }
+            advancedConnections.expandForHighlightIfNeeded(highlight)
         }
         .onAppear {
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight) {
                 haExpanded = true
             }
-            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: searchFocus?.highlight, accountCount: store.miAccounts.count) {
-                showsAdvancedConnections = true
-            }
+            advancedConnections.applyInitialDefaultsIfNeeded(
+                accountCount: store.miAccounts.count,
+                isDualSourceActive: store.hasMiSource && store.hasHASource
+            )
+            advancedConnections.expandForHighlightIfNeeded(searchFocus?.highlight)
             urlDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             tokenDraft = initialHAToken.token
@@ -2062,14 +2087,28 @@ private struct AboutSettingsTab: View {
 // MARK: - LG webOS
 
 enum LGWebOSSettingsSaveGuard {
-    static func shouldExpandAdvancedWake(
-        forHighlight highlight: SettingsAnchor?,
-        macAddress: String
-    ) -> Bool {
-        if !macAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return true
+    struct WakeDisclosureState: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
         }
-        return highlight == .lgTV
+
+        mutating func applyInitialDefaultsIfNeeded(macAddress: String) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if !macAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandForHighlightIfNeeded(_ highlight: SettingsAnchor?) {
+            if highlight == .lgTV {
+                isExpanded = true
+            }
+        }
     }
 
     @MainActor
@@ -2144,12 +2183,12 @@ enum LGWebOSSettingsSaveGuard {
 
 struct LGWebOSSettingsSection: View {
     let store: HomeStore
+    @Binding var wakeDisclosure: LGWebOSSettingsSaveGuard.WakeDisclosureState
     @State private var isEnabled: Bool = false
     @State private var hostDraft: String = ""
     @State private var macDraft: String = ""
     @State private var isScanning: Bool = false
     @State private var confirmsTrustReset = false
-    @State private var showsAdvancedWake = false
     @Environment(\.settingsSearchFocus) private var searchFocus
 
     var body: some View {
@@ -2199,7 +2238,7 @@ struct LGWebOSSettingsSection: View {
                         .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
                 }
 
-                DisclosureGroup(isExpanded: $showsAdvancedWake) {
+                DisclosureGroup(isExpanded: $wakeDisclosure.isExpanded) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(L10n.tr("电视的网络硬件地址 (MAC)", "TV Network Hardware Address (MAC)"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
@@ -2281,23 +2320,17 @@ struct LGWebOSSettingsSection: View {
             isEnabled = store.lgConfig.isEnabled
             hostDraft = store.lgConfig.host
             macDraft = store.lgConfig.macAddress
-            if LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(
-                forHighlight: searchFocus?.highlight,
-                macAddress: macDraft
-            ) {
-                showsAdvancedWake = true
-            }
+            wakeDisclosure.applyInitialDefaultsIfNeeded(macAddress: macDraft)
+            wakeDisclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
         }
         .onChange(of: store.lgConfig.isEnabled) { _, newValue in
             isEnabled = newValue
+            if newValue {
+                wakeDisclosure.applyInitialDefaultsIfNeeded(macAddress: macDraft)
+            }
         }
         .onChange(of: searchFocus?.highlight) { _, highlight in
-            if LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(
-                forHighlight: highlight,
-                macAddress: macDraft
-            ) {
-                showsAdvancedWake = true
-            }
+            wakeDisclosure.expandForHighlightIfNeeded(highlight)
         }
     }
 

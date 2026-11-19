@@ -440,20 +440,33 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: .appearance))
         #expect(!GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: .general))
 
-        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .miMultiAccounts))
-        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .dualSourceFusion))
-        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: nil, accountCount: 2))
-        #expect(!ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .miAccount, accountCount: 1))
-        #expect(!ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: nil, accountCount: 0))
+        for anchor in [SettingsAnchor.miMultiAccounts, .dualSourceFusion] {
+            var state = ConnectionSettingsDisclosure.State()
+            state.expandForHighlightIfNeeded(anchor)
+            #expect(state.isExpanded)
+        }
+        var connHighlightState = ConnectionSettingsDisclosure.State()
+        connHighlightState.expandForHighlightIfNeeded(.miAccount)
+        #expect(!connHighlightState.isExpanded)
+        connHighlightState.expandForHighlightIfNeeded(nil)
+        #expect(!connHighlightState.isExpanded)
 
-        #expect(LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: .lgTV, macAddress: ""))
-        #expect(LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: nil, macAddress: "AA:BB:CC:DD:EE:FF"))
-        #expect(!LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: nil, macAddress: "   "))
+        var wakeHighlightState = LGWebOSSettingsSaveGuard.WakeDisclosureState()
+        wakeHighlightState.expandForHighlightIfNeeded(.haServerAddress)
+        #expect(!wakeHighlightState.isExpanded)
+        wakeHighlightState.expandForHighlightIfNeeded(.lgTV)
+        #expect(wakeHighlightState.isExpanded)
 
-        #expect(MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: true, forHighlight: nil))
-        #expect(MiAccountSection.shouldExpandRegionPicker(region: .sg, isScanning: false, forHighlight: nil))
-        #expect(MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: false, forHighlight: .miAccount))
-        #expect(!MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: false, forHighlight: nil))
+        var regionHighlightState = MiAccountSection.RegionDisclosureState()
+        regionHighlightState.expandIfNeeded(isScanning: true)
+        #expect(regionHighlightState.isExpanded)
+        var regionAnchorState = MiAccountSection.RegionDisclosureState()
+        regionAnchorState.expandIfNeeded(forHighlight: .miAccount)
+        #expect(regionAnchorState.isExpanded)
+        var regionDefaultState = MiAccountSection.RegionDisclosureState()
+        regionDefaultState.applyInitialNonDefaultIfNeeded(region: .cn)
+        regionDefaultState.expandIfNeeded(forHighlight: nil)
+        #expect(!regionDefaultState.isExpanded)
     }
 
     @Test("Traditional Chinese translations match MiAccountSection region title and Advanced Display labels")
@@ -468,12 +481,19 @@ struct PreReleaseMacOSUIFixesTests {
                 "Dedicated Connection Key (Access Token)"
             ) == "專屬連線鑰匙 (Access Token)")
             #expect(L10n.tr("全部恢复显示", "Unhide All") == "全部恢復顯示")
+            let hiddenLabel = L10n.tr("已手动隐藏 \(2) 台设备", "\(2) manually hidden device(s)")
+            #expect(hiddenLabel == "已手動隱藏 2 臺裝置")
+            #expect(!hiddenLabel.contains("手动"))
+            #expect(!hiddenLabel.contains("台"))
+            #expect(!hiddenLabel.contains("设备"))
+            #expect(L10n.tr("继续扫码添加", "Scan Another Account") == "繼續掃碼新增")
             #expect(MiAccountSection.regionDisclosureTitle(for: .cn) == "進階：雲端伺服器地區（目前：中國大陸 (cn)）")
             #expect(MiAccountSection.regionDisclosureTitle(for: .sg) == "進階：雲端伺服器地區（目前：新加坡 / 國際 (sg)）")
         }
 
         L10n.$overrideLanguage.withValue(.en) {
             #expect(MiAccountSection.regionDisclosureTitle(for: .cn) == "Advanced: Cloud Region (Current: China Mainland (cn))")
+            #expect(L10n.tr("继续扫码添加", "Scan Another Account") == "Scan Another Account")
         }
     }
 
@@ -619,6 +639,72 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(focus.highlight == .miAccount)
         #expect(focus.generation == 1)
         focus.endHighlight()
+    }
+
+    @Test("Connection advanced disclosure auto-expands once for multi-account or dual-source and preserves user collapse")
+    func connectionAdvancedDisclosurePreservesUserCollapseAndExpandsForDualSource() {
+        // Default single-account or unconfigured setup remains collapsed.
+        var unconfigured = ConnectionSettingsDisclosure.State()
+        unconfigured.applyInitialDefaultsIfNeeded(accountCount: 0, isDualSourceActive: false)
+        #expect(!unconfigured.isExpanded)
+
+        var singleMiOnly = ConnectionSettingsDisclosure.State()
+        singleMiOnly.applyInitialDefaultsIfNeeded(accountCount: 1, isDualSourceActive: false)
+        #expect(!singleMiOnly.isExpanded)
+
+        // Multi-account expands on first appearance and honors user collapse afterwards.
+        var multiAccount = ConnectionSettingsDisclosure.State()
+        multiAccount.applyInitialDefaultsIfNeeded(accountCount: 2, isDualSourceActive: false)
+        #expect(multiAccount.isExpanded)
+
+        multiAccount.isExpanded = false
+        multiAccount.expandForHighlightIfNeeded(nil)
+        multiAccount.expandForHighlightIfNeeded(.miAccount)
+        multiAccount.applyInitialDefaultsIfNeeded(accountCount: 2, isDualSourceActive: true)
+        #expect(!multiAccount.isExpanded)
+
+        // Single Mi account + Home Assistant (dual-source active) also expands on first appearance.
+        var dualSource = ConnectionSettingsDisclosure.State()
+        dualSource.applyInitialDefaultsIfNeeded(accountCount: 1, isDualSourceActive: true)
+        #expect(dualSource.isExpanded)
+
+        dualSource.isExpanded = false
+        dualSource.expandForHighlightIfNeeded(nil)
+        dualSource.expandForHighlightIfNeeded(.haServerAddress)
+        dualSource.applyInitialDefaultsIfNeeded(accountCount: 1, isDualSourceActive: true)
+        #expect(!dualSource.isExpanded)
+
+        // Explicit search jumps to either advanced anchor still expand it.
+        dualSource.expandForHighlightIfNeeded(.dualSourceFusion)
+        #expect(dualSource.isExpanded)
+        dualSource.isExpanded = false
+        dualSource.expandForHighlightIfNeeded(.miMultiAccounts)
+        #expect(dualSource.isExpanded)
+    }
+
+    @Test("LG wake disclosure auto-expands once for non-empty MAC and preserves user collapse across highlight expiry and tab switch")
+    func lgWakeDisclosurePreservesUserCollapseAcrossExpiryAndReappear() {
+        var emptyMac = LGWebOSSettingsSaveGuard.WakeDisclosureState()
+        emptyMac.applyInitialDefaultsIfNeeded(macAddress: "   ")
+        #expect(!emptyMac.isExpanded)
+
+        var configuredMac = LGWebOSSettingsSaveGuard.WakeDisclosureState()
+        configuredMac.applyInitialDefaultsIfNeeded(macAddress: "AA:BB:CC:DD:EE:FF")
+        #expect(configuredMac.isExpanded)
+
+        // User collapses the wake section; highlight expiry or other anchors or re-appear must not reopen it.
+        configuredMac.isExpanded = false
+        configuredMac.expandForHighlightIfNeeded(nil)
+        configuredMac.expandForHighlightIfNeeded(.haServerAddress)
+        configuredMac.applyInitialDefaultsIfNeeded(macAddress: "AA:BB:CC:DD:EE:FF")
+        #expect(!configuredMac.isExpanded)
+
+        // Explicit search jump to .lgTV still expands it, and clearing highlight keeps user's later collapse.
+        configuredMac.expandForHighlightIfNeeded(.lgTV)
+        #expect(configuredMac.isExpanded)
+        configuredMac.isExpanded = false
+        configuredMac.expandForHighlightIfNeeded(nil)
+        #expect(!configuredMac.isExpanded)
     }
 
 

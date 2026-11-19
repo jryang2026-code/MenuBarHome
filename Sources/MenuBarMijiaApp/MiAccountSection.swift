@@ -127,14 +127,6 @@ public struct MiAccountSection: View {
         autoStartsQRLogin && (homeBackend == .xiaomiCloud || miSessionShowsExpired)
     }
 
-    static func shouldExpandRegionPicker(
-        region: MiCloudRegion,
-        isScanning: Bool,
-        forHighlight anchor: SettingsAnchor? = nil
-    ) -> Bool {
-        isScanning || region != .cn || anchor == .miAccount
-    }
-
     static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
         L10n.format(
             "高级：云端服务器地区（当前：%@）",
