@@ -154,8 +154,20 @@ extension ControlCenterPanel {
     }
 
     private var panelMoreMenu: some View {
-        Menu {
-            statusFooterControl
+        let connectionStatus = PanelConnectionStatusPresentation.resolve(store: store)
+        return Menu {
+            Button {
+                PanelConnectionDetailState.shared.toggle()
+            } label: {
+                Label(connectionStatus.text, systemImage: connectionStatus.iconName)
+            }
+            if let actionTitle = connectionStatus.inlineActionTitle,
+               let inlineAction = connectionStatus.inlineAction,
+               inlineAction != .openDetail {
+                Button(actionTitle) {
+                    PanelConnectionStatusPresentation.performInline(inlineAction, store: store)
+                }
+            }
             Divider()
             Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
                 get: { store.isCompactGridMode },
@@ -693,92 +705,645 @@ extension ControlCenterPanel {
     }
 
     var statusDotAnimates: Bool {
-        // 面板不可见时不必呼吸：`repeatForever` 停不下来，会一直占 CPU（见 `BreathingDot`）。
         guard store.pollingContext.panelVisible else { return false }
-        if case .ok = store.panelHealth { return true }
-        return false
+        return PanelConnectionStatusPresentation.resolve(store: store).badge == .online
     }
 
     var statusDotColor: Color {
-        switch store.panelHealth {
-        case .ok:
-            return .green
-        case .connecting, .degraded:
-            return .orange
-        case .blocked, .notConfigured:
-            return .red
-        }
+        PanelConnectionStatusPresentation.resolve(store: store).color
     }
 
     @ViewBuilder
     var statusFooterControl: some View {
-        if case .blocked(_, let action) = store.panelHealth {
-            Button {
-                performPanelHealthAction(action)
-            } label: {
-                Text(statusFooterLabel)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(statusDotColor)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.plain)
-        } else if store.homeBackend == .demo {
-            // #144: the demo is a doorway, not a place to stay.
-            HStack(spacing: 8) {
-                Text(statusFooterLabel)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Button {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.leaveDemo() }
-                } label: {
-                    Text(L10n.tr("连接真实家庭", "Connect a Real Home"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                .panelHelp(L10n.tr("退出演示，连接你自己的米家或 Home Assistant", "Leave the demo and connect your own Mi Home or Home Assistant"))
-            }
-        } else {
-            Text(statusFooterLabel)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
+        PanelConnectionStatusControl(store: store, theme: .liquidGlass)
+    }
+
+    var footerBar: some View {
+        PanelConnectionFooterBar(
+            store: store,
+            theme: .liquidGlass,
+            updateBadgeTitle: updateBadgeTitle,
+            presentSettingsWindow: presentSettingsWindow
+        )
     }
 
     func performPanelHealthAction(_ action: PanelHealthAction) {
-        switch action {
-        case .presentMiReauth:
-            withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
-        case .openConnectionSettings:
-            SettingsWindowOpener.shared.show(tab: .connection)
-        case .openLocalNetworkSettings:
-            LocalNetworkSystemSettings.open()
-        }
+        PanelConnectionStatusPresentation.perform(action, store: store)
     }
 
     var statusFooterLabel: String {
-        switch store.panelHealth {
-        case .ok:
-            if let dual = store.dualSourceStatusSummary { return dual }
-            if store.homeBackend == .demo {
-                return L10n.tr("虚拟设备，离线运行", "Virtual devices, offline")
-            }
-            if store.connectedBackends.contains(.homeAssistant) && store.connectedBackends.contains(.xiaomiCloud) {
-                return L10n.tr("HA + 米家云 (\(store.serverHostSummary))", "HA + Xiaomi Cloud (\(store.serverHostSummary))")
-            }
-            if store.connectedBackends.contains(.xiaomiCloud) {
-                return L10n.tr("已连接 · \(store.serverHostSummary)", "Connected · \(store.serverHostSummary)")
-            }
-            return L10n.tr("已连接 · Home Assistant", "Connected · Home Assistant")
-        case .connecting:
-            return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
-        case .degraded(let reason), .blocked(let reason, _):
-            return reason
-        case .notConfigured:
-            return L10n.tr("未配置数据源", "No data source configured")
+        PanelConnectionStatusPresentation.resolve(store: store).text
+    }
+}
+
+// MARK: - Shared Footer Connection Status & Detail Popover (WP2a, §4.1 & §4.2)
+
+@MainActor
+@Observable
+final class PanelConnectionDetailState {
+    static let shared = PanelConnectionDetailState()
+    var isPresented = false
+    var isStatusControlFocused = false
+    var restoreFocusTrigger = 0
+    var clearFocusTrigger = 0
+
+    func toggle() {
+        isPresented.toggle()
+        if !isPresented {
+            isStatusControlFocused = true
+            restoreFocusTrigger &+= 1
+        }
+    }
+
+    func dismiss(restoreFocus: Bool = true) {
+        guard isPresented else { return }
+        isPresented = false
+        if restoreFocus {
+            isStatusControlFocused = true
+            restoreFocusTrigger &+= 1
+        }
+    }
+
+    func focusStatusControl() {
+        isStatusControlFocused = true
+        restoreFocusTrigger &+= 1
+    }
+
+    func clearStatusControlFocus() {
+        guard isStatusControlFocused else { return }
+        isStatusControlFocused = false
+        clearFocusTrigger &+= 1
+    }
+}
+
+struct PanelConnectionSourceItem: Equatable, Identifiable, Sendable {
+    var id: String
+    var name: String
+    var statusText: String
+    var isOnline: Bool
+    var badge: PanelConnectionBadgeKind
+}
+
+enum PanelConnectionBadgeKind: Equatable, Sendable {
+    case online, connecting, degraded, reauthRequired, disconnected, notConfigured, demo
+
+    var iconName: String {
+        switch self {
+        case .online: "checkmark.circle.fill"
+        case .connecting: "arrow.triangle.2.circlepath"
+        case .degraded: "exclamationmark.triangle.fill"
+        case .reauthRequired: "qrcode"
+        case .disconnected: "wifi.slash"
+        case .notConfigured: "link.badge.plus"
+        case .demo: "sparkles"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .online: .green
+        case .connecting, .degraded, .reauthRequired: .orange
+        case .disconnected, .notConfigured: .red
+        case .demo: .secondary
         }
     }
 }
+
+enum PanelConnectionInlineAction: Equatable, Sendable {
+    case leaveDemo, openConnectionSettings, presentMiReauth, openDetail, openLocalNetworkSettings
+}
+
+struct PanelConnectionStatusPresentation: Equatable, Sendable {
+    var badge: PanelConnectionBadgeKind
+    var text: String
+    var inlineActionTitle: String? = nil
+    var inlineAction: PanelConnectionInlineAction? = nil
+    var sources: [PanelConnectionSourceItem] = []
+
+    var iconName: String { badge.iconName }
+    var color: Color { badge.color }
+
+    @MainActor
+    static func perform(_ action: PanelHealthAction, store: HomeStore) {
+        switch action {
+        case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+        case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
+        case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
+        }
+    }
+
+    @MainActor
+    static func performInline(_ action: PanelConnectionInlineAction, store: HomeStore) {
+        switch action {
+        case .leaveDemo: withAnimation(AppleMotion.snappySpring) { _ = store.leaveDemo() }
+        case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
+        case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+        case .openDetail: PanelConnectionDetailState.shared.toggle()
+        case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
+        }
+    }
+
+    @MainActor
+    static func resolve(store: HomeStore) -> PanelConnectionStatusPresentation {
+        if store.homeBackend == .demo {
+            return PanelConnectionStatusPresentation(
+                badge: .demo,
+                text: L10n.tr("示例家庭，不会控制真实设备", "Demo home; won't control real devices"),
+                inlineActionTitle: L10n.tr("连接真实家庭", "Connect a Real Home"),
+                inlineAction: .leaveDemo,
+                sources: [PanelConnectionSourceItem(
+                    id: "demo",
+                    name: L10n.tr("示例家庭", "Demo Home"),
+                    statusText: L10n.tr("本地演示数据", "Local demo data"),
+                    isOnline: true,
+                    badge: .demo
+                )]
+            )
+        }
+
+        let hasMi = store.hasMiSource
+        let hasHA = store.hasHASource
+        let hasLGTV = store.lgConfig.isEnabled && store.lgConfig.hasConfiguredHost
+        let lgOnline = hasLGTV && !store.effectiveLocalNetworkBlocks.contains(.lgWebOS) && store.devices.contains { device in
+            guard device.isOnline, case .tv(let spec) = device.kind else { return false }
+            return LGWebOSProtocol.isLGEntity(spec.mediaEntityId)
+        }
+
+        if !hasMi && !hasHA {
+            return PanelConnectionStatusPresentation(
+                badge: .notConfigured,
+                text: L10n.tr("还没连接家居平台", "No smart home platform connected"),
+                inlineActionTitle: L10n.tr("去连接", "Connect"),
+                inlineAction: .openConnectionSettings
+            )
+        }
+
+        let miItem = hasMi ? resolveMiSource(store: store) : nil
+        let haItem = hasHA ? resolveHASource(store: store) : nil
+        let lgItem = hasLGTV ? resolveLGSource(store: store, isOnline: lgOnline) : nil
+        let sources = [miItem, haItem, lgItem].compactMap { $0 }
+
+        if store.miSessionBlocksControl {
+            if lgOnline {
+                return PanelConnectionStatusPresentation(
+                    badge: .degraded,
+                    text: L10n.tr("米家暂不可用，LG 电视仍可控制", "Xiaomi Home unavailable; LG TV still controllable"),
+                    inlineActionTitle: L10n.tr("重新扫码", "Re-scan"),
+                    inlineAction: .presentMiReauth,
+                    sources: sources
+                )
+            }
+            return PanelConnectionStatusPresentation(
+                badge: .reauthRequired,
+                text: L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
+                inlineActionTitle: L10n.tr("重新扫码", "Re-scan"),
+                inlineAction: .presentMiReauth,
+                sources: sources
+            )
+        }
+
+        if case .blocked(_, .openLocalNetworkSettings) = store.panelHealth {
+            return PanelConnectionStatusPresentation(
+                badge: .disconnected,
+                text: L10n.tr("本地网络权限受阻", "Local network access blocked"),
+                inlineActionTitle: L10n.tr("打开系统设置", "Open System Settings"),
+                inlineAction: .openLocalNetworkSettings,
+                sources: sources
+            )
+        }
+
+        if let miItem, let haItem {
+            if !miItem.isOnline && haItem.isOnline {
+                if miItem.badge == .connecting {
+                    return PanelConnectionStatusPresentation(
+                        badge: .connecting,
+                        text: L10n.tr("正在连接米家…", "Connecting to Xiaomi Home…"),
+                        sources: sources
+                    )
+                }
+                return PanelConnectionStatusPresentation(
+                    badge: .degraded,
+                    text: L10n.tr("米家暂不可用，部分设备暂无数据", "Xiaomi Home unavailable; some devices have no data"),
+                    inlineActionTitle: store.miSessionShowsExpired ? L10n.tr("重新扫码", "Re-scan") : nil,
+                    inlineAction: store.miSessionShowsExpired ? .presentMiReauth : nil,
+                    sources: sources
+                )
+            }
+            if miItem.isOnline && !haItem.isOnline {
+                if haItem.badge == .connecting {
+                    return PanelConnectionStatusPresentation(
+                        badge: .connecting,
+                        text: L10n.tr("正在连接 Home Assistant…", "Connecting to Home Assistant…"),
+                        sources: sources
+                    )
+                }
+                if case .declined = store.haPlaintextPrompt {
+                    return PanelConnectionStatusPresentation(
+                        badge: .reauthRequired,
+                        text: L10n.tr("未连接 Home Assistant（已拒绝明文 http）", "Home Assistant not connected (plaintext http declined)"),
+                        inlineActionTitle: L10n.tr("改用 https…", "Use https…"),
+                        inlineAction: .openConnectionSettings,
+                        sources: sources
+                    )
+                }
+                if haItem.badge == .reauthRequired {
+                    return PanelConnectionStatusPresentation(
+                        badge: .reauthRequired,
+                        text: L10n.tr("Home Assistant 凭据或地址需更新", "Home Assistant credentials or address need attention"),
+                        inlineActionTitle: L10n.tr("查看连接", "Check Connection"),
+                        inlineAction: .openDetail,
+                        sources: sources
+                    )
+                }
+                return PanelConnectionStatusPresentation(
+                    badge: .degraded,
+                    text: L10n.tr("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant unavailable; some devices have no data"),
+                    sources: sources
+                )
+            }
+            if !miItem.isOnline && !haItem.isOnline {
+                if lgOnline {
+                    return PanelConnectionStatusPresentation(
+                        badge: .degraded,
+                        text: L10n.tr("米家与 Home Assistant 暂不可用，LG 电视仍可控制", "Xiaomi Home and Home Assistant unavailable; LG TV still controllable"),
+                        sources: sources
+                    )
+                }
+                if miItem.badge == .connecting || haItem.badge == .connecting {
+                    return PanelConnectionStatusPresentation(
+                        badge: .connecting,
+                        text: L10n.tr("正在连接家居平台…", "Connecting to smart home platforms…"),
+                        sources: sources
+                    )
+                }
+                return PanelConnectionStatusPresentation(
+                    badge: .disconnected,
+                    text: L10n.tr("米家与 Home Assistant 均不可用", "Xiaomi Home and Home Assistant are both unavailable"),
+                    inlineActionTitle: L10n.tr("查看连接", "Check Connection"),
+                    inlineAction: .openDetail,
+                    sources: sources
+                )
+            }
+        }
+
+        if let miItem, haItem == nil, !miItem.isOnline {
+            if lgOnline {
+                return PanelConnectionStatusPresentation(
+                    badge: .degraded,
+                    text: L10n.tr("米家暂不可用，LG 电视仍可控制", "Xiaomi Home unavailable; LG TV still controllable"),
+                    sources: sources
+                )
+            }
+            if miItem.badge == .connecting {
+                return PanelConnectionStatusPresentation(
+                    badge: .connecting,
+                    text: L10n.tr("正在连接米家…", "Connecting to Xiaomi Home…"),
+                    sources: sources
+                )
+            }
+            return PanelConnectionStatusPresentation(
+                badge: .disconnected,
+                text: L10n.tr("米家暂不可用，部分设备暂无数据", "Xiaomi Home unavailable; some devices have no data"),
+                inlineActionTitle: L10n.tr("查看连接", "Check Connection"),
+                inlineAction: .openDetail,
+                sources: sources
+            )
+        }
+
+        if let haItem, miItem == nil, !haItem.isOnline {
+            if lgOnline {
+                return PanelConnectionStatusPresentation(
+                    badge: .degraded,
+                    text: L10n.tr("Home Assistant 暂不可用，LG 电视仍可控制", "Home Assistant unavailable; LG TV still controllable"),
+                    sources: sources
+                )
+            }
+            if haItem.badge == .connecting {
+                return PanelConnectionStatusPresentation(
+                    badge: .connecting,
+                    text: L10n.tr("正在连接 Home Assistant…", "Connecting to Home Assistant…"),
+                    sources: sources
+                )
+            }
+            if case .declined = store.haPlaintextPrompt {
+                return PanelConnectionStatusPresentation(
+                    badge: .reauthRequired,
+                    text: L10n.tr("未连接 Home Assistant（已拒绝明文 http）", "Home Assistant not connected (plaintext http declined)"),
+                    inlineActionTitle: L10n.tr("改用 https…", "Use https…"),
+                    inlineAction: .openConnectionSettings,
+                    sources: sources
+                )
+            }
+            let text = haItem.badge == .reauthRequired
+                ? L10n.tr("Home Assistant 凭据或地址需更新", "Home Assistant credentials or address need attention")
+                : L10n.tr("Home Assistant 暂不可用，部分设备暂无数据", "Home Assistant unavailable; some devices have no data")
+            return PanelConnectionStatusPresentation(
+                badge: haItem.badge == .reauthRequired ? .reauthRequired : .disconnected,
+                text: text,
+                inlineActionTitle: L10n.tr("查看连接", "Check Connection"),
+                inlineAction: .openDetail,
+                sources: sources
+            )
+        }
+
+        if case .degraded(let reason) = store.panelHealth {
+            return PanelConnectionStatusPresentation(badge: .degraded, text: reason, sources: sources)
+        }
+
+        return PanelConnectionStatusPresentation(
+            badge: .online,
+            text: L10n.tr("设备同步正常", "Devices synced"),
+            sources: sources
+        )
+    }
+
+    @MainActor
+    private static func resolveMiSource(store: HomeStore) -> PanelConnectionSourceItem {
+        let name = L10n.tr("米家", "Xiaomi Home")
+        if store.miSessionBlocksControl || (store.miSessionShowsExpired && !store.miAccounts.contains { $0.session.expiryState(at: Date()) != .expired }) {
+            return PanelConnectionSourceItem(
+                id: "mi", name: name,
+                statusText: L10n.tr("登录已过期 · 需要重新扫码", "Session expired · Re-scan required"),
+                isOnline: false, badge: .reauthRequired
+            )
+        }
+        let status = store.sourceStatuses[.xiaomiCloud]
+            ?? (store.connectedBackends.contains(.xiaomiCloud) || !store.hasHASource ? store.connectionStatus : .connecting)
+        switch status {
+        case .connected:
+            if store.effectiveLocalNetworkBlocks.contains(.xiaomiLAN) {
+                return PanelConnectionSourceItem(
+                    id: "mi", name: name,
+                    statusText: L10n.tr("云端在线（局域网权限受阻）", "Cloud online (LAN blocked)"),
+                    isOnline: true, badge: .degraded
+                )
+            }
+            return PanelConnectionSourceItem(id: "mi", name: name, statusText: L10n.tr("在线", "Online"), isOnline: true, badge: .online)
+        case .connecting:
+            return PanelConnectionSourceItem(id: "mi", name: name, statusText: L10n.tr("正在连接…", "Connecting…"), isOnline: false, badge: .connecting)
+        case .disconnected(let reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = trimmed.isEmpty ? L10n.tr("暂不可用", "Unavailable") : trimmed
+            return PanelConnectionSourceItem(id: "mi", name: name, statusText: detail, isOnline: false, badge: .disconnected)
+        }
+    }
+
+    @MainActor
+    private static func resolveHASource(store: HomeStore) -> PanelConnectionSourceItem {
+        let name = "Home Assistant"
+        if case .declined = store.haPlaintextPrompt {
+            return PanelConnectionSourceItem(
+                id: "ha", name: name,
+                statusText: L10n.tr("未连接（已拒绝明文 http）", "Not connected (plaintext http declined)"),
+                isOnline: false, badge: .reauthRequired
+            )
+        }
+        if store.effectiveLocalNetworkBlocks.contains(.homeAssistant) {
+            return PanelConnectionSourceItem(
+                id: "ha", name: name,
+                statusText: L10n.tr("本地网络权限受阻", "Local network access blocked"),
+                isOnline: false, badge: .disconnected
+            )
+        }
+        let status = store.sourceStatuses[.homeAssistant]
+            ?? (store.connectedBackends.contains(.homeAssistant) || !store.hasMiSource ? store.connectionStatus : .connecting)
+        switch status {
+        case .connected:
+            return PanelConnectionSourceItem(id: "ha", name: name, statusText: L10n.tr("在线", "Online"), isOnline: true, badge: .online)
+        case .connecting:
+            return PanelConnectionSourceItem(id: "ha", name: name, statusText: L10n.tr("正在连接…", "Connecting…"), isOnline: false, badge: .connecting)
+        case .disconnected(let reason):
+            let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isAuth = trimmed.contains("401") || trimmed.contains("403") || trimmed.localizedCaseInsensitiveContains("token") || trimmed.contains("令牌")
+            let detail = trimmed.isEmpty ? L10n.tr("暂不可用", "Unavailable") : trimmed
+            return PanelConnectionSourceItem(
+                id: "ha", name: name, statusText: detail, isOnline: false,
+                badge: isAuth ? .reauthRequired : .disconnected
+            )
+        }
+    }
+
+    @MainActor
+    private static func resolveLGSource(store: HomeStore, isOnline: Bool) -> PanelConnectionSourceItem {
+        let name = L10n.tr("LG 电视", "LG TV")
+        if store.effectiveLocalNetworkBlocks.contains(.lgWebOS) {
+            return PanelConnectionSourceItem(
+                id: "lg", name: name,
+                statusText: L10n.tr("本地网络权限受阻", "Local network access blocked"),
+                isOnline: false, badge: .degraded
+            )
+        }
+        return PanelConnectionSourceItem(
+            id: "lg", name: name,
+            statusText: isOnline ? L10n.tr("在线", "Online") : L10n.tr("待机或离线", "Standby or offline"),
+            isOnline: isOnline, badge: isOnline ? .online : .degraded
+        )
+    }
+}
+
+struct PanelConnectionStatusControl: View {
+    let store: HomeStore
+    let theme: PanelTheme
+    @Bindable private var detailState = PanelConnectionDetailState.shared
+    @FocusState private var isStatusButtonFocused: Bool
+
+    var body: some View {
+        let status = PanelConnectionStatusPresentation.resolve(store: store)
+        let isMuted = status.badge == .online || status.badge == .demo
+        HStack(spacing: 6) {
+            Button {
+                detailState.toggle()
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: status.iconName)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(status.color)
+                    Text(status.text)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: isMuted ? .medium : .semibold))
+                        .foregroundStyle(isMuted ? Color.secondary : status.color)
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .focusable()
+            .focused($isStatusButtonFocused)
+            .onKeyPress(.return) { detailState.toggle(); return .handled }
+            .onKeyPress(.space) { detailState.toggle(); return .handled }
+            .accessibilityIdentifier("panel-connection-status-button")
+            .accessibilityLabel(Text(status.text))
+            .accessibilityHint(Text(L10n.tr("点击或按回车查看各平台连接状态", "Click or press Return to view platform connection details")))
+            .popover(
+                isPresented: Binding(
+                    get: { detailState.isPresented },
+                    set: { newValue in newValue ? (detailState.isPresented = true) : detailState.dismiss(restoreFocus: true) }
+                ),
+                arrowEdge: .top
+            ) {
+                PanelConnectionDetailPopover(store: store, theme: theme, status: status) {
+                    detailState.dismiss(restoreFocus: true)
+                }
+            }
+            .onChange(of: isStatusButtonFocused) { _, focused in
+                detailState.isStatusControlFocused = focused
+            }
+            .onChange(of: detailState.restoreFocusTrigger) { _, _ in isStatusButtonFocused = true }
+            .onChange(of: detailState.clearFocusTrigger) { _, _ in isStatusButtonFocused = false }
+
+            if let actionTitle = status.inlineActionTitle, let inlineAction = status.inlineAction {
+                Button(actionTitle) {
+                    PanelConnectionStatusPresentation.performInline(inlineAction, store: store)
+                }
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .lineLimit(1)
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            }
+        }
+    }
+}
+
+struct PanelConnectionDetailPopover: View {
+    let store: HomeStore
+    let theme: PanelTheme
+    let status: PanelConnectionStatusPresentation
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Image(systemName: status.iconName)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(status.color)
+                Text(status.text)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 4)
+                Button(action: onClose) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.body))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(L10n.tr("关闭连接详情", "Close connection details")))
+            }
+
+            if !status.sources.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(status.sources) { item in
+                        HStack(spacing: 8) {
+                            Image(systemName: item.badge.iconName)
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                .foregroundStyle(item.badge.color)
+                            Text(item.name)
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            Spacer(minLength: 8)
+                            Text(item.statusText)
+                                .font(.system(size: DesignTokens.TypeSize.caption))
+                                .foregroundStyle(item.isOnline ? Color.secondary : item.badge.color)
+                                .lineLimit(1)
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                if store.homeBackend != .demo, (store.hasMiSource || store.hasHASource) {
+                    Button(L10n.tr("重试连接", "Retry Connection")) { store.refreshNow() }
+                        .themedPillButtonStyle(theme)
+                }
+                if store.miSessionShowsExpired {
+                    Button(L10n.tr("重新扫码", "Re-scan")) {
+                        onClose()
+                        withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                    }
+                    .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                }
+                Spacer(minLength: 4)
+                Button(L10n.tr("连接设置…", "Connection Settings…")) {
+                    onClose()
+                    SettingsWindowOpener.shared.show(tab: .connection)
+                }
+                .themedPillButtonStyle(theme, isSelected: true, tintColor: .accentColor)
+            }
+        }
+        .padding(12)
+        .frame(width: 288)
+        .onExitCommand(perform: onClose)
+    }
+}
+
+struct PanelConnectionFooterBar: View {
+    let store: HomeStore
+    let theme: PanelTheme
+    let updateBadgeTitle: (AppRelease) -> String
+    let presentSettingsWindow: () -> Void
+
+    private var status: PanelConnectionStatusPresentation { PanelConnectionStatusPresentation.resolve(store: store) }
+    private var statusDotAnimates: Bool { store.pollingContext.panelVisible && status.badge == .online }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            BreathingDot(color: status.color, animate: statusDotAnimates)
+                .id(status.color)
+            PanelConnectionStatusControl(store: store, theme: theme)
+            Spacer()
+
+            if let release = store.updateState.badgeRelease {
+                Button {
+                    if store.updateState.isReadyToRelaunch {
+                        withAnimation(AppleMotion.snappySpring) { store.confirmRelaunchForUpdate() }
+                    } else {
+                        SettingsWindowOpener.shared.show(tab: .about)
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: store.updateState.isReadyToRelaunch ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.down.circle.fill")
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        Text(updateBadgeTitle(release))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                            .monospacedDigit()
+                    }
+                }
+                .themedPillButtonStyle(theme, isSelected: true, tintColor: store.updateState.isReadyToRelaunch ? .green : .accentColor)
+                .panelHelp(store.updateState.isReadyToRelaunch
+                    ? L10n.tr("点击立即重启并完成 v\(release.version) 更新", "Click to relaunch and finish updating to v\(release.version)")
+                    : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available"))
+            }
+
+            if store.undoBanner == nil, !store.isShowingAssistantBar, UndoAvailabilityTracker.shared.isAvailable {
+                footerIconButton("arrow.uturn.backward", label: L10n.tr("撤销上一步", "Undo last action"), help: L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)")) {
+                    store.presentAssistantBar()
+                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                }
+            }
+
+            footerIconButton("arrow.clockwise", label: L10n.tr("立即同步", "Refresh now"), help: L10n.tr("立即同步最新状态", "Refresh device states now")) {
+                store.refreshNow()
+            }
+            footerIconButton("slider.horizontal.3", size: DesignTokens.TypeSize.body, label: L10n.tr("打开设置", "Open Settings"), help: L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)") ) {
+                presentSettingsWindow()
+            }
+            footerIconButton("power", label: L10n.tr("退出应用", "Quit App"), help: L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)")) {
+                NSApplication.shared.terminate(nil)
+            }
+        }
+    }
+
+    private func footerIconButton(_ symbol: String, size: CGFloat = DesignTokens.TypeSize.caption, label: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.72))
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(label))
+        .panelHelp(help)
+    }
+}
+

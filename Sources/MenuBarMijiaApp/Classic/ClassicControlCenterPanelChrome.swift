@@ -1038,110 +1038,12 @@ extension ClassicControlCenterPanel {
     // MARK: - 4. Footer Status Bar
 
     var footerBar: some View {
-        HStack(spacing: 8) {
-            BreathingDot(
-                color: statusDotColor,
-                animate: statusDotAnimates
-            )
-            .id(statusDotColor)
-
-            statusFooterControl
-
-            Spacer()
-
-            if let release = store.updateState.badgeRelease {
-                Button {
-                    if store.updateState.isReadyToRelaunch {
-                        withAnimation(AppleMotion.snappySpring) {
-                            store.confirmRelaunchForUpdate()
-                        }
-                    } else {
-                        SettingsWindowOpener.shared.show(tab: .about)
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(
-                            systemName: store.updateState.isReadyToRelaunch
-                                ? "arrow.triangle.2.circlepath.circle.fill"
-                                : "arrow.down.circle.fill"
-                        )
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        Text(updateBadgeTitle(for: release))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .monospacedDigit()
-                    }
-                }
-                .buttonStyle(
-                    ClassicPillActionButtonStyle(
-                        isSelected: true,
-                        tintColor: store.updateState.isReadyToRelaunch ? .green : .accentColor
-                    )
-                )
-                .panelHelp(
-                    store.updateState.isReadyToRelaunch
-                        ? L10n.tr("点击立即重启并完成 v\(release.version) 更新", "Click to relaunch and finish updating to v\(release.version)")
-                        : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available")
-                )
-            }
-
-            // #53: once the banner is gone the assistant action is still undoable for ten minutes.
-            if store.undoBanner == nil,
-               !store.isShowingAssistantBar,
-               UndoAvailabilityTracker.shared.isAvailable {
-                Button {
-                    store.presentAssistantBar()
-                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.72))
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(L10n.tr("撤销上一步", "Undo last action")))
-                .panelHelp(L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)"))
-            }
-
-            Button {
-                store.refreshNow()
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("立即同步", "Refresh now")))
-            .panelHelp(L10n.tr("立即同步最新状态", "Refresh device states now"))
-
-            Button {
-                presentSettingsWindow()
-            } label: {
-                Image(systemName: "slider.horizontal.3")
-                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("打开设置", "Open Settings")))
-            .panelHelp(L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)"))
-
-            Button {
-                NSApplication.shared.terminate(nil)
-            } label: {
-                Image(systemName: "power")
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(L10n.tr("退出应用", "Quit App")))
-            .panelHelp(L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)"))
-        }
+        PanelConnectionFooterBar(
+            store: store,
+            theme: .classic,
+            updateBadgeTitle: updateBadgeTitle,
+            presentSettingsWindow: presentSettingsWindow
+        )
     }
 
     /// `openSettings` is the supported way to reveal the Settings scene from a MenuBarExtra.
@@ -1166,92 +1068,24 @@ extension ClassicControlCenterPanel {
     }
 
     var statusDotAnimates: Bool {
-        // 面板不可见时不必呼吸：`repeatForever` 停不下来，会一直占 CPU（见 `BreathingDot`）。
         guard store.pollingContext.panelVisible else { return false }
-        if case .ok = store.panelHealth { return true }
-        return false
+        return PanelConnectionStatusPresentation.resolve(store: store).badge == .online
     }
 
     var statusDotColor: Color {
-        switch store.panelHealth {
-        case .ok:
-            return .green
-        case .connecting, .degraded:
-            return .orange
-        case .blocked, .notConfigured:
-            return .red
-        }
+        PanelConnectionStatusPresentation.resolve(store: store).color
     }
 
     @ViewBuilder
     var statusFooterControl: some View {
-        if case .blocked(_, let action) = store.panelHealth {
-            Button {
-                performPanelHealthAction(action)
-            } label: {
-                Text(statusFooterLabel)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                    .foregroundStyle(statusDotColor)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.plain)
-        } else if store.homeBackend == .demo {
-            // #144: the demo is a doorway, not a place to stay.
-            HStack(spacing: 8) {
-                Text(statusFooterLabel)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Button {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.leaveDemo() }
-                } label: {
-                    Text(L10n.tr("连接真实家庭", "Connect a Real Home"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .lineLimit(1)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
-                .panelHelp(L10n.tr("退出演示，连接你自己的米家或 Home Assistant", "Leave the demo and connect your own Mi Home or Home Assistant"))
-            }
-        } else {
-            Text(statusFooterLabel)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
+        PanelConnectionStatusControl(store: store, theme: .classic)
     }
 
     func performPanelHealthAction(_ action: PanelHealthAction) {
-        switch action {
-        case .presentMiReauth:
-            withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
-        case .openConnectionSettings:
-            SettingsWindowOpener.shared.show(tab: .connection)
-        case .openLocalNetworkSettings:
-            LocalNetworkSystemSettings.open()
-        }
+        PanelConnectionStatusPresentation.perform(action, store: store)
     }
 
     var statusFooterLabel: String {
-        switch store.panelHealth {
-        case .ok:
-            if let dual = store.dualSourceStatusSummary { return dual }
-            if store.homeBackend == .demo {
-                return L10n.tr("虚拟设备，离线运行", "Virtual devices, offline")
-            }
-            if store.connectedBackends.contains(.homeAssistant) && store.connectedBackends.contains(.xiaomiCloud) {
-                return L10n.tr("HA + 米家云 (\(store.serverHostSummary))", "HA + Xiaomi Cloud (\(store.serverHostSummary))")
-            }
-            if store.connectedBackends.contains(.xiaomiCloud) {
-                return L10n.tr("已连接 · \(store.serverHostSummary)", "Connected · \(store.serverHostSummary)")
-            }
-            return L10n.tr("已连接 · Home Assistant", "Connected · Home Assistant")
-        case .connecting:
-            return L10n.tr("正在连接 (\(store.serverHostSummary))…", "Connecting (\(store.serverHostSummary))…")
-        case .degraded(let reason), .blocked(let reason, _):
-            return reason
-        case .notConfigured:
-            return L10n.tr("未配置数据源", "No data source configured")
-        }
+        PanelConnectionStatusPresentation.resolve(store: store).text
     }
 }

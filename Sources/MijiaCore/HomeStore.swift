@@ -179,15 +179,33 @@ public final class HomeStore {
     var snapshotGeneration: UInt64 = 0
     /// How long to wait before a second property poll when the first read still shows the old power.
     var readBackEchoDelay: Duration = .milliseconds(800)
+    struct ReadBackEchoHoldKey: Hashable {
+        let deviceId: String
+        let ticket: UInt64
+    }
+
     /// Test latch: the echo retry waits until `releaseReadBackEcho` instead of sleeping.
     var holdReadBackEcho = false
-    var isHoldingReadBackEcho = false
-    var readBackEchoHold: CheckedContinuation<Void, Never>?
+    var readBackEchoHolds: [ReadBackEchoHoldKey: CheckedContinuation<Void, Never>] = [:]
+    var isHoldingReadBackEcho: Bool { !readBackEchoHolds.isEmpty }
 
-    func releaseReadBackEcho() {
-        isHoldingReadBackEcho = false
-        readBackEchoHold?.resume()
-        readBackEchoHold = nil
+    func isHoldingReadBackEcho(for deviceId: String) -> Bool {
+        readBackEchoHolds.keys.contains { $0.deviceId == deviceId }
+    }
+
+    func releaseReadBackEcho(for deviceId: String? = nil) {
+        if let deviceId {
+            let keys = readBackEchoHolds.keys.filter { $0.deviceId == deviceId }
+            for key in keys {
+                readBackEchoHolds.removeValue(forKey: key)?.resume()
+            }
+        } else {
+            let holds = readBackEchoHolds
+            readBackEchoHolds.removeAll()
+            for cont in holds.values {
+                cont.resume()
+            }
+        }
     }
 
     public internal(set) var listCut: DeviceListCut = .all
@@ -824,9 +842,21 @@ public final class HomeStore {
     public internal(set) var haPlaintextPrompt: HAPlaintextPrompt?
     public internal(set) var isDiscoveringHA: Bool = false
 
-    var provider: any HomeProvider
+    var provider: any HomeProvider {
+        didSet {
+            providerGeneration &+= 1
+        }
+    }
+    var providerGeneration: UInt64 = 0
     var controlContextID = UUID()
-    var lgWebOSClient: LGWebOSClient?
+    var lgWebOSClient: LGWebOSClient? {
+        didSet {
+            if lgWebOSClient !== oldValue {
+                lgWebOSClientID = nil
+            }
+        }
+    }
+    var lgWebOSClientID: UUID?
     let isTestEnvironment: Bool
     var latestLGDevice: SmartDevice?
     var eventTask: Task<Void, Never>?
