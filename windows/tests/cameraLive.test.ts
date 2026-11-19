@@ -844,4 +844,57 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assert.equal(ctx.getDeviceListCalls(), deviceListBefore);
     assert.equal(ctx.getHomeRoomCalls(), homeRoomBefore);
   });
+
+  it("stops the locally registered bridge after a sign-out retarget renames the live-view card (#254)", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [{ did: "cam-a", name: "客厅摄像机", model: "isa.camera.hlc7", roomName: "客厅" }],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    ctrl.activeLiveCameraId = "cam-a";
+
+    const bridged = await ctrl.bridgeHlsStreamToMjpeg("cam-a", "http://192.168.50.10:8080/live/cam.m3u8");
+    assert.equal(bridged, true);
+    assert.equal(ctx.hlsBridgeCalls[0]?.["did"], "cam-a");
+
+    // The restored HA card keeps the same physical camera under another id.
+    const source = ctx.app.devices.find((d) => d.id === "cam-a")!;
+    ctx.app.devices = [...ctx.app.devices, { ...source, id: "ha-cam-a" }];
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+    assert.equal(ctrl.activeLiveCameraId, "ha-cam-a");
+
+    ctrl.stopLiveTransport();
+    assert.deepEqual(
+      ctx.stopBridgeCalls.at(-1),
+      { did: "cam-a" },
+      "teardown must stop the stream registered under the old card id, not the new one",
+    );
+  });
+
+  it("restarts a still-connecting live view when a sign-out retarget renames its card (#254)", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [{ did: "cam-a", name: "客厅摄像机", model: "isa.camera.hlc7", roomName: "客厅" }],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    const source = ctx.app.devices.find((d) => d.id === "cam-a")!;
+    ctx.app.devices = [...ctx.app.devices, { ...source, id: "ha-cam-a" }];
+
+    let reconnects = 0;
+    ctrl.reconnectCameraLiveView = () => {
+      reconnects += 1;
+    };
+
+    ctrl.activeLiveCameraId = "cam-a";
+    ctrl.liveCameraLoading = true;
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+    assert.equal(reconnects, 1, "a start that was still negotiating must be restarted under the new id");
+
+    // A stream that is already attached keeps playing; retargeting only renames its card.
+    ctrl.activeLiveCameraId = "cam-a";
+    ctrl.liveCameraLoading = true;
+    ctrl.liveCameraImgEl = document.createElement("img");
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+    assert.equal(reconnects, 1);
+  });
 });

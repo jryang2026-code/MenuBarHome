@@ -51,6 +51,8 @@ interface CameraBridgeBinding {
   readonly did: string;
   readonly channel: number;
   readonly subdid: string | null;
+  /** Set when the stream is a locally registered HLS bridge rather than a Xiaomi P2P session. */
+  readonly localHls?: boolean;
 }
 
 /** One cloud start. Identity is the lease, so a later start for the same device is a different entry. */
@@ -233,6 +235,12 @@ export class CameraLiveController {
     const { sourceDev } = this.resolveCameraSource(dev);
     if (sourceDev.kind.kind === "camera" && sourceDev.kind.gatewayDid) return sourceDev.kind.gatewayDid;
     return sourceDev.id;
+  }
+
+  /** A locally registered HLS bridge is not a Xiaomi stream, even though teardown stops it the same way. */
+  private hasXiaomiCameraBridge(deviceId: string): boolean {
+    const binding = this.cameraBridgeBindings.get(deviceId);
+    return binding !== undefined && binding.localHls !== true;
   }
 
   private hasHigherPriorityOverlayOpen(): boolean {
@@ -423,11 +431,11 @@ export class CameraLiveController {
       this.host.devices.find((d) => d.id === activeId) ??
       (this.activeLiveCameraSnapshot?.id === activeId ? this.activeLiveCameraSnapshot : undefined);
     if (!dev) {
-      return this.host.settings.connectionMode === "xiaomiCloud" || this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+      return this.host.settings.connectionMode === "xiaomiCloud" || this.cloudStreamSessions.has(activeId) || this.hasXiaomiCameraBridge(activeId);
     }
     const resolved = this.resolveCameraSource(dev);
     if (resolved.backend !== "xiaomiCloud") {
-      return this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+      return this.cloudStreamSessions.has(activeId) || this.hasXiaomiCameraBridge(activeId);
     }
     if (!accountId) return true;
     const owner = dev.accountId ?? resolved.sourceDev.accountId ?? resolved.accountId ?? null;
@@ -446,6 +454,7 @@ export class CameraLiveController {
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev || dev.kind.kind !== "camera") return false;
     if (previousId === dev.id) return true;
+    const pendingStart = this.liveCameraLoading && !this.liveCameraImgEl && !this.liveCameraRawMediaEl;
     // Teardown reads the bridge binding by the active id, so the binding has to move with the view.
     const bridge = this.cameraBridgeBindings.get(previousId);
     if (bridge) {
@@ -455,6 +464,12 @@ export class CameraLiveController {
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.syncModalEscapeListener();
+    // A start that is still negotiating also compares the active id, so it would bail and leave the
+    // modal spinning; restart it under the new id (the moved binding stops the old registration).
+    if (pendingStart) {
+      this.reconnectCameraLiveView();
+      return true;
+    }
     this.host.render();
     return true;
   }
@@ -887,6 +902,9 @@ export class CameraLiveController {
         return false;
       }
       if (mjpegName) {
+        // Registration is keyed by this id, so teardown (and a retarget to another card id) has to
+        // send the same one back to the backend (#254).
+        this.cameraBridgeBindings.set(did, { did, channel: 0, subdid: null, localHls: true });
         this.liveCameraStreamURL = mjpegName;
         this.liveCameraError = null;
         this.liveCameraLoading = false;
