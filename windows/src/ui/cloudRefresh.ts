@@ -59,7 +59,6 @@ import {
   miAccountScope,
   resolveMiAccountSelectionState,
   revalidateAfterMiAccountReenable,
-  writeMiAccountSelectionMutation,
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
@@ -122,22 +121,15 @@ function completePendingMiRevalidation(
     syncedAccountIds.map(miAccountScope).filter((s) => state.pendingRevalidationAccountIds.has(s)),
   );
   if (matchedScopes.size === 0) return false;
-  writeMiAccountSelectionMutation({
-    mutate: (prev) => ({
-      ...prev,
-      pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => !matchedScopes.has(miAccountScope(id))),
-      knownDisabledDevices: prev.knownDisabledDevices.filter((d) => !matchedScopes.has(miAccountScope(d.accountId))),
-    }),
-  });
   const nowMs = (host as { pendingReenableNowMs?: number }).pendingReenableNowMs;
-  revalidateAfterMiAccountReenable({
+  return revalidateAfterMiAccountReenable({
     context: buildHostCapabilityContext(host, accountsOverride),
     scheduledCommandStore: host.scheduledCommandStore,
     activeTimerIdentity: scheduledCommandIdentity(host.settings),
     ruleStore: new AutomationRuleStore(),
+    completedScopes: matchedScopes,
     ...(nowMs !== undefined ? { nowMs } : {}),
   });
-  return true;
 }
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
@@ -509,6 +501,12 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         host.cameraLive.closeCameraLiveView();
       }
       markTimerSnapshotReady(host);
+      revalidateAfterMiAccountReenable({
+        context: buildHostCapabilityContext(host),
+        scheduledCommandStore: host.scheduledCommandStore,
+        activeTimerIdentity: scheduledCommandIdentity(host.settings),
+        ruleStore: new AutomationRuleStore(),
+      });
       const readingPriorityById = new Map(
         host.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
@@ -1015,12 +1013,14 @@ export async function refreshMultiAccountXiaomiDevices(
       silent,
       previousSnapshots: prevState?.children,
     });
-    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, accounts).map((a) => a.id));
+    const latestAccounts = host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
+    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, latestAccounts).map((a) => a.id));
     if (
       !isHostAttachedToActiveWindow(host) ||
       host.settings.connectionMode !== "xiaomiCloud" ||
       !stateToken.isCurrent() ||
       !syncRun.isCurrent() ||
+      enabledAccounts.length !== latestEnabledIds.size ||
       !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
     ) {
       return;
@@ -1265,6 +1265,8 @@ export async function refreshDualSourceDevices(
         : [];
   if (accounts.length === 0) return;
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
+  const currentDualAccounts = () =>
+    host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
 
   const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
@@ -1286,7 +1288,7 @@ export async function refreshDualSourceDevices(
       knownPreferenceIds: knownPreferenceIdsForHost(host),
       languagePreference: host.settings.interfaceLanguage,
       shouldCommit: () => {
-        const latestIds = new Set(resolveEnabledMiAccountsForHost(host, accounts).map((a) => a.id));
+        const latestIds = new Set(resolveEnabledMiAccountsForHost(host, currentDualAccounts()).map((a) => a.id));
         return (
           isHostAttachedToActiveWindow(host) &&
           isDualSourceEnabled(host) &&
@@ -1341,7 +1343,7 @@ export async function refreshDualSourceDevices(
       },
     });
 
-    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, accounts).map((a) => a.id));
+    const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, currentDualAccounts()).map((a) => a.id));
     if (
       outcome.aborted ||
       !isHostAttachedToActiveWindow(host) ||

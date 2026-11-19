@@ -1141,14 +1141,25 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   removeXiaomiAccount(
     accountId: string,
     languagePreference?: LanguagePreference,
+    options: {
+      readonly remainingEnabledCount?: number;
+      readonly reason?: "disabled" | "signedOut";
+    } = {},
   ): DeviceMergeResult | null {
     if (!accountId) return null;
     this.mutationEpoch += 1;
+    const defaultEmptyMiReason =
+      options.reason === "signedOut"
+        ? tr3("米家连接已断开", "米家連線已中斷", "Xiaomi Home is disconnected", undefined, languagePreference)
+        : tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference);
     if (!this.lastMi) {
-      if (this.sourceStatuses.xiaomiCloud.kind === "connecting") {
+      if (
+        this.sourceStatuses.xiaomiCloud.kind === "connecting" ||
+        options.remainingEnabledCount === 0
+      ) {
         this.sourceStatuses.xiaomiCloud = {
           kind: "disconnected",
-          reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference),
+          reason: defaultEmptyMiReason,
         };
       }
       return null;
@@ -1190,6 +1201,12 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     const nextReadings = this.lastMi.home.environmentReadings.filter(
       (reading) => !isRemovedMiDevice(reading.id),
     );
+    const nextScenes = this.lastMi.home.scenes.filter(
+      (scene) =>
+        scene.accountId !== accountId &&
+        !MiAccountScope.isOwned(scene.id, accountId) &&
+        !MiAccountScope.isOwned(scene.entityId, accountId),
+    );
     let nextDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
     if (this.lastMi.home.deviceFacets) {
       nextDeviceFacets = {};
@@ -1230,18 +1247,18 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     const remainingStatuses = Object.values(nextAccountStatuses ?? {});
-    const allRemainingDisconnected =
-      remainingStatuses.length > 0 && remainingStatuses.every((s) => s.kind === "disconnected");
     const noRemainingAccounts =
-      (!hadAccountStatuses || remainingStatuses.length === 0) &&
-      nextDevices.length === 0 &&
-      (nextHomes?.length ?? 0) === 0;
+      options.remainingEnabledCount !== undefined
+        ? options.remainingEnabledCount <= 0
+        : (!hadAccountStatuses || remainingStatuses.length === 0) &&
+          nextDevices.length === 0 &&
+          (nextHomes?.length ?? 0) === 0;
 
-    if (noRemainingAccounts || allRemainingDisconnected) {
+    if (noRemainingAccounts) {
       this.lastMi = null;
       this.sourceStatuses.xiaomiCloud = {
         kind: "disconnected",
-        reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference),
+        reason: defaultEmptyMiReason,
       };
     } else {
       this.lastMi = {
@@ -1250,7 +1267,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
           rooms: nextRooms,
           devices: nextDevices,
           environmentReadings: nextReadings,
-          scenes: this.lastMi.home.scenes,
+          scenes: nextScenes,
           ...(nextDeviceFacets !== undefined ? { deviceFacets: nextDeviceFacets } : {}),
         },
         ...(nextIdentities !== undefined ? { identities: nextIdentities } : {}),
@@ -1258,6 +1275,23 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         ...(nextHomes !== undefined ? { homes: nextHomes } : {}),
         ...(nextAccountStatuses !== undefined ? { accountStatuses: nextAccountStatuses } : {}),
       };
+      if (remainingStatuses.length > 0) {
+        if (remainingStatuses.some((s) => s.kind === "connected")) {
+          this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        } else if (remainingStatuses.some((s) => s.kind === "connecting")) {
+          this.sourceStatuses.xiaomiCloud = { kind: "connecting" };
+        } else {
+          const firstDisc = remainingStatuses.find(
+            (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
+          );
+          this.sourceStatuses.xiaomiCloud = {
+            kind: "disconnected",
+            reason:
+              firstDisc?.reason ||
+              tr3("米家连接已断开", "米家連線已中斷", "Xiaomi Home is disconnected", undefined, languagePreference),
+          };
+        }
+      }
     }
 
     if (!this.lastHA && !this.lastMi) {

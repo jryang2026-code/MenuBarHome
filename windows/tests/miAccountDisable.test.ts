@@ -5,8 +5,9 @@ import type { Window } from "happy-dom";
 import "./dom.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
-import { canRefreshDevicesInBackground } from "../src/ui/appLifecycle.js";
+import { canRefreshDevicesInBackground, signOutXiaomiAccount } from "../src/ui/appLifecycle.js";
 import {
+  buildHostCapabilityContext,
   getHostMiAccountsStore,
   recomputeHostDualSource,
   refreshDevices,
@@ -15,7 +16,7 @@ import {
   setHostHAInvokeOverride,
 } from "../src/ui/cloudRefresh.js";
 import { scheduleEchoReadBack } from "../src/ui/commandDispatch.js";
-import { setMiAccountEnabledOnHost } from "../src/ui/connectionsAndDiagView.js";
+import { addOrUpdateMiAccountOnHost, setMiAccountEnabledOnHost } from "../src/ui/connectionsAndDiagView.js";
 import {
   enqueueScheduledCommand,
   markTimerSnapshotReady,
@@ -25,16 +26,22 @@ import {
 import { executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
 import { onOpenURL } from "../src/core/appUrlCommand.js";
 import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
+import { DualSourceCoordinator } from "../src/core/dualSourceProvider.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { makeMiAccount } from "../src/core/miAccountsStore.js";
 import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
+  buildIndexedCapabilityDevices,
+  evaluateIntentsWriteGate,
   filterEnabledMiAccounts,
+  miAccountScope,
   resolveMiAccountSelectionState,
+  writeMiAccountSelectionMutation,
 } from "../src/core/miAccountControl.js";
-import { MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse, type HttpTransport, type MiSession } from "../src/core/miCloudClient.js";
+import { MiCloudError, MiotSpecResolver, parseMiotDeviceSpec, type HttpRequest, type HttpResponse, type HttpTransport, type MiSession } from "../src/core/miCloudClient.js";
 import { scheduleDelayedReadBack } from "../src/core/optimisticLock.js";
 import { getXiaomiBackoffUntilMs, recordXiaomiRateLimit } from "../src/core/pollingPolicy.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import { CredentialVault, type SecureInvoke } from "../src/core/secureStore.js";
 
 const SEC = "AQIDBAUGBwgJCgsMDQ4PEA==";
@@ -905,26 +912,30 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     markTimerSnapshotReady(app);
 
     const nowMs = Date.now();
+    const devAId = app.devices.find((d) => d.name === "主号台灯")?.id ?? `${ACC_A}/101`;
     const queueA = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
     queueA.scheduledCommands = [
-      { id: "t_atomic", command: "关书房台灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: "mi:cn:10001/101", operation: { kind: "power", isOn: false } }] },
+      { id: "t_atomic", command: "关书房台灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: devAId, operation: { kind: "power", isOn: false } }] },
     ];
     app.scheduledCommandStore.persist();
     const ruleStore = new AutomationRuleStore(localStorage);
     ruleStore.save([
-      createAutomationRule({ id: "rule_atomic", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["mi:cn:10001/101"], isOn: false } }),
+      createAutomationRule({ id: "rule_atomic", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: [devAId], isOn: false } }),
     ]);
 
     // 1) Simulate capability selection write failure -> timers & rules must NOT stay paused!
-    const storageProto = Object.getPrototypeOf(localStorage) as Storage;
-    const origSetItem = storageProto.setItem;
+    const origSetItem = localStorage.setItem.bind(localStorage);
     let failCapabilityWrite = true;
-    storageProto.setItem = function (this: Storage, key: string, val: string): void {
-      if (failCapabilityWrite && this === localStorage && key === MI_ACCOUNT_CAPABILITY_STORAGE_KEY) {
-        throw new Error("QuotaExceededError");
-      }
-      origSetItem.call(this, key, val);
-    };
+    Object.defineProperty(localStorage, "setItem", {
+      configurable: true,
+      writable: true,
+      value: (key: string, val: string): void => {
+        if (failCapabilityWrite && key === MI_ACCOUNT_CAPABILITY_STORAGE_KEY) {
+          throw new Error("QuotaExceededError");
+        }
+        origSetItem(key, val);
+      },
+    });
     try {
       const outcome = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true, nowMs });
       assert.equal(outcome.status, "blocked");
@@ -935,7 +946,7 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
       assert.equal(app.replyBanner?.isError, true);
     } finally {
       failCapabilityWrite = false;
-      storageProto.setItem = origSetItem;
+      Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: origSetItem });
     }
 
     // 2) Trigger unresolvedReferenceOwnership (timer targets unknown device while ACC_B stays enabled) -> blocked banner in UI & replyBanner!
@@ -1072,5 +1083,535 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     assert.match(readBannerText(), /All Lights Off.*connection/i);
     setLanguage("zh-Hans");
   });
+
+  it("keeps Home Assistant and Demo devices, facets, and readings intact when disabling a Xiaomi account with dual-source off (4622786203)", async () => {
+    const secure = makeSecure();
+    const app = mountApp(async () => okMi({}), secure);
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-tok";
+    app.settings.miSession = SESS_A;
+    setHostDualSourceEnabled(app, false, { persist: true });
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+
+    let haExecutes = 0;
+    setHostHAInvokeOverride(app, async <T>(cmd: string): Promise<T> => {
+      if (cmd === "ha_snapshot") {
+        return ({
+          areas: [{ area_id: "a1", name: "客厅" }],
+          devices: [
+            { id: "ha-dev-light", area_id: "a1", name: "HA吸顶灯" },
+            { id: "ha-dev-sensor", area_id: "a1", name: "HA温湿度计" },
+          ],
+          entities: [
+            { entity_id: "light.ha_ceiling", device_id: "ha-dev-light" },
+            { entity_id: "switch.ha_ceiling_night", device_id: "ha-dev-light" },
+            { entity_id: "sensor.ha_temp", device_id: "ha-dev-sensor" },
+          ],
+          states: [
+            { entity_id: "light.ha_ceiling", state: "on", attributes: { friendly_name: "HA吸顶灯", brightness: 200 } },
+            { entity_id: "switch.ha_ceiling_night", state: "off", attributes: { friendly_name: "夜灯开关" } },
+            { entity_id: "sensor.ha_temp", state: "24.5", attributes: { friendly_name: "HA温湿度计", device_class: "temperature", unit_of_measurement: "°C" } },
+          ],
+        } as unknown) as T;
+      }
+      if (cmd === "ha_execute") {
+        haExecutes += 1;
+      }
+      return (null as unknown) as T;
+    });
+
+    await refreshDevices(app, false);
+    const haLight = app.devices.find((d) => d.name === "HA吸顶灯");
+    assert.ok(haLight, "expected HA light card");
+    const haLightId = haLight.id;
+    const readingsBefore = app.environmentReadings.length;
+    assert.ok(readingsBefore > 0, "expected HA environment reading");
+    app.deviceFacets = {
+      ...app.deviceFacets,
+      [haLightId]: [{
+        id: "night", kind: "toggle", name: "night", title: "夜灯", serviceName: "switch",
+        unit: null, scale: null, value: false, options: [], range: null,
+        isWritable: true, writesByDefault: true, isHighValue: true,
+        target: { kind: "property", entityId: "switch.ha_ceiling_night", piid: 1 },
+      }],
+    };
+
+    const outcome = await setMiAccountEnabledOnHost(app, ACC_A, false);
+    assert.equal(outcome.status, "applied");
+    assert.equal(app.devices.some((d) => d.id === haLightId), true, "HA card must remain on panel");
+    assert.equal(app.environmentReadings.length, readingsBefore, "HA environment readings must remain intact");
+    assert.equal(app.deviceFacets[haLightId]?.length, 1, "HA device facets must remain intact");
+    const stateAfter = resolveMiAccountSelectionState({
+      storage: localStorage, accounts: [makeMiAccount(SESS_A)],
+      haBaseURL: app.settings.haBaseURL, haToken: app.settings.haToken,
+      connectionMode: "homeAssistant", dualSourceEnabled: false, hasExistingPreferences: true,
+    });
+    assert.equal(stateAfter.knownDisabledDevices.some((d) => d.id === haLightId), false, "HA card must not enter knownDisabledDevices");
+    assert.equal(await app.applyCommand({ kind: "setLightPower", entityId: "light.ha_ceiling", isOn: false }), true);
+    assert.equal(haExecutes, 1);
+
+    // Demo mode must also keep demo devices intact and out of knownDisabledDevices when disabling a stored Xiaomi account.
+    await store.upsertAccount(SESS_B);
+    app.settings.connectionMode = "demo";
+    app.devices = [
+      {
+        id: "demo_desk_lamp",
+        name: "演示台灯",
+        roomId: "study",
+        roomName: "书房",
+        model: "demo.light",
+        isOnline: true,
+        kind: { kind: "light", entityId: "light.demo_desk", isOn: true, brightnessPercent: 80, colorTempKelvin: 4000, minKelvin: 2700, maxKelvin: 6500, availableEffects: [], currentEffect: null },
+      },
+    ];
+    const demoOutcome = await setMiAccountEnabledOnHost(app, ACC_B, false);
+    assert.equal(demoOutcome.status, "applied");
+    assert.equal(app.devices.some((d) => d.id === "demo_desk_lamp"), true, "Demo card must remain on panel");
+    const stateAfterDemo = resolveMiAccountSelectionState({
+      storage: localStorage, accounts: [makeMiAccount(SESS_A), makeMiAccount(SESS_B)],
+      connectionMode: "demo", dualSourceEnabled: false, hasExistingPreferences: true,
+    });
+    assert.equal(stateAfterDemo.knownDisabledDevices.some((d) => d.id === "demo_desk_lamp"), false, "Demo card must not enter knownDisabledDevices");
+  });
+
+  it("queues revalidation when QR login re-enables a disabled account and unsticks paused items on sign-out (4622786217)", async () => {
+    let failRefresh = false;
+    let executedCommands = 0;
+    const secure = makeSecure();
+    const transport: HttpTransport = async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (failRefresh) throw new Error("temporary network failure");
+      if (path === "miotspec/prop/set") {
+        executedCommands += 1;
+        return okMi([{ did: "101", siid: 2, piid: 1, code: 0 }]);
+      }
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: "Home", roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return user === "10001"
+          ? okMi({ list: [{ did: "101", name: "主号台灯", model: LIGHT_MODEL, isOnline: true }] })
+          : okMi({ list: [{ did: "202", name: "副号落地灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        const did = user === "10001" ? "101" : "202";
+        return okMi([{ did, siid: 2, piid: 1, code: 0, value: true }, { did, siid: 2, piid: 2, code: 0, value: 80 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport, secure);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+
+    const nowMs = Date.now();
+    app.scheduledCommands = [
+      { id: "qr_expired", command: "一分钟后关灯", reply: "好", delaySeconds: 60, fireTimestampMs: nowMs + 60_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+      { id: "qr_future", command: "十分钟后关灯", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+    ];
+    app.scheduledCommandStore.persist();
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_qr_auto", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101"], isOn: false } }),
+      createAutomationRule({ id: "r_qr_manual_off", isEnabled: false, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101"], isOn: false } }),
+    ]);
+
+    await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(app.scheduledCommands.length, 0);
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qr_auto")?.isEnabled, false);
+
+    // Re-login SESS_A via addOrUpdateMiAccountOnHost while first refresh fails -> stays pending revalidation!
+    failRefresh = true;
+    await addOrUpdateMiAccountOnHost(app, { ...SESS_A, serviceToken: "tok-a-rescanned" });
+    const midState = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
+    assert.equal(midState.disabledAccountIds.has(ACC_A), false);
+    assert.equal(midState.pendingRevalidationAccountIds.has(ACC_A), true, "QR login of disabled account must retain pendingRevalidationAccountIds until fresh snapshot succeeds");
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qr_auto")?.isEnabled, false, "must not resume before fresh snapshot succeeds");
+
+    // Subsequent refresh succeeds at nowMs + 120s -> future timer re-arms, expired timer moves to missed without auto-firing, auto rule resumes, manual-off rule stays off, quickAction restores!
+    failRefresh = false;
+    (app as unknown as { pendingReenableNowMs?: number }).pendingReenableNowMs = nowMs + 120_000;
+    try {
+      await refreshDevices(app, false);
+    } finally {
+      delete (app as unknown as { pendingReenableNowMs?: number }).pendingReenableNowMs;
+    }
+    processScheduledCommands(app, nowMs + 120_000);
+    assert.equal(executedCommands, 0, "expired timer must not auto-fire after QR re-login");
+    assert.deepEqual(app.scheduledCommands.map((t) => t.id), ["qr_future"]);
+    assert.deepEqual(app.missedScheduledCommands.map((t) => t.id), ["qr_expired"]);
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qr_auto")?.isEnabled, true);
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qr_manual_off")?.isEnabled, false, "manually disabled rule must stay off");
+    const afterLoginState = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
+    assert.equal(afterLoginState.pendingRevalidationAccountIds.has(ACC_A), false);
+    assert.equal(afterLoginState.pausedQuickActionIds.has("lightsOff"), false);
+
+    // Part B: Sign-out / removal of a disabled account must NOT leave paused timers, rules, or quickActions permanently stuck!
+    app.scheduledCommands = [];
+    app.missedScheduledCommands = [];
+    app.scheduledCommandStore.persist();
+    await store.upsertAccount(SESS_B);
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+    const devB = app.devices.find((d) => d.name === "副号落地灯");
+    assert.ok(devB, "expected secondary account device");
+
+    app.scheduledCommands = [
+      { id: "signout_b_timer", command: "五分钟后关副号灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 500_000, intents: [{ targetId: devB.id, operation: { kind: "power", isOn: false } }], sourceScopes: [ACC_A, ACC_B] },
+    ];
+    app.scheduledCommandStore.persist();
+    ruleStore.save([
+      createAutomationRule({ id: "r_qa_signout", isEnabled: true, trigger: "screenLocked", action: { kind: "quickAction", quickAction: "lightsOff" } }),
+    ]);
+
+    await setMiAccountEnabledOnHost(app, ACC_B, false, { confirmPause: true, nowMs });
+    // Remove ACC_B via Settings UI while ACC_A stays enabled -> signout_b_timer must move out of pausedScheduledCommands into missedScheduledCommands (not stuck forever!), and r_qa_signout stays active on ACC_A!
+    app.openSettingsSheet("connection");
+    const removeBBtn = document.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${ACC_B}"]`);
+    assert.ok(removeBBtn, "expected sign-out button for secondary account B");
+    removeBBtn.click();
+    for (
+      let i = 0;
+      i < 40 && (store.getAccounts().some((a) => a.id === ACC_B) || (app.connDiagSession?.signingOutAccountIds.size ?? 0) > 0);
+      i += 1
+    ) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+    const activeQueueAfterRemoveB = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
+    assert.equal(activeQueueAfterRemoveB.pausedScheduledCommands?.length ?? 0, 0, "paused timer of removed account must not stay stuck in pausedScheduledCommands");
+    assert.equal(app.missedScheduledCommands.some((t) => t.id === "signout_b_timer"), true, "removed account's paused timer moves to missed without firing");
+
+    // Now disable remaining ACC_A (pausing lightsOff + r_qa_signout), then sign out Xiaomi completely -> pausedQuickActionIds & quickAction rule must NOT stay stuck!
+    await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true }).pausedQuickActionIds.has("lightsOff"), true);
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qa_signout")?.isEnabled, false);
+
+    signOutXiaomiAccount(app);
+    await new Promise((r) => setTimeout(r, 0));
+    app.settings.connectionMode = "demo";
+    const demoState = resolveMiAccountSelectionState({ storage: localStorage, accounts: [], connectionMode: "demo", hasExistingPreferences: true });
+    assert.equal(demoState.pausedQuickActionIds.size, 0, "signing out all Xiaomi accounts must clear stuck pausedQuickActionIds");
+    assert.equal(ruleStore.load().find((r) => r.id === "r_qa_signout")?.isEnabled, true, "signing out all Xiaomi accounts must unstick paused quickAction rule");
+  });
+
+  it("tags scenes according to connectionMode and dualSourceEnabled instead of unconditionally marking them Home Assistant (4622827966)", async () => {
+    const app = mountApp(async () => okMi({}));
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    app.devices = [];
+    // Leftover HA credentials while dual-source is OFF!
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "leftover-ha-tok";
+    setHostDualSourceEnabled(app, false, { persist: true });
+    app.scenes = [{ id: "mi_scene_night", name: "米家晚安", entityId: "101.2.a1" }];
+
+    const ctxXiaomiOnly = buildHostCapabilityContext(app, [makeMiAccount(SESS_A)]);
+    const indexedXiaomiOnly = buildIndexedCapabilityDevices(ctxXiaomiOnly);
+    assert.equal(indexedXiaomiOnly.sceneRefs[0]?.connection, "xiaomi-cloud", "Xiaomi-only mode must not tag scenes as home-assistant");
+    assert.equal(indexedXiaomiOnly.sceneRefs[0]?.sourceScope, ACC_A);
+    assert.equal(
+      evaluateIntentsWriteGate({
+        intents: [{ targetId: "mi_scene_night", operation: { kind: "activateScene" } }],
+        context: ctxXiaomiOnly,
+      }),
+      null,
+      "scene execution in Xiaomi-only mode with leftover HA settings must not be rejected as disabled HA",
+    );
+
+    // Dual-source ON with both an HA scene and a Xiaomi scene: disabling ACC_A pauses Xiaomi scene rule & blocks Xiaomi scene write before high-risk, while HA scene stays active!
+    setHostDualSourceEnabled(app, true, { persist: true });
+    app.scenes = [
+      { id: "scene.ha_movie", name: "HA观影", entityId: "scene.ha_movie" },
+      { id: `${ACC_A}/sc_mi_leave`, name: "米家离家", entityId: "101.2.a2" },
+    ];
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_ha_scene", isEnabled: true, trigger: "screenLocked", action: { kind: "scene", sceneId: "scene.ha_movie" } }),
+      createAutomationRule({ id: "r_mi_scene", isEnabled: true, trigger: "screenLocked", action: { kind: "scene", sceneId: `${ACC_A}/sc_mi_leave` } }),
+    ]);
+
+    const previewDual = await setMiAccountEnabledOnHost(app, ACC_A, false);
+    assert.equal(previewDual.status, "requiresPauseConfirmation", "Xiaomi scene automation in dual-source must require pause confirmation");
+    const appliedDual = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
+    assert.equal(appliedDual.status, "applied");
+    assert.equal(ruleStore.load().find((r) => r.id === "r_mi_scene")?.isEnabled, false, "Xiaomi scene rule must pause when Xiaomi account is disabled");
+    assert.equal(ruleStore.load().find((r) => r.id === "r_ha_scene")?.isEnabled, true, "HA scene rule must stay enabled in dual-source");
+
+    // Keep Xiaomi scene reference in host.scenes to verify write gate rejects disabled Xiaomi scene!
+    app.scenes = [
+      { id: "scene.ha_movie", name: "HA观影", entityId: "scene.ha_movie" },
+      { id: `${ACC_A}/sc_mi_leave`, name: "米家离家", entityId: "101.2.a2" },
+    ];
+    const ctxAfterDisable = buildHostCapabilityContext(app, [makeMiAccount(SESS_A)]);
+    assert.equal(
+      evaluateIntentsWriteGate({
+        intents: [{ targetId: "scene.ha_movie", operation: { kind: "activateScene" } }],
+        context: ctxAfterDisable,
+      }),
+      null,
+    );
+    assert.match(
+      evaluateIntentsWriteGate({
+        intents: [{ targetId: `${ACC_A}/sc_mi_leave`, operation: { kind: "activateScene" } }],
+        context: ctxAfterDisable,
+      }) ?? "",
+      /停用/,
+    );
+  });
+
+  it("keeps pendingRevalidationAccountIds until timer, rule, and selection persistence all succeed (4622827975)", async () => {
+    const transport: HttpTransport = async (req) => {
+      const path = reqPath(req);
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") return okMi({ homelist: [{ id: "9101", name: "Home", roomlist: [] }] });
+      if (path === "v2/home/device_list_page" || path === "home/device_list") return okMi({ list: [{ did: "101", name: "书房台灯", model: LIGHT_MODEL, isOnline: true }] });
+      if (path === "miotspec/prop/get") return okMi([{ did: "101", siid: 2, piid: 1, code: 0, value: true }, { did: "101", siid: 2, piid: 2, code: 0, value: 80 }]);
+      return okMi({});
+    };
+
+    const app = mountApp(transport);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+
+    const nowMs = Date.now();
+    app.scheduledCommands = [
+      { id: "t_retry", command: "十分钟后关灯", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+    ];
+    app.scheduledCommandStore.persist();
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_retry", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101"], isOn: false } }),
+    ]);
+
+    await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(app.scheduledCommands.length, 0);
+    assert.equal(ruleStore.load()[0]?.isEnabled, false);
+
+    const origSetItem = localStorage.setItem.bind(localStorage);
+    let blockedKey: string | null = SCHEDULED_COMMANDS_STORAGE_KEY;
+    Object.defineProperty(localStorage, "setItem", {
+      configurable: true,
+      writable: true,
+      value: (key: string, val: string): void => {
+        if (blockedKey !== null && key === blockedKey) {
+          throw new Error("QuotaExceededError");
+        }
+        origSetItem(key, val);
+      },
+    });
+    try {
+      // 1) Re-enable while timer store persist fails -> token MUST remain pending!
+      await setMiAccountEnabledOnHost(app, ACC_A, true, { nowMs: nowMs + 5_000 });
+      const stateAfterTimerFail = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
+      assert.equal(stateAfterTimerFail.pendingRevalidationAccountIds.has(ACC_A), true, "pendingRevalidationAccountIds must survive failed timer persist");
+
+      // 2) Next refresh: timer persist succeeds, rule store save fails -> token MUST still remain pending!
+      blockedKey = AutomationRuleStore.storageKey;
+      await refreshDevices(app, false);
+      const stateAfterRuleFail = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
+      assert.equal(stateAfterRuleFail.pendingRevalidationAccountIds.has(ACC_A), true, "pendingRevalidationAccountIds must survive failed rule save");
+      assert.equal(ruleStore.load()[0]?.isEnabled, false);
+
+      // 3) Next refresh: all persistence succeeds -> timer armed, rule resumed, quickAction restored, token cleared!
+      blockedKey = null;
+      await refreshDevices(app, false);
+      const stateAfterSuccess = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
+      assert.equal(stateAfterSuccess.pendingRevalidationAccountIds.has(ACC_A), false);
+      assert.equal(stateAfterSuccess.pausedQuickActionIds.has("lightsOff"), false);
+      assert.equal(app.scheduledCommands.some((t) => t.id === "t_retry"), true);
+      assert.equal(ruleStore.load()[0]?.isEnabled, true);
+    } finally {
+      Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: origSetItem });
+    }
+  });
+
+  it("drops stale multi-account refresh on re-enable and supersedes in-flight sync so re-enabled devices and revalidation land immediately (4622827982)", async () => {
+    let gateAccA = false;
+    let releaseAccA!: () => void;
+    const makeGate = () => new Promise<void>((r) => { releaseAccA = r; });
+    let currentGate = makeGate();
+    const secure = makeSecure();
+
+    const transport: HttpTransport = async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (gateAccA && user === "10001" && (path === "v2/home/device_list_page" || path === "home/device_list")) {
+        await currentGate;
+      }
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: "Home", roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return user === "10001"
+          ? okMi({ list: [{ did: "101", name: "主号台灯", model: LIGHT_MODEL, isOnline: true }] })
+          : okMi({ list: [{ did: "202", name: "副号台灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        const did = user === "10001" ? "101" : "202";
+        return okMi([{ did, siid: 2, piid: 1, code: 0, value: true }, { did, siid: 2, piid: 2, code: 0, value: 75 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport, secure);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+    await store.upsertAccount(SESS_B);
+    await refreshDevices(app, false);
+    const devBInitial = app.devices.find((d) => d.name === "副号台灯");
+    assert.ok(devBInitial, "expected secondary account device");
+    const devBId = devBInitial.id;
+
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_b_inflight", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: [devBId], isOn: false } }),
+    ]);
+    await setMiAccountEnabledOnHost(app, ACC_B, false, { confirmPause: true });
+    assert.equal(app.devices.some((d) => d.name === "副号台灯"), false);
+    assert.equal(ruleStore.load()[0]?.isEnabled, false);
+
+    // 1) Direct selection mutation re-enabling ACC_B during an in-flight multi-account refresh of [ACC_A] must NOT commit stale [ACC_A]-only snapshot over newer panel state!
+    currentGate = makeGate();
+    gateAccA = true;
+    const stalePoll = refreshDevices(app, true);
+    await new Promise((r) => setTimeout(r, 0));
+    app.devices = [
+      ...app.devices,
+      { id: devBId, accountId: ACC_B, name: "副号台灯", roomId: "r2", roomName: "卧室", model: LIGHT_MODEL, isOnline: true, kind: { kind: "light", entityId: "202.2.1", isOn: true, brightnessPercent: 75, colorTempKelvin: null, minKelvin: 2700, maxKelvin: 6500, availableEffects: [], currentEffect: null } },
+    ];
+    writeMiAccountSelectionMutation({
+      mutate: (prev) => ({
+        ...prev,
+        disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== ACC_B),
+        pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, miAccountScope(ACC_B)])],
+      }),
+    });
+    gateAccA = false;
+    releaseAccA();
+    await stalePoll;
+    assert.equal(app.devices.some((d) => d.name === "副号台灯"), true, "in-flight refresh started before re-enable must not overwrite panel without restored account");
+
+    // 2) Now disable ACC_B again, start another in-flight refresh of [ACC_A], and call setMiAccountEnabledOnHost(app, ACC_B, true) while [ACC_A] is still in flight!
+    await setMiAccountEnabledOnHost(app, ACC_B, false, { confirmPause: true });
+    currentGate = makeGate();
+    gateAccA = true;
+    const inFlightBeforeToggle = refreshDevices(app, true);
+    await new Promise((r) => setTimeout(r, 0));
+    gateAccA = false;
+    const reenablePromise = setMiAccountEnabledOnHost(app, ACC_B, true);
+    releaseAccA();
+    await Promise.all([inFlightBeforeToggle, reenablePromise]);
+    assert.equal(app.devices.some((d) => d.name === "副号台灯"), true, "re-enabling during in-flight refresh must immediately sync restored account");
+    assert.equal(ruleStore.load()[0]?.isEnabled, true, "re-enabling during in-flight refresh must complete pending revalidation");
+  });
+
+  it("preserves remaining disconnected Xiaomi accounts in DualSourceCoordinator.removeXiaomiAccount and distinguishes disconnected vs turned off in all 3 languages (4622827993)", async () => {
+    let failAccBMode: "none" | "http" | "expired" = "none";
+    const secure = makeSecure();
+    const transport: HttpTransport = async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (user === "20002" && failAccBMode === "http") {
+        throw new MiCloudError("http", "米家网络暂时不可用", 503);
+      }
+      if (user === "20002" && failAccBMode === "expired") {
+        throw new MiCloudError("sessionExpired", "米家登录已过期", 401);
+      }
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: `Home-${user}`, roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return user === "10001"
+          ? okMi({ list: [{ did: "101", name: "主号台灯", model: LIGHT_MODEL, isOnline: true }] })
+          : okMi({ list: [{ did: "202", name: "副号独占台灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        const did = user === "10001" ? "101" : "202";
+        return okMi([{ did, siid: 2, piid: 1, code: 0, value: true }, { did, siid: 2, piid: 2, code: 0, value: 80 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport, secure);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-tok";
+    setHostDualSourceEnabled(app, true, { persist: true });
+    setHostHAInvokeOverride(app, async <T>(cmd: string): Promise<T> => {
+      if (cmd === "ha_snapshot") {
+        return ({
+          areas: [],
+          devices: [{ id: "ha-dev-1", name: "HA客厅灯" }],
+          entities: [{ entity_id: "light.ha_living", device_id: "ha-dev-1" }],
+          states: [{ entity_id: "light.ha_living", state: "on", attributes: { friendly_name: "HA客厅灯", brightness: 200 } }],
+        } as unknown) as T;
+      }
+      return (null as unknown) as T;
+    });
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+    await store.upsertAccount(SESS_B);
+
+    // 1) Initial dual-source refresh: both ACC_A and ACC_B connected.
+    await refreshDevices(app, false);
+    assert.equal(app.devices.some((d) => d.name === "副号独占台灯"), true);
+
+    // 2) Second refresh: ACC_A stays connected while ACC_B transiently disconnects (cached device preserved).
+    failAccBMode = "http";
+    await refreshDevices(app, false);
+    assert.equal(app.devices.some((d) => d.name === "副号独占台灯"), true);
+
+    // 3) Disable ACC_A while ACC_B is still enabled (though disconnected): ACC_B's cached device MUST stay on panel and status must report real disconnect, NOT turned off!
+    await setMiAccountEnabledOnHost(app, ACC_A, false);
+    assert.equal(app.devices.some((d) => d.name === "主号台灯"), false);
+    assert.equal(app.devices.some((d) => d.name === "副号独占台灯"), true, "enabled disconnected account's cached devices must not be wiped");
+    const miStatusAfterDisableA = app.dualSourceCoordinator?.getSourceStatuses().xiaomiCloud;
+    assert.equal(miStatusAfterDisableA?.kind, "disconnected");
+    if (miStatusAfterDisableA?.kind === "disconnected") {
+      assert.match(miStatusAfterDisableA.reason, /网络暂时不可用/);
+      assert.doesNotMatch(miStatusAfterDisableA.reason, /停用|turned off/i, "must report real disconnect reason instead of turned off");
+    }
+
+    // 3b) Also verify when remaining enabled ACC_B has 0 cached devices (sessionExpired): disabling ACC_A still reports ACC_B's expired reason instead of turned off.
+    failAccBMode = "expired";
+    await setMiAccountEnabledOnHost(app, ACC_A, true);
+    assert.equal(app.devices.some((d) => d.name === "主号台灯"), true);
+    await setMiAccountEnabledOnHost(app, ACC_A, false);
+    const miStatusExpiredB = app.dualSourceCoordinator?.getSourceStatuses().xiaomiCloud;
+    assert.equal(miStatusExpiredB?.kind, "disconnected");
+    if (miStatusExpiredB?.kind === "disconnected") {
+      assert.match(miStatusExpiredB.reason, /过期/);
+      assert.doesNotMatch(miStatusExpiredB.reason, /停用|turned off/i);
+    }
+
+    // 4) Trilingual distinction between disconnected vs turned off on DualSourceCoordinator:
+    for (const [lang, expectedDisc, expectedOff] of [
+      ["zh-Hans", /断开|过期/, /米家已停用/],
+      ["zh-Hant", /中斷|過期/, /米家已停用/],
+      ["en", /disconnected|expired/i, /Xiaomi Home is turned off/],
+    ] as const) {
+      const c1 = new DualSourceCoordinator(null);
+      c1.removeXiaomiAccount(ACC_A, lang, { remainingEnabledCount: 0, reason: "signedOut" });
+      const s1 = c1.getSourceStatuses().xiaomiCloud;
+      assert.equal(s1.kind, "disconnected");
+      if (s1.kind === "disconnected") assert.match(s1.reason, expectedDisc);
+
+      const c2 = new DualSourceCoordinator(null);
+      c2.removeXiaomiAccount(ACC_A, lang, { remainingEnabledCount: 0, reason: "disabled" });
+      const s2 = c2.getSourceStatuses().xiaomiCloud;
+      assert.equal(s2.kind, "disconnected");
+      if (s2.kind === "disconnected") assert.match(s2.reason, expectedOff);
+    }
+  });
 });
+
 

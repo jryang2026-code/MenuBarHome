@@ -126,7 +126,7 @@ import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { foldGrouped, isDualSourceEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, makeMiAccount, miAccountId } from "../core/miAccountsStore.js";
-import { writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
+import { queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
@@ -1093,12 +1093,12 @@ export class MenuMijiaWindowsApp {
       // The account-level passToken is never persisted (#27).
       const cleanScanned = sessionWithoutPassToken(session);
       const scannedAccountId = miAccountId(cleanScanned);
-      writeMiAccountSelectionMutation({
-        mutate: (prev) => ({
-          ...prev,
-          disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== scannedAccountId),
-          knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== scannedAccountId),
-        }),
+      const miStore = this.miAccountsStore;
+      if (miStore && miStore.getAccounts().some((acc) => acc.id === scannedAccountId)) {
+        await miStore.upsertAccount(cleanScanned);
+      }
+      queueMiAccountReenableFromLogin(scannedAccountId, {
+        scheduledCommandStore: this.scheduledCommandStore,
       });
       this.settings.miSession = cleanScanned;
       this.miSessionExpired = false;

@@ -7,6 +7,7 @@ import {
   filterEnabledMiAccounts,
   miAccountScope,
   previewMiAccountDisable,
+  queueMiAccountReenableFromLogin,
   removeSignedOutMiAccountFromSelection,
   resolveDeviceMiAccountOwner,
   revalidateAfterMiAccountReenable,
@@ -33,7 +34,7 @@ import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSou
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
-import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
+import { switchHome, switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { isPlainHttpRemoteEndpoint, type SettingsTab, type SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -460,6 +461,22 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
   }
 }
 
+function revalidateHostAfterAccountRemoval(
+  host: ConnectionsAndDiagHost,
+  remainingAccounts: readonly MiAccount[],
+): void {
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore =
+    (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ??
+    new ScheduledCommandStore(fallbackStorage);
+  revalidateAfterMiAccountReenable({
+    context: buildHostCapabilityContext(host, remainingAccounts),
+    scheduledCommandStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore: new AutomationRuleStore(),
+  });
+}
+
 export async function addOrUpdateMiAccountOnHost(
   host: ConnectionsAndDiagHost,
   rawSession: MiSession,
@@ -474,7 +491,14 @@ export async function addOrUpdateMiAccountOnHost(
   }
   const result = await store.upsertAccount(cleanSession);
   setHostMiAccounts(host, null);
-  removeSignedOutMiAccountFromSelection(miAccountId(cleanSession));
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore =
+    (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ??
+    new ScheduledCommandStore(fallbackStorage);
+  queueMiAccountReenableFromLogin(miAccountId(cleanSession), {
+    scheduledCommandStore,
+    ruleStore: new AutomationRuleStore(),
+  });
   getHostConnDiagSession(host).pendingDisablePreview = null;
 
   setPendingMiVaultDeletion(false);
@@ -525,9 +549,16 @@ function computeDisablePreviewGeneration(
     [...context.state.selection.enabledConnectionScopes].sort().join(","),
     [...context.state.pausedQuickActionIds].sort().join(","),
     context.devices.map((d) => `${d.id}:${d.name}:${d.sourceBackend ?? ""}`).join("|"),
-    context.scenes.map((s) => `${s.id}:${s.name}`).join("|"),
+    context.scenes.map((s) => `${s.id}:${s.name}:${s.accountId ?? ""}:${s.sourceBackend ?? ""}`).join("|"),
   ];
   for (const [identity, queue] of [...scheduledCommandStore.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (
+      queue.scheduledCommands.length === 0 &&
+      queue.missedScheduledCommands.length === 0 &&
+      (queue.pausedScheduledCommands?.length ?? 0) === 0
+    ) {
+      continue;
+    }
     const ser = (list: readonly { readonly id: string; readonly command: string; readonly intents?: readonly { readonly targetId: string }[]; readonly sourceScopes?: readonly string[] }[]) =>
       list.map((i) => `${i.id}:${i.command}:${(i.intents ?? []).map((t) => t.targetId).join(",")}:${(i.sourceScopes ?? []).join(",")}`).join(";");
     const serPaused = (queue.pausedScheduledCommands ?? []).map((p) => `${p.command.id}:${p.originalPartition}:${p.sourceScopes.join(",")}:${p.pausedCapabilities.join(",")}`).join(";");
@@ -611,6 +642,9 @@ export async function setMiAccountEnabledOnHost(
       pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, miAccountScope(accountId)])],
     }) });
     resetHostUnsupportedScanner(host);
+    if (isDualSourceEnabled(host) || host.settings.connectionMode === "xiaomiCloud") {
+      switchHome(host);
+    }
     host.render();
     const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
     if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
@@ -686,20 +720,30 @@ export async function setMiAccountEnabledOnHost(
 
   session.pendingDisablePreview = null;
   const wasDualSource = isDualSourceEnabled(host);
+  const isXiaomiSnapshot = wasDualSource || host.settings.connectionMode === "xiaomiCloud";
   const dualRoutes = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
   const deviceOwners = getHostMiAccountsState(host)?.merged?.deviceOwners;
   const ownerOf = (dev: SmartDevice): string | null => resolveDeviceMiAccountOwner({
-    device: dev, accounts: allAccounts, ...(deviceOwners ? { deviceOwners } : {}), ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
+    device: dev,
+    accounts: allAccounts,
+    connectionMode: host.settings.connectionMode,
+    dualSourceEnabled: wasDualSource,
+    ...(deviceOwners ? { deviceOwners } : {}),
+    ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
   });
   const hasHaAlternate = (dev: SmartDevice): boolean => {
     const route = dualRoutes?.[dev.id];
     return route ? route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null) : wasDualSource && dev.sourceBackend === "homeAssistant";
   };
 
-  const ownedDevices = host.devices.filter((d) => ownerOf(d) === accountId);
-  const snapshots = ownedDevices
-    .filter((d) => !hasHaAlternate(d))
-    .map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []));
+  const ownedDevices = isXiaomiSnapshot ? host.devices.filter((d) => ownerOf(d) === accountId) : [];
+  const snapshots = isXiaomiSnapshot
+    ? ownedDevices
+        .filter((d) => !hasHaAlternate(d))
+        .map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []))
+    : host.settings.cachedXiaomiDevices
+        .filter((d) => d.accountId === accountId || MiAccountScope.isOwned(d.id, accountId))
+        .map((d) => snapshotDisabledMiDevice(d, accountId));
   const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
   const prevRawSelection = (() => {
     try { return typeof localStorage !== "undefined" ? localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) : null; } catch { return null; }
@@ -770,11 +814,20 @@ export async function setMiAccountEnabledOnHost(
   }
 
   const hadTimerSnapshot = Boolean((host as { readonly timerSnapshot?: { readonly identity: string; readonly sourceRevision: number } | null }).timerSnapshot);
-  switchSource(host, "mi-account-disabled");
-  host.clearPendingHighRisk();
+  if (isXiaomiSnapshot) {
+    switchSource(host, "mi-account-disabled");
+    host.clearPendingHighRisk();
+  }
   resetHostUnsupportedScanner(host);
-  const nextDual = wasDualSource ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null) : null;
-  if (host.waitingDeviceIds) for (const id of removedIds) host.waitingDeviceIds.delete(id);
+  const nextDual = wasDualSource
+    ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage, {
+        remainingEnabledCount: enabledAfter.length,
+        reason: "disabled",
+      }) ?? null)
+    : null;
+  if (isXiaomiSnapshot && host.waitingDeviceIds) {
+    for (const id of removedIds) host.waitingDeviceIds.delete(id);
+  }
 
   if (nextDual) {
     host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
@@ -787,12 +840,17 @@ export async function setMiAccountEnabledOnHost(
   } else if (!wasDualSource && host.settings.connectionMode === "xiaomiCloud" && enabledAfter.length === 0) {
     host.devices = []; host.scenes = []; host.environmentReadings = []; host.homes = [];
     host.groupOwnerByMemberDid = new Map(); host.deviceFacets = {}; host.cloudValuesStale = false; host.selectRoom(null);
-  } else if (removedIds.size > 0) {
-    host.devices = host.devices.filter((d) => !removedIds.has(d.id));
-    host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
-    const nextFacets = { ...host.deviceFacets };
-    for (const id of removedIds) delete nextFacets[id];
-    host.deviceFacets = nextFacets;
+  } else if (isXiaomiSnapshot) {
+    if (removedIds.size > 0) {
+      host.devices = host.devices.filter((d) => !removedIds.has(d.id));
+      host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
+      const nextFacets = { ...host.deviceFacets };
+      for (const id of removedIds) delete nextFacets[id];
+      host.deviceFacets = nextFacets;
+    }
+    host.scenes = host.scenes.filter(
+      (s) => s.accountId !== accountId && !MiAccountScope.isOwned(s.id, accountId) && !MiAccountScope.isOwned(s.entityId, accountId),
+    );
   }
 
   if (enabledAfter.length === 0) {
@@ -805,9 +863,13 @@ export async function setMiAccountEnabledOnHost(
       host.multiAccountState = { accounts: enabledAfter, children: nextChildren, merged: mergeMiAccountSnapshots(enabledAfter, nextChildren) };
     }
   }
-  if (host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) host.expandedDeviceId = null;
+  if (isXiaomiSnapshot && host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) {
+    host.expandedDeviceId = null;
+  }
   const hasRemainingActiveSource = enabledAfter.length > 0 || wasDualSource || host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "demo";
-  if (hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  if (isXiaomiSnapshot && hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) {
+    markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  }
   host.saveSettings();
   host.render();
   return { status: "applied" };
@@ -864,8 +926,11 @@ async function performSignOutSingleMiAccountOnHost(
     }
     clearAccountRateLimitBackoff(accountId);
 
-    switchSource(host, "mi-account-removed");
-    host.clearPendingHighRisk();
+    const isXiaomiSnapshot = wasDualSource || host.settings.connectionMode === "xiaomiCloud";
+    if (isXiaomiSnapshot) {
+      switchSource(host, "mi-account-removed");
+      host.clearPendingHighRisk();
+    }
     resetHostUnsupportedScanner(host);
 
     const dualRoutesBeforeRemoval = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
@@ -897,14 +962,16 @@ async function performSignOutSingleMiAccountOnHost(
       return wasDualSource && dev.sourceBackend === "homeAssistant";
     };
     const removedIds = new Set(
-      host.devices
-        .filter((d) => {
-          const route = dualRoutesBeforeRemoval?.[d.id];
-          if (!isRouteOwnedByRemovedAccount(route, d)) return false;
-          if (hasHomeAssistantRepresentation(route, d)) return false;
-          return true;
-        })
-        .map((d) => d.id),
+      isXiaomiSnapshot
+        ? host.devices
+            .filter((d) => {
+              const route = dualRoutesBeforeRemoval?.[d.id];
+              if (!isRouteOwnedByRemovedAccount(route, d)) return false;
+              if (hasHomeAssistantRepresentation(route, d)) return false;
+              return true;
+            })
+            .map((d) => d.id)
+        : [],
     );
     const activeCamId = host.cameraLive?.activeLiveCameraId;
     if (activeCamId) {
@@ -922,12 +989,19 @@ async function performSignOutSingleMiAccountOnHost(
         host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
       }
     }
+    const enabledRemaining = filterEnabledMiAccounts(
+      removal.accounts,
+      resolveHostMiSelectionState(host, removal.accounts),
+    );
     const nextDual =
       wasDualSource && removal.accounts.length > 0
-        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null)
+        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage, {
+            remainingEnabledCount: enabledRemaining.length,
+            reason: enabledRemaining.length === 0 ? "disabled" : "signedOut",
+          }) ?? null)
         : null;
 
-    if (host.waitingDeviceIds) {
+    if (isXiaomiSnapshot && host.waitingDeviceIds) {
       for (const id of removedIds) host.waitingDeviceIds.delete(id);
       if (nextDual) {
         for (const d of host.devices) {
@@ -956,7 +1030,7 @@ async function performSignOutSingleMiAccountOnHost(
         host.environmentReadings.map((r) => r.id),
         nextDual.home.environmentReadings,
       ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
-    } else {
+    } else if (isXiaomiSnapshot) {
       if (removedIds.size > 0) {
         host.devices = host.devices.filter((d) => !removedIds.has(d.id));
         host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
@@ -964,6 +1038,9 @@ async function performSignOutSingleMiAccountOnHost(
         for (const id of removedIds) delete nextFacets[id];
         host.deviceFacets = nextFacets;
       }
+      host.scenes = host.scenes.filter(
+        (s) => s.accountId !== accountId && !MiAccountScope.isOwned(s.id, accountId) && !MiAccountScope.isOwned(s.entityId, accountId),
+      );
       if (wasDualSource) {
         const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
           if (dev.accountId !== accountId) return dev;
@@ -992,6 +1069,7 @@ async function performSignOutSingleMiAccountOnHost(
     }
 
     if (
+      isXiaomiSnapshot &&
       host.expandedDeviceId &&
       (removedIds.has(host.expandedDeviceId) ||
         MiAccountScope.isOwned(host.expandedDeviceId, accountId) ||
@@ -1019,7 +1097,7 @@ async function performSignOutSingleMiAccountOnHost(
       const { transitionedToHASingleSource } = finishAllMiAccountsSignedOutOnHost(host, {
         wasDualSource,
         wasXiaomiMode: host.settings.connectionMode === "xiaomiCloud",
-        alreadySwitchedSource: true,
+        alreadySwitchedSource: isXiaomiSnapshot,
       });
       host.saveSettings();
       if (transitionedToHASingleSource) {
@@ -1044,6 +1122,7 @@ async function performSignOutSingleMiAccountOnHost(
       return true;
     }
 
+    revalidateHostAfterAccountRemoval(host, removal.accounts);
     const rem = removal.accounts.length;
     host.saveSettings();
     host.replyBanner = {
@@ -1224,6 +1303,7 @@ export function finishAllMiAccountsSignedOutOnHost(
         host.expandedDeviceId = null;
       }
     }
+    revalidateHostAfterAccountRemoval(host, []);
     return { transitionedToHASingleSource: wasDualSource };
   }
 
@@ -1238,6 +1318,7 @@ export function finishAllMiAccountsSignedOutOnHost(
     host.selectRoom(null);
     if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
   }
+  revalidateHostAfterAccountRemoval(host, []);
   return { transitionedToHASingleSource: false };
 }
 

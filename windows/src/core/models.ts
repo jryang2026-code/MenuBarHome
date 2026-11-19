@@ -402,6 +402,8 @@ export interface HomeScene {
   readonly id: string;
   readonly name: string;
   readonly entityId: string;
+  readonly accountId?: string;
+  readonly sourceBackend?: HomeBackend;
 }
 
 export interface SynthesizedHome {

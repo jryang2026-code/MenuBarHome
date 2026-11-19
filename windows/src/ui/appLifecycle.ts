@@ -1,6 +1,7 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
-import { processScheduledCommands } from "./scheduledCommands.js";
+import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
+import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
@@ -56,8 +57,11 @@ import {
   readAccountIndex,
 } from "../core/miAccountsStore.js";
 import type { MiSession } from "../core/miCloudClient.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import { removeSignedOutMiAccountFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import {
+  buildHostCapabilityContext,
   isDualSourceEnabled,
   isHostMiSessionEnabled,
   resolveEnabledMiAccountsForHost,
@@ -263,6 +267,19 @@ export async function clearHostSessionAndDualSourceState(
     if (host.settings) {
       host.settings.dualSourceEnabled = false;
     }
+  }
+  removeSignedOutMiAccountFromSelection(null);
+  const fullSettings = host.settings as MenuMijiaWindowsApp["settings"] | undefined;
+  const scheduledCommandStore =
+    host.scheduledCommandStore ?? (typeof localStorage !== "undefined" ? new ScheduledCommandStore(localStorage) : null);
+  if (fullSettings && typeof fullSettings.connectionMode === "string" && scheduledCommandStore) {
+    const inspectableHost = host as unknown as DualSourceInspectableHost;
+    revalidateAfterMiAccountReenable({
+      context: buildHostCapabilityContext(inspectableHost, []),
+      scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(fullSettings) ?? null,
+      ruleStore: new AutomationRuleStore(),
+    });
   }
   let signOutError: unknown = null;
   if (store) {
