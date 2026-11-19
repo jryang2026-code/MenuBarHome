@@ -532,7 +532,10 @@ extension HomeStore {
         case .homeAssistant where hasHASource:
             return (.homeAssistant, homeAssistantScopeIdentifier)
         case .xiaomiCloud where !miAccounts.isEmpty || hasMiSource:
-            if let accountId = device.accountId, !accountId.isEmpty { return (.xiaomiCloud, accountId) }
+            if let accountId = device.accountId, !accountId.isEmpty,
+               isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
+                return (.xiaomiCloud, accountId)
+            }
             if let scope = enabledMiAccounts.first?.id ?? miSessionScopeIdentifier { return (.xiaomiCloud, scope) }
         case .demo:
             return (nil, "demo")
@@ -540,7 +543,13 @@ extension HomeStore {
             break
         }
         if homeBackend == .demo { return (nil, "demo") }
-        if let accountId = device.accountId, !accountId.isEmpty { return (.xiaomiCloud, accountId) }
+        // A row naming an account this Mac does not have (a stale row, a shared home, a provider
+        // injected by tests) is not capability-managed: blocking it would break devices that worked
+        // before P2a and that the user never turned off.
+        if let accountId = device.accountId, !accountId.isEmpty,
+           isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
+            return (.xiaomiCloud, accountId)
+        }
         if hasHASource && (homeBackend == .homeAssistant || activeHAProvider != nil) {
             return (.homeAssistant, homeAssistantScopeIdentifier)
         }

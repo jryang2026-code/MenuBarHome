@@ -1470,6 +1470,29 @@ struct MiAccountDisableTestsReview {
         #expect(!store.pausedQuickActionIDs.contains("lightsOff"))
     }
 
+    @Test("A row naming an account this Mac does not have is not blocked by the capability gate")
+    func unknownAccountRowStaysControllable() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: vault).isEmpty)
+
+        let mock = MockHomeProvider()
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let stale = SmartDevice(
+            id: "stale-light", name: "旧账号灯", roomId: "r", roomName: "客厅",
+            model: "yeelink.light.ceiling22", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:stale-light:2", isOn: true)),
+            accountId: "acc-not-on-this-mac"
+        )
+        store.devices = [stale]
+
+        let task = try #require(store.togglePrimary(stale), "an unconfigured account is not a capability the host turned off")
+        _ = await task.value
+        #expect(await mock.executedCommands.count == 1)
+    }
+
     // MARK: L1 – All accounts turned off is not "not configured"
 
     @Test("Turning off the only Xiaomi account reports a turned-off connection, not an unconfigured home")
