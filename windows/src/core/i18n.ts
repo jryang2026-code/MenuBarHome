@@ -940,16 +940,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "Uses an unofficial connection. Xiaomi may throttle or flag accounts, and logins expire and require re-scanning. Credentials stay encrypted on this device.",
   ],
   "刷新二维码": ["刷新二维码", "Refresh QR Code"],
-  "查找家中的 Home Assistant": ["查找家中的 Home Assistant", "Find Home Assistant on Network"],
-  "正在局域网查找 Home Assistant…": ["正在局域网查找 Home Assistant…", "Looking for Home Assistant on your local network…"],
-  "已找到本地 Home Assistant：{url}": ["已找到本地 Home Assistant：{url}", "Found local Home Assistant: {url}"],
-  "未在局域网自动找到 Home Assistant。请手动输入地址，或在 Home Assistant 网页设置里查看地址。": [
-    "未在局域网自动找到 Home Assistant。请手动输入地址，或在 Home Assistant 网页设置里查看地址。",
-    "Could not auto-detect Home Assistant on your LAN. Enter the address manually or check your Home Assistant web settings.",
-  ],
-  "没找到？在 Home Assistant 网页设置里查看地址": [
-    "没找到？在 Home Assistant 网页设置里查看地址",
-    "Not found? Check the URL in Home Assistant web settings",
+  "在 Home Assistant 网页设置里查看地址": [
+    "在 Home Assistant 网页设置里查看地址",
+    "Check your server URL in Home Assistant web settings",
   ],
   "专属连接钥匙（长期访问令牌）": ["专属连接钥匙（长期访问令牌）", "Access Key (Long-Lived Access Token)"],
   "打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。": [

@@ -13,6 +13,7 @@ import {
   hasSecondaryMiAccountsInIndex,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
 } from "../core/miAccountsStore.js";
+import { MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../core/miAccountControl.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../core/scheduledCommands.js";
@@ -71,6 +72,7 @@ export function upgradeCachedDevices(devices: SmartDevice[], migrateLegacyFridge
 
 const AUXILIARY_LOCAL_DATA_KEYS = [
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
+  MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   DUAL_SOURCE_ENABLED_STORAGE_KEY,
   PINNED_DEVICE_SOURCES_STORAGE_KEY,
   CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
@@ -122,7 +124,7 @@ export function detectPersistedLocalData(parsed?: Partial<PersistedSettings> & R
       return true;
     }
   } catch {
-    return false;
+    return true;
   }
   return false;
 }
@@ -259,7 +261,10 @@ export function loadSettings(): LoadedSettings {
         ? (parsed.hasCompletedOnboarding as boolean)
         : hasLegacyDataSource ||
           hasPersistedLocalData ||
-          (hasPersistedSettings && (parsed.connectionMode === "xiaomiCloud" || parsed.connectionMode === "homeAssistant"));
+          (hasPersistedSettings &&
+            (parsed.connectionMode === "xiaomiCloud" ||
+              parsed.connectionMode === "homeAssistant" ||
+              parsed.connectionMode === "demo"));
       const preDemoConnectionMode =
         parsed.preDemoConnectionMode === "xiaomiCloud" || parsed.preDemoConnectionMode === "homeAssistant"
           ? parsed.preDemoConnectionMode
@@ -462,9 +467,32 @@ export function writeAskWhenUnsure(settings: { askWhenUnsure?: boolean }, enable
   settings.askWhenUnsure = enabled;
 }
 
+function isValidSettingsJsonObject(raw: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function quarantineUnreadableSettingsPayload(raw: string): void {
+  const base = `${STORAGE_KEY}.unreadable`;
+  let key = base;
+  let suffix = 0;
+  while (localStorage.getItem(key) !== null) {
+    key = `${base}.${++suffix}`;
+  }
+  localStorage.setItem(key, raw);
+}
+
 /** Writes settings without credentials; secrets belong to the Windows Credential Manager (#28). */
 export function writeSettingsForStorage(settings: object): void {
   try {
+    const existingRaw = localStorage.getItem(STORAGE_KEY);
+    if (existingRaw !== null && !isValidSettingsJsonObject(existingRaw)) {
+      quarantineUnreadableSettingsPayload(existingRaw);
+    }
     const normalized =
       "panelTheme" in settings
         ? { ...settings, panelTheme: normalizePanelTheme((settings as { panelTheme?: unknown }).panelTheme) }
@@ -480,8 +508,9 @@ export function stripCredentialFieldsFromStoredCopies(): void {
     const raw = localStorage.getItem(key);
     if (!raw) continue;
     try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      localStorage.setItem(key, JSON.stringify(sanitizeSettingsForStorage(parsed)));
+      const parsed: unknown = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      localStorage.setItem(key, JSON.stringify(sanitizeSettingsForStorage(parsed as Record<string, unknown>)));
     } catch {
       continue;
     }

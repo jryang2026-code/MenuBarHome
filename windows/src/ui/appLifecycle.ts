@@ -51,6 +51,7 @@ import {
 } from "../core/dualSourceProvider.js";
 import {
   clearAccountRateLimitBackoff,
+  hasCorruptMiAccountIndex,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
   MI_ACCOUNTS_INDEX_STORAGE_KEY,
@@ -142,11 +143,15 @@ export async function retryIdentityMigration(host: MenuMijiaWindowsApp): Promise
       }
     }
   }
+  if (host.identityMigrationDiagnostic === "corrupt_mi_accounts_index" && !hasCorruptMiAccountIndex()) {
+    host.identityMigrationDiagnostic = null;
+  }
   if (host.identityMigrationDiagnostic === "credential_vault_read_failed") {
     host.identityMigrationDiagnostic = null;
   }
   await hydrateCredentials(host);
   resolveHostMiSelectionState(host);
+  host.render();
 }
 
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {

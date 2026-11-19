@@ -781,8 +781,11 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     const runConnectionAction = (kind: string | undefined): void => {
       setConnectionDetails(false);
       if (kind === "qr") startQrLogin();
-      else if (kind === "retry") void host.refreshDevices(false);
-      else if (kind === "leaveDemo") leaveDemoHome(host);
+      else if (kind === "retryIdentity") void host.retryIdentityMigration();
+      else if (kind === "retry") {
+        if (host.identityMigrationDiagnostic) void host.retryIdentityMigration();
+        else void host.refreshDevices(false);
+      } else if (kind === "leaveDemo") leaveDemoHome(host);
       else if (!hasAnyConnectedOrSelectedDataSource(host) && host.settings.connectionMode !== "demo" && !host.settings.hasCompletedOnboarding) {
         host.activeSheet = "onboarding";
         invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });

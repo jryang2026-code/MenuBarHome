@@ -8,15 +8,21 @@ import {
   type AssistantConfig,
   type AssistantProviderPresetInfo,
 } from "../core/assistant.js";
-import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../core/dualSourceProvider.js";
+import { DUAL_SOURCE_ENABLED_STORAGE_KEY, type DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
 import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
-import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion, type HttpTransport } from "../core/miCloudClient.js";
+import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { ConnectionMode } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
-import { haCacheIfEnabled, isHostHaEnabled, type DualSourceInspectableHost } from "./cloudRefresh.js";
+import {
+  haCacheIfEnabled,
+  isHostHaEnabled,
+  setHostDualSourceEnabled,
+  type DualSourceInspectableHost,
+  type DualSourceMutableHost,
+} from "./cloudRefresh.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
 import { switchSource } from "./sourceSwitch.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -207,46 +213,13 @@ function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = cur
   return zhHans;
 }
 
-export const DEFAULT_HA_DISCOVERY_CANDIDATES: readonly string[] = [
-  "http://homeassistant.local:8123",
-  "http://localhost:8123",
-];
-
-/** On-demand local HA probe triggered solely by explicit user click; aborts immediately on signal. */
-export async function discoverLocalHomeAssistant(
-  transport: HttpTransport,
-  signal: AbortSignal,
-  candidates: readonly string[] = DEFAULT_HA_DISCOVERY_CANDIDATES,
-): Promise<string | null> {
-  for (const base of candidates) {
-    if (signal.aborted) return null;
-    try {
-      const response = await transport({
-        url: `${base}/api/`,
-        method: "GET",
-        timeoutMs: 2_000,
-      });
-      if (signal.aborted) return null;
-      if (response.status === 200 || response.status === 401) {
-        return base;
-      }
-    } catch {
-      if (signal.aborted) return null;
-    }
-  }
-  return null;
-}
-
 interface OnboardingSessionState {
   selectedMode: ConnectionMode | null;
   haURLDraft: string;
   haTokenDraft: string;
-  haDiscoveryState: "idle" | "scanning" | "found" | "empty";
-  haDiscoveryMessage: string | null;
-  haDiscoverAbort: AbortController | null;
-  haDiscoverGeneration: number;
   haConnectError: string | null;
   haConnecting: boolean;
+  haConnectGeneration: number;
   haConnectedCount: number | null;
   addingSecondPlatform: boolean;
   assistantDraft: AssistantDraftState;
@@ -255,27 +228,15 @@ interface OnboardingSessionState {
 
 const onboardingSessionByHost = new WeakMap<object, OnboardingSessionState>();
 
-function cancelHaDiscovery(session: OnboardingSessionState): void {
-  session.haDiscoverGeneration += 1;
-  if (session.haDiscoverAbort) {
-    session.haDiscoverAbort.abort();
-    session.haDiscoverAbort = null;
-  }
-  if (session.haDiscoveryState === "scanning") {
-    session.haDiscoveryState = "idle";
-    session.haDiscoveryMessage = null;
-  }
-}
-
 export function clearOnboardingSession(host: object): void {
-  const existing = onboardingSessionByHost.get(host);
-  if (existing) cancelHaDiscovery(existing);
   onboardingSessionByHost.delete(host);
 }
 
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
   readonly qrStatusText?: string;
-  readonly transport?: HttpTransport;
+  dualSourceCoordinator?: DualSourceCoordinator | null;
+  dualSourceEnabledOverride?: boolean | null;
+  submitServiceEndpoints?(force?: boolean): void;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
 }
@@ -327,12 +288,9 @@ function ensureSession(host: OnboardingRenderViewHost): OnboardingSessionState {
     selectedMode: initialMode,
     haURLDraft: host.settings.haBaseURL,
     haTokenDraft: host.settings.haToken,
-    haDiscoveryState: "idle",
-    haDiscoveryMessage: null,
-    haDiscoverAbort: null,
-    haDiscoverGeneration: 0,
     haConnectError: null,
     haConnecting: false,
+    haConnectGeneration: 0,
     haConnectedCount: null,
     addingSecondPlatform: false,
     assistantDraft: createInitialAssistantDraftState(
@@ -432,16 +390,6 @@ export function leaveDemoHome(host: OnboardingRenderViewHost): void {
   host.activeSheet = "onboarding";
   invokeTauriVoid("set_pin_popover", { pin: true });
   host.render();
-}
-
-function enableDualSourceOnHost(host: OnboardingRenderViewHost): void {
-  host.settings.dualSourceEnabled = true;
-  try {
-    if (typeof localStorage !== "undefined") {
-      localStorage.setItem(DUAL_SOURCE_ENABLED_STORAGE_KEY, "true");
-    }
-  } catch {
-  }
 }
 
 function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: OnboardingSessionState): boolean {
@@ -544,19 +492,9 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       const warnPlainHttp = isPlainHttpRemoteURL(session.haURLDraft);
       return `
         <div class="cc-field" data-onboarding-step="2">
-          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
-            <button type="button" class="cc-btn-secondary" id="btn-onboarding-discover-ha" ${session.haDiscoveryState === "scanning" ? "disabled" : ""}>
-              ${esc(session.haDiscoveryState === "scanning" ? t("正在局域网查找 Home Assistant…") : t("查找家中的 Home Assistant"))}
-            </button>
-          </div>
           <p class="cc-field-hint" data-onboarding-ha-hint style="margin: 0 0 6px 0;">
-            ${esc(t("没找到？在 Home Assistant 网页设置里查看地址"))}
+            ${esc(t("在 Home Assistant 网页设置里查看地址"))}
           </p>
-          ${
-            session.haDiscoveryMessage
-              ? `<p class="cc-field-hint" data-onboarding-ha-discovery-status style="margin: 0 0 6px 0;">${esc(session.haDiscoveryMessage)}</p>`
-              : ""
-          }
           <label for="onboarding-ha-url">Home Assistant URL</label>
           <input
             id="onboarding-ha-url"
@@ -752,7 +690,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.onboardingMode as ConnectionMode | undefined;
       if (!mode) return;
-      if (mode !== "homeAssistant") cancelHaDiscovery(session);
       session.selectedMode = mode;
       session.addingSecondPlatform = false;
       session.statusNote = null;
@@ -767,7 +704,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   sheet.querySelector<HTMLElement>("#btn-onboarding-add-second-platform")?.addEventListener("click", (event) => {
     const target = (event.currentTarget as HTMLElement).dataset.secondPlatform as Exclude<ConnectionMode, "demo"> | undefined;
     if (!target) return;
-    cancelHaDiscovery(session);
     session.selectedMode = target;
     session.addingSecondPlatform = true;
     session.haConnectError = null;
@@ -775,7 +711,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-back")?.addEventListener("click", () => {
-    cancelHaDiscovery(session);
     session.selectedMode = null;
     session.addingSecondPlatform = false;
     session.haConnectError = null;
@@ -783,7 +718,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-use-demo")?.addEventListener("click", () => {
-    cancelHaDiscovery(session);
     session.selectedMode = "demo";
     session.haConnectError = null;
     switchConnectionModeInOnboarding(host, "demo");
@@ -800,35 +734,9 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
 
   sheet.querySelector("#btn-start-qr")?.addEventListener("click", () => {
     if (session.addingSecondPlatform || hasConnectedHA(host)) {
-      enableDualSourceOnHost(host);
+      setHostDualSourceEnabled(host as unknown as DualSourceMutableHost, true, { persist: true });
     }
     void host.startXiaomiQRLogin();
-  });
-
-  sheet.querySelector("#btn-onboarding-discover-ha")?.addEventListener("click", () => {
-    if (!host.transport) return;
-    cancelHaDiscovery(session);
-    const controller = new AbortController();
-    const generation = session.haDiscoverGeneration;
-    session.haDiscoverAbort = controller;
-    session.haDiscoveryState = "scanning";
-    session.haDiscoveryMessage = t("正在局域网查找 Home Assistant…");
-    host.render();
-    void discoverLocalHomeAssistant(host.transport, controller.signal).then((found) => {
-      if (onboardingSessionByHost.get(host) !== session || session.haDiscoverGeneration !== generation || controller.signal.aborted) {
-        return;
-      }
-      session.haDiscoverAbort = null;
-      if (found) {
-        session.haDiscoveryState = "found";
-        if (session.haURLDraft.trim() === "") session.haURLDraft = found;
-        session.haDiscoveryMessage = t("已找到本地 Home Assistant：{url}", { url: found });
-      } else {
-        session.haDiscoveryState = "empty";
-        session.haDiscoveryMessage = t("未在局域网自动找到 Home Assistant。请手动输入地址，或在 Home Assistant 网页设置里查看地址。");
-      }
-      host.render();
-    });
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-ha-url")?.addEventListener("input", (event) => {
@@ -842,7 +750,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-connect-ha")?.addEventListener("click", () => {
-    cancelHaDiscovery(session);
     let endpoint = session.haURLDraft.trim();
     if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
       endpoint = `http://${endpoint}`;
@@ -862,6 +769,44 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       token !== host.settings.haToken ||
       prevIdentity !== nextIdentity;
     const shouldEnableDual = session.addingSecondPlatform || hasConnectedMi(host);
+    const dualHost = host as unknown as DualSourceMutableHost;
+    const prevHaBaseURL = host.settings.haBaseURL;
+    const prevHaToken = host.settings.haToken;
+    const prevCachedHAHome = host.settings.cachedHAHome;
+    const prevConnectionMode = host.settings.connectionMode;
+    const prevDualEnabled = host.settings.dualSourceEnabled;
+    const prevDualOverride = dualHost.dualSourceEnabledOverride;
+    const hadPersistedDualKey = (() => {
+      try {
+        return typeof localStorage !== "undefined" && localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY) === "1";
+      } catch {
+        return false;
+      }
+    })();
+    const rollbackDualSource = (): void => {
+      if (!shouldEnableDual) return;
+      if (host.settings.haBaseURL !== endpoint || host.settings.haToken !== token) return;
+      host.settings.haBaseURL = prevHaBaseURL;
+      host.settings.haToken = prevHaToken;
+      host.settings.cachedHAHome = prevCachedHAHome;
+      host.settings.connectionMode = prevConnectionMode;
+      if (prevDualEnabled === undefined) delete host.settings.dualSourceEnabled;
+      else host.settings.dualSourceEnabled = prevDualEnabled;
+      dualHost.dualSourceEnabledOverride = prevDualOverride ?? null;
+      host.haConnectionError = null;
+      host.dualSourceCoordinator?.reset();
+      try {
+        if (typeof localStorage !== "undefined") {
+          if (hadPersistedDualKey) localStorage.setItem(DUAL_SOURCE_ENABLED_STORAGE_KEY, "1");
+          else localStorage.removeItem(DUAL_SOURCE_ENABLED_STORAGE_KEY);
+        }
+      } catch {
+        // Ignore storage failures during rollback.
+      }
+      host.submitServiceEndpoints?.(true);
+    };
+
+    const connectGen = ++session.haConnectGeneration;
     session.haURLDraft = endpoint;
     session.haConnectError = null;
     session.haConnecting = true;
@@ -883,33 +828,68 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     host.settings.haToken = token;
     host.settings.preDemoConnectionMode = null;
     if (shouldEnableDual) {
-      enableDualSourceOnHost(host);
+      if (host.settings.connectionMode === "demo") {
+        host.settings.connectionMode = "xiaomiCloud";
+      }
+      host.dualSourceCoordinator?.reset();
+      setHostDualSourceEnabled(dualHost, true, { persist: false });
+      host.submitServiceEndpoints?.(true);
     } else {
       host.settings.connectionMode = "homeAssistant";
+      host.saveSettings(true);
     }
     session.selectedMode = "homeAssistant";
     session.statusNote = { text: t("正在连接并验证 Home Assistant…"), isError: false };
-    host.saveSettings(true);
     const capturedToken = host.sourceEpoch.capture();
     host.render();
-    void Promise.resolve(host.refreshHADevices(false))
+    const refreshPromise = shouldEnableDual ? host.refreshDevices(false) : host.refreshHADevices(false);
+    void Promise.resolve(refreshPromise)
       .then(() => {
-        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) return;
+        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) {
+          if (session.haConnectGeneration === connectGen) {
+            session.haConnecting = false;
+            if (onboardingSessionByHost.get(host) === session) host.render();
+          }
+          return;
+        }
         session.haConnecting = false;
         const err = typeof host.haConnectionError === "string" ? host.haConnectionError.trim() : "";
-        if (err) {
-          session.haConnectError = mapHaErrorToPlainLanguage(err);
+        const verifiedHaHome = shouldEnableDual
+          ? (() => {
+              const snap = host.dualSourceCoordinator?.getLastHASnapshot() ?? null;
+              return err === "" && snap !== null && snap.identity === nextIdentity ? snap.home : null;
+            })()
+          : err === "" && host.settings.cachedHAHome?.identity === nextIdentity
+            ? host.settings.cachedHAHome.home
+            : null;
+        if (verifiedHaHome) {
+          if (shouldEnableDual) {
+            setHostDualSourceEnabled(dualHost, true, { persist: true });
+            host.saveSettings(true);
+            session.addingSecondPlatform = false;
+          }
+          session.haConnectError = null;
+          session.haConnectedCount = verifiedHaHome.devices.length;
           session.statusNote = null;
         } else {
-          session.haConnectError = null;
-          session.haConnectedCount = host.devices.length;
+          rollbackDualSource();
+          session.haConnectError = err
+            ? mapHaErrorToPlainLanguage(err)
+            : t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
           session.statusNote = null;
         }
         host.render();
       })
       .catch(() => {
-        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) return;
+        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) {
+          if (session.haConnectGeneration === connectGen) {
+            session.haConnecting = false;
+            if (onboardingSessionByHost.get(host) === session) host.render();
+          }
+          return;
+        }
         session.haConnecting = false;
+        rollbackDualSource();
         session.haConnectError = t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
         session.statusNote = null;
         host.render();
@@ -1036,7 +1016,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   const completeAndClose = (markCompleted: boolean) => {
-    cancelHaDiscovery(session);
     const keyInput = sheet.querySelector<HTMLInputElement>("#onboarding-api-key");
     if (keyInput) session.assistantDraft = { ...session.assistantDraft, apiKey: keyInput.value };
     const baseInput = sheet.querySelector<HTMLInputElement>("#onboarding-base-url");

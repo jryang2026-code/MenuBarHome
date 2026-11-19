@@ -7,7 +7,7 @@ import type { Window } from "happy-dom";
 
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
-import type { HttpTransport } from "../src/core/miCloudClient.js";
+import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../src/core/dualSourceProvider.js";
 import { loadSharedCapabilityManifest } from "../src/core/capabilityManifest.js";
 import {
   resolveCapabilityInstallSelection,
@@ -20,8 +20,17 @@ import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js
 import { serializeMiSession } from "../src/core/secureStore.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
-import { resolveHostMiSelectionState } from "../src/ui/cloudRefresh.js";
-import { evaluateLegacyOnboardingMigration, loadSettings } from "../src/ui/settings.js";
+import {
+  isDualSourceEnabled,
+  resolveHostMiSelectionState,
+  setHostDualSourceEnabled,
+} from "../src/ui/cloudRefresh.js";
+import { resolveConnectionStatus } from "../src/ui/connectionStatus.js";
+import {
+  detectPersistedLocalData,
+  evaluateLegacyOnboardingMigration,
+  loadSettings,
+} from "../src/ui/settings.js";
 
 let dom: Window;
 
@@ -128,48 +137,18 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.ok(document.querySelector("[data-onboarding-mi-warning]"), "Mi card shows non-official risk note");
     assert.ok(document.querySelector("[data-onboarding-mi-region-details]"), "Mi card keeps region selector expandable");
 
-    // Selecting HA card alone still triggers zero LAN discovery.
+    // Selecting HA card shows manual address entry only (LAN auto-discovery moved to a follow-up host command slice).
     await click('[data-onboarding-card="homeAssistant"]');
-    assert.ok(document.querySelector("#btn-onboarding-discover-ha"));
+    assert.equal(document.querySelector("#btn-onboarding-discover-ha"), null);
+    assert.ok(document.querySelector("#onboarding-ha-url"));
     assert.deepEqual(
       tauriCalls.filter((c) => forbidden.has(c.name)),
       [],
-      "selecting HA card must not trigger LAN scan before user taps discover",
+      "selecting HA card must not trigger any LAN or HTTP requests",
     );
   });
 
-  it("runs HA LAN discovery only on click and aborts cleanly when navigating back", async () => {
-    const resolvers: Array<(value: { status: number; headers: Record<string, string>; body: string }) => void> = [];
-    const probedUrls: string[] = [];
-    const app = new MenuMijiaWindowsApp(el("#app"));
-    const customTransport: HttpTransport = async (req) => {
-      probedUrls.push(req.url);
-      return await new Promise((resolve) => {
-        resolvers.push(resolve);
-      });
-    };
-    (app as unknown as { transport: HttpTransport }).transport = customTransport;
-    await setImmediate();
-
-    await click('[data-onboarding-card="homeAssistant"]');
-    assert.equal(probedUrls.length, 0);
-
-    await click("#btn-onboarding-discover-ha");
-    assert.ok(probedUrls.length >= 1, "on-demand discovery probes local HA endpoints only after click");
-    assert.match(el("[data-onboarding-ha-discovery-status]").textContent ?? "", /正在局域网查找 Home Assistant/);
-
-    // Navigating back cancels the in-flight scan so late responses cannot overwrite draft state.
-    await click("#btn-onboarding-back");
-    for (const resolve of resolvers) {
-      resolve({ status: 200, headers: {}, body: '{"message":"API running."}' });
-    }
-    await setImmediate();
-
-    await click('[data-onboarding-card="homeAssistant"]');
-    assert.equal(el<HTMLInputElement>("#onboarding-ha-url").value, "");
-  });
-
-  it("preserves HA draft on verification error and enables dual-source when adding a second platform", async () => {
+  it("preserves HA draft on verification error and enables dual-source via setHostDualSourceEnabled when adding Mi as second platform", async () => {
     let failNext = true;
     const haFixture = JSON.parse(readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/ha_snapshot.json"), "utf8")) as unknown;
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
@@ -186,6 +165,8 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     });
 
     const app = new MenuMijiaWindowsApp(el("#app"));
+    // Simulate a user who previously turned off dual-source in the same session.
+    setHostDualSourceEnabled(app, false, { persist: true });
     await setImmediate();
 
     await click('[data-onboarding-card="homeAssistant"]');
@@ -211,12 +192,178 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(addSecond.dataset.secondPlatform, "xiaomiCloud");
     await click("#btn-onboarding-add-second-platform");
     assert.ok(document.querySelector("#btn-start-qr"), "navigates to Mi QR step for second platform");
-    assert.notEqual(app.settings.dualSourceEnabled, true, "does not enable dual-source before connecting second platform");
+    assert.equal(isDualSourceEnabled(app), false, "does not enable dual-source before connecting second platform");
     let qrStarted = false;
     app.startXiaomiQRLogin = async () => { qrStarted = true; };
     await click("#btn-start-qr");
     assert.equal(qrStarted, true);
+    assert.equal(app.dualSourceEnabledOverride, true, "clears prior dualSourceEnabledOverride");
     assert.equal(app.settings.dualSourceEnabled, true);
+    assert.equal(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1");
+    app.settings.miSession = {
+      userId: "10086",
+      cUserId: "c10086",
+      passToken: "pt-secret",
+      serviceToken: "st-secret",
+      ssecurity: "ss-secret",
+      region: "cn",
+    };
+    assert.equal(isDualSourceEnabled(app), true, "dual-source activates immediately once second platform session arrives");
+  });
+
+  it("verifies HA token via dual-source refresh when adding HA on top of connected Mi, rolling back on bad token", async () => {
+    let failHa = true;
+    const haFixture = JSON.parse(readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/ha_snapshot.json"), "utf8")) as {
+      states?: unknown[];
+    };
+    const miDevices = [
+      {
+        id: "mi-d1",
+        name: "客厅吸顶灯",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "yeelink.light.lamp1",
+        isOnline: true,
+        kind: {
+          kind: "light" as const,
+          entityId: "mi-d1",
+          isOn: true,
+          brightnessPercent: 80,
+          colorTempKelvin: 4000,
+          minKelvin: 2700,
+          maxKelvin: 6500,
+          currentEffect: null,
+          availableEffects: [],
+        },
+      },
+      {
+        id: "mi-d2",
+        name: "卧室台灯",
+        roomId: "r2",
+        roomName: "卧室",
+        model: "yeelink.light.lamp2",
+        isOnline: true,
+        kind: {
+          kind: "light" as const,
+          entityId: "mi-d2",
+          isOn: false,
+          brightnessPercent: 50,
+          colorTempKelvin: 3500,
+          minKelvin: 2700,
+          maxKelvin: 6500,
+          currentEffect: null,
+          availableEffects: [],
+        },
+      },
+    ];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      cachedXiaomiDevices: miDevices,
+    }));
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") {
+            if (failHa) throw new Error("401 Unauthorized");
+            return haFixture;
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    app.settings.miSession = {
+      userId: "10086",
+      cUserId: "c10086",
+      passToken: "pt-secret",
+      serviceToken: "st-secret",
+      ssecurity: "ss-secret",
+      region: "cn",
+    };
+    app.devices = miDevices;
+    // Simulate a user who previously disabled dual-source in the current session.
+    setHostDualSourceEnabled(app, false, { persist: true });
+    assert.equal(isDualSourceEnabled(app), false);
+
+    // Open onboarding with Mi connected and add Home Assistant as the second platform.
+    app.activeSheet = "onboarding";
+    app.render();
+    await click('[data-onboarding-card="xiaomiCloud"]');
+    await click("#btn-onboarding-add-second-platform");
+    assert.ok(document.querySelector("#onboarding-ha-url"));
+
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "invalid-ha-token");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(document.querySelector("[data-onboarding-ha-verified]"), null, "bad token must not report HA connected");
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /专属连接钥匙无效或已过期.*设备还未同步/);
+    assert.equal(isDualSourceEnabled(app), false, "failed dual-source HA verify must keep dual-source disabled");
+    assert.notEqual(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1");
+    assert.equal(app.settings.haToken, "", "failed dual-source HA verify rolls back stored HA token");
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-url").value, "http://192.168.1.50:8123", "draft URL preserved");
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-token").value, "invalid-ha-token", "draft token preserved");
+
+    // Retry with valid token: succeeds via dual-source refresh and persists dual-source with "1".
+    failHa = false;
+    typeInput("#onboarding-ha-token", "valid-ha-token");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+
+    const verifiedText = el("[data-onboarding-ha-verified]").textContent ?? "";
+    const haCount = app.dualSourceCoordinator?.getLastHASnapshot()?.home.devices.length ?? 0;
+    assert.ok(haCount > 0, "dual-source coordinator received a real HA snapshot");
+    assert.ok(verifiedText.includes(String(haCount)), "verified badge reports actual HA device count");
+    assert.equal(isDualSourceEnabled(app), true, "dual-source enabled after verified HA snapshot");
+    assert.equal(app.dualSourceEnabledOverride, true, "prior false override cleared via setHostDualSourceEnabled");
+    assert.equal(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1");
+  });
+
+  it("resets HA connecting state when a stale verification resolves after sourceEpoch advances", async () => {
+    const resolvers: Array<(value: unknown) => void> = [];
+    const haFixture = JSON.parse(readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/ha_snapshot.json"), "utf8")) as unknown;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") {
+            return await new Promise((resolve) => {
+              resolvers.push(resolve);
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+
+    await click('[data-onboarding-card="homeAssistant"]');
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "valid-token");
+    await click("#btn-onboarding-connect-ha");
+    assert.equal(el<HTMLButtonElement>("#btn-onboarding-connect-ha").disabled, true);
+
+    // Advance sourceEpoch so capturedToken.isCurrent() returns false when the promise settles.
+    app.sourceEpoch.advance("source");
+    assert.equal(resolvers.length, 1, "ha_snapshot request started");
+    resolvers[0]!(haFixture);
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(
+      el<HTMLButtonElement>("#btn-onboarding-connect-ha").disabled,
+      false,
+      "button must not remain permanently disabled after stale verification settles",
+    );
   });
 
   it("supports skip without forcing demo and restores prior mode when leaving demo home", async () => {
@@ -258,7 +405,7 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(app.activeSheet, "none");
   });
 
-  it("silently migrates legacy Mi, HA, dual-source, cached, and local-data installs without popping onboarding", async () => {
+  it("silently migrates legacy Mi, HA, dual-source, demo, cached, and local-data installs without popping onboarding", async () => {
     const scenarios: Array<{ label: string; setup: () => void }> = [
       {
         label: "legacy Mi-only with cached devices (offline)",
@@ -286,8 +433,22 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
         })),
       },
       {
+        label: "legacy demo user without explicit hasCompletedOnboarding",
+        setup: () => localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          connectionMode: "demo",
+        })),
+      },
+      {
         label: "legacy auxiliary local data (scheduled commands only)",
         setup: () => localStorage.setItem(SCHEDULED_COMMANDS_STORAGE_KEY, JSON.stringify([{ id: "t1" }])),
+      },
+      {
+        label: "legacy auxiliary local data (mi capability storage only)",
+        setup: () => localStorage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, JSON.stringify({
+          schemaVersion: 1,
+          migrationComplete: true,
+          disabledMiAccountIds: [],
+        })),
       },
     ];
 
@@ -305,7 +466,45 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     }
   });
 
-  it("falls back to legacy without sealing migration on corrupt settings or vault failure, and seals on retry", async () => {
+  it("fails closed when auxiliary localStorage reads throw in detectPersistedLocalData", () => {
+    const originalGetItem = localStorage.getItem.bind(localStorage);
+    Object.defineProperty(localStorage, "getItem", {
+      value: () => {
+        throw new Error("storage locked");
+      },
+      configurable: true,
+      writable: true,
+    });
+    try {
+      assert.equal(detectPersistedLocalData(), true, "unreadable auxiliary localStorage must fail closed as persisted data");
+    } finally {
+      Object.defineProperty(localStorage, "getItem", {
+        value: originalGetItem,
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
+  it("quarantines unreadable settings payload before overwriting on saveSettings", async () => {
+    localStorage.setItem(STORAGE_KEY, "{not-valid-json");
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    assert.equal(localStorage.getItem(STORAGE_KEY), "{not-valid-json");
+
+    // Any subsequent saveSettings() backs up the corrupt payload to .unreadable before writing.
+    app.saveSettings();
+    assert.equal(localStorage.getItem(`${STORAGE_KEY}.unreadable`), "{not-valid-json");
+    assert.doesNotThrow(() => JSON.parse(localStorage.getItem(STORAGE_KEY) ?? ""));
+
+    // A second corrupt payload increments the suffix without clobbering the first backup.
+    localStorage.setItem(STORAGE_KEY, "still-broken");
+    app.saveSettings();
+    assert.equal(localStorage.getItem(`${STORAGE_KEY}.unreadable`), "{not-valid-json");
+    assert.equal(localStorage.getItem(`${STORAGE_KEY}.unreadable.1`), "still-broken");
+  });
+
+  it("surfaces identityMigrationDiagnostic in connectionStatus with trilingual retry action and seals on retry", async () => {
     // 1. Corrupt settings JSON
     localStorage.setItem(STORAGE_KEY, "{not-valid-json");
     const corruptApp = new MenuMijiaWindowsApp(el("#app"));
@@ -314,14 +513,17 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(corruptApp.identityMigrationDiagnostic, "corrupt_settings_storage");
     assert.equal(readStoredMigrationComplete(), null, "must not seal migrationComplete while settings are unreadable");
     assert.equal(localStorage.getItem(STORAGE_KEY), "{not-valid-json", "must not overwrite unreadable settings payload");
+    assert.match(el(".cc-footer-label").textContent ?? "", /本机配置读取失败，可重试/);
+    assert.equal(el("#btn-connection-action").dataset.connectionAction, "retryIdentity");
 
-    // Once storage is repaired, retryIdentityMigration clears diagnostic and seals migration.
+    // Once storage is repaired, clicking the retry action invokes retryIdentityMigration(), clears diagnostic, and seals migration.
     localStorage.setItem(STORAGE_KEY, JSON.stringify({
       connectionMode: "homeAssistant",
       haBaseURL: "http://homeassistant.local:8123",
       haToken: "repaired-token",
     }));
-    await corruptApp.retryIdentityMigration();
+    await click("#btn-connection-action");
+    await setImmediate();
     assert.equal(corruptApp.identityMigrationDiagnostic, null);
     assert.equal(readStoredMigrationComplete(), true);
 
@@ -356,10 +558,28 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(vaultApp.identityMigrationDiagnostic, "credential_vault_read_failed");
     assert.equal(readStoredMigrationComplete(), null, "must not seal migrationComplete on vault failure");
 
+    // Verify trilingual footer copy & retryIdentity action.
+    assert.equal(resolveConnectionStatus(vaultApp).text, "凭据读取失败，可重试");
+    assert.equal(resolveConnectionStatus(vaultApp).action?.kind, "retryIdentity");
+    assert.equal(resolveConnectionStatus(vaultApp).action?.label, "重试读取");
+    vaultApp.settings.interfaceLanguage = "zh-Hant";
+    assert.equal(resolveConnectionStatus(vaultApp).text, "憑據讀取失敗，可重試");
+    assert.equal(resolveConnectionStatus(vaultApp).action?.label, "重試讀取");
+    vaultApp.settings.interfaceLanguage = "en";
+    assert.equal(resolveConnectionStatus(vaultApp).text, "Could not read credentials; retry");
+    assert.equal(resolveConnectionStatus(vaultApp).action?.label, "Retry");
+    vaultApp.settings.interfaceLanguage = "zh-Hans";
+    vaultApp.render();
+    assert.match(el(".cc-footer-label").textContent ?? "", /凭据读取失败，可重试/);
+
     failVault = false;
-    await vaultApp.retryIdentityMigration();
+    await click("#btn-connection-action");
+    await setImmediate();
+    await setImmediate();
     assert.equal(vaultApp.identityMigrationDiagnostic, null);
     assert.equal(vaultApp.settings.miSession?.userId, "10086");
     assert.equal(readStoredMigrationComplete(), true);
+    assert.doesNotMatch(el(".cc-footer-label").textContent ?? "", /凭据读取失败/);
   });
 });
+
