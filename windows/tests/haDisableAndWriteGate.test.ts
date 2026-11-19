@@ -1328,6 +1328,68 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(app.devices.some((d) => d.name === "HA灯带"), true);
   });
 
+  it("keeps HA stopping until native drain completes and waits for the new endpoint registration", async () => {
+    const oldDrain = createDeferred<void>();
+    const newReady = createDeferred<void>();
+    const nextURL = "https://next-ha.example/house";
+    const h = makeHarness({
+      onHaSetConnection: ({ baseUrl }) => baseUrl === null
+        ? oldDrain.promise
+        : baseUrl === nextURL ? newReady.promise : Promise.resolve(),
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-first";
+    app.submitServiceEndpoints();
+    await app.refreshHADevices(false);
+    const first = h.tauriCalls.find((call) => call.cmd === "ha_snapshot");
+    const firstRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection");
+    assert.ok(first && firstRegistration);
+    assert.equal(first.args["generation"], firstRegistration.args["generation"]);
+
+    await fetchHomeAssistantSensorHistory({
+      baseURL: HA_URL,
+      token: "ha-first",
+      transport: createTransport(),
+      entityIds: ["sensor.ha_temp"],
+      window: "24h",
+    });
+    const http = h.tauriCalls.find((call) => call.cmd === "ha_http");
+    assert.equal(http?.args["generation"], firstRegistration.args["generation"]);
+
+    await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    assert.equal(getHostHaLifecyclePhase(app), "stopping");
+    const stop = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === null);
+    assert.ok(stop);
+    assert.ok(Number(stop.args["generation"]) > Number(first.args["generation"]));
+
+    app.settings.haBaseURL = nextURL;
+    app.settings.haToken = "ha-next";
+    app.submitServiceEndpoints();
+    const refresh = app.refreshHADevices(false);
+    oldDrain.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(h.countCmd("ha_snapshot"), 1);
+    newReady.resolve();
+    await refresh;
+    const last = h.tauriCalls.filter((call) => call.cmd === "ha_snapshot").at(-1);
+    const nextRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === nextURL);
+    assert.equal(last?.args["baseUrl"], nextURL);
+    assert.equal(last?.args["generation"], nextRegistration?.args["generation"]);
+    assert.ok(Number(last?.args["generation"]) > Number(stop.args["generation"]));
+
+    app.settings.connectionMode = "demo";
+    await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    await app.endpointSubmission;
+    await setHaConnectionEnabledOnHost(app, true);
+    await app.endpointSubmission;
+    const demoRegistration = h.tauriCalls.filter((call) => call.cmd === "ha_set_connection").at(-1);
+    assert.equal(demoRegistration?.args["baseUrl"], nextURL);
+    assert.ok(Number(demoRegistration?.args["generation"]) > Number(last?.args["generation"]));
+    assert.equal(h.countCmd("ha_snapshot"), 2);
+  });
+
   it("bounds hung HA in-flight stop with stop_timeout, surfaces Still stopping · Retry without hanging setHaConnectionEnabledOnHost(true), and abandons stale leases cleanly", async () => {
     setHaStopDrainTimeoutMsForTests(25);
     const hungSnapshot = createDeferred<ReturnType<typeof makeHaSnapshotPayload>>();
@@ -1397,58 +1459,6 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     hungSnapshot.resolve(makeHaSnapshotPayload());
     await inFlightRefresh;
     assert.deepEqual(app.devices.map((d) => d.name), ["恢复后新灯"], "late hung response must not overwrite fresh state");
-  });
-
-  it("keeps HA stopping until native drain completes and waits for the new endpoint registration", async () => {
-    const oldDrain = createDeferred<void>();
-    const newReady = createDeferred<void>();
-    const nextURL = "https://next-ha.example/house";
-    const h = makeHarness({
-      onHaSetConnection: ({ baseUrl }) => baseUrl === null
-        ? oldDrain.promise
-        : baseUrl === nextURL ? newReady.promise : Promise.resolve(),
-    });
-    const { app } = h;
-    app.settings.connectionMode = "homeAssistant";
-    app.settings.haBaseURL = HA_URL;
-    app.settings.haToken = "ha-first";
-    app.submitServiceEndpoints();
-    await app.refreshHADevices(false);
-    const first = h.tauriCalls.find((call) => call.cmd === "ha_snapshot");
-    const firstRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection");
-    assert.ok(first && firstRegistration);
-    assert.equal(first.args["generation"], firstRegistration.args["generation"]);
-
-    await fetchHomeAssistantSensorHistory({
-      baseURL: HA_URL,
-      token: "ha-first",
-      transport: createTransport(),
-      entityIds: ["sensor.ha_temp"],
-      window: "24h",
-    });
-    const http = h.tauriCalls.find((call) => call.cmd === "ha_http");
-    assert.equal(http?.args["generation"], firstRegistration.args["generation"]);
-
-    await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
-    assert.equal(getHostHaLifecyclePhase(app), "stopping");
-    const stop = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === null);
-    assert.ok(stop);
-    assert.ok(Number(stop.args["generation"]) > Number(first.args["generation"]));
-
-    app.settings.haBaseURL = nextURL;
-    app.settings.haToken = "ha-next";
-    app.submitServiceEndpoints();
-    const refresh = app.refreshHADevices(false);
-    oldDrain.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.equal(h.countCmd("ha_snapshot"), 1);
-    newReady.resolve();
-    await refresh;
-    const last = h.tauriCalls.filter((call) => call.cmd === "ha_snapshot").at(-1);
-    const nextRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === nextURL);
-    assert.equal(last?.args["baseUrl"], nextURL);
-    assert.equal(last?.args["generation"], nextRegistration?.args["generation"]);
-    assert.ok(Number(last?.args["generation"]) > Number(stop.args["generation"]));
   });
 
   it("keeps dual-source Xiaomi timers ready and firing when HA is disabled, and uses structured verdict codes in zh-Hant", async () => {
