@@ -27,10 +27,11 @@ import {
   getHostMiAccountsState,
   hasMultipleMiAccountsForHost,
   isDualSourceEnabled,
+  isHostHaEnabled,
   isHostMiSessionEnabled,
   resolveEnabledMiAccountsForHost,
 } from "./cloudRefresh.js";
-import { evaluateDeviceEntityWriteGate, miAccountScope } from "../core/miAccountControl.js";
+import { evaluateDeviceEntityWriteGate, haConnectionScope, miAccountScope } from "../core/miAccountControl.js";
 import { controlTargetRejectionMessage } from "../core/capabilityReferenceVerdict.js";
 import {
   MiCloudClient,
@@ -868,6 +869,7 @@ export async function applyCommand(
       targetIdOrEntityId: command.entityId,
       resolvedActiveDeviceId: targetDeviceId,
       context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
       languagePreference: host.settings?.interfaceLanguage,
     });
     if (gateMsg !== null) {
@@ -889,7 +891,7 @@ export async function applyCommand(
     if (effectiveMode === "homeAssistant") {
       command = homeAssistantCommand(command, host.devices, host.deviceFacets);
     }
-    const readPower = await dispatchCloudCommand(host, command, readBackPower);
+    const readPower = await dispatchCloudCommand(host, command, readBackPower, originalCommand.entityId);
     if (typeof readPower === "boolean") command = withReadPower(command, readPower);
   } catch (error) {
     if (sourceRevision !== host.sourceRevision) return false;
@@ -1146,6 +1148,7 @@ async function dispatchCloudCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
   readBackPower = false,
+  originalEntityId = command.entityId,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
   const provider = homeProviderFor(host);
@@ -1154,6 +1157,22 @@ async function dispatchCloudCommand(
       readBackPower,
       beforeSend: () => {
         if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
+        if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const currentTargetId = deviceOwningEntityId(
+            host.devices,
+            host.deviceFacets ?? {},
+            originalEntityId,
+          );
+          const gateMsg = evaluateDeviceEntityWriteGate({
+            targetKind: command.kind === "activateScene" ? "scene" : "device",
+            targetIdOrEntityId: originalEntityId,
+            resolvedActiveDeviceId: currentTargetId,
+            context: buildHostCapabilityContext(host),
+            rejectUnknown: true,
+            languagePreference: host.settings?.interfaceLanguage,
+          });
+          if (gateMsg !== null) throw new Error(gateMsg);
+        }
       },
     });
   } catch (error) {
@@ -1204,6 +1223,22 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
 }
 
 function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
+  if (!isHostHaEnabled(host)) {
+    const pref =
+      host.settings.interfaceLanguage && host.settings.interfaceLanguage !== "system"
+        ? host.settings.interfaceLanguage
+        : undefined;
+    throw new Error(
+      controlTargetRejectionMessage(
+        {
+          code: "connectionDisabled",
+          connection: "home-assistant",
+          scope: haConnectionScope(host.settings.haBaseURL, host.settings.haToken) ?? "home-assistant",
+        },
+        pref,
+      ),
+    );
+  }
   return new HomeAssistantProvider(
     new HomeAssistantClient(
       host.settings.haBaseURL,
@@ -1219,6 +1254,7 @@ export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
   if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
   if (isDualSourceEnabled(host)) {
     let cachedMiProvider: HomeProvider | null = null;
+    let cachedHaProvider: HomeProvider | null = null;
     return new DualSourceHomeProvider({
       miProvider: {
         execute: (command, options) => {
@@ -1226,7 +1262,12 @@ export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
           return cachedMiProvider.execute(command, options);
         },
       },
-      haProvider: buildHomeAssistantProvider(host),
+      haProvider: {
+        execute: (command, options) => {
+          cachedHaProvider ??= buildHomeAssistantProvider(host);
+          return cachedHaProvider.execute(command, options);
+        },
+      },
       routes: getHostDualSourceState(host)?.routes,
       deviceIdForEntity: (entityId) => deviceOwningEntityId(host.devices, host.deviceFacets, entityId),
     });

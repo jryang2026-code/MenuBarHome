@@ -58,11 +58,13 @@ import {
 } from "../core/miAccountsStore.js";
 import type { MiSession } from "../core/miCloudClient.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
-import { removeSignedOutMiAccountFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
+import { removeDisconnectedHaFromSelection, removeSignedOutMiAccountFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
+import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import {
   buildHostCapabilityContext,
   isDualSourceEnabled,
+  isHostHaEnabled,
   isHostMiSessionEnabled,
   resolveEnabledMiAccountsForHost,
   type DualSourceInspectableHost,
@@ -177,16 +179,25 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         }
       }
       if (host.settings.connectionMode === "homeAssistant") {
-        const cache = host.settings.cachedHAHome;
-        if (cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken)) {
-          host.devices = structuredClone(cache.home.devices);
-          host.scenes = structuredClone(cache.home.scenes);
-          host.environmentReadings = structuredClone(cache.home.environmentReadings);
-          host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
+        if (isHostHaEnabled(host)) {
+          const cache = host.settings.cachedHAHome;
+          if (cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken)) {
+            host.devices = structuredClone(cache.home.devices);
+            host.scenes = structuredClone(cache.home.scenes);
+            host.environmentReadings = structuredClone(cache.home.environmentReadings);
+            host.deviceFacets = structuredClone(cache.home.deviceFacets ?? {});
+          }
+        } else {
+          host.devices = [];
+          host.scenes = [];
+          host.environmentReadings = [];
+          host.deviceFacets = {};
         }
       }
       host.render();
-      if (host.settings.connectionMode === "homeAssistant") void host.refreshHADevices();
+      if (host.settings.connectionMode === "homeAssistant" && isHostHaEnabled(host)) {
+        void host.refreshHADevices();
+      }
     } catch {
       if (host.settings.connectionMode === "homeAssistant") {
         host.haConnectionError = "Home Assistant credentials could not be loaded. Check Windows Credential Manager.";
@@ -267,11 +278,17 @@ export async function clearHostSessionAndDualSourceState(
     if (host.settings) {
       host.settings.dualSourceEnabled = false;
     }
+    clearHaScopeLifecycle(null);
+    removeDisconnectedHaFromSelection(null);
   }
   removeSignedOutMiAccountFromSelection(null);
   if (host.connDiagSession) {
     host.connDiagSession.pendingDisablePreview = null;
     host.connDiagSession.disableErrorByAccountId = {};
+    if (options.revokeAll) {
+      host.connDiagSession.pendingHaDisablePreview = null;
+      host.connDiagSession.haDisableError = null;
+    }
   }
   const fullSettings = host.settings as MenuMijiaWindowsApp["settings"] | undefined;
   const scheduledCommandStore =
@@ -410,7 +427,7 @@ export function applyTemperatureSetting(host: MenuMijiaWindowsApp): void {
 
 export function submitServiceEndpoints(host: MenuMijiaWindowsApp, force = false): void {
     const assistantUrl = host.settings.assistantBaseURL.trim();
-    const haUrl = host.settings.haBaseURL.trim();
+    const haUrl = isHostHaEnabled(host) ? host.settings.haBaseURL.trim() : "";
     const serialized = `${assistantUrl}\n${haUrl}`;
     if (!force && serialized === host.lastSubmittedEndpoints) return;
     host.lastSubmittedEndpoints = serialized;
@@ -699,8 +716,8 @@ export function canRefreshDevicesInBackground(host: ResumeRecoveryHost): boolean
     return hasSecondaryMiAccountsInIndex();
   };
   const hasActiveSource =
-    isDualSourceEnabled(dualInspectable) ||
-    host.settings.connectionMode === "homeAssistant" ||
+    (isDualSourceEnabled(dualInspectable) && (isHostHaEnabled(dualInspectable) || hasEnabledMi())) ||
+    (host.settings.connectionMode === "homeAssistant" && isHostHaEnabled(dualInspectable)) ||
     (host.settings.connectionMode === "xiaomiCloud" && hasEnabledMi());
   return (
     hasActiveSource &&

@@ -27,6 +27,8 @@ import {
 import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
+import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
+import { evaluateDisabledUtteranceGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 
 function localParseOptions(host: MenuMijiaWindowsApp): LocalIntentParseOptions {
   const cut = host.listCut;
@@ -90,8 +92,9 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           host.scenes,
           localParseOptions(host),
         );
-        if (resolved && resolved.intents.length === 0) {
+        if (!resolved || resolved.intents.length === 0) {
           if (
+            resolved &&
             resolved.suggestions.length > 0 &&
             !resolved.suggestions.every((s) => suggestionBaseId(s.id).startsWith("bare:"))
           ) {
@@ -108,13 +111,42 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
             host.render();
             return;
           }
-          host.pendingSuggestions = [];
-          host.replyBanner = {
-            text: resolved.reply || t("无法找到指令对应的设备"),
-            source: t("0ms 本地直达"),
-          };
-          host.render();
-          return;
+          if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+            const disabledMsg = evaluateDisabledUtteranceGate({
+              utterance: delaySpec.remainder,
+              context: buildHostCapabilityContext(host),
+              aliases: host.layout.aliases,
+              languagePreference: host.settings.interfaceLanguage,
+            });
+            if (disabledMsg !== null) {
+              host.pendingSuggestions = [];
+              host.replyBanner = { text: disabledMsg, source: t("控制失败"), isError: true };
+              host.render();
+              return;
+            }
+          }
+          if (resolved) {
+            host.pendingSuggestions = [];
+            host.replyBanner = {
+              text: resolved.reply || t("无法找到指令对应的设备"),
+              source: t("0ms 本地直达"),
+            };
+            host.render();
+            return;
+          }
+        }
+        if (resolved && resolved.intents.length > 0 && (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host))) {
+          const gateMsg = evaluateIntentsWriteGate({
+            intents: resolved.intents,
+            context: buildHostCapabilityContext(host),
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            host.pendingSuggestions = [];
+            host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+            host.render();
+            return;
+          }
         }
         if (
           resolved &&
@@ -165,6 +197,25 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
       const localPlan = LocalIntentParser.parse(trimmed, aliasedDevices, host.scenes, localParseOptions(host));
       let plan: IntentPlan | null = localPlan;
       let sourceLabel = t("0ms 本地直达");
+
+      if (
+        (!plan || (plan.intents.length === 0 && plan.suggestions.length === 0)) &&
+        (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host))
+      ) {
+        const disabledMsg = evaluateDisabledUtteranceGate({
+          utterance: trimmed,
+          context: buildHostCapabilityContext(host),
+          aliases: host.layout.aliases,
+          languagePreference: host.settings.interfaceLanguage,
+        });
+        if (disabledMsg !== null) {
+          host.pendingSuggestions = [];
+          host.replyBanner = { text: disabledMsg, source: t("控制失败"), isError: true };
+          host.isResolvingIntent = false;
+          host.render();
+          return;
+        }
+      }
 
       if (!plan) {
         const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
@@ -234,6 +285,21 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
         plan = await resolver.resolve(trimmed, aliasedDevices, host.scenes, context);
         if (sourceRevision !== host.sourceRevision) return;
         sourceLabel = resolver.usesSystemOne ? "Jev SystemOne" : host.settings.assistantModel;
+      }
+
+      if (plan.intents.length > 0 && (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host))) {
+        const gateMsg = evaluateIntentsWriteGate({
+          intents: plan.intents,
+          context: buildHostCapabilityContext(host),
+          languagePreference: host.settings.interfaceLanguage,
+        });
+        if (gateMsg !== null) {
+          host.pendingSuggestions = [];
+          host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+          host.isResolvingIntent = false;
+          host.render();
+          return;
+        }
       }
 
       const sanitized = IntentValidator.sanitize(plan.intents, aliasedDevices, host.scenes);
@@ -340,6 +406,18 @@ function queueScheduledCommand(
   intents: readonly DeviceIntent[],
   options: { readonly allowConfirmedHazardous?: boolean } = {},
 ): void {
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateIntentsWriteGate({
+      intents,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
+  }
   const devices = withAliases(host.layout, host.devices);
   const sanitized = IntentValidator.sanitize(intents, devices, host.scenes);
   if (sanitized.length === 0) {
@@ -389,8 +467,32 @@ export function confirmDelayedSuggestion(
 
 export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): Promise<void> {
   if (item.intents && item.intents.length > 0) {
+    const gateMsg =
+      host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)
+        ? evaluateIntentsWriteGate({
+            intents: item.intents,
+            context: buildHostCapabilityContext(host),
+            languagePreference: host.settings.interfaceLanguage,
+          })
+        : null;
     const missingTargets = missingScheduledCommandTargets(item, host.devices, host.scenes);
+    if (gateMsg !== null && missingTargets.length === 0) {
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
     if (missingTargets.length > 0) {
+      const isNotFoundOnly =
+        gateMsg === null ||
+        gateMsg === "设备不存在" ||
+        gateMsg === "Device not found" ||
+        gateMsg === "场景不存在" ||
+        gateMsg === "Scene not found";
+      if (!isNotFoundOnly && gateMsg !== null) {
+        host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+        host.render();
+        return;
+      }
       // Selecting another home under the same account swaps the device/scene list while keeping
       // the connection identity (ADR-0019 / HomeStore+Assistant.swift:628-633): park the timer in
       // missedScheduledCommands instead of failing or acting on the wrong home.
@@ -408,6 +510,9 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
           return;
         }
       }
+      if (gateMsg !== null) {
+        host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      }
       host.isShowingAssistantBar = true;
       host.queueBackgroundRender();
       return;
@@ -421,6 +526,19 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
       { recordHabits: false },
     );
     return;
+  }
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const disabledMsg = evaluateDisabledUtteranceGate({
+      utterance: item.command,
+      context: buildHostCapabilityContext(host),
+      aliases: host.layout.aliases,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (disabledMsg !== null) {
+      host.replyBanner = { text: disabledMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
   }
   // An unresolved legacy timer must never be reinterpreted against a different home or AI response.
   host.replyBanner = { text: t("无法找到指令对应的设备"), source: t("定时任务"), isError: true };

@@ -51,7 +51,8 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
-import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
 import {
@@ -1155,12 +1156,36 @@ export async function executeAutomationCardUndo(
   runId: string,
   nowMs = Date.now(),
 ): Promise<boolean> {
-  if (await rejectIfControlBlockedWhileLocked(host)) return false;
-
   const center = getHostActivityCenter(host);
   const pref = host.settings.interfaceLanguage;
   const run = center.recentAutomationRuns.find((r) => r.id === runId);
   if (!run) return false;
+
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const capContext = buildHostCapabilityContext(host);
+    for (const step of run.steps) {
+      const activeId = host.devices.some((d) => d.id === step.deviceId) ? step.deviceId : null;
+      const stepGate = evaluateDeviceEntityWriteGate({
+        targetKind: "device",
+        targetIdOrEntityId: step.deviceId,
+        resolvedActiveDeviceId: activeId,
+        context: capContext,
+        languagePreference: pref,
+        rejectUnknown: true,
+      });
+      if (stepGate !== null) {
+        center.recentAutomationRuns = center.recentAutomationRuns.filter((r) => r.id !== runId);
+        if (center.pendingHighRiskUndoRunId === runId) center.pendingHighRiskUndoRunId = null;
+        host.replyBanner = { text: stepGate, source: t("控制失败"), isError: true };
+        host.render();
+        return false;
+      }
+    }
+  }
+
+  if (await rejectIfControlBlockedWhileLocked(host)) return false;
+
+  if (!center.recentAutomationRuns.some((r) => r.id === runId)) return false;
 
   const startingRevision = host.sourceRevision ?? 0;
   const startingScope = computeActivityScopeKey(host);
@@ -1371,6 +1396,15 @@ export async function dispatchSystemContextEvent(
     scope: center.scopeKey,
     displayDevices: aliasedHostDevices(host),
     observationsByDeviceId: center.observationsOverride ?? undefined,
+    evaluateRuleWriteGate: (rule) =>
+      host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)
+        ? evaluateAutomationRuleWriteGate({
+            rule,
+            context: buildHostCapabilityContext(host),
+            lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+            languagePreference: host.settings.interfaceLanguage,
+          })
+        : null,
     recordUndoKindSnapshots,
     onUndoRecorded: (run) => {
       center.dismissedActivityIds.delete(`auto:${run.id}`);

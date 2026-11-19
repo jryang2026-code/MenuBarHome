@@ -28,9 +28,12 @@ import {
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   getHostDualSourceState,
+  getHostHaLifecyclePhase,
   getHostMiAccountsState,
   isDualSourceEnabled,
+  isHostHaEnabled,
 } from "./cloudRefresh.js";
+import { acquireHaTransportLease } from "../core/haTransportGate.js";
 import { seedDemoSensorHistory } from "./demo.js";
 import { comfort, tr3 } from "./panelPrefs.js";
 
@@ -261,7 +264,7 @@ function sensorSnapshotSignature(devices: readonly SmartDevice[]): string {
 function canRecordLiveHostSensors(host: MenuMijiaWindowsApp): boolean {
   if (host.valuesAreStale) return false;
   const dual = isDualSourceEnabled(host);
-  if (!dual && host.settings.connectionMode === "homeAssistant" && Boolean(host.haConnectionError)) {
+  if (!dual && host.settings.connectionMode === "homeAssistant" && (!isHostHaEnabled(host) || Boolean(host.haConnectionError))) {
     return false;
   }
   if (!dual && host.settings.connectionMode === "xiaomiCloud" && Boolean(host.miSessionExpired)) {
@@ -331,15 +334,19 @@ async function discoverHASensorEntitiesViaSnapshot(
   const direct = resolveHomeAssistantSensorEntityIds(dev, facets);
   const rawId = dev.id.startsWith("ha:") ? dev.id.slice(3) : dev.id;
   if (rawId.startsWith("sensor.")) return direct;
+  if (!isHostHaEnabled(host) || getHostHaLifecyclePhase(host) !== "enabled") return direct;
   const invoke =
     host.haInvokeOverride ??
     (typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined);
   if (!invoke) return direct;
+  const lease = acquireHaTransportLease(host.settings.haBaseURL);
+  if (!lease) return direct;
   try {
     const raw = await invoke<Record<string, unknown>>("ha_snapshot", {
       baseUrl: host.settings.haBaseURL,
       token: host.settings.haToken,
     });
+    if (!lease.isCurrent()) return direct;
     const entities = Array.isArray(raw?.entities)
       ? (raw.entities as ReadonlyArray<{
           readonly entity_id?: unknown;
@@ -351,6 +358,8 @@ async function discoverHASensorEntitiesViaSnapshot(
     return resolveHomeAssistantSensorEntityIds(dev, facets, entities);
   } catch {
     return direct;
+  } finally {
+    lease.release();
   }
 }
 
@@ -496,6 +505,8 @@ function triggerRemoteHistoryFetchIfNeeded(
 
   if (
     effectiveBackend === "homeAssistant" &&
+    isHostHaEnabled(host) &&
+    getHostHaLifecyclePhase(host) === "enabled" &&
     (dualActive || !host.haConnectionError) &&
     host.settings.haBaseURL.trim() !== "" &&
     host.settings.haToken.trim() !== ""

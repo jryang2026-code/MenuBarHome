@@ -124,11 +124,12 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
-import { queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
+import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
+import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
-import { getAutomationUndoRunId } from "../core/automationEngine.js";
+import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import {
@@ -421,7 +422,12 @@ export class MenuMijiaWindowsApp {
     this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");
     this.applyTemperatureSetting();
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
-    const haCache = this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken) ? this.settings.cachedHAHome.home : null;
+    const haEnabledOnBoot = isHostHaEnabled(this);
+    const haCache =
+      haEnabledOnBoot &&
+      this.settings.cachedHAHome?.identity === homeAssistantIdentity(this.settings.haBaseURL, this.settings.haToken)
+        ? this.settings.cachedHAHome.home
+        : null;
     const primaryDisabledOnly =
       this.settings.miSession !== null &&
       !isHostMiSessionEnabled(this, this.settings.miSession) &&
@@ -448,8 +454,24 @@ export class MenuMijiaWindowsApp {
     // Alt+Tab hides the popover without a button blur; a hold started before it must not finish.
     const onBlurCancelAllOff = () => this.cancelAllOffHold();
     window.addEventListener("blur", onBlurCancelAllOff);
+    const unsubscribeHaLifecycle = subscribeHaScopeLifecycle(() => {
+      if (!this.root.isConnected) return;
+      if (this.activeSheet === "settings" || isConnectionsAndDiagModalOpen(this) || this.connectionDetailsOpen) {
+        const focusedTag = document.activeElement?.tagName;
+        const focusedType = (document.activeElement as HTMLInputElement | null)?.type;
+        const isTypingText =
+          focusedTag === "TEXTAREA" ||
+          (focusedTag === "INPUT" && focusedType !== "checkbox" && focusedType !== "radio" && focusedType !== "button");
+        if (!isTypingText) {
+          this.render();
+          return;
+        }
+      }
+      this.queueBackgroundRender();
+    });
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
+      unsubscribeHaLifecycle,
       () => undoTrackerFor(this).dispose(),
     );
     this.bindLayoutGestures();
@@ -502,7 +524,7 @@ export class MenuMijiaWindowsApp {
     applyTemperatureSetting(this);
   }
 
-  private submitServiceEndpoints(force = false): void {
+  public submitServiceEndpoints(force = false): void {
     submitServiceEndpoints(this, force);
   }
 
@@ -685,7 +707,17 @@ export class MenuMijiaWindowsApp {
 
   /** Devices 全关 would switch off: on screen (current room), on, and taking part (#23). */
   public get allOffTargets(): SmartDevice[] {
-    return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
+    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
+      return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
+    }
+    const { indexedDevices } = buildIndexedCapabilityDevices(buildHostCapabilityContext(this));
+    const availableIds = new Set(
+      indexedDevices.filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled).map((d) => d.id),
+    );
+    return allOffTargets(
+      this.filteredDevices.filter((d) => availableIds.has(d.id)),
+      this.settings.allOffOverrides,
+    );
   }
 
   public renderKindBar(): string {
@@ -786,6 +818,19 @@ export class MenuMijiaWindowsApp {
   }
 
   private async turnAllOff(): Promise<void> {
+    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+      const gateMsg = evaluateQuickActionSourceWriteGate({
+        actionId: "lightsOff",
+        scopeDevices: [],
+        context: buildHostCapabilityContext(this),
+        languagePreference: this.settings.interfaceLanguage,
+      });
+      if (gateMsg !== null) {
+        this.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+        this.render();
+        return;
+      }
+    }
     const targets = this.allOffTargets;
     if (targets.length === 0) return;
     const intents: DeviceIntent[] = targets.map((d) => ({
@@ -815,6 +860,19 @@ export class MenuMijiaWindowsApp {
     sourceLabel: string,
     options: { recordHabits?: boolean } = {},
   ): Promise<boolean> {
+    if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+      const gateMsg = evaluateIntentsWriteGate({
+        intents,
+        context: buildHostCapabilityContext(this),
+        languagePreference: this.settings?.interfaceLanguage,
+      });
+      if (gateMsg !== null) {
+        this.clearPendingHighRisk();
+        this.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+        this.render();
+        return false;
+      }
+    }
     if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return false;
     return executeIntents(this, intents, replyText, sourceLabel, options);
   }
@@ -826,6 +884,23 @@ export class MenuMijiaWindowsApp {
     intent?: DeviceIntent,
     readBackPower = false,
   ): Promise<void> {
+    if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+      const activeId = this.devices.some((d) => d.id === device.id) ? device.id : null;
+      const gateMsg = evaluateDeviceEntityWriteGate({
+        targetKind: command.kind === "activateScene" ? "scene" : "device",
+        targetIdOrEntityId: activeId ? device.id : command.entityId || device.id,
+        resolvedActiveDeviceId: activeId,
+        context: buildHostCapabilityContext(this),
+        rejectUnknown: true,
+        languagePreference: this.settings?.interfaceLanguage,
+      });
+      if (gateMsg !== null) {
+        this.clearPendingHighRisk();
+        this.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+        this.render();
+        return;
+      }
+    }
     if (await rejectIfControlBlockedWhileLocked(this)) return;
     return executeSingleCommand(this, device, command, summary, intent, readBackPower);
   }
@@ -859,9 +934,45 @@ export class MenuMijiaWindowsApp {
     return shouldKeepPopoverPinned(this);
   }
 
+  public evaluateAutomationRuleWriteGate(rule: AutomationRule): string | null {
+    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) return null;
+    return evaluateAutomationRuleWriteGate({
+      rule,
+      context: buildHostCapabilityContext(this),
+      lastManuallyUsedLightId: this.lastManuallyUsedLightId,
+      languagePreference: this.settings.interfaceLanguage,
+    });
+  }
+
   public async performUndo(): Promise<void> {
-    if (await rejectIfControlBlockedWhileLocked(this)) return;
     const paused = isUndoHoverPaused(this);
+    if (
+      this.lastUndoAction &&
+      (paused || this.lastUndoAction.expiresAtMs > Date.now()) &&
+      (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this))
+    ) {
+      const preCapContext = buildHostCapabilityContext(this);
+      for (const step of this.lastUndoAction.steps) {
+        const activeId = this.devices.some((d) => d.id === step.deviceId) ? step.deviceId : null;
+        const stepGate = evaluateDeviceEntityWriteGate({
+          targetKind: "device",
+          targetIdOrEntityId: step.deviceId,
+          resolvedActiveDeviceId: activeId,
+          context: preCapContext,
+          languagePreference: this.settings.interfaceLanguage,
+          rejectUnknown: true,
+        });
+        if (stepGate) {
+          const staleAction = this.lastUndoAction;
+          this.lastUndoAction = null;
+          if (this.pendingHighRiskUndoAction === staleAction) this.pendingHighRiskUndoAction = null;
+          this.replyBanner = { text: stepGate, source: t("控制失败"), isError: true };
+          this.render();
+          return;
+        }
+      }
+    }
+    if (await rejectIfControlBlockedWhileLocked(this)) return;
     if (!this.lastUndoAction || (!paused && this.lastUndoAction.expiresAtMs <= Date.now())) {
       clearUndoHoverPause(this);
       this.lastUndoAction = null;
@@ -894,6 +1005,42 @@ export class MenuMijiaWindowsApp {
       return true;
     });
     if (eligibleSteps.length === 0 && action.steps.length > 0) return;
+    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+      const capContext = buildHostCapabilityContext(this);
+      for (const step of eligibleSteps) {
+        const activeId = this.devices.some((d) => d.id === step.deviceId) ? step.deviceId : null;
+        const stepGate = evaluateDeviceEntityWriteGate({
+          targetKind: "device",
+          targetIdOrEntityId: step.deviceId,
+          resolvedActiveDeviceId: activeId,
+          context: capContext,
+          languagePreference: this.settings.interfaceLanguage,
+          rejectUnknown: true,
+        });
+        if (stepGate) {
+          if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null;
+          this.replyBanner = { text: stepGate, source: t("控制失败"), isError: true };
+          this.render();
+          return;
+        }
+        for (const cmd of step.commands) {
+          const cmdGate = evaluateDeviceEntityWriteGate({
+            targetKind: "device",
+            targetIdOrEntityId: cmd.entityId,
+            resolvedActiveDeviceId: activeId,
+            context: capContext,
+            languagePreference: this.settings.interfaceLanguage,
+            rejectUnknown: true,
+          });
+          if (cmdGate) {
+            if (this.pendingHighRiskUndoAction === action) this.pendingHighRiskUndoAction = null;
+            this.replyBanner = { text: cmdGate, source: t("控制失败"), isError: true };
+            this.render();
+            return;
+          }
+        }
+      }
+    }
     const autoRunId = getAutomationUndoRunId(action);
     // Every undo goes through the hazard gate, a one-device restore included: a facet or MIoT
     // restore can turn a heater's auxiliary switch back on exactly like a batch step can.

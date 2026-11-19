@@ -5,7 +5,8 @@ import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
-import { resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, isDualSourceEnabled, isHostHaEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { evaluateDisabledUtteranceGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
@@ -24,6 +25,7 @@ export function scheduledCommandIdentity(settings: PersistedSettings): string | 
 export function scheduledCommandsReady(host: MenuMijiaWindowsApp): boolean {
   const identity = scheduledCommandIdentity(host.settings);
   if (identity === "demo") return true;
+  if (host.settings.connectionMode === "homeAssistant" && !isHostHaEnabled(host)) return false;
   return host.timerCredentialsReady && identity !== null &&
     host.timerSnapshot?.identity === identity && host.timerSnapshot.sourceRevision === host.sourceRevision;
 }
@@ -73,7 +75,30 @@ export async function confirmMissedScheduledCommand(
   host: MenuMijiaWindowsApp,
   id: string,
 ): Promise<void> {
-  if (!host.missedScheduledCommands.some((entry) => entry.id === id)) return;
+  const preItem = host.missedScheduledCommands.find((entry) => entry.id === id);
+  if (!preItem) return;
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const capContext = buildHostCapabilityContext(host);
+    const gateMsg =
+      preItem.intents && preItem.intents.length > 0
+        ? evaluateIntentsWriteGate({
+            intents: preItem.intents,
+            context: capContext,
+            languagePreference: host.settings.interfaceLanguage,
+          })
+        : evaluateDisabledUtteranceGate({
+            utterance: preItem.command,
+            context: capContext,
+            aliases: host.layout.aliases,
+            languagePreference: host.settings.interfaceLanguage,
+          });
+    if (gateMsg !== null) {
+      host.isShowingAssistantBar = true;
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
+  }
   const identity = scheduledCommandIdentity(host.settings);
 
   const needsNativeLockProbe =

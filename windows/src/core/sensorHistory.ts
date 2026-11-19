@@ -1,3 +1,4 @@
+import { acquireHaTransportLease } from "./haTransportGate.js";
 import { MiCloudClient } from "./miCloud/client.js";
 import { normalizeMiCloudRegion, type HttpTransport, type MiSession } from "./miCloud/session.js";
 import { miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
@@ -1426,6 +1427,8 @@ export async function fetchHomeAssistantSensorHistory(options: {
   const token = options.token.trim();
   const entityIds = [...new Set(options.entityIds.map((e) => e.trim()).filter(Boolean))];
   if (!base || !token || entityIds.length === 0) return [];
+  const lease = acquireHaTransportLease(base);
+  if (!lease) return [];
 
   const nowMs = toTimestampMs(options.now ?? Date.now()) ?? Date.now();
   const spanMs = options.window === "24h" ? 25 * 3600 * 1000 : 8 * 86400 * 1000;
@@ -1440,10 +1443,12 @@ export async function fetchHomeAssistantSensorHistory(options: {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       timeoutMs: 15_000,
     });
-    if (resp.status < 200 || resp.status >= 300) return [];
+    if (!lease.isCurrent() || resp.status < 200 || resp.status >= 300) return [];
     return parseHomeAssistantHistoryResponse(JSON.parse(resp.body), options.entityMetricHints);
   } catch {
     return [];
+  } finally {
+    lease.release();
   }
 }
 
