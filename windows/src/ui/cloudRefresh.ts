@@ -135,13 +135,39 @@ export interface HostMiotTypePruneSnapshot {
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
 }
 
+/** The three host fields the off-panel Mi snapshot owns; every production host is wider. */
+export interface MiotTypePruneHostSlice {
+  safetyRetainedDevices?: SmartDevice[];
+  safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+}
+
 export function applyMiotTypePruneSnapshot(
-  host: MenuMijiaWindowsApp,
+  host: MiotTypePruneHostSlice,
   snapshot: HostMiotTypePruneSnapshot | null | undefined,
 ): void {
   host.safetyRetainedDevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
   host.safetyRetainedDeviceFacets = snapshot?.safetyDeviceFacets ?? {};
   host.hiddenMiDevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+}
+
+/**
+ * Drops one Mi account's off-panel devices right after it is disabled: until the next refresh
+ * rewrites the snapshot, its retained sensors would otherwise keep evaluating (P3a-W).
+ */
+export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice, accountId: string): void {
+  const scope = miAccountScope(accountId);
+  const ownedByAccount = (device: { readonly id: string; readonly accountId?: string }): boolean =>
+    device.accountId === accountId || device.id.startsWith(`${accountId}/`);
+  const retained = host.safetyRetainedDevices ?? [];
+  const dropped = new Set(retained.filter(ownedByAccount).map((device) => device.id));
+  const facets: Record<string, readonly FacetControl[]> = { ...(host.safetyRetainedDeviceFacets ?? {}) };
+  for (const id of dropped) delete facets[id];
+  applyMiotTypePruneSnapshot(host, {
+    safetyDevices: retained.filter((device) => !dropped.has(device.id)),
+    safetyDeviceFacets: facets,
+    hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
+  });
 }
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>

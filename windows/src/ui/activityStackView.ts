@@ -231,7 +231,10 @@ function deviceTelemetrySignature(devices: readonly SmartDevice[]): string {
 
 function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
   const mode = host.settings.connectionMode;
-  if (mode === "demo" || host.devices.length === 0) return false;
+  if (mode === "demo") return false;
+  // A home whose kept types are all turned off has no cards left, yet its retained sensors must
+  // still be evaluated, so an alert-only snapshot counts as live (P3a-W).
+  if (host.devices.length === 0 && safetyRetainedDeviceIds(host).size === 0) return false;
   if (host.valuesAreStale) return false;
   if (mode === "homeAssistant" && Boolean(host.haConnectionError)) return false;
   if (mode === "xiaomiCloud" && Boolean(host.miSessionExpired)) return false;

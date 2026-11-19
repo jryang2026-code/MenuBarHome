@@ -47,7 +47,8 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, dropMiotTypePruneSnapshotForAccount, applyMiotTypePruneSnapshot, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -291,6 +292,10 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   assistantKeysByPreset: Record<string, string>;
   cloudValuesStale: boolean;
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Off-panel Mi devices of the current snapshot, kept only for enabled safety alerts (P3a-W). */
+  safetyRetainedDevices?: SmartDevice[];
+  safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenMiDevices?: readonly CapabilityIndexedDevice[];
   /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
   groupOwnerByMemberDid: Map<string, string>;
@@ -1646,6 +1651,7 @@ async function performSignOutSingleMiAccountOnHost(
       ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
       reconcileActiveCameraAfterDeviceRestore(host, dualRoutesBeforeRemoval);
     } else if (isXiaomiSnapshot) {
+      dropMiotTypePruneSnapshotForAccount(host, accountId);
       if (removedIds.size > 0) {
         host.devices = host.devices.filter((d) => !removedIds.has(d.id));
         host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
@@ -1872,6 +1878,7 @@ export function finishAllMiAccountsSignedOutOnHost(
     host.waitingDeviceIds?.clear();
   }
   host.cameraLive?.discardRetainedCloudSessions?.();
+  applyMiotTypePruneSnapshot(host, null);
   host.settings.cachedXiaomiDevices = [];
   host.miSessionExpired = false;
   host.cloudValuesStale = false;

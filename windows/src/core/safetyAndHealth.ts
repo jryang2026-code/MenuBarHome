@@ -183,22 +183,31 @@ const VIBRATION_TOKENS = ["vibration", "tamper", "shake", "tilt", "震动", "振
 const CONTACT_TOKENS = ["magnet", "contact", "door", "window", "opening", "门窗", "門窗", "门磁", "窗磁"];
 const MOTION_TOKENS = ["motion", "occupancy", "presence", "pir", "人体", "人體", "人在", "移动", "移動"];
 
-function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
+const looksLikeLockMetadata = (lower: string): boolean =>
+  (lower.includes("lock") && !lower.includes("clock") && !lower.includes("block") && !lower.includes("child")) ||
+  lower.includes("门锁") ||
+  lower.includes("門鎖");
+
+/**
+ * Every sensor-alert kind the given metadata can plausibly report, in the order
+ * `inferSensorKindFromMetadata` prefers. A read plan asks this to decide which alert signals a
+ * hidden device must keep reading (P3a-W); evaluation still asks the single-kind form.
+ */
+export function inferSensorAlertKindsFromMetadata(text: string): SensorAlertKind[] {
   const lower = text.toLowerCase();
-  if (SMOKE_TOKENS.some((t) => lower.includes(t))) return "smoke";
-  if (GAS_TOKENS.some((t) => lower.includes(t))) return "gas";
-  if (LEAK_TOKENS.some((t) => lower.includes(t))) return "leak";
-  if (VIBRATION_TOKENS.some((t) => lower.includes(t))) return "vibration";
-  if (
-    (lower.includes("lock") && !lower.includes("clock") && !lower.includes("block") && !lower.includes("child")) ||
-    lower.includes("门锁") ||
-    lower.includes("門鎖")
-  ) {
-    return "lock";
-  }
-  if (CONTACT_TOKENS.some((t) => lower.includes(t))) return "contact";
-  if (MOTION_TOKENS.some((t) => lower.includes(t))) return "motion";
-  return null;
+  const kinds: SensorAlertKind[] = [];
+  if (SMOKE_TOKENS.some((t) => lower.includes(t))) kinds.push("smoke");
+  if (GAS_TOKENS.some((t) => lower.includes(t))) kinds.push("gas");
+  if (LEAK_TOKENS.some((t) => lower.includes(t))) kinds.push("leak");
+  if (VIBRATION_TOKENS.some((t) => lower.includes(t))) kinds.push("vibration");
+  if (looksLikeLockMetadata(lower)) kinds.push("lock");
+  if (CONTACT_TOKENS.some((t) => lower.includes(t))) kinds.push("contact");
+  if (MOTION_TOKENS.some((t) => lower.includes(t))) kinds.push("motion");
+  return kinds;
+}
+
+function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
+  return inferSensorAlertKindsFromMetadata(text)[0] ?? null;
 }
 
 const CLEAR_STATUS_TOKENS = [

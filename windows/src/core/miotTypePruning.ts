@@ -3,24 +3,36 @@ import {
   partitionCapabilityDevices, SENSOR_ALERT_TO_SAFETY_SIGNAL,
   type CapabilityIndexedDevice, type CapabilitySelection, type DeviceSetPartition, type SafetySignalKind,
 } from "./capabilityReferenceVerdict.js";
-import { inferFallbackSpec, type MiotDeviceSpec } from "./miCloud/spec.js";
+import { inferFallbackSpec, miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
 import { MiotSynthesizer } from "./miCloud/synthesis.js";
 import type { MiDeviceRecord, MiotPropKey } from "./miCloud/client.js";
-import { SENSOR_ALERT_KINDS, sensorAlertEnabledByDefault, type SensorAlertKind, type SensorAlertPolicy } from "./safetyAndHealth.js";
+import {
+  inferSensorAlertKindsFromMetadata, SENSOR_ALERT_KINDS, sensorAlertEnabledByDefault,
+  type SensorAlertKind, type SensorAlertPolicy,
+} from "./safetyAndHealth.js";
 
 /**
- * The desktop-alert signals a closed device category still reads for, per `architecture.md` §D.
- * Only alerts the user can switch on and off are listed: long-run, high-power, offline and low
- * battery have no per-kind switch yet, so there is nothing to retain for them without a setting.
+ * Only a sensor card or a generic facet card can carry a binary safety alert. Smoke, gas, leak,
+ * contact, motion, vibration and lock sensors all synthesize one of those, and the alert engine
+ * infers the kind from the same metadata used here.
  */
-const CATEGORY_SAFETY_SIGNALS: Readonly<Partial<Record<DeviceCategoryID, readonly SafetySignalKind[]>>> = {
-  // Mi smoke, gas, leak, contact, motion, vibration and lock sensors all synthesize a `sensor` card
-  // whose alert labels come from its own card properties.
-  sensor: SENSOR_ALERT_KINDS.map((kind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]),
-  // A generic card has no builder: its state, including alert labels, is every readable facet
-  // property, so it cannot be split into "alert-only" reads.
-  generic: SENSOR_ALERT_KINDS.map((kind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]),
-};
+const SAFETY_SIGNAL_CATEGORIES: ReadonlySet<DeviceCategoryID> = new Set<DeviceCategoryID>(["sensor", "generic"]);
+
+/**
+ * Which alerts this card could report, from the metadata the alert engine itself reads (model,
+ * name, device type, service and property names). A water-leak sensor therefore keeps only its
+ * leak reads, and a device that names no safety signal is pruned completely once its type is off.
+ * Long-run, high-power, offline and low-battery alerts have no per-kind setting, so closing a
+ * category there is the user's only switch and nothing is retained for them.
+ */
+function safetySignalsFor(record: MiDeviceRecord, category: DeviceCategoryID, spec: MiotDeviceSpec): SafetySignalKind[] {
+  if (!SAFETY_SIGNAL_CATEGORIES.has(category)) return [];
+  const text = [
+    record.model, record.name, record.specType ?? "", spec.type,
+    ...spec.services.flatMap((service) => [miotShortName(service.type), ...service.properties.map((p) => miotShortName(p.type))]),
+  ].join(" ");
+  return inferSensorAlertKindsFromMetadata(text).map((kind: SensorAlertKind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
+}
 
 /** Every sensor-alert signal the host is currently evaluating, in the shared `SafetySignalKind` vocabulary. */
 export function miotSafetySignalsForSensorPolicy(policy: SensorAlertPolicy): SafetySignalKind[] {
@@ -87,12 +99,13 @@ function classifyRecord(record: MiDeviceRecord, spec: MiotDeviceSpec): Classifie
       deviceId: plan.planId,
       name: plan.name,
       category,
-      safetySignals: CATEGORY_SAFETY_SIGNALS[category] ?? [],
+      safetySignals: safetySignalsFor(record, category, plan.spec),
       required: plan.required,
       facets: plan.facets,
-      // A hidden card only needs the reads its alert comes from. A card without a builder has no
-      // card properties at all, so its facet reads are the alert source.
-      safetyReadKeys: plan.required.length > 0 ? plan.required : plan.facets,
+      // Either layer can raise the alert: a dedicated card reads its state from card properties,
+      // while a facet carries the alarm label of a builder-less card. Keep both, and stop them all
+      // once the matching alert is switched off.
+      safetyReadKeys: [...plan.required, ...plan.facets],
     };
   });
 }

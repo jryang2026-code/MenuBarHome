@@ -11,7 +11,9 @@ import { parseMiotDeviceSpec, type MiotDeviceSpec } from "../src/core/miCloud/sp
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
 import { propKeyString, type MiDeviceRecord, type MiotPropKey } from "../src/core/miCloud/client.js";
 import { buildMiotTypePrunePlan, miotSafetySignalsForSensorPolicy } from "../src/core/miotTypePruning.js";
-import { createDefaultSensorAlertPolicy, evaluateSensorAlerts } from "../src/core/safetyAndHealth.js";
+import {
+  createDefaultSensorAlertPolicy, evaluateSensorAlerts, inferSensorAlertKindsFromMetadata,
+} from "../src/core/safetyAndHealth.js";
 import type { SmartDevice } from "../src/core/models.js";
 import { makeMiAccount, mergeMiAccountSnapshots, refreshMiAccountsConcurrently, type AccountChildSnapshot } from "../src/core/miAccountsStore.js";
 import { buildIndexedCapabilityDevices, resolveMiAccountSelectionState } from "../src/core/miAccountControl.js";
@@ -114,7 +116,7 @@ describe("Mi device-type pruning (P3a-W)", () => {
     assert.equal(plan.safetyRetainedDeviceIds.size, 0);
   });
 
-  it("drops a closed cover and keeps only the alert reads of a closed sensor type", () => {
+  it("drops a closed cover and keeps the alert reads of a closed sensor type", () => {
     const plan = planWith(["light", "plug"]);
     // A closed curtain carries no safety signal, so it costs no reads at all.
     assert.equal(plan.visibleDeviceIds.has("curtain"), false);
@@ -131,14 +133,34 @@ describe("Mi device-type pruning (P3a-W)", () => {
         ...readIds(MiotSynthesizer.facetProps(record("light"), spec("light"))),
       ])].sort(),
     );
-    // A retained sensor keeps its signal reads and loses only the drawer-only ones.
+    // A retained sensor keeps every read its alert can come from - card properties or facets -
+    // but it is no longer a card.
     for (const did of ["leak", "contact", "lock"] as const) {
       assert.equal(plan.visibleDeviceIds.has(did), false, did);
       assert.ok(plan.safetyRetainedDeviceIds.has(did), did);
-      const safety = readsOf(plan.readKeys, did);
-      assert.ok(safety.length > 0, did);
-      assert.deepEqual(safety, [...new Set(readIds(MiotSynthesizer.requiredProps(record(did), spec(did))))].sort(), did);
+      assert.deepEqual(
+        readsOf(plan.readKeys, did),
+        [...new Set([
+          ...readIds(MiotSynthesizer.requiredProps(record(did), spec(did))),
+          ...readIds(MiotSynthesizer.facetProps(record(did), spec(did))),
+        ])].sort(),
+        did,
+      );
     }
+  });
+
+  it("derives each device's own signals, so an unrelated hidden device stops reading", () => {
+    // Only a smoke alert is on: a water-leak sensor has nothing to contribute and is pruned whole,
+    // and the generic fish tank names no safety signal at all.
+    const smokeOnly = planWith(["light"], ["smoke"]);
+    assert.equal(smokeOnly.safetyRetainedDeviceIds.has("leak"), false);
+    assert.equal(smokeOnly.readKeys.some((key) => key.did === "leak"), false);
+    assert.equal(smokeOnly.readKeys.some((key) => key.did === "tank"), false);
+    assert.ok(smokeOnly.safetyRetainedDeviceIds.has("smoke"));
+    // A contact sensor reports contact, not smoke.
+    assert.equal(smokeOnly.safetyRetainedDeviceIds.has("contact"), false);
+    // And with the leak alert on, the same sensor is back.
+    assert.ok(planWith(["light"], ["leak"]).safetyRetainedDeviceIds.has("leak"));
   });
 
   it("keeps a facet-only card's alert reads, because that is where its labels live", () => {
@@ -210,6 +232,16 @@ describe("Mi device-type pruning (P3a-W)", () => {
     });
     assert.equal(unknown.visibleDeviceIds.has("curtain"), true);
     assert.ok(readsOf(unknown.readKeys, "curtain").length > 0);
+  });
+
+  it("infers a device's own alert kinds from the same metadata the evaluator reads", () => {
+    // The single-kind form evaluation uses stays the first match of the multi-kind form.
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("bkxh.flood.yf02 submersion-state"), ["leak"]);
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("bkxh.sensor_smoke.s1 smoke-sensor"), ["smoke"]);
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("bkxh.sensor_gas.s2 gas-sensor"), ["gas"]);
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("bkxh.magnet.yf01 magnet-sensor contact-state"), ["contact"]);
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("bdf668.lock.mf24n door-state"), ["lock", "contact"]);
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("209754.fishbowl.tank01 fish-tank"), []);
   });
 
   it("maps sensor-alert settings to the shared safety-signal vocabulary", () => {
