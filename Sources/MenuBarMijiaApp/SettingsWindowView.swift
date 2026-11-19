@@ -784,9 +784,7 @@ private struct GeneralSettingsTab: View {
                                 Spacer()
                                 GlassSegmentedControl(
                                     selection: $panelThemeRaw,
-                                    segments: PanelTheme.allCases.map {
-                                        GlassSegment(value: $0.rawValue, title: $0.title)
-                                    }
+                                    segments: PanelTheme.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
                                 )
                                 .frame(width: 210)
                             }
@@ -803,9 +801,7 @@ private struct GeneralSettingsTab: View {
                                 Spacer()
                                 GlassSegmentedControl(
                                     selection: $panelHeightRaw,
-                                    segments: PanelHeight.allCases.map {
-                                        GlassSegment(value: $0.rawValue, title: $0.title)
-                                    }
+                                    segments: PanelHeight.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
                                 )
                                 .frame(width: 210)
                             }
@@ -817,10 +813,7 @@ private struct GeneralSettingsTab: View {
 
                         SettingsToggleRow(
                             title: L10n.tr("双列紧凑磁贴视图", "2-Column Compact Grid"),
-                            isOn: Binding(
-                                get: { store.isCompactGridMode },
-                                set: { store.isCompactGridMode = $0 }
-                            )
+                            isOn: Binding(get: { store.isCompactGridMode }, set: { store.isCompactGridMode = $0 })
                         )
                         .settingsRow(anchor: .compactGrid)
 
@@ -832,10 +825,7 @@ private struct GeneralSettingsTab: View {
 
                         SettingsToggleRow(
                             title: L10n.tr("灯组内的单灯不重复显示", "Hide individual lights inside groups"),
-                            isOn: Binding(
-                                get: { store.hideGroupedLights },
-                                set: { store.hideGroupedLights = $0 }
-                            )
+                            isOn: Binding(get: { store.hideGroupedLights }, set: { store.hideGroupedLights = $0 })
                         )
                         .settingsRow(anchor: .hideGroupedLights)
 
@@ -1050,13 +1040,9 @@ private struct GeneralSettingsTab: View {
                 }
             }
         }
-        .task {
-            await HotkeyAndNotificationManager.shared.refreshNotificationPermission()
-        }
+        .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {
-            if initialExpandAdvancedDisplay {
-                showsAdvancedDisplay = true
-            }
+            if initialExpandAdvancedDisplay { showsAdvancedDisplay = true }
             launchAtLogin.refresh()
         }
         .onChange(of: initialExpandAdvancedDisplay) { _, newValue in
@@ -1218,10 +1204,7 @@ enum HAConnectionSaveGuard {
 }
 
 enum ConnectionSettingsDisclosure {
-    static let advancedConnectionAnchors: Set<SettingsAnchor> = [
-        .miMultiAccounts,
-        .dualSourceFusion,
-    ]
+    static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts, .dualSourceFusion]
 
     static func shouldExpandAdvancedConnections(
         forHighlight highlight: SettingsAnchor?,
@@ -1331,11 +1314,7 @@ private struct ConnectionSettingsTab: View {
 
             if store.homeBackend != .demo {
                 SettingsSection(title: L10n.tr("米家", "Xiaomi Home"), anchor: .miAccount) {
-                    MiAccountSection(
-                        store: store,
-                        showsInlineAddAccountButton: false,
-                        addAccountTrigger: addMiAccountTrigger
-                    )
+                    MiAccountSection(store: store, showsInlineAddAccountButton: false, addAccountTrigger: addMiAccountTrigger)
                 }
 
                 if showsHomeAssistantForm {
@@ -1418,7 +1397,7 @@ private struct ConnectionSettingsTab: View {
 
                 SettingsSection(title: L10n.tr("高级连接选项", "Advanced Connection Options")) {
                     DisclosureGroup(isExpanded: $showsAdvancedConnections) {
-                        VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .top, spacing: 12) {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))
@@ -1432,9 +1411,7 @@ private struct ConnectionSettingsTab: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 8)
-                                Button {
-                                    addMiAccountTrigger &+= 1
-                                } label: {
+                                Button { addMiAccountTrigger &+= 1 } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "plus.circle")
                                         Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))
@@ -1447,11 +1424,8 @@ private struct ConnectionSettingsTab: View {
                             Divider().overlay(Color.primary.opacity(0.06))
 
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(L10n.tr(
-                                    "同时连接多个家居平台（相同设备自动合并）",
-                                    "Connect Multiple Home Platforms Together (Duplicate Devices Merge Automatically)"
-                                ))
-                                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                                Text(L10n.tr("同时连接多个家居平台（相同设备自动合并）", "Connect Multiple Home Platforms Together (Duplicate Devices Merge Automatically)"))
+                                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
                                 Text(L10n.tr(
                                     "同时配置米家与 Home Assistant 后，应用会自动并行连接，并把同一台设备合并成一张卡片，无需手动切换平台。",
                                     "When both Xiaomi Home and Home Assistant are configured, the app connects to both in parallel and merges duplicate devices into a single tile without manual platform switching."
@@ -1462,18 +1436,11 @@ private struct ConnectionSettingsTab: View {
                             }
                             .settingsRow(anchor: .dualSourceFusion)
                         }
-                        .padding(.top, 8)
+                        .padding(.top, 6)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(L10n.tr("多账号与多平台合并", "Multiple Accounts & Multi-Platform Merge"))
-                                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                            Text(L10n.tr(
-                                "添加更多米家账号、同时连接多个家居平台（相同设备自动合并）。",
-                                "Add another Xiaomi Home account or connect multiple platforms together."
-                            ))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
+                        Text(L10n.tr("多账号与多平台合并", "Multiple Accounts & Multi-Platform Merge"))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                             .foregroundStyle(DesignTokens.secondaryText)
-                        }
                     }
                 }
             }
@@ -1482,18 +1449,12 @@ private struct ConnectionSettingsTab: View {
         .onDisappear { unsaved?.unregister("home-assistant") }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
-            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(
-                forHighlight: highlight,
-                accountCount: store.miAccounts.count
-            ) {
+            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: highlight, accountCount: store.miAccounts.count) {
                 showsAdvancedConnections = true
             }
         }
         .onAppear {
-            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(
-                forHighlight: searchFocus?.highlight,
-                accountCount: store.miAccounts.count
-            ) {
+            if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: searchFocus?.highlight, accountCount: store.miAccounts.count) {
                 showsAdvancedConnections = true
             }
             urlDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
