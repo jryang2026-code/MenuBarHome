@@ -1056,7 +1056,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
         let status = store.sourceStatuses[.xiaomiCloud]
-            ?? (store.connectedBackends.contains(.xiaomiCloud) ? store.connectionStatus : .connecting)
+            ?? (store.connectedBackends.contains(.xiaomiCloud) || !store.hasHASource ? store.connectionStatus : .connecting)
         switch status {
         case .connected:
             if store.effectiveLocalNetworkBlocks.contains(.xiaomiLAN) {
@@ -1094,7 +1094,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
             )
         }
         let status = store.sourceStatuses[.homeAssistant]
-            ?? (store.connectedBackends.contains(.homeAssistant) ? store.connectionStatus : .connecting)
+            ?? (store.connectedBackends.contains(.homeAssistant) || !store.hasMiSource ? store.connectionStatus : .connecting)
         switch status {
         case .connected:
             return PanelConnectionSourceItem(id: "ha", name: name, statusText: L10n.tr("在线", "Online"), isOnline: true, badge: .online)

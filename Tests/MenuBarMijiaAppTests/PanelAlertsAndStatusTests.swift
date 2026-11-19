@@ -293,6 +293,19 @@ struct PanelAlertsAndStatusTests {
         #expect(store.missedScheduledCommands.map(\.id) == [missed.id])
     }
 
+    @Test("A sole source shows its real disconnect instead of connecting forever")
+    func soleSourceKeepsDisconnectedStatus() {
+        let (store, suite) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.connectedBackends = []
+        store.sourceStatuses = [:]
+        store.connectionStatus = .disconnected("401 invalid token")
+
+        let status = PanelConnectionStatusPresentation.resolve(store: store)
+        #expect(status.badge == .reauthRequired)
+        #expect(status.sources.first { $0.id == "ha" }?.badge == .reauthRequired)
+    }
+
     @Test("Footer connection status copy follows §4.1 and §4.2 across zh-Hans, zh-Hant, and en")
     func footerConnectionStatusCopy() {
         // 1. All healthy
