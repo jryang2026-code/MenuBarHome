@@ -32,7 +32,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -816,7 +816,7 @@ export async function setMiAccountEnabledOnHost(
         .filter((d) => cachedOwnerOf(d) === accountId)
         .map((d) => snapshotDisabledMiDevice(d, accountId));
   const ownedScenes = isXiaomiSnapshot
-    ? host.scenes.filter((s) => sceneOwnerOf(s) === accountId && !(survivingSceneIds?.has(s.id)))
+    ? collectHostKnownScenes(host).filter((s) => sceneOwnerOf(s) === accountId && !(survivingSceneIds?.has(s.id)))
     : [];
   const sceneSnapshots = ownedScenes.map((s) => snapshotDisabledMiScene(s, accountId));
   const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);

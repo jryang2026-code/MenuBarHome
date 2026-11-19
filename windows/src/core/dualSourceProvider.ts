@@ -1031,6 +1031,11 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getLastHASnapshot(): DualSourceInputSnapshot | null { return this.lastHA;
   }
 
+  /** Last Xiaomi input committed by `refreshParallel`. Dual-source merge only forwards Home
+   * Assistant scenes to `merged.home.scenes`, so callers that need Xiaomi scenes read them here. */
+  getLastMiSnapshot(): DualSourceInputSnapshot | null { return this.lastMi;
+  }
+
   reset(): void {
     this.mutationEpoch += 1;
     this.lastHA = null;

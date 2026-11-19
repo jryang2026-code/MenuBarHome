@@ -31,9 +31,13 @@ import { AutomationRuleStore, createAutomationRule } from "../src/core/automatio
 import { DualSourceCoordinator } from "../src/core/dualSourceProvider.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { makeMiAccount } from "../src/core/miAccountsStore.js";
+import { evaluateControlTargetGate } from "../src/core/capabilityReferenceVerdict.js";
+import type { HomeScene } from "../src/core/models.js";
 import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   buildIndexedCapabilityDevices,
+  evaluateDeviceEntityWriteGate,
+  evaluateDisabledSceneUrlGate,
   evaluateIntentsWriteGate,
   filterEnabledMiAccounts,
   miAccountScope,
@@ -2166,6 +2170,139 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     assert.equal(reenabled.status, "applied");
     const rawAfterReenable = JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as Record<string, unknown>;
     assert.equal(rawAfterReenable["knownDisabledScenes"], undefined, "knownDisabledScenes must be cleaned up after re-enable refresh");
+  });
+
+  it("snapshots dual-source Xiaomi scenes that only live on the coordinator or multi-account children so disabled-account gates reject instead of failing open (4624246983)", async () => {
+    const transport: HttpTransport = async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: `Home-${user}`, roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return user === "10001"
+          ? okMi({ list: [{ did: "101", name: "米家书房灯", model: LIGHT_MODEL, isOnline: true }] })
+          : okMi({ list: [{ did: "201", name: "米家卧室灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        return okMi([
+          { did: "101", siid: 2, piid: 1, code: 0, value: true }, { did: "101", siid: 2, piid: 2, code: 0, value: 80 },
+          { did: "201", siid: 2, piid: 1, code: 0, value: true }, { did: "201", siid: 2, piid: 2, code: 0, value: 60 },
+        ]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    app.settings.haBaseURL = "https://ha.example.test:8123";
+    app.settings.haToken = "ha-tok";
+    setHostDualSourceEnabled(app, true, { persist: true });
+    setHostHAInvokeOverride(app, async <T>(cmd: string): Promise<T> => {
+      if (cmd === "ha_snapshot") {
+        return ({
+          areas: [],
+          devices: [{ id: "ha-dev-1", name: "HA客厅灯" }],
+          entities: [{ entity_id: "light.ha_living", device_id: "ha-dev-1" }],
+          states: [
+            { entity_id: "light.ha_living", state: "on", attributes: { friendly_name: "HA客厅灯", brightness: 120 } },
+            { entity_id: "scene.ha_movie", state: "on", attributes: { friendly_name: "HA观影" } },
+          ],
+        } as unknown) as T;
+      }
+      return (null as unknown) as T;
+    });
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+    await store.upsertAccount(SESS_B);
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+
+    // The dual-source merge copies only Home Assistant scenes into host.scenes; Xiaomi scenes stay
+    // on the coordinator's Mi snapshot and on the multi-account child/merged snapshots.
+    assert.deepEqual(app.scenes.map((s) => s.id), ["scene.ha_movie"], "dual-source host.scenes must stay Home-Assistant-only here");
+    const multiState = app.multiAccountState!;
+    const childA = multiState.children[ACC_A]!, childB = multiState.children[ACC_B]!;
+    assert.ok(childA && childB && multiState.merged);
+
+    const miSceneFromLastMi: HomeScene = { id: "mi_scene_night", name: "米家晚安", entityId: "101.2.a1" };
+    const miSceneFromChild: HomeScene = { id: "mi_scene_noon", name: "米家午休", entityId: "101.2.a2", accountId: ACC_A, sourceBackend: "xiaomiCloud" };
+    const miSceneFromChildB: HomeScene = { id: "mi_scene_bedroom", name: "米家次卧", entityId: "201.2.a1", accountId: ACC_B, sourceBackend: "xiaomiCloud" };
+
+    app.multiAccountState = {
+      accounts: multiState.accounts,
+      merged: { ...multiState.merged!, home: { ...multiState.merged!.home, scenes: [miSceneFromChild, miSceneFromChildB] } },
+      children: {
+        [ACC_A]: { ...childA, home: { ...childA.home, scenes: [miSceneFromChild] } },
+        [ACC_B]: { ...childB, home: { ...childB.home, scenes: [miSceneFromChildB] } },
+      },
+    };
+
+    const coordinator = app.dualSourceCoordinator!;
+    const mergedHome = app.multiAccountState.merged!.home;
+    await coordinator.refreshParallel({
+      fetchHA: async () => coordinator.getLastHASnapshot()!,
+      fetchMi: async () => ({
+        home: { ...mergedHome, scenes: [miSceneFromLastMi] },
+        homes: app.multiAccountState!.merged!.homes,
+        accountStatuses: app.multiAccountState!.merged!.accountStatuses,
+      }),
+    });
+    assert.equal(coordinator.getLastMerged()?.home.scenes.some((s) => s.id === miSceneFromLastMi.id) ?? false, false,
+      "dual-source merge drops Xiaomi scenes from merged.home.scenes — the scene collector has to read the Mi snapshot");
+
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_mi_dual_scene", isEnabled: true, trigger: "screenLocked", action: { kind: "scene", sceneId: miSceneFromChild.id } }),
+    ]);
+
+    // Preflight/capability indexing must see the Xiaomi scenes even though host.scenes is HA-only.
+    const preflight = buildHostCapabilityContext(app, [makeMiAccount(SESS_A), makeMiAccount(SESS_B)]);
+    assert.deepEqual(
+      new Set(preflight.scenes.map((s) => s.id)),
+      new Set(["scene.ha_movie", miSceneFromLastMi.id, miSceneFromChild.id, miSceneFromChildB.id]),
+      "capability context must merge HA scenes with Xiaomi scenes from the coordinator and multi-account snapshots",
+    );
+
+    const preview = await setMiAccountEnabledOnHost(app, ACC_A, false);
+    assert.equal(preview.status, "requiresPauseConfirmation", "dual-source Xiaomi scene automation must require pause confirmation");
+    const applied = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
+    assert.equal(applied.status, "applied");
+    assert.equal(ruleStore.load().find((r) => r.id === "r_mi_dual_scene")?.isEnabled, false, "rule on the disabled account's Xiaomi scene must pause");
+
+    const raw = JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as {
+      knownDisabledScenes?: Array<{ id: string; accountId: string }>;
+    };
+    const snapshots = raw.knownDisabledScenes ?? [];
+    assert.equal(snapshots.some((s) => s.id === miSceneFromLastMi.id), true, "Xiaomi scene cached only on the coordinator must be snapshotted");
+    assert.equal(snapshots.some((s) => s.id === miSceneFromChild.id), true, "Xiaomi scene cached on a multi-account child must be snapshotted");
+    assert.equal(snapshots.find((s) => s.id === miSceneFromLastMi.id)?.accountId, ACC_A, "snapshot must be attributed to the disabled account");
+    assert.equal(snapshots.some((s) => s.id === miSceneFromChildB.id), false, "surviving account's Xiaomi scene must not be snapshotted");
+    assert.deepEqual(app.scenes.map((s) => s.id), ["scene.ha_movie"], "HA scenes must stay on the panel after disabling the Xiaomi account");
+
+    const ctx = buildHostCapabilityContext(app, [makeMiAccount(SESS_A), makeMiAccount(SESS_B)]);
+    // 1. Direct entity write gate by Xiaomi entityId/id rejects as disabled instead of failing open.
+    assert.match(
+      evaluateDeviceEntityWriteGate({ targetKind: "scene", targetIdOrEntityId: miSceneFromLastMi.entityId, resolvedActiveDeviceId: null, context: ctx }) ?? "",
+      /该米家账号已停用/,
+      "direct scene write by entityId must report the disabled Xiaomi account",
+    );
+    assert.match(
+      evaluateDeviceEntityWriteGate({ targetKind: "scene", targetIdOrEntityId: miSceneFromChild.id, resolvedActiveDeviceId: null, context: ctx }) ?? "",
+      /该米家账号已停用/,
+      "direct scene write by scene id must report the disabled Xiaomi account",
+    );
+    // 2. Low-level control gate resolves the snapshotted scene and rejects on the disabled scope.
+    const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(ctx);
+    const controlGate = evaluateControlTargetGate({ targetKind: "scene", targetId: miSceneFromChild.id, selection: ctx.state.selection, devices: indexedDevices, scenes: sceneRefs });
+    assert.equal(controlGate.allowed, false);
+    assert.equal(controlGate.rejectionReason?.code, "connectionScopeDisabled", "disabled Xiaomi scene must not degrade to sceneNotFound");
+    // 3. Scene URL activation by name and by id reports the disabled account instead of "不存在".
+    assert.match(evaluateDisabledSceneUrlGate("米家晚安", app.settings) ?? "", /该米家账号已停用/);
+    assert.match(evaluateDisabledSceneUrlGate(miSceneFromChild.id, app.settings) ?? "", /该米家账号已停用/);
+    // 4. Home Assistant scenes and the surviving Xiaomi account stay unaffected.
+    assert.equal(evaluateDeviceEntityWriteGate({ targetKind: "scene", targetIdOrEntityId: "scene.ha_movie", resolvedActiveDeviceId: null, context: ctx }), null);
+    assert.equal(evaluateDeviceEntityWriteGate({ targetKind: "scene", targetIdOrEntityId: miSceneFromChildB.id, resolvedActiveDeviceId: null, context: ctx }), null);
   });
 
   it("aborts Xiaomi account re-enable when capability selection persistence fails so UI rolls back and paused items still revalidate on retry (4623897095)", async () => {

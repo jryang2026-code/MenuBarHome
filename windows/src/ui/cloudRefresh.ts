@@ -93,15 +93,46 @@ export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts:
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
   Boolean(session && isMiSessionEnabledInState(session, resolveHostMiSelectionState(host, [makeMiAccount(session)])));
 
+export interface HostSceneSource {
+  readonly scenes?: readonly HomeScene[] | null;
+}
+
+/**
+ * Every scene the host currently knows about, deduplicated by id (first source wins).
+ *
+ * In dual-source mode `host.scenes` only carries the merged Home Assistant scenes, because the
+ * merge copies `haInput.home.scenes` and drops Xiaomi scenes. Xiaomi scenes therefore stay on the
+ * multi-account merged/child snapshots and on the coordinator's last Mi input; leaving them out
+ * makes disable preflight, capability indexing and the disabled-scene gates blind to them.
+ */
+export function collectHostKnownScenes(
+  host: DualSourceInspectableHost & HostSceneSource & { readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null },
+): readonly HomeScene[] {
+  const seen = new Set<string>();
+  const out: HomeScene[] = [];
+  const push = (list: readonly HomeScene[] | null | undefined): void => {
+    for (const scene of list ?? []) {
+      if (!scene || seen.has(scene.id)) continue;
+      seen.add(scene.id);
+      out.push(scene);
+    }
+  };
+  push(host.scenes);
+  push(host.multiAccountState?.merged?.home.scenes);
+  for (const child of Object.values(host.multiAccountState?.children ?? {})) push(child?.home.scenes);
+  if (isDualSourceEnabled(host)) push(host.dualSourceCoordinator?.getLastMiSnapshot()?.home.scenes);
+  return out;
+}
+
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly scenes?: readonly HomeScene[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } },
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
   return {
-    state, accounts, devices: host.devices ?? [], scenes: host.scenes ?? [],
+    state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
     ...(dualRoutes ? { dualRoutes } : {}),
     haBaseURL: host.settings.haBaseURL ?? "", haToken: host.settings.haToken ?? "",
