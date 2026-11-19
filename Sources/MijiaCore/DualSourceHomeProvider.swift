@@ -100,8 +100,13 @@ public actor DualSourceHomeProvider: HomeProvider {
         pinnedBackends: @escaping @Sendable () -> [String: HomeBackend] = { [:] },
         persistCanonicalIDs: @escaping CanonicalIDPersistence = { _ in },
         graceNow: @escaping @Sendable () -> SuspendingClock.Instant = { SuspendingClock.now },
+        // `graceNow` still measures active time on `SuspendingClock`, and `setPollingContext`
+        // cancels this recheck on system sleep and shifts the deadlines on wake, so the grace
+        // window stays frozen across sleep. Sleeping on `Task.sleep` instead of
+        // `SuspendingClock().sleep` keeps that behaviour while avoiding the x86_64 task-local
+        // allocator crash the clock sleeper hits when a pending recheck is cancelled (#274).
         graceSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
-            try await SuspendingClock().sleep(for: duration)
+            try await Task.sleep(for: duration)
         }
     ) {
         self.homeAssistant = homeAssistant
@@ -1416,6 +1421,9 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     public func shutdown() async {
         isShutDown = true
+        let haForward = haTask
+        let miForward = miTask
+        let recheck = fallbackRecheckTask
         haTask?.cancel()
         haTask = nil
         miTask?.cancel()
@@ -1423,6 +1431,13 @@ public actor DualSourceHomeProvider: HomeProvider {
         cancelFallbackRecheck()
         continuation?.finish()
         continuation = nil
+        // Await the cancelled children so no forwarding loop or grace recheck outlives teardown and
+        // races the next suite (#274). Cancelling finishes each `AsyncStream` and stops the clock
+        // sleeper; the only actor re-entry left is `handle`/`completeScheduledFallbackRecheck`,
+        // which return immediately because `isShutDown` is already set.
+        await recheck?.value
+        await haForward?.value
+        await miForward?.value
         let ha = homeAssistant
         let mi = xiaomiCloud
         await withTaskGroup(of: Void.self) { group in

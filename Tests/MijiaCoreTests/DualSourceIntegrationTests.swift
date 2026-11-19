@@ -35,6 +35,16 @@ struct DualSourceIntegrationTests {
         return home
     }
 
+    /// Awaits the whole store teardown so a grace recheck or follow-up poll cannot outlive the
+    /// test and interleave with the next suite (#274). Each test keeps its `defer { store.stop() }`
+    /// as the fallback for an early `#require` throw. `HomeStore.shutdown()` is the awaited form of
+    /// `stop()`: it also drains the resume coordinator and any pending provider shutdown instead of
+    /// leaving those on an unstructured `Task`.
+    @MainActor
+    private func stopAndAwaitShutdown(_ store: HomeStore) async {
+        await store.shutdown()
+    }
+
     @MainActor
     @Test("HA disconnect hands the paired card to Mi Cloud with its favorite and alias intact")
     func haDisconnectKeepsPreferences() async throws {
@@ -137,8 +147,8 @@ struct DualSourceIntegrationTests {
             Issue.record("handoff lost the light card")
         }
         _ = await store.togglePrimary(miDeviceForCommand)?.value
-        await store.executeQuickAction(.lightsOff)?.value
-        await store.undoTurnAllOff()?.value
+        _ = await store.executeQuickAction(.lightsOff)?.value
+        _ = await store.undoTurnAllOff()?.value
         let miCommands = await miMock.executedCommands
         #expect(miCommands.filter { $0.targetEntityId == "miot:\(did):2" }.count >= 2)
         #expect((await haMock.executedCommands).count == haCommands.count)
@@ -151,6 +161,7 @@ struct DualSourceIntegrationTests {
         #expect(store.devices.first?.id == canonical)
         #expect(store.devices.first?.name == "客厅主灯")
         #expect(store.favoriteDeviceIds.contains(canonical))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -215,6 +226,7 @@ struct DualSourceIntegrationTests {
         #expect(store.devices.first?.id == did)
         #expect(store.deviceBackend(for: did) == .homeAssistant)
         #expect(store.favoriteDeviceIds.contains(did))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -281,6 +293,7 @@ struct DualSourceIntegrationTests {
         }
         #expect(store.devices.first?.id == did)
         #expect(store.favoriteDeviceIds.contains(did))
+        await stopAndAwaitShutdown(store)
     }
 
     @Test("HA registry identifiers, connections and unique ids become pairing evidence")
@@ -465,6 +478,7 @@ struct DualSourceIntegrationTests {
 
         let miCommands = await miMock.executedCommands
         #expect(miCommands.contains(.setLightPower(entityId: "miot:\(did):2", isOn: true)))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -548,6 +562,7 @@ struct DualSourceIntegrationTests {
             return
         }
         #expect(spec.entityId == "miot:\(did):2")
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -603,6 +618,7 @@ struct DualSourceIntegrationTests {
             "HA 连接中 · 米家云未连接",
             "HA connecting · Xiaomi Cloud offline"
         ))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -678,6 +694,7 @@ struct DualSourceIntegrationTests {
             HomeBackend.homeAssistant.shortTitle,
             HomeBackend.xiaomiCloud.shortTitle
         ))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -731,6 +748,8 @@ struct DualSourceIntegrationTests {
         #expect(haOnlyStore.disconnectHomeAssistant())
         #expect(haOnlyStore.devices.isEmpty)
         #expect(haOnlyStore.rooms.isEmpty)
+        await stopAndAwaitShutdown(haOnlyStore)
+        await stopAndAwaitShutdown(storeWithMi)
     }
 
     @MainActor
@@ -835,6 +854,7 @@ struct DualSourceIntegrationTests {
         let recoveredLight = try #require(store.devices.first { $0.id == pairedLightID })
         #expect(recoveredLight.isOnline == true)
         #expect(recoveredLight.telemetryStale == false)
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -945,6 +965,7 @@ struct DualSourceIntegrationTests {
         let camCardDuringRetry = try #require(store.devices.first { $0.id == haCamId })
         #expect(camCardDuringRetry.isOnline == true)
         #expect(camCardDuringRetry.telemetryStale == false)
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1074,6 +1095,7 @@ struct DualSourceIntegrationTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(store.panelHealth == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
         }
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1118,6 +1140,7 @@ struct DualSourceIntegrationTests {
         }
         #expect(sawLocalNetworkBlockedWhenOnline == true)
         await haProvider.shutdown()
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1195,6 +1218,7 @@ struct DualSourceIntegrationTests {
         }
         #expect(standaloneSawBlocked == false)
         await standaloneProvider.shutdown()
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1356,5 +1380,6 @@ struct DualSourceIntegrationTests {
         let api2Targets = await api2.setPropsCalls.flatMap { $0.map(\.did) }
         #expect(api2Targets.contains(studyMiDID))
         #expect(api2Targets.contains("de-light-2"))
+        await stopAndAwaitShutdown(store)
     }
 }
