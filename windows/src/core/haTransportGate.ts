@@ -555,8 +555,7 @@ export function clearHaScopeLifecycle(scope?: string | null): void {
   entries.delete(normalized);
 }
 
-function finishDrain(scope: string, entry: ScopeLifecycleEntry, storage?: HaGateStorageLike | null): void {
-  if (activeInFlight(entry) > 0 || getScopeEntries().get(scope) !== entry) return;
+function finishDrain(scope: string, entry: ScopeLifecycleEntry, storage?: HaGateStorageLike | null): void {  if (activeInFlight(entry) > 0 || getScopeEntries().get(scope) !== entry) return;
   clearDrainTimer(entry);
   entry.stopTimedOut = false;
   const disabled = isHaScopeDisabledInStorage(scope, storage);
@@ -646,6 +645,53 @@ export function subscribeHaScopeLifecycle(
   return () => {
     listeners.delete(listener);
   };
+}
+
+export interface HaDrainWaitResult {
+  readonly drained: boolean;
+  readonly timedOut: boolean;
+}
+
+/**
+ * Resolves once nothing of `scope` is still in flight, or when the stop drain times out.
+ *
+ * Connection removal uses this between "stop using it" and "delete its credentials": a transport
+ * still holding the old generation must finish (or time out) before the token it carries is gone.
+ */
+export function waitForHaScopeDrained(
+  scope: string | null | undefined,
+  timeoutMs: number = getHaStopDrainTimeoutMs(),
+): Promise<HaDrainWaitResult> {
+  const normalized = haConnectionScope(scope);
+  if (!normalized || getHaScopeInFlightCount(normalized) === 0) {
+    return Promise.resolve({ drained: true, timedOut: false });
+  }
+  return new Promise<HaDrainWaitResult>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let unsubscribe = (): void => undefined;
+    const finish = (result: HaDrainWaitResult): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      unsubscribe();
+      resolve(result);
+    };
+    timer = setTimeout(() => finish({ drained: false, timedOut: true }), Math.max(1, timeoutMs));
+    unsubscribe = subscribeHaScopeLifecycle((changed, phase) => {
+      if (changed !== normalized) return;
+      if (phase === "stop_timeout") {
+        finish({ drained: false, timedOut: true });
+        return;
+      }
+      if (phase === "disabled" || phase === "enabled") {
+        finish({ drained: getHaScopeInFlightCount(normalized) === 0, timedOut: false });
+      }
+    });
+    // The drain may have finished between the check above and the subscription.
+    if (getHaScopeInFlightCount(normalized) === 0) finish({ drained: true, timedOut: false });
+    else if (isHaScopeStopTimedOut(normalized)) finish({ drained: false, timedOut: true });
+  });
 }
 
 export function resetHaTransportGateForTests(): void {

@@ -46,6 +46,7 @@ import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./ap
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
 import { applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled } from "./cloudRefresh.js";
 import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
+import { clearConnectionRemovals, pendingConnectionRemovalScopes } from "../core/connectionRemoval.js";
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
@@ -525,6 +526,9 @@ export async function removeActiveAssistantProvider(host: SettingsEventsHost): P
 
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
+  // Revoke-all supersedes any single-connection removal: everything is being wiped here, and a
+  // stale record would keep a later sign-in disabled by the removal overlay (P2c-W).
+  clearConnectionRemovals();
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
   }
@@ -696,6 +700,22 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   const prevOpenRouterApiKey = host.settings.openRouterApiKey;
   const prevAssistantKeyEndpoint = host.settings.assistantKeyEndpoint;
   const prevAssistantCustomKeyEndpoint = host.settings.assistantCustomKeyEndpoint;
+
+  // P2c-W: Home Assistant uses one credential slot, so an unfinished removal owns it no matter
+  // which endpoint the form is saving. Storing a new token now would be deleted by the retry.
+  if (haToken && haToken.value.trim() !== "" && pendingConnectionRemovalScopes("ha").length > 0) {
+    host.replyBanner = {
+      text: tr3(
+        "有一个 Home Assistant 连接还没移除完，请先重试清理再保存连接",
+        "有一個 Home Assistant 連線還沒移除完，請先重試清理再儲存連線",
+        "A Home Assistant removal is still unfinished; retry the cleanup before saving this connection",
+      ),
+      source: tr3("连接管理", "連線管理", "Connections"),
+      isError: true,
+    };
+    host.render();
+    return;
+  }
 
   if (haUrl) {
     let endpoint = haUrl.value.trim();
