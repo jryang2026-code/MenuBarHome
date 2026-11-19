@@ -132,6 +132,105 @@ describe("Mi Cloud response decoding (#76)", () => {
   });
 });
 
+describe("Mi Cloud empty success is a control failure, not a success", () => {
+  /** A transport whose every answer is the given plain JSON body, which is how a gateway replies. */
+  const reply = (body: unknown): HttpTransport => async () => ({
+    status: 200,
+    headers: {},
+    body: JSON.stringify(body),
+  });
+
+  const isBadResponse = (err: unknown): boolean => err instanceof MiCloudError && err.kind === "badResponse";
+
+  it("rejects a 200 plain code 0 without a usable result", () => {
+    for (const body of [{ code: 0 }, { code: 0, result: null }]) {
+      assert.throws(() => MiCloudClient.decodeResponse(JSON.stringify(body), 200, "signed"), isBadResponse);
+    }
+    // A plain envelope that does carry a payload keeps decoding, so mirrored replies stay valid.
+    assert.deepEqual(
+      MiCloudClient.decodeResponse(JSON.stringify({ code: 0, result: { list: [] } }), 200, "signed"),
+      { list: [] },
+    );
+  });
+
+  it("fails the device list instead of reporting an empty account", async () => {
+    await assert.rejects(() => new MiCloudClient(SESSION, reply({ code: 0 })).deviceList(), isBadResponse);
+  });
+
+  it("fails a prop write whose answer carries no per-device verdict", async () => {
+    const write = { did: "lamp-1", siid: 2, piid: 1, value: true };
+    for (const result of [[], null, [{ did: "lamp-1", siid: 2, piid: 1 }]]) {
+      await assert.rejects(
+        () => new MiCloudClient(SESSION, reply({ code: 0, result })).setProps([write]),
+        isBadResponse,
+      );
+    }
+  });
+
+  it("fails an action whose answer carries no device verdict", async () => {
+    const call = { did: "lamp-1", siid: 2, aiid: 1, inputs: [] };
+    for (const result of [
+      null,
+      {},
+      [],
+      { out: [] },
+      [{ out: [] }],
+      { code: "bad", out: ["x"] },
+      { did: "lamp-1", siid: 2, aiid: 1, out: [] },
+      { message: "offline" },
+      { message: "see https://example.com/help" },
+    ]) {
+      await assert.rejects(
+        () => new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call),
+        isBadResponse,
+      );
+    }
+  });
+
+  it("accepts action output without a code, because camera stream URLs arrive that way", async () => {
+    const call = { did: "cam-1", siid: 2, aiid: 1, inputs: [] };
+    const url = "https://example.com/live.m3u8";
+    for (const result of [{ out: [url] }, { url }]) {
+      assert.deepEqual(await new MiCloudClient(SESSION, reply({ code: 0, result })).callAction(call), result);
+    }
+    await assert.rejects(
+      () => new MiCloudClient(SESSION, reply({ code: 0, result: { code: -704042011, out: [url] } })).callAction(call),
+      (err: unknown) => err instanceof MiCloudError && err.code === -704042011,
+    );
+  });
+
+  it("keeps the legitimate empty answers: a verdict without output, async acceptance, and no writes", async () => {
+    const call = { did: "lamp-1", siid: 2, aiid: 1, inputs: [] };
+    const write = { did: "lamp-1", siid: 2, piid: 1, value: true };
+
+    assert.deepEqual(
+      await new MiCloudClient(SESSION, reply({ code: 0, result: { code: 0 } })).callAction(call),
+      { code: 0 },
+    );
+    assert.deepEqual(
+      await new MiCloudClient(SESSION, reply({ code: 0, result: [{ code: 0 }] })).callAction(call),
+      [{ code: 0 }],
+    );
+    await new MiCloudClient(SESSION, reply({ code: 0, result: [{ code: 0 }, { code: 1 }] })).setProps([write, write]);
+
+    let called = false;
+    const unused: HttpTransport = async () => {
+      called = true;
+      throw new Error("setProps([]) must not reach the cloud");
+    };
+    await new MiCloudClient(SESSION, unused).setProps([]);
+    assert.equal(called, false);
+  });
+
+  it("still surfaces a negative per-device code as the device's verdict", async () => {
+    const write = { did: "lamp-1", siid: 2, piid: 1, value: true };
+    await assert.rejects(
+      () => new MiCloudClient(SESSION, reply({ code: 0, result: [{ code: -704042011 }] })).setProps([write]),
+      (err: unknown) => err instanceof MiCloudError && err.code === -704042011,
+    );
+  });
+});
+
 describe("Mi Cloud room and device requests (#76 / #67)", () => {
   it("asks for app_ver 9, keeps every home's owner uid, and merges get_dev_room_page info pages", async () => {
     const pages = [
