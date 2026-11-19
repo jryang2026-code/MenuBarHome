@@ -149,7 +149,13 @@ public final class HomeStore {
     }
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
     /// while an optimistic write is locked.
-    public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
+    public internal(set) var deviceFacets: [String: [FacetControl]] = [:] {
+        didSet {
+            if !isApplyingProviderSnapshot, deviceFacets != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
     public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
@@ -582,7 +588,13 @@ public final class HomeStore {
     /// Every signed-in Mi account, primary (first) first. The panel groups by account when there is
     /// more than one, and adding an account never replaces the ones already signed in.
     public internal(set) var miAccounts: [MiAccount] = [] {
-        didSet { syncInMemoryConfiguredCapabilities() }
+        didSet {
+            syncInMemoryConfiguredCapabilities()
+            if !miAccounts.isEmpty {
+                miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
+            }
+            miAccountStatuses = miAccountStatuses.filter { id, _ in isMiAccountEnabled(id) }
+        }
     }
     /// Per-account connection state reported by `MiAccountsProvider` so Settings can flag an
     /// expired/disconnected account even while another account keeps `connectionStatus == .connected`.
@@ -618,9 +630,21 @@ public final class HomeStore {
         return .homeAssistant
     }
     /// Which provider currently drives each merged card.
-    public internal(set) var deviceBackends: [String: HomeBackend] = [:]
+    public internal(set) var deviceBackends: [String: HomeBackend] = [:] {
+        didSet {
+            if !isApplyingProviderSnapshot, deviceBackends != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     /// Cards that exist in both sources; only these offer a source pin (#111).
-    public internal(set) var pairedDeviceIDs: Set<String> = []
+    public internal(set) var pairedDeviceIDs: Set<String> = [] {
+        didSet {
+            if !isApplyingProviderSnapshot, pairedDeviceIDs != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     /// Per-source state from the latest merged snapshot; drives the dual-source footer summary (#111).
     public internal(set) var sourceStatuses: [HomeBackend: ConnectionStatus] = [:]
     /// Explicit per-card source choices, keyed by canonical card id (#111).
@@ -1050,6 +1074,7 @@ public final class HomeStore {
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
+    @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]
     /// Timers paused by an account/connection disable. Observed so the assistant bar can list them;
     /// they stay cancellable while paused.
     public internal(set) var pausedScheduledCommands: [PausedScheduledCommand] = []

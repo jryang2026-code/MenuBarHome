@@ -1636,6 +1636,120 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Panel renders calm turned-off state and footer when all configured connections are disabled")
+    func panelAllConnectionsDisabledSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok"
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+        let accountId = try #require(fixture.store.miAccounts.first?.id)
+        _ = fixture.store.setMiAccountEnabled(
+            false,
+            id: accountId,
+            pauseConfirmed: true,
+            expectedGeneration: fixture.store.capabilityGeneration
+        )
+        fixture.store.devices = []
+        fixture.store.rooms = []
+        fixture.store.environmentReadings = []
+        #expect(fixture.store.allConfiguredSourcesTurnedOff)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-all-connections-disabled-zh-light")
+            )
+        }
+    }
+
+    @Test("Panel renders healthy Devices synced footer in dual-source when Xiaomi is disabled and Home Assistant stays online")
+    func panelDualSourceMiDisabledHAOnlineSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok"
+            ),
+            configuredHASource: true
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+        fixture.store.serverURLString = "http://192.168.1.10:8123"
+        let accountId = try #require(fixture.store.miAccounts.first?.id)
+        _ = fixture.store.setMiAccountEnabled(
+            false,
+            id: accountId,
+            pauseConfirmed: true,
+            expectedGeneration: fixture.store.capabilityGeneration
+        )
+        fixture.store.connectedBackends = [.homeAssistant]
+        fixture.store.sourceStatuses = [.homeAssistant: .connected]
+        fixture.store.connectionStatus = .connected
+        #expect(fixture.store.panelHealth == .ok)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-dual-source-mi-disabled-ha-online-zh-light")
+            )
+        }
+    }
+
+    @Test("Connection settings render independent row enablement when multiple Xiaomi accounts have mixed enabled state")
+    func settingsConnectionMultiMiMixedEnabledSnapshots() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c-cn",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok-cn",
+                region: "cn"
+            ),
+            configuredHASource: false
+        )
+        defer { fixture.restore() }
+
+        let secondAccount = MiAccount(session: MiSession(
+            userId: "89012345",
+            cUserId: "c-de",
+            ssecurity: Data(repeating: 8, count: 16).base64EncodedString(),
+            serviceToken: "tok-de",
+            region: "de"
+        ))
+        fixture.store.miAccounts.append(secondAccount)
+        fixture.store.registerNewlyConfiguredScope(secondAccount.id, connection: .xiaomiCloud)
+        fixture.store.miAccountStatuses = [fixture.store.miAccounts[0].id: .connected]
+        _ = fixture.store.setMiAccountEnabled(false, id: secondAccount.id)
+
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-multi-mi-mixed-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("A paused timer shows in the assistant bar with its cancel control")
     func assistantPausedTimerSnapshot() async throws {
         let fixture = try await SnapshotFixture(

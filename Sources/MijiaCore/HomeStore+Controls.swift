@@ -1287,6 +1287,10 @@ extension HomeStore {
               let facets = deviceFacets[deviceId],
               let index = facets.firstIndex(where: { $0.id == controlId }) else { return }
         let control = facets[index]
+        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         guard facetWriteAllowed(control),
               control.target?.isAction == false,
               control.value != value,
@@ -1361,6 +1365,10 @@ extension HomeStore {
               currentControl.target?.isAction == false,
               didPresentModal || currentControl.value != value,
               let currentCommand = Self.facetCommand(for: currentControl, value: value) else { return }
+        if let reason = miotCommandWriteRejection(for: currentCommand.targetEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         let previous = facetWrites[key]
         let snapshotAdvancedDuringModal = didPresentModal && snapshotGeneration != preModalGeneration
         let origin: JSONValue?
@@ -1492,8 +1500,12 @@ extension HomeStore {
     /// other inputs fall back to the profile default (an enum input prefers the app/remote source).
     public func runFacetAction(_ deviceId: String, controlId: String, portion: Int? = nil) {
         guard let device = controllableDevice(deviceId), device.isOnline,
-              let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
-              facetWriteAllowed(control), let target = control.target else { return }
+              let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }) else { return }
+        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
+        guard facetWriteAllowed(control), let target = control.target else { return }
         switch target {
         case .action, .haAction:
             break
@@ -1531,6 +1543,10 @@ extension HomeStore {
         case .haAction(let entityId):
             command = .pressButton(entityId: entityId)
         case .property, .haProperty:
+            return
+        }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+            showToast(reason.userMessage, isError: true)
             return
         }
         extendFacetLock(deviceId, controlId: controlId, duration: .seconds(2.0))
@@ -2173,12 +2189,23 @@ extension HomeStore {
     }
 
     public func pressDeviceButton(_ buttonEntityId: String, label: String) {
+        let command = DeviceCommand.pressButton(entityId: buttonEntityId)
+        if let ownerId = owningDeviceIdForCommand(command),
+           rejectDeviceWriteIfCapabilityDisabled(deviceId: ownerId) != nil {
+            return
+        }
+        if let reason = miotCommandWriteRejection(for: buttonEntityId) {
+            showToast(reason.userMessage, isError: true)
+            return
+        }
         guard !rejectWritesBlockedByMiSession() else { return }
         guard !rejectControlWhileLocked() else { return }
         Task {
             do {
-                try await executeDeviceCommand(.pressButton(entityId: buttonEntityId))
+                try await executeDeviceCommand(command)
                 showToast(L10n.tr("已触发：\(label)", "Triggered: \(label)"))
+            } catch let blocked as CapabilityControlBlockedError {
+                showToast(blocked.reason.userMessage, isError: true)
             } catch {
                 showToast(L10n.tr("\(label) 执行失败", "\(label) failed"), isError: true)
             }

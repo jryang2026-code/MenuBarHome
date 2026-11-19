@@ -1629,6 +1629,282 @@ struct MiAccountDisableTestsReview {
         }
         #expect(await mock.executedCommands.isEmpty)
     }
+
+    // MARK: Cross-family review fixes – P1-1, P1-2, P2-3
+
+    @Test("Cold-start and failover HA-backed paired cards survive Xiaomi account disable without pausing HA-served timers or automations")
+    func pairedCardsSurviveXiaomiDisableOnColdStartAndFailoverWithoutPausingHAReferences() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+
+        // 1. Cold start with cn already disabled before the first snapshot (`self.deviceBackends` empty):
+        // an HA-winning paired card must NOT be suppressed even if it carries cn's accountId.
+        var initialSelection = CapabilitySelection(
+            enabledConnections: [.xiaomiCloud, .homeAssistant],
+            enabledConnectionScopes: [Self.de.id, "ha:http://192.168.1.10:8123"],
+            enabledFeatures: Set(FeatureID.allCases),
+            enabledCategories: Set(DeviceCategoryID.allCases)
+        )
+        CapabilitySelectionStore.save(
+            selection: initialSelection,
+            configuredScopes: [Self.cn.id, Self.de.id, "ha:http://192.168.1.10:8123"],
+            explicitlyDisabledConnections: [],
+            defaults: defaults
+        )
+        let coldStore = Self.makeStore(suite: suite, vault: vault)
+        coldStore.hasHASource = true
+        coldStore.serverURLString = "http://192.168.1.10:8123"
+        #expect(!coldStore.isMiAccountEnabled(Self.cn.id))
+        #expect(coldStore.deviceBackends.isEmpty)
+
+        let haWinningPaired = SmartDevice(
+            id: "ha-paired-light", name: "客厅主灯", roomId: "ha-living", roomName: "客厅",
+            model: "yeelink.light.ceiling22", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living_main", isOn: true)),
+            accountId: Self.cn.id
+        )
+        var coldSnapshot = SynthesizedHome(devices: [haWinningPaired])
+        coldSnapshot.isInitialLoadComplete = true
+        coldSnapshot.deviceBackends = ["ha-paired-light": .homeAssistant]
+        coldSnapshot.pairedDeviceIDs = ["ha-paired-light"]
+        coldStore.handleProviderEvent(.snapshotUpdated(coldSnapshot))
+
+        #expect(coldStore.devices.map(\.id) == ["ha-paired-light"])
+        #expect(coldStore.indexedDevicesById["ha-paired-light"]?.connection == .homeAssistant)
+
+        // 2. Live failover: a paired card whose canonical ID was previously won by Xiaomi (`accountId = cn.id`,
+        // `deviceBackends[id] = .xiaomiCloud`) must NOT pause timers/automations/quick actions when HA is
+        // enabled, must survive disable, and must update its index scope to HA when HA takes over (`accountId == nil`).
+        initialSelection.enabledConnectionScopes.insert(Self.cn.id)
+        let failoverSuite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: failoverSuite) }
+        let failoverDefaults = try #require(UserDefaults(suiteName: failoverSuite))
+        let failoverVault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(failoverDefaults, failoverVault)
+
+        let store = Self.makeStore(suite: failoverSuite, vault: failoverVault)
+        store.hasHASource = true
+        store.serverURLString = "http://192.168.1.10:8123"
+
+        let canonicalId = "123456789"
+        let miWinningPaired = SmartDevice(
+            id: canonicalId, name: "卧室吸顶灯", roomId: "\(Self.cn.id)/bed", roomName: "卧室",
+            model: "yeelink.light.ceiling22", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:\(canonicalId):2", isOn: true)),
+            accountId: Self.cn.id, accountLabel: Self.cn.maskedUserId
+        )
+        var preDisableSnapshot = SynthesizedHome(devices: [miWinningPaired])
+        preDisableSnapshot.isInitialLoadComplete = true
+        preDisableSnapshot.deviceBackends = [canonicalId: .xiaomiCloud]
+        preDisableSnapshot.pairedDeviceIDs = [canonicalId]
+        store.handleProviderEvent(.snapshotUpdated(preDisableSnapshot))
+        #expect(store.indexedDevicesById[canonicalId]?.sourceScope == Self.cn.id)
+
+        let pairedTimer = ScheduledCommand(
+            reply: "10 分钟后关闭卧室吸顶灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(intents: [DeviceIntent(targetId: canonicalId, operation: .power(false))], reply: "关闭卧室吸顶灯", source: .local),
+            sourceScope: Self.cn.id,
+            sourceScopes: [Self.cn.id, store.homeAssistantScopeIdentifier]
+        )
+        ScheduledCommand.save([pairedTimer], to: failoverDefaults)
+        store.restoreScheduledCommands()
+        let ruleStore = AutomationRuleStore(defaults: failoverDefaults)
+        ruleStore.save([AutomationRule(trigger: .away, action: .devices(ids: [canonicalId], isOn: false), isEnabled: true)])
+
+        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
+        #expect(preview.disposition == .allowed)
+        #expect(preview.itemsToPause.isEmpty)
+
+        let verdict = store.setMiAccountEnabled(false, id: Self.cn.id)
+        #expect(verdict.disposition == .allowed)
+        #expect(store.scheduledCommands.count == 1)
+        #expect(store.pausedScheduledCommands.isEmpty)
+        #expect(ruleStore.load().allSatisfy { $0.isEnabled })
+        #expect(store.pausedQuickActionIDs.isEmpty)
+        #expect(store.devices.map(\.id) == [canonicalId])
+
+        // HA now emits the takeover snapshot under the preserved canonical ID with `accountId == nil`.
+        let haTakeoverPaired = SmartDevice(
+            id: canonicalId, name: "卧室吸顶灯", roomId: "ha-bed", roomName: "卧室",
+            model: "yeelink.light.ceiling22", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.bedroom_ceiling", isOn: true)),
+            accountId: nil
+        )
+        var haTakeoverSnapshot = SynthesizedHome(devices: [haTakeoverPaired])
+        haTakeoverSnapshot.isInitialLoadComplete = true
+        haTakeoverSnapshot.deviceBackends = [canonicalId: .homeAssistant]
+        haTakeoverSnapshot.pairedDeviceIDs = [canonicalId]
+        store.handleProviderEvent(.snapshotUpdated(haTakeoverSnapshot))
+
+        #expect(store.devices.map(\.id) == [canonicalId])
+        #expect(store.indexedDevicesById[canonicalId]?.connection == .homeAssistant)
+        #expect(store.indexedDevicesById[canonicalId]?.sourceScope == store.homeAssistantScopeIdentifier)
+
+        // 3. Changing `deviceBackends` while `devices == nextDevices` still re-syncs `indexedDevicesById`.
+        var backendFlipOnly = haTakeoverSnapshot
+        backendFlipOnly.deviceBackends = [canonicalId: .xiaomiCloud]
+        store.setMiAccountEnabled(true, id: Self.cn.id)
+        store.handleProviderEvent(.snapshotUpdated(backendFlipOnly))
+        #expect(store.indexedDevicesById[canonicalId]?.connection == .xiaomiCloud)
+    }
+
+    @Test("Unified write gate and pressDeviceButton fail closed for split-channel drawer facets, merged HA+MIoT facets, and unknown MIoT dids")
+    func unifiedWriteGateFailsClosedForDrawerFacetsMergedFacetsAndUnknownDids() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedAccounts(defaults, vault)
+
+        // 1. Split-channel row `<did>.s2` with a cross-siid drawer facet on `siid = 5`.
+        let splitSwitch = SmartDevice(
+            id: "wall-hub.s2", name: "玄关二键开关", roomId: "\(Self.cn.id)/hall", roomName: "玄关",
+            model: "lumi.switch.b2lacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:wall-hub:2:1", isOn: true)),
+            accountId: Self.cn.id, accountLabel: Self.cn.maskedUserId
+        )
+        // 2. Dual-source HA-winning card `climate.bedroom` with a Xiaomi-merged facet `miot:mi-ac-did:7:1`.
+        let haPairedAC = SmartDevice(
+            id: "climate.bedroom", name: "主卧空调", roomId: "ha-bed", roomName: "主卧",
+            model: "xiaomi.aircondition.mc5", isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: "climate.bedroom", isOn: true, hvacMode: "cool",
+                availableModes: ["cool", "heat"], targetTemperature: 25
+            )),
+            accountId: Self.cn.id
+        )
+        let splitFacet = FacetControl(
+            id: "5.1", kind: .toggle, name: "indicator-light", title: "背光指示灯",
+            serviceName: "indicator-light", value: .bool(true),
+            isWritable: true, writesByDefault: true, isHighValue: false,
+            target: .property(entityId: "miot:wall-hub:5", piid: 1)
+        )
+        let mergedMiFacet = FacetControl(
+            id: "7.1", kind: .toggle, name: "alarm", title: "提示音",
+            serviceName: "alarm", value: .bool(true),
+            isWritable: true, writesByDefault: true, isHighValue: false,
+            target: .property(entityId: "miot:mi-ac-did:7", piid: 1)
+        )
+        let mergedMiActionFacet = FacetControl(
+            id: "7.a2", kind: .button, name: "self-clean", title: "自清洁",
+            serviceName: "maintenance",
+            isWritable: true, writesByDefault: true, isHighValue: false,
+            target: .action(entityId: "miot-action:mi-ac-did:7:2")
+        )
+        let haNativeFacet = FacetControl(
+            id: "ha.eco", kind: .toggle, name: "eco", title: "节能模式",
+            serviceName: "climate", value: .bool(false),
+            isWritable: true, writesByDefault: true, isHighValue: false,
+            target: .haProperty(entityId: "switch.bedroom_ac_eco")
+        )
+
+        var snapshot = SynthesizedHome(devices: [splitSwitch, haPairedAC])
+        snapshot.isInitialLoadComplete = true
+        snapshot.deviceBackends = ["wall-hub.s2": .xiaomiCloud, "climate.bedroom": .homeAssistant]
+        snapshot.pairedDeviceIDs = ["climate.bedroom"]
+        snapshot.deviceFacets = [
+            "wall-hub.s2": [splitFacet],
+            "climate.bedroom": [mergedMiFacet, mergedMiActionFacet, haNativeFacet],
+        ]
+        let mock = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        store.hasHASource = true
+        store.serverURLString = "http://192.168.1.10:8123"
+        try await store.waitForTestSnapshot()
+
+        #expect(store.miotDidToAccountScopes["wall-hub"] == [Self.cn.id])
+        #expect(store.miotDidToAccountScopes["mi-ac-did"] == [Self.cn.id])
+
+        // Disable cn while de and HA stay enabled.
+        _ = store.setMiAccountEnabled(
+            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
+        )
+
+        // Merged Xiaomi facets on the surviving HA card are stripped immediately while native HA facets stay.
+        #expect(store.devices.map(\.id) == ["climate.bedroom"])
+        #expect(store.deviceFacets["climate.bedroom"]?.map(\.id) == ["ha.eco"])
+
+        // Stale drawer facet write on split-channel `siid = 5` is blocked with zero writes.
+        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
+            try await store.executeDeviceCommand(.setMiotProperty(entityId: "miot:wall-hub:5", piid: 1, value: .bool(false)))
+        }
+        // Stale merged Xiaomi facet write on `climate.bedroom` is blocked even though `climate.bedroom` itself is HA-enabled!
+        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
+            try await store.executeDeviceCommand(.setMiotProperty(entityId: "miot:mi-ac-did:7", piid: 1, value: .bool(false)))
+        }
+        // Unknown MIoT `did` fails closed while `cn` is disabled and `de` is enabled.
+        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
+            try await store.executeDeviceCommand(.setSwitch(entityId: "miot:unindexed-did:9:1", isOn: false))
+        }
+
+        // `pressDeviceButton`, `setFacetValue`, and `runFacetAction` reject upfront with error toast and zero writes.
+        store.dismissToast()
+        store.pressDeviceButton("miot-action:mi-ac-did:7:2", label: "自清洁")
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message == "该米家账号已停用")
+
+        // Even if an open drawer still held stale Xiaomi facet descriptors, `setFacetValue` and `runFacetAction` block them upfront.
+        store.deviceFacets["climate.bedroom"] = [mergedMiFacet, mergedMiActionFacet, haNativeFacet]
+        store.dismissToast()
+        store.setFacetValue("climate.bedroom", controlId: "7.1", value: .bool(false))
+        #expect(store.toastNotice?.message == "该米家账号已停用")
+
+        store.dismissToast()
+        store.runFacetAction("climate.bedroom", controlId: "7.a2")
+        #expect(store.toastNotice?.message == "该米家账号已停用")
+
+        #expect(await mock.executedCommands.isEmpty)
+
+        // Meanwhile HA commands on `climate.bedroom` continue to work normally.
+        try await store.executeDeviceCommand(.setSwitch(entityId: "switch.bedroom_ac_eco", isOn: true))
+        #expect(await mock.executedCommands.count == 1)
+    }
+
+    @Test("Disabling one Xiaomi account immediately purges its miAccountStatuses entry and scopes miSessionShowsExpired to enabled accounts")
+    func disablingAccountPurgesStatusAndScopesSessionExpiryToEnabledAccounts() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+
+        let now = Date()
+        let expiredCN = MiAccount(session: MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn",
+            region: "cn", expiresAt: now.addingTimeInterval(-3600)
+        ))
+        let validDE = MiAccount(session: MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de",
+            region: "de", expiresAt: now.addingTimeInterval(86_400 * 10)
+        ))
+        MiSessionStore.saveAccounts([expiredCN, validDE], defaults: defaults, vault: vault)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+
+        let store = Self.makeStore(suite: suite, vault: vault)
+        store.miAccountStatuses = [
+            expiredCN.id: .disconnected("401 expired"),
+            validDE.id: .connected,
+        ]
+        #expect(store.miSessionShowsExpired)
+        #expect(!store.miSessionBlocksControl)
+
+        // Disabling the expired account while validDE stays enabled purges expiredCN's status and clears expired banner state.
+        #expect(store.setMiAccountEnabled(false, id: expiredCN.id).disposition == .allowed)
+        #expect(store.miAccountStatuses[expiredCN.id] == nil)
+        #expect(store.miAccountStatuses[validDE.id] == .connected)
+        #expect(!store.miSessionShowsExpired)
+        #expect(!store.miSessionBlocksControl)
+
+        // Conversely, enabling expiredCN and disabling validDE exposes expiredCN's expiry and blocks Xiaomi control.
+        #expect(store.setMiAccountEnabled(true, id: expiredCN.id).disposition == .allowed)
+        #expect(store.setMiAccountEnabled(false, id: validDE.id).disposition == .allowed)
+        #expect(store.miAccountStatuses[validDE.id] == nil)
+        #expect(store.miSessionShowsExpired)
+        #expect(store.miSessionBlocksControl)
+    }
 }
 
 /// Shared fixture values so the review tests can reuse the primary test suite's sessions.

@@ -19,6 +19,7 @@ private extension CapabilityDeactivationVerdict {
 
 extension HomeStore {
     static let capabilityDeviceIndexKey = "capability_device_index_v1"
+    static let capabilityMiotDidScopesKey = "capability_miot_did_scopes_v1"
     static let pausedQuickActionsKey = "paused_quick_actions_v1"
     static let pausedQuickActionScopesKey = "paused_quick_action_scopes_v1"
 
@@ -44,8 +45,32 @@ extension HomeStore {
         return hasMiSource && !explicitlyDisabledConnections.contains(.xiaomiCloud)
     }
 
-    var isHAConnectionEnabled: Bool {
+    public var isAnyMiAccountEnabled: Bool {
+        hasEnabledMiSource
+    }
+
+    public var isHAConnectionEnabled: Bool {
         !hasHASource || capabilitySelection.isSourceEnabled(connection: .homeAssistant, scope: homeAssistantScopeIdentifier)
+    }
+
+    public var hasEnabledHASource: Bool {
+        hasHASource && isHAConnectionEnabled
+    }
+
+    public var hasConfiguredLGTVSource: Bool {
+        lgConfig.isEnabled && lgConfig.hasConfiguredHost
+    }
+
+    public var hasEnabledConfiguredSource: Bool {
+        hasEnabledMiSource || hasEnabledHASource || hasConfiguredLGTVSource
+    }
+
+    public var allConfiguredSourcesTurnedOff: Bool {
+        (hasHASource || hasMiSource || !miAccounts.isEmpty) && !hasEnabledConfiguredSource
+    }
+
+    func isPairedCardServedByEnabledHA(_ deviceId: String) -> Bool {
+        hasEnabledHASource && pairedDeviceIDs.contains(deviceId)
     }
 
     var isMiOnboardingBackendEnabled: Bool {
@@ -219,6 +244,17 @@ extension HomeStore {
         let beforeCount = indexedDevicesById.count
         indexedDevicesById = indexedDevicesById.filter { !scopes.contains($0.value.sourceScope) }
         if indexedDevicesById.count != beforeCount { persistIndexedDevices() }
+        var didScopesChanged = false
+        var updatedDidScopes: [String: Set<String>] = [:]
+        for (did, ownerScopes) in miotDidToAccountScopes {
+            let kept = ownerScopes.subtracting(scopes)
+            if kept != ownerScopes { didScopesChanged = true }
+            if !kept.isEmpty { updatedDidScopes[did] = kept }
+        }
+        if didScopesChanged {
+            miotDidToAccountScopes = updatedDidScopes
+            persistMiotDidScopes()
+        }
         // Paused references outlive the account they were paused for. Drop the removed scopes from
         // their pause markers now; revalidation runs once the removed devices left the panel.
         let ruleStore = AutomationRuleStore(defaults: userDefaults)
@@ -244,24 +280,38 @@ extension HomeStore {
         return next
     }
 
-    /// A paired card copies the Xiaomi `accountId` even when Home Assistant drives it (ADR-0008).
-    /// Only rows the Mi account actually controls may be torn down or hidden with it.
+    /// A paired card copies the Xiaomi `accountId` even when Home Assistant drives it or can take over
+    /// seamlessly (ADR-0008). Only rows exclusively controlled by the disabled Mi account are torn down.
     private func isMiOwnedRow(_ device: SmartDevice, accountId: String) -> Bool {
-        device.accountId == accountId && deviceBackends[device.id] != .homeAssistant
+        guard deviceBackends[device.id] != .homeAssistant,
+              !isPairedCardServedByEnabledHA(device.id) else {
+            return false
+        }
+        return device.accountId == accountId
     }
 
     private func applyMiAccountDisabledRuntimeState(id: String) {
+        // Record any live MIoT DIDs before tearing down rows or facets so late writes stay fail-closed.
+        _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
         invalidateUndoContext()
         var disabledDeviceIds = Set(devices.filter { isMiOwnedRow($0, accountId: id) }.map(\.id))
         for (devId, indexed) in indexedDevicesById where indexed.sourceScope == id {
-            disabledDeviceIds.insert(devId)
+            if deviceBackends[devId] != .homeAssistant && !isPairedCardServedByEnabledHA(devId) {
+                disabledDeviceIds.insert(devId)
+            }
         }
         miAccountStatuses.removeValue(forKey: id)
         miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
         miSessionScopeIdentifier = enabledMiAccounts.first?.session.historyScopeIdentifier
+        scheduleMiSessionExpiryTransition()
         if !hasEnabledMiSource {
             isShowingMiReauth = false
             localNetworkBlocks.remove(.xiaomiLAN)
+        } else if !miSessionShowsExpired {
+            isShowingMiReauth = false
+        }
+        if !miSessionBlocksControl, toastNotice?.action?.kind == .presentMiReauth {
+            dismissToast()
         }
         if let home = selectedMiHomeId, MiAccountScope.isOwned(home, by: id) { selectedMiHomeId = nil }
 
@@ -277,7 +327,35 @@ extension HomeStore {
             lastReportedDevices.removeValue(forKey: removedId)
             lastReportedFacets.removeValue(forKey: removedId)
         }
+
+        // Surviving dual-source paired cards fail over to Home Assistant; cancel in-flight MIoT writes
+        // and strip any Xiaomi-contributed drawer facets belonging to the disabled account.
+        let retainedPairedIds = pairedDeviceIDs.subtracting(disabledDeviceIds)
+        for pairedId in retainedPairedIds {
+            if deviceBackends[pairedId] == .xiaomiCloud, isPairedCardServedByEnabledHA(pairedId) {
+                releaseReadBackEcho(for: pairedId)
+                cancelFacetWrites(for: pairedId)
+                cancelDebouncedWrites(for: pairedId, recomputeRow: false)
+                clearOptimisticLockEntries(for: pairedId)
+                clearOptimisticRevisions(for: pairedId)
+                manualWriteSessions.removeValue(forKey: pairedId)
+                deviceBackends[pairedId] = .homeAssistant
+            }
+            if let existingFacets = deviceFacets[pairedId] {
+                let keptFacets = existingFacets.filter { !shouldSuppressMiotFacet($0) }
+                if keptFacets.count != existingFacets.count {
+                    cancelFacetWrites(for: pairedId)
+                    if keptFacets.isEmpty {
+                        deviceFacets.removeValue(forKey: pairedId)
+                    } else {
+                        deviceFacets[pairedId] = keptFacets
+                    }
+                }
+            }
+        }
+
         devices.removeAll { disabledDeviceIds.contains($0.id) || isMiOwnedRow($0, accountId: id) }
+        if !devices.isEmpty { syncIndexedDevices(from: devices) }
         environmentReadings.removeAll { disabledDeviceIds.contains($0.id) }
         rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
         homes.removeAll { $0.accountId == id }
@@ -316,6 +394,12 @@ extension HomeStore {
         )
     }
 
+    public func capabilityControlRejectionMessage(forDeviceId deviceId: String) -> String? {
+        let gate = evaluateDeviceControlGate(deviceId: deviceId)
+        guard !gate.allowed, let reason = gate.rejectionReason, reason != .deviceNotFound else { return nil }
+        return reason.userMessage
+    }
+
     /// Capability rejection for a command target, resolved from the live rows as well as the persisted
     /// index. A stale index entry must not let a command slip past the gate that the panel applies
     /// (Bugbot #275: write gate skipped without index entry).
@@ -323,6 +407,101 @@ extension HomeStore {
         guard resolvedIndexedDevice(for: deviceId) != nil else { return nil }
         let verdict = evaluateDeviceControlGate(deviceId: deviceId)
         return verdict.allowed ? nil : verdict.rejectionReason
+    }
+
+    /// Fail-closed write gate for any MIoT property or action entity (`miot:<did>:...` / `miot-action:<did>:...`),
+    /// including drawer facets on split-channel rows and Xiaomi-contributed facets merged onto HA paired cards.
+    func miotCommandWriteRejection(for entityId: String) -> ControlTargetRejectionReason? {
+        guard let parsed = MiotAddress.parse(entityId) else { return nil }
+        let isXiaomiManaged = !miAccounts.isEmpty
+            || miSessionScopeIdentifier != nil
+            || explicitlyDisabledConnections.contains(.xiaomiCloud)
+        guard isXiaomiManaged else { return nil }
+
+        if !capabilitySelection.enabledConnections.contains(.xiaomiCloud) {
+            let fallbackScope = miAccounts.first?.id ?? miSessionScopeIdentifier ?? "xiaomi"
+            return .connectionDisabled(.xiaomiCloud, scope: fallbackScope)
+        }
+
+        var candidateScopes = miotDidToAccountScopes[parsed.did] ?? []
+        if let scopedOwner = MiAccountScope.owner(of: parsed.did),
+           isCapabilityScopeConfigured(.xiaomiCloud, scope: scopedOwner) {
+            candidateScopes.insert(scopedOwner)
+        }
+        for dev in devices where dev.id == parsed.did || dev.id.hasPrefix("\(parsed.did).s") || dev.miotCommandDids.contains(parsed.did) {
+            if let acc = dev.accountId, isCapabilityScopeConfigured(.xiaomiCloud, scope: acc) {
+                candidateScopes.insert(acc)
+            }
+        }
+        for (devId, facets) in deviceFacets where facets.contains(where: {
+            $0.referencedEntityIds.contains(entityId)
+                || $0.referencedEntityIds.contains { MiotAddress.parse($0)?.did == parsed.did }
+        }) {
+            if let dev = devices.first(where: { $0.id == devId }),
+               let acc = dev.accountId, isCapabilityScopeConfigured(.xiaomiCloud, scope: acc) {
+                candidateScopes.insert(acc)
+            }
+        }
+        for (devId, indexed) in indexedDevicesById
+        where (devId == parsed.did || devId.hasPrefix("\(parsed.did).s")) && indexed.connection == .xiaomiCloud {
+            if isCapabilityScopeConfigured(.xiaomiCloud, scope: indexed.sourceScope) {
+                candidateScopes.insert(indexed.sourceScope)
+            }
+        }
+        candidateScopes = candidateScopes.filter { isCapabilityScopeConfigured(.xiaomiCloud, scope: $0) }
+
+        if !hasEnabledMiSource {
+            if let scope = candidateScopes.sorted().first ?? miAccounts.first?.id ?? miSessionScopeIdentifier {
+                return .connectionScopeDisabled(.xiaomiCloud, scope: scope)
+            }
+            return .connectionDisabled(.xiaomiCloud, scope: "xiaomi")
+        }
+
+        if !candidateScopes.isEmpty {
+            if candidateScopes.contains(where: { isMiAccountEnabled($0) }) {
+                return nil
+            }
+            return .connectionScopeDisabled(.xiaomiCloud, scope: candidateScopes.sorted().first!)
+        }
+
+        // Fail-closed when `parsed.did` has no recorded owner while at least one configured Xiaomi
+        // account is disabled (cannot prove the target belongs to an enabled account).
+        if let firstDisabled = miAccounts.first(where: { !isMiAccountEnabled($0.id) }) {
+            return .connectionScopeDisabled(.xiaomiCloud, scope: firstDisabled.id)
+        }
+        if miAccounts.isEmpty, let singleScope = miSessionScopeIdentifier, !isMiAccountEnabled(singleScope) {
+            return .connectionScopeDisabled(.xiaomiCloud, scope: singleScope)
+        }
+        return nil
+    }
+
+    func shouldSuppressMiotFacet(_ control: FacetControl, snapshotEpoch: Int? = nil) -> Bool {
+        let miotDids = control.referencedEntityIds.compactMap { MiotAddress.parse($0)?.did }
+        guard !miotDids.isEmpty else { return false }
+        let isXiaomiManaged = !miAccounts.isEmpty
+            || miSessionScopeIdentifier != nil
+            || explicitlyDisabledConnections.contains(.xiaomiCloud)
+        guard isXiaomiManaged else { return false }
+        if !hasEnabledMiSource { return true }
+        for did in miotDids {
+            var scopes = miotDidToAccountScopes[did] ?? []
+            if let owner = MiAccountScope.owner(of: did), isCapabilityScopeConfigured(.xiaomiCloud, scope: owner) {
+                scopes.insert(owner)
+            }
+            scopes = scopes.filter { isCapabilityScopeConfigured(.xiaomiCloud, scope: $0) }
+            if !scopes.isEmpty {
+                let anyActive = scopes.contains { scope in
+                    if let snapshotEpoch {
+                        return !shouldSuppressMiAccountInSnapshot(scope, snapshotEpoch: snapshotEpoch)
+                    }
+                    return isMiAccountEnabled(scope)
+                }
+                if !anyActive { return true }
+            } else if miAccounts.contains(where: { shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch) }) {
+                return true
+            }
+        }
+        return false
     }
 
     @discardableResult
@@ -339,10 +518,21 @@ extension HomeStore {
         let entityId = command.targetEntityId
         if LGWebOSProtocol.isLGEntity(entityId) { return LGWebOSProtocol.deviceId }
         if let live = devices.first(where: { $0.referencedEntityIds.contains(entityId) }) { return live.id }
+        if let facetOwner = deviceFacets.first(where: { $0.value.contains { $0.referencedEntityIds.contains(entityId) } })?.key {
+            return facetOwner
+        }
         if let parsed = MiotAddress.parse(entityId) {
+            if let liveByDid = devices.first(where: {
+                $0.id == parsed.did || $0.id.hasPrefix("\(parsed.did).s") || $0.miotCommandDids.contains(parsed.did)
+            }) {
+                return liveByDid.id
+            }
             if indexedDevicesById[parsed.did] != nil { return parsed.did }
             let splitId = "\(parsed.did).s\(parsed.siid)"
             if indexedDevicesById[splitId] != nil { return splitId }
+            if let anySplit = indexedDevicesById.keys.sorted().first(where: { $0.hasPrefix("\(parsed.did).s") }) {
+                return anySplit
+            }
             return parsed.did
         }
         return nil
@@ -354,6 +544,10 @@ extension HomeStore {
         if let data = userDefaults.data(forKey: Self.capabilityDeviceIndexKey),
            let decoded = try? JSONDecoder().decode([String: CapabilityIndexedDevice].self, from: data) {
             indexedDevicesById = decoded
+        }
+        if let data = userDefaults.data(forKey: Self.capabilityMiotDidScopesKey),
+           let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            miotDidToAccountScopes = decoded.mapValues(Set.init)
         }
         pausedScheduledCommands = PausedScheduledCommand.load(from: userDefaults)
         pausedQuickActionIDs = Set(userDefaults.stringArray(forKey: Self.pausedQuickActionsKey) ?? [])
@@ -382,6 +576,64 @@ extension HomeStore {
             }
         }
         if changed { persistIndexedDevices() }
+        _ = recordMiotDidAccountScopes(from: currentDevices, facetsByDeviceId: deviceFacets)
+    }
+
+    @discardableResult
+    func recordMiotDidAccountScopes(
+        from candidateDevices: [SmartDevice],
+        facetsByDeviceId: [String: [FacetControl]]
+    ) -> Bool {
+        var didScopesChanged = false
+        for device in candidateDevices {
+            let miScope: String? = {
+                if let acc = device.accountId, !acc.isEmpty, isCapabilityScopeConfigured(.xiaomiCloud, scope: acc) {
+                    return acc
+                }
+                let (conn, scope) = inferSource(for: device)
+                if conn == .xiaomiCloud, isCapabilityScopeConfigured(.xiaomiCloud, scope: scope) {
+                    return scope
+                }
+                if let existing = indexedDevicesById[device.id],
+                   existing.connection == .xiaomiCloud,
+                   isCapabilityScopeConfigured(.xiaomiCloud, scope: existing.sourceScope) {
+                    return existing.sourceScope
+                }
+                if miAccounts.count == 1, isCapabilityScopeConfigured(.xiaomiCloud, scope: miAccounts[0].id) {
+                    let hasMiotFacet = (facetsByDeviceId[device.id] ?? []).contains {
+                        $0.referencedEntityIds.contains { MiotAddress.parse($0) != nil }
+                    }
+                    if hasMiotFacet { return miAccounts[0].id }
+                }
+                return nil
+            }()
+            guard let miScope else { continue }
+
+            var dids = Set(device.miotCommandDids)
+            if let splitRange = device.id.range(of: ".s", options: .backwards),
+               device.id[splitRange.upperBound...].allSatisfy(\.isNumber) {
+                dids.insert(String(device.id[..<splitRange.lowerBound]))
+            } else if device.accountId != nil || deviceBackends[device.id] == .xiaomiCloud,
+                      !device.id.contains(".") {
+                dids.insert(device.id)
+            }
+            for facet in facetsByDeviceId[device.id] ?? [] {
+                for entityId in facet.referencedEntityIds {
+                    if let parsed = MiotAddress.parse(entityId) {
+                        dids.insert(parsed.did)
+                    }
+                }
+            }
+            for did in dids where !did.isEmpty {
+                var set = miotDidToAccountScopes[did] ?? []
+                if set.insert(miScope).inserted {
+                    miotDidToAccountScopes[did] = set
+                    didScopesChanged = true
+                }
+            }
+        }
+        if didScopesChanged { persistMiotDidScopes() }
+        return didScopesChanged
     }
 
     func shouldSuppressMiAccountInSnapshot(_ accountId: String, snapshotEpoch: Int?) -> Bool {
@@ -488,6 +740,17 @@ extension HomeStore {
         }
     }
 
+    private func persistMiotDidScopes() {
+        if miotDidToAccountScopes.isEmpty {
+            userDefaults.removeObject(forKey: Self.capabilityMiotDidScopesKey)
+            return
+        }
+        let serializable = miotDidToAccountScopes.mapValues { $0.sorted() }
+        if let data = try? JSONEncoder().encode(serializable) {
+            userDefaults.set(data, forKey: Self.capabilityMiotDidScopesKey)
+        }
+    }
+
     private func materializeIndexedDevice(_ stored: CapabilityIndexedDevice) -> CapabilityIndexedDevice {
         CapabilityIndexedDevice(
             id: stored.id, name: stored.name, category: stored.category,
@@ -534,7 +797,13 @@ extension HomeStore {
         case .xiaomiCloud where !miAccounts.isEmpty || hasMiSource:
             if let accountId = device.accountId, !accountId.isEmpty,
                isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
+                if !isMiAccountEnabled(accountId), isPairedCardServedByEnabledHA(device.id) {
+                    return (.homeAssistant, homeAssistantScopeIdentifier)
+                }
                 return (.xiaomiCloud, accountId)
+            }
+            if !hasEnabledMiSource, isPairedCardServedByEnabledHA(device.id) {
+                return (.homeAssistant, homeAssistantScopeIdentifier)
             }
             if let scope = enabledMiAccounts.first?.id ?? miSessionScopeIdentifier { return (.xiaomiCloud, scope) }
         case .demo:
@@ -548,9 +817,12 @@ extension HomeStore {
         // before P2a and that the user never turned off.
         if let accountId = device.accountId, !accountId.isEmpty,
            isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
+            if !isMiAccountEnabled(accountId), isPairedCardServedByEnabledHA(device.id) {
+                return (.homeAssistant, homeAssistantScopeIdentifier)
+            }
             return (.xiaomiCloud, accountId)
         }
-        if hasHASource && (homeBackend == .homeAssistant || activeHAProvider != nil) {
+        if hasHASource && (homeBackend == .homeAssistant || activeHAProvider != nil || isPairedCardServedByEnabledHA(device.id)) {
             return (.homeAssistant, homeAssistantScopeIdentifier)
         }
         return (nil, "local")
@@ -660,7 +932,30 @@ extension HomeStore {
         proposed: CapabilitySelection,
         expectedGeneration: Int?
     ) -> CapabilityDeactivationVerdict {
-        let indexed = currentIndexedDevicesList()
+        let haScope = homeAssistantScopeIdentifier
+        let haServesFailover = hasEnabledHASource
+            && proposed.isSourceEnabled(connection: .homeAssistant, scope: haScope)
+        let indexed = currentIndexedDevicesList().map { dev -> CapabilityIndexedDevice in
+            guard haServesFailover,
+                  pairedDeviceIDs.contains(dev.id),
+                  dev.connection == .xiaomiCloud,
+                  !proposed.isSourceEnabled(connection: dev.connection, scope: dev.sourceScope) else {
+                return dev
+            }
+            return CapabilityIndexedDevice(
+                id: dev.id,
+                name: dev.name,
+                category: dev.category,
+                connection: .homeAssistant,
+                sourceScope: haScope,
+                isSourceAvailable: true,
+                upstreamHiddenOrDisabled: dev.upstreamHiddenOrDisabled,
+                participatesInAllOff: dev.participatesInAllOff,
+                safetySignals: dev.safetySignals,
+                readKeys: dev.readKeys,
+                safetyReadKeys: dev.safetyReadKeys
+            )
+        }
         let graph = buildCapabilityReferenceGraph(indexedDevices: indexed, expectedGeneration: expectedGeneration)
         return CapabilityReferenceEngine.evaluateDeactivation(
             current: capabilitySelection, proposed: proposed, manifest: .shared,

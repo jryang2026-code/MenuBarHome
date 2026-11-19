@@ -217,9 +217,7 @@ final class URLCommandHandler {
         case .scene, .ask:
             return nil
         }
-        let gate = store.evaluateDeviceControlGate(deviceId: targetId)
-        guard !gate.allowed, let reason = gate.rejectionReason, reason != .deviceNotFound else { return nil }
-        return reason.userMessage
+        return store.capabilityControlRejectionMessage(forDeviceId: targetId)
     }
 
     private func description(for resolved: Resolved) -> String {

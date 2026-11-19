@@ -852,6 +852,9 @@ extension HomeStore {
            let reason = capabilityWriteRejection(forDeviceId: ownerId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+            throw CapabilityControlBlockedError(reason: reason)
+        }
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {

@@ -336,7 +336,9 @@ extension HomeStore {
             if localNetworkBlocks != blocked { localNetworkBlocks = blocked }
 
         case .doorbellRang(let ring):
-            if let indexed = indexedDevicesById[ring.deviceId],
+            if deviceBackends[ring.deviceId] != .homeAssistant,
+               !isPairedCardServedByEnabledHA(ring.deviceId),
+               let indexed = indexedDevicesById[ring.deviceId],
                indexed.connection == .xiaomiCloud,
                !isMiAccountEnabled(indexed.sourceScope) {
                 return
@@ -350,15 +352,27 @@ extension HomeStore {
         case .snapshotUpdated(let rawSnapshot):
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
-            if miAccounts.contains(where: { shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch) }) {
+            _ = recordMiotDidAccountScopes(from: rawSnapshot.devices, facetsByDeviceId: rawSnapshot.deviceFacets)
+            let hasSuppressedMiScope = miAccounts.contains {
+                shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch)
+            } || (!hasEnabledMiSource && (hasMiSource || !miAccounts.isEmpty))
+            if hasSuppressedMiScope {
                 // Some MIoT rows carry no `accountId`; the persisted index still knows which account
                 // unites them, so a disabled account's devices cannot come back through them.
+                // Dual-source paired cards backed or taken over by an enabled Home Assistant source
+                // must survive Xiaomi account disable seamlessly.
                 let disabledDeviceIds = Set(snapshot.devices.compactMap { device -> String? in
-                    // An HA-winning paired card copies the Mi `accountId` but is not controlled by it.
-                    if let acc = device.accountId,
-                       deviceBackends[device.id] != .homeAssistant,
-                       shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) {
-                        return device.id
+                    let effectiveBackend = snapshot.deviceBackends[device.id] ?? deviceBackends[device.id]
+                    if effectiveBackend == .homeAssistant {
+                        return nil
+                    }
+                    let isPairedWithEnabledHA = hasEnabledHASource
+                        && (snapshot.pairedDeviceIDs.contains(device.id) || pairedDeviceIDs.contains(device.id))
+                    if isPairedWithEnabledHA {
+                        return nil
+                    }
+                    if let acc = device.accountId {
+                        return shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) ? device.id : nil
                     }
                     if let indexed = indexedDevicesById[device.id],
                        CapabilityReferenceEngine.connectionCapability(forScope: indexed.sourceScope) == .xiaomiCloud,
@@ -386,6 +400,23 @@ extension HomeStore {
                     snapshot.deviceBackends.removeValue(forKey: id)
                     snapshot.deviceTransportDiagnostics.removeValue(forKey: id)
                 }
+                for surviving in snapshot.devices {
+                    if snapshot.deviceBackends[surviving.id] == .xiaomiCloud,
+                       let acc = surviving.accountId,
+                       shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch),
+                       hasEnabledHASource,
+                       snapshot.pairedDeviceIDs.contains(surviving.id) || pairedDeviceIDs.contains(surviving.id) {
+                        snapshot.deviceBackends[surviving.id] = .homeAssistant
+                    }
+                    if let existingFacets = snapshot.deviceFacets[surviving.id] {
+                        let kept = existingFacets.filter { !shouldSuppressMiotFacet($0, snapshotEpoch: snapshotEpoch) }
+                        if kept.isEmpty {
+                            snapshot.deviceFacets.removeValue(forKey: surviving.id)
+                        } else if kept.count != existingFacets.count {
+                            snapshot.deviceFacets[surviving.id] = kept
+                        }
+                    }
+                }
             }
             isApplyingProviderSnapshot = true
             snapshotGeneration &+= 1
@@ -395,8 +426,15 @@ extension HomeStore {
                 selectRoom(nil)
             }
             if !hasReceivedInitialSnapshot, snapshot.isInitialLoadComplete { hasReceivedInitialSnapshot = true }
-            if !snapshot.accountStatuses.isEmpty, miAccountStatuses != snapshot.accountStatuses {
-                miAccountStatuses = snapshot.accountStatuses
+            if !rawSnapshot.accountStatuses.isEmpty {
+                if miAccountStatuses != snapshot.accountStatuses {
+                    miAccountStatuses = snapshot.accountStatuses
+                }
+            } else if !miAccountStatuses.isEmpty {
+                let enabledOnly = miAccountStatuses.filter { isMiAccountEnabled($0.key) }
+                if miAccountStatuses != enabledOnly {
+                    miAccountStatuses = enabledOnly
+                }
             }
             let previousBackends = deviceBackends
             let nextConnected: Set<HomeBackend>
@@ -408,8 +446,10 @@ extension HomeStore {
                 nextConnected = snapshot.activeBackends
             }
             if connectedBackends != nextConnected { connectedBackends = nextConnected }
-            if deviceBackends != snapshot.deviceBackends { deviceBackends = snapshot.deviceBackends }
-            if pairedDeviceIDs != snapshot.pairedDeviceIDs { pairedDeviceIDs = snapshot.pairedDeviceIDs }
+            let backendsChanged = deviceBackends != snapshot.deviceBackends
+            if backendsChanged { deviceBackends = snapshot.deviceBackends }
+            let pairedChanged = pairedDeviceIDs != snapshot.pairedDeviceIDs
+            if pairedChanged { pairedDeviceIDs = snapshot.pairedDeviceIDs }
             if lightGroupOwners != snapshot.lightGroupOwners { lightGroupOwners = snapshot.lightGroupOwners }
             if sourceStatuses != snapshot.sourceStatuses { sourceStatuses = snapshot.sourceStatuses }
             if deviceTransportDiagnostics != snapshot.deviceTransportDiagnostics {
@@ -571,11 +611,16 @@ extension HomeStore {
                     nextFacets[device.id] = local
                 }
             }
-            if deviceFacets != nextFacets { deviceFacets = nextFacets }
+            let facetsChanged = deviceFacets != nextFacets
+            if facetsChanged { deviceFacets = nextFacets }
 
             // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
-            if devices != nextDevices { devices = nextDevices }
+            if devices != nextDevices {
+                devices = nextDevices
+            } else if backendsChanged || pairedChanged || facetsChanged {
+                syncIndexedDevices(from: devices)
+            }
             reconcileReenabledScopesAfterSnapshot(snapshot)
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
@@ -1597,9 +1642,16 @@ extension HomeStore {
 // MARK: - Mi Session Expiry (#181)
 
 extension HomeStore {
+    private var effectiveMiSessionExpiresAt: Date? {
+        if !miAccounts.isEmpty {
+            return enabledMiAccounts.compactMap(\.session.expiresAt).min()
+        }
+        return miSessionExpiresAt
+    }
+
     public var miSessionExpiryState: MiSessionExpiryState {
         let _ = miSessionExpiryRevision
-        return MiSessionExpiryPolicy.state(expiresAt: miSessionExpiresAt, now: Date())
+        return MiSessionExpiryPolicy.state(expiresAt: effectiveMiSessionExpiresAt, now: Date())
     }
 
     /// Schedules a one-shot wake at the next boundary (`expiresAt - warningLeadTime` or `expiresAt`)
@@ -1607,8 +1659,12 @@ extension HomeStore {
     func scheduleMiSessionExpiryTransition(now: Date = Date()) {
         miSessionExpiryTimerTask?.cancel()
         miSessionExpiryTimerTask = nil
-        let accountEnds = enabledMiAccounts.compactMap(\.session.expiresAt)
-        let candidateEnds = accountEnds.isEmpty ? [miSessionExpiresAt].compactMap { $0 } : accountEnds
+        let candidateEnds: [Date]
+        if !miAccounts.isEmpty {
+            candidateEnds = enabledMiAccounts.compactMap(\.session.expiresAt)
+        } else {
+            candidateEnds = [miSessionExpiresAt].compactMap { $0 }
+        }
         let nextBoundary = candidateEnds
             .flatMap { [$0.addingTimeInterval(-MiSessionExpiryPolicy.warningLeadTime), $0] }
             .filter { $0 > now }
@@ -1630,14 +1686,20 @@ extension HomeStore {
     }
 
     public var miSessionShowsExpired: Bool {
-        usesMiSessionLifecycle && miSessionExpiryState == .expired
+        guard usesMiSessionLifecycle else { return false }
+        let _ = miSessionExpiryRevision
+        if !miAccounts.isEmpty {
+            let now = Date()
+            return enabledMiAccounts.contains { $0.session.expiryState(at: now) == .expired }
+        }
+        return miSessionExpiryState == .expired
     }
 
-    /// True when Xiaomi Cloud is the only configured source and every enabled account has expired,
-    /// so no live device can be controlled until the user scans again.
+    /// True when Xiaomi Cloud is the only enabled cloud source and every enabled account has expired,
+    /// so no live cloud device can be controlled until the user scans again.
     public var miSessionBlocksControl: Bool {
         let _ = miSessionExpiryRevision
-        guard miSessionShowsExpired, !hasHASource else { return false }
+        guard miSessionShowsExpired, !hasEnabledHASource else { return false }
         let enabled = enabledMiAccounts
         guard !enabled.isEmpty else { return miAccounts.isEmpty }
         let now = Date()
@@ -1653,7 +1715,8 @@ extension HomeStore {
     public func presentMiReauth() {
         guard usesMiSessionLifecycle,
               miSessionMaskedUserId != nil || !enabledMiAccounts.isEmpty else { return }
-        if let target = enabledMiAccounts.first(where: { $0.session.expiresAt == miSessionExpiresAt }) ?? enabledMiAccounts.first {
+        let targetExpiry = effectiveMiSessionExpiresAt
+        if let target = enabledMiAccounts.first(where: { $0.session.expiresAt == targetExpiry }) ?? enabledMiAccounts.first {
             miCloudRegion = target.region
         }
         isShowingMiReauth = true
@@ -1676,8 +1739,9 @@ extension HomeStore {
     public var panelHealth: PanelHealth {
         PanelHealthResolver.resolve(PanelHealthInput(
             isDemo: homeBackend == .demo,
-            hasHASource: hasHASource && isHAConnectionEnabled,
+            hasHASource: hasEnabledHASource,
             hasMiSource: hasEnabledMiSource,
+            hasLGSource: hasConfiguredLGTVSource,
             miSessionBlocksControl: miSessionBlocksControl,
             miSessionShowsExpired: miSessionShowsExpired,
             haPlaintextDeclined: {
@@ -1692,8 +1756,7 @@ extension HomeStore {
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus,
             localNetworkBlocks: effectiveLocalNetworkBlocks,
-            allConfiguredSourcesTurnedOff: (hasHASource || hasMiSource || !miAccounts.isEmpty)
-                && !(hasHASource && isHAConnectionEnabled) && !hasEnabledMiSource
+            allConfiguredSourcesTurnedOff: allConfiguredSourcesTurnedOff
         ))
     }
 }
@@ -1717,6 +1780,7 @@ struct PanelHealthInput: Equatable, Sendable {
     var isDemo: Bool
     var hasHASource: Bool
     var hasMiSource: Bool
+    var hasLGSource: Bool = false
     var miSessionBlocksControl: Bool
     var miSessionShowsExpired: Bool
     var haPlaintextDeclined: Bool
@@ -1765,7 +1829,7 @@ enum PanelHealthResolver {
                 action: .openConnectionSettings
             )
         }
-        if !input.hasHASource && !input.hasMiSource {
+        if !input.hasHASource && !input.hasMiSource && !input.hasLGSource {
             return .notConfigured
         }
         if !input.localNetworkBlocks.isEmpty {
@@ -1786,6 +1850,9 @@ enum PanelHealthResolver {
             if input.localNetworkBlocks.contains(.lgWebOS) {
                 return (miWorking || haWorking) ? .degraded(reason: L10n.tr("电视本地网络权限受阻", "TV local network access is blocked")) : blockedVerdict
             }
+        }
+        if !input.hasHASource && !input.hasMiSource && input.hasLGSource {
+            return .ok
         }
         if input.miSessionShowsExpired, input.hasHASource,
            case .connected = input.connectionStatus, case .connected = input.haStatus {

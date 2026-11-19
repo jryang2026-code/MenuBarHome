@@ -69,7 +69,8 @@ public struct MiAccountSection: View {
         var title: String { L10n.tr("停用米家账号连接？", "Turn off Xiaomi Home connection?") }
         var confirmButtonTitle: String { L10n.tr("暂停并停用连接", "Pause & Turn Off Connection") }
         var messageText: String {
-            let names = itemsToPause.prefix(4).map(\.name).joined(separator: "、")
+            let sep = L10n.isEnglish ? ", " : "、"
+            let names = itemsToPause.prefix(4).map(\.name).joined(separator: sep)
             let suffix = itemsToPause.count > 4 ? "…" : ""
             return L10n.format(
                 "停用「%@」的连接后，以下定时、自动化或快捷动作将暂停保留，重新启用连接后自动恢复：%@%@",
