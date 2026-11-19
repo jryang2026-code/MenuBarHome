@@ -32,11 +32,27 @@ struct DualSourceFallbackGraceTests {
         private var cancelledBeforeParking: Set<UUID> = []
         private var ignoreCancelOnNextPark = false
         private var ignoreCancelIds: Set<UUID> = []
+        private var isShutDown = false
         private(set) var parkCount = 0
         private(set) var cancelledWakeCount = 0
         private(set) var recordedDelays: [Duration] = []
 
         var waiting: Int { sleepers.count }
+
+        /// Resumes every parked sleeper and refuses new ones, so no `CheckedContinuation`
+        /// outlives the test that parked it. A sleeper whose cancellation was deliberately
+        /// ignored is resumed here too: its continuation is exactly the one a plain cancel
+        /// leaves behind, and leaving it parked aborts the parallel run at teardown.
+        func shutdown() {
+            isShutDown = true
+            let parked = sleepers
+            sleepers.removeAll()
+            cancelledBeforeParking.removeAll()
+            ignoreCancelIds.removeAll()
+            for sleeper in parked.reversed() {
+                sleeper.continuation.resume(throwing: CancellationError())
+            }
+        }
 
         func ignoreCancellationOnNextSleep() {
             ignoreCancelOnNextPark = true
@@ -46,6 +62,10 @@ struct DualSourceFallbackGraceTests {
             let id = UUID()
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
+                    if isShutDown {
+                        continuation.resume(throwing: CancellationError())
+                        return
+                    }
                     if ignoreCancelOnNextPark {
                         ignoreCancelOnNextPark = false
                         ignoreCancelIds.insert(id)
@@ -176,6 +196,7 @@ struct DualSourceFallbackGraceTests {
     }
 
     private func makeRig(
+        _ teardown: Teardown,
         haStream: String? = "camera.door_stream",
         miStream: String = "miot:\(Self.did):5"
     ) async -> Rig {
@@ -212,6 +233,7 @@ struct DualSourceFallbackGraceTests {
             gate: gate,
             pump: pump
         )
+        track(teardown, rig)
         await waitUntil { await collector.backend(forCard: Self.haID) != nil }
         return rig
     }
@@ -227,10 +249,84 @@ struct DualSourceFallbackGraceTests {
         }
     }
 
+    /// The providers, gates and event pumps one test builds, drained before the test returns.
+    ///
+    /// A test that returns while a `CheckedContinuation` is still parked in `GraceSleepGate`
+    /// aborts the whole parallel run (`signal code 6: freed pointer was not the last
+    /// allocation`), and an `async` test has no `defer` that can `await`. Bodies therefore run
+    /// inside `withTeardown`, which drains on the throwing path too (#274).
+    private final class Teardown {
+        private var steps: [() async -> Void] = []
+        private var finishes: [() -> Void] = []
+
+        /// Runs first: a provider parked on an `AsyncStream` must see it finished before the
+        /// provider itself is shut down.
+        func addFinish(_ finish: @escaping () -> Void) {
+            finishes.append(finish)
+        }
+
+        func add(_ step: @escaping () async -> Void) {
+            steps.append(step)
+        }
+
+        func drain() async {
+            let pendingFinishes = finishes
+            finishes.removeAll()
+            for finish in pendingFinishes { finish() }
+            let pendingSteps = steps
+            steps.removeAll()
+            for step in pendingSteps.reversed() { await step() }
+        }
+    }
+
+    /// Runs `body` and always drains its teardown, including when `#require` throws.
+    private func withTeardown(_ body: (Teardown) async throws -> Void) async throws {
+        let teardown = Teardown()
+        do {
+            try await body(teardown)
+        } catch {
+            await teardown.drain()
+            throw error
+        }
+        await teardown.drain()
+    }
+
+    /// Shuts a rig down without leaving a parked `CheckedContinuation` behind: the provider
+    /// cancels its fallback sleepers first, the gate then force-resumes whatever is still
+    /// parked (even a sleeper that ignores cancellation), and the pump is drained last.
+    private func shutdownRig(_ rig: Rig) async {
+        await rig.provider.shutdown()
+        await rig.gate.shutdown()
+        rig.pump.cancel()
+        await rig.pump.value
+    }
+
+    private func track(_ teardown: Teardown, _ rig: Rig) {
+        teardown.add { await self.shutdownRig(rig) }
+    }
+
+    /// Registers a hand-built provider/gate/pump triple, torn down exactly like a rig.
+    private func track(
+        _ teardown: Teardown,
+        provider: DualSourceHomeProvider,
+        gate: GraceSleepGate,
+        pump: Task<Void, Never>
+    ) {
+        teardown.add {
+            await provider.shutdown()
+            await gate.shutdown()
+            pump.cancel()
+            await pump.value
+        }
+    }
+
     @Test("A brief Home Assistant blip keeps the paired card and its live camera on HA")
     func briefHABlipHoldsRoutingAndLiveView() async throws {
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        try await withTeardown(briefHABlipHoldsRoutingAndLiveViewBody)
+    }
+
+    private func briefHABlipHoldsRoutingAndLiveViewBody(_ teardown: Teardown) async throws {
+        let rig = await makeRig(teardown)
 
         // Both sources can stream; the tie prefers the low-latency Home Assistant copy.
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
@@ -257,8 +353,11 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A real Home Assistant outage flips the card after the grace window and closes the old stream")
     func realHAOutageFlipsAfterGraceAndClosesOldStream() async throws {
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        try await withTeardown(realHAOutageFlipsAfterGraceAndClosesOldStreamBody)
+    }
+
+    private func realHAOutageFlipsAfterGraceAndClosesOldStreamBody(_ teardown: Teardown) async throws {
+        let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         let card = try #require(
@@ -291,9 +390,12 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A brief Mi cloud blip holds its winning card too")
     func briefMiBlipHoldsRouting() async throws {
+        try await withTeardown(briefMiBlipHoldsRoutingBody)
+    }
+
+    private func briefMiBlipHoldsRoutingBody(_ teardown: Teardown) async throws {
         // HA knows the camera but has no stream, so Mi wins the paired card.
-        let rig = await makeRig(haStream: nil)
-        defer { rig.pump.cancel() }
+        let rig = await makeRig(teardown, haStream: nil)
 
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
         let card = try #require(
@@ -316,6 +418,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A brief MiAccountsProvider account disconnect holds the paired camera and live stream through grace, then fails over on real outage")
     func miAccountsProviderBlipHoldsPairedCameraAndLiveStream() async throws {
+        try await withTeardown(miAccountsProviderBlipHoldsPairedCameraAndLiveStreamBody)
+    }
+
+    private func miAccountsProviderBlipHoldsPairedCameraAndLiveStreamBody(_ teardown: Teardown) async throws {
         let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]},{"iid":2,"type":"urn:miot-spec-v2:property:night-shot:00000057:chuangmi-061a01:1","format":"uint8","access":["read","write","notify"],"value-list":[{"value":0,"description":"Off"},{"value":1,"description":"On"},{"value":2,"description":"Auto"}]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
         let camSpec = MiotFixtures.decode(cameraSpecJSON)
         struct CameraSpecSource: MiotSpecSource {
@@ -374,10 +480,7 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        defer {
-            pump.cancel()
-            Task { await provider.shutdown() }
-        }
+        track(teardown, provider: provider, gate: gate, pump: pump)
 
         await waitUntil { await collector.backend(forCard: Self.haID) == .xiaomiCloud }
         let initialCard = try #require(
@@ -432,8 +535,11 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Other source events during grace cancel superseded fallback tasks without recompute loops")
     func cancelledFallbackTaskDoesNotRecomputeOrReschedule() async throws {
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        try await withTeardown(cancelledFallbackTaskDoesNotRecomputeOrRescheduleBody)
+    }
+
+    private func cancelledFallbackTaskDoesNotRecomputeOrRescheduleBody(_ teardown: Teardown) async throws {
+        let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         let card = try #require(
@@ -498,8 +604,11 @@ struct DualSourceFallbackGraceTests {
 
     @Test("System sleep pauses the fallback grace so wake does not immediately flip paired cards")
     func systemSleepFreezesGraceUntilWake() async throws {
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        try await withTeardown(systemSleepFreezesGraceUntilWakeBody)
+    }
+
+    private func systemSleepFreezesGraceUntilWakeBody(_ teardown: Teardown) async throws {
+        let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         let card = try #require(
@@ -557,10 +666,13 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Wake adopts fallback immediately when grace expired at or before system sleep")
     func wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleep() async throws {
+        try await withTeardown(wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleepBody)
+    }
+
+    private func wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleepBody(_ teardown: Teardown) async throws {
         // 1. Source-level boundary: Mac enters sleep right at the 15s grace boundary before the
         // parked sleeper executes its recompute, and no backend events arrive after wake.
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
         let card = try #require(
@@ -625,7 +737,7 @@ struct DualSourceFallbackGraceTests {
                 await collector2.append(event)
             }
         }
-        defer { pump2.cancel() }
+        track(teardown, provider: provider2, gate: gate2, pump: pump2)
 
         await waitUntil { await collector2.backend(forCard: Self.haID) == .xiaomiCloud }
         let miCard = try #require(
@@ -657,6 +769,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("sessionExpired immediately skips grace even when the last snapshot still lists Xiaomi as connected")
     func sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatus() async throws {
+        try await withTeardown(sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatusBody)
+    }
+
+    private func sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatusBody(_ teardown: Teardown) async throws {
         // 1. Multi-account production path: MiAccountsProvider forwards `.sessionExpired` from a
         // follow-up poll without publishing a snapshot or status event, while the second account
         // stays connected.
@@ -738,10 +854,7 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        defer {
-            pump.cancel()
-            Task { await provider.shutdown() }
-        }
+        track(teardown, provider: provider, gate: gate, pump: pump)
 
         await waitUntil {
             let camBackend = await collector.backend(forCard: Self.haID)
@@ -773,8 +886,7 @@ struct DualSourceFallbackGraceTests {
 
         // 2. Single-source snapshot (`accountStatuses.isEmpty`): `.sessionExpired` arriving while
         // `miStatus` is still `.connected` must also fail over immediately without waiting for status/snapshot.
-        let singleRig = await makeRig(haStream: nil)
-        defer { singleRig.pump.cancel() }
+        let singleRig = await makeRig(teardown, haStream: nil)
 
         await waitForBackend(singleRig, cardID: Self.haID, .xiaomiCloud)
         let singleCard = try #require(
@@ -792,8 +904,11 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A source reconfigured or invalidated skips the grace entirely")
     func invalidationSkipsGrace() async throws {
-        let rig = await makeRig()
-        defer { rig.pump.cancel() }
+        try await withTeardown(invalidationSkipsGraceBody)
+    }
+
+    private func invalidationSkipsGraceBody(_ teardown: Teardown) async throws {
+        let rig = await makeRig(teardown)
 
         await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
 
@@ -806,6 +921,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Expired Xiaomi account drops its candidates so paired devices route to HA immediately including nil-accountId devices while healthy accounts keep winning")
     func sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountID() async throws {
+        try await withTeardown(sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountIDBody)
+    }
+
+    private func sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountIDBody(_ teardown: Teardown) async throws {
         let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
         let plugSpecJSON = #"{"type":"urn:miot-spec-v2:device:outlet:0000A002:cuco-v3:1","services":[{"iid":2,"type":"urn:miot-spec-v2:service:switch:0000780C:cuco-v3:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:cuco-v3:1","format":"bool","access":["read","write","notify"]}]}]}"#
         let camSpec = MiotFixtures.decode(cameraSpecJSON)
@@ -927,10 +1046,7 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        defer {
-            pump.cancel()
-            Task { await provider.shutdown() }
-        }
+        track(teardown, provider: provider, gate: gate, pump: pump)
 
         await waitUntil {
             let doorBackend = await collector.backend(forCard: Self.haID)
@@ -999,10 +1115,7 @@ struct DualSourceFallbackGraceTests {
                 await singleCollector.append(event)
             }
         }
-        defer {
-            singlePump.cancel()
-            Task { await singleDual.shutdown() }
-        }
+        track(teardown, provider: singleDual, gate: gate, pump: singlePump)
 
         await waitUntil { await singleCollector.backend(forCard: Self.haID) == .xiaomiCloud }
         let singleInitialCard = try #require(
@@ -1054,10 +1167,7 @@ struct DualSourceFallbackGraceTests {
                 await scopedCollector.append(event)
             }
         }
-        defer {
-            scopedPump.cancel()
-            Task { await scopedDual.shutdown() }
-        }
+        track(teardown, provider: scopedDual, gate: gate, pump: scopedPump)
 
         await waitUntil {
             let camBackend = await scopedCollector.backend(forCard: Self.haID)
@@ -1115,10 +1225,7 @@ struct DualSourceFallbackGraceTests {
                 await unattributedCollector.append(event)
             }
         }
-        defer {
-            unattributedPump.cancel()
-            Task { await unattributedDual.shutdown() }
-        }
+        track(teardown, provider: unattributedDual, gate: gate, pump: unattributedPump)
 
         await waitUntil {
             let camBackend = await unattributedCollector.backend(forCard: Self.did)
@@ -1136,6 +1243,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Shared Xiaomi devices stay uninterrupted on surviving co-owner when another account's session expires")
     func sharedXiaomiDevicesSurviveCoOwnerSessionExpiry() async throws {
+        try await withTeardown(sharedXiaomiDevicesSurviveCoOwnerSessionExpiryBody)
+    }
+
+    private func sharedXiaomiDevicesSurviveCoOwnerSessionExpiryBody(_ teardown: Teardown) async throws {
         let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
         let plugSpecJSON = #"{"type":"urn:miot-spec-v2:device:outlet:0000A002:cuco-v3:1","services":[{"iid":2,"type":"urn:miot-spec-v2:service:switch:0000780C:cuco-v3:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:cuco-v3:1","format":"bool","access":["read","write","notify"]}]}]}"#
         let camSpec = MiotFixtures.decode(cameraSpecJSON)
@@ -1296,10 +1407,7 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        defer {
-            pump.cancel()
-            Task { await provider.shutdown() }
-        }
+        track(teardown, provider: provider, gate: gate, pump: pump)
 
         await waitUntil {
             let sharedCamBackend = await collector.backend(forCard: Self.haID)
@@ -1434,10 +1542,7 @@ struct DualSourceFallbackGraceTests {
                 await followUpCollector.append(event)
             }
         }
-        defer {
-            followUpPump.cancel()
-            Task { await followUpDual.shutdown() }
-        }
+        track(teardown, provider: followUpDual, gate: followUpGate, pump: followUpPump)
 
         await waitUntil {
             let camBackend = await followUpCollector.backend(forCard: Self.haID)
@@ -1532,10 +1637,7 @@ struct DualSourceFallbackGraceTests {
                 await directCollector.append(event)
             }
         }
-        defer {
-            directPump.cancel()
-            Task { await directDual.shutdown() }
-        }
+        track(teardown, provider: directDual, gate: directGate, pump: directPump)
 
         await waitUntil {
             let camBackend = await directCollector.backend(forCard: Self.haID)
@@ -1578,6 +1680,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Single-account sessionExpired keeps cached devices stripped across premature connecting/connected statuses and stale snapshots until a fresh post-relogin snapshot arrives")
     func singleAccountSessionExpiredWaitsForFreshPostReloginSnapshot() async throws {
+        try await withTeardown(singleAccountSessionExpiredWaitsForFreshPostReloginSnapshotBody)
+    }
+
+    private func singleAccountSessionExpiredWaitsForFreshPostReloginSnapshotBody(_ teardown: Teardown) async throws {
         let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
         let camSpec = MiotFixtures.decode(cameraSpecJSON)
         struct CameraOnlySpecSource: MiotSpecSource {
@@ -1629,10 +1735,7 @@ struct DualSourceFallbackGraceTests {
                 await collector.append(event)
             }
         }
-        defer {
-            pump.cancel()
-            Task { await dual.shutdown() }
-        }
+        track(teardown, provider: dual, gate: gate, pump: pump)
 
         await waitUntil {
             let camBackend = await collector.backend(forCard: Self.haID)
@@ -1769,12 +1872,11 @@ struct DualSourceFallbackGraceTests {
                 await e2eCollector.append(event)
             }
         }
-        defer {
+        teardown.addFinish {
             pollReleaseCont.finish()
             enteredPollCont.finish()
-            e2ePump.cancel()
-            Task { await e2eDual.shutdown() }
         }
+        track(teardown, provider: e2eDual, gate: gate, pump: e2ePump)
 
         await waitUntil { await e2eCollector.backend(forCard: Self.haID) == .xiaomiCloud }
         let e2eInitialCard = try #require(await e2eCollector.latestHome?.devices.first { $0.id == Self.haID })
@@ -1816,6 +1918,10 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Multi-account sessionExpired re-login immediately surfaces connecting and clears miExpiredAccountIDs without waiting for connected")
     func multiAccountReloginSurfacesConnectingAndClearsExpiredImmediately() async throws {
+        try await withTeardown(multiAccountReloginSurfacesConnectingAndClearsExpiredImmediatelyBody)
+    }
+
+    private func multiAccountReloginSurfacesConnectingAndClearsExpiredImmediatelyBody(_ teardown: Teardown) async throws {
         let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
         let plugSpecJSON = #"{"type":"urn:miot-spec-v2:device:outlet:0000A002:cuco-v3:1","services":[{"iid":2,"type":"urn:miot-spec-v2:service:switch:0000780C:cuco-v3:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:cuco-v3:1","format":"bool","access":["read","write","notify"]}]}]}"#
         let camSpec = MiotFixtures.decode(cameraSpecJSON)
@@ -1885,10 +1991,7 @@ struct DualSourceFallbackGraceTests {
                 await directCollector.append(event)
             }
         }
-        defer {
-            directPump.cancel()
-            Task { await directDual.shutdown() }
-        }
+        track(teardown, provider: directDual, gate: directGate, pump: directPump)
 
         await waitUntil { await directCollector.backend(forCard: Self.haID) == .xiaomiCloud }
         await directMiMock.sendSessionExpired(session1)
@@ -1992,12 +2095,11 @@ struct DualSourceFallbackGraceTests {
                 await e2eCollector.append(event)
             }
         }
-        defer {
+        teardown.addFinish {
             reloginGateCont.finish()
             reloginEnteredCont.finish()
-            e2ePump.cancel()
-            Task { await e2eDual.shutdown() }
         }
+        track(teardown, provider: e2eDual, gate: e2eGate, pump: e2ePump)
 
         await waitUntil {
             let camBackend = await e2eCollector.backend(forCard: Self.haID)

@@ -89,6 +89,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -206,6 +207,7 @@ struct DualSourceIntegrationTests {
             ),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
         }
@@ -266,6 +268,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.devices.count == 1 && store.favoriteDeviceIds.contains(did)
@@ -430,6 +433,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -514,6 +518,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         store.controlDebounceInterval = .milliseconds(120)
 
         await waitUntil {
@@ -570,6 +575,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         store.hasHASource = true
         store.miSessionMaskedUserId = "masked"
 
@@ -639,6 +645,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
@@ -692,6 +699,7 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suite
         )
         defer { storeWithMi.logoutMiAccount() }
+        defer { storeWithMi.stop() }
         storeWithMi.hasHASource = true
         #expect(storeWithMi.hasHASource)
         #expect(storeWithMi.hasMiSource)
@@ -717,6 +725,7 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suiteNoMi
         )
         defer { haOnlyStore.switchBackend(.demo) }
+        defer { haOnlyStore.stop() }
         await waitUntil { !haOnlyStore.devices.isEmpty }
         haOnlyStore.hasHASource = true
         #expect(haOnlyStore.disconnectHomeAssistant())
@@ -775,6 +784,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -899,6 +909,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.devices.count == 2 && store.deviceBackend(for: haCamId) == .xiaomiCloud
