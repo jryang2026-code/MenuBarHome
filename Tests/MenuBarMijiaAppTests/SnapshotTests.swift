@@ -1819,7 +1819,7 @@ struct SnapshotTests {
         let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for language in [AppLanguage.zhHans, .en] {
-            try L10n.$overrideLanguage.withValue(language) {
+            L10n.$overrideLanguage.withValue(language) {
             fixture.store.appLanguagePreference = AppLanguagePreference(language)
             for scheme in [ColorScheme.light, .dark] {
                 assertRendered(
@@ -1933,7 +1933,7 @@ struct SnapshotTests {
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
     func cameraAudioHUDStates() async throws {
-        try L10n.$overrideLanguage.withValue(.zhHans) {
+        L10n.$overrideLanguage.withValue(.zhHans) {
         let states: [(CameraLiveAudioStatus, String)] = [
             (.videoOnly, "video-only"),
             (.audio(isMuted: true), "muted"),
@@ -2109,7 +2109,7 @@ struct SnapshotTests {
             defer {
                 controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
             }
-            try L10n.$overrideLanguage.withValue(.zhHans) {
+            L10n.$overrideLanguage.withValue(.zhHans) {
                 assertRendered(
                     snapshotReady(CameraLivePanelView(controller: controller, store: fixture.store), scheme: .dark),
                     size: size,
