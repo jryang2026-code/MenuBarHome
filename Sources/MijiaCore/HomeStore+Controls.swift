@@ -380,12 +380,40 @@ extension HomeStore {
 
         return Task {
             defer { self.readBackTickets.finish(deviceId, ticket: ticket) }
-            guard self.controlContextID == context else { return false }
+            guard self.matchesModalDeviceContext(modalContext) else {
+                if self.controlContextID == context, self.readBackTickets.isLatest(deviceId, ticket: ticket) {
+                    if let coverWrite {
+                        if self.ownsRow(coverWrite) {
+                            if self.optimisticFieldLocks[.field(deviceId, .coverPosition)] != nil {
+                                self.revert(coverWrite, restoring: self.reportedDevice(for: deviceId))
+                            } else {
+                                self.coverCommandOrigins.removeValue(forKey: deviceId)
+                            }
+                        }
+                    } else {
+                        self.discardCoverOrigin(coverOrigin, deviceId: deviceId, revision: lockRevision)
+                    }
+                }
+                return false
+            }
             do {
                 try await self.executeDeviceCommand(cmd)
-                guard self.controlContextID == context else { return false }
+                guard self.matchesModalDeviceContext(modalContext) else {
+                    if self.controlContextID == context, self.readBackTickets.isLatest(deviceId, ticket: ticket),
+                       let coverWrite, self.ownsRow(coverWrite) {
+                        if self.optimisticFieldLocks[.field(deviceId, .coverPosition)] != nil {
+                            self.revert(coverWrite, restoring: self.reportedDevice(for: deviceId))
+                        } else {
+                            self.coverCommandOrigins.removeValue(forKey: deviceId)
+                        }
+                    }
+                    return false
+                }
+                if let coverWrite, !self.ownsRow(coverWrite) {
+                    return true
+                }
                 let confirmation = await self.confirmToggleReadBack(deviceId: deviceId, requested: updated, ticket: ticket, context: context)
-                guard self.controlContextID == context else { return false }
+                guard self.matchesModalDeviceContext(modalContext) else { return false }
                 switch confirmation {
                 case .matched:
                     let shown = self.devices.first(where: { $0.id == deviceId }) ?? updated
@@ -937,6 +965,7 @@ extension HomeStore {
         let closing = checkSpec.closeDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         let pausing = checkSpec.pauseDescription.map { description.caseInsensitiveCompare($0) == .orderedSame } ?? false
         let modalContext = captureModalDeviceContext(for: check)
+        let preModalGeneration = snapshotGeneration
         let motorOperation: IntentOperation? = (opening || closing) ? .power(opening) : nil
         var didPresentModal = false
         if let motorOperation {
@@ -954,19 +983,33 @@ extension HomeStore {
             return
         }
         cancelDebouncedWrites(for: deviceId, keys: ["\(deviceId).cover"])
+        if (opening || closing),
+           optimisticFieldLocks[.field(deviceId, .coverPosition)] != nil,
+           let reported = reportedDevice(for: deviceId),
+           case .cover(let reportedSpec) = reported.kind {
+            let reportedPos = lastCoverPositions[deviceId]
+                ?? reportedSpec.reportedPositionPercent
+                ?? reportedSpec.positionPercent
+            let priorOrigin = coverCommandOrigins[deviceId]
+            if (didPresentModal && snapshotGeneration != preModalGeneration)
+                || (priorOrigin != nil && reportedPos != nil && reportedPos != priorOrigin) {
+                dropSupersededCoverLock(deviceId: deviceId, restoring: reported)
+            }
+        }
         guard let previous = resolvePostModalDevice(modalContext),
               case .cover(var s) = previous.kind,
               s.entityId == checkSpec.entityId else { return }
         let priorCoverOrigin = coverCommandOrigins[deviceId]
+        let latestPos = lastCoverPositions[deviceId] ?? s.reportedPositionPercent ?? s.positionPercent
         let origin = activeCoverOrigin(for: deviceId, fallback: s.positionPercent)
         if opening {
-            coverCommandOrigins[deviceId] = s.positionPercent
+            coverCommandOrigins[deviceId] = latestPos
             s.positionPercent = 100
             s.motion = .opening
             s.motionIsInferred = false
         }
         if closing {
-            coverCommandOrigins[deviceId] = s.positionPercent
+            coverCommandOrigins[deviceId] = latestPos
             s.positionPercent = 0
             s.motion = .closing
             s.motionIsInferred = false
@@ -994,6 +1037,34 @@ extension HomeStore {
                 device.kind = .cover(spec)
             }
         )
+    }
+
+    private func dropSupersededCoverLock(deviceId: String, restoring reported: SmartDevice) {
+        if var session = manualWriteSessions[deviceId] {
+            session.patches.removeAll { $0.fields.contains(.coverPosition) }
+            session.baseFieldLocks.removeValue(forKey: .coverPosition)
+            session.baseCoverOrigin = nil
+            session.base = session.base.mergingOptimisticFields(from: reported, lockedFields: [.coverPosition])
+            if session.patches.isEmpty {
+                manualWriteSessions.removeValue(forKey: deviceId)
+            } else {
+                manualWriteSessions[deviceId] = session
+            }
+        }
+        optimisticFieldLocks.removeValue(forKey: .field(deviceId, .coverPosition))
+        coverCommandOrigins.removeValue(forKey: deviceId)
+        if let idx = devices.firstIndex(where: { $0.id == deviceId }) {
+            if let session = manualWriteSessions[deviceId], optimisticLockRevision[deviceId] == session.revision {
+                var composed = session.base
+                for patch in session.patches {
+                    patch.apply(&composed)
+                }
+                devices[idx] = composed
+            } else {
+                devices[idx] = devices[idx].mergingOptimisticFields(from: reported, lockedFields: [.coverPosition])
+            }
+            syncGenericPowerFacet(devices[idx])
+        }
     }
 
     /// A curtain or blind treats the drag as the confirmation; a subtype the hazard table calls
@@ -1279,7 +1350,7 @@ extension HomeStore {
         // sources switch, or an earlier debounced tick rolls back and clears its undo banner.
         // Re-read live state before committing so stale pre-modal captures cannot overwrite new
         // cloud state, carry stale undo baselines, or target gone/re-sourced rows.
-        guard let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true),
+        guard let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true, showOfflineToast: true),
               var currentFacets = deviceFacets[deviceId],
               let currentIndex = currentFacets.firstIndex(where: { $0.id == controlId }) else { return }
         let currentControl = currentFacets[currentIndex]
@@ -1436,7 +1507,7 @@ extension HomeStore {
             for: device
         ) != nil
         guard allowManualControl(facet: control, value: nil, portion: portion, for: device),
-              let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true),
+              let currentDevice = resolvePostModalDevice(modalContext, requireOnline: true, showOfflineToast: true),
               let currentControl = deviceFacets[deviceId]?.first(where: { $0.id == controlId }),
               facetWriteAllowed(currentControl),
               let currentTarget = currentControl.target,
@@ -1603,7 +1674,7 @@ extension HomeStore {
         }
     }
 
-    private func reportedDevice(for deviceId: String) -> SmartDevice? {
+    func reportedDevice(for deviceId: String) -> SmartDevice? {
         lastReportedDevices[deviceId].map { devicesWithAliases([$0]).first ?? $0 }
     }
 

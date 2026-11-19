@@ -552,8 +552,13 @@ extension HomeStore {
             guard controlContext == controlContextID else { return nil }
             guard !approved.isEmpty else {
                 if isControlBlockedByScreenLock {
-                    setAssistantState(.failed(screenLockBlockedMessage))
-                    return plan
+                    let blocked = IntentPlan(
+                        intents: [],
+                        reply: screenLockBlockedMessage,
+                        source: plan.source
+                    )
+                    setAssistantState(.failed(blocked.reply))
+                    return blocked
                 }
                 let cancelled = IntentPlan(
                     intents: [],
@@ -1084,7 +1089,11 @@ extension HomeStore {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
             setAssistantState(.failed(screenLockBlockedMessage))
-            return plan
+            return IntentPlan(
+                intents: [],
+                reply: screenLockBlockedMessage,
+                source: plan.source
+            )
         }
         let context = controlContextID
         let previousSnapshot = devices

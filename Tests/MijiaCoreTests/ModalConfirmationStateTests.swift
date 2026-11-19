@@ -1,5 +1,4 @@
 import Foundation
-import os
 import Testing
 @testable import MijiaCore
 
@@ -318,7 +317,11 @@ struct ModalConfirmationStateTests {
 
     @Test("Card controls preserve post-modal cloud state, roll back to post-modal state, and abort on source switch")
     func cardControlsPreservePostModalStateAndRollback() async throws {
-        let attempted = OSAllocatedUnfairLock(initialState: [DeviceCommand]())
+        actor Recorder {
+            var attempted: [DeviceCommand] = []
+            func record(_ cmd: DeviceCommand) { attempted.append(cmd) }
+        }
+        let recorder = Recorder()
         let gate = SleepGate()
         var initialHome = SynthesizedHome(devices: [
             Self.heaterClimate(isOn: true, hvacMode: "heat", currentTemp: 19, targetTemp: 22, fanMode: "low")
@@ -326,7 +329,7 @@ struct ModalConfirmationStateTests {
         initialHome.deviceBackends = ["heater": .xiaomiCloud]
         let mock = MockHomeProvider(snapshot: initialHome)
         await mock.setFailingCommands { cmd in
-            attempted.withLock { $0.append(cmd) }
+            Task { await recorder.record(cmd) }
             return cmd.targetEntityId == "climate.heater"
         }
         let store = HomeStore(
@@ -363,7 +366,8 @@ struct ModalConfirmationStateTests {
         let task = store.debounceTasks["heater.temp"]
         await task?.value
 
-        #expect(attempted.withLock { $0 } == [
+        await waitUntil { await recorder.attempted.count == 1 }
+        #expect(await recorder.attempted == [
             .setClimateTemperature(entityId: "climate.heater", temperature: 24)
         ])
 
@@ -895,6 +899,360 @@ struct ModalConfirmationStateTests {
         #expect(store.facetWrites.isEmpty)
         #expect(store.undoBanner == nil)
         #expect(store.deviceFacets["wh"]?.first(where: { $0.id == "2.5" })?.value == nil)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("Non-momentary togglePrimary rechecks modal device context before send and cleans up cover state")
+    func nonMomentaryTogglePrimaryRechecksSourceBeforeSendAndCleansCoverState() async throws {
+        // 1. Non-cover togglePrimary aborts when backend switches before Task body runs.
+        var heaterHome = SynthesizedHome(devices: [Self.heaterClimate()])
+        heaterHome.deviceBackends = ["heater": .xiaomiCloud]
+        let heaterMock = MockHomeProvider(snapshot: heaterHome)
+        let heaterStore = HomeStore(
+            provider: heaterMock,
+            defaultsSuiteName: "test.modal.toggle.presend.heater.\(UUID().uuidString)"
+        )
+        heaterStore.toastAutoDismissInterval = nil
+        try await heaterStore.waitForTestSnapshot()
+        heaterStore.manualControlConfirmationHandler = { _ in true }
+
+        let heaterCard = try #require(heaterStore.devices.first)
+        let heaterTask = try #require(heaterStore.togglePrimary(heaterCard))
+        var switchedHeaterHome = SynthesizedHome(devices: [Self.heaterClimate(isOn: false)])
+        switchedHeaterHome.deviceBackends = ["heater": .homeAssistant]
+        heaterStore.handleProviderEvent(.snapshotUpdated(switchedHeaterHome))
+
+        #expect(await heaterTask.value == false)
+        #expect(await heaterMock.executedCommands.isEmpty)
+
+        // 2. Cover togglePrimary aborts on account/source switch before Task runs, clearing coverOrigin and optimistic lock.
+        func coverWithAccount(_ accountId: String, position: Int) -> SmartDevice {
+            SmartDevice(
+                id: "garage",
+                name: "车库门",
+                roomId: "yard",
+                roomName: "车库",
+                model: "dooya.curtain.garage",
+                isOnline: true,
+                kind: .cover(CoverSpec(
+                    entityId: "cover.garage",
+                    subtype: .garageDoor,
+                    positionPercent: position,
+                    reportedPositionPercent: position,
+                    positionWritable: true,
+                    openDescription: "Open",
+                    closeDescription: "Close",
+                    pauseDescription: "Pause",
+                    motion: .stopped
+                )),
+                accountId: accountId
+            )
+        }
+
+        var coverHome = SynthesizedHome(devices: [coverWithAccount("acc-1", position: 0)])
+        coverHome.deviceBackends = ["garage": .xiaomiCloud]
+        let coverMock = MockHomeProvider(snapshot: coverHome)
+        let coverStore = HomeStore(
+            provider: coverMock,
+            defaultsSuiteName: "test.modal.toggle.presend.cover.\(UUID().uuidString)"
+        )
+        coverStore.toastAutoDismissInterval = nil
+        try await coverStore.waitForTestSnapshot()
+        coverStore.manualControlConfirmationHandler = { _ in true }
+
+        let coverCard = try #require(coverStore.devices.first)
+        let coverTask = try #require(coverStore.togglePrimary(coverCard))
+        #expect(coverStore.coverCommandOrigins["garage"] == 0)
+
+        // Account switches from acc-1 to acc-2 (same backend, so snapshotUpdated's backendChanged does not fire).
+        var switchedCoverHome = SynthesizedHome(devices: [coverWithAccount("acc-2", position: 65)])
+        switchedCoverHome.deviceBackends = ["garage": .xiaomiCloud]
+        coverStore.handleProviderEvent(.snapshotUpdated(switchedCoverHome))
+
+        #expect(await coverTask.value == false)
+        #expect(await coverMock.executedCommands.isEmpty)
+        #expect(coverStore.coverCommandOrigins["garage"] == nil)
+        #expect(coverStore.optimisticFieldLocks[.field("garage", .coverPosition)] == nil)
+        #expect(coverStore.devices.first?.coverSpec?.positionPercent == 65)
+    }
+
+    @Test("raycastWrite rechecks source context across await window and aborts remaining commands on source switch")
+    func raycastWriteAbortsWhenSourceSwitchesDuringAwaitWindow() async throws {
+        func deskLamp(accountId: String, brightness: Int, kelvin: Int) -> SmartDevice {
+            SmartDevice(
+                id: "lamp",
+                name: "书房台灯",
+                roomId: "study",
+                roomName: "书房",
+                model: "yeelink.light.lamp4",
+                isOnline: true,
+                kind: .light(LightSpec(
+                    entityId: "light.study",
+                    isOn: true,
+                    brightnessPercent: brightness,
+                    colorTempKelvin: kelvin,
+                    minKelvin: 2700,
+                    maxKelvin: 6500,
+                    powerWritable: true,
+                    brightnessWritable: true,
+                    colorWritable: true
+                )),
+                accountId: accountId
+            )
+        }
+
+        var home = SynthesizedHome(devices: [deskLamp(accountId: "acc-1", brightness: 80, kelvin: 5000)])
+        home.deviceBackends = ["lamp": .xiaomiCloud]
+        let mock = MockHomeProvider(snapshot: home)
+        await mock.holdSnapshots()
+        await mock.holdNextExecute()
+        let store = HomeStore(
+            provider: mock,
+            defaultsSuiteName: "test.modal.raycast.await.\(UUID().uuidString)"
+        )
+        store.toastAutoDismissInterval = nil
+        await mock.emitSnapshot()
+        try await store.waitForTestSnapshot()
+        await mock.holdSnapshots()
+
+        let task = Task {
+            await store.executeRaycastDirectCommand("把书房台灯设为柔和月光模式")
+        }
+        await waitUntil { await mock.executeStarted == 1 }
+
+        // While the first command (brightness) is awaiting, the lamp switches to a different account/source.
+        var switchedHome = SynthesizedHome(devices: [deskLamp(accountId: "acc-2", brightness: 90, kelvin: 5500)])
+        switchedHome.deviceBackends = ["lamp": .homeAssistant]
+        store.handleProviderEvent(.snapshotUpdated(switchedHome))
+
+        await mock.releaseExecute()
+        let result = await task.value
+
+        #expect(result.handled == true)
+        #expect(result.isError == true)
+        #expect(
+            await mock.executedCommands == [.setLightBrightness(entityId: "light.study", percent: 15)],
+            "must not dispatch the second command (setLightColorTemp) to the switched source"
+        )
+        #expect(store.optimisticFieldLocks[.field("lamp", .brightness)] == nil)
+        #expect(store.optimisticFieldLocks[.field("lamp", .colorTemperature)] == nil)
+        if case .light(let spec) = store.devices.first?.kind {
+            #expect(spec.brightnessPercent == 90)
+            #expect(spec.colorTempKelvin == 5500)
+        } else {
+            Issue.record("expected light spec")
+        }
+    }
+
+    @Test("setCoverMotor with in-flight command uses post-modal reported position for origin and rollback while keeping Pause origin")
+    func setCoverMotorWithInFlightCommandUsesPostModalReportedOriginAndRollback() async throws {
+        actor InFlightCoverProvider: HomeProvider {
+            private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
+            private let initial: SynthesizedHome
+            private var openWaiter: CheckedContinuation<Void, Never>?
+            private var closeWaiter: CheckedContinuation<Void, Never>?
+            private(set) var openInFlight = false
+            private(set) var closeInFlight = false
+            private(set) var executed: [DeviceCommand] = []
+            var failClose = true
+
+            init(initial: SynthesizedHome) {
+                self.initial = initial
+            }
+
+            nonisolated func events() -> AsyncStream<HomeProviderEvent> {
+                AsyncStream { cont in
+                    Task { await self.attach(cont) }
+                }
+            }
+
+            private func attach(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+                self.continuation = cont
+                cont.yield(.statusChanged(.connected))
+                cont.yield(.snapshotUpdated(initial))
+            }
+
+            func execute(_ command: DeviceCommand) async throws {
+                if command == .setSelectOption(entityId: "cover.garage", option: "Open"), !openInFlight {
+                    openInFlight = true
+                    await withCheckedContinuation { openWaiter = $0 }
+                    executed.append(command)
+                    return
+                }
+                if command == .setSelectOption(entityId: "cover.garage", option: "Close"), failClose {
+                    closeInFlight = true
+                    await withCheckedContinuation { closeWaiter = $0 }
+                    throw HomeProviderError.serviceCallFailed(500, "Close failed")
+                }
+                executed.append(command)
+            }
+
+            func releaseOpen() {
+                openWaiter?.resume()
+                openWaiter = nil
+            }
+
+            func releaseClose() {
+                closeWaiter?.resume()
+                closeWaiter = nil
+            }
+
+            func refreshNow() async {}
+        }
+
+        let provider = InFlightCoverProvider(initial: SynthesizedHome(devices: [Self.garageDoor(position: 0)]))
+        let store = HomeStore(
+            provider: provider,
+            defaultsSuiteName: "test.modal.cover.inflight.\(UUID().uuidString)"
+        )
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // 1. Earlier Open command (0% -> 100%) is in flight and holds the 100% cover lock.
+        store.manualControlConfirmationHandler = { _ in true }
+        store.setCoverMotor("garage", description: "Open")
+        await waitUntil { await provider.openInFlight }
+        #expect(store.coverCommandOrigins["garage"] == 0)
+        #expect(store.devices.first?.coverSpec?.positionPercent == 100)
+
+        // 2. User triggers Close; while the confirmation modal is open, the motor reports 40% (.opening).
+        store.manualControlConfirmationHandler = { _ in
+            store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [
+                Self.garageDoor(position: 40, motion: .opening)
+            ])))
+            return true
+        }
+        let exitsBeforeClose = store.manualWriteExits
+        store.setCoverMotor("garage", description: "Close")
+        await waitUntil { await provider.closeInFlight }
+
+        #expect(
+            store.coverCommandOrigins["garage"] == 40,
+            "opening/closing must record post-modal reported 40%, not the locked 100% target"
+        )
+        #expect(store.devices.first?.coverSpec?.positionPercent == 0)
+
+        // 3. Close fails -> must roll back to the real post-modal 40% position, not 100% or 0%.
+        await provider.releaseClose()
+        await waitUntil { store.manualWriteExits > exitsBeforeClose }
+
+        let rolledBack = try #require(store.devices.first)
+        guard case .cover(let rolledSpec) = rolledBack.kind else {
+            Issue.record("expected cover spec")
+            return
+        }
+        #expect(rolledSpec.positionPercent == 40, "failed Close must roll back to real 40% motor position")
+        #expect(store.coverCommandOrigins["garage"] == nil)
+
+        // Releasing the superseded earlier Open does not clobber the 40% state.
+        let exitsBeforeOpen = store.manualWriteExits
+        await provider.releaseOpen()
+        await waitUntil { store.manualWriteExits > exitsBeforeOpen }
+        #expect(store.devices.first?.coverSpec?.positionPercent == 40)
+
+        // 4. Pause still preserves activeCoverOrigin from an active travel lock.
+        store.manualControlConfirmationHandler = { _ in true }
+        store.setCoverMotor("garage", description: "Open")
+        #expect(store.coverCommandOrigins["garage"] == 40)
+        store.setCoverMotor("garage", description: "Pause")
+        #expect(store.coverCommandOrigins["garage"] == 40)
+    }
+
+    @Test("runAssistantCommand returns empty blocked plan with lock message when screen locks during modal")
+    func runAssistantCommandReturnsBlockedPlanOnScreenLockDuringModal() async throws {
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.heaterClimate(isOn: false)]))
+        let store = HomeStore(
+            provider: mock,
+            defaultsSuiteName: "test.modal.assist.screenlock.\(UUID().uuidString)"
+        )
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        store.manualControlConfirmationHandler = { _ in
+            store.setScreenLocked(true)
+            return true
+        }
+
+        let plan = try #require(await store.runAssistantCommand("打开卧室取暖器"))
+        #expect(plan.intents.isEmpty, "screen-locked abort must not return unexecuted intents")
+        #expect(plan.reply == store.screenLockBlockedMessage, "plan reply must report screen lock instead of original plan")
+        #expect(store.assistantState == .failed(store.screenLockBlockedMessage))
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("setFacetValue and runFacetAction show offline toast when device goes offline during confirmation modal")
+    func facetControlsShowOfflineToastWhenDeviceGoesOfflineDuringModal() async throws {
+        var whOffline = Self.waterHeater(cardTarget: 40)
+        whOffline.isOnline = false
+
+        var home = SynthesizedHome(devices: [Self.waterHeater(cardTarget: 40)])
+        home.deviceFacets = ["wh": [Self.targetTemperatureSlider(value: .number(40))]]
+        let mock = MockHomeProvider(snapshot: home)
+        let store = HomeStore(
+            provider: mock,
+            defaultsSuiteName: "test.modal.facet.offline.\(UUID().uuidString)"
+        )
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // 1. setFacetValue shows offline toast when device goes offline during modal.
+        store.manualControlConfirmationHandler = { _ in
+            var offlineHome = SynthesizedHome(devices: [whOffline])
+            offlineHome.deviceFacets = ["wh": [Self.targetTemperatureSlider(value: .number(40))]]
+            store.handleProviderEvent(.snapshotUpdated(offlineHome))
+            return true
+        }
+        store.dismissToast()
+        store.setFacetValue("wh", controlId: "2.5", value: .number(70))
+        #expect(store.toastNotice?.isError == true)
+        #expect(
+            store.toastNotice?.message.contains("离线") == true
+                || store.toastNotice?.message.contains("offline") == true,
+            "setFacetValue must show offline toast when device goes offline during modal"
+        )
+        #expect(await mock.executedCommands.isEmpty)
+
+        // 2. runFacetAction shows offline toast when device goes offline during modal.
+        var feederOnline = SmartDevice(
+            id: "feeder",
+            name: "宠物喂食器",
+            roomId: "living",
+            roomName: "客厅",
+            model: "mmgg.feeder.inland",
+            isOnline: true,
+            kind: .generic(GenericSpec(deviceType: "pet-feeder", typeTitle: "宠物喂食器", isReadOnly: false)),
+            accountId: "acc-1"
+        )
+        let feedControl = FacetControl(
+            id: "2.1",
+            kind: .button,
+            name: "out-food",
+            title: "出粮",
+            serviceName: "pet-feeder",
+            isWritable: true,
+            writesByDefault: true,
+            isHighValue: true,
+            target: .action(entityId: "miot:feeder:2:1")
+        )
+        var feederHome = SynthesizedHome(devices: [feederOnline])
+        feederHome.deviceFacets = ["feeder": [feedControl]]
+        store.handleProviderEvent(.snapshotUpdated(feederHome))
+
+        store.manualControlConfirmationHandler = { _ in
+            feederOnline.isOnline = false
+            var offlineFeederHome = SynthesizedHome(devices: [feederOnline])
+            offlineFeederHome.deviceFacets = ["feeder": [feedControl]]
+            store.handleProviderEvent(.snapshotUpdated(offlineFeederHome))
+            return true
+        }
+        store.dismissToast()
+        store.runFacetAction("feeder", controlId: "2.1")
+        #expect(store.toastNotice?.isError == true)
+        #expect(
+            store.toastNotice?.message.contains("离线") == true
+                || store.toastNotice?.message.contains("offline") == true,
+            "runFacetAction must show offline toast when device goes offline during modal"
+        )
         #expect(await mock.executedCommands.isEmpty)
     }
 }

@@ -181,7 +181,7 @@ extension HomeStore {
     private func raycastConfirm(
         _ operation: IntentOperation,
         for device: SmartDevice
-    ) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
+    ) -> (device: SmartDevice?, context: ModalDeviceContext?, refusal: RaycastDirectResult?) {
         let preConfirmToastId = toastNotice?.id
         guard let resolved = confirmAndResolveManualControl(
             operation,
@@ -191,34 +191,65 @@ extension HomeStore {
         ) else {
             let msg = (toastNotice?.id != preConfirmToastId ? toastNotice?.message : nil)
                 ?? L10n.format("已取消「%@」的操作", "Cancelled the action for \"%@\"", device.name)
-            return (nil, (true, msg, true))
+            return (nil, nil, (true, msg, true))
         }
-        return (resolved.device, nil)
+        return (resolved.device, resolved.context, nil)
     }
 
     /// Shows `updated`, sends `commands`, and reports the outcome as a toast and a Raycast reply.
-    /// A failure rolls the row back through the control-write module.
+    /// A failure or mid-flight source change rolls the row back through the control-write module.
     private func raycastWrite(
         from device: SmartDevice,
         to updated: SmartDevice,
         commands: [DeviceCommand],
         lock: Duration,
+        modalContext: ModalDeviceContext? = nil,
         habitIntents: [DeviceIntent] = [],
         success: String
     ) async -> RaycastDirectResult {
+        let expectedContext = modalContext ?? captureModalDeviceContext(for: device)
+        let context = expectedContext.controlContextID
+        guard matchesModalDeviceContext(expectedContext) else {
+            let msg = L10n.tr("设备已不在面板中", "The device is no longer available")
+            return (true, msg, true)
+        }
         let write = beginOptimisticWrite(from: device, to: updated, lock: lock)
         do {
-            try await send(commands, for: write)
+            for command in commands {
+                guard matchesModalDeviceContext(expectedContext) else {
+                    if controlContextID == context {
+                        revert(write, restoring: reportedDevice(for: device.id))
+                    }
+                    let msg = L10n.format("已取消「%@」的操作", "Cancelled the action for \"%@\"", device.name)
+                    return (true, msg, true)
+                }
+                try await executeDeviceCommand(command)
+            }
+            guard matchesModalDeviceContext(expectedContext) else {
+                if controlContextID == context {
+                    revert(write, restoring: reportedDevice(for: device.id))
+                }
+                let msg = L10n.format("已取消「%@」的操作", "Cancelled the action for \"%@\"", device.name)
+                return (true, msg, true)
+            }
             if !habitIntents.isEmpty { confirmManualControl(intents: habitIntents) }
             showToast(success, isError: false)
             return (true, success, false)
         } catch {
+            if controlContextID == context {
+                revert(
+                    write,
+                    restoring: matchesModalDeviceContext(expectedContext) ? nil : reportedDevice(for: device.id)
+                )
+            }
             // `showToast` keeps the persistent expiry toast while the session is blocked, so this
             // only decides the message the companion receives.
             let msg = error is MiSessionWriteBlocked
                 ? Self.miSessionBlockedMessage
                 : L10n.format("%@ 响应失败", "%@ failed to respond", device.name)
-            showToast(msg, isError: true)
+            if matchesModalDeviceContext(expectedContext) {
+                showToast(msg, isError: true)
+            }
             return (true, msg, true)
         }
     }
@@ -332,7 +363,10 @@ extension HomeStore {
         } else {
             success = L10n.tr("已将\(current.name)开到 \(clamped)%", "Set \(current.name) to \(clamped)%")
         }
-        return await raycastWrite(from: current, to: updated, commands: [cmd], lock: coverOptimisticLockDuration, success: success)
+        return await raycastWrite(
+            from: current, to: updated, commands: [cmd], lock: coverOptimisticLockDuration,
+            modalContext: confirmed.context, success: success
+        )
     }
 
     private func executeDirectFanPercentage(at idx: Int, percent: Int) async -> RaycastDirectResult {
@@ -420,7 +454,10 @@ extension HomeStore {
         case .returnToBase:
             success = L10n.tr("已让\(current.name)返回基站回充", "Sent \(current.name) back to dock")
         }
-        return await raycastWrite(from: current, to: change.updated, commands: [change.command], lock: .seconds(2.5), success: success)
+        return await raycastWrite(
+            from: current, to: change.updated, commands: [change.command], lock: .seconds(2.5),
+            modalContext: confirmed.context, success: success
+        )
     }
 
     // MARK: - Parameterized Companion Controls
@@ -527,7 +564,7 @@ extension HomeStore {
             : L10n.tr("已关闭\(current.name)", "Turned off \(current.name)")
         return await raycastWrite(
             from: current, to: updated, commands: commands, lock: .seconds(2.5),
-            habitIntents: habitIntents, success: success
+            modalContext: confirmed.context, habitIntents: habitIntents, success: success
         )
     }
 
@@ -559,6 +596,7 @@ extension HomeStore {
             from: current, to: updated,
             commands: [.setLightColorTemp(entityId: spec.entityId, kelvin: clamped)],
             lock: .seconds(2.5),
+            modalContext: confirmed.context,
             habitIntents: [.init(targetId: current.id, operation: .colorTemperature(clamped))],
             success: L10n.tr("已将\(current.name)色温调到 \(clamped)K", "Set \(current.name) colour temperature to \(clamped)K")
         )
@@ -595,6 +633,7 @@ extension HomeStore {
             from: current, to: updated,
             commands: [.setClimateTemperature(entityId: spec.entityId, temperature: target)],
             lock: .seconds(2.5),
+            modalContext: confirmed.context,
             habitIntents: [.init(targetId: current.id, operation: .targetTemperature(target))],
             success: L10n.tr("已将\(current.name)设定为 \(targetText)°C", "Set \(current.name) to \(targetText) °C")
         )
@@ -629,7 +668,7 @@ extension HomeStore {
             } ?? []
             return await raycastWrite(
                 from: current, to: change.updated, commands: [change.command], lock: .seconds(2.5),
-                habitIntents: habitIntents,
+                modalContext: confirmed.context, habitIntents: habitIntents,
                 success: L10n.tr("已将\(current.name)风速调到 \(clamped)%", "Set \(current.name) fan speed to \(clamped)%")
             )
         }
