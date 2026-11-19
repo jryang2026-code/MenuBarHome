@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -185,12 +186,10 @@ struct AppURLCommandTests {
     @Test("RaycastSnapshot exports 0600 JSON with capabilities, pinyin, multi-sensor readings, and command feedback")
     @MainActor
     func exportsRaycastSnapshotAndExecutesBuiltInScenes() async throws {
-        let suite = "test.raycast.snapshot.\(UUID().uuidString)"
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("raycast-snapshot-test-\(UUID().uuidString)", isDirectory: true)
         let snapshotFile = tempDir.appendingPathComponent("raycast-snapshot.json", isDirectory: false)
         defer {
-            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: tempDir)
         }
 
@@ -262,7 +261,8 @@ struct AppURLCommandTests {
                 scenes: scenes
             )
         )
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        defer { store.stop() }
         store.raycastSnapshotTestURL = snapshotFile
         try await store.waitForTestSnapshot()
         store.setRaycastIntegration(enabled: true)
@@ -309,6 +309,7 @@ struct AppURLCommandTests {
             message: "已打开 客厅吸顶灯",
             isError: false
         )
+        #expect(store.lastRaycastCommandFeedback?.requestId == "req-99")
         let updatedData = try Data(contentsOf: snapshotFile)
         let updatedSnapshot = try JSONDecoder().decode(RaycastSnapshot.self, from: updatedData)
         #expect(updatedSnapshot.lastCommandFeedback?.requestId == "req-99")

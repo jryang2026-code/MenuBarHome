@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import MijiaCore
 @testable import MenuBarMijiaApp
@@ -27,7 +28,6 @@ final class FakeMacContextProvider: MacContextProviding {
 }
 
 @MainActor
-@Suite(.serialized)
 struct AutomationContextEngineTests {
     static let lightId = "light_study"
     static let workScene = HomeScene(id: "scene_work", name: "办公模式", entityId: "scene.work")
@@ -44,11 +44,6 @@ struct AutomationContextEngineTests {
         )
     }
 
-    /// The engine references its store weakly and the provider callback references the engine
-    /// weakly; tests keep both alive for the process so snapshots cannot silently no-op.
-    private static var retainedEngines: [AutomationEngine] = []
-    private static var retainedStores: [HomeStore] = []
-
     private func makeStore(
         lightOn: Bool = true,
         scenes: [HomeScene] = []
@@ -59,16 +54,10 @@ struct AutomationContextEngineTests {
         ))
         let store = HomeStore(
             provider: mock,
-            defaultsSuiteName: "test.automation.context.\(UUID().uuidString)"
+            defaults: InMemoryUserDefaults()
         )
         try await store.waitForTestSnapshot()
         return (store, mock)
-    }
-
-    private func makeDefaults() throws -> (UserDefaults, String) {
-        let suite = "test.automation.context.defaults.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        return (defaults, suite)
     }
 
     static let unlockedEnvironment = AutomationEnvironmentProbe(
@@ -91,19 +80,10 @@ struct AutomationContextEngineTests {
         calendar: Calendar = .current,
         environment: AutomationEnvironmentProbe = Self.unlockedEnvironment
     ) async throws -> (AutomationEngine, HomeStore, MockHomeProvider, FakeMacContextProvider) {
-        // The suite is serialized, so anything the previous test retained is finished with. Stop it
-        // before dropping the reference: every leaked `HomeStore` still polling at once is what
-        // starves `cfprefsd` on a 3-core CI runner.
-        for oldStore in Self.retainedStores { oldStore.stop() }
-        Self.retainedEngines.removeAll()
-        Self.retainedStores.removeAll()
-
-        // Settle the store snapshot before touching the rule suite: both go through `cfprefsd`, and a
-        // contended rule read here is the one window that can start the engine with an empty list.
         let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes)
         let ruleStore = AutomationRuleStore(defaults: defaults)
         ruleStore.save(rules)
-        try #require(ruleStore.load().count == rules.count)
+        try #require(ruleStore.load() == rules)
 
         let provider = FakeMacContextProvider()
         let engine = AutomationEngine(
@@ -114,8 +94,6 @@ struct AutomationContextEngineTests {
         )
         engine.attach(store: store)
         engine.startContextObservation()
-        Self.retainedEngines.append(engine)
-        Self.retainedStores.append(store)
         #expect(provider.isStarted)
         return (engine, store, mock, provider)
     }
@@ -130,9 +108,9 @@ struct AutomationContextEngineTests {
 
     @Test("No rules means every Mac context signal stays inert")
     func noRulesIsInert() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let (_, store, mock, provider) = try await makeEngine(rules: [], defaults: defaults)
+        let defaults = InMemoryUserDefaults()
+        let (engine, store, mock, provider) = try await makeEngine(rules: [], defaults: defaults)
+        defer { withExtendedLifetime(engine) { store.stop() } }
 
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let meeting = CalendarMeeting(
@@ -159,14 +137,14 @@ struct AutomationContextEngineTests {
 
     @Test("A disabled Mac context rule never runs")
     func disabledRuleNeverRuns() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .cameraInUse,
             action: .devices(ids: [Self.lightId], isOn: false),
             isEnabled: false
         )
-        let (_, _, mock, provider) = try await makeEngine(rules: [rule], defaults: defaults)
+        let (engine, store, mock, provider) = try await makeEngine(rules: [rule], defaults: defaults)
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
 
         await provider.emit(MacContextSnapshot(), at: start)
@@ -176,8 +154,7 @@ struct AutomationContextEngineTests {
 
     @Test("Camera and microphone rules fire on use / stop and coalesce flaps")
     func cameraAndMicrophoneRules() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let cameraOn = AutomationRule(
             trigger: .cameraInUse,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -190,10 +167,11 @@ struct AutomationContextEngineTests {
             trigger: .microphoneInUse,
             action: .devices(ids: [Self.lightId], isOn: false)
         )
-        let (_, store, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [cameraOn, cameraOff, micOn],
             defaults: defaults
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
 
         await provider.emit(MacContextSnapshot(), at: start)
@@ -215,8 +193,7 @@ struct AutomationContextEngineTests {
 
     @Test("Power, disconnect and battery-threshold rules each run")
     func powerAndBatteryRules() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let powerConnected = AutomationRule(
             trigger: .powerConnected,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -230,10 +207,11 @@ struct AutomationContextEngineTests {
             action: .devices(ids: [Self.lightId], isOn: false),
             triggerOptions: AutomationTriggerOptions(batteryThresholdPercent: 20)
         )
-        let (_, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [powerConnected, powerDisconnected, lowBattery],
             defaults: defaults
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let batteryHigh = MacContextSnapshot(powerSource: .battery, batteryPercent: 80)
         let ac = MacContextSnapshot(powerSource: .ac, batteryPercent: 80)
@@ -249,8 +227,7 @@ struct AutomationContextEngineTests {
 
     @Test("A time window gates Mac context rules and leaves the trigger for an in-window event")
     func timeWindowGatesContextRules() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
         let nightOnly = AutomationRule(
@@ -260,11 +237,12 @@ struct AutomationContextEngineTests {
                 timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
             )
         )
-        let (_, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [nightOnly],
             defaults: defaults,
             calendar: calendar
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let noon = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 12)))
         let night = try #require(calendar.date(from: DateComponents(year: 2026, month: 11, day: 12, hour: 23)))
         let battery = MacContextSnapshot(powerSource: .battery, batteryPercent: 80)
@@ -281,8 +259,7 @@ struct AutomationContextEngineTests {
 
     @Test("A camera rule outside its window runs nothing and does not start the cooldown")
     func timeWindowBlocksContextWithoutConsumingCooldown() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let rule = AutomationRule(
@@ -292,11 +269,12 @@ struct AutomationContextEngineTests {
                 timeWindow: AutomationTimeWindow(isEnabled: true, startMinute: 22 * 60, endMinute: 7 * 60)
             )
         )
-        let (engine, _, mock, _) = try await makeEngine(
+        let (engine, store, mock, _) = try await makeEngine(
             rules: [rule],
             defaults: defaults,
             calendar: calendar
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
 
         func at(hour: Int, minute: Int, second: Int = 0) throws -> Date {
             try #require(calendar.date(from: DateComponents(
@@ -325,8 +303,7 @@ struct AutomationContextEngineTests {
 
     @Test("Wi-Fi rules target a SSID and ignore unauthorized SSID reads")
     func wifiRules() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let joined = AutomationRule(
             trigger: .wifiNetworkJoined,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -337,7 +314,8 @@ struct AutomationContextEngineTests {
             action: .devices(ids: [Self.lightId], isOn: true),
             triggerOptions: AutomationTriggerOptions(wifiSSID: "Home")
         )
-        let (_, _, mock, provider) = try await makeEngine(rules: [joined, left], defaults: defaults)
+        let (engine, store, mock, provider) = try await makeEngine(rules: [joined, left], defaults: defaults)
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
 
         await provider.emit(MacContextSnapshot(wifiSSID: "Office"), at: start)
@@ -356,8 +334,7 @@ struct AutomationContextEngineTests {
 
     @Test("Focus on/off rules run only when the observer exposes focus state")
     func focusRules() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let enabled = AutomationRule(
             trigger: .focusModeEnabled,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -366,11 +343,12 @@ struct AutomationContextEngineTests {
             trigger: .focusModeDisabled,
             action: .devices(ids: [Self.lightId], isOn: true)
         )
-        let (_, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [enabled, disabled],
             defaults: defaults,
             lightOn: false
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
 
         await provider.emit(MacContextSnapshot(isFocusActive: nil), at: start)
@@ -387,14 +365,14 @@ struct AutomationContextEngineTests {
 
     @Test("A calendar meeting runs once and leaves the normal undo banner")
     func calendarMeetingRule() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .calendarMeetingStartingSoon,
             action: .devices(ids: [Self.lightId], isOn: false),
             triggerOptions: AutomationTriggerOptions(calendarLeadMinutes: 5)
         )
-        let (_, store, mock, provider) = try await makeEngine(rules: [rule], defaults: defaults)
+        let (engine, store, mock, provider) = try await makeEngine(rules: [rule], defaults: defaults)
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let meeting = CalendarMeeting(
             id: "event-42",
@@ -414,18 +392,18 @@ struct AutomationContextEngineTests {
 
     @Test("Calendar fallback runs a later meeting when the earliest already fired")
     func calendarFallbackAfterFiredMeeting() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .calendarMeetingStartingSoon,
             action: .scene(sceneId: Self.workScene.id),
             triggerOptions: AutomationTriggerOptions(calendarLeadMinutes: 60)
         )
-        let (_, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [rule],
             defaults: defaults,
             scenes: [Self.workScene]
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let start = Date(timeIntervalSince1970: 1_800_000_000)
         let first = CalendarMeeting(
             id: "first",
@@ -457,8 +435,7 @@ struct AutomationContextEngineTests {
 
     @Test("Late-night use runs once per night, not once per observer tick")
     func lateNightRule() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -466,11 +443,12 @@ struct AutomationContextEngineTests {
         )
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let (_, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [rule],
             defaults: defaults,
             calendar: calendar
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let firstNight = calendar.date(from: DateComponents(
             year: 2026, month: 6, day: 15, hour: 23, minute: 30
         ))!
@@ -493,8 +471,7 @@ struct AutomationContextEngineTests {
 
     @Test("Late-night use stays suppressed when the app launches while locked and fires after unlock")
     func lateNightRuleSuppressedWhenLaunchedLockedUntilUnlock() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -502,12 +479,13 @@ struct AutomationContextEngineTests {
         )
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let (engine, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [rule],
             defaults: defaults,
             calendar: calendar,
             environment: Self.lockedEnvironment
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let night = try #require(calendar.date(from: DateComponents(
             year: 2026, month: 6, day: 15, hour: 23, minute: 30
         )))
@@ -524,8 +502,7 @@ struct AutomationContextEngineTests {
 
     @Test("Arbitrated screen lock and unlock signals immediately toggle presence for late-night rules")
     func arbitratedScreenLockAndUnlockUpdatePresence() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -535,12 +512,13 @@ struct AutomationContextEngineTests {
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         // Next year keeps the lock debounce deadline in the future so the background sleep cannot race.
         let year = calendar.component(.year, from: Date()) + 1
-        let (engine, _, mock, provider) = try await makeEngine(
+        let (engine, store, mock, provider) = try await makeEngine(
             rules: [rule],
             defaults: defaults,
             calendar: calendar,
             environment: Self.unlockedEnvironment
         )
+        defer { withExtendedLifetime(engine) { store.stop() } }
         let night = try #require(calendar.date(from: DateComponents(
             year: year, month: 6, day: 15, hour: 23, minute: 30
         )))

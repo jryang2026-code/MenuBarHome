@@ -12,6 +12,7 @@ let package = Package(
     ],
     targets: [
         .target(name: "KeychainTestGuard", path: "Tests/KeychainTestGuard"),
+        .target(name: "PreferencesTestSupport", path: "Tests/PreferencesTestSupport"),
         .target(name: "KeychainTestSupport", dependencies: ["MijiaCore", "KeychainTestGuard"], path: "Tests/KeychainTestSupport"),
         .target(
             name: "MijiaCore",
@@ -37,7 +38,7 @@ let package = Package(
         ),
         .testTarget(
             name: "MijiaCoreTests",
-            dependencies: ["MijiaCore", "KeychainTestSupport"],
+            dependencies: ["MijiaCore", "KeychainTestSupport", "PreferencesTestSupport"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
@@ -50,6 +51,7 @@ let package = Package(
                 "MenuBarMijiaApp",
                 "MijiaCore",
                 "KeychainTestSupport",
+                "PreferencesTestSupport",
             ],
             // Baselines are read through `#filePath` (SnapshotAssertion), never as bundle resources.
             exclude: ["__Snapshots__"],
