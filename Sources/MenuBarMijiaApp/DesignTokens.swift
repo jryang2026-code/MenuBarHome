@@ -9,9 +9,14 @@ enum DesignTokens {
         static let body: CGFloat = 13
         static let caption: CGFloat = 12
         static let control: CGFloat = 11.5
+        /// Minimum size for panel/card help text and badges (§4.2).
+        static let footnote: CGFloat = 11
         static let micro: CGFloat = 10
         static let reading: CGFloat = 24
     }
+
+    /// Minimum interactive hit area across panel controls and icon buttons (§4.2).
+    static let minHitTarget: CGFloat = 28
 
     /// Ink for the settings segmented control's white selection lens. Tiles never paint an opaque
     /// slab, so this is the only surface whose text cannot follow the window scheme.

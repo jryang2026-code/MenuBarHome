@@ -362,6 +362,31 @@ extension HomeStore {
         allOffOverrides[deviceId] = joins == Self.joinsAllOffByDefault(device) ? nil : joins
     }
 
+    /// Whether `device` can be configured to participate in 全关.
+    ///
+    /// Covers never participate; closed valves with `closeWritable` still qualify so their 全关
+    /// membership can be configured while closed.
+    public nonisolated static func canConfigureAllOff(_ device: SmartDevice) -> Bool {
+        guard !device.kind.isCover else { return false }
+        if case .valve(var spec) = device.kind {
+            spec.isOpen = true
+            var probe = device
+            probe.kind = .valve(spec)
+            return allOffChange(for: probe) != nil
+        }
+        return allOffChange(for: device) != nil
+    }
+
+    /// Non-hidden devices whose participation in 全关 can be configured in Settings.
+    public var allOffConfigurableDevices: [SmartDevice] {
+        devices.filter { !hiddenDeviceIds.contains($0.id) && Self.canConfigureAllOff($0) }
+    }
+
+    /// Non-hidden configurable devices currently included in 全关.
+    public var allOffIncludedDevices: [SmartDevice] {
+        allOffConfigurableDevices.filter { joinsAllOff($0) }
+    }
+
     /// What 全关 turns off: devices on screen right now (current room, not hidden) that are on,
     /// take part in 全关, and can actually be switched off from here.
     public var allOffTargets: [SmartDevice] {

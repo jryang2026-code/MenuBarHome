@@ -27,6 +27,7 @@ final class FakeMacContextProvider: MacContextProviding {
 }
 
 @MainActor
+@Suite(.serialized)
 struct AutomationContextEngineTests {
     static let lightId = "light_study"
     static let workScene = HomeScene(id: "scene_work", name: "办公模式", entityId: "scene.work")
@@ -90,8 +91,20 @@ struct AutomationContextEngineTests {
         calendar: Calendar = .current,
         environment: AutomationEnvironmentProbe = Self.unlockedEnvironment
     ) async throws -> (AutomationEngine, HomeStore, MockHomeProvider, FakeMacContextProvider) {
-        AutomationRuleStore(defaults: defaults).save(rules)
+        // The suite is serialized, so anything the previous test retained is finished with. Stop it
+        // before dropping the reference: every leaked `HomeStore` still polling at once is what
+        // starves `cfprefsd` on a 3-core CI runner.
+        for oldStore in Self.retainedStores { oldStore.stop() }
+        Self.retainedEngines.removeAll()
+        Self.retainedStores.removeAll()
+
+        // Settle the store snapshot before touching the rule suite: both go through `cfprefsd`, and a
+        // contended rule read here is the one window that can start the engine with an empty list.
         let (store, mock) = try await makeStore(lightOn: lightOn, scenes: scenes)
+        let ruleStore = AutomationRuleStore(defaults: defaults)
+        ruleStore.save(rules)
+        try #require(ruleStore.load().count == rules.count)
+
         let provider = FakeMacContextProvider()
         let engine = AutomationEngine(
             defaults: defaults,
@@ -118,7 +131,7 @@ struct AutomationContextEngineTests {
     @Test("No rules means every Mac context signal stays inert")
     func noRulesIsInert() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let (_, store, mock, provider) = try await makeEngine(rules: [], defaults: defaults)
 
         let start = Date(timeIntervalSince1970: 1_800_000_000)
@@ -147,7 +160,7 @@ struct AutomationContextEngineTests {
     @Test("A disabled Mac context rule never runs")
     func disabledRuleNeverRuns() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .cameraInUse,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -164,7 +177,7 @@ struct AutomationContextEngineTests {
     @Test("Camera and microphone rules fire on use / stop and coalesce flaps")
     func cameraAndMicrophoneRules() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let cameraOn = AutomationRule(
             trigger: .cameraInUse,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -203,7 +216,7 @@ struct AutomationContextEngineTests {
     @Test("Power, disconnect and battery-threshold rules each run")
     func powerAndBatteryRules() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let powerConnected = AutomationRule(
             trigger: .powerConnected,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -237,7 +250,7 @@ struct AutomationContextEngineTests {
     @Test("A time window gates Mac context rules and leaves the trigger for an in-window event")
     func timeWindowGatesContextRules() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = try #require(TimeZone(identifier: "UTC"))
         let nightOnly = AutomationRule(
@@ -269,7 +282,7 @@ struct AutomationContextEngineTests {
     @Test("A camera rule outside its window runs nothing and does not start the cooldown")
     func timeWindowBlocksContextWithoutConsumingCooldown() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
         let rule = AutomationRule(
@@ -313,7 +326,7 @@ struct AutomationContextEngineTests {
     @Test("Wi-Fi rules target a SSID and ignore unauthorized SSID reads")
     func wifiRules() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let joined = AutomationRule(
             trigger: .wifiNetworkJoined,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -344,7 +357,7 @@ struct AutomationContextEngineTests {
     @Test("Focus on/off rules run only when the observer exposes focus state")
     func focusRules() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let enabled = AutomationRule(
             trigger: .focusModeEnabled,
             action: .devices(ids: [Self.lightId], isOn: false)
@@ -375,7 +388,7 @@ struct AutomationContextEngineTests {
     @Test("A calendar meeting runs once and leaves the normal undo banner")
     func calendarMeetingRule() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .calendarMeetingStartingSoon,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -402,7 +415,7 @@ struct AutomationContextEngineTests {
     @Test("Calendar fallback runs a later meeting when the earliest already fired")
     func calendarFallbackAfterFiredMeeting() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .calendarMeetingStartingSoon,
             action: .scene(sceneId: Self.workScene.id),
@@ -445,7 +458,7 @@ struct AutomationContextEngineTests {
     @Test("Late-night use runs once per night, not once per observer tick")
     func lateNightRule() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -481,7 +494,7 @@ struct AutomationContextEngineTests {
     @Test("Late-night use stays suppressed when the app launches while locked and fires after unlock")
     func lateNightRuleSuppressedWhenLaunchedLockedUntilUnlock() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),
@@ -512,7 +525,7 @@ struct AutomationContextEngineTests {
     @Test("Arbitrated screen lock and unlock signals immediately toggle presence for late-night rules")
     func arbitratedScreenLockAndUnlockUpdatePresence() async throws {
         let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let rule = AutomationRule(
             trigger: .lateNightUsage,
             action: .devices(ids: [Self.lightId], isOn: false),

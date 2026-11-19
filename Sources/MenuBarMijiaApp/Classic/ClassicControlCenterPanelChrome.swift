@@ -59,11 +59,12 @@ extension ClassicControlCenterPanel {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("关闭", "Close")))
+                    .panelHelp(L10n.tr("关闭", "Close"))
                 }
 
                 MiAccountSection(store: store, autoStartsQRLogin: true, showsRegionPicker: false)
@@ -97,7 +98,7 @@ extension ClassicControlCenterPanel {
 
                         if store.homeBackend == .demo {
                             Text(L10n.tr("演示预览", "Demo"))
-                                .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                                .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1.5)
@@ -142,7 +143,7 @@ extension ClassicControlCenterPanel {
                         )
                         if let helper = copy.helper {
                             Text(helper)
-                                .font(.system(size: DesignTokens.TypeSize.micro))
+                                .font(.system(size: DesignTokens.TypeSize.footnote))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
@@ -242,8 +243,9 @@ extension ClassicControlCenterPanel {
                     collapsedRaw = GroupPrefs.encode(set)
                 }
             }
+            revealClassicDeviceIfNeeded(env.id)
             store.toggleExpanded(env.id)
-            if store.expandedDeviceId == env.id {
+            if store.expandedDeviceId == env.id || store.visibleDevices.contains(where: { $0.id == env.id }) {
                 pendingScrollToDeviceId = env.id
             }
         }
@@ -612,7 +614,7 @@ extension ClassicControlCenterPanel {
                 Image(systemName: "arrow.up.arrow.down")
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                     .foregroundStyle(isRoomOrdering ? Color.white : Color.primary.opacity(0.78))
-                    .frame(width: 26, height: 24)
+                    .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                     .background {
                         if isRoomOrdering {
                             Capsule(style: .continuous).fill(Color.accentColor)
@@ -652,10 +654,10 @@ extension ClassicControlCenterPanel {
                 isOn: store.isCompactGridMode,
                 onSymbol: "rectangle.grid.2x2.fill",
                 offSymbol: "rectangle.grid.1x2.fill",
-                onLabel: L10n.tr("紧凑双列视图", "Compact two-column view"),
+                onLabel: L10n.tr("双列分体磁贴", "Two-column split tiles"),
                 help: store.isCompactGridMode
-                    ? L10n.tr("当前：双列紧凑磁贴（点击切换单列）", "2-column compact tiles (click for single column)")
-                    : L10n.tr("点击切换双列紧凑磁贴视图", "Switch to 2-column compact tiles")
+                    ? L10n.tr("当前：双列分体磁贴（点击切换单列）", "2-column split tiles (click for single column)")
+                    : L10n.tr("点击切换双列分体磁贴视图", "Switch to 2-column split tiles")
             ) {
                 store.isCompactGridMode.toggle()
             }
@@ -688,7 +690,7 @@ extension ClassicControlCenterPanel {
             Image(systemName: isOn ? onSymbol : offSymbol)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(isOn ? Color.white : Color.primary.opacity(0.78))
-                .frame(width: 26, height: 24)
+                .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 .background {
                     if isOn {
                         Capsule(style: .continuous)

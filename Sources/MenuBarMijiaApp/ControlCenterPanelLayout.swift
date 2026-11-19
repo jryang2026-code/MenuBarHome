@@ -670,8 +670,8 @@ extension ControlCenterPanel {
     }
 
     /// Cards for one collection. Search results pass `sortByUserOrder: false`, so rank wins over the
-    /// saved layout order. `asRows` draws an opened stack: every device a full-width rounded card,
-    /// like the notifications of an expanded group, outside the favorites' resize/drag editing.
+    /// saved layout order. `allowsLayoutEditing` scopes drag-reorder and corner-resize handles to
+    /// the pinned favorites collection while letting opened stacks share the 2-column split-tile default.
     @ViewBuilder
     func deviceCollectionView(
         devices: [SmartDevice],
@@ -679,7 +679,7 @@ extension ControlCenterPanel {
         quickIndexMap: [String: Int],
         highlightId: String? = nil,
         sortByUserOrder: Bool = true,
-        asRows: Bool = false
+        allowsLayoutEditing: Bool = true
     ) -> some View {
         let aliases = GroupPrefs.map(aliasesRaw)
         let currentRoomAliases = roomAliases
@@ -694,14 +694,14 @@ extension ControlCenterPanel {
             }
             return d
         }
-        let spanMap = asRows ? Dictionary(uniqueKeysWithValues: ordered.map { ($0.id, 12) }) : spans(for: ordered)
+        let spanMap = spans(for: ordered)
         // Every card is its own child keyed by device id, so a reorder slides cards instead of rebuilding rows.
         // The glass container lets neighbouring liquid-glass modules merge their edges on macOS 26.
         AdaptiveGlassContainer(spacing: 8) {
             TileFlowLayout(spacing: 8) {
                 ForEach(Array(ordered.enumerated()), id: \.element.id) { index, dev in
                     let span = spanMap[dev.id] ?? 12
-                    let isHero = !asRows && tileSize(dev) == .hero && store.expandedDeviceId != dev.id
+                    let isHero = allowsLayoutEditing && tileSize(dev) == .hero && store.expandedDeviceId != dev.id
                     DeviceCardView(
                         device: dev,
                         store: store,
@@ -711,7 +711,7 @@ extension ControlCenterPanel {
                     )
                     .frame(minHeight: isHero ? 124 : nil)
                     .frame(maxHeight: .infinity, alignment: .top)
-                    .modifier(OptionalModifier(asRows ? nil : editable(dev)))
+                    .modifier(OptionalModifier(allowsLayoutEditing ? editable(dev) : nil))
                     .overlay {
                         if highlightId == dev.id {
                             RoundedRectangle(
@@ -736,10 +736,10 @@ extension ControlCenterPanel {
                             let g: CGRect? = panelFoldRecord != nil ? geo.frame(in: .global) : nil
                             #endif
                             Color.clear
-                                // Stack rows are not drop targets for the favorites' drag reorder.
+                                // Unpinned stack tiles are not drop targets for the favorites' drag reorder.
                                 .preference(
                                     key: TileFramesKey.self,
-                                    value: asRows ? [:] : [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())]
+                                    value: allowsLayoutEditing ? [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())] : [:]
                                 )
                                 #if DEBUG
                                 .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
@@ -757,7 +757,7 @@ extension ControlCenterPanel {
         .overlayPreferenceValue(TileFramesKey.self, alignment: .topLeading) { frames in
             // `−` badges sit above the glass container: inside it, the cards' glass composites over
             // anything a card draws past its own edge.
-            if isEditingLayout, !asRows, draggingId == nil {
+            if isEditingLayout, allowsLayoutEditing, draggingId == nil {
                 GeometryReader { geo in
                     let origin = geo.frame(in: .named(TileSpace.name)).origin
                     ForEach(ordered) { dev in

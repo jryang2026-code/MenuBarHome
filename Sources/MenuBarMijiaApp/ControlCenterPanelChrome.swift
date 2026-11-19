@@ -59,11 +59,12 @@ extension ControlCenterPanel {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("关闭", "Close")))
+                    .panelHelp(L10n.tr("关闭", "Close"))
                 }
 
                 MiAccountSection(store: store, autoStartsQRLogin: true, showsRegionPicker: false)
@@ -88,7 +89,7 @@ extension ControlCenterPanel {
                         .lineLimit(1)
                     if store.homeBackend == .demo {
                         Text(L10n.tr("演示", "Demo"))
-                            .font(.system(size: DesignTokens.TypeSize.micro, weight: .semibold))
+                            .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -169,7 +170,7 @@ extension ControlCenterPanel {
                 }
             }
             Divider()
-            Toggle(L10n.tr("常用设备用双列胶囊", "Two-column favorites"), isOn: Binding(
+            Toggle(L10n.tr("双列分体磁贴", "Two-column split tiles"), isOn: Binding(
                 get: { store.isCompactGridMode },
                 set: { value in withAnimation(AppleMotion.reveal) { store.isCompactGridMode = value } }
             ))
@@ -214,6 +215,7 @@ extension ControlCenterPanel {
         .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(Text(L10n.tr("更多操作", "More actions")))
+        .panelHelp(L10n.tr("更多操作", "More actions"))
     }
 
     private func updateCapsule(for release: AppRelease) -> some View {
@@ -1324,7 +1326,7 @@ struct PanelConnectionFooterBar: View {
             BreathingDot(color: status.color, animate: statusDotAnimates)
                 .id(status.color)
             PanelConnectionStatusControl(store: store, theme: theme)
-            Spacer()
+            Spacer(minLength: 4)
 
             if let release = store.updateState.badgeRelease {
                 Button {
@@ -1348,21 +1350,23 @@ struct PanelConnectionFooterBar: View {
                     : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available"))
             }
 
-            if store.undoBanner == nil, !store.isShowingAssistantBar, UndoAvailabilityTracker.shared.isAvailable {
-                footerIconButton("arrow.uturn.backward", label: L10n.tr("撤销上一步", "Undo last action"), help: L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)")) {
-                    store.presentAssistantBar()
-                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+            HStack(spacing: 2) {
+                if store.undoBanner == nil, !store.isShowingAssistantBar, UndoAvailabilityTracker.shared.isAvailable {
+                    footerIconButton("arrow.uturn.backward", label: L10n.tr("撤销上一步", "Undo last action"), help: L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)")) {
+                        store.presentAssistantBar()
+                        Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                    }
                 }
-            }
 
-            footerIconButton("arrow.clockwise", label: L10n.tr("立即同步", "Refresh now"), help: L10n.tr("立即同步最新状态", "Refresh device states now")) {
-                store.refreshNow()
-            }
-            footerIconButton("slider.horizontal.3", size: DesignTokens.TypeSize.body, label: L10n.tr("打开设置", "Open Settings"), help: L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)") ) {
-                presentSettingsWindow()
-            }
-            footerIconButton("power", label: L10n.tr("退出应用", "Quit App"), help: L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)")) {
-                NSApplication.shared.terminate(nil)
+                footerIconButton("arrow.clockwise", label: L10n.tr("立即同步", "Refresh now"), help: L10n.tr("立即同步最新状态", "Refresh device states now")) {
+                    store.refreshNow()
+                }
+                footerIconButton("slider.horizontal.3", size: DesignTokens.TypeSize.body, label: L10n.tr("打开设置", "Open Settings"), help: L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)") ) {
+                    presentSettingsWindow()
+                }
+                footerIconButton("power", label: L10n.tr("退出应用", "Quit App"), help: L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)")) {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
     }
@@ -1372,7 +1376,7 @@ struct PanelConnectionFooterBar: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.primary.opacity(0.72))
-                .frame(width: 24, height: 22)
+                .frame(minWidth: DesignTokens.minHitTarget, minHeight: DesignTokens.minHitTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

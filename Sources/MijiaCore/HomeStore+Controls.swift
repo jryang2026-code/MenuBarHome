@@ -2265,6 +2265,7 @@ extension HomeStore {
             showToast(L10n.tr("\(device.name) 当前离线", "\(device.name) is offline"), isError: true)
             return
         }
+        guard !rejectControlWhileLocked() else { return }
         activeLiveCameraDeviceId = device.id
         onOpenCameraLiveView?(device)
     }

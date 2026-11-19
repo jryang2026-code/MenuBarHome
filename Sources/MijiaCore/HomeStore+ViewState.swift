@@ -180,8 +180,12 @@ extension HomeStore {
     public func toggleExpanded(_ deviceId: String) {
         if expandedDeviceId == deviceId {
             expandedDeviceId = nil
-        } else {
-            expandedDeviceId = deviceId
+            return
         }
+        if let device = devices.first(where: { $0.id == deviceId }), !device.isOnline {
+            expandedDeviceId = nil
+            return
+        }
+        expandedDeviceId = deviceId
     }
 }
