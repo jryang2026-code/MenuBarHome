@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import Observation
 import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
@@ -18,6 +19,7 @@ import Testing
 /// for the same suite reads through `cfprefsd` and can answer an emptied cache under CI load, which
 /// is how these assertions once read rules back as `[]` on an otherwise green run.
 @MainActor
+@Suite(.timeLimit(.minutes(1)))
 struct HAConnectionDisableTests {
     private static let haURL = "http://192.168.1.50:8123"
     private static let haScope = "ha:http://192.168.1.50:8123"
@@ -373,7 +375,7 @@ struct HAConnectionDisableTests {
             doorbellResponses.append(response)
         }
 
-        await waitUntil {
+        try await awaitSnapshotState {
             Set(store.devices.map(\.id)) == ["ha-light", "ha-cam", "mi-plug"]
                 && store.scenes.map(\.id) == ["scene.movie"]
         }
@@ -475,6 +477,28 @@ struct HAConnectionDisableTests {
         await waitUntil { await miApi.setPropsCalls.count == 1 }
     }
 
+    // A snapshot can arrive after a polling deadline on a loaded runner. Wait for the
+    // observed state itself and let the test time limit cancel a missing transition.
+    private func awaitSnapshotState(_ matches: () -> Bool) async throws {
+        while true {
+            try Task.checkCancellation()
+            let (changes, change) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let ready = withObservationTracking {
+                matches()
+            } onChange: {
+                change.yield(())
+                change.finish()
+            }
+            if ready {
+                change.finish()
+                return
+            }
+            var iterator = changes.makeAsyncIterator()
+            _ = await iterator.next()
+            change.finish()
+        }
+    }
+
     // MARK: - 4. Reference Verdict Preview, Pause Confirmation, Atomic Commit & Revalidation
 
     @Test("HA disable previews device and scene timers, automations, and quick actions, enforces M2/M3, and revalidates on fresh snapshot without silent overdue execution")
@@ -518,8 +542,11 @@ struct HAConnectionDisableTests {
         )
         defer { _ = store.disconnectHomeAssistant() }
         store.assistantNow = { clock.now }
+        let timerGate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantSleep = { _ in await timerGate.sleep() }
+        defer { store.scheduledTasks.values.forEach { $0.cancel() } }
 
-        await waitUntil {
+        try await awaitSnapshotState {
             Set(store.devices.map(\.id)) == ["ha-light", "ha-vanished"]
                 && store.scenes.map(\.id) == ["scene.movie"]
         }
@@ -793,7 +820,7 @@ struct HAConnectionDisableTests {
         store.miAccounts = [Self.miAccount]
         store.syncInMemoryConfiguredCapabilities()
 
-        await waitUntil {
+        try await awaitSnapshotState {
             Set(store.devices.map(\.id)) == [haUnpinnedID, haPinnedID]
                 && store.pairedDeviceIDs == [haUnpinnedID, haPinnedID]
                 && store.deviceBackend(for: haUnpinnedID) == .homeAssistant
@@ -805,17 +832,23 @@ struct HAConnectionDisableTests {
         #expect(store.pinnedSource(for: haPinnedID) == .homeAssistant)
         #expect(store.pinnedSource(for: haUnpinnedID) == nil)
 
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        let timerGate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantNow = { now }
+        store.assistantSleep = { _ in await timerGate.sleep() }
+        defer { store.scheduledTasks.values.forEach { $0.cancel() } }
+
         // Seed one timer on unpinned card and one timer on HA-pinned card.
         let unpinnedTimer = ScheduledCommand(
             reply: "10 分钟后关闭客厅吸顶灯",
-            fireDate: Date().addingTimeInterval(600),
+            fireDate: now.addingTimeInterval(600),
             plan: IntentPlan(intents: [DeviceIntent(targetId: haUnpinnedID, operation: .power(false))], reply: "关闭客厅吸顶灯", source: .local),
             sourceScope: Self.haScope,
             sourceScopes: [Self.haScope, Self.miAccount.id]
         )
         let pinnedTimer = ScheduledCommand(
             reply: "10 分钟后关闭主卧吊灯",
-            fireDate: Date().addingTimeInterval(600),
+            fireDate: now.addingTimeInterval(600),
             plan: IntentPlan(intents: [DeviceIntent(targetId: haPinnedID, operation: .power(false))], reply: "关闭主卧吊灯", source: .local),
             sourceScope: Self.haScope,
             sourceScopes: [Self.haScope, Self.miAccount.id]
@@ -852,7 +885,7 @@ struct HAConnectionDisableTests {
         #expect(store.deviceFacets[haUnpinnedID] == nil)
 
         await store.providerShutdownTask?.value
-        await waitUntil {
+        try await awaitSnapshotState {
             store.deviceBackend(for: haUnpinnedID) == .xiaomiCloud
                 && store.deviceFacets[haUnpinnedID]?.map(\.id) == ["2.7"]
         }
@@ -957,7 +990,7 @@ struct HAConnectionDisableTests {
         store.hasHASource = true
         store.serverURLString = Self.haURL
         store.syncInMemoryConfiguredCapabilities()
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
         store.pinDeviceSource("ha-pinned-lamp", to: .homeAssistant)
 
         var confirmationPrompts = 0
@@ -1280,7 +1313,7 @@ struct HAConnectionDisableTests {
             )
         )
         let store = HomeStore(provider: haProvider, credentialVault: vault, defaults: defaults)
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
 
         let disabled = store.setHAConnectionEnabled(
             false,
@@ -1293,7 +1326,7 @@ struct HAConnectionDisableTests {
         #expect(store.connectionStatus == .disconnected("连接已停用"))
 
         store.switchBackend(.demo)
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
 
         #expect(store.homeBackend == .demo)
         #expect(!store.allConfiguredSourcesTurnedOff)
@@ -1462,7 +1495,7 @@ struct HAConnectionDisableTests {
         let haProvider = StubHARuntimeProvider(initialSnapshot: haSnapshot)
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
         let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
         store.devices = [miLamp, haLamp]
 
         let miRestore = DeviceCommand.setLightPower(entityId: "miot:mi-lamp-undo:2", isOn: true)
@@ -1585,7 +1618,7 @@ struct HAConnectionDisableTests {
 
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
         let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
 
         let haRefreshBefore = await haProvider.refreshCalls
         let miRefreshBefore = await miProvider.refreshCalls
@@ -1674,7 +1707,7 @@ struct HAConnectionDisableTests {
             },
             defaults: defaults
         )
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
         let dual = try #require(store.activeDualProvider)
         #expect(createdProviders == 1)
         #expect(store.devices.map(\.id).sorted() == [haLamp.id, haSensor.id])
@@ -1705,7 +1738,7 @@ struct HAConnectionDisableTests {
         #expect(store.isHAConnectionEnabled)
         await store.providerShutdownTask?.value
         // The gate only reopens once the replacement provider owns the backend again.
-        await waitUntil { store.devices.contains { $0.id == haSensor.id } }
+        try await awaitSnapshotState { store.devices.contains { $0.id == haSensor.id } }
         #expect(createdProviders == 2)
         #expect(store.isDisablingHAConnection == false)
         #expect(store.capabilityTeardownTask == nil)
@@ -1862,7 +1895,7 @@ struct HAConnectionDisableTests {
         let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
 
         let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
-        try await store.waitForTestSnapshot()
+        try await awaitSnapshotState { store.hasReceivedInitialSnapshot }
 
         let now = Date(timeIntervalSince1970: 1_760_000_000)
         store.assistantNow = { now }
