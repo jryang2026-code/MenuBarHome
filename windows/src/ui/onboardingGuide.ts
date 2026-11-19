@@ -14,6 +14,7 @@ import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../cor
 import { SF_ICONS } from "./appConstants.js";
 import type { ConnectionMode } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
+import { haCacheIfEnabled, isHostHaEnabled, type DualSourceInspectableHost } from "./cloudRefresh.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
 import { switchSource } from "./sourceSwitch.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -305,12 +306,13 @@ function switchConnectionModeInOnboarding(host: OnboardingRenderViewHost, mode: 
       void host.refreshDevices(false);
     }
   } else if (mode === "homeAssistant") {
-    const cache = host.settings.cachedHAHome;
-    const matches = cache?.identity === homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
-    host.devices = matches && cache ? structuredClone(cache.home.devices) : [];
-    host.scenes = matches && cache ? structuredClone(cache.home.scenes) : [];
-    host.environmentReadings = matches && cache ? structuredClone(cache.home.environmentReadings) : [];
-    if (host.settings.haBaseURL && host.settings.haToken) {
+    const inspectable = host as unknown as DualSourceInspectableHost & { readonly settings: typeof host.settings };
+    const cache = haCacheIfEnabled(inspectable, { requireIdentityMatch: true });
+    host.devices = cache ? structuredClone(cache.home.devices) : [];
+    host.scenes = cache ? structuredClone(cache.home.scenes) : [];
+    host.environmentReadings = cache ? structuredClone(cache.home.environmentReadings) : [];
+    host.deviceFacets = cache ? structuredClone(cache.home.deviceFacets ?? {}) : {};
+    if (isHostHaEnabled(inspectable) && host.settings.haBaseURL && host.settings.haToken) {
       void host.refreshHADevices(false);
     }
   }
