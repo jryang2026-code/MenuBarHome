@@ -71,7 +71,9 @@ extension HomeStore {
     }
 
     public var allConfiguredSourcesTurnedOff: Bool {
-        (hasHASource || hasMiSource || !miAccounts.isEmpty) && !hasEnabledConfiguredSource
+        homeBackend != .demo
+            && (hasHASource || hasMiSource || !miAccounts.isEmpty)
+            && !hasEnabledConfiguredSource
     }
 
     func isPairedCardServedByEnabledHA(_ deviceId: String) -> Bool {
@@ -127,7 +129,7 @@ extension HomeStore {
     }
 
     @discardableResult
-    private func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
+    func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
         CapabilitySelectionStore.save(
             selection: capabilitySelection,
             configuredScopes: configuredConnectionScopes(),
@@ -223,6 +225,13 @@ extension HomeStore {
         )
     }
 
+    var hasManagedHAProvider: Bool {
+        activeDualProvider != nil
+            || provider is HAWebSocketProvider
+            || haProviderFactory != nil
+            || provider is DualSourceHomeProvider
+    }
+
     @discardableResult
     public func setHAConnectionEnabled(
         _ enabled: Bool,
@@ -238,15 +247,20 @@ extension HomeStore {
             guard next != capabilitySelection || wasDisabled else {
                 return allowedDeactivationVerdict(for: capabilitySelection)
             }
+            clearHATeardownState()
             explicitlyDisabledConnections.remove(.homeAssistant)
             explicitlyDisabledScopes.remove(haScope)
             capabilitySelection = next
             capabilityGeneration &+= 1
             persistCapabilitySelection(removingScopes: [haScope])
-            if homeBackend != .demo,
-               (activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil) {
+            if homeBackend != .demo, hasManagedHAProvider {
                 pendingRevalidationScopes.insert(haScope)
-                rebuildLiveProvider()
+                if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
+                    rebuildLiveProvider()
+                } else {
+                    syncHistoryConnectionScopes()
+                    syncScheduledCommandScopeIfNeeded()
+                }
             } else {
                 syncHistoryConnectionScopes()
                 syncScheduledCommandScopeIfNeeded()
@@ -406,6 +420,7 @@ extension HomeStore {
     }
 
     private func isHAExclusivelyOwnedRow(_ device: SmartDevice) -> Bool {
+        if homeBackend == .demo { return false }
         if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return false }
         if hasEnabledMiSource && pairedDeviceIDs.contains(device.id) { return false }
         if deviceBackends[device.id] == .homeAssistant { return true }
@@ -414,10 +429,13 @@ extension HomeStore {
         return homeBackend == .homeAssistant || indexedDevicesById[device.id]?.connection == .homeAssistant
     }
 
-    private func applyHADisabledRuntimeState() {
-        _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
-        invalidateUndoContext()
+    func clearHATeardownState() {
+        haTeardownToken &+= 1
+        isDisablingHAConnection = false
+        capabilityTeardownTask = nil
+    }
 
+    func collectHADisabledDeviceIds() -> (disabledDeviceIds: Set<String>, cameraTeardownIds: Set<String>) {
         let haCameraIds = Set(devices.compactMap { device -> String? in
             guard case .camera = device.kind else { return nil }
             if deviceBackends[device.id] == .homeAssistant
@@ -434,6 +452,81 @@ extension HomeStore {
                 disabledDeviceIds.insert(devId)
             }
         }
+        return (disabledDeviceIds, disabledDeviceIds.union(haCameraIds))
+    }
+
+    func tearDownHACameras(_ cameraTeardownIds: Set<String>) {
+        if let activeCam = activeLiveCameraDeviceId, cameraTeardownIds.contains(activeCam) {
+            activeLiveCameraDeviceId = nil
+        }
+        onHAConnectionDisabled?(cameraTeardownIds)
+    }
+
+    private func trackHATeardownIfNeeded(before previousShutdownTask: Task<Void, Never>?) {
+        guard let shutdownTask = providerShutdownTask, shutdownTask != previousShutdownTask else {
+            clearHATeardownState()
+            return
+        }
+        haTeardownToken &+= 1
+        let token = haTeardownToken
+        isDisablingHAConnection = true
+        capabilityTeardownTask = Task { @MainActor [weak self] in
+            await shutdownTask.value
+            guard let self, self.haTeardownToken == token else { return }
+            self.isDisablingHAConnection = false
+            self.capabilityTeardownTask = nil
+        }
+    }
+
+    private func applyHADisabledRuntimeState() {
+        // Synchronously seal off reads, writes, and events on the active dual provider before any
+        // async shutdown task runs so no refresh or history fetch can slip through the window.
+        (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.homeAssistant)
+
+        guard homeBackend != .demo else {
+            clearHATeardownState()
+            scheduleRaycastSnapshotExport()
+            return
+        }
+
+        _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
+        let survivingBanner: UndoBanner? = if hasEnabledMiSource, let banner = undoBanner,
+            !partitionUndoCommandsByCapability(
+                banner.restoreCommands,
+                previousDevices: banner.previousDevices
+            ).eligibleCommands.isEmpty {
+            banner
+        } else {
+            nil
+        }
+        let survivingAssistantUndo: AssistantUndoEntry? = if hasEnabledMiSource, let entry = lastAssistantUndo,
+            !partitionUndoCommandsByCapability(
+                entry.restore,
+                previousDevices: entry.previous
+            ).eligibleCommands.isEmpty {
+            entry
+        } else {
+            nil
+        }
+        invalidateUndoContext()
+        if let survivingBanner {
+            scheduleUndoBanner(
+                actionId: survivingBanner.actionId,
+                title: survivingBanner.title,
+                restoreCommands: survivingBanner.restoreCommands,
+                previousDevices: survivingBanner.previousDevices,
+                deviceCount: survivingBanner.deviceCount,
+                habitReceipt: survivingBanner.habitReceipt,
+                duration: survivingBanner.duration,
+                isAllOff: survivingBanner.isAllOff,
+                attemptedDeviceIds: survivingBanner.attemptedDeviceIds
+            )
+        }
+        if let survivingAssistantUndo {
+            lastAssistantUndo = survivingAssistantUndo
+        }
+
+        let (disabledDeviceIds, cameraTeardownIds) = collectHADisabledDeviceIds()
 
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
@@ -499,12 +592,9 @@ extension HomeStore {
             }
         }
 
-        let cameraTeardownIds = disabledDeviceIds.union(haCameraIds)
-        if let activeCam = activeLiveCameraDeviceId, cameraTeardownIds.contains(activeCam) {
-            activeLiveCameraDeviceId = nil
-        }
-        onHAConnectionDisabled?(cameraTeardownIds)
+        tearDownHACameras(cameraTeardownIds)
 
+        let shutdownBefore = providerShutdownTask
         if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
             rebuildLiveProvider()
             if activeBackends.isEmpty {
@@ -536,10 +626,14 @@ extension HomeStore {
                 sourceStatuses = [:]
             }
         }
+        trackHATeardownIfNeeded(before: shutdownBefore)
         scheduleRaycastSnapshotExport()
     }
 
     private func applyMiAccountDisabledRuntimeState(id: String) {
+        if !hasEnabledMiSource {
+            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.xiaomiCloud)
+        }
         // Record any live MIoT DIDs before tearing down rows or facets so late writes stay fail-closed.
         _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
         invalidateUndoContext()
@@ -649,18 +743,20 @@ extension HomeStore {
     // MARK: - Host Control Write Gate
 
     public func evaluateDeviceControlGate(deviceId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        CapabilityReferenceEngine.evaluateControlTargetGate(
+        let indexed = resolvedIndexedDevice(for: deviceId)
+        return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .device, targetId: deviceId, expectedGeneration: expectedGeneration,
             currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: currentIndexedDevicesList(), scenes: currentSceneReferences()
+            devices: indexed.map { [$0] } ?? [], scenes: []
         )
     }
 
     public func evaluateSceneControlGate(sceneId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        CapabilityReferenceEngine.evaluateControlTargetGate(
+        let scene = resolvedSceneReference(for: sceneId)
+        return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .scene, targetId: sceneId, expectedGeneration: expectedGeneration,
             currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: currentIndexedDevicesList(), scenes: currentSceneReferences()
+            devices: [], scenes: scene.map { [$0] } ?? []
         )
     }
 
@@ -710,12 +806,28 @@ extension HomeStore {
         return nil
     }
 
+    /// O(1) single-device write gate for hot list loops (`allOffTargets`, `controllableDevices`,
+    /// `buildRaycastSnapshot`) without scanning `devices` or sorting the full device index.
+    func capabilityWriteRejection(for device: SmartDevice) -> ControlTargetRejectionReason? {
+        let indexed = makeIndexedDevice(from: device)
+        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
+            targetKind: .device, targetId: device.id, expectedGeneration: nil,
+            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            devices: [indexed], scenes: []
+        )
+        return verdict.allowed ? nil : verdict.rejectionReason
+    }
+
     /// Capability rejection for a command target, resolved from the live rows as well as the persisted
     /// index. A stale index entry must not let a command slip past the gate that the panel applies
     /// (Bugbot #275: write gate skipped without index entry).
     func capabilityWriteRejection(forDeviceId deviceId: String) -> ControlTargetRejectionReason? {
-        guard resolvedIndexedDevice(for: deviceId) != nil else { return nil }
-        let verdict = evaluateDeviceControlGate(deviceId: deviceId)
+        guard let indexed = resolvedIndexedDevice(for: deviceId) else { return nil }
+        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
+            targetKind: .device, targetId: deviceId, expectedGeneration: nil,
+            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            devices: [indexed], scenes: []
+        )
         return verdict.allowed ? nil : verdict.rejectionReason
     }
 
@@ -1280,6 +1392,11 @@ extension HomeStore {
             id: stored.id, name: stored.name, connection: stored.connection, sourceScope: stored.sourceScope,
             isSourceAvailable: isScopeConfiguredAndAvailable(connection: stored.connection, scope: stored.sourceScope)
         )
+    }
+
+    private func resolvedSceneReference(for sceneId: String) -> SceneReference? {
+        if let live = scenes.first(where: { $0.id == sceneId }) { return makeSceneReference(from: live) }
+        return indexedScenesById[sceneId].map(materializeSceneReference)
     }
 
     private func currentSceneReferences() -> [SceneReference] {

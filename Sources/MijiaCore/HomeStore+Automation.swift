@@ -27,7 +27,7 @@ extension HomeStore {
             $0.isPrimaryToggleable
                 && $0.isOnline
                 && !hiddenDeviceIds.contains($0.id)
-                && capabilityWriteRejection(forDeviceId: $0.id) == nil
+                && capabilityWriteRejection(for: $0) == nil
         }
     }
 

@@ -346,4 +346,56 @@ struct HAConnectionAppGateTests {
         #expect(controller.activeDeviceId == nil)
         #expect(!controller.isVisible)
     }
+
+    // MARK: - 5. Settings Save Guard & Disconnect Camera Teardown
+
+    @Test("HAConnectionSaveGuard hides status header without token and labels save button to keep HA turned off while disabled")
+    func haConnectionSaveGuardHeaderVisibilityAndButtonTitle() {
+        #expect(!HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: false))
+        #expect(HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: true))
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(HAConnectionSaveGuard.saveButtonTitle(hasHASource: true, isHAConnectionEnabled: false) == "保存配置（保持停用）")
+            #expect(HAConnectionSaveGuard.saveButtonTitle(hasHASource: true, isHAConnectionEnabled: true) == "保存并重新连接")
+            #expect(HAConnectionSaveGuard.saveButtonTitle(hasHASource: false, isHAConnectionEnabled: false) == "保存并重新连接")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(HAConnectionSaveGuard.saveButtonTitle(hasHASource: true, isHAConnectionEnabled: false) == "Save Settings (Keep Turned Off)")
+            #expect(HAConnectionSaveGuard.saveButtonTitle(hasHASource: true, isHAConnectionEnabled: true) == "Save & Reconnect")
+        }
+    }
+
+    @Test("CameraLivePanelController closes active HA live camera window on disconnectHomeAssistant")
+    func cameraLivePanelClosesOnDisconnectHomeAssistant() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        let haCam = SmartDevice(
+            id: "ha-cam-disconnect-app",
+            name: "后院摄像头",
+            roomId: "yard",
+            roomName: "后院",
+            model: "ha.camera",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "camera.yard", isOn: true))
+        )
+        var snapshot = SynthesizedHome(devices: [haCam])
+        snapshot.isInitialLoadComplete = true
+        let (store, _, defaults) = try Self.makeHAStore(suite: suite, snapshot: snapshot)
+        try await store.waitForTestSnapshot()
+
+        let controller = CameraLivePanelController()
+        controller.presentsActively = false
+        controller.frameDefaults = defaults
+        controller.install(with: store)
+        defer { controller.closePanel() }
+
+        controller.present(device: haCam)
+        #expect(controller.activeDeviceId == haCam.id)
+
+        #expect(store.disconnectHomeAssistant())
+        #expect(controller.activeDeviceId == nil)
+        #expect(!controller.isVisible)
+    }
 }
+

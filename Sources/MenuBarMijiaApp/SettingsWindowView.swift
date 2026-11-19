@@ -1221,6 +1221,17 @@ enum HAConnectionSaveGuard {
         anchor.map(collapsedAnchors.contains) ?? false
     }
 
+    static func showsConnectionStatusHeader(hasHASource: Bool) -> Bool {
+        hasHASource
+    }
+
+    static func saveButtonTitle(hasHASource: Bool, isHAConnectionEnabled: Bool) -> String {
+        if hasHASource && !isHAConnectionEnabled {
+            return L10n.tr("保存配置（保持停用）", "Save Settings (Keep Turned Off)")
+        }
+        return L10n.tr("保存并重新连接", "Save & Reconnect")
+    }
+
     enum Decision: Equatable {
         case proceed(token: String, clearUnavailableFlag: Bool)
         case blockedKeychainUnavailable
@@ -1465,7 +1476,7 @@ private struct ConnectionSettingsTab: View {
     }
 
     private var showsHomeAssistantForm: Bool {
-        if haExpanded || store.hasHASource || !store.isHAConnectionEnabled { return true }
+        if haExpanded || store.hasHASource { return true }
         return HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight)
     }
 
@@ -1523,7 +1534,7 @@ private struct ConnectionSettingsTab: View {
 
                 if showsHomeAssistantForm {
                     SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
-                        if store.hasHASource || !store.isHAConnectionEnabled {
+                        if HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: store.hasHASource) {
                             haConnectionStatusHeader
                         }
 
@@ -1571,7 +1582,12 @@ private struct ConnectionSettingsTab: View {
                                 .buttonStyle(PillActionButtonStyle())
                             }
 
-                            Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
+                            Button(
+                                HAConnectionSaveGuard.saveButtonTitle(
+                                    hasHASource: store.hasHASource,
+                                    isHAConnectionEnabled: store.isHAConnectionEnabled
+                                )
+                            ) {
                                 saveHomeAssistant()
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -1729,27 +1745,43 @@ private struct ConnectionSettingsTab: View {
 
     @ViewBuilder
     private var haConnectionStatusHeader: some View {
+        let isDisabling = store.isDisablingHAConnection
         let isEnabled = store.isHAConnectionEnabled
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: !isEnabled ? "pause.circle.fill" : (disconnectReason != nil ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
+                Image(systemName: isDisabling
+                      ? "ellipsis.circle.fill"
+                      : (!isEnabled ? "pause.circle.fill" : (disconnectReason != nil ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(!isEnabled ? DesignTokens.secondaryText : (disconnectReason != nil ? .orange : .green))
-                Text(!isEnabled
-                     ? L10n.tr("Home Assistant 连接已停用", "Home Assistant connection turned off")
-                     : L10n.tr("已配置 Home Assistant 连接", "Home Assistant connection configured"))
+                    .foregroundStyle(isDisabling || !isEnabled ? DesignTokens.secondaryText : (disconnectReason != nil ? .orange : .green))
+                Text(isDisabling
+                     ? L10n.tr("Home Assistant 连接停止中…", "Turning off Home Assistant connection…")
+                     : (!isEnabled
+                        ? L10n.tr("Home Assistant 连接已停用", "Home Assistant connection turned off")
+                        : L10n.tr("已配置 Home Assistant 连接", "Home Assistant connection configured")))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer()
-                Button(isEnabled ? L10n.tr("停用连接", "Turn Off Connection") : L10n.tr("启用连接", "Turn On Connection")) {
+                Button(isDisabling
+                       ? L10n.tr("停止中…", "Turning Off…")
+                       : (isEnabled ? L10n.tr("停用连接", "Turn Off Connection") : L10n.tr("启用连接", "Turn On Connection"))) {
                     if isEnabled {
                         requestDisableHAConnection()
                     } else {
                         _ = store.setHAConnectionEnabled(true)
                     }
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: !isEnabled, tintColor: .accentColor))
+                .buttonStyle(PillActionButtonStyle(isSelected: !isEnabled && !isDisabling, tintColor: .accentColor))
+                .disabled(isDisabling)
             }
-            if !isEnabled {
+            if isDisabling {
+                Text(L10n.tr(
+                    "正在关闭实时连接并回收后台任务，完成后将保持停用。",
+                    "Closing the live connection and cleaning up background tasks; it will stay turned off once finished."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            } else if !isEnabled {
                 Text(L10n.tr(
                     "已暂停同步与控制；保存的地址、连接钥匙、明文授权与本地历史均已保留。",
                     "Sync and control are paused; your saved address, access token, plaintext approval and local history are kept."

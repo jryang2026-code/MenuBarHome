@@ -359,7 +359,8 @@ extension HomeStore {
             if localNetworkBlocks != effective { localNetworkBlocks = effective }
 
         case .doorbellRang(let ring):
-            if !isHAConnectionEnabled,
+            if homeBackend != .demo,
+               !isHAConnectionEnabled,
                (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)) {
                 let isBackedByHA = deviceBackends[ring.deviceId] == .homeAssistant
                     || (deviceBackends[ring.deviceId] != .xiaomiCloud && indexedDevicesById[ring.deviceId]?.connection == .homeAssistant)
@@ -388,7 +389,8 @@ extension HomeStore {
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
             _ = recordMiotDidAccountScopes(from: rawSnapshot.devices, facetsByDeviceId: rawSnapshot.deviceFacets)
-            let suppressHA = !isHAConnectionEnabled
+            let suppressHA = homeBackend != .demo
+                && !isHAConnectionEnabled
                 && (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant))
             if suppressHA {
                 let disabledHADeviceIds = Set(snapshot.devices.compactMap { device -> String? in
@@ -839,6 +841,16 @@ extension HomeStore {
         force: Bool = false,
         now: Date = Date()
     ) {
+        if allConfiguredSourcesTurnedOff { return }
+        if homeBackend != .demo, !isHAConnectionEnabled,
+           deviceBackends[deviceId] == .homeAssistant
+               || (deviceBackends[deviceId] != .xiaomiCloud && indexedDevicesById[deviceId]?.connection == .homeAssistant),
+           enabledMiFailoverScope(
+               for: deviceId,
+               accountHint: devices.first(where: { $0.id == deviceId })?.accountId
+           ) == nil {
+            return
+        }
         if !force {
             guard sensorHistory.shouldFetchCloud(deviceId: deviceId, window: window, now: now) else { return }
         }
@@ -1047,6 +1059,14 @@ extension HomeStore {
         let active = activeBackends
         let wantsHA = active.contains(.homeAssistant)
         let wantsMi = active.contains(.xiaomiCloud)
+        if !wantsHA {
+            dual.markBackendDisabled(.homeAssistant)
+        }
+        if !wantsMi {
+            dual.markBackendDisabled(.xiaomiCloud)
+        }
+        let haEnableGeneration = wantsHA ? dual.disableGeneration(for: .homeAssistant) : nil
+        let miEnableGeneration = wantsMi ? dual.disableGeneration(for: .xiaomiCloud) : nil
         var nextHAReplacement: (shouldReplace: Bool, provider: (any HomeProvider)?) = (false, nil)
         var haCredentialUpdate: (provider: HAWebSocketProvider, url: String, token: String)?
         if wantsHA {
@@ -1118,11 +1138,11 @@ extension HomeStore {
                 await u.provider.updateCredentials(baseURLString: u.url, token: u.token)
             }
             if nextHAReplacement.shouldReplace, let ha = nextHAReplacement.provider {
-                await dual.setSourceProvider(ha, for: .homeAssistant)
+                await dual.setSourceProvider(ha, for: .homeAssistant, expectedDisableGeneration: haEnableGeneration)
             }
             if nextMiReplacement.shouldReplace, let mi = nextMiReplacement.provider {
                 if let targetMiEpoch { await mi.setConfigEpoch(targetMiEpoch) }
-                await dual.setSourceProvider(mi, for: .xiaomiCloud)
+                await dual.setSourceProvider(mi, for: .xiaomiCloud, expectedDisableGeneration: miEnableGeneration)
             }
             if nextHAReplacement.shouldReplace, nextHAReplacement.provider == nil {
                 await dual.setSourceProvider(nil, for: .homeAssistant)
@@ -1184,6 +1204,7 @@ extension HomeStore {
         let previousBackend = homeBackend
         self.homeBackend = backend
         if backend == .demo {
+            clearHATeardownState()
             eventTask?.cancel()
             shutdownCurrentProvider()
             haPlaintextPrompt = nil
@@ -1358,6 +1379,9 @@ extension HomeStore {
         guard KeychainHelper.saveToken("", defaults: userDefaults, vault: credentialVault) else {
             return false
         }
+        (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.homeAssistant)
+        clearHATeardownState()
+        let (_, cameraTeardownIds) = homeBackend == .demo ? (Set<String>(), Set<String>()) : collectHADisabledDeviceIds()
         let removedScope = homeAssistantScopeIdentifier
         hasHASource = false
         explicitlyDisabledConnections.remove(.homeAssistant)
@@ -1368,9 +1392,11 @@ extension HomeStore {
         localNetworkBlocks.remove(.homeAssistant)
         sourceStatuses.removeValue(forKey: .homeAssistant)
         connectedBackends.remove(.homeAssistant)
-        scenes = []
-        if homeBackend != .demo,
-           (provider is DualSourceHomeProvider || provider is HAWebSocketProvider || activeDualProvider != nil || haProviderFactory != nil) {
+        if homeBackend != .demo {
+            scenes = []
+            tearDownHACameras(cameraTeardownIds)
+        }
+        if homeBackend != .demo, hasManagedHAProvider {
             invalidateUndoContext()
             if hasMiSource {
                 homeBackend = .xiaomiCloud
@@ -1477,20 +1503,53 @@ extension HomeStore {
             )
             return
         }
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hadHASource = hasHASource
+        let keepHADisabled = hadHASource && !isHAConnectionEnabled && !trimmedToken.isEmpty
+        let (_, cameraTeardownIds) = (hadHASource && trimmedToken.isEmpty && homeBackend != .demo)
+            ? collectHADisabledDeviceIds()
+            : (Set<String>(), Set<String>())
         let wasDemo = homeBackend == .demo
-        invalidateUndoContext()
         let normalized = HAWebSocketProvider.normalizeBaseURL(serverURL)
         if normalized != HAWebSocketProvider.normalizeBaseURL(serverURLString) {
             rememberHAInstanceId(forURL: normalized)
         }
         pendingHAAddressSuggestion = nil
         self.serverURLString = normalized
-        self.hasHASource = !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        self.hasHASource = !trimmedToken.isEmpty
+        if keepHADisabled {
+            persistCapabilitySelection(removingScopes: [homeAssistantScopeIdentifier])
+            self.completeOnboarding()
+            if wasDemo {
+                invalidateUndoContext()
+                self.homeBackend = preferredLiveBackend
+                rebuildLiveProvider()
+                resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: true)
+            } else {
+                syncHistoryConnectionScopes()
+                syncScheduledCommandScopeIfNeeded()
+            }
+            showToast(L10n.tr(
+                "已保存 Home Assistant 配置（连接仍处于停用状态）",
+                "Saved Home Assistant settings (connection remains turned off)"
+            ))
+            return
+        }
+        invalidateUndoContext()
         if self.hasHASource {
+            clearHATeardownState()
             registerNewlyConfiguredScope(homeAssistantScopeIdentifier, connection: .homeAssistant)
+        } else {
+            clearHATeardownState()
+            explicitlyDisabledConnections.remove(.homeAssistant)
+            capabilitySelection.enabledConnections.insert(.homeAssistant)
+            persistCapabilitySelection(removingScopes: [homeAssistantScopeIdentifier])
+            if hadHASource, homeBackend != .demo {
+                tearDownHACameras(cameraTeardownIds)
+            }
         }
         self.homeBackend = preferredLiveBackend
-        if !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !trimmedToken.isEmpty {
             self.completeOnboarding()
         }
         rebuildLiveProvider()
@@ -1780,6 +1839,7 @@ extension HomeStore {
     }
 
     public func refreshNow() {
+        guard !allConfiguredSourcesTurnedOff else { return }
         Task {
             await provider.refreshNow()
             if homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {

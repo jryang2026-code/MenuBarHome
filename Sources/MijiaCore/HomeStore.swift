@@ -936,6 +936,11 @@ public final class HomeStore {
     var latestLGDevice: SmartDevice?
     var eventTask: Task<Void, Never>?
     var providerShutdownTask: Task<Void, Never>?
+    /// True while a disabled Home Assistant connection is still tearing down its live provider.
+    public internal(set) var isDisablingHAConnection: Bool = false
+    /// Awaitable handle for the active Home Assistant disable teardown, if any.
+    @ObservationIgnored public internal(set) var capabilityTeardownTask: Task<Void, Never>?
+    @ObservationIgnored var haTeardownToken: UInt64 = 0
     var activeDualProvider: DualSourceHomeProvider?
     var activeHAProvider: (any HomeProvider)?
     var activeHAConfig: (url: String, token: String)?

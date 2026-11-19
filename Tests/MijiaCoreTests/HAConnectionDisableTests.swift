@@ -1169,6 +1169,7 @@ struct HAConnectionDisableTests {
         #expect(HAPlaintextConsent.allowsToken(to: publicHTTPURL, defaults: defaults))
 
         let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        store.haProviderFactory = { _, _ in MockHomeProvider() }
         let haSensor = SmartDevice(
             id: "ha-sensor-1",
             name: "书房温湿度计",
@@ -1230,8 +1231,14 @@ struct HAConnectionDisableTests {
         #expect(EnergyHistory(defaults: defaults, connectionScope: publicScope).recordingStartedAt != nil)
         #expect(store.pausedScheduledCommands.count == 1)
 
-        // 2. Reconnect via `updateConnection` re-enables HA and queues fresh-snapshot revalidation!
+        // 2. Saving via `updateConnection` while disabled retains disabled state without connecting;
+        // explicit `setHAConnectionEnabled(true)` re-enables HA and queues fresh-snapshot revalidation.
         store.updateConnection(serverURL: publicHTTPURL, token: Self.haToken)
+        #expect(!store.isHAConnectionEnabled)
+        #expect(!store.pendingRevalidationScopes.contains(publicScope))
+
+        let reenabled = store.setHAConnectionEnabled(true)
+        #expect(reenabled.disposition == .allowed)
         #expect(store.isHAConnectionEnabled)
         #expect(store.pendingRevalidationScopes.contains(publicScope))
 
@@ -1254,4 +1261,524 @@ struct HAConnectionDisableTests {
         #expect(store.pausedScheduledCommands.isEmpty)
         #expect(store.indexedDevicesById["ha-plug-1"] == nil)
     }
+
+    // MARK: - 7. PR #285 Cross-Model Review Regression & Concurrency Tests
+
+    private static func makeLoadedSnapshot(
+        devices: [SmartDevice] = [],
+        scenes: [HomeScene] = []
+    ) -> SynthesizedHome {
+        var snapshot = SynthesizedHome(devices: devices, scenes: scenes)
+        snapshot.isInitialLoadComplete = true
+        return snapshot
+    }
+
+    @Test("Disabling HA then switching to demo preserves all demo scenes and connected status")
+    func disablingHAThenSwitchingToDemoPreservesDemoScenesAndStatus() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+
+        let haProvider = StubHARuntimeProvider(
+            initialSnapshot: Self.makeLoadedSnapshot(
+                devices: [
+                    SmartDevice(
+                        id: "ha-lamp-demo-switch",
+                        name: "书房灯",
+                        roomId: "ha-study",
+                        roomName: "书房",
+                        model: "ha.light",
+                        isOnline: true,
+                        kind: .light(LightSpec(entityId: "light.study_demo_switch", isOn: true))
+                    )
+                ],
+                scenes: [HomeScene(id: "scene.ha_only", name: "HA 观影", entityId: "scene.ha_only")]
+            )
+        )
+        let store = HomeStore(provider: haProvider, defaultsSuiteName: suite, credentialVault: vault)
+        try await store.waitForTestSnapshot()
+
+        let disabled = store.setHAConnectionEnabled(
+            false,
+            pauseConfirmed: true,
+            expectedGeneration: store.capabilityGeneration
+        )
+        #expect(disabled.disposition == .allowed || disabled.disposition == .requiresPauseConfirmation)
+        #expect(!store.isHAConnectionEnabled)
+        #expect(store.allConfiguredSourcesTurnedOff)
+        #expect(store.connectionStatus == .disconnected("连接已停用"))
+
+        store.switchBackend(.demo)
+        try await store.waitForTestSnapshot()
+
+        #expect(store.homeBackend == .demo)
+        #expect(!store.allConfiguredSourcesTurnedOff)
+        #expect(store.connectionStatus == .connected)
+        #expect(store.scenes.count == 2)
+        #expect(store.visibleScenes.count == 2)
+        #expect(!store.devices.isEmpty)
+    }
+
+    @Test("Saving HA settings while disabled preserves disabled state and emits zero HA provider creations until explicitly re-enabled")
+    func updateConnectionWhileHADisabledKeepsDisabledState() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+
+        var createdURLs: [String] = []
+        var createdTokens: [String] = []
+        let store = HomeStore(
+            provider: StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot()),
+            defaultsSuiteName: suite,
+            credentialVault: vault
+        )
+        store.haProviderFactory = { url, token in
+            createdURLs.append(url)
+            createdTokens.append(token)
+            return StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot())
+        }
+
+        _ = store.setHAConnectionEnabled(false)
+        if let teardownTask = store.capabilityTeardownTask {
+            await teardownTask.value
+        }
+        #expect(!store.isHAConnectionEnabled)
+        #expect(createdURLs.isEmpty)
+
+        let updatedURL = "http://192.168.1.99:8123"
+        let updatedScope = "ha:\(updatedURL)"
+        let updatedToken = "ha-updated-secret-token"
+        store.updateConnection(serverURL: updatedURL, token: updatedToken)
+
+        #expect(!store.isHAConnectionEnabled)
+        #expect(store.hasHASource)
+        #expect(store.serverURLString == updatedURL)
+        #expect(store.loadHAToken() == updatedToken)
+        #expect(store.explicitlyDisabledConnections.contains(.homeAssistant))
+        #expect(!store.capabilitySelection.enabledConnections.contains(.homeAssistant))
+        #expect(!store.capabilitySelection.enabledConnectionScopes.contains(updatedScope))
+        #expect(!store.capabilitySelection.enabledConnectionScopes.contains(Self.haScope))
+        #expect(createdURLs.isEmpty)
+        #expect(store.toastNotice?.message.contains("连接仍处于停用状态") == true)
+
+        let reenabled = store.setHAConnectionEnabled(true)
+        #expect(reenabled.disposition == .allowed)
+        #expect(store.isHAConnectionEnabled)
+        #expect(createdURLs == [updatedURL])
+        #expect(createdTokens == [updatedToken])
+        #expect(store.pendingRevalidationScopes.contains(updatedScope))
+    }
+
+    @Test("Dual-source undo with HA disabled restores Mi items, retains blocked HA restore items and receipts, and reports partial undo")
+    func dualSourceUndoPreservesBlockedHAItemsAndHabitReceipts() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
+
+        let miLamp = SmartDevice(
+            id: "mi-lamp-undo",
+            name: "客厅米家灯",
+            roomId: "\(Self.miAccount.id)/living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp1",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:mi-lamp-undo:2", isOn: false)),
+            accountId: Self.miAccount.id
+        )
+        let miLampPrev = SmartDevice(
+            id: "mi-lamp-undo",
+            name: "客厅米家灯",
+            roomId: "\(Self.miAccount.id)/living",
+            roomName: "客厅",
+            model: "yeelink.light.lamp1",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:mi-lamp-undo:2", isOn: true)),
+            accountId: Self.miAccount.id
+        )
+        let haLamp = SmartDevice(
+            id: "ha-lamp-undo",
+            name: "书房 HA 灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "ha.light",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study_undo", isOn: false))
+        )
+        let haLampPrev = SmartDevice(
+            id: "ha-lamp-undo",
+            name: "书房 HA 灯",
+            roomId: "study",
+            roomName: "书房",
+            model: "ha.light",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.study_undo", isOn: true))
+        )
+
+        var miSnapshot = Self.makeLoadedSnapshot(devices: [miLamp])
+        miSnapshot.freshAccountIds = [Self.miAccount.id]
+        miSnapshot.accountStatuses = [Self.miAccount.id: .connected]
+        let haSnapshot = Self.makeLoadedSnapshot(devices: [haLamp])
+
+        let miProvider = StubHARuntimeProvider(initialSnapshot: miSnapshot)
+        let haProvider = StubHARuntimeProvider(initialSnapshot: haSnapshot)
+        let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
+        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        try await store.waitForTestSnapshot()
+        store.devices = [miLamp, haLamp]
+
+        let miRestore = DeviceCommand.setLightPower(entityId: "miot:mi-lamp-undo:2", isOn: true)
+        let haRestore = DeviceCommand.setLightPower(entityId: "light.study_undo", isOn: true)
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        var memory = store.userHabitMemory
+        let habitReceipt = memory.record(
+            utterance: nil,
+            intents: [
+                DeviceIntent(targetId: miLamp.id, operation: .power(false)),
+                DeviceIntent(targetId: haLamp.id, operation: .power(false)),
+            ],
+            devices: [miLampPrev, haLampPrev],
+            scenes: [],
+            now: now
+        )
+        store.userHabitMemory = memory
+
+        store.undoBanner = UndoBanner(
+            title: "已关闭 2 个设备",
+            restoreCommands: [miRestore, haRestore],
+            previousDevices: [miLampPrev, haLampPrev],
+            deviceCount: 2,
+            habitReceipt: habitReceipt,
+            isAllOff: true
+        )
+
+        // Disable HA after the dual-source all-off action.
+        _ = store.setHAConnectionEnabled(false)
+        if let teardownTask = store.capabilityTeardownTask {
+            await teardownTask.value
+        }
+        #expect(!store.isHAConnectionEnabled)
+
+        let haCommandsBefore = await haProvider.executedCommands.count
+        let miCommandsBefore = await miProvider.executedCommands.count
+
+        if let undoTask = store.undoTurnAllOff() {
+            await undoTask.value
+        }
+
+        #expect(await miProvider.executedCommands.count == miCommandsBefore + 1)
+        #expect(await miProvider.executedCommands.last?.targetEntityId == "miot:mi-lamp-undo:2")
+        #expect(await haProvider.executedCommands.count == haCommandsBefore)
+        #expect(store.undoBanner != nil)
+        #expect(store.undoBanner?.restoreCommands == [haRestore])
+        #expect(store.undoBanner?.habitReceipt?.entries.map(\.targetId) == [haLamp.id])
+        #expect(store.toastNotice?.isError == true)
+        #expect(store.toastNotice?.message.contains("部分设备未撤销") == true)
+        #expect(store.toastNotice?.message.contains("Home Assistant 已停用") == true)
+
+        // Assistant undo path follows the exact same partial-retention contract.
+        store.devices = [miLamp, haLamp]
+        store.lastAssistantUndo = AssistantUndoEntry(
+            reply: "已关闭全部灯光",
+            restore: [miRestore, haRestore],
+            previous: [miLampPrev, haLampPrev],
+            at: Date()
+        )
+        let miCommandsBeforeAssistant = await miProvider.executedCommands.count
+        _ = await store.runAssistantCommand("撤销")
+
+        #expect(await miProvider.executedCommands.count == miCommandsBeforeAssistant + 1)
+        #expect(await haProvider.executedCommands.count == haCommandsBefore)
+        #expect(store.lastAssistantUndo != nil)
+        #expect(store.lastAssistantUndo?.restore == [haRestore])
+        if case .failed(let message) = store.assistantState {
+            #expect(message.contains("部分设备未撤销"))
+            #expect(message.contains("Home Assistant 已停用"))
+        } else {
+            Issue.record("Expected assistantState .failed with partial undo message, got \(store.assistantState)")
+        }
+    }
+
+    @Test("Disabling HA short-circuits DualSourceHomeProvider reads during slow shutdown and exposes teardown state")
+    func dualSourceDisableShortCircuitsReadsDuringSlowShutdown() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
+
+        let haSensor = SmartDevice(
+            id: "ha-sensor-race",
+            name: "卧室传感器",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "ha.sensor",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 23.5, humidity: 48))
+        )
+        let haCam = SmartDevice(
+            id: "ha-cam-race",
+            name: "走廊摄像头",
+            roomId: "hall",
+            roomName: "走廊",
+            model: "ha.camera",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "camera.hall", isOn: true))
+        )
+        let miLamp = SmartDevice(
+            id: "mi-lamp-race",
+            name: "玄关灯",
+            roomId: "\(Self.miAccount.id)/entry",
+            roomName: "玄关",
+            model: "yeelink.light.lamp1",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:mi-lamp-race:2", isOn: true)),
+            accountId: Self.miAccount.id
+        )
+
+        let shutdownGate = AsyncGate()
+        var miSnapshot = Self.makeLoadedSnapshot(devices: [miLamp])
+        miSnapshot.freshAccountIds = [Self.miAccount.id]
+        miSnapshot.accountStatuses = [Self.miAccount.id: .connected]
+        let miProvider = StubHARuntimeProvider(initialSnapshot: miSnapshot)
+        let haProvider = StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot(devices: [haSensor, haCam]))
+        await haProvider.setShutdownHook {
+            await shutdownGate.enterAndWait()
+        }
+
+        let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
+        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        try await store.waitForTestSnapshot()
+
+        let haRefreshBefore = await haProvider.refreshCalls
+        let miRefreshBefore = await miProvider.refreshCalls
+
+        let result = store.setHAConnectionEnabled(false)
+        #expect(result.disposition == .allowed)
+        #expect(store.isDisablingHAConnection)
+        #expect(store.capabilityTeardownTask != nil)
+
+        // Wait deterministically until old HA child is blocked inside `shutdown()`.
+        await shutdownGate.waitUntilEntered()
+
+        // Concurrent reads during the teardown window must short-circuit HA while keeping Mi working.
+        async let r1: Void = store.refreshNow()
+        async let r2: Void = dual.refreshNow()
+        async let r3: [SensorHistorySample] = dual.fetchSensorHistory(
+            deviceId: haSensor.id,
+            window: .last24Hours,
+            now: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+        async let r4: CameraStreamSource? = try? await dual.resolveCameraStream(
+            for: haCam,
+            quality: .sd,
+            channel: 0
+        )
+        store.requestSensorHistory(for: haSensor.id, window: .last24Hours)
+        let (_, _, historySamples, cameraStream) = await (r1, r2, r3, r4)
+
+        #expect(historySamples.isEmpty)
+        #expect(cameraStream == nil)
+        #expect(await haProvider.refreshCalls == haRefreshBefore)
+        #expect(await haProvider.sensorHistoryCalls.isEmpty)
+        #expect(await haProvider.cameraResolveCalls.isEmpty)
+        #expect(await miProvider.refreshCalls > miRefreshBefore)
+
+        // Stale generation re-attach must be rejected while a newer disable generation exists.
+        let staleGen = dual.disableGeneration(for: .homeAssistant)
+        _ = dual.markBackendDisabled(.homeAssistant)
+        let staleReplacement = StubHARuntimeProvider()
+        await dual.setSourceProvider(staleReplacement, for: .homeAssistant, expectedDisableGeneration: staleGen)
+        #expect(await staleReplacement.shutdownCalls == 1)
+
+        await shutdownGate.release()
+        if let teardownTask = store.capabilityTeardownTask {
+            await teardownTask.value
+        }
+
+        #expect(!store.isDisablingHAConnection)
+        #expect(store.capabilityTeardownTask == nil)
+        #expect(await haProvider.shutdownCalls == 1)
+    }
+
+    @Test("Single-device capabilityWriteRejection matches ID lookup across 200 mixed devices and preserves allOffTargets and RaycastSnapshot semantics")
+    func singleDeviceCapabilityWriteRejectionMatchesIdLookup() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+
+        var devices: [SmartDevice] = []
+        for index in 0..<100 {
+            devices.append(SmartDevice(
+                id: "ha-light-\(index)",
+                name: "HA 灯 \(index)",
+                roomId: "ha-room",
+                roomName: "书房",
+                model: "ha.light",
+                isOnline: true,
+                kind: .light(LightSpec(entityId: "light.ha_\(index)", isOn: true))
+            ))
+            devices.append(SmartDevice(
+                id: "mi-light-\(index)",
+                name: "米家灯 \(index)",
+                roomId: "\(Self.miAccount.id)/mi-room",
+                roomName: "客厅",
+                model: "yeelink.light.lamp1",
+                isOnline: true,
+                kind: .light(LightSpec(entityId: "miot:mi-light-\(index):2", isOn: true)),
+                accountId: Self.miAccount.id
+            ))
+        }
+        store.devices = devices
+        store.pinDeviceSource("mi-light-0", to: .homeAssistant)
+        store.pinDeviceSource("mi-light-1", to: .xiaomiCloud)
+
+        _ = store.setHAConnectionEnabled(false)
+
+        for device in devices {
+            let byDevice = store.capabilityWriteRejection(for: device)
+            let byId = store.capabilityWriteRejection(forDeviceId: device.id)
+            #expect(byDevice == byId)
+        }
+
+        // All HA-only lights and the HA-pinned Mi light are excluded from allOffTargets.
+        let targets = Set(store.allOffTargets.map(\.id))
+        #expect(!targets.contains("ha-light-0"))
+        #expect(!targets.contains("mi-light-0"))
+        #expect(targets.contains("mi-light-1"))
+        #expect(targets.count == 99)
+
+        let snapshot = store.buildRaycastSnapshot()
+        #expect(snapshot.devices.first(where: { $0.id == "ha-light-0" }) == nil)
+        let pinnedHAItem = try #require(snapshot.devices.first(where: { $0.id == "mi-light-0" }))
+        let miItem = try #require(snapshot.devices.first(where: { $0.id == "mi-light-1" }))
+        #expect(!pinnedHAItem.capabilities.canTogglePower)
+        #expect(!pinnedHAItem.isPrimaryToggleable)
+        #expect(miItem.capabilities.canTogglePower)
+        #expect(miItem.isPrimaryToggleable)
+    }
+
+    @Test("disconnectHomeAssistant tears down active HA cameras while leaving Mi cameras untouched")
+    func disconnectHomeAssistantTearsDownActiveHACameras() throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
+
+        let haCam = SmartDevice(
+            id: "ha-cam-disconnect",
+            name: "HA 门廊摄像头",
+            roomId: "porch",
+            roomName: "玄关",
+            model: "ha.camera",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "camera.porch_disconnect", isOn: true))
+        )
+        let miCam = SmartDevice(
+            id: "mi-cam-disconnect",
+            name: "米家客厅摄像头",
+            roomId: "\(Self.miAccount.id)/living",
+            roomName: "客厅",
+            model: "chuangmi.camera.055a02",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "miot:mi-cam-disconnect:2", isOn: true)),
+            accountId: Self.miAccount.id
+        )
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        store.devices = [haCam, miCam]
+        store.activeLiveCameraDeviceId = haCam.id
+
+        var tornDownSets: [Set<String>] = []
+        store.onHAConnectionDisabled = { ids in
+            tornDownSets.append(ids)
+        }
+
+        #expect(store.disconnectHomeAssistant())
+        #expect(tornDownSets == [Set([haCam.id])])
+        #expect(store.activeLiveCameraDeviceId == nil)
+
+        // Re-seed HA and verify an active Mi camera stays open when disconnecting HA.
+        Self.seedHAConfig(defaults, vault)
+        store.devices = [haCam, miCam]
+        store.activeLiveCameraDeviceId = miCam.id
+        tornDownSets.removeAll()
+
+        #expect(store.disconnectHomeAssistant())
+        #expect(tornDownSets == [Set([haCam.id])])
+        #expect(store.activeLiveCameraDeviceId == miCam.id)
+    }
+
+    @Test("Re-enabling HA on an injected DualSourceHomeProvider queues pendingRevalidationScopes symmetrically")
+    func injectedDualSourceReenableQueuesPendingRevalidationScope() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        MiSessionStore.saveAccounts([Self.miAccount], defaults: defaults, vault: vault)
+
+        let haPlug = SmartDevice(
+            id: "ha-plug-injected",
+            name: "书房插座",
+            roomId: "study",
+            roomName: "书房",
+            model: "ha.plug",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.study_injected", isOn: true))
+        )
+        var miSnapshot = Self.makeLoadedSnapshot()
+        miSnapshot.freshAccountIds = [Self.miAccount.id]
+        miSnapshot.accountStatuses = [Self.miAccount.id: .connected]
+        let miProvider = StubHARuntimeProvider(initialSnapshot: miSnapshot)
+        let haProvider = StubHARuntimeProvider(initialSnapshot: Self.makeLoadedSnapshot(devices: [haPlug]))
+        let dual = DualSourceHomeProvider(homeAssistant: haProvider, xiaomiCloud: miProvider)
+
+        let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+        try await store.waitForTestSnapshot()
+
+        let now = Date(timeIntervalSince1970: 1_760_000_000)
+        store.assistantNow = { now }
+        let plugTimer = ScheduledCommand(
+            reply: "10 分钟后关闭书房插座",
+            fireDate: now.addingTimeInterval(600),
+            plan: IntentPlan(intents: [DeviceIntent(targetId: haPlug.id, operation: .power(false))], reply: "关闭书房插座", source: .local),
+            sourceScope: Self.haScope,
+            sourceScopes: [Self.haScope]
+        )
+        ScheduledCommand.save([plugTimer], to: defaults)
+        store.restoreScheduledCommands(now: now)
+
+        _ = store.setHAConnectionEnabled(
+            false,
+            pauseConfirmed: true,
+            expectedGeneration: store.capabilityGeneration
+        )
+        if let teardownTask = store.capabilityTeardownTask {
+            await teardownTask.value
+        }
+        #expect(store.pausedScheduledCommands.count == 1)
+
+        // No `haProviderFactory` is installed, yet `hasManagedHAProvider` recognizes the injected DualSourceHomeProvider.
+        let reenabled = store.setHAConnectionEnabled(true)
+        #expect(reenabled.disposition == .allowed)
+        #expect(store.pendingRevalidationScopes.contains(Self.haScope))
+        #expect(store.pausedScheduledCommands.count == 1)
+    }
 }
+
+

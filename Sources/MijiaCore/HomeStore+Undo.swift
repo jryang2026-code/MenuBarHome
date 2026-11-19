@@ -164,7 +164,7 @@ extension HomeStore {
 
         switch action {
         case .lightsOff:
-            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(forDeviceId: devices[idx].id) == nil {
+            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(for: devices[idx]) == nil {
                 let previous = devices[idx]
                 guard case .light(var s) = previous.kind, s.isOn, s.powerWritable else { continue }
                 let deviceId = previous.id
@@ -181,13 +181,13 @@ extension HomeStore {
         case .softNightLight:
             var targetIndices = devices.indices.filter { idx in
                 guard devices[idx].isOnline,
-                      capabilityWriteRejection(forDeviceId: devices[idx].id) == nil,
+                      capabilityWriteRejection(for: devices[idx]) == nil,
                       case .light(let s) = devices[idx].kind else { return false }
                 return s.isOn && s.brightnessWritable && s.colorWritable
             }
             if targetIndices.isEmpty {
                 let isOnlineLight = { (dev: SmartDevice) -> Bool in
-                    guard dev.isOnline, self.capabilityWriteRejection(forDeviceId: dev.id) == nil else { return false }
+                    guard dev.isOnline, self.capabilityWriteRejection(for: dev) == nil else { return false }
                     if case .light(let spec) = dev.kind {
                         return spec.brightnessWritable && spec.colorWritable
                     }
@@ -233,7 +233,7 @@ extension HomeStore {
             }
 
         case .climateSleepOff:
-            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(forDeviceId: devices[idx].id) == nil {
+            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(for: devices[idx]) == nil {
                 let previous = devices[idx]
                 let deviceId = previous.id
                 switch previous.kind {
@@ -394,7 +394,7 @@ extension HomeStore {
             $0.isActiveOn
                 && joinsAllOff($0)
                 && Self.allOffChange(for: $0) != nil
-                && capabilityWriteRejection(forDeviceId: $0.id) == nil
+                && capabilityWriteRejection(for: $0) == nil
         }
     }
 
@@ -802,6 +802,53 @@ extension HomeStore {
         return haCommandWriteRejection(for: command.targetEntityId)
     }
 
+    struct UndoCapabilityPartition {
+        let eligibleCommands: [DeviceCommand]
+        let blockedCommands: [DeviceCommand]
+        let blockedDeviceIds: Set<String>
+        let firstBlockedReason: ControlTargetRejectionReason?
+    }
+
+    func partitionUndoCommandsByCapability(
+        _ commands: [DeviceCommand],
+        previousDevices: [SmartDevice],
+        excludingDeviceIds: Set<String> = []
+    ) -> UndoCapabilityPartition {
+        var eligible: [DeviceCommand] = []
+        var blocked: [DeviceCommand] = []
+        var blockedDeviceIds: Set<String> = []
+        var firstReason: ControlTargetRejectionReason?
+        for command in commands {
+            let ownerId = owningDeviceIdForCommand(command)
+                ?? previousDevices.first(where: { $0.referencedEntityIds.contains(command.targetEntityId) })?.id
+            if let ownerId, excludingDeviceIds.contains(ownerId) {
+                continue
+            }
+            if let reason = capabilityUndoRejectionReason(for: command) {
+                blocked.append(command)
+                if let ownerId { blockedDeviceIds.insert(ownerId) }
+                if firstReason == nil { firstReason = reason }
+            } else {
+                eligible.append(command)
+            }
+        }
+        return UndoCapabilityPartition(
+            eligibleCommands: eligible,
+            blockedCommands: blocked,
+            blockedDeviceIds: blockedDeviceIds,
+            firstBlockedReason: firstReason
+        )
+    }
+
+    func partialCapabilityUndoMessage(blockedCount: Int, reason: ControlTargetRejectionReason) -> String {
+        L10n.format(
+            "部分设备未撤销：%@ 项未恢复（%@），重新启用后可再次点击撤销",
+            "Partial undo: %@ item(s) not restored (%@); tap Undo again after turning back on",
+            String(blockedCount),
+            reason.userMessage
+        )
+    }
+
     @discardableResult
     public func undoTurnAllOff() -> Task<Void, Never>? {
         // Nothing to undo stays silent. A blocked Mi session is checked before any UI state or a
@@ -814,17 +861,20 @@ extension HomeStore {
         // `turnAllOff` refuses it before the banner, the rows or a batch state move, and a
         // refused undo stays retryable after unlocking (#143).
         guard !rejectControlWhileLocked() else { return nil }
-        if !banner.restoreCommands.isEmpty {
-            let blockedReasons = banner.restoreCommands.compactMap { capabilityUndoRejectionReason(for: $0) }
-            if blockedReasons.count == banner.restoreCommands.count, let firstReason = blockedReasons.first {
-                showToast(firstReason.userMessage, isError: true)
-                return nil
-            }
+        let prePartition = partitionUndoCommandsByCapability(
+            banner.restoreCommands,
+            previousDevices: banner.previousDevices
+        )
+        if !banner.restoreCommands.isEmpty,
+           prePartition.eligibleCommands.isEmpty,
+           let firstReason = prePartition.firstBlockedReason {
+            showToast(firstReason.userMessage, isError: true)
+            return nil
         }
         // Only an undo whose restores are all Mi-dependent is refused outright. A mixed undo sends
         // its LAN restores, keeps the refused Mi ones in the banner and leaves the expiry toast up.
-        let hasLGRestore = banner.restoreCommands.contains { lgClientServes($0) }
-        let hasMiRestore = banner.restoreCommands.contains { !lgClientServes($0) }
+        let hasLGRestore = prePartition.eligibleCommands.contains { lgClientServes($0) }
+        let hasMiRestore = prePartition.eligibleCommands.contains { !lgClientServes($0) }
         if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             return nil
         }
@@ -842,7 +892,7 @@ extension HomeStore {
         } ?? []
         let contextBeforeModal = controlContextID
         let confirmation = confirmUndoTargets(
-            banner.restoreCommands,
+            prePartition.eligibleCommands,
             previousDevices: banner.previousDevices,
             excludingDeviceIds: takenOverDeviceIds
         )
@@ -854,14 +904,20 @@ extension HomeStore {
               !rejectControlWhileLocked() else {
             return nil
         }
-        if !banner.restoreCommands.isEmpty {
-            let blockedReasons = banner.restoreCommands.compactMap { capabilityUndoRejectionReason(for: $0) }
-            if blockedReasons.count == banner.restoreCommands.count, let firstReason = blockedReasons.first {
-                showToast(firstReason.userMessage, isError: true)
-                return nil
-            }
+        let postPartition = partitionUndoCommandsByCapability(
+            banner.restoreCommands,
+            previousDevices: banner.previousDevices,
+            excludingDeviceIds: confirmation.excludedDeviceIds
+        )
+        if !banner.restoreCommands.isEmpty,
+           postPartition.eligibleCommands.isEmpty,
+           let firstReason = postPartition.firstBlockedReason {
+            showToast(firstReason.userMessage, isError: true)
+            return nil
         }
-        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
+        let postHasLG = postPartition.eligibleCommands.contains { lgClientServes($0) }
+        let postHasMi = postPartition.eligibleCommands.contains { !lgClientServes($0) }
+        if postHasMi, !postHasLG, rejectWritesBlockedByMiSession() {
             return nil
         }
         let savedAssistantUndo = lastAssistantUndo?.actionId == banner.actionId ? lastAssistantUndo : nil
@@ -878,11 +934,39 @@ extension HomeStore {
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
-            banner.restoreCommands,
+            postPartition.eligibleCommands,
             previousDevices: banner.previousDevices,
             excludingDeviceIds: confirmation.excludedDeviceIds
         )
         if applicable.isEmpty, !banner.restoreCommands.isEmpty {
+            if !postPartition.blockedCommands.isEmpty, let firstReason = postPartition.firstBlockedReason {
+                let blockedCount = max(postPartition.blockedDeviceIds.count, postPartition.blockedCommands.count)
+                let remainingReceipt = banner.habitReceipt.flatMap {
+                    Self.partitionHabitReceipt($0, failedDeviceIds: postPartition.blockedDeviceIds).remaining
+                }
+                scheduleUndoBanner(
+                    actionId: banner.actionId,
+                    title: banner.title,
+                    restoreCommands: postPartition.blockedCommands,
+                    previousDevices: banner.previousDevices.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                    deviceCount: blockedCount,
+                    habitReceipt: remainingReceipt,
+                    duration: banner.duration,
+                    isAllOff: banner.isAllOff
+                )
+                if let savedAssistantUndo, Date().timeIntervalSince(savedAssistantUndo.at) <= Self.voiceUndoWindow {
+                    lastAssistantUndo = AssistantUndoEntry(
+                        actionId: savedAssistantUndo.actionId,
+                        reply: savedAssistantUndo.reply,
+                        restore: postPartition.blockedCommands,
+                        previous: savedAssistantUndo.previous.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                        at: assistantNow(),
+                        habitReceipt: remainingReceipt
+                    )
+                }
+                showToast(partialCapabilityUndoMessage(blockedCount: blockedCount, reason: firstReason), isError: true)
+                return nil
+            }
             showToast(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo"), isError: true)
             return nil
         }
@@ -929,9 +1013,40 @@ extension HomeStore {
                     optimisticLockRevision[deviceId] == revision ? deviceId : nil
                 })
                 restorable = applicable.filter { owned.contains($0.deviceId) }
-                guard !restorable.isEmpty else {
-                    // Every row is the newer action's now, so there is nothing left to restore and
-                    // nothing to announce.
+                if restorable.isEmpty {
+                    // Every eligible row is the newer action's now; still preserve any
+                    // capability-blocked restores so they are never silently dropped.
+                    if !postPartition.blockedCommands.isEmpty, let firstReason = postPartition.firstBlockedReason {
+                        let blockedCount = max(postPartition.blockedDeviceIds.count, postPartition.blockedCommands.count)
+                        let remainingReceipt = banner.habitReceipt.flatMap {
+                            Self.partitionHabitReceipt($0, failedDeviceIds: postPartition.blockedDeviceIds).remaining
+                        }
+                        if bannerUndoRevision == capturedBannerRevision {
+                            scheduleUndoBanner(
+                                actionId: banner.actionId,
+                                title: banner.title,
+                                restoreCommands: postPartition.blockedCommands,
+                                previousDevices: banner.previousDevices.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                                deviceCount: blockedCount,
+                                habitReceipt: remainingReceipt,
+                                duration: banner.duration,
+                                isAllOff: banner.isAllOff
+                            )
+                        }
+                        if let savedAssistantUndo,
+                           assistantUndoRevision == capturedAssistantRevision,
+                           Date().timeIntervalSince(savedAssistantUndo.at) <= Self.voiceUndoWindow {
+                            lastAssistantUndo = AssistantUndoEntry(
+                                actionId: savedAssistantUndo.actionId,
+                                reply: savedAssistantUndo.reply,
+                                restore: postPartition.blockedCommands,
+                                previous: savedAssistantUndo.previous.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                                at: assistantNow(),
+                                habitReceipt: remainingReceipt
+                            )
+                        }
+                        showToast(partialCapabilityUndoMessage(blockedCount: blockedCount, reason: firstReason), isError: true)
+                    }
                     return
                 }
                 // Back to the normal lease.
@@ -961,12 +1076,16 @@ extension HomeStore {
                 context: context,
                 preUndoById: preUndoById,
                 preUndoFacetsById: preUndoFacetsById,
-                habitReceipt: banner.habitReceipt
+                habitReceipt: banner.habitReceipt,
+                preBlockedDeviceIds: postPartition.blockedDeviceIds
             ) else { return }
-            if outcome.succeeded {
+            let remainingCommands = outcome.failedCommands + postPartition.blockedCommands
+            let remainingDeviceIds = outcome.failedDeviceIds.union(postPartition.blockedDeviceIds)
+            if remainingCommands.isEmpty {
                 showToast(L10n.tr("已恢复关闭前的状态", "Restored previous device states"))
                 return
             }
+            let remainingCount = max(remainingDeviceIds.count, remainingCommands.count)
             let lockedBeforeAnySend = outcome.blockedByScreenLock && !outcome.didSendAnyCommand
             if bannerUndoRevision == capturedBannerRevision {
                 if lockedBeforeAnySend, batchTask == nil {
@@ -985,9 +1104,9 @@ extension HomeStore {
                     scheduleUndoBanner(
                         actionId: banner.actionId,
                         title: banner.title,
-                        restoreCommands: outcome.failedCommands,
-                        previousDevices: banner.previousDevices.filter { outcome.failedDeviceIds.contains($0.id) },
-                        deviceCount: outcome.failedDeviceIds.count,
+                        restoreCommands: remainingCommands,
+                        previousDevices: banner.previousDevices.filter { remainingDeviceIds.contains($0.id) },
+                        deviceCount: remainingCount,
                         habitReceipt: outcome.habitReceipt,
                         duration: banner.duration,
                         isAllOff: banner.isAllOff
@@ -1003,26 +1122,32 @@ extension HomeStore {
                     lastAssistantUndo = AssistantUndoEntry(
                         actionId: savedAssistantUndo.actionId,
                         reply: savedAssistantUndo.reply,
-                        restore: outcome.failedCommands,
-                        previous: savedAssistantUndo.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                        restore: remainingCommands,
+                        previous: savedAssistantUndo.previous.filter { remainingDeviceIds.contains($0.id) },
                         at: assistantNow(),
                         habitReceipt: outcome.habitReceipt
                     )
                 }
             }
-            // The refused Mi commands or screen-locked restores stay in the banner; the expiry or
-            // lock toast already explains them, so the generic "did not respond" message would only
-            // replace it.
-            if !outcome.blockedByMiSession, !outcome.blockedByScreenLock {
-                let sep = L10n.isEnglish ? ", " : "、"
-                let list = outcome.failedNames.joined(separator: sep)
-                showToast(
-                    L10n.tr(
-                        "撤销未完成：\(list) 未响应，可再次点击撤销重试",
-                        "Undo incomplete: \(list) did not respond; tap Undo to retry"
-                    ),
-                    isError: true
-                )
+            // The refused Mi commands, screen-locked restores, or capability-disabled restores stay
+            // in the banner; pick the specific explanation instead of dropping or overwriting it.
+            let capabilityBlockedReason = postPartition.firstBlockedReason ?? outcome.capabilityBlockedReason
+            if outcome.failedCommands.isEmpty, let reason = capabilityBlockedReason {
+                showToast(partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason), isError: true)
+            } else if !outcome.blockedByMiSession, !outcome.blockedByScreenLock {
+                if let reason = outcome.capabilityBlockedReason, outcome.nonCapabilityFailedNames.isEmpty {
+                    showToast(partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason), isError: true)
+                } else {
+                    let sep = L10n.isEnglish ? ", " : "、"
+                    let list = outcome.failedNames.joined(separator: sep)
+                    showToast(
+                        L10n.tr(
+                            "撤销未完成：\(list) 未响应，可再次点击撤销重试",
+                            "Undo incomplete: \(list) did not respond; tap Undo to retry"
+                        ),
+                        isError: true
+                    )
+                }
             }
         }
     }
@@ -1219,11 +1344,14 @@ extension HomeStore {
         let failedCommands: [DeviceCommand]
         let failedDeviceIds: Set<String>
         let failedNames: [String]
+        let nonCapabilityFailedNames: [String]
         let habitReceipt: UserHabitMemory.RecordingReceipt?
         /// At least one restore was refused by the expired Mi session; its persistent toast is up.
         let blockedByMiSession: Bool
         /// At least one restore was refused because the Mac locked before or during the send loop.
         let blockedByScreenLock: Bool
+        /// First capability write-gate rejection encountered during the send loop, if any.
+        let capabilityBlockedReason: ControlTargetRejectionReason?
         /// Whether any restore command reached `executeDeviceCommand` before a lock or failure stopped the rest.
         let didSendAnyCommand: Bool
 
@@ -1238,13 +1366,16 @@ extension HomeStore {
         context: UUID,
         preUndoById: [String: SmartDevice],
         preUndoFacetsById: [String: [FacetControl]],
-        habitReceipt: UserHabitMemory.RecordingReceipt?
+        habitReceipt: UserHabitMemory.RecordingReceipt?,
+        preBlockedDeviceIds: Set<String> = []
     ) async -> UndoRunOutcome? {
         var failedCommands: [DeviceCommand] = []
         var failedDeviceIds: Set<String> = []
         var failedNames: [String] = []
+        var nonCapabilityFailedNames: [String] = []
         var blockedByMiSession = false
         var blockedByScreenLock = false
+        var capabilityBlockedReason: ControlTargetRejectionReason?
         var didSendAnyCommand = false
         for item in applicable {
             guard context == controlContextID else { return nil }
@@ -1263,6 +1394,9 @@ extension HomeStore {
                 if !failedNames.contains(item.deviceName) {
                     failedNames.append(item.deviceName)
                 }
+                if !nonCapabilityFailedNames.contains(item.deviceName) {
+                    nonCapabilityFailedNames.append(item.deviceName)
+                }
                 continue
             }
             didSendAnyCommand = true
@@ -1270,6 +1404,11 @@ extension HomeStore {
                 try await executeDeviceCommand(item.command)
             } catch {
                 if error is MiSessionWriteBlocked { blockedByMiSession = true }
+                if let blocked = error as? CapabilityControlBlockedError {
+                    if capabilityBlockedReason == nil { capabilityBlockedReason = blocked.reason }
+                } else if !nonCapabilityFailedNames.contains(item.deviceName) {
+                    nonCapabilityFailedNames.append(item.deviceName)
+                }
                 failedCommands.append(item.command)
                 failedDeviceIds.insert(item.deviceId)
                 if !failedNames.contains(item.deviceName) {
@@ -1278,7 +1417,8 @@ extension HomeStore {
             }
         }
         guard context == controlContextID else { return nil }
-        if failedCommands.isEmpty {
+        let allUnrestoredDeviceIds = failedDeviceIds.union(preBlockedDeviceIds)
+        if failedCommands.isEmpty, preBlockedDeviceIds.isEmpty {
             if let habitReceipt {
                 var memory = userHabitMemory
                 memory.unrecord(habitReceipt)
@@ -1288,19 +1428,26 @@ extension HomeStore {
                 failedCommands: [],
                 failedDeviceIds: [],
                 failedNames: [],
+                nonCapabilityFailedNames: [],
                 habitReceipt: nil,
                 blockedByMiSession: false,
                 blockedByScreenLock: false,
+                capabilityBlockedReason: nil,
                 didSendAnyCommand: didSendAnyCommand
             )
         }
-        rollbackFailedUndoDevices(
-            failedDeviceIds, applicable: applicable, preUndoById: preUndoById,
-            preUndoFacetsById: preUndoFacetsById
-        )
+        if !failedDeviceIds.isEmpty {
+            rollbackFailedUndoDevices(
+                failedDeviceIds, applicable: applicable, preUndoById: preUndoById,
+                preUndoFacetsById: preUndoFacetsById
+            )
+        }
         var remainingReceipt: UserHabitMemory.RecordingReceipt?
         if let habitReceipt {
-            let (succeededPart, remainingPart) = Self.partitionHabitReceipt(habitReceipt, failedDeviceIds: failedDeviceIds)
+            let (succeededPart, remainingPart) = Self.partitionHabitReceipt(
+                habitReceipt,
+                failedDeviceIds: allUnrestoredDeviceIds
+            )
             if let succeededPart {
                 var memory = userHabitMemory
                 memory.unrecord(succeededPart)
@@ -1312,9 +1459,11 @@ extension HomeStore {
             failedCommands: failedCommands,
             failedDeviceIds: failedDeviceIds,
             failedNames: failedNames,
+            nonCapabilityFailedNames: nonCapabilityFailedNames,
             habitReceipt: remainingReceipt,
             blockedByMiSession: blockedByMiSession,
             blockedByScreenLock: blockedByScreenLock,
+            capabilityBlockedReason: capabilityBlockedReason,
             didSendAnyCommand: didSendAnyCommand
         )
     }

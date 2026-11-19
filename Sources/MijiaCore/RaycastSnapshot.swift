@@ -565,7 +565,7 @@ extension HomeStore {
             let pinyinInitials = Self.pinyinInitials(of: dev.name)
             let pinyinFull = PanelSearch.Pinyin.syllables(dev.name)?.joined() ?? ""
             let roomPinyin = Self.pinyinInitials(of: displayRoom)
-            let isWritable = capabilityWriteRejection(forDeviceId: dev.id) == nil
+            let isWritable = capabilityWriteRejection(for: dev) == nil
             let capabilities = Self.buildCapabilities(for: dev, markedLightIds: markedLightIds, isWritable: isWritable)
             let snapshotTag: DeviceKindTag = dev.isSwitchedLight ? .light : dev.kind.tag
 
@@ -767,17 +767,17 @@ extension HomeStore {
 
     private func buildQuickActionItems() -> [RaycastQuickActionItem] {
         let activeLightsCount = devices.filter { dev in
-            guard dev.isOnline, capabilityWriteRejection(forDeviceId: dev.id) == nil, case .light(let s) = dev.kind else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil, case .light(let s) = dev.kind else { return false }
             return s.isOn && s.powerWritable
         }.count
 
         let nightLightCandidatesCount = devices.filter { dev in
-            guard dev.isOnline, capabilityWriteRejection(forDeviceId: dev.id) == nil, case .light(let s) = dev.kind else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil, case .light(let s) = dev.kind else { return false }
             return s.brightnessWritable && s.colorWritable
         }.count
 
         let activeClimateFanCount = devices.filter { dev in
-            guard dev.isOnline, capabilityWriteRejection(forDeviceId: dev.id) == nil else { return false }
+            guard dev.isOnline, capabilityWriteRejection(for: dev) == nil else { return false }
             switch dev.kind {
             case .climate(let s): return s.isOn && s.hvacMode != "off" && s.powerWritable
             case .fan(let s): return s.isOn && s.powerWritable

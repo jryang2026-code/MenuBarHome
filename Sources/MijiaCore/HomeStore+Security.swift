@@ -83,8 +83,7 @@ extension HomeStore {
         requireOnline: Bool = false,
         showOfflineToast: Bool = false
     ) -> SmartDevice? {
-        if let reason = rejectDeviceWriteIfCapabilityDisabled(deviceId: captured.deviceId) {
-            _ = reason
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: captured.deviceId) != nil {
             return nil
         }
         guard controlContextID == captured.controlContextID,

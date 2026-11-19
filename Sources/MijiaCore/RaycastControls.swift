@@ -155,7 +155,7 @@ extension HomeStore {
     }
 
     private func raycastControllable(_ device: SmartDevice) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
-        if let reason = capabilityWriteRejection(forDeviceId: device.id) {
+        if let reason = capabilityWriteRejection(for: device) {
             let msg = reason.userMessage
             showToast(msg, isError: true)
             return (nil, (true, msg, true))

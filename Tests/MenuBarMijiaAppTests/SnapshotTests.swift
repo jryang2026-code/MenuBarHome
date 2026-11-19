@@ -1888,6 +1888,7 @@ struct SnapshotTests {
             pauseConfirmed: true,
             expectedGeneration: fixture.store.capabilityGeneration
         )
+        await fixture.store.capabilityTeardownTask?.value
         for scheme in [ColorScheme.light, .dark] {
             assertRendered(
                 SettingsWindowView(store: fixture.store, selectedTab: .connection)
@@ -1924,6 +1925,7 @@ struct SnapshotTests {
             pauseConfirmed: true,
             expectedGeneration: fixture.store.capabilityGeneration
         )
+        await fixture.store.capabilityTeardownTask?.value
         fixture.store.miAccountStatuses = [accountId: .connected]
         fixture.store.connectedBackends = [.xiaomiCloud]
         fixture.store.sourceStatuses = [.xiaomiCloud: .connected]
