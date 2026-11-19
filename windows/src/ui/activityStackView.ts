@@ -2374,7 +2374,11 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
     let activePointerId: number | null = null, startX = 0, startY = 0, startTimeMs = 0, lastX = 0, lastTimeMs = 0, velocityPxPerSec = 0, isHorizontalSwipe = false;
 
     cardEl.addEventListener("pointerdown", (e: PointerEvent) => {
-      if ((typeof e.button === "number" && e.button !== 0) || (e.target as Element | null)?.closest?.("button, input, select, a, summary")) return;
+      const target = e.target as Element | null;
+      if ((typeof e.button === "number" && e.button !== 0) || target?.closest?.("button, input, select, a, summary")) return;
+      // A group card (the ordinary capsule) wraps per-row cards. Only the innermost card owns a swipe, otherwise the
+      // outer card captures the pointer for the row's gesture and one swipe drops the whole group.
+      if (target?.closest?.("[data-upper-card-id]") !== cardEl) return;
       activePointerId = typeof e.pointerId === "number" ? e.pointerId : 1;
       startX = lastX = e.clientX;
       startY = e.clientY;
@@ -2440,9 +2444,8 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
       e.stopPropagation();
       center.ordinaryExpanded = !center.ordinaryExpanded;
       host.render();
-      if (center.ordinaryExpanded) {
-        host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
-      }
+      // `render()` may mount a fresh button, so restore focus for both directions instead of only on expand.
+      host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
     });
   }
 

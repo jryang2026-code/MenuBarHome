@@ -1,11 +1,12 @@
-import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../core/dualSourceProvider.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import type { LanguagePreference } from "../core/i18n.js";
+import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
 import type { ConnectionStatus } from "../core/models.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
+import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 /** Plain-language connection state for the footer and its keyboard-reachable detail card. */
 export type ConnectionBadge = "online" | "connecting" | "degraded" | "reauth" | "offline" | "demo" | "unconfigured";
 export interface ConnectionSourceItem {
@@ -48,20 +49,18 @@ const prefOf = (host: MenuMijiaWindowsApp): LanguagePreference | undefined =>
 function tr(host: MenuMijiaWindowsApp, hans: string, hant: string, en: string, params?: Readonly<Record<string, string | number>>): string {
   return tr3(hans, hant, en, params, prefOf(host));
 }
+/** The footer must count every Xiaomi login the rest of the app already merges: the live session, an override
+ * list, hydrated accounts, and an index that still proves a secondary login after `mi_session` went empty. */
 const hasMi = (host: MenuMijiaWindowsApp): boolean =>
-  host.settings.miSession !== null || (host.miAccountsOverride?.length ?? 0) > 0;
+  host.settings.miSession !== null ||
+  (host.miAccountsOverride?.length ?? 0) > 0 ||
+  (getHostMiAccountsState(host)?.accounts.length ?? 0) > 0 ||
+  hasSecondaryMiAccountsInIndex();
 const hasHA = (host: MenuMijiaWindowsApp): boolean =>
   homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
-function usesDualSource(host: MenuMijiaWindowsApp): boolean {
-  if (host.settings.connectionMode === "demo" || !hasMi(host) || !hasHA(host)) return false;
-  if (host.dualSourceEnabledOverride !== null) return host.dualSourceEnabledOverride;
-  if (typeof host.settings.dualSourceEnabled === "boolean") return host.settings.dualSourceEnabled;
-  try {
-    return globalThis.localStorage?.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
+/** One owner for dual-source detection so the footer can never disagree with the merge pipeline. */
+const usesDualSource = (host: MenuMijiaWindowsApp): boolean =>
+  host.settings.connectionMode !== "demo" && isDualSourceEnabled(host);
 function miExpired(host: MenuMijiaWindowsApp): boolean {
   return host.miSessionExpired
     || (host.settings.miSession !== null && miSessionExpiryState(host.settings.miSession).kind === "expired");
@@ -249,6 +248,9 @@ export function renderConnectionStatus(host: MenuMijiaWindowsApp): string {
   const status = resolveConnectionStatus(host);
   const label = host.escapeHtml(status.text);
   const title = host.escapeHtml(tr(host, "连接详情", "連線詳情", "Connection details"));
+  // The trigger's accessible name carries the plain-language state before naming what the click opens;
+  // a bare "Connection details" would hide the status from screen readers.
+  const accessibleName = host.escapeHtml(`${status.text} · ${tr(host, "连接详情", "連線詳情", "Connection details")}`);
   const open = host.connectionDetailsOpen;
   const action = status.action
     ? `<button type="button" class="cc-footer-action" id="btn-connection-action" data-connection-action="${status.action.kind}">${host.escapeHtml(status.action.label)}</button>`
@@ -263,5 +265,5 @@ export function renderConnectionStatus(host: MenuMijiaWindowsApp): string {
         <div class="cc-conn-actions"><button type="button" class="cc-inline-pill" data-connection-retry>${host.escapeHtml(tr(host, "重试连接", "重試連線", "Retry connection"))}</button><button type="button" class="cc-inline-pill" data-connection-settings>${host.escapeHtml(tr(host, "连接设置…", "連線設定…", "Connection settings…"))}</button></div>
       </div>`
     : "";
-  return `<button type="button" class="cc-status-trigger" id="btn-connection-status" data-connection-status-trigger aria-expanded="${open}" aria-controls="cc-connection-details" aria-label="${title}" title="${label}"><span class="cc-status-dot ${dotClass(status.tone)}" aria-hidden="true"></span><span class="cc-status-icon" aria-hidden="true">${status.icon}</span><span class="cc-footer-label">${label}</span></button>${action}${details}`;
+  return `<button type="button" class="cc-status-trigger" id="btn-connection-status" data-connection-status-trigger aria-expanded="${open}" aria-controls="cc-connection-details" aria-label="${accessibleName}" title="${label}"><span class="cc-status-dot ${dotClass(status.tone)}" aria-hidden="true"></span><span class="cc-status-icon" aria-hidden="true">${status.icon}</span><span class="cc-footer-label">${label}</span></button>${action}${details}`;
 }

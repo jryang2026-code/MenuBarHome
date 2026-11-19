@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 import { setLanguage } from "../src/core/i18n.js";
+import { MI_ACCOUNTS_INDEX_STORAGE_KEY } from "../src/core/miAccountsStore.js";
 import { defaultSafetyStorage, saveSensorAlertPolicy } from "../src/core/safetyAndHealth.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
@@ -20,6 +21,25 @@ const text = (selector: string): string => el(selector).textContent?.trim() ?? "
 const click = (selector: string): void => el<HTMLButtonElement>(selector).click();
 const escape = (): void => {
   window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+};
+/** Swipe one expanded ordinary reminder the way a browser delivers it: the last element to capture the
+ * pointer receives every later event, so a nested row and its group card must not both own one gesture. */
+const swipeExpandedRow = (row: HTMLElement, group: HTMLElement, pointerId: number): void => {
+  let capture: HTMLElement | null = null;
+  for (const card of [row, group]) {
+    card.setPointerCapture = () => { capture = card; };
+    card.releasePointerCapture = () => { if (capture === card) capture = null; };
+  }
+  const send = (type: string, clientX: number): void => {
+    (capture ?? row).dispatchEvent(new dom.PointerEvent(type, { clientX, clientY: 20, pointerId, bubbles: true }) as unknown as Event);
+  };
+  send("pointerdown", 200);
+  send("pointermove", 380);
+  send("pointerup", 390);
+};
+/** Only the account index proves a secondary Xiaomi login when `miSession` is empty. */
+const useIndexedSecondaryMi = (): void => {
+  localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, JSON.stringify([{ id: "acc-primary" }, { id: "acc-secondary" }]));
 };
 function startDemo(): MenuMijiaWindowsApp {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "zh-Hans" }));
@@ -150,6 +170,36 @@ describe("WP5b-1 · activity alert tiering", () => {
     click("[data-activity-toggle-expand]");
     assert.equal(el("[data-upper-stack]").classList.contains("is-collapsed"), true, "collapse works when nothing forces the stack open");
   });
+  it("swipes one expanded ordinary reminder without dismissing the whole capsule", () => {
+    const host = startDemo();
+    host.settings.panelTheme = "classic";
+    recordSafetyAlerts(host, [offline(1), battery]);
+    host.render();
+    click("[data-ordinary-alerts-toggle]");
+    const row = `[data-upper-card-id="safety:${offline(1).id}"]`;
+    assert.ok(document.querySelector(row), "the expanded row owns its own swipe target");
+    swipeExpandedRow(el<HTMLElement>(row), el<HTMLElement>('[data-upper-card-id="ordinary:alerts"]'), 7);
+    assert.equal(document.querySelector(row), null, "the swiped reminder leaves on its own");
+    assert.ok(document.querySelector(`[data-upper-card-id="safety:${battery.id}"]`), "the sibling reminder survives");
+    assert.ok(document.querySelector('[data-upper-card-id="ordinary:alerts"]'), "one row swipe never dismisses the whole ordinary capsule");
+  });
+  it("returns focus to the ordinary capsule after both expanding and collapsing", () => {
+    const host = startDemo();
+    recordSafetyAlerts(host, [offline(1), battery]);
+    host.render();
+    el<HTMLButtonElement>("[data-ordinary-alerts-toggle]").focus();
+    assert.equal(document.activeElement?.hasAttribute("data-ordinary-alerts-toggle"), true);
+    click("[data-ordinary-alerts-toggle]");
+    assert.equal(el("[data-ordinary-alerts-toggle]").getAttribute("aria-expanded"), "true");
+    assert.equal(document.activeElement?.hasAttribute("data-ordinary-alerts-toggle"), true, "expanding keeps focus on the capsule");
+    // The render that follows a toggle may mount a fresh button; a collapse must land on the live one
+    // instead of inheriting focus from the node it replaced.
+    const expanded = el<HTMLButtonElement>("[data-ordinary-alerts-toggle]");
+    expanded.remove();
+    expanded.click();
+    assert.equal(el("[data-ordinary-alerts-toggle]").getAttribute("aria-expanded"), "false");
+    assert.equal(document.activeElement?.hasAttribute("data-ordinary-alerts-toggle"), true, "collapsing must not drop focus onto <body>");
+  });
 });
 
 describe("WP5b-1 · honest plain-language footer status", () => {
@@ -243,6 +293,46 @@ describe("WP5b-1 · honest plain-language footer status", () => {
     assert.equal(badge("mi"), "degraded");
     assert.equal(text("[data-connection-source='mi'] .cc-conn-state"), "部分米家账号异常 · 部分设备暂无数据");
     assert.equal(badge("ha"), "online");
+  });
+  it("counts an index-only secondary Xiaomi account as a live Mi source", () => {
+    const host = startDemo();
+    useIndexedSecondaryMi();
+    host.settings.connectionMode = "xiaomiCloud";
+    host.settings.miSession = null;
+    host.render();
+    assert.notEqual(resolveConnectionStatus(host).text, "还没连接家居平台", "the footer must not call an indexed secondary login unconnected");
+    assert.equal(resolveConnectionStatus(host).text, "设备同步正常");
+    click("#btn-connection-status");
+    assert.ok(el("[data-connection-source='mi']"), "the Mi source is listed");
+    assert.equal(text("[data-connection-source='mi'] .cc-conn-state"), `已连接 · ${host.devices.length} 台设备`);
+  });
+  it("merges both sources when dual mode is backed only by indexed secondary accounts", () => {
+    const host = startDemo();
+    useIndexedSecondaryMi();
+    host.settings.connectionMode = "xiaomiCloud";
+    host.settings.miSession = null;
+    useDualSource(host, { ha: "connected", mi: "connected" });
+    host.render();
+    assert.equal(resolveConnectionStatus(host).tone, "online");
+    click("#btn-connection-status");
+    assert.equal(badge("mi"), "online");
+    assert.equal(badge("ha"), "online");
+    assert.equal(text("[data-connection-source='mi'] .cc-conn-state"), "已连接");
+  });
+  it("keeps the plain-language status in the footer trigger's accessible name", () => {
+    const host = startDemo();
+    useMi(host);
+    assert.equal(el("#btn-connection-status").getAttribute("aria-label"), "设备同步正常 · 连接详情");
+    assert.equal(text("#btn-connection-status"), "设备同步正常", "the visible label keeps the status copy alone");
+    host.miSessionExpired = true;
+    host.render();
+    assert.match(el("#btn-connection-status").getAttribute("aria-label") ?? "", /米家登录已过期 · 重新扫码/);
+    assert.match(el("#btn-connection-status").getAttribute("aria-label") ?? "", /连接详情/);
+    host.settings.interfaceLanguage = "en";
+    host.settings.miSession = { userId: "90001234", cUserId: "", ssecurity: "x", serviceToken: "y", passToken: "", region: "cn" };
+    host.miSessionExpired = false;
+    host.render();
+    assert.equal(el("#btn-connection-status").getAttribute("aria-label"), "Devices synced · Connection details");
   });
 });
 
