@@ -2284,6 +2284,7 @@ enum UnsupportedDeviceGrouping {
 private struct ScannerResetKey: Equatable {
     let homeBackend: HomeBackend
     let accountIDs: [String]
+    let hasEnabledHASource: Bool
     let serverURL: String
 }
 
@@ -2313,7 +2314,8 @@ private struct AboutSettingsTab: View {
     private var scannerResetKey: ScannerResetKey {
         ScannerResetKey(
             homeBackend: store.homeBackend,
-            accountIDs: store.miAccounts.map(\.id),
+            accountIDs: store.enabledMiAccounts.map(\.id),
+            hasEnabledHASource: store.hasEnabledHASource,
             serverURL: store.serverURLString
         )
     }

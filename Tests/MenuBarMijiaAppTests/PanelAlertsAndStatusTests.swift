@@ -644,5 +644,114 @@ struct PanelAlertsAndStatusTests {
         #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_Tab), contextWithDetail) == .passThrough)
         #expect(PanelKeyRouter.beforeSearch(PanelKeyRouter.Key(code: kVK_DownArrow), contextWithDetail) == .passThrough)
     }
+
+    @Test("Footer connection status handles all-disabled, dual-source Mi-disabled, and partial Mi session expiry calmly")
+    func footerDisabledAndPartialMiAccountStates() {
+        // (a) Single Xiaomi account disabled -> calm turned-off copy + openConnectionSettings, no fault badge
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let accountId = store.miAccounts[0].id
+            store.setMiAccountEnabled(false, id: accountId)
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "连接已停用 · 点此重新启用")
+                #expect(status.badge == .turnedOff)
+                #expect(status.inlineAction == .openConnectionSettings)
+                #expect(status.inlineActionTitle == "去启用")
+                #expect(status.sources.first(where: { $0.id == "mi" })?.badge == .turnedOff)
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "連線已停用 · 點此重新啟用")
+                #expect(status.inlineActionTitle == "去啟用")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Connections turned off · Turn one back on")
+                #expect(status.inlineActionTitle == "Turn On")
+            }
+        }
+
+        // (b) Dual-source with Xiaomi disabled + Home Assistant online -> "设备同步正常" (.online), not stuck on connecting
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            store.serverURLString = "http://192.168.1.10:8123"
+            let accountId = store.miAccounts[0].id
+            store.setMiAccountEnabled(false, id: accountId)
+            store.connectedBackends = [.homeAssistant]
+            store.sourceStatuses = [.homeAssistant: .connected]
+            store.connectionStatus = .connected
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "设备同步正常")
+                #expect(status.badge == .online)
+                #expect(status.inlineAction == nil)
+                #expect(status.sources.first(where: { $0.id == "mi" })?.badge == .turnedOff)
+                #expect(status.sources.first(where: { $0.id == "mi" })?.statusText == "连接已停用")
+                #expect(status.sources.first(where: { $0.id == "ha" })?.badge == .online)
+            }
+        }
+
+        // (c) Two Xiaomi accounts: valid Account A disabled + expired Account B enabled -> .reauthRequired
+        do {
+            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: false, hasHA: false)
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let validA = MiAccount(session: MiSession(
+                userId: "10001", cUserId: "ca", ssecurity: "c2VjcmV0", serviceToken: "tok-a",
+                region: "cn", expiresAt: Self.fixedNow.addingTimeInterval(86_400 * 30)
+            ))
+            let expiredB = MiAccount(session: MiSession(
+                userId: "20002", cUserId: "cb", ssecurity: "c2VjcmV0", serviceToken: "tok-b",
+                region: "de", expiresAt: Self.fixedNow.addingTimeInterval(-3600)
+            ))
+            store.miAccounts = [validA, expiredB]
+            store.registerNewlyConfiguredScope(validA.id, connection: .xiaomiCloud)
+            store.registerNewlyConfiguredScope(expiredB.id, connection: .xiaomiCloud)
+            store.setMiAccountEnabled(false, id: validA.id)
+
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.badge == .reauthRequired)
+                #expect(status.text == "米家登录已过期")
+                #expect(status.inlineAction == .presentMiReauth)
+            }
+        }
+    }
+
+    @Test("DisableConnectionConfirmation list separator and Add Account Traditional Chinese copy match locale rules")
+    func disableConfirmationListSeparatorAndZhHantAddAccountCopy() {
+        let account = MiAccount(session: Self.validMiSession())
+        let confirmation = MiAccountSection.DisableConnectionConfirmation(
+            account: account,
+            itemsToPause: [
+                AffectedReferenceItem(
+                    kind: .waitingTimer, id: "t1", name: "Timer One",
+                    connectionScopes: [account.id], affectedTargetIds: ["d1"],
+                    affectedCapabilities: [.connection(.xiaomiCloud)]
+                ),
+                AffectedReferenceItem(
+                    kind: .automationRule, id: "r1", name: "Rule Two",
+                    connectionScopes: [account.id], affectedTargetIds: ["d1"],
+                    affectedCapabilities: [.connection(.xiaomiCloud)]
+                ),
+            ],
+            generation: 1
+        )
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(confirmation.messageText.contains("Timer One, Rule Two"))
+            #expect(!confirmation.messageText.contains("、"))
+        }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(confirmation.messageText.contains("Timer One、Rule Two"))
+        }
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(L10n.tr("添加账号", "Add Account") == "新增帳號")
+        }
+    }
 }
 }
