@@ -54,6 +54,7 @@ struct ManualControlHazardProfile: Equatable, Sendable {
 /// failovers, account changes, session expiry or screen lock can run before confirmation returns.
 struct ModalDeviceContext: Sendable {
     let controlContextID: UUID
+    let capabilityGeneration: Int
     let deviceId: String
     let backend: HomeBackend
     let accountId: String?
@@ -66,6 +67,7 @@ extension HomeStore {
     func captureModalDeviceContext(for device: SmartDevice) -> ModalDeviceContext {
         ModalDeviceContext(
             controlContextID: controlContextID,
+            capabilityGeneration: capabilityGeneration,
             deviceId: device.id,
             backend: deviceBackend(for: device.id),
             accountId: device.accountId,
@@ -81,7 +83,11 @@ extension HomeStore {
         requireOnline: Bool = false,
         showOfflineToast: Bool = false
     ) -> SmartDevice? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: captured.deviceId) != nil {
+            return nil
+        }
         guard controlContextID == captured.controlContextID,
+              capabilityGeneration == captured.capabilityGeneration,
               let current = devices.first(where: { $0.id == captured.deviceId }),
               deviceBackend(for: captured.deviceId) == captured.backend,
               current.accountId == captured.accountId,
@@ -105,6 +111,8 @@ extension HomeStore {
     /// True while `deviceId` still exists on the exact control context and source captured in `captured`.
     func matchesModalDeviceContext(_ captured: ModalDeviceContext) -> Bool {
         guard controlContextID == captured.controlContextID,
+              capabilityGeneration == captured.capabilityGeneration,
+              capabilityWriteRejection(forDeviceId: captured.deviceId) == nil,
               let current = devices.first(where: { $0.id == captured.deviceId }) else {
             return false
         }
@@ -170,6 +178,9 @@ extension HomeStore {
         requireOnline: Bool = false,
         showOfflineToast: Bool = false
     ) -> (device: SmartDevice, didPresentModal: Bool, context: ModalDeviceContext)? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: initial.id) != nil {
+            return nil
+        }
         let modalContext = captureModalDeviceContext(for: initial)
         let marks: Set<String> = ignoresSwitchLightMark ? [] : SwitchLightMarks.load(defaults: userDefaults)
         let didPresentModal = ManualControlPolicy.requiresConfirmation(
@@ -213,7 +224,8 @@ extension HomeStore {
         if let captured = activeModalContexts.last(where: { $0.deviceId == deviceId }) {
             guard matchesModalDeviceContext(captured) else { return false }
         }
-        guard let current = devices.first(where: { $0.id == deviceId }),
+        guard capabilityWriteRejection(forDeviceId: deviceId) == nil,
+              let current = devices.first(where: { $0.id == deviceId }),
               current.isOnline,
               current.isPrimaryToggleable,
               !isControlBlockedByScreenLock,
@@ -249,6 +261,7 @@ extension HomeStore {
 
     /// Gate for a manual intent, used when a tapped suggestion must keep the same hazard rule as a card.
     func allowManualControl(_ intent: DeviceIntent) -> Bool {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: intent.targetId) != nil { return false }
         guard let device = devices.first(where: { $0.id == intent.targetId }) else { return false }
         return allowManualControl(intent.operation, for: device)
     }

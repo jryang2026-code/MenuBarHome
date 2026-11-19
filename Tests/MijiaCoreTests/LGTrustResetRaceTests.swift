@@ -47,8 +47,10 @@ struct LGTrustResetRaceTests {
     private func makeFixture(withVault: Bool) async throws -> Fixture {
         let vault: CredentialVault? = withVault ? CredentialVault(storage: MemoryVaultStorage().storage) : nil
         let suite = "test.lg-trust-reset-race.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.set(true, forKey: "has_completed_onboarding")
+        // Seed onboarding before the store exists, then reuse the store's own handle: a second
+        // `UserDefaults(suiteName:)` instance reads through `cfprefsd` and can serve a stale cache
+        // under CI load, making the assertions below flake.
+        try #require(UserDefaults(suiteName: suite)).set(true, forKey: "has_completed_onboarding")
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
             defaultsSuiteName: suite,
@@ -58,6 +60,7 @@ struct LGTrustResetRaceTests {
         let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
         #expect(store.updateLGWebOSConfig(initial))
         let client = try #require(store.lgWebOSClient)
+        let defaults = store.userDefaults
         return Fixture(store: store, client: client, defaults: defaults, vault: vault, suite: suite)
     }
 
@@ -90,6 +93,7 @@ struct LGTrustResetRaceTests {
         #expect(clientConfig.clientKey.isEmpty)
         #expect(await f.client.hasConnectionLoopForTesting == false)
         await f.client.shutdown()
+        await f.store.shutdown()
     }
 
     @Test("A reset on the plain-defaults path keeps unrelated edits made mid-reset")
@@ -122,6 +126,7 @@ struct LGTrustResetRaceTests {
         #expect(clientConfig.isEnabled == false)
         #expect(clientConfig.name == "Bedroom TV")
         await f.client.shutdown()
+        await f.store.shutdown()
     }
 
     @Test("A pairing-key callback that arrives while the reset is in flight cannot restore trust")
@@ -145,6 +150,7 @@ struct LGTrustResetRaceTests {
         #expect(LGWebOSConfig.load(from: f.defaults, vault: f.vault).clientKey.isEmpty)
         #expect(await f.client.configForTesting.clientKey.isEmpty)
         await f.client.shutdown()
+        await f.store.shutdown()
     }
 
     @Test("A reset stops and asks for a retry when the TV host changed mid-reset, without restoring the old key")
@@ -175,5 +181,6 @@ struct LGTrustResetRaceTests {
         let notice = try #require(f.store.toastNotice)
         #expect(notice.isError)
         await f.client.shutdown()
+        await f.store.shutdown()
     }
 }

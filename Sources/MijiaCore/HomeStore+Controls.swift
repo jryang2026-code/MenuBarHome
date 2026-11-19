@@ -1293,7 +1293,9 @@ extension HomeStore {
               let facets = deviceFacets[deviceId],
               let index = facets.firstIndex(where: { $0.id == controlId }) else { return }
         let control = facets[index]
-        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+        if let target = control.target,
+           let reason = miotCommandWriteRejection(for: target.referencedEntityId)
+               ?? haCommandWriteRejection(for: target.referencedEntityId) {
             showToast(reason.userMessage, isError: true)
             return
         }
@@ -1371,7 +1373,8 @@ extension HomeStore {
               currentControl.target?.isAction == false,
               didPresentModal || currentControl.value != value,
               let currentCommand = Self.facetCommand(for: currentControl, value: value) else { return }
-        if let reason = miotCommandWriteRejection(for: currentCommand.targetEntityId) {
+        if let reason = miotCommandWriteRejection(for: currentCommand.targetEntityId)
+            ?? haCommandWriteRejection(for: currentCommand.targetEntityId) {
             showToast(reason.userMessage, isError: true)
             return
         }
@@ -1507,7 +1510,9 @@ extension HomeStore {
     public func runFacetAction(_ deviceId: String, controlId: String, portion: Int? = nil) {
         guard let device = controllableDevice(deviceId), device.isOnline,
               let control = deviceFacets[deviceId]?.first(where: { $0.id == controlId }) else { return }
-        if let target = control.target, let reason = miotCommandWriteRejection(for: target.referencedEntityId) {
+        if let target = control.target,
+           let reason = miotCommandWriteRejection(for: target.referencedEntityId)
+               ?? haCommandWriteRejection(for: target.referencedEntityId) {
             showToast(reason.userMessage, isError: true)
             return
         }
@@ -1551,7 +1556,8 @@ extension HomeStore {
         case .property, .haProperty:
             return
         }
-        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId)
+            ?? haCommandWriteRejection(for: command.targetEntityId) {
             showToast(reason.userMessage, isError: true)
             return
         }
@@ -2200,7 +2206,8 @@ extension HomeStore {
            rejectDeviceWriteIfCapabilityDisabled(deviceId: ownerId) != nil {
             return
         }
-        if let reason = miotCommandWriteRejection(for: buttonEntityId) {
+        if let reason = miotCommandWriteRejection(for: buttonEntityId)
+            ?? haCommandWriteRejection(for: buttonEntityId) {
             showToast(reason.userMessage, isError: true)
             return
         }

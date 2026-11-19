@@ -1879,6 +1879,68 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Connection settings render the turned-off state and Turn On Connection button when Home Assistant is disabled")
+    func settingsConnectionDisabledHASnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: true)
+        defer { fixture.restore() }
+        _ = fixture.store.setHAConnectionEnabled(
+            false,
+            pauseConfirmed: true,
+            expectedGeneration: fixture.store.capabilityGeneration
+        )
+        await fixture.store.capabilityTeardownTask?.value
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-disabled-ha-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("Panel renders healthy Devices synced footer in dual-source when Home Assistant is disabled and Xiaomi stays online")
+    func panelDualSourceHADisabledMiOnlineSnapshot() async throws {
+        let fixture = try await SnapshotFixture(
+            miSession: MiSession(
+                userId: "45123481",
+                cUserId: "c",
+                ssecurity: Data(repeating: 7, count: 16).base64EncodedString(),
+                serviceToken: "tok"
+            ),
+            configuredHASource: true
+        )
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+        fixture.store.serverURLString = "http://192.168.1.10:8123"
+        let accountId = try #require(fixture.store.miAccounts.first?.id)
+        _ = fixture.store.setHAConnectionEnabled(
+            false,
+            pauseConfirmed: true,
+            expectedGeneration: fixture.store.capabilityGeneration
+        )
+        await fixture.store.capabilityTeardownTask?.value
+        fixture.store.miAccountStatuses = [accountId: .connected]
+        fixture.store.connectedBackends = [.xiaomiCloud]
+        fixture.store.sourceStatuses = [.xiaomiCloud: .connected]
+        fixture.store.connectionStatus = .connected
+        #expect(fixture.store.panelHealth == .ok)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-dual-source-ha-disabled-mi-online-zh-light")
+            )
+        }
+    }
+
     @Test("Connection settings render independent row enablement when multiple Xiaomi accounts have mixed enabled state")
     func settingsConnectionMultiMiMixedEnabledSnapshots() async throws {
         let fixture = try await SnapshotFixture(

@@ -1222,6 +1222,17 @@ enum HAConnectionSaveGuard {
         anchor.map(collapsedAnchors.contains) ?? false
     }
 
+    static func showsConnectionStatusHeader(hasHASource: Bool) -> Bool {
+        hasHASource
+    }
+
+    static func saveButtonTitle(hasHASource: Bool, isHAConnectionEnabled: Bool) -> String {
+        if hasHASource && !isHAConnectionEnabled {
+            return L10n.tr("保存配置（保持停用）", "Save Settings (Keep Turned Off)")
+        }
+        return L10n.tr("保存并重新连接", "Save & Reconnect")
+    }
+
     enum Decision: Equatable {
         case proceed(token: String, clearUnavailableFlag: Bool)
         case blockedKeychainUnavailable
@@ -1338,6 +1349,27 @@ enum ConnectionSettingsDisclosure {
     }
 }
 
+struct HADisableConnectionConfirmation: Equatable {
+    let itemsToPause: [AffectedReferenceItem]
+    let generation: Int
+
+    /// Exact list shown in the confirmation sheet; M3 re-previews if the live set changes before submit.
+    var pauseItemKeys: Set<String> { Set(itemsToPause.map(\.pauseKey)) }
+
+    var title: String { L10n.tr("停用 Home Assistant 连接？", "Turn off Home Assistant connection?") }
+    var confirmButtonTitle: String { L10n.tr("暂停这些项并关闭", "Pause These & Turn Off") }
+    var messageText: String {
+        let sep = L10n.isEnglish ? ", " : "、"
+        let names = itemsToPause.prefix(6).map(\.name).joined(separator: sep)
+        let suffix = itemsToPause.count > 6 ? "…" : ""
+        return L10n.format(
+            "停用 Home Assistant 连接后，以下受影响的定时、自动化或快捷动作将暂停保留，重新启用连接后自动复验恢复：%@%@",
+            "Turning off the Home Assistant connection will pause and keep the following affected timers, automations, or quick actions until you turn it back on: %@%@",
+            names, suffix
+        )
+    }
+}
+
 private struct ConnectionSettingsTab: View {
     let store: HomeStore
     @Binding var advancedConnections: ConnectionSettingsDisclosure.State
@@ -1348,6 +1380,7 @@ private struct ConnectionSettingsTab: View {
     /// #143: Home Assistant is the second path, so its form stays folded until it is needed.
     @State private var haExpanded = false
     @State private var addMiAccountTrigger = 0
+    @State private var pendingHADisableConfirmation: HADisableConnectionConfirmation?
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
     /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
@@ -1388,6 +1421,61 @@ private struct ConnectionSettingsTab: View {
         return true
     }
 
+    private func requestDisableHAConnection() {
+        let generation = store.capabilityGeneration
+        let verdict = store.previewSetHAConnectionEnabled(false)
+        switch verdict.disposition {
+        case .allowed:
+            let applied = store.setHAConnectionEnabled(false, expectedGeneration: generation)
+            if applied.disposition == .blocked {
+                reportBlockedHADisable(applied)
+            } else {
+                presentHADisableConfirmationIfStillNeeded(applied)
+            }
+        case .requiresPauseConfirmation:
+            pendingHADisableConfirmation = HADisableConnectionConfirmation(
+                itemsToPause: verdict.itemsToPause,
+                generation: generation
+            )
+        case .blocked:
+            reportBlockedHADisable(verdict)
+        }
+    }
+
+    private func presentHADisableConfirmationIfStillNeeded(_ verdict: CapabilityDeactivationVerdict) {
+        guard verdict.disposition == .requiresPauseConfirmation,
+              store.isHAConnectionEnabled else { return }
+        let fresh = HADisableConnectionConfirmation(
+            itemsToPause: verdict.itemsToPause,
+            generation: store.capabilityGeneration
+        )
+        Task { @MainActor in pendingHADisableConfirmation = fresh }
+    }
+
+    private func reportBlockedHADisable(_ verdict: CapabilityDeactivationVerdict) {
+        let kinds = Set(verdict.blockingReasons.map(\.kind))
+        let message: String
+        if kinds.contains(.corruptedReferenceStore) {
+            message = L10n.tr(
+                "无法停用该连接：本地保存的定时、自动化或布局数据已损坏。请先在对应页面修复或删除这些数据后重试",
+                "Could not turn off this connection: saved timers, automations or layout data are damaged. Fix or delete them in their pages and try again"
+            )
+        } else if kinds.contains(.unresolvedReferenceOwnership) {
+            message = L10n.tr(
+                "无法停用该连接：有定时或自动化无法确认目标属于哪个连接。请先在这些项目里重新选择目标",
+                "Could not turn off this connection: a timer or automation has targets that cannot be attributed to a connection. Reselect their targets first"
+            )
+        } else if kinds.contains(.stalePreviewGeneration) {
+            message = L10n.tr(
+                "连接状态刚刚发生变化，请再试一次",
+                "The connection state just changed; try again"
+            )
+        } else {
+            message = L10n.tr("无法停用该连接", "Could not turn off this connection")
+        }
+        store.showToast(message, isError: true)
+    }
+
     private var showsHomeAssistantForm: Bool {
         if haExpanded || store.hasHASource { return true }
         return HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight)
@@ -1395,6 +1483,7 @@ private struct ConnectionSettingsTab: View {
 
     var body: some View {
         let _ = store.effectiveLanguage
+        let _ = store.capabilityGeneration
         VStack(alignment: .leading, spacing: 16) {
             if !store.hasCompletedOnboarding {
                 ContinueOnboardingSection(store: store)
@@ -1462,6 +1551,10 @@ private struct ConnectionSettingsTab: View {
 
                 if showsHomeAssistantForm {
                     SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
+                        if HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: store.hasHASource) {
+                            haConnectionStatusHeader
+                        }
+
                         homeAssistantForm
 
                         HStack {
@@ -1477,7 +1570,7 @@ private struct ConnectionSettingsTab: View {
                                 }
                             }
                             .buttonStyle(PillActionButtonStyle())
-                            .disabled(store.isDiscoveringHA)
+                            .disabled(store.isDiscoveringHA || !store.isHAConnectionEnabled)
                             .settingsRow(anchor: .haDiscovery)
 
                             Button(L10n.tr("填入默认地址", "Use Default URL")) {
@@ -1506,7 +1599,12 @@ private struct ConnectionSettingsTab: View {
                                 .buttonStyle(PillActionButtonStyle())
                             }
 
-                            Button(L10n.tr("保存并重新连接", "Save & Reconnect")) {
+                            Button(
+                                HAConnectionSaveGuard.saveButtonTitle(
+                                    hasHASource: store.hasHASource,
+                                    isHAConnectionEnabled: store.isHAConnectionEnabled
+                                )
+                            ) {
                                 saveHomeAssistant()
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
@@ -1594,7 +1692,10 @@ private struct ConnectionSettingsTab: View {
             }
         }
         .onChange(of: haIsDirty) { _, _ in registerUnsavedForm() }
-        .onDisappear { unsaved?.unregister("home-assistant") }
+        .onDisappear {
+            pendingHADisableConfirmation = nil
+            unsaved?.unregister("home-assistant")
+        }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
             advancedConnections.expandForHighlightIfNeeded(highlight)
@@ -1627,6 +1728,84 @@ private struct ConnectionSettingsTab: View {
                         haBaselineURL = urlDraft
                     }
                 }
+            }
+        }
+        .alert(
+            pendingHADisableConfirmation?.title ?? "",
+            isPresented: Binding(
+                get: { pendingHADisableConfirmation != nil },
+                set: { if !$0 { pendingHADisableConfirmation = nil } }
+            ),
+            presenting: pendingHADisableConfirmation
+        ) { confirmation in
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) {
+                pendingHADisableConfirmation = nil
+            }
+            Button(confirmation.confirmButtonTitle) {
+                pendingHADisableConfirmation = nil
+                let verdict = store.setHAConnectionEnabled(
+                    false,
+                    pauseConfirmed: true,
+                    expectedGeneration: confirmation.generation,
+                    expectedPauseItemKeys: confirmation.pauseItemKeys
+                )
+                if verdict.disposition == .blocked {
+                    reportBlockedHADisable(verdict)
+                } else {
+                    presentHADisableConfirmationIfStillNeeded(verdict)
+                }
+            }
+        } message: { confirmation in
+            Text(confirmation.messageText)
+        }
+    }
+
+    @ViewBuilder
+    private var haConnectionStatusHeader: some View {
+        let isDisabling = store.isDisablingHAConnection
+        let isEnabled = store.isHAConnectionEnabled
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(systemName: isDisabling
+                      ? "ellipsis.circle.fill"
+                      : (!isEnabled ? "pause.circle.fill" : (disconnectReason != nil ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(isDisabling || !isEnabled ? DesignTokens.secondaryText : (disconnectReason != nil ? .orange : .green))
+                Text(isDisabling
+                     ? L10n.tr("Home Assistant 连接停止中…", "Turning off Home Assistant connection…")
+                     : (!isEnabled
+                        ? L10n.tr("Home Assistant 连接已停用", "Home Assistant connection turned off")
+                        : L10n.tr("已配置 Home Assistant 连接", "Home Assistant connection configured")))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                Spacer()
+                Button(isDisabling
+                       ? L10n.tr("停止中…", "Turning Off…")
+                       : (isEnabled ? L10n.tr("停用连接", "Turn Off Connection") : L10n.tr("启用连接", "Turn On Connection"))) {
+                    if isEnabled {
+                        requestDisableHAConnection()
+                    } else {
+                        _ = store.setHAConnectionEnabled(true)
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: !isEnabled && !isDisabling, tintColor: .accentColor))
+                .disabled(isDisabling)
+            }
+            if isDisabling {
+                Text(L10n.tr(
+                    "正在关闭实时连接并回收后台任务，完成后将保持停用。",
+                    "Closing the live connection and cleaning up background tasks; it will stay turned off once finished."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            } else if !isEnabled {
+                Text(L10n.tr(
+                    "已暂停同步与控制；保存的地址、连接钥匙、明文授权与本地历史均已保留。",
+                    "Sync and control are paused; your saved address, access token, plaintext approval and local history are kept."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -1757,8 +1936,12 @@ private struct ConnectionSettingsTab: View {
     }
 
     private var disconnectReason: String? {
-        guard store.homeBackend != .demo,
-              case .disconnected(let reason) = store.connectionStatus else {
+        guard store.homeBackend != .demo, store.isHAConnectionEnabled else {
+            return nil
+        }
+        let haStatus = store.sourceStatuses[.homeAssistant]
+            ?? (store.hasEnabledMiSource ? nil : store.connectionStatus)
+        guard case .disconnected(let reason) = haStatus else {
             return nil
         }
         let trimmed = reason.trimmingCharacters(in: .whitespacesAndNewlines)
