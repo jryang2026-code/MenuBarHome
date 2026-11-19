@@ -137,13 +137,14 @@ struct ActivityStackView<Content: View>: View {
                     Image(systemName: "xmark")
                         .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
                         .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
+                        .frame(minWidth: DesignTokens.minHitTarget, minHeight: DesignTokens.minHitTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .padding(.top, 6)
-                .padding(.trailing, 6)
+                .padding(.top, 4)
+                .padding(.trailing, 4)
                 .accessibilityLabel(Text(L10n.tr("清除", "Dismiss")))
+                .panelHelp(L10n.tr("清除", "Dismiss"))
             }
         }
         .themedAdaptiveGlass(theme, in: shape)
@@ -208,6 +209,7 @@ struct ActivityStackView<Content: View>: View {
     @ViewBuilder
     private func ordinaryReminderSection(_ ordinary: [PanelActivity]) -> some View {
         let summaryText = ActivityStackPolicy.ordinaryCapsuleSummary(labels: ordinary.map(label))
+        let clearLabel = ActivityStackPolicy.ordinaryClearAccessibilityLabel()
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Button {
@@ -241,11 +243,12 @@ struct ActivityStackView<Content: View>: View {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.micro, weight: .bold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 22, height: 22)
+                            .frame(minWidth: DesignTokens.minHitTarget, minHeight: DesignTokens.minHitTarget)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(Text(ActivityStackPolicy.ordinaryClearAccessibilityLabel()))
+                    .accessibilityLabel(Text(clearLabel))
+                    .panelHelp(clearLabel)
                 }
             }
             .padding(.horizontal, 12)

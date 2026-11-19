@@ -126,6 +126,146 @@ struct SnapshotTests {
         )
     }
 
+    @Test("All-view >8 online devices render PanelLongTailBar with expand count and room browse in both themes")
+    func panelLongTailBarSnapshots() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        let rooms = [
+            RoomArea(id: "living", name: "客厅", sortOrder: 0),
+            RoomArea(id: "bedroom", name: "主卧", sortOrder: 1),
+            RoomArea(id: "study", name: "书房", sortOrder: 2),
+        ]
+        let devices: [SmartDevice] = [
+            SmartDevice(id: "lt_1", name: "客厅主灯", roomId: "living", roomName: "客厅", model: "yeelink.light.ceiling", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_1", isOn: true, brightnessPercent: 80))),
+            SmartDevice(id: "lt_2", name: "沙发落地灯", roomId: "living", roomName: "客厅", model: "yeelink.light.lamp4", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_2", isOn: true, brightnessPercent: 60))),
+            SmartDevice(id: "lt_3", name: "电视插座", roomId: "living", roomName: "客厅", model: "chuangmi.plug.v1", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.lt_3", isOn: true))),
+            SmartDevice(id: "lt_4", name: "加湿器插座", roomId: "living", roomName: "客厅", model: "chuangmi.plug.v1", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.lt_4", isOn: false))),
+            SmartDevice(id: "lt_5", name: "主卧吸顶灯", roomId: "bedroom", roomName: "主卧", model: "yeelink.light.ceiling", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_5", isOn: false, brightnessPercent: 50))),
+            SmartDevice(id: "lt_6", name: "左侧床头灯", roomId: "bedroom", roomName: "主卧", model: "yeelink.light.lamp4", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_6", isOn: false, brightnessPercent: 40))),
+            SmartDevice(id: "lt_7", name: "右侧床头灯", roomId: "bedroom", roomName: "主卧", model: "yeelink.light.lamp4", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_7", isOn: false, brightnessPercent: 40))),
+            SmartDevice(id: "lt_8", name: "书房台灯", roomId: "study", roomName: "书房", model: "yeelink.light.lamp4", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_8", isOn: true, brightnessPercent: 90))),
+            SmartDevice(id: "lt_9", name: "屏幕挂灯", roomId: "study", roomName: "书房", model: "yeelink.light.lamp4", isOnline: true, kind: .light(LightSpec(entityId: "light.lt_9", isOn: false, brightnessPercent: 70))),
+            SmartDevice(id: "lt_10", name: "桌面排插", roomId: "study", roomName: "书房", model: "chuangmi.plug.v1", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.lt_10", isOn: false))),
+        ]
+        fixture.store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(rooms: rooms, devices: devices, scenes: [])))
+        let favIds = ["lt_1", "lt_2", "lt_3", "lt_4"]
+        fixture.store.favoriteDeviceIds = Set(favIds)
+        fixture.store.favoriteOrder = favIds
+
+        #expect(ClassicControlCenterPanel(store: fixture.store).classicDeviceLayoutState.showsLongTailControl)
+        let liquidPanel = ControlCenterPanel(store: fixture.store)
+        #expect(liquidPanel.longTailBarState(for: liquidPanel.deviceStacks).shows)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-long-tail-bar-zh-light")
+            )
+        }
+    }
+
+    @Test("Mixed online and offline home renders collapsed and expanded bottom offline drawer in both themes", arguments: [
+        (false, "panel-offline-drawer-collapsed-zh-light"),
+        (true, "panel-offline-drawer-expanded-zh-light"),
+    ])
+    func panelOfflineDrawerSnapshots(expanded: Bool, snapshotName: String) async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        let rooms = [
+            RoomArea(id: "living", name: "客厅", sortOrder: 0),
+            RoomArea(id: "study", name: "书房", sortOrder: 1),
+        ]
+        let devices: [SmartDevice] = [
+            SmartDevice(id: "on_1", name: "客厅主灯", roomId: "living", roomName: "客厅", model: "yeelink.light.ceiling", isOnline: true, kind: .light(LightSpec(entityId: "light.on_1", isOn: true, brightnessPercent: 80))),
+            SmartDevice(id: "on_2", name: "桌面插座", roomId: "study", roomName: "书房", model: "chuangmi.plug.v1", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.on_2", isOn: true))),
+            SmartDevice(id: "off_1", name: "断电台灯", roomId: "study", roomName: "书房", model: "yeelink.light.lamp4", isOnline: false, kind: .light(LightSpec(entityId: "light.off_1", isOn: false, brightnessPercent: 50))),
+            SmartDevice(id: "off_2", name: "阳台插座", roomId: "living", roomName: "客厅", model: "chuangmi.plug.v1", isOnline: false, kind: .plug(PlugSpec(switchEntityId: "switch.off_2", isOn: false))),
+        ]
+        fixture.store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(rooms: rooms, devices: devices, scenes: [])))
+        let favIds = ["on_1", "on_2"]
+        fixture.store.favoriteDeviceIds = Set(favIds)
+        fixture.store.favoriteOrder = favIds
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store, initialOfflineExpanded: expanded)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, snapshotName)
+            )
+        }
+    }
+
+    @Test("Compact two-column split tiles render split, primary-only, read-only, and hero tile modes in both themes")
+    func panelSplitTileModesSnapshots() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+        #expect(fixture.store.isCompactGridMode)
+
+        let rooms = [
+            RoomArea(id: "living", name: "客厅", sortOrder: 0),
+            RoomArea(id: "study", name: "书房", sortOrder: 1),
+        ]
+        let splitLight = SmartDevice(
+            id: "mode_split_light", name: "客厅吸顶灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.ceiling", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.mode_split", isOn: true, brightnessPercent: 80, colorTempKelvin: 4000))
+        )
+        let splitCam = SmartDevice(
+            id: "mode_split_cam", name: "门厅摄像机", roomId: "living", roomName: "客厅",
+            model: "chuangmi.camera.ipc019", isOnline: true,
+            kind: .camera(CameraSpec(entityId: "camera.mode_cam", isOn: true, nightShot: "Auto", availableNightShots: ["Off", "On", "Auto"], streamEntityId: "camera.mode_cam"))
+        )
+        let primaryPlug = SmartDevice(
+            id: "mode_primary_plug", name: "桌面插座", roomId: "study", roomName: "书房",
+            model: "chuangmi.plug.v1", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.mode_plug", isOn: true))
+        )
+        let readOnlyValve = SmartDevice(
+            id: "mode_readonly_valve", name: "总水阀", roomId: "living", roomName: "客厅",
+            model: "xiaomi.valve.v1", isOnline: true,
+            kind: .valve(ValveSpec(entityId: "valve.mode_ro", isOpen: true, openWritable: false, closeWritable: false))
+        )
+        let heroLight = SmartDevice(
+            id: "mode_hero_light", name: "书房氛围灯", roomId: "study", roomName: "书房",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.mode_hero", isOn: true, brightnessPercent: 65, colorTempKelvin: 3200))
+        )
+        let devices = [splitLight, splitCam, primaryPlug, readOnlyValve, heroLight]
+        fixture.store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(rooms: rooms, devices: devices, scenes: [])))
+        let allIds = devices.map(\.id)
+        fixture.store.favoriteDeviceIds = Set(allIds)
+        fixture.store.favoriteOrder = allIds
+        PanelLayoutStore.shared(for: fixture.store.userDefaults).setSize(.hero, of: heroLight.id, scope: "all")
+
+        #expect(DeviceTileActionLayout.resolve(for: splitLight, store: fixture.store) == .split(primary: .togglePower))
+        #expect(DeviceTileActionLayout.resolve(for: splitCam, store: fixture.store) == .split(primary: .cameraLive))
+        #expect(DeviceTileActionLayout.resolve(for: primaryPlug, store: fixture.store) == .primaryOnly(.togglePower))
+        #expect(DeviceTileActionLayout.resolve(for: readOnlyValve, store: fixture.store) == .readOnly)
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-split-tile-modes-zh-light")
+            )
+        }
+    }
+
     @Test("A panel with no configured source names that instead of connected")
     func panelNoSourceSnapshot() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)
@@ -1858,7 +1998,7 @@ struct SnapshotTests {
         let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         for language in [AppLanguage.zhHans, .en] {
-            try L10n.$overrideLanguage.withValue(language) {
+            L10n.$overrideLanguage.withValue(language) {
             fixture.store.appLanguagePreference = AppLanguagePreference(language)
             for scheme in [ColorScheme.light, .dark] {
                 assertRendered(
@@ -2100,7 +2240,7 @@ struct SnapshotTests {
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
     func cameraAudioHUDStates() async throws {
-        try L10n.$overrideLanguage.withValue(.zhHans) {
+        L10n.$overrideLanguage.withValue(.zhHans) {
         let states: [(CameraLiveAudioStatus, String)] = [
             (.videoOnly, "video-only"),
             (.audio(isMuted: true), "muted"),
@@ -2276,7 +2416,7 @@ struct SnapshotTests {
             defer {
                 controller.configurePTZPreview(deviceId: nil, binding: nil, stream: nil, notice: nil, ready: false)
             }
-            try L10n.$overrideLanguage.withValue(.zhHans) {
+            L10n.$overrideLanguage.withValue(.zhHans) {
                 assertRendered(
                     snapshotReady(CameraLivePanelView(controller: controller, store: fixture.store), scheme: .dark),
                     size: size,
@@ -2295,20 +2435,23 @@ struct SnapshotTests {
         _ theme: PanelTheme,
         store: HomeStore,
         initialActivitiesExpanded: Bool = false,
-        initialTransientExpanded: Bool = false
+        initialTransientExpanded: Bool = false,
+        initialOfflineExpanded: Bool = false
     ) -> AnyView {
         switch theme {
         case .classic:
             return AnyView(ClassicControlCenterPanel(
                 store: store,
                 initialActivitiesExpanded: initialActivitiesExpanded,
-                initialTransientExpanded: initialTransientExpanded
+                initialTransientExpanded: initialTransientExpanded,
+                initialOfflineExpanded: initialOfflineExpanded
             ))
         case .liquidGlass:
             return AnyView(ControlCenterPanel(
                 store: store,
                 initialActivitiesExpanded: initialActivitiesExpanded,
-                initialTransientExpanded: initialTransientExpanded
+                initialTransientExpanded: initialTransientExpanded,
+                initialOfflineExpanded: initialOfflineExpanded
             ))
         }
     }

@@ -622,6 +622,10 @@ extension HomeStore {
                 syncIndexedDevices(from: devices)
             }
             adoptPairedDevicePreferences(snapshot.preferenceAdoptions)
+            if let expandedId = expandedDeviceId,
+               devices.first(where: { $0.id == expandedId })?.isOnline != true {
+                expandedDeviceId = nil
+            }
             reconcileReenabledScopesAfterSnapshot(snapshot)
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()

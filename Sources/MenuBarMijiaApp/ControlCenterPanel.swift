@@ -45,6 +45,8 @@ public struct ControlCenterPanel: View {
     @AppStorage(PanelGrouping.storageKey) var groupingRaw: String = PanelGrouping.room.rawValue
     /// Stacks opened this session; Notification Center also forgets an opened group on close.
     @State var expandedStacks: Set<String> = []
+    /// Frozen habit/active priority snapshot for the current open session; cleared on panel close.
+    @State var prioritySnapshot: PanelPrioritySnapshot?
     /// The search field is folded behind the header's magnifier until asked for.
     @State private var isSearchRevealed = false
     /// Expansion ends on panel close, backend change, or an empty activity feed.
@@ -72,9 +74,15 @@ public struct ControlCenterPanel: View {
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
+    public init(
+        store: HomeStore,
+        initialActivitiesExpanded: Bool = false,
+        initialTransientExpanded: Bool = false,
+        initialOfflineExpanded: Bool = false
+    ) {
         self.store = store
         _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        _expandedStacks = State(initialValue: initialOfflineExpanded ? [PanelDeviceOrganizer.offlineSectionId] : [])
         self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
@@ -92,6 +100,7 @@ public struct ControlCenterPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
+                prioritySnapshot = .capture(from: store)
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
@@ -105,6 +114,8 @@ public struct ControlCenterPanel: View {
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
             .onChange(of: store.homeBackend) { _, _ in
                 activitiesExpanded = false
+                expandedStacks = []
+                prioritySnapshot = .capture(from: store)
                 PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             .onChange(of: store.panelActivities.count) { _, _ in
@@ -192,6 +203,7 @@ public struct ControlCenterPanel: View {
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
         // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
         .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
+        .onChange(of: hasVisibleOfflineDevices) { _, hasOffline in if !hasOffline { resetOfflineExpansion() } }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -224,9 +236,18 @@ public struct ControlCenterPanel: View {
         }
     }
 
+    private var hasVisibleOfflineDevices: Bool {
+        store.visibleDevices.contains { !$0.isOnline }
+    }
+
+    private func resetOfflineExpansion() {
+        expandedStacks.remove(PanelDeviceOrganizer.offlineSectionId)
+    }
+
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
+        prioritySnapshot = .capture(from: store)
     }
 
     private func handlePanelDidHide() {
@@ -235,6 +256,7 @@ public struct ControlCenterPanel: View {
         dragLocation = nil
         activeResize = nil
         lastSwapTarget = nil
+        prioritySnapshot = nil
         search.end()
         isSearchFieldFocused = false
         isSearchRevealed = false
@@ -260,9 +282,14 @@ public struct ControlCenterPanel: View {
     private func handleHomeContextChange() {
         layoutUI.commitRoomOrderIfNeeded()
         layoutUI.dismissActivePrompt()
+        expandedStacks = []
+        prioritySnapshot = .capture(from: store)
     }
 
     private func pruneStalePrompts() {
+        if let snapshot = prioritySnapshot {
+            prioritySnapshot = snapshot.freezingNewDevices(from: store)
+        }
         layoutUI.pruneStalePrompts(
             deviceIds: Set(store.devices.map(\.id)),
             groupIds: Set(groups.map(\.id)),
@@ -356,7 +383,7 @@ public struct ControlCenterPanel: View {
 
                 footerBar
                     .padding(.horizontal, Self.columnInset + 2)
-                    .padding(.vertical, 9)
+                    .padding(.vertical, 6)
             }
         }
         .foldOrigin { $0.panelMinY = $1 }
@@ -421,6 +448,10 @@ public struct ControlCenterPanel: View {
     private var deviceColumn: some View {
         ScrollViewReader { scrollProxy in
             let stacks = deviceStacks
+            let onlineStacks = stacks.filter { $0.source != .offline }
+            let offlineStacks = stacks.filter { $0.source == .offline }
+            let overviewFolded = overviewFoldedStackIds(in: stacks)
+            let longTailState = longTailBarState(for: stacks)
             // The one order both the card badges and the digit/navigation shortcuts read: only cards
             // that are actually drawn take a number, in the order they are drawn.
             let quickIndex = search.isSearching
@@ -443,9 +474,40 @@ public struct ControlCenterPanel: View {
                     } else if store.visibleDevices.isEmpty {
                         emptyStateView
                     } else {
-                        ForEach(stacks) { stack in
-                            stackView(stack, totalStacks: stacks.count, quickIndexMap: quickIndexBadges)
-                                .transition(.opacity)
+                        ForEach(onlineStacks) { stack in
+                            stackView(
+                                stack,
+                                totalStacks: stacks.count,
+                                overviewFolded: overviewFolded,
+                                quickIndexMap: quickIndexBadges
+                            )
+                            .transition(.opacity)
+                        }
+
+                        if longTailState.shows {
+                            PanelLongTailBar(
+                                hiddenCount: longTailState.hiddenCount,
+                                isExpanded: longTailState.isExpanded,
+                                rooms: roomBrowseOptions,
+                                theme: .liquidGlass,
+                                onToggleExpand: { toggleLongTail(in: stacks) },
+                                onSelectRoom: { roomId in
+                                    withAnimation(AppleMotion.snappySpring) {
+                                        _ = store.selectRoom(roomId)
+                                    }
+                                }
+                            )
+                            .transition(.opacity)
+                        }
+
+                        ForEach(offlineStacks) { stack in
+                            stackView(
+                                stack,
+                                totalStacks: stacks.count,
+                                overviewFolded: overviewFolded,
+                                quickIndexMap: quickIndexBadges
+                            )
+                            .transition(.opacity)
                         }
                     }
                 }
@@ -512,11 +574,12 @@ public struct ControlCenterPanel: View {
     private var omnibar: some View {
         let shape = Capsule(style: .continuous)
         let listening = speech.isListening
-        return HStack(spacing: 7) {
+        return HStack(spacing: 4) {
             OmnibarLeadingSymbol(
                 listening: listening,
                 isThinking: store.assistantState == .thinking
             )
+            .padding(.trailing, 3)
 
             TextField(
                 omnibarPlaceholder,
@@ -544,9 +607,12 @@ public struct ControlCenterPanel: View {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(L10n.tr("清空输入", "Clear input")))
+                .panelHelp(L10n.tr("清空输入", "Clear input"))
             }
 
             if store.assistantState == .thinking {
@@ -554,10 +620,10 @@ public struct ControlCenterPanel: View {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.7)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 } else {
                     Color.clear
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                 }
             } else if store.enableVoiceInput {
                 Button {
@@ -568,19 +634,20 @@ public struct ControlCenterPanel: View {
                     Image(systemName: listening ? "stop.circle.fill" : "mic.fill")
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                         .foregroundStyle(listening ? Color.red : Color.accentColor)
-                        .frame(width: 20, height: 18)
+                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(Text(listening
                     ? L10n.tr("停止聆听", "Stop listening")
                     : L10n.tr("语音输入", "Voice input")))
-                .help(listening
+                .panelHelp(listening
                     ? L10n.tr("停止聆听并执行", "Stop listening and run")
                     : L10n.tr("语音输入（快捷键 V，或长按 ⌥M / 菜单栏图标）", "Voice input (Shortcut V, or hold ⌥M / menu bar icon)"))
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, 12)
+        .padding(.trailing, 4)
         .frame(height: 32)
         .adaptiveGlass(in: shape, interactive: true)
         .overlay(

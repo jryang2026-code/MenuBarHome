@@ -38,6 +38,7 @@ struct ClassicSensorCardView: View {
     }
 
     private var isExpanded: Bool {
+        guard device.isOnline else { return false }
         if forceExpanded { return true }
         return store?.expandedDeviceId == device.id
     }
@@ -64,7 +65,7 @@ struct ClassicSensorCardView: View {
         .frame(minHeight: (isCompact && !isExpanded) ? 50 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isEditingLayout, let store else { return }
+            guard !isEditingLayout, device.isOnline, let store else { return }
             withAnimation(AppleMotion.snappySpring) {
                 store.toggleExpanded(device.id)
             }
@@ -110,8 +111,8 @@ struct ClassicSensorCardView: View {
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                     .foregroundStyle(tempColor)
                 Text(displayName)
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .foregroundStyle(muted)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(fg)
                     .lineLimit(1)
                 Spacer(minLength: 2)
                 comfortChip

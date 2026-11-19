@@ -1,3 +1,4 @@
+import Testing
 @testable import MijiaCore
 
 extension HomeStore {
@@ -6,4 +7,26 @@ extension HomeStore {
     func waitForTestSnapshot() async throws {
         try await waitForInitialSnapshot(timeout: .seconds(30))
     }
+}
+
+/// Polls `condition` until it is true or `timeout` passes. The deadline is the only bound.
+@MainActor
+func waitUntil(
+    timeout: Duration = .seconds(15),
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column,
+    _ condition: @MainActor () async -> Bool
+) async {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await condition() { return }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    if await condition() { return }
+    Issue.record(
+        "condition was not met before \(timeout)",
+        sourceLocation: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+    )
 }
