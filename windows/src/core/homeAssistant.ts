@@ -2,6 +2,7 @@ import {
   HaBlockedRequestError,
   acquireHaTransportLease,
   haConnectionScope,
+  invokeHaWithLease,
 } from "./haTransportGate.js";
 import {
   auxiliaryEntitiesForCover,
@@ -1514,12 +1515,12 @@ export class HomeAssistantClient {
     },
   ) {}
   async snapshot(): Promise<SynthesizedHome> {
-    const lease = acquireHaTransportLease(this.baseURL);
+    const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
     if (!lease) {
       throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
     }
     try {
-      const raw = await this.invoke<unknown>("ha_snapshot", {
+      const raw = await invokeHaWithLease<unknown>(lease, this.invoke, "ha_snapshot", {
         baseUrl: this.baseURL,
         token: this.token,
       });
@@ -1533,12 +1534,12 @@ export class HomeAssistantClient {
     }
   }
   async execute(command: DeviceCommand): Promise<void> {
-    const lease = acquireHaTransportLease(this.baseURL);
+    const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
     if (!lease) {
       throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
     }
     try {
-      await this.invoke("ha_execute", {
+      await invokeHaWithLease(lease, this.invoke, "ha_execute", {
         baseUrl: this.baseURL,
         token: this.token,
         command: haServiceCall(command),

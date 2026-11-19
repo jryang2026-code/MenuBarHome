@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::future::Future;
+use std::net::{Shutdown, TcpStream};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::{OwnedRwLockReadGuard, RwLock};
+use tokio_util::sync::CancellationToken;
 use tungstenite::{client_tls, stream::MaybeTlsStream, Message, WebSocket};
 
 #[derive(Serialize)]
@@ -19,6 +23,182 @@ pub struct HaServiceCall {
     service: String,
     entity_id: String,
     data: serde_json::Map<String, Value>,
+}
+
+const STALE: &str = "Home Assistant connection is disabled or has changed";
+const CANCELLED: &str = "Home Assistant request cancelled";
+
+#[derive(Default)]
+pub(crate) struct HaConnections(Mutex<HaRegistration>);
+
+#[derive(Default)]
+struct HaRegistration {
+    generation: u64,
+    current: Option<Arc<HaConnection>>,
+}
+
+struct HaConnection {
+    generation: u64,
+    scope: String,
+    cancel: CancellationToken,
+    tasks: Arc<RwLock<()>>,
+}
+
+struct HaTask {
+    cancel: CancellationToken,
+    _running: OwnedRwLockReadGuard<()>,
+}
+
+impl HaConnections {
+    async fn configure(&self, scope: Option<String>, generation: u64) -> Result<(), String> {
+        let retiring = {
+            let mut state = self.0.lock().map_err(|_| STALE)?;
+            if generation <= state.generation {
+                return Err(STALE.into());
+            }
+            state.generation = generation;
+            if let Some(current) = &state.current {
+                current.cancel.cancel();
+            }
+            state.current.clone()
+        };
+        if let Some(connection) = retiring {
+            // Keep the retiring connection registered until its last task exits.
+            // Concurrent configurations wait on the same connection.
+            let _drained = connection.tasks.write().await;
+        }
+        let mut state = self.0.lock().map_err(|_| STALE)?;
+        if state.generation == generation {
+            state.current = scope.map(|scope| {
+                Arc::new(HaConnection {
+                    generation,
+                    scope,
+                    cancel: CancellationToken::new(),
+                    tasks: Arc::default(),
+                })
+            });
+        }
+        Ok(())
+    }
+
+    fn acquire(&self, base_url: &str, generation: u64) -> Result<HaTask, String> {
+        let scope = connection_scope(base_url)?;
+        let state = self.0.lock().map_err(|_| STALE)?;
+        let current = state.current.as_ref().filter(|current| {
+            state.generation == generation
+                && current.generation == generation
+                && current.scope == scope
+        }).ok_or(STALE)?;
+        Ok(HaTask {
+            cancel: current.cancel.clone(),
+            _running: current.tasks.clone().try_read_owned().map_err(|_| STALE)?,
+        })
+    }
+}
+
+fn connection_scope(base_url: &str) -> Result<String, String> {
+    let (_, path) = crate::network::parse_ha_endpoint_parts(base_url, false)?;
+    let url = reqwest::Url::parse(base_url.trim()).map_err(|_| "Invalid Home Assistant URL")?;
+    let prefix = path.strip_suffix("/api/websocket").ok_or("Invalid Home Assistant URL")?;
+    Ok(format!("{}{}", url.origin().ascii_serialization(), prefix))
+}
+
+#[tauri::command]
+pub(crate) async fn ha_set_connection(
+    connections: tauri::State<'_, HaConnections>,
+    base_url: Option<String>,
+    generation: u64,
+) -> Result<(), String> {
+    let scope = base_url.as_deref().map(connection_scope).transpose()?;
+    connections.configure(scope, generation).await
+}
+
+impl HaTask {
+    async fn http<T>(self, request: impl Future<Output = Result<T, String>>) -> Result<T, String> {
+        self.cancel.run_until_cancelled(request).await.ok_or(CANCELLED)?
+    }
+
+    async fn websocket<T: Send + 'static>(
+        self,
+        url: String,
+        token: String,
+        operation: impl FnOnce(&mut Socket, &CancellationToken) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let parsed = reqwest::Url::parse(&url).map_err(|_| "Invalid Home Assistant URL")?;
+        let host = parsed
+            .host_str()
+            .ok_or("Invalid Home Assistant host")?
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+        let port = parsed.port_or_known_default().ok_or("Invalid Home Assistant port")?;
+        let connect = async {
+            let addresses = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|_| "Home Assistant address lookup failed")?;
+            for address in addresses {
+                let socket = tokio::net::TcpStream::connect(address);
+                if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(5), socket).await {
+                    return Ok(stream);
+                }
+            }
+            Err("Home Assistant connection failed")
+        };
+        let stream = self
+            .cancel
+            .run_until_cancelled(connect)
+            .await
+            .ok_or(CANCELLED)??
+            .into_std()
+            .map_err(|_| "Home Assistant socket setup failed")?;
+        stream
+            .set_nonblocking(false)
+            .and_then(|()| stream.set_read_timeout(Some(Duration::from_secs(10))))
+            .and_then(|()| stream.set_write_timeout(Some(Duration::from_secs(10))))
+            .map_err(|_| "Home Assistant socket setup failed")?;
+        let interrupt = stream.try_clone().map_err(|_| "Home Assistant socket setup failed")?;
+
+        // Own the task until the blocking reader has returned, even if the IPC waiter goes away.
+        tauri::async_runtime::spawn(async move {
+            let Self { cancel, _running } = self;
+            let worker_cancel = cancel.clone();
+            let mut worker = tauri::async_runtime::spawn_blocking(move || {
+                if worker_cancel.is_cancelled() {
+                    return Err(CANCELLED.into());
+                }
+                let mut socket = authenticated(&url, stream, &token, &worker_cancel)?;
+                if worker_cancel.is_cancelled() {
+                    return Err(CANCELLED.into());
+                }
+                let result = operation(&mut socket, &worker_cancel);
+                let _ = socket.close(None);
+                result
+            });
+            match cancel.run_until_cancelled(&mut worker).await {
+                Some(result) => result.map_err(|_| "Home Assistant worker failed".to_string())?,
+                None => {
+                    let _ = interrupt.shutdown(Shutdown::Both);
+                    let _ = worker.await;
+                    Err(CANCELLED.into())
+                }
+            }
+        }).await.map_err(|_| "Home Assistant worker failed".to_string())?
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn ha_http(
+    connections: tauri::State<'_, HaConnections>,
+    base_url: String,
+    generation: u64,
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    timeout_ms: Option<u64>,
+) -> Result<crate::network::NativeHttpResponse, String> {
+    let task = connections.acquire(&base_url, generation)?;
+    let scope = connection_scope(&base_url)?;
+    task.http(crate::network::native_http_with_scope(
+        url, None, headers, None, None, timeout_ms, Some(scope),
+    )).await
 }
 
 fn endpoint(base_url: &str, token: &str) -> Result<String, String> {
@@ -66,34 +246,14 @@ fn send(socket: &mut Socket, packet: Value) -> Result<(), String> {
         .map_err(|_| "Home Assistant send failed".into())
 }
 
-fn authenticated(base_url: &str, token: &str) -> Result<Socket, String> {
-    let url = endpoint(base_url, token)?;
-    let parsed = reqwest::Url::parse(&url).map_err(|_| "Invalid Home Assistant URL")?;
-    let host = parsed
-        .host_str()
-        .ok_or("Invalid Home Assistant host")?
-        .trim_start_matches('[')
-        .trim_end_matches(']');
-    let port = parsed
-        .port_or_known_default()
-        .ok_or("Invalid Home Assistant port")?;
-    let addresses = (host, port)
-        .to_socket_addrs()
-        .map_err(|_| "Home Assistant address lookup failed")?;
-    let stream = addresses
-        .filter_map(|address| TcpStream::connect_timeout(&address, Duration::from_secs(5)).ok())
-        .next()
-        .ok_or("Home Assistant connection failed")?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .map_err(|_| "Home Assistant socket setup failed")?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
-        .map_err(|_| "Home Assistant socket setup failed")?;
+fn authenticated(url: &str, stream: TcpStream, token: &str, cancel: &CancellationToken) -> Result<Socket, String> {
     let (mut socket, _) =
-        client_tls(url.as_str(), stream).map_err(|_| "Home Assistant handshake failed")?;
+        client_tls(url, stream).map_err(|_| "Home Assistant handshake failed")?;
     if receive(&mut socket)?["type"] != "auth_required" {
         return Err("Home Assistant authentication handshake failed".into());
+    }
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.into());
     }
     send(&mut socket, json!({"type":"auth", "access_token": token}))?;
     if receive(&mut socket)?["type"] != "auth_ok" {
@@ -102,7 +262,10 @@ fn authenticated(base_url: &str, token: &str) -> Result<Socket, String> {
     Ok(socket)
 }
 
-fn request(socket: &mut Socket, id: u32, mut packet: Value) -> Result<Value, String> {
+fn request(socket: &mut Socket, cancel: &CancellationToken, id: u32, mut packet: Value) -> Result<Value, String> {
+    if cancel.is_cancelled() {
+        return Err(CANCELLED.into());
+    }
     packet["id"] = json!(id);
     send(socket, packet)?;
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -236,44 +399,47 @@ fn validate_call(command: &HaServiceCall) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub async fn ha_snapshot(base_url: String, token: String) -> Result<HaSnapshot, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut socket = authenticated(&base_url, &token)?;
-        let result = HaSnapshot {
-            areas: request(&mut socket, 1, json!({"type":"config/area_registry/list"}))?,
-            devices: request(
-                &mut socket,
-                2,
-                json!({"type":"config/device_registry/list"}),
-            )?,
-            entities: request(
-                &mut socket,
-                3,
-                json!({"type":"config/entity_registry/list"}),
-            )?,
-            states: request(&mut socket, 4, json!({"type":"get_states"}))?,
-        };
-        let _ = socket.close(None);
-        Ok(result)
+fn snapshot(socket: &mut Socket, cancel: &CancellationToken) -> Result<HaSnapshot, String> {
+    Ok(HaSnapshot {
+        areas: request(socket, cancel, 1, json!({"type":"config/area_registry/list"}))?,
+        devices: request(socket, cancel, 2, json!({"type":"config/device_registry/list"}))?,
+        entities: request(socket, cancel, 3, json!({"type":"config/entity_registry/list"}))?,
+        states: request(socket, cancel, 4, json!({"type":"get_states"}))?,
     })
-    .await
-    .map_err(|_| "Home Assistant worker failed".to_string())?
+}
+
+fn execute(socket: &mut Socket, cancel: &CancellationToken, command: HaServiceCall) -> Result<(), String> {
+    request(socket, cancel, 1, json!({
+        "type":"call_service", "domain":command.domain, "service":command.service,
+        "target":{"entity_id":command.entity_id}, "service_data":command.data
+    }))?;
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn ha_execute(
+pub(crate) async fn ha_snapshot(
+    connections: tauri::State<'_, HaConnections>,
     base_url: String,
+    generation: u64,
+    token: String,
+) -> Result<HaSnapshot, String> {
+    let task = connections.acquire(&base_url, generation)?;
+    task.websocket(endpoint(&base_url, &token)?, token, snapshot).await
+}
+
+#[tauri::command]
+pub(crate) async fn ha_execute(
+    connections: tauri::State<'_, HaConnections>,
+    base_url: String,
+    generation: u64,
     token: String,
     command: HaServiceCall,
 ) -> Result<(), String> {
+    let task = connections.acquire(&base_url, generation)?;
     validate_call(&command)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut socket = authenticated(&base_url, &token)?;
-        request(&mut socket, 1, json!({"type":"call_service", "domain":command.domain, "service":command.service, "target":{"entity_id":command.entity_id}, "service_data":command.data}))?;
-        let _ = socket.close(None);
-        Ok(())
-    }).await.map_err(|_| "Home Assistant worker failed".to_string())?
+    task.websocket(endpoint(&base_url, &token)?, token, move |socket, cancel| {
+        execute(socket, cancel, command)
+    }).await
 }
 
 #[cfg(test)]
@@ -452,6 +618,150 @@ mod tests {
     }
 
     #[test]
+    fn registration_rejects_old_scope_and_generation_until_drain_finishes() {
+        tauri::async_runtime::block_on(async {
+            let a = "https://home.example/first";
+            let b = "https://home.example/second";
+            let connections = Arc::new(HaConnections::default());
+            assert!(connections.acquire(a, 1).is_err());
+            connections.configure(Some(connection_scope(a).unwrap()), 1).await.unwrap();
+            let task = connections.acquire("https://HOME.example:443/first/api/websocket/", 1).unwrap();
+            assert!(connections.acquire(b, 1).is_err());
+
+            let stop = {
+                let connections = connections.clone();
+                tauri::async_runtime::spawn(async move { connections.configure(None, 2).await })
+            };
+            tokio::time::timeout(Duration::from_secs(2), task.cancel.cancelled()).await.unwrap();
+            assert!(connections.acquire(a, 1).is_err());
+
+            let switch = connections.configure(Some(connection_scope(b).unwrap()), 3);
+            let mut switch = std::pin::pin!(switch);
+            std::future::poll_fn(|cx| {
+                assert!(switch.as_mut().poll(cx).is_pending());
+                std::task::Poll::Ready(())
+            }).await;
+            assert!(connections.acquire(b, 3).is_err());
+            assert!(!stop.inner().is_finished());
+            drop(task);
+            switch.await.unwrap();
+            stop.await.unwrap().unwrap();
+
+            assert!(connections.acquire(b, 3).is_ok());
+            assert!(connections.acquire(a, 3).is_err());
+            assert!(connections.acquire(b, 1).is_err());
+            assert!(connections.configure(Some(connection_scope(a).unwrap()), 2).await.is_err());
+            assert!(connections.acquire(b, 3).is_ok());
+        });
+    }
+
+    #[test]
+    fn cancellation_wakes_upgrade_and_websocket_read_and_joins_worker() {
+        for complete_upgrade in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let (waiting, ready) = tokio::sync::oneshot::channel();
+            let peer = std::thread::spawn(move || {
+                use std::io::Read;
+                let (mut stream, _) = listener.accept().unwrap();
+                stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                if complete_upgrade {
+                    let mut socket = tungstenite::accept(stream).unwrap();
+                    send_fixture(&mut socket, "auth_required");
+                    assert!(socket.read().unwrap().is_text());
+                    send_fixture(&mut socket, "auth_ok");
+                    assert!(socket.read().unwrap().is_text()); // Snapshot's first request.
+                    waiting.send(()).unwrap();
+                    assert!(socket.read().is_err());
+                } else {
+                    // Leave the WebSocket upgrade pending after receiving its HTTP headers.
+                    let mut byte = [0];
+                    let mut headers = Vec::new();
+                    while !headers.ends_with(b"\r\n\r\n") {
+                        stream.read_exact(&mut byte).unwrap();
+                        headers.push(byte[0]);
+                    }
+                    waiting.send(()).unwrap();
+                    assert_peer_disconnected(stream.read(&mut byte));
+                }
+            });
+            tauri::async_runtime::block_on(async {
+                let connections = HaConnections::default();
+                connections.configure(Some(connection_scope(&base).unwrap()), 1).await.unwrap();
+                let task = connections.acquire(&base, 1).unwrap();
+                let operation = tauri::async_runtime::spawn(task.websocket(
+                    format!("{}/api/websocket", base.replacen("http:", "ws:", 1)),
+                    "fixture-token".into(), snapshot,
+                ));
+                tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
+                tokio::time::timeout(Duration::from_secs(2), connections.configure(None, 2))
+                    .await.unwrap().unwrap();
+                assert!(operation.await.unwrap().is_err());
+                assert!(connections.acquire(&base, 1).is_err());
+            });
+            peer.join().unwrap();
+        }
+    }
+
+    fn assert_peer_disconnected(read: std::io::Result<usize>) {
+        match read {
+            Ok(0) => (),
+            Err(ref error) if matches!(error.kind(), std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted) => (),
+            _ => panic!("expected cancelled connection to close, got {read:?}"),
+        }
+    }
+
+    fn send_fixture(socket: &mut WebSocket<TcpStream>, packet_type: &str) {
+        socket.send(Message::Text(json!({"type":packet_type}).to_string().into())).unwrap();
+    }
+
+    #[test]
+    fn cancellation_closes_http_request_and_streaming_response_body() {
+        let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
+        for send_headers in [false, true] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let origin = crate::normalize_extra_origin(&base).unwrap();
+            crate::EXTRA_ALLOWED_ORIGINS.write().unwrap().insert(origin.clone());
+            let (waiting, ready) = tokio::sync::oneshot::channel();
+            let peer = std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader, Read, Write};
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+                let mut request = BufReader::new(&mut socket);
+                loop {
+                    let mut header = String::new();
+                    assert!(request.read_line(&mut header).unwrap() > 0);
+                    if header == "\r\n" {
+                        break;
+                    }
+                }
+                if send_headers {
+                    // Start an SSE body, leaving it open after the first event.
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n9\r\ndata: 1\n\n\r\n").unwrap();
+                }
+                waiting.send(()).unwrap();
+                assert_peer_disconnected(socket.read(&mut [0]));
+            });
+            tauri::async_runtime::block_on(async {
+                let connections = HaConnections::default();
+                connections.configure(Some(connection_scope(&base).unwrap()), 1).await.unwrap();
+                let task = connections.acquire(&base, 1).unwrap();
+                let operation = tauri::async_runtime::spawn(task.http(crate::network::native_http_with_scope(
+                    format!("{base}/api/stream"), None, None, None, None, Some(10_000),
+                    Some(connection_scope(&base).unwrap()),
+                )));
+                tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
+                tokio::time::timeout(Duration::from_secs(2), connections.configure(None, 2))
+                    .await.unwrap().unwrap();
+                assert_eq!(operation.await.unwrap().err().as_deref(), Some(CANCELLED));
+            });
+            peer.join().unwrap();
+            crate::EXTRA_ALLOWED_ORIGINS.write().unwrap().remove(&origin);
+        }
+    }
+
+    #[test]
     fn controlled_websocket_auth_snapshot_and_service_smoke() {
         let _guard = crate::ORIGIN_TEST_LOCK.lock().unwrap();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -534,12 +844,15 @@ mod tests {
             }
             (handshakes, snapshots, services)
         });
+        let connections = HaConnections::default();
+        let scope = connection_scope(&base_url).unwrap();
+        tauri::async_runtime::block_on(connections.configure(Some(scope), 1)).unwrap();
+        let url = endpoint(&base_url, "controlled-native-token").unwrap();
         let mut snapshot_ms = Vec::new();
         for _ in 0..5 {
             let start = std::time::Instant::now();
-            let snapshot = tauri::async_runtime::block_on(ha_snapshot(
-                base_url.clone(),
-                "controlled-native-token".into(),
+            let snapshot = tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+                url.clone(), "controlled-native-token".into(), snapshot,
             ))
             .unwrap();
             let serialized = serde_json::to_string(&snapshot).unwrap();
@@ -555,10 +868,8 @@ mod tests {
                 entity_id: "light.study".into(),
                 data: Default::default(),
             };
-            let result = tauri::async_runtime::block_on(ha_execute(
-                base_url.clone(),
-                "controlled-native-token".into(),
-                command,
+            let result = tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+                url.clone(), "controlled-native-token".into(), move |socket, cancel| execute(socket, cancel, command),
             ));
             assert_eq!(result.is_err(), fail);
             if let Err(error) = result {
@@ -566,7 +877,9 @@ mod tests {
             }
         }
         let error =
-            tauri::async_runtime::block_on(ha_snapshot(base_url, "controlled-native-token".into()))
+            tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+                url, "controlled-native-token".into(), snapshot,
+            ))
                 .err()
                 .unwrap();
         assert_eq!(error, "Home Assistant authentication rejected");

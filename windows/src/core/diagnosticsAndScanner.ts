@@ -1,4 +1,4 @@
-import { acquireHaTransportLease, isHaBlockedRequestError } from "./haTransportGate.js";
+import { acquireHaTransportLease, invokeHaWithLease, isHaBlockedRequestError } from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import { currentLanguage,
   resolveLanguage,
@@ -697,10 +697,10 @@ export class UnsupportedDeviceScanner { public devices: UnsupportedDevice[] = []
       }
 
       if (scanHA && !options.haDisabled && options.haInvoke && options.haBaseURL && options.haToken) {
-        const haLease = acquireHaTransportLease(options.haBaseURL);
+        const haLease = acquireHaTransportLease(options.haBaseURL, { token: options.haToken });
         if (haLease) {
           try {
-            const rawHA = await options.haInvoke<unknown>("ha_snapshot", {
+            const rawHA = await invokeHaWithLease<unknown>(haLease, options.haInvoke, "ha_snapshot", {
               baseUrl: options.haBaseURL,
               token: options.haToken,
             });

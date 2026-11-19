@@ -687,7 +687,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     let historyCalls = 0;
     window.__TAURI_INTERNALS__ = {
       invoke: (async (cmd: string, args?: Record<string, unknown>) => {
-          if (cmd === "native_http" && String(args?.url ?? "").includes("/api/history/period/")) {
+          if (cmd === "ha_http" && String(args?.url ?? "").includes("/api/history/period/")) {
             historyCalls += 1;
             return { status: 200, headers: {}, body: JSON.stringify(haHistoryPayload) };
           }
@@ -1053,7 +1053,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
     );
     window.__TAURI_INTERNALS__ = {
       invoke: (async (cmd: string, args?: Record<string, unknown>) => {
-        if (cmd === "native_http") {
+        if (cmd === "ha_http") {
           requestedUrls.push(String(args?.url ?? ""));
           return { status: 200, headers: {}, body: "[]" };
         }
