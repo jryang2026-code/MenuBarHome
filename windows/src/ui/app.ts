@@ -70,7 +70,6 @@ import { normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
 import {
   t,
 } from "../core/i18n.js";
-import { miSessionExpiryState } from "../core/miCloud/session.js";
 import {
   KIND_CHIP,
   filterByListCut,
@@ -92,6 +91,7 @@ import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt,
 import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
+  releaseActivityWindowLifecycle,
   type HostActivityCenter,
 } from "./activityStackView.js";
 import {
@@ -124,8 +124,8 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, isDualSourceEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
-import { hasSecondaryMiAccountsInIndex, makeMiAccount, miAccountId } from "../core/miAccountsStore.js";
+import { foldGrouped, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
 import { queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
@@ -149,13 +149,6 @@ import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from 
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
-
-export type PanelHealth =
-  | { readonly kind: "demo"; readonly dot: "is-demo"; readonly label: string }
-  | { readonly kind: "syncing"; readonly dot: "is-syncing"; readonly label: string }
-  | { readonly kind: "online"; readonly dot: "is-online"; readonly label: string }
-  | { readonly kind: "degraded"; readonly dot: "is-degraded"; readonly label: string }
-  | { readonly kind: "offline"; readonly dot: "is-offline"; readonly label: string; readonly recovery: "qr" | "none" };
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -202,7 +195,7 @@ export class MenuMijiaWindowsApp {
   );
   public sensorHistoryUi: SensorHistoryUiState = createSensorHistoryUiState();
   public activityCenter: HostActivityCenter | null = null;
-  public activityWindowLifecycleBound = false;
+  public activityWindowLifecycleAbort: AbortController | null = null;
   public miAccountsStore: MiAccountsStore | null = null;
   public miAccountsOverride: readonly MiAccount[] | null = null;
   public multiAccountState: HostMultiAccountState | null = null;
@@ -387,6 +380,8 @@ export class MenuMijiaWindowsApp {
   // Personalisation / layout editing state (see panelPrefs.ts).
   public homes: HomeOption[] = [];
   public isHomeMenuOpen = false;
+  /** Footer connection card; cleared on hide so the next open starts collapsed. */
+  public connectionDetailsOpen = false;
   public isEditingLayout = false;
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;
@@ -550,6 +545,7 @@ export class MenuMijiaWindowsApp {
   /** Idempotently cancels lifecycle intervals, recovery timers, and global window listeners. */
   public dispose(): void {
     disposeAppLifecycle(this);
+    releaseActivityWindowLifecycle(this);
     this.pipeline.clearTransientState();
     this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
@@ -571,6 +567,7 @@ export class MenuMijiaWindowsApp {
     return (
       this.activeSheet !== "none" ||
       isConnectionsAndDiagModalOpen(this) ||
+      this.connectionDetailsOpen ||
       this.pointerIsDown ||
       this.isListeningVoice ||
       this.allOffHoldTimer !== null ||
@@ -1168,89 +1165,6 @@ export class MenuMijiaWindowsApp {
     return undoButtonVisible(this, now);
   }
 
-  public panelHealth(): PanelHealth {
-    const mode = this.settings.connectionMode;
-    if (mode === "demo") {
-      return { kind: "demo", dot: "is-demo", label: t("演示模式") };
-    }
-    const dualActive = isDualSourceEnabled(this);
-    const knownMi = this.multiAccountState?.accounts ?? (this.settings.miSession ? [makeMiAccount(this.settings.miSession)] : []);
-    const enabledMi = mode === "xiaomiCloud" || dualActive ? resolveEnabledMiAccountsForHost(this, knownMi) : [];
-    const allMiDisabled = (mode === "xiaomiCloud" || dualActive) && knownMi.length > 0 && enabledMi.length === 0;
-    if (mode === "xiaomiCloud" && !dualActive && allMiDisabled) {
-      return {
-        kind: "offline",
-        dot: "is-offline",
-        label: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, this.settings.interfaceLanguage),
-        recovery: "none",
-      };
-    }
-    if (
-      mode === "xiaomiCloud" &&
-      !allMiDisabled &&
-      this.settings.miSession &&
-      (this.miSessionExpired || miSessionExpiryState(this.settings.miSession).kind === "expired") &&
-      enabledMi.some((acc) => acc.id === miAccountId(this.settings.miSession!))
-    ) {
-      return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
-    }
-    if (mode === "homeAssistant" || (dualActive && allMiDisabled)) {
-      const block = haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "");
-      if (block === "plaintext") {
-        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
-      }
-      if (block === "auth") {
-        return { kind: "offline", dot: "is-offline", label: t("Home Assistant 认证被拒绝"), recovery: "none" };
-      }
-    }
-    if (this.sourceIsMissing()) {
-      const recovery = mode === "xiaomiCloud" ? "qr" : "none";
-      return { kind: "offline", dot: "is-offline", label: t("未配置数据源"), recovery };
-    }
-    const label = this.connectionFooterLabel();
-    if (this.isSyncingCloud) {
-      return { kind: "syncing", dot: "is-syncing", label };
-    }
-    const cloudFailed = mode === "xiaomiCloud" && !allMiDisabled && this.cloudValuesStale;
-    const haFailed = (mode === "homeAssistant" || dualActive) && this.haConnectionError !== null;
-    if (cloudFailed || haFailed || this.valuesAreStale) {
-      const stale = this.valuesAreStale ? `${label} · ${t("可能过期")}` : label;
-      return { kind: "degraded", dot: "is-degraded", label: stale };
-    }
-    return { kind: "online", dot: "is-online", label };
-  }
-
-  private connectionFooterLabel(): string {
-    const dualActive = isDualSourceEnabled(this);
-    if (this.settings.connectionMode === "xiaomiCloud") {
-      const knownMi = this.multiAccountState?.accounts ?? (this.settings.miSession ? [makeMiAccount(this.settings.miSession)] : []);
-      const enabledMi = resolveEnabledMiAccountsForHost(this, knownMi);
-      if (dualActive && enabledMi.length === 0) {
-        return `Home Assistant · ${this.devices.length}`;
-      }
-      const activeUser = enabledMi[0]?.session.userId ?? this.settings.miSession?.userId;
-      if (activeUser) {
-        return t("米家账号 {user} · {count} 台设备", {
-          user: maskedMiUserId(activeUser),
-          count: this.devices.length,
-        });
-      }
-    }
-    if (this.settings.connectionMode === "homeAssistant") {
-      return `Home Assistant · ${this.devices.length}`;
-    }
-    return t("演示模式");
-  }
-
-  private sourceIsMissing(): boolean {
-    const mode = this.settings.connectionMode;
-    if (mode === "xiaomiCloud") return this.settings.miSession === null;
-    if (mode === "homeAssistant") {
-      return this.settings.haBaseURL.trim() === "" || this.settings.haToken.trim() === "";
-    }
-    return false;
-  }
-
   /** The native endpoint dialog rejected a public Home Assistant address. Keep it on the connection, not only the banner. */
   public noteServiceEndpointFailure(error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
@@ -1308,6 +1222,14 @@ export class MenuMijiaWindowsApp {
   }
 
   public render(): void {
+    // The footer connection dialog belongs to the panel surface: any sheet, menu or prompt that opens over it
+    // closes it instead of leaving a ghost dialog (and its focus target) behind (CODING_STANDARDS §13).
+    if (
+      this.connectionDetailsOpen &&
+      (this.activeSheet !== "none" || this.isHomeMenuOpen || this.ctxMenu !== null || this.prompt !== null)
+    ) {
+      this.connectionDetailsOpen = false;
+    }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
   }

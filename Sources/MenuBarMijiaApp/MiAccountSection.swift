@@ -57,25 +57,67 @@ public struct MiAccountSection: View {
         }
     }
 
+    struct RegionDisclosureState: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
+        }
+
+        mutating func applyInitialNonDefaultIfNeeded(region: MiCloudRegion) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if region != .cn {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forHighlight anchor: SettingsAnchor?) {
+            if anchor == .miAccount {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(isScanning: Bool) {
+            if isScanning {
+                isExpanded = true
+            }
+        }
+    }
+
+    @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var phase: ScanPhase
     @State private var loginTask: Task<Void, Never>?
     @State private var pendingLogoutConfirmation: LogoutConfirmation?
+    @State private var regionDisclosure: RegionDisclosureState
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
+    private let showsInlineAddAccountButton: Bool
+    private let addAccountTrigger: Int
 
     public init(
         store: HomeStore,
         previewTicket: QRLoginTicket? = nil,
         autoStartsQRLogin: Bool = false,
-        showsRegionPicker: Bool = true
+        showsRegionPicker: Bool = true,
+        showsInlineAddAccountButton: Bool = true,
+        addAccountTrigger: Int = 0
     ) {
         self.store = store
         self.autoStartsQRLogin = autoStartsQRLogin
         self.showsRegionPicker = showsRegionPicker
+        self.showsInlineAddAccountButton = showsInlineAddAccountButton
+        self.addAccountTrigger = addAccountTrigger
         if let previewTicket {
             self._phase = State(initialValue: .waitingForScan(ticket: previewTicket, expiresAt: Date().addingTimeInterval(previewTicket.timeout)))
+            self._regionDisclosure = State(initialValue: RegionDisclosureState(isExpanded: true, hasAppliedInitialDefaults: true))
         } else {
             self._phase = State(initialValue: .idle)
+            var initialDisclosure = RegionDisclosureState()
+            initialDisclosure.applyInitialNonDefaultIfNeeded(region: store.miCloudRegion)
+            self._regionDisclosure = State(initialValue: initialDisclosure)
         }
     }
 
@@ -85,31 +127,22 @@ public struct MiAccountSection: View {
         autoStartsQRLogin && (homeBackend == .xiaomiCloud || miSessionShowsExpired)
     }
 
+    static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
+        L10n.format(
+            "高级：云端服务器地区（当前：%@）",
+            "Advanced: Cloud Region (Current: %@)",
+            region.label
+        )
+    }
+
+    private var isScanningPhase: Bool {
+        if case .idle = phase { return false }
+        return true
+    }
+
     public var body: some View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 9) {
-            if showsRegionPicker {
-                HStack {
-                    Text(L10n.tr("云端服务器地区", "Cloud Region"))
-                        .font(.system(size: DesignTokens.TypeSize.body))
-                    Spacer()
-                    Picker(
-                        L10n.tr("云端服务器地区", "Cloud Region"),
-                        selection: Binding(
-                            get: { store.miCloudRegion },
-                            set: { store.miCloudRegion = $0 }
-                        )
-                    ) {
-                        ForEach(MiCloudRegion.allCases) { region in
-                            Text(region.label).tag(region)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: DesignTokens.Settings.fieldWidth)
-                    .controlSize(.regular)
-                }
-            }
-
             switch phase {
             case .idle:
                 if store.miAccounts.count > 1 {
@@ -165,6 +198,38 @@ public struct MiAccountSection: View {
                     }
                 }
             }
+
+            // #146 & WP3a: risk notice stays always visible in default view (>= 12pt).
+            unofficialRiskNotice
+
+            if showsRegionPicker {
+                DisclosureGroup(isExpanded: $regionDisclosure.isExpanded) {
+                    HStack {
+                        Text(L10n.tr("云端服务器地区", "Cloud Region"))
+                            .font(.system(size: DesignTokens.TypeSize.body))
+                        Spacer()
+                        Picker(
+                            L10n.tr("云端服务器地区", "Cloud Region"),
+                            selection: Binding(
+                                get: { store.miCloudRegion },
+                                set: { store.miCloudRegion = $0 }
+                            )
+                        ) {
+                            ForEach(MiCloudRegion.allCases) { region in
+                                Text(region.label).tag(region)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: DesignTokens.Settings.fieldWidth)
+                        .controlSize(.regular)
+                    }
+                    .padding(.top, 4)
+                } label: {
+                    Text(Self.regionDisclosureTitle(for: store.miCloudRegion))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                }
+            }
         }
         .task {
             guard Self.shouldAutoStartQRLogin(
@@ -172,6 +237,22 @@ public struct MiAccountSection: View {
                 homeBackend: store.homeBackend,
                 miSessionShowsExpired: store.miSessionShowsExpired
             ), case .idle = phase else { return }
+            startQRLogin()
+        }
+        .onAppear {
+            regionDisclosure.applyInitialNonDefaultIfNeeded(region: store.miCloudRegion)
+            regionDisclosure.expandIfNeeded(forHighlight: searchFocus?.highlight)
+            regionDisclosure.expandIfNeeded(isScanning: isScanningPhase)
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            regionDisclosure.expandIfNeeded(forHighlight: highlight)
+        }
+        .onChange(of: isScanningPhase) { _, isScanning in
+            regionDisclosure.expandIfNeeded(isScanning: isScanning)
+        }
+        .onChange(of: addAccountTrigger) { oldValue, newValue in
+            guard newValue != oldValue else { return }
+            regionDisclosure.isExpanded = true
             startQRLogin()
         }
         .onChange(of: store.homeBackend) { _, backend in
@@ -269,10 +350,12 @@ public struct MiAccountSection: View {
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: needsRescan, tintColor: .accentColor))
 
-                Button(L10n.tr("添加账号", "Add Account")) {
-                    startQRLogin()
+                if showsInlineAddAccountButton {
+                    Button(L10n.tr("添加更多米家账号", "Add More Xiaomi Accounts")) {
+                        startQRLogin()
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: !needsRescan, tintColor: .accentColor))
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: !needsRescan, tintColor: .accentColor))
 
                 Spacer()
 
@@ -342,10 +425,12 @@ public struct MiAccountSection: View {
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
-                Button(L10n.tr("添加账号", "Add Account")) {
-                    startQRLogin()
+                if showsInlineAddAccountButton {
+                    Button(L10n.tr("添加更多米家账号", "Add More Xiaomi Accounts")) {
+                        startQRLogin()
+                    }
+                    .buttonStyle(PillActionButtonStyle())
                 }
-                .buttonStyle(PillActionButtonStyle())
 
                 Spacer()
 
@@ -366,20 +451,6 @@ public struct MiAccountSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
 
-            // #146: the risk is visible, not buried in secondary-colour fine print.
-            Label {
-                Text(L10n.tr(
-                    "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。",
-                    "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."
-                ))
-                .fixedSize(horizontal: false, vertical: true)
-            } icon: {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange)
-            }
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(.primary.opacity(0.85))
-
             HStack {
                 Spacer()
                 Button(L10n.tr("扫码登录米家账号", "Sign In with QR Code")) {
@@ -388,6 +459,22 @@ public struct MiAccountSection: View {
                 .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
             }
         }
+    }
+
+    private var unofficialRiskNotice: some View {
+        // #146 & WP3a: the risk is always visible (>= 12pt), never buried in fine print or advanced disclosure.
+        Label {
+            Text(L10n.tr(
+                "直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。",
+                "Direct mode uses an unofficial API, so Xiaomi may rate-limit or flag accounts. If that worries you, use Home Assistant (xiaomi_home) instead. Sign-in expires; you will need to scan again."
+            ))
+            .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        }
+        .font(.system(size: DesignTokens.TypeSize.caption))
+        .foregroundStyle(.primary.opacity(0.85))
     }
 
     private func qrCodeScanningView(ticket: QRLoginTicket, expiresAt: Date) -> some View {

@@ -41,13 +41,16 @@ private enum SettingsSearchMemoCache {
 public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
+    @State private var advancedDisplay = GeneralSettingsDisclosure.State()
+    @State private var connectionAdvancedDisclosure = ConnectionSettingsDisclosure.State()
+    @State private var lgWakeDisclosure = LGWebOSSettingsSaveGuard.WakeDisclosureState()
     @State private var focus = SettingsSearchFocus()
     @State private var unsaved = SettingsUnsavedChanges()
     @State private var highlightedResult: Int?
     /// The ⌘, window is a separate scene, so it must apply the app's appearance itself.
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     /// The height control lives behind the resolved theme, so the window reads the same stored value
-    /// the appearance pane does and resolves it identically.
+    /// the general pane does and resolves it identically.
     @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
     @Environment(\.effectiveReduceMotion) private var reduceMotion
 
@@ -57,7 +60,10 @@ public struct SettingsWindowView: View {
 
     init(store: HomeStore, selectedTab: SettingsTab) {
         self.store = store
-        _tab = State(initialValue: selectedTab)
+        _tab = State(initialValue: selectedTab.canonicalTab)
+        var initialDisclosure = GeneralSettingsDisclosure.State()
+        initialDisclosure.expandIfNeeded(forRequestedTab: selectedTab)
+        _advancedDisplay = State(initialValue: initialDisclosure)
     }
 
     /// Which rows this window is actually drawing, so search never offers a row that is not there.
@@ -149,7 +155,8 @@ public struct SettingsWindowView: View {
         }
         .onAppear {
             if let requested = opener.requestedTab {
-                tab = requested
+                advancedDisplay.expandIfNeeded(forRequestedTab: requested)
+                tab = requested.canonicalTab
                 opener.requestedTab = nil
             }
         }
@@ -212,8 +219,10 @@ public struct SettingsWindowView: View {
     private func selectCategory(_ category: SettingsTab) {
         focus.clearQuery()
         highlightedResult = nil
-        guard leavesTabSafely(for: category) else { return }
-        tab = category
+        let destination = category.canonicalTab
+        guard leavesTabSafely(for: destination) else { return }
+        advancedDisplay.expandIfNeeded(forRequestedTab: category)
+        tab = destination
     }
 
     /// Switching pages drops the page's drafts, so unsaved edits are resolved first (#148).
@@ -226,7 +235,7 @@ public struct SettingsWindowView: View {
     /// click. Only the second path resolves unsaved edits and changes `tab`, so one click asks once and
     /// a Cancel or a failed save leaves the page as it was (#148).
     private var guardedTab: Binding<SettingsTab> {
-        Binding(get: { tab }, set: { _ in })
+        Binding(get: { tab.canonicalTab }, set: { _ in })
     }
 
     private func jump(to hit: SettingsSearchHit) {
@@ -235,12 +244,28 @@ public struct SettingsWindowView: View {
         // the query change and the jump would arrive with nothing to scroll to or point at.
         focus.clearQuery()
         highlightedResult = nil
-        guard leavesTabSafely(for: hit.anchor.tab) else { return }
-        tab = hit.anchor.tab
+        let destination = hit.anchor.tab.canonicalTab
+        guard leavesTabSafely(for: destination) else { return }
+        advancedDisplay.expandIfNeeded(forHighlight: hit.anchor)
+        connectionAdvancedDisclosure.expandForHighlightIfNeeded(hit.anchor)
+        lgWakeDisclosure.expandForHighlightIfNeeded(hit.anchor)
+        tab = destination
         focus.jump(to: hit.anchor)
     }
 
     // MARK: Detail
+
+    private func scrollToAnchor(_ anchor: SettingsAnchor, using proxy: ScrollViewProxy) {
+        // No animation under Reduce Motion, and none at all would make a long page jump
+        // feel like the window lost its place.
+        if reduceMotion {
+            proxy.scrollTo(anchor, anchor: .center)
+        } else {
+            withAnimation(AppleMotion.reveal) {
+                proxy.scrollTo(anchor, anchor: .center)
+            }
+        }
+    }
 
     private var detailPane: some View {
         ScrollViewReader { proxy in
@@ -249,7 +274,7 @@ public struct SettingsWindowView: View {
             // jump would silently do nothing and the lower cards would be unreachable.
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: DesignTokens.Settings.cardSpacing) {
-                    SettingsPaneHeader(tab: tab, subtitle: tab.paneSubtitle)
+                    SettingsPaneHeader(tab: tab.canonicalTab, subtitle: tab.canonicalTab.paneSubtitle)
                     settingsPage
                 }
                 .padding(.horizontal, DesignTokens.Settings.contentInset)
@@ -259,16 +284,18 @@ public struct SettingsWindowView: View {
                 .coordinateSpace(name: SettingsScrollSpace.name)
             }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
-            .onChange(of: focus.generation) { _, _ in
+            .onChange(of: focus.generation) { _, targetGeneration in
                 guard let anchor = focus.highlight else { return }
-                // No animation under Reduce Motion, and none at all would make a long page jump
-                // feel like the window lost its place.
-                if reduceMotion {
-                    proxy.scrollTo(anchor, anchor: .center)
-                } else {
-                    withAnimation(AppleMotion.reveal) {
-                        proxy.scrollTo(anchor, anchor: .center)
-                    }
+                scrollToAnchor(anchor, using: proxy)
+                // Cross-tab jumps and newly expanded disclosures mount their `.id(anchor)` row
+                // asynchronously after state changes, so re-scroll once the layout settles.
+                Task { @MainActor in
+                    await Task.yield()
+                    guard focus.generation == targetGeneration, focus.highlight == anchor else { return }
+                    scrollToAnchor(anchor, using: proxy)
+                    try? await Task.sleep(for: .milliseconds(40))
+                    guard focus.generation == targetGeneration, focus.highlight == anchor else { return }
+                    scrollToAnchor(anchor, using: proxy)
                 }
             }
         }
@@ -276,13 +303,21 @@ public struct SettingsWindowView: View {
 
     @ViewBuilder
     private var settingsPage: some View {
-        switch tab {
-        case .general: GeneralSettingsTab(store: store)
-        case .connection: ConnectionSettingsTab(store: store)
-        case .assistant: AssistantSettingsTab(store: store)
-        case .appearance: AppearanceSettingsTab(store: store)
-        case .privacy: PrivacySettingsTab(store: store)
-        case .about: AboutSettingsTab(store: store)
+        switch tab.canonicalTab {
+        case .general, .appearance:
+            GeneralSettingsTab(store: store, advancedDisplay: $advancedDisplay)
+        case .connection:
+            ConnectionSettingsTab(
+                store: store,
+                advancedConnections: $connectionAdvancedDisclosure,
+                lgWakeDisclosure: $lgWakeDisclosure
+            )
+        case .assistant:
+            AssistantSettingsTab(store: store)
+        case .privacy:
+            PrivacySettingsTab(store: store)
+        case .about:
+            AboutSettingsTab(store: store)
         }
     }
 }
@@ -295,11 +330,19 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
     case privacy
     case about
 
+    static var allCases: [SettingsTab] {
+        [.general, .connection, .assistant, .privacy, .about]
+    }
+
+    var canonicalTab: SettingsTab {
+        self == .appearance ? .general : self
+    }
+
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .general: return L10n.tr("通用", "General")
+        case .general: return L10n.tr("常规", "General")
         case .connection: return L10n.tr("家居连接", "Connections")
         case .assistant: return L10n.tr("AI 助手", "AI Assistant")
         case .appearance: return L10n.tr("外观", "Appearance")
@@ -307,7 +350,6 @@ enum SettingsTab: String, CaseIterable, Identifiable, Hashable {
         case .about: return L10n.tr("关于与更新", "About & Updates")
         }
     }
-
 }
 
 // MARK: - Shared Building Blocks
@@ -430,16 +472,98 @@ struct SettingsToggleRow: View {
 
 // MARK: - General
 
+enum GeneralSettingsDisclosure {
+    static let advancedDisplayAnchors: Set<SettingsAnchor> = [
+        .panelTheme, .panelHeight, .compactGrid, .climatePanelModule, .hideGroupedLights
+    ]
+
+    struct State: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false) {
+            self.isExpanded = isExpanded
+        }
+
+        mutating func applyInitialNonDefaultIfNeeded(
+            panelTheme: PanelTheme,
+            panelHeight: PanelHeight,
+            isCompactGridMode: Bool,
+            climatePanelModule: Bool,
+            hideGroupedLights: Bool
+        ) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if GeneralSettingsDisclosure.hasNonDefaultDisplaySettings(
+                panelTheme: panelTheme,
+                panelHeight: panelHeight,
+                isCompactGridMode: isCompactGridMode,
+                climatePanelModule: climatePanelModule,
+                hideGroupedLights: hideGroupedLights
+            ) {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forRequestedTab tab: SettingsTab?) {
+            if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: tab) {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forHighlight anchor: SettingsAnchor?) {
+            if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: anchor) {
+                isExpanded = true
+            }
+        }
+    }
+
+    static func shouldExpandAdvancedDisplay(forHighlight anchor: SettingsAnchor?) -> Bool {
+        anchor.map(advancedDisplayAnchors.contains) ?? false
+    }
+
+    static func shouldExpandAdvancedDisplay(forRequestedTab tab: SettingsTab?) -> Bool {
+        tab == .appearance
+    }
+
+    static func hasNonDefaultDisplaySettings(
+        panelTheme: PanelTheme,
+        panelHeight: PanelHeight,
+        isCompactGridMode: Bool,
+        climatePanelModule: Bool,
+        hideGroupedLights: Bool
+    ) -> Bool {
+        if panelTheme != .classic { return true }
+        if panelHeight != .standard { return true }
+        if !isCompactGridMode { return true }
+        if !climatePanelModule { return true }
+        if !hideGroupedLights { return true }
+        return false
+    }
+}
+
 private struct GeneralSettingsTab: View {
     let store: HomeStore
+    @Binding var advancedDisplay: GeneralSettingsDisclosure.State
+    @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var showNotificationRationale = false
     @State private var confirmsAdvancedFacetWrites = false
+    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
+    @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
+    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
+    @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
     @AppStorage(SoundFeedback.storageKey) private var soundFeedbackEnabled = false
     @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
     private var notifications: NotificationPermissionState { .shared }
     private var hotkey: HotkeySettingsState { .shared }
     @MainActor private var launchAtLogin: LaunchAtLoginCoordinator { .live(store: store) }
+
+    /// The theme the app actually renders, so a stored Liquid Glass choice on an older system still
+    /// shows the classic controls.
+    private var panelTheme: PanelTheme {
+        PanelTheme.resolved(from: panelThemeRaw)
+    }
 
     var body: some View {
         let _ = store.effectiveLanguage
@@ -449,7 +573,32 @@ private struct GeneralSettingsTab: View {
                 UpdateSection(store: store)
             }
 
-            SettingsSection(title: L10n.tr("菜单栏与交互体验", "Menu Bar & Interface")) {
+            SettingsSection(title: L10n.tr("基础显示", "Basic Display")) {
+                HStack {
+                    Text(L10n.tr("外观模式", "Appearance"))
+                        .font(.system(size: DesignTokens.TypeSize.body))
+                    Spacer(minLength: 12)
+                    GlassSegmentedControl(
+                        selection: $appearanceRaw,
+                        segments: AppAppearance.allCases.map {
+                            GlassSegment(value: $0.rawValue, title: $0.title)
+                        }
+                    )
+                    .frame(width: DesignTokens.Settings.fieldWidth)
+                }
+                .frame(minHeight: DesignTokens.Settings.rowHeight)
+                .settingsRow(anchor: .appearanceMode)
+
+                Text(L10n.tr(
+                    "面板会跟随系统自动使用浅色或深色材质，开启的设备比关闭的磁贴略亮一层。",
+                    "The panel follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
                 SettingsValueRow(title: L10n.tr("界面语言", "Language")) {
                     Picker(L10n.tr("界面语言", "Language"), selection: Binding(
                         get: { store.appLanguagePreference },
@@ -495,44 +644,9 @@ private struct GeneralSettingsTab: View {
                     .labelsHidden()
                 }
                 .settingsRow(anchor: .menuBarReadout)
+            }
 
-                Divider().padding(.vertical, 4)
-
-                SettingsToggleRow(
-                    title: L10n.tr("双列紧凑磁贴视图", "2-Column Compact Grid"),
-                    isOn: Binding(
-                        get: { store.isCompactGridMode },
-                        set: { store.isCompactGridMode = $0 }
-                    )
-                )
-                .settingsRow(anchor: .compactGrid)
-
-                SettingsToggleRow(
-                    title: L10n.tr("隐藏离线/未通电的设备", "Hide Offline / Unpowered Devices"),
-                    isOn: Binding(
-                        get: { store.hideOfflineDevices },
-                        set: { store.hideOfflineDevices = $0 }
-                    )
-                )
-                .settingsRow(anchor: .hideOfflineDevices)
-
-                SettingsToggleRow(
-                    title: L10n.tr("灯组内的单灯不重复显示", "Hide individual lights inside groups"),
-                    isOn: Binding(
-                        get: { store.hideGroupedLights },
-                        set: { store.hideGroupedLights = $0 }
-                    )
-                )
-                .settingsRow(anchor: .hideGroupedLights)
-
-                Text(L10n.tr(
-                    "开启后，米家灯组的成员灯会折叠进灯组卡片；灯组卡片被隐藏、离线或被筛掉时，成员单灯仍会显示。全关、场景、搜索与助手仍按完整设备集合计算。默认开启。",
-                    "When on, member lights fold into their Mi light-group card. If that card is hidden, offline or filtered out, the member lights stay visible. All Off, scenes, search and the assistant still use the full device set. On by default."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
+            SettingsSection(title: L10n.tr("交互", "Interaction")) {
                 SettingsToggleRow(
                     title: L10n.tr("输入框里显示快捷场景", "Show Scenes Under the Input"),
                     isOn: Binding(
@@ -543,13 +657,18 @@ private struct GeneralSettingsTab: View {
                 .settingsRow(anchor: .quickScenesBar)
 
                 SettingsToggleRow(
-                    title: L10n.tr("启用侧边情绪智能球", "Enable Sidecar Grok Ball"),
-                    isOn: Binding(
-                        get: { store.enableGrokBall },
-                        set: { store.enableGrokBall = $0 }
-                    )
+                    title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
+                    isOn: $soundFeedbackEnabled
                 )
-                .settingsRow(anchor: .grokBall)
+                .settingsRow(anchor: .soundFeedback)
+
+                Text(L10n.tr(
+                    "默认关闭。开启后，开关、全关和 AI 执行成功会播放轻提示音，失败会播放另一种提示音。",
+                    "Off by default. When enabled, successful toggles, All Off and AI actions play a soft cue, and failures play a different one."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
                 SettingsToggleRow(
                     title: L10n.tr("语音输入", "Voice Input"),
@@ -569,19 +688,16 @@ private struct GeneralSettingsTab: View {
                 .fixedSize(horizontal: false, vertical: true)
 
                 SettingsToggleRow(
-                    title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
-                    isOn: $soundFeedbackEnabled
+                    title: L10n.tr("启用侧边情绪智能球", "Enable Sidecar Grok Ball"),
+                    isOn: Binding(
+                        get: { store.enableGrokBall },
+                        set: { store.enableGrokBall = $0 }
+                    )
                 )
-                .settingsRow(anchor: .soundFeedback)
+                .settingsRow(anchor: .grokBall)
+            }
 
-                Text(L10n.tr(
-                    "默认关闭。开启后，开关、全关和 AI 执行成功会播放轻提示音，失败会播放另一种提示音。",
-                    "Off by default. When enabled, successful toggles, All Off and AI actions play a soft cue, and failures play a different one."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
+            SettingsSection(title: L10n.tr("启动与快捷键", "Startup & Shortcuts")) {
                 HStack {
                     Text(L10n.tr("登录 Mac 时自动启动", "Launch at Login"))
                         .font(.system(size: DesignTokens.TypeSize.body))
@@ -618,6 +734,177 @@ private struct GeneralSettingsTab: View {
                         }
                         .buttonStyle(PillActionButtonStyle())
                     }
+                }
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
+                VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
+                    SettingsToggleRow(
+                        title: store.enableVoiceInput
+                            ? L10n.tr(
+                                "启用全局快捷键 \(hotkey.shortcut.displayString)（短按面板，长按语音）",
+                                "Global shortcut \(hotkey.shortcut.displayString) (tap for dashboard, hold to speak)"
+                            )
+                            : L10n.tr(
+                                "启用全局快捷键 \(hotkey.shortcut.displayString)（打开/收起面板）",
+                                "Global shortcut \(hotkey.shortcut.displayString) (open or close dashboard)"
+                            ),
+                        isOn: Binding(
+                            get: { store.enableGlobalHotkey },
+                            set: { store.enableGlobalHotkey = $0 }
+                        )
+                    )
+
+                    if store.enableGlobalHotkey {
+                        HotkeyRecorderRow()
+                    }
+
+                    Text(L10n.tr(
+                        "关闭开关会立即取消系统级注册，不会继续占用这个组合。",
+                        "Turning this off unregisters the shortcut immediately so other apps can use it."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .settingsRow(anchor: .globalHotkey)
+            }
+
+            SettingsSection(title: L10n.tr("设备可见性", "Device Visibility")) {
+                SettingsToggleRow(
+                    title: L10n.tr("隐藏离线/未通电的设备", "Hide Offline / Unpowered Devices"),
+                    isOn: Binding(
+                        get: { store.hideOfflineDevices },
+                        set: { store.hideOfflineDevices = $0 }
+                    )
+                )
+                .settingsRow(anchor: .hideOfflineDevices)
+
+                if !store.hiddenDevices.isEmpty {
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text(L10n.tr(
+                                "已手动隐藏 \(store.hiddenDevices.count) 台设备",
+                                "\(store.hiddenDevices.count) manually hidden device(s)"
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(DesignTokens.secondaryText)
+
+                            Spacer()
+
+                            if store.hiddenDevices.count > 1 {
+                                Button(L10n.tr("全部恢复显示", "Unhide All")) {
+                                    let ids = store.hiddenDevices.map(\.id)
+                                    withAnimation(AppleMotion.snappySpring) {
+                                        for id in ids {
+                                            store.unhideDevice(id)
+                                        }
+                                    }
+                                }
+                                .buttonStyle(PillActionButtonStyle())
+                            }
+                        }
+
+                        ForEach(store.hiddenDevices) { dev in
+                            HStack(spacing: 8) {
+                                Image(systemName: dev.sfSymbolName)
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                    .frame(width: 18)
+
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(dev.name)
+                                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                    Text(L10n.displayRoomName(dev.roomName))
+                                        .font(.system(size: DesignTokens.TypeSize.caption))
+                                        .foregroundStyle(DesignTokens.secondaryText)
+                                }
+
+                                Spacer()
+
+                                Button(L10n.tr("恢复显示", "Unhide")) {
+                                    withAnimation(AppleMotion.snappySpring) {
+                                        store.unhideDevice(dev.id)
+                                    }
+                                }
+                                .buttonStyle(PillActionButtonStyle())
+                            }
+                        }
+                    }
+                    .settingsRow(anchor: .hiddenDevices)
+                }
+            }
+
+            SettingsSection(title: L10n.tr("高级显示", "Advanced Display")) {
+                DisclosureGroup(isExpanded: $advancedDisplay.isExpanded) {
+                    VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
+                        if #available(macOS 26.0, *) {
+                            HStack {
+                                Text(L10n.tr("面板主题", "Panel Theme"))
+                                    .font(.system(size: DesignTokens.TypeSize.body))
+                                Spacer()
+                                GlassSegmentedControl(
+                                    selection: $panelThemeRaw,
+                                    segments: PanelTheme.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
+                                )
+                                .frame(width: 210)
+                            }
+                            .frame(minHeight: DesignTokens.Settings.rowHeight)
+                            .settingsRow(anchor: .panelTheme)
+
+                            Divider().overlay(Color.primary.opacity(0.06))
+                        }
+
+                        if panelTheme == .classic {
+                            HStack {
+                                Text(L10n.tr("面板高度", "Panel Height"))
+                                    .font(.system(size: DesignTokens.TypeSize.body))
+                                Spacer()
+                                GlassSegmentedControl(
+                                    selection: $panelHeightRaw,
+                                    segments: PanelHeight.allCases.map { GlassSegment(value: $0.rawValue, title: $0.title) }
+                                )
+                                .frame(width: 210)
+                            }
+                            .frame(minHeight: DesignTokens.Settings.rowHeight)
+                            .settingsRow(anchor: .panelHeight)
+
+                            Divider().overlay(Color.primary.opacity(0.06))
+                        }
+
+                        SettingsToggleRow(
+                            title: L10n.tr("双列紧凑磁贴视图", "2-Column Compact Grid"),
+                            isOn: Binding(get: { store.isCompactGridMode }, set: { store.isCompactGridMode = $0 })
+                        )
+                        .settingsRow(anchor: .compactGrid)
+
+                        SettingsToggleRow(
+                            title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),
+                            isOn: $climatePanelModule
+                        )
+                        .settingsRow(anchor: .climatePanelModule)
+
+                        SettingsToggleRow(
+                            title: L10n.tr("灯组内的单灯不重复显示", "Hide individual lights inside groups"),
+                            isOn: Binding(get: { store.hideGroupedLights }, set: { store.hideGroupedLights = $0 })
+                        )
+                        .settingsRow(anchor: .hideGroupedLights)
+
+                        Text(L10n.tr(
+                            "开启后，米家灯组的成员灯会折叠进灯组卡片；灯组卡片被隐藏、离线或被筛掉时，成员单灯仍会显示。全关、场景、搜索与助手仍按完整设备集合计算。默认开启。",
+                            "When on, member lights fold into their Mi light-group card. If that card is hidden, offline or filtered out, the member lights stay visible. All Off, scenes, search and the assistant still use the full device set. On by default."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 6)
+                } label: {
+                    Text(L10n.tr("面板主题、高度、紧凑网格与卡片显示细节", "Panel theme, height, compact grid and card layout options"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
                 }
             }
 
@@ -657,36 +944,6 @@ private struct GeneralSettingsTab: View {
                 Text(L10n.tr(
                     "默认只放开亮度、模式、风速这类低风险写入。「更多设置」里的其他开关、滑块和按钮会显示为不可用；开启后它们也可以操作，请先确认设备确实支持该项。",
                     "Brightness, mode and fan level are the only writes open by default. Other switches, sliders and buttons under More Settings stay disabled until you turn this on; check that the device really supports the setting first."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-
-            SettingsSection(title: L10n.tr("全局快捷键", "Global Shortcut"), anchor: .globalHotkey) {
-                SettingsToggleRow(
-                    title: store.enableVoiceInput
-                        ? L10n.tr(
-                            "启用全局快捷键 \(hotkey.shortcut.displayString)（短按面板，长按语音）",
-                            "Global shortcut \(hotkey.shortcut.displayString) (tap for dashboard, hold to speak)"
-                        )
-                        : L10n.tr(
-                            "启用全局快捷键 \(hotkey.shortcut.displayString)（打开/收起面板）",
-                            "Global shortcut \(hotkey.shortcut.displayString) (open or close dashboard)"
-                        ),
-                    isOn: Binding(
-                        get: { store.enableGlobalHotkey },
-                        set: { store.enableGlobalHotkey = $0 }
-                    )
-                )
-
-                if store.enableGlobalHotkey {
-                    HotkeyRecorderRow()
-                }
-
-                Text(L10n.tr(
-                    "关闭开关会立即取消系统级注册，不会继续占用这个组合。",
-                    "Turning this off unregisters the shortcut immediately so other apps can use it."
                 ))
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
@@ -825,36 +1082,6 @@ private struct GeneralSettingsTab: View {
             AutomationSettingsSection(store: store)
             EnergySettingsSection(store: store)
 
-            if !store.hiddenDevices.isEmpty {
-                SettingsSection(title: L10n.tr("已隐藏的设备 (\(store.hiddenDevices.count))", "Hidden Devices (\(store.hiddenDevices.count))"), anchor: .hiddenDevices) {
-                    ForEach(store.hiddenDevices) { dev in
-                        HStack(spacing: 8) {
-                            Image(systemName: dev.sfSymbolName)
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .frame(width: 18)
-
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(dev.name)
-                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                                Text(L10n.displayRoomName(dev.roomName))
-                                    .font(.system(size: DesignTokens.TypeSize.caption))
-                                    .foregroundStyle(DesignTokens.secondaryText)
-                            }
-
-                            Spacer()
-
-                            Button(L10n.tr("恢复显示", "Unhide")) {
-                                withAnimation(AppleMotion.snappySpring) {
-                                    store.unhideDevice(dev.id)
-                                }
-                            }
-                            .buttonStyle(PillActionButtonStyle())
-                        }
-                    }
-                }
-            }
-
             SettingsSection(title: L10n.tr("首次设置", "Setup"), anchor: .setupGuide) {
                 HStack {
                     Text(L10n.tr("重新打开新手引导，再看一遍连接、搜索与全关撤销。", "Reopen the setup guide to review connecting, search and All Off + Undo."))
@@ -876,11 +1103,20 @@ private struct GeneralSettingsTab: View {
                 }
             }
         }
-        .task {
-            await HotkeyAndNotificationManager.shared.refreshNotificationPermission()
-        }
+        .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {
+            advancedDisplay.applyInitialNonDefaultIfNeeded(
+                panelTheme: panelTheme,
+                panelHeight: PanelHeight(rawValue: panelHeightRaw) ?? .standard,
+                isCompactGridMode: store.isCompactGridMode,
+                climatePanelModule: climatePanelModule,
+                hideGroupedLights: store.hideGroupedLights
+            )
+            advancedDisplay.expandIfNeeded(forHighlight: searchFocus?.highlight)
             launchAtLogin.refresh()
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            advancedDisplay.expandIfNeeded(forHighlight: highlight)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchAtLogin.refresh()
@@ -1032,13 +1268,51 @@ enum HAConnectionSaveGuard {
     }
 }
 
+enum ConnectionSettingsDisclosure {
+    static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts, .dualSourceFusion]
+
+    struct State: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
+        }
+
+        mutating func applyInitialDefaultsIfNeeded(accountCount: Int, isDualSourceActive: Bool) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if accountCount > 1 || isDualSourceActive {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandForHighlightIfNeeded(_ highlight: SettingsAnchor?) {
+            guard let highlight, ConnectionSettingsDisclosure.advancedConnectionAnchors.contains(highlight) else {
+                return
+            }
+            isExpanded = true
+        }
+    }
+
+    @MainActor
+    static func requestAddMiAccount(trigger: inout Int, focus: SettingsSearchFocus?) {
+        trigger &+= 1
+        focus?.jump(to: .miAccount)
+    }
+}
+
 private struct ConnectionSettingsTab: View {
     let store: HomeStore
+    @Binding var advancedConnections: ConnectionSettingsDisclosure.State
+    @Binding var lgWakeDisclosure: LGWebOSSettingsSaveGuard.WakeDisclosureState
     @State private var urlDraft: String = ""
     @State private var tokenDraft: String = ""
     @State private var tokenLookupWasUnavailable = false
     /// #143: Home Assistant is the second path, so its form stays folded until it is needed.
     @State private var haExpanded = false
+    @State private var addMiAccountTrigger = 0
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
     /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
@@ -1087,7 +1361,7 @@ private struct ConnectionSettingsTab: View {
     var body: some View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: L10n.tr("连接配置", "Connection")) {
+            SettingsSection(title: L10n.tr("连接状态与示例家庭", "Connection Status & Demo Home")) {
                 HStack {
                     Text(store.connectionSourceSummary)
                         .font(.system(size: DesignTokens.TypeSize.caption))
@@ -1107,19 +1381,19 @@ private struct ConnectionSettingsTab: View {
                         }
                     }
                 )) {
-                    Text(L10n.tr("演示模式（内置虚拟设备，完全离线）", "Demo Mode (built-in virtual devices, fully offline)"))
+                    Text(L10n.tr("先逛逛示例家庭", "Explore Demo Home"))
                 }
                 .toggleStyle(.switch)
                 .settingsRow(anchor: .demoMode)
 
                 Text(store.homeBackend == .demo
                      ? L10n.tr(
-                        "演示模式使用内置虚拟设备，不发起任何网络请求。关闭开关即可连接已配置的账号。",
-                        "Demo mode uses built-in virtual devices and never touches the network. Turn it off to connect configured accounts."
+                        "示例家庭，不会控制真实设备。关闭开关即可连接已配置的账号。",
+                        "Demo home will not control real devices. Turn it off to connect configured accounts."
                      )
                      : L10n.tr(
-                        "Home Assistant 与米家云端可以同时配置。两端都配置后会自动并行连接并合并重叠设备；只配置一端时单源运行。",
-                        "Home Assistant and Xiaomi Cloud can be configured together. With both, the app connects in parallel and merges overlapping devices; one source runs alone when it is the only one configured."
+                        "支持连接米家、Home Assistant 和 LG 电视；关闭示例家庭后将连接已配置的平台。",
+                        "Supports Xiaomi Home, Home Assistant and LG TV; connects to configured platforms when Demo Home is off."
                      ))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(DesignTokens.secondaryText)
@@ -1127,8 +1401,8 @@ private struct ConnectionSettingsTab: View {
             }
 
             if store.homeBackend != .demo {
-                SettingsSection(title: L10n.tr("米家云端直连", "Xiaomi Cloud Direct"), anchor: .miAccount) {
-                    MiAccountSection(store: store)
+                SettingsSection(title: L10n.tr("米家", "Xiaomi Home"), anchor: .miAccount) {
+                    MiAccountSection(store: store, showsInlineAddAccountButton: false, addAccountTrigger: addMiAccountTrigger)
                 }
 
                 if showsHomeAssistantForm {
@@ -1136,7 +1410,7 @@ private struct ConnectionSettingsTab: View {
                         homeAssistantForm
 
                         HStack {
-                            Button(store.isDiscoveringHA ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("扫描局域网 HA", "Scan LAN for HA")) {
+                            Button(store.isDiscoveringHA ? L10n.tr("查找中…", "Finding…") : L10n.tr("查找家中的 Home Assistant", "Find Home Assistant on LAN")) {
                                 Task {
                                     let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
                                     if let first = found.first {
@@ -1151,7 +1425,7 @@ private struct ConnectionSettingsTab: View {
                             .disabled(store.isDiscoveringHA)
                             .settingsRow(anchor: .haDiscovery)
 
-                            Button(L10n.tr("默认地址", "Default URL")) {
+                            Button(L10n.tr("填入默认地址", "Use Default URL")) {
                                 urlDraft = KeychainHelper.defaultNASURL
                             }
                             .buttonStyle(PillActionButtonStyle())
@@ -1207,15 +1481,78 @@ private struct ConnectionSettingsTab: View {
                     }
                 }
 
-                LGWebOSSettingsSection(store: store)
+                LGWebOSSettingsSection(store: store, wakeDisclosure: $lgWakeDisclosure)
+
+                SettingsSection(title: L10n.tr("高级连接选项", "Advanced Connection Options")) {
+                    DisclosureGroup(isExpanded: $advancedConnections.isExpanded) {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))
+                                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                                    Text(L10n.tr(
+                                        "如果有家人账号或不同地区的米家设备，可以继续扫码添加第二个米家账号；已添加账号可直接在上方「米家」卡片单独移除或全部退出。",
+                                        "If you have a family account or Xiaomi Home devices in another region, scan to add another account. Added accounts can be removed or signed out directly in the Xiaomi Home card above."
+                                    ))
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 8)
+                                Button {
+                                    ConnectionSettingsDisclosure.requestAddMiAccount(
+                                        trigger: &addMiAccountTrigger,
+                                        focus: searchFocus
+                                    )
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "plus.circle")
+                                        Text(L10n.tr("继续扫码添加", "Scan Another Account"))
+                                    }
+                                }
+                                .buttonStyle(PillActionButtonStyle())
+                            }
+                            .settingsRow(anchor: .miMultiAccounts)
+
+                            Divider().overlay(Color.primary.opacity(0.06))
+
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(L10n.tr("同时连接多个家居平台（相同设备自动合并）", "Connect Multiple Home Platforms Together (Duplicate Devices Merge Automatically)"))
+                                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                                Text(L10n.tr(
+                                    "同时配置米家与 Home Assistant 后，应用会自动并行连接，并把同一台设备合并成一张卡片，无需手动切换平台。",
+                                    "When both Xiaomi Home and Home Assistant are configured, the app connects to both in parallel and merges duplicate devices into a single tile without manual platform switching."
+                                ))
+                                .font(.system(size: DesignTokens.TypeSize.caption))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .settingsRow(anchor: .dualSourceFusion)
+                        }
+                        .padding(.top, 6)
+                    } label: {
+                        Text(L10n.tr("多账号与多平台合并", "Multiple Accounts & Multi-Platform Merge"))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                }
             }
         }
         .onChange(of: haIsDirty) { _, _ in registerUnsavedForm() }
         .onDisappear { unsaved?.unregister("home-assistant") }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: highlight) { haExpanded = true }
+            advancedConnections.expandForHighlightIfNeeded(highlight)
         }
         .onAppear {
+            if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight) {
+                haExpanded = true
+            }
+            advancedConnections.applyInitialDefaultsIfNeeded(
+                accountCount: store.miAccounts.count,
+                isDualSourceActive: store.hasMiSource && store.hasHASource
+            )
+            advancedConnections.expandForHighlightIfNeeded(searchFocus?.highlight)
             urlDraft = HAConnectionSaveGuard.initialURLDraft(storedURL: store.serverURLString, hasHASource: store.hasHASource)
             let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
             tokenDraft = initialHAToken.token
@@ -1243,7 +1580,7 @@ private struct ConnectionSettingsTab: View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(L10n.tr("服务器地址", "Server URL"))
+                    Text(L10n.tr("Home Assistant 地址 (URL)", "Home Assistant Address (URL)"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
@@ -1269,8 +1606,15 @@ private struct ConnectionSettingsTab: View {
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
+                Text(L10n.tr(
+                    "不确定地址？可在 Home Assistant 网页设置里查看。",
+                    "Not sure about the address? Check Settings in your Home Assistant web page."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
                 if HAConnectionSaveGuard.showsPlaintextWarning(forDraft: urlDraft) {
-                    Label(L10n.tr("令牌将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
+                    Label(L10n.tr("连接钥匙将以明文在网络上传输，建议使用 HTTPS 或 Nabu Casa 地址。", "Your access token will travel unencrypted. Use HTTPS or a Nabu Casa address."), systemImage: "exclamationmark.triangle.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
@@ -1279,12 +1623,12 @@ private struct ConnectionSettingsTab: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(L10n.tr("长期访问令牌 (安全存入钥匙串)", "Long-Lived Access Token (Stored in Keychain)"))
+                    Text(L10n.tr("专属连接钥匙 (Access Token，安全存入钥匙串)", "Access Token (Long-Lived Token, Stored in Keychain)"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                     Spacer()
                     if let secURL = URL(string: "\(HAWebSocketProvider.normalizeBaseURL(HAConnectionSaveGuard.effectiveURL(urlDraft)))/profile/security") {
-                        Button(L10n.tr("打开网页取令牌", "Open Security Page")) {
+                        Button(L10n.tr("打开网页取钥匙", "Open Security Page")) {
                             NSWorkspace.shared.open(secURL)
                         }
                         .buttonStyle(.plain)
@@ -1292,10 +1636,17 @@ private struct ConnectionSettingsTab: View {
                         .foregroundStyle(Color.accentColor)
                     }
                 }
-                SecureField(L10n.tr("粘贴 HA 长期访问令牌", "Paste HA Long-Lived Access Token"), text: $tokenDraft)
+                SecureField(L10n.tr("粘贴 Home Assistant 专属连接钥匙", "Paste Home Assistant Access Token"), text: $tokenDraft)
                     .textFieldStyle(.roundedBorder)
                     .controlSize(.regular)
                     .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
+                Text(L10n.tr(
+                    "可在 Home Assistant 网页左下角「个人资料 → 安全设置」底部创建长期专属连接钥匙。",
+                    "Create a Long-Lived Access Token at the bottom of Profile → Security in your Home Assistant web page."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
                 if let reason = disconnectReason {
                     Label(reason, systemImage: "exclamationmark.octagon.fill")
                         .font(.system(size: DesignTokens.TypeSize.caption))
@@ -1312,7 +1663,7 @@ private struct ConnectionSettingsTab: View {
     private var connectionBadgeText: String {
         switch store.panelHealth {
         case .ok where store.homeBackend == .demo:
-            return L10n.tr("● 离线演示", "● Offline Demo")
+            return L10n.tr("● 示例家庭", "● Demo Home")
         case .ok:
             return L10n.tr("● 已连接", "● Connected")
         case .connecting:
@@ -1405,89 +1756,6 @@ private struct AssistantSettingsTab: View {
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
                 .settingsRow(anchor: .confidenceThreshold)
-            }
-        }
-    }
-}
-
-// MARK: - Appearance
-
-private struct AppearanceSettingsTab: View {
-    let store: HomeStore
-    @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
-    @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
-    @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
-    @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
-
-    /// The theme the app actually renders, so a stored Liquid Glass choice on an older system still
-    /// shows the classic controls.
-    private var panelTheme: PanelTheme {
-        PanelTheme.resolved(from: panelThemeRaw)
-    }
-
-    var body: some View {
-        let _ = store.effectiveLanguage
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: L10n.tr("外观模式", "Appearance")) {
-                GlassSegmentedControl(
-                    selection: $appearanceRaw,
-                    segments: AppAppearance.allCases.map {
-                        GlassSegment(value: $0.rawValue, title: $0.title)
-                    }
-                )
-                .settingsRow(anchor: .appearanceMode)
-
-                Text(L10n.tr(
-                    "面板会跟随系统自动使用浅色或深色材质，开启的设备比关闭的磁贴略亮一层。",
-                    "The panel follows light and dark automatically, and a device that is on sits one step brighter than the off tile."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                if #available(macOS 26.0, *) {
-                    Divider().overlay(Color.primary.opacity(0.06))
-
-                    HStack {
-                        Text(L10n.tr("面板主题", "Panel Theme"))
-                            .font(.system(size: DesignTokens.TypeSize.body))
-                        Spacer()
-                        GlassSegmentedControl(
-                            selection: $panelThemeRaw,
-                            segments: PanelTheme.allCases.map {
-                                GlassSegment(value: $0.rawValue, title: $0.title)
-                            }
-                        )
-                        .frame(width: 210)
-                        .settingsRow(anchor: .panelTheme)
-                    }
-                }
-            }
-
-            SettingsSection(title: L10n.tr("面板布局", "Panel Layout")) {
-                if panelTheme == .classic {
-                    HStack {
-                        Text(L10n.tr("面板高度", "Panel Height"))
-                            .font(.system(size: DesignTokens.TypeSize.body))
-                        Spacer()
-                        GlassSegmentedControl(
-                            selection: $panelHeightRaw,
-                            segments: PanelHeight.allCases.map {
-                                GlassSegment(value: $0.rawValue, title: $0.title)
-                            }
-                        )
-                        .frame(width: 210)
-                        .settingsRow(anchor: .panelHeight)
-                    }
-
-                    Divider().overlay(Color.primary.opacity(0.06))
-                }
-
-                SettingsToggleRow(
-                    title: L10n.tr("空调使用整行面板模块", "Full-Width Climate Panel"),
-                    isOn: $climatePanelModule
-                )
-                .settingsRow(anchor: .climatePanelModule)
             }
         }
     }
@@ -1819,6 +2087,30 @@ private struct AboutSettingsTab: View {
 // MARK: - LG webOS
 
 enum LGWebOSSettingsSaveGuard {
+    struct WakeDisclosureState: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
+        }
+
+        mutating func applyInitialDefaultsIfNeeded(macAddress: String) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if !macAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandForHighlightIfNeeded(_ highlight: SettingsAnchor?) {
+            if highlight == .lgTV {
+                isExpanded = true
+            }
+        }
+    }
+
     @MainActor
     @discardableResult
     static func toggleEnabled(
@@ -1891,17 +2183,19 @@ enum LGWebOSSettingsSaveGuard {
 
 struct LGWebOSSettingsSection: View {
     let store: HomeStore
+    @Binding var wakeDisclosure: LGWebOSSettingsSaveGuard.WakeDisclosureState
     @State private var isEnabled: Bool = false
     @State private var hostDraft: String = ""
     @State private var macDraft: String = ""
     @State private var isScanning: Bool = false
     @State private var confirmsTrustReset = false
+    @Environment(\.settingsSearchFocus) private var searchFocus
 
     var body: some View {
         let _ = store.effectiveLanguage
         let isPaired = !store.lgConfig.clientKey.isEmpty
         let hasHost = !hostDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        SettingsSection(title: L10n.tr("LG webOS 电视局域网直连", "LG webOS TV Direct LAN"), anchor: .lgTV) {
+        SettingsSection(title: L10n.tr("LG 电视", "LG TV"), anchor: .lgTV) {
             HStack {
                 Spacer()
                 Text(isPaired
@@ -1914,10 +2208,10 @@ struct LGWebOSSettingsSection: View {
             }
 
             HStack {
-                Text(L10n.tr("启用 LG 电视局域网直连 (SSAP + WoL)", "Enable LG TV LAN Control (SSAP + WoL)"))
+                Text(L10n.tr("启用 LG 电视局域网控制", "Enable LG TV LAN Control"))
                     .font(.system(size: DesignTokens.TypeSize.body))
                 Spacer()
-                Toggle(L10n.tr("启用 LG 电视局域网直连", "Enable LG TV Direct LAN"), isOn: $isEnabled)
+                Toggle(L10n.tr("启用 LG 电视局域网控制", "Enable LG TV LAN Control"), isOn: $isEnabled)
                     .labelsHidden()
                     .glassLabelHidden()
                     .toggleStyle(.glass)
@@ -1934,30 +2228,45 @@ struct LGWebOSSettingsSection: View {
             }
 
             if isEnabled {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n.tr("局域网 IP", "LAN IP"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                        TextField(L10n.tr("如 192.168.1.50", "e.g. 192.168.1.50"), text: $hostDraft)
-                            .textFieldStyle(.roundedBorder)
-                            .controlSize(.regular)
-                            .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
-                    }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(L10n.tr("电视局域网 IP", "TV LAN IP"))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                    TextField(L10n.tr("如 192.168.1.50", "e.g. 192.168.1.50"), text: $hostDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .controlSize(.regular)
+                        .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
+                }
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(L10n.tr("MAC 地址 (Wake-on-LAN)", "MAC Address (Wake-on-LAN)"))
+                DisclosureGroup(isExpanded: $wakeDisclosure.isExpanded) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(L10n.tr("电视的网络硬件地址 (MAC)", "TV Network Hardware Address (MAC)"))
                             .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(DesignTokens.secondaryText)
                         TextField(L10n.tr("如 AA:BB:CC:DD:EE:FF", "e.g. AA:BB:CC:DD:EE:FF"), text: $macDraft)
                             .textFieldStyle(.roundedBorder)
                             .controlSize(.regular)
                             .font(.system(size: DesignTokens.TypeSize.body, design: .monospaced))
+                        Text(L10n.tr(
+                            "仅在电视关机后需要从菜单栏远程开机时填写；可在电视「设置 → 网络」里查看 MAC 地址。",
+                            "Only needed to turn the TV on remotely when it is off. Find the MAC address in TV Settings → Network."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                     }
+                    .padding(.top, 4)
+                } label: {
+                    Text(L10n.tr(
+                        "高级：允许远程开机（需电视开启网络唤醒）",
+                        "Advanced: Allow Remote Power On (Requires TV Network Wake)"
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
                 }
 
                 HStack {
-                    Button(isScanning ? L10n.tr("扫描中…", "Scanning…") : L10n.tr("扫描局域网电视", "Scan LAN TV")) {
+                    Button(isScanning ? L10n.tr("查找中…", "Finding…") : L10n.tr("查找局域网电视", "Find TV on LAN")) {
                         isScanning = true
                         Task {
                             let found = await store.discoverLGWebOSTVs(hostHint: hostDraft)
@@ -2011,9 +2320,17 @@ struct LGWebOSSettingsSection: View {
             isEnabled = store.lgConfig.isEnabled
             hostDraft = store.lgConfig.host
             macDraft = store.lgConfig.macAddress
+            wakeDisclosure.applyInitialDefaultsIfNeeded(macAddress: macDraft)
+            wakeDisclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
         }
         .onChange(of: store.lgConfig.isEnabled) { _, newValue in
             isEnabled = newValue
+            if newValue {
+                wakeDisclosure.applyInitialDefaultsIfNeeded(macAddress: macDraft)
+            }
+        }
+        .onChange(of: searchFocus?.highlight) { _, highlight in
+            wakeDisclosure.expandForHighlightIfNeeded(highlight)
         }
     }
 

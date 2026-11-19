@@ -33,6 +33,7 @@ import {
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { STALE, type EpochToken, type SyncRunToken } from "./sourceEpoch.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { patchConnectionStatusFooter } from "./connectionStatus.js";
 import { switchLightMarkIds } from "../core/switchLightMarks.js";
 import { AutomationRuleStore, type HASnapshotLike } from "../core/automationEngine.js";
 import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
@@ -833,14 +834,9 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     host.root
       .querySelector<HTMLElement>(".cc-home-badge")
       ?.classList.toggle("is-active", host.activeDeviceCount > 0);
-    const health = host.panelHealth();
-    const dot = host.root.querySelector<HTMLElement>(".cc-status-dot");
-    if (dot) dot.className = `cc-status-dot ${health.dot}`;
-    const footerLabel = host.root.querySelector<HTMLElement>(".cc-footer-label");
-    const wantsButton = health.kind === "offline" && health.recovery === "qr";
-    if (footerLabel && (footerLabel.tagName === "BUTTON") !== wantsButton) return false;
-    if (footerLabel) footerLabel.textContent = health.label;
-    return true;
+    // The footer (trigger, recovery action, detail card) always re-derives from one owner; a silent refresh must
+    // never write an older label back over the plain-language state (#280 review).
+    return patchConnectionStatusFooter(host);
   }
 
   export function filterBySelectedHome<D extends { readonly did: string; readonly splitParentDid?: string | null }, R extends { readonly homeId?: string; readonly dids: readonly string[] }>(

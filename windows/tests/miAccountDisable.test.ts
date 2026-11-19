@@ -17,6 +17,7 @@ import {
 } from "../src/ui/cloudRefresh.js";
 import { scheduleEchoReadBack } from "../src/ui/commandDispatch.js";
 import { addOrUpdateMiAccountOnHost, setMiAccountEnabledOnHost } from "../src/ui/connectionsAndDiagView.js";
+import { resolveConnectionStatus } from "../src/ui/connectionStatus.js";
 import {
   enqueueScheduledCommand,
   markTimerSnapshotReady,
@@ -643,9 +644,16 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
       "disconnected",
       "dual-source empty Xiaomi snapshot when all accounts disabled must not report connected",
     );
-    assert.equal(app.panelHealth().kind, "online");
-    assert.doesNotMatch(app.panelHealth().label, /米家账号/);
-
+    // The footer must tell the same story: Xiaomi is turned off, Home Assistant keeps the panel usable,
+    // and no stale "米家账号 …" label promises a login that can no longer control anything.
+    const status = resolveConnectionStatus(app);
+    assert.notEqual(status.tone, "offline", "a disabled Xiaomi login must not take the Home Assistant panel down");
+    assert.doesNotMatch(status.text, /米家账号/);
+    assert.match(status.text, /米家已停用/);
+    const miSource = status.sources.find((source) => source.id === "mi");
+    assert.equal(miSource?.badge, "unconfigured");
+    assert.match(miSource?.statusText ?? "", /米家已停用/);
+    assert.equal(status.sources.find((source) => source.id === "ha")?.badge, "online");
     // 1. HA-exclusive device remains controllable via applyCommand and executeIntents.
     const haEntity = haOnly.kind.kind === "light" ? haOnly.kind.entityId : "";
     assert.equal(await app.applyCommand({ kind: "setLightPower", entityId: haEntity, isOn: false }), true);
