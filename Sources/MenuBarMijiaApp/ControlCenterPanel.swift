@@ -140,9 +140,12 @@ public struct ControlCenterPanel: View {
     /// The dashboard plus the hooks that only react to state the panel itself owns. Kept out of
     /// `body` on purpose: one 30-modifier chain made CI's compiler give up with "unable to
     /// type-check this expression in reasonable time", so the chain is split in two.
+    ///
+    /// `body` stays free of side effects: the probe's height cap is written only from `onAppear`,
+    /// `onChange` and the panel's `didShow` notification, so those notifications are never swallowed
+    /// by a flag a previous body pass already applied.
     private var dashboardRoot: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
-        let _ = syncAdaptiveMaximumHeight(notify: false)
         return ZStack(alignment: .bottom) {
             if store.showsFullOnboardingGuide {
                 OnboardingGuideView(store: store)

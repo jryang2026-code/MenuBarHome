@@ -180,5 +180,47 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_Space, characters: " "), onboarding) == .passThrough)
         #expect(route(esc, onboarding) == .hidePanel)
     }
+
+    @Test("An IME composition keeps Esc: tier-2 surfaces and the GrokBall stage wait for the marked text to commit")
+    func imeCompositionKeepsEscape() {
+        let esc = Key(code: kVK_Escape)
+        let composing = Context(
+            isGrokBallStageExpanded: true,
+            isTextFieldFocused: true,
+            isComposingText: true,
+            hasExpandedDevice: true
+        )
+        // Neither the GrokBall stage nor the device drawer may collapse while Pinyin/Kana marked text is live.
+        #expect(PanelKeyRouter.beforeSearch(esc, composing) == nil)
+        #expect(route(esc, composing) == .leaveTextField(dismissAssistant: false))
+
+        // The same context without marked text hands Esc back to the panel.
+        var committed = composing
+        committed.isComposingText = false
+        #expect(route(esc, committed) == .dismissGrokBallStage)
+        committed.isGrokBallStageExpanded = false
+        #expect(route(esc, committed) == .collapseExpandedDevice)
+    }
+
+    @Test("An active prompt only owns keys inside the panel window")
+    func promptScopeIsThePanelWindow() {
+        let esc = Key(code: kVK_Escape)
+        #expect(route(esc, Context(isPanelWindow: false, hasActivePrompt: true)) == .passThrough)
+        #expect(route(Key(code: kVK_Return), Context(isPanelWindow: false, hasActivePrompt: true)) == .passThrough)
+        #expect(route(esc, Context(isPanelWindow: true, hasActivePrompt: true)) == .dismissPrompt)
+    }
+
+    @Test("Esc in a connection-detail form leaves the field without closing the assistant bar behind it")
+    func connectionDetailFormEscape() {
+        let detailForm = Context(isShowingConnectionDetail: true, isTextFieldFocused: true, isFormFieldFocused: true, isShowingAssistantBar: true)
+        #expect(route(Key(code: kVK_Escape), detailForm) == .leaveTextField(dismissAssistant: false))
+        // Other keys still belong to the detail's own form controls.
+        #expect(route(Key(code: kVK_Tab), detailForm) == .passThrough)
+        // With no field focused, Esc closes the detail itself.
+        var unfocused = detailForm
+        unfocused.isTextFieldFocused = false
+        unfocused.isFormFieldFocused = false
+        #expect(route(Key(code: kVK_Escape), unfocused) == .dismissConnectionDetail)
+    }
 }
 

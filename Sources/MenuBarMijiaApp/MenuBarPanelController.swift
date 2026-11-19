@@ -100,6 +100,8 @@ final class MenuBarPanelController: NSObject {
     var isApplyingPanelGeometry = false
     var isEntranceAnimating = false
     var hasPendingGeometryPass = false
+    /// One coalesced geometry pass per runloop turn; `scheduleAdaptiveGeometryPass()` owns the hop.
+    var isGeometryPassScheduled = false
     var serialGeometryApplyCount = 0
 
     /// Page-routing boundary used by the status menu; the app delegates to the existing Settings owner.
@@ -281,6 +283,7 @@ final class MenuBarPanelController: NSObject {
         isApplyingPanelGeometry = false
         isEntranceAnimating = false
         hasPendingGeometryPass = false
+        isGeometryPassScheduled = false
         panelAdaptiveHeightProbe.resetNotificationBaseline()
         PanelTransientUIState.shared.resetOnPanelHide(store: store)
         removeMouseMonitors()
@@ -961,6 +964,7 @@ final class MenuBarPanelController: NSObject {
         isApplyingPanelGeometry = false
         isEntranceAnimating = false
         hasPendingGeometryPass = false
+        isGeometryPassScheduled = false
         panelAdaptiveHeightProbe.resetNotificationBaseline()
         panelHostingVisibility.setVisible(false)
         panelWindow?.contentView = nil

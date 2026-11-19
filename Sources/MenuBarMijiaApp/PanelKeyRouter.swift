@@ -30,27 +30,32 @@ final class PanelTransientUIState {
         return session
     }
 
-    func endAllOffHold(session: UInt64?) {
+    /// The pointer lifted. `onPressingChanged(false)` runs *before* a completed 0.6 s long press's
+    /// `perform` closure, so a release only stops the key/tap semantics: it keeps the session
+    /// consumable. Otherwise SwiftUI's own callback order would reject every successful hold.
+    /// Only an explicit cancel (Esc, focus loss, panel hide) invalidates the session.
+    func releaseAllOffHold(session: UInt64?) {
         guard let session, activeHoldSessionId == session else { return }
-        activeHoldSessionId = nil
         isAllOffHoldActive = false
         cancelActiveHoldHandler = nil
     }
 
+    /// Esc, key-focus loss, or the panel hiding: the hold is over, and a late `perform` must not fire.
     func cancelAllOffHold(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         let handler = cancelActiveHoldHandler
-        let wasActive = isAllOffHoldActive
+        let wasActive = activeHoldSessionId != nil
         activeHoldSessionId = nil
         isAllOffHoldActive = false
         cancelActiveHoldHandler = nil
         if wasActive {
+            // The cancelled press must not turn into the button's tap on mouse-up.
             suppressTapUntilUptime = now + 0.8
             handler?()
         }
     }
 
     func consumeConfirmedHold(session: UInt64?) -> Bool {
-        guard let session, isAllOffHoldActive, activeHoldSessionId == session else { return false }
+        guard let session, activeHoldSessionId == session else { return false }
         activeHoldSessionId = nil
         isAllOffHoldActive = false
         cancelActiveHoldHandler = nil
@@ -137,6 +142,8 @@ enum PanelKeyRouter {
         var isHotkeyPhysicallyDown = false
         var isTextFieldFocused = false
         var isFormFieldFocused = false
+        /// An IME has uncommitted marked text in the focused field: Esc cancels the composition, not the panel.
+        var isComposingText = false
         var isShowingOnboarding = false
         var isShowingAssistantBar = false
         var editMode: PanelEditMode = .none
@@ -199,12 +206,14 @@ enum PanelKeyRouter {
             if context.isAllOffHoldActive { return .cancelAllOffHold }
             if context.hasPendingConfirmation { return .cancelPendingConfirmation }
         }
-        if context.hasActivePrompt {
+        if context.isPanelWindow, context.hasActivePrompt {
             // Esc belongs to the prompt; Return and ↑↓ go to the prompt's field, never to search or cards.
             if key.code == kVK_Escape { return .dismissPrompt }
             if key.code == kVK_Return || key.code == kVK_UpArrow || key.code == kVK_DownArrow { return .passThrough }
         }
-        if key.code == kVK_Escape, context.isPanelWindow, !context.isFormFieldFocused {
+        // The IME owns Esc while it has marked text, so a Chinese/Japanese composition can be abandoned
+        // without a panel-level surface collapsing behind it.
+        if key.code == kVK_Escape, context.isPanelWindow, !context.isFormFieldFocused, !context.isComposingText {
             if context.isGrokBallStageExpanded { return .dismissGrokBallStage }
             if context.isShowingConnectionDetail { return .dismissConnectionDetail }
             if !context.isTextFieldFocused, context.isShowingAssistantBar { return .dismissAssistantBar }
@@ -216,6 +225,11 @@ enum PanelKeyRouter {
             if context.isConnectionStatusFocused { return .clearConnectionStatusFocus }
         }
         if context.isShowingConnectionDetail, context.isPanelWindow {
+            // The detail keeps its own form keys (the reader is a text field, not the panel's search), but
+            // Esc still leaves the field first instead of also tearing down the assistant bar behind it.
+            if key.code == kVK_Escape, context.isFormFieldFocused {
+                return .leaveTextField(dismissAssistant: false)
+            }
             return .passThrough
         }
         if context.isConnectionStatusFocused, context.isPanelWindow {
@@ -231,7 +245,7 @@ enum PanelKeyRouter {
 
     /// Keys search did not take.
     static func afterSearch(_ key: Key, _ context: Context) -> Action {
-        if context.hasActivePrompt {
+        if context.isPanelWindow, context.hasActivePrompt {
             if key.code == kVK_Escape { return .dismissPrompt }
             if key.code == kVK_Return || key.code == kVK_UpArrow || key.code == kVK_DownArrow { return .passThrough }
         }

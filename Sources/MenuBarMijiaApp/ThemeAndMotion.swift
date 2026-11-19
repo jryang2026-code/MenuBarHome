@@ -136,6 +136,7 @@ private struct AdaptiveSliceWriter: View {
                 let height = geo.size.height
                 let _ = probe.recordDuringLayout(slice: slice, height: height)
                 Color.clear
+                    .allowsHitTesting(false)
                     .onAppear {
                         probe.updateAndNotify(slice: slice, height: height)
                     }

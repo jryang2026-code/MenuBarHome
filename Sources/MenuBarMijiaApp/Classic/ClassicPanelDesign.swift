@@ -82,6 +82,8 @@ struct ClassicHoldToConfirmButton: View {
             onTap()
         }
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
+            // SwiftUI fires `onPressingChanged(false)` before this closure, and the release kept the
+            // session consumable, so a completed hold is recognised exactly once.
             let session = holdSessionId
             holdSessionId = nil
             holding = false
@@ -97,13 +99,14 @@ struct ClassicHoldToConfirmButton: View {
                 }
                 withAnimation(.linear(duration: 0.6)) { holding = true }
             } else {
-                PanelTransientUIState.shared.endAllOffHold(session: holdSessionId)
-                holdSessionId = nil
+                // A release is not a cancel: dismissing either would converge.
+                PanelTransientUIState.shared.releaseAllOffHold(session: holdSessionId)
                 withAnimation(.easeOut(duration: 0.2)) { holding = false }
             }
         }
         .onDisappear {
-            PanelTransientUIState.shared.endAllOffHold(session: holdSessionId)
+            // Leaving the tree is an explicit cancel: a late `perform` must not fire.
+            PanelTransientUIState.shared.cancelAllOffHold()
             holdSessionId = nil
             holding = false
         }

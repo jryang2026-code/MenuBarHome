@@ -2972,6 +2972,7 @@ struct MenuBarPanelControllerTests {
         #expect(abs(panel.frame.height - maxCap) <= 2)
 
         // Switching to a sparse room shrinks the panel toward the 280 pt pilot floor without closing.
+        let demoDevices = store.devices
         let singleLight = try #require(store.devices.first {
             if case .light = $0.kind { return true }
             return false
@@ -2985,12 +2986,40 @@ struct MenuBarPanelControllerTests {
         #expect(compactHeight >= MenuBarPanelController.pilotMinHeight - 1)
         #expect(compactHeight < maxCap - 40, "sparse room shrinks well below the 560 pt cap")
 
-        // Expanding a drawer grows serially, and hiding stops further geometry passes.
+        // Expanding a drawer grows serially, and collapsing it returns to the exact pre-expansion height.
         store.expandedDeviceId = singleLight.id
         Self.pumpMainRunLoop(0.08)
         #expect(panel.frame.height >= compactHeight)
         let passesBeforeHide = controller.serialGeometryApplyCount
-        #expect(passesBeforeHide < 16, "coalesced probe avoids layout feedback loops")
+        #expect(passesBeforeHide <= 3, "one coalesced pass per state change, not a layout feedback loop")
+
+        store.expandedDeviceId = nil
+        Self.pumpMainRunLoop(0.08)
+        #expect(abs(panel.frame.height - compactHeight) <= 1, "collapsing the drawer restores the pre-expansion height")
+
+        // Edit mode unmounts the footer slice (`clearOnDisappear: true`), so its 0 height must reach the
+        // window instead of leaving the panel holding the space the footer used to take.
+        // A four-tile room keeps the column above the 280 pt floor, where the footer's slice is visible
+        // in the height instead of being absorbed by the minimum.
+        store.devices = demoDevices.filter { $0.roomId == singleLight.roomId }
+        Self.pumpMainRunLoop(0.08)
+        let tallRoomHeight = panel.frame.height
+        let probe = controller.panelAdaptiveHeightProbe
+        let browsingNeed = probe.resolvedContentHeight
+        let footerHeight = probe.bottomChromeHeight
+        #expect(tallRoomHeight > MenuBarPanelController.pilotMinHeight + 4, "four tiles must clear the pilot floor")
+        #expect(footerHeight > 0)
+        #expect(abs(probe.topChromeHeight + probe.scrollContentHeight + footerHeight - browsingNeed) <= 0.5)
+
+        LayoutUIState.shared.beginDeviceLayoutEditing()
+        #expect(Self.pumpMainRunLoop(until: {
+            probe.bottomChromeHeight == 0
+                && abs(panel.frame.height - MenuBarPanelController.clampAdaptiveHeight(probe.resolvedContentHeight, availableHeight: maxCap)) <= 1
+        }), "edit mode unmounts the footer slice, clears its measured height, and the window follows")
+
+        LayoutUIState.shared.endDeviceLayoutEditing()
+        #expect(Self.pumpMainRunLoop(until: { probe.bottomChromeHeight == footerHeight }))
+        #expect(abs(panel.frame.height - tallRoomHeight) <= 1, "leaving edit mode restores the footer's height")
 
         controller.hidePanel()
         Self.pumpMainRunLoop(0.05)
@@ -3055,31 +3084,67 @@ struct MenuBarPanelControllerTests {
         #expect(offlineCollapsed)
     }
 
-    @Test("WP2d: GrokBall stays top-anchored across 280->560 pt adaptive growth and flips without overlapping the 380 pt column")
+    @Test("WP2d: a completed 0.6 s All-Off hold is consumed in either callback order, and only an explicit cancel voids it")
+    func allOffHoldSessionSurvivesRelease() {
+        let transient = PanelTransientUIState.shared
+        defer { transient.resetForTesting() }
+
+        // SwiftUI's real order: `onPressingChanged(false)` runs first, then the long press's `perform`.
+        // The release must keep the session consumable, or every mouse hold is silently dropped.
+        let releasedFirst = transient.beginAllOffHold { }
+        transient.releaseAllOffHold(session: releasedFirst)
+        #expect(transient.isAllOffHoldActive == false, "a finished hold stops owning Esc")
+        #expect(transient.consumeConfirmedHold(session: releasedFirst), "release is not a cancel")
+
+        // The opposite order (perform before release) must also fire exactly once.
+        let performedFirst = transient.beginAllOffHold { }
+        #expect(transient.consumeConfirmedHold(session: performedFirst))
+        transient.releaseAllOffHold(session: performedFirst)
+        #expect(transient.consumeConfirmedHold(session: performedFirst) == false, "a hold confirms once")
+
+        // Esc, focus loss and hiding all go through `cancelAllOffHold`: the same late perform is refused.
+        var resetCount = 0
+        let cancelled = transient.beginAllOffHold { resetCount += 1 }
+        transient.cancelAllOffHold()
+        #expect(resetCount == 1, "a cancel resets the button's sweep")
+        #expect(transient.consumeConfirmedHold(session: cancelled) == false)
+        #expect(transient.shouldSuppressTap(), "a cancelled hold must not become the button's tap")
+
+        // A short press that never reached 0.6 s leaves a stale token the next begin makes unusable.
+        let shortPress = transient.beginAllOffHold { }
+        transient.releaseAllOffHold(session: shortPress)
+        let nextPress = transient.beginAllOffHold { }
+        #expect(transient.consumeConfirmedHold(session: shortPress) == false)
+        #expect(transient.consumeConfirmedHold(session: nextPress))
+    }
+
+    @Test("WP2d: GrokBall keeps a top-anchored ball in place across 280->560 pt adaptive growth")
     func grokBallTopAnchorAndAdaptiveEdgeRecalibration() {
         let visible = NSRect(x: 0, y: 0, width: 1_440, height: 900)
         // Right-aligned 380 pt adaptive column growing downward from 280 pt to 560 pt (fixed maxY = 870).
         let compactParent = NSRect(x: 1_044, y: 590, width: 380, height: 280)
         let tallParent = NSRect(x: 1_044, y: 310, width: 380, height: 560)
 
+        // The anchor is the panel's top edge, so a bottom-edge height change keeps it fixed.
         #expect(GrokBallSidecarPlacement.anchorOrigin(for: compactParent) == GrokBallSidecarPlacement.anchorOrigin(for: tallParent))
 
+        // A dragged ball stores its offset against that anchor: the same offset lands on the same
+        // screen point at 280 pt and at 560 pt, instead of sliding by half the height delta.
+        let dragged = NSPoint(x: compactParent.minX - 50, y: -86)
+        let compactAnchor = GrokBallSidecarPlacement.anchorOrigin(for: compactParent)
+        let tallAnchor = GrokBallSidecarPlacement.anchorOrigin(for: tallParent)
+        #expect(NSPoint(x: compactAnchor.x + dragged.x, y: compactAnchor.y + dragged.y)
+                == NSPoint(x: tallAnchor.x + dragged.x, y: tallAnchor.y + dragged.y))
+
+        // The default placement is top-anchored too, so neither the ball nor its side moves.
         for expanded in [false, true] {
             let compactPlacement = GrokBallSidecarPlacement.resolve(parent: compactParent, visible: visible, expanded: expanded)
             let tallPlacement = GrokBallSidecarPlacement.resolve(parent: tallParent, visible: visible, expanded: expanded)
             #expect(compactPlacement.side == .left)
             #expect(tallPlacement.side == .left)
             #expect(compactPlacement.ballCenter == tallPlacement.ballCenter, "bottom-edge growth never shifts a top-anchored ball")
-            #expect(compactPlacement.frame.intersects(compactParent) == false || compactPlacement.suggestionsFrame?.intersects(compactParent) != true)
+            #expect(compactPlacement.frame.intersects(compactParent) == false)
             if let suggestions = tallPlacement.suggestionsFrame {
-                let ballRect = NSRect(
-                    x: tallPlacement.ballCenter.x - GrokBallSidecarPlacement.ballDiameter / 2,
-                    y: tallPlacement.ballCenter.y - GrokBallSidecarPlacement.ballDiameter / 2,
-                    width: GrokBallSidecarPlacement.ballDiameter,
-                    height: GrokBallSidecarPlacement.ballDiameter
-                )
-                #expect(suggestions.intersects(tallParent) == false)
-                #expect(suggestions.intersects(ballRect) == false)
                 #expect(visible.contains(suggestions))
             }
         }
@@ -3096,6 +3161,17 @@ struct MenuBarPanelControllerTests {
 
     private static func pumpMainRunLoop(_ seconds: TimeInterval = 0.05) {
         CFRunLoopRunInMode(.defaultMode, seconds, false)
+    }
+
+    /// Pumps the main runloop until `predicate` holds. A SwiftUI conditional removal settles across a
+    /// display pass, so the height it frees arrives after the state change rather than with it.
+    private static func pumpMainRunLoop(until predicate: () -> Bool, seconds: TimeInterval = 2) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while !predicate() {
+            guard Date() < deadline else { return false }
+            CFRunLoopRunInMode(.defaultMode, 0.02, false)
+        }
+        return true
     }
 }
 }

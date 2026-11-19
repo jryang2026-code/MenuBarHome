@@ -333,11 +333,34 @@ extension MenuBarPanelController {
             hasPendingGeometryPass = true
             return
         }
-        applySerialPanelGeometry()
+        // The probe notifies from inside SwiftUI's layout/`onChange` cycle and `didChangeScreen` arrives
+        // mid-transaction; resizing right there re-enters AppKit's display pass and `onDisappear`.
+        // Coalesce every request from this runloop turn into one pass on the next turn.
+        guard !isGeometryPassScheduled else {
+            hasPendingGeometryPass = true
+            return
+        }
+        isGeometryPassScheduled = true
+        // A runloop block, not `Task { @MainActor }`: the pass must land after the current AppKit
+        // layout/display turn, and it has to run inside the runloop pumps the panel tests drive.
+        RunLoop.main.perform { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.isGeometryPassScheduled = false
+                guard self.isPanelVisible, !self.isClosing else { return }
+                if self.isEntranceAnimating {
+                    self.hasPendingGeometryPass = true
+                    return
+                }
+                self.applySerialPanelGeometry()
+            }
+        }
     }
 
     /// Serially applies size measurement, screen clamping, backdrop shadow, and GrokBall synchronization
     /// so room switches, drawer toggles, and display changes never re-enter competitively or jitter.
+    /// Only call this from outside a SwiftUI update; scheduled paths go through
+    /// `scheduleAdaptiveGeometryPass()`, which hops to the next runloop turn first.
     func applySerialPanelGeometry() {
         guard !isApplyingPanelGeometry else {
             hasPendingGeometryPass = true

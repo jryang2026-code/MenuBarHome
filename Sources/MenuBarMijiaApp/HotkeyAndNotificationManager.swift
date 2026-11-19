@@ -468,6 +468,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isHotkeyPhysicallyDown: isHotkeyPhysicallyDown,
             isTextFieldFocused: isFieldResponder,
             isFormFieldFocused: isFieldResponder && !PanelSearchState.shared.isFieldFocused,
+            // A field that is mid-composition (Pinyin, Kana, Hangul) owns Esc to cancel the marked text.
+            isComposingText: (responder as? NSTextView)?.hasMarkedText() == true,
             isShowingOnboarding: store.showsFullOnboardingGuide,
             isShowingAssistantBar: store.isShowingAssistantBar,
             editMode: LayoutUIState.shared.editMode,
