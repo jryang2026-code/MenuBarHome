@@ -248,6 +248,9 @@ extension HomeStore {
             guard next != capabilitySelection else { return allowedDeactivationVerdict(for: capabilitySelection) }
             explicitlyDisabledConnections.remove(.xiaomiCloud)
             explicitlyDisabledScopes.remove(id)
+            revokedMiAccountScopes.remove(id)
+            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markXiaomiAccountEnabled(id)
+            activeMiAccountsProvider?.markAccountEnabled(id)
             capabilitySelection = next
             capabilityGeneration &+= 1
             persistCapabilitySelection()
@@ -393,6 +396,11 @@ extension HomeStore {
         // `setMiAccountEnabled(true, ...)`. Without that the pause markers survive forever.
         explicitlyDisabledConnections.remove(connection)
         explicitlyDisabledScopes.remove(scope)
+        if connection == .xiaomiCloud {
+            revokedMiAccountScopes.remove(scope)
+            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markXiaomiAccountEnabled(scope)
+            activeMiAccountsProvider?.markAccountEnabled(scope)
+        }
         var next = capabilitySelection
         next.enabledConnections.insert(connection)
         next.enabledConnectionScopes.insert(scope)
@@ -718,9 +726,12 @@ extension HomeStore {
 
     private func applyMiAccountDisabledRuntimeState(id: String) {
         dropMiotTypePruneReport(scope: id)
+        let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
+        dual?.markXiaomiAccountDisabled(id)
         if !hasEnabledMiSource {
-            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.xiaomiCloud)
+            dual?.markBackendDisabled(.xiaomiCloud)
         }
+        activeMiAccountsProvider?.markAccountDisabled(id)
         // Record any live MIoT DIDs before tearing down rows or facets so late writes stay fail-closed.
         _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
         invalidateUndoContext()
@@ -785,6 +796,10 @@ extension HomeStore {
         }
 
         devices.removeAll { disabledDeviceIds.contains($0.id) || isMiOwnedRow($0, accountId: id) }
+        for index in devices.indices where devices[index].accountId == id && deviceBackends[devices[index].id] == .homeAssistant {
+            devices[index].accountId = nil
+            devices[index].accountLabel = nil
+        }
         if !devices.isEmpty { syncIndexedDevices(from: devices) }
         environmentReadings.removeAll { disabledDeviceIds.contains($0.id) }
         rooms.removeAll { MiAccountScope.isOwned($0.id, by: id) }
@@ -803,10 +818,12 @@ extension HomeStore {
         } else if let dual = provider as? DualSourceHomeProvider {
             syncHistoryConnectionScopes()
             syncScheduledCommandScopeIfNeeded()
-            if !hasEnabledMiSource {
-                let previousShutdown = providerShutdownTask
-                providerShutdownTask = Task {
-                    await previousShutdown?.value
+            let shouldRemoveMiSource = !hasEnabledMiSource
+            let previousShutdown = providerShutdownTask
+            providerShutdownTask = Task {
+                await previousShutdown?.value
+                await dual.revokeXiaomiAccountGrace(accountID: id)
+                if shouldRemoveMiSource {
                     await dual.setSourceProvider(nil, for: .xiaomiCloud)
                 }
             }
@@ -1202,6 +1219,7 @@ extension HomeStore {
     }
 
     func shouldSuppressMiAccountInSnapshot(_ accountId: String, snapshotEpoch: Int?) -> Bool {
+        if revokedMiAccountScopes.contains(accountId) { return true }
         if !isMiAccountEnabled(accountId) { return true }
         if pendingRevalidationScopes.contains(accountId),
            let snapshotEpoch,

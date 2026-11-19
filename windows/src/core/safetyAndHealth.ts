@@ -183,22 +183,92 @@ const VIBRATION_TOKENS = ["vibration", "tamper", "shake", "tilt", "震动", "振
 const CONTACT_TOKENS = ["magnet", "contact", "door", "window", "opening", "门窗", "門窗", "门磁", "窗磁"];
 const MOTION_TOKENS = ["motion", "occupancy", "presence", "pir", "人体", "人體", "人在", "移动", "移動"];
 
-function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
+const looksLikeLockMetadata = (lower: string): boolean =>
+  (lower.includes("lock") && !lower.includes("clock") && !lower.includes("block") && !lower.includes("child")) ||
+  lower.includes("门锁") ||
+  lower.includes("門鎖");
+
+/**
+ * A lock's own child lock and its physical button carry the word "lock" without making a device a
+ * lock: `miot.lock.ble22` publishes `child-lock`, and aquariums, shower heads, feeders and kettles
+ * all publish `physical-controls-locked`. A read plan strips these before asking for the lock
+ * signal, so one neutral property cannot decide a whole device.
+ */
+const LOCK_NEUTRAL_PROPERTY_TOKENS = [
+  "child-lock", "child lock", "childlock",
+  "physical-controls-locked", "physical-controls-lock",
+  "physical control locked", "physical controls locked", "physical-control-locked",
+  "童锁", "童鎖",
+];
+
+/** Drops the lock-neutral property tokens from one metadata field, lowercased. */
+export function stripLockNeutralTokens(text: string): string {
+  let out = text.toLowerCase();
+  for (const token of LOCK_NEUTRAL_PROPERTY_TOKENS) out = out.split(token).join(" ");
+  return out;
+}
+
+/**
+ * Every sensor-alert kind the given metadata can plausibly report, in the order
+ * `inferSensorKindFromMetadata` prefers. A read plan asks this to decide which alert signals a
+ * hidden device must keep reading (P3a-W); evaluation still asks the single-kind form.
+ */
+export interface SensorAlertMetadataOptions {
+  /** Match the short ASCII tokens on word edges; a read plan opts in, evaluation does not. */
+  readonly wordBoundedShortTokens?: boolean;
+}
+
+export function inferSensorAlertKindsFromMetadata(
+  text: string,
+  options: SensorAlertMetadataOptions = {},
+): SensorAlertKind[] {
   const lower = text.toLowerCase();
-  if (SMOKE_TOKENS.some((t) => lower.includes(t))) return "smoke";
-  if (GAS_TOKENS.some((t) => lower.includes(t))) return "gas";
-  if (LEAK_TOKENS.some((t) => lower.includes(t))) return "leak";
-  if (VIBRATION_TOKENS.some((t) => lower.includes(t))) return "vibration";
-  if (
-    (lower.includes("lock") && !lower.includes("clock") && !lower.includes("block") && !lower.includes("child")) ||
-    lower.includes("门锁") ||
-    lower.includes("門鎖")
-  ) {
-    return "lock";
+  const has = (tokens: readonly string[]): boolean =>
+    tokens.some((token) => options.wordBoundedShortTokens === true
+      ? tokenMatchesOnWordEdge(lower, token)
+      : lower.includes(token));
+  const kinds: SensorAlertKind[] = [];
+  if (has(SMOKE_TOKENS)) kinds.push("smoke");
+  if (has(GAS_TOKENS)) kinds.push("gas");
+  if (has(LEAK_TOKENS)) kinds.push("leak");
+  if (has(VIBRATION_TOKENS)) kinds.push("vibration");
+  if (looksLikeLockMetadata(lower)) kinds.push("lock");
+  if (has(CONTACT_TOKENS)) kinds.push("contact");
+  if (has(MOTION_TOKENS)) kinds.push("motion");
+  return kinds;
+}
+
+/**
+ * A read plan asks for word edges on the short tokens: `Expiration` ends in `pir`, `Indoor` hides
+ * `door`, `Milkshake` hides `shake`, and `gas` sits inside `GasStove`, so a plain substring match
+ * keeps a hidden card alive for an alert it can never raise. Evaluation keeps the substring form so
+ * an alert that already fires never disappears. Longer tokens stay substring matches, which is what
+ * `submersion-state` and `water-leak` need. The edge test uses the same letter/digit boundary the
+ * facet layer's own alert labels (`isMiotAlertLabel`) use, so a label like `Leaking` is neither a
+ * card alert nor a reason to keep reading a hidden card.
+ */
+const SHORT_ALERT_TOKEN_LENGTH = 5;
+const WORD_CHAR = /[a-z0-9]/;
+const isWordChar = (char: string): boolean => char !== "" && WORD_CHAR.test(char);
+
+function tokenMatchesOnWordEdge(lowerText: string, token: string): boolean {
+  // The hyphen and the underscore are separators here: `water-leak` and `door-dect` name a leak or a
+  // door, while `Milkshake` and `Leakage` do not.
+  const wordBounded = token.length <= SHORT_ALERT_TOKEN_LENGTH && /^[a-z]+$/.test(token);
+  if (!wordBounded) return lowerText.includes(token);
+  let from = 0;
+  for (;;) {
+    const at = lowerText.indexOf(token, from);
+    if (at < 0) return false;
+    const before = at === 0 ? "" : lowerText.charAt(at - 1);
+    const after = lowerText.charAt(at + token.length);
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+    from = at + 1;
   }
-  if (CONTACT_TOKENS.some((t) => lower.includes(t))) return "contact";
-  if (MOTION_TOKENS.some((t) => lower.includes(t))) return "motion";
-  return null;
+}
+
+function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {
+  return inferSensorAlertKindsFromMetadata(text)[0] ?? null;
 }
 
 const CLEAR_STATUS_TOKENS = [

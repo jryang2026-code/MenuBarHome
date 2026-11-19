@@ -2793,6 +2793,53 @@ struct SnapshotTests {
         .frame(width: 320, height: 180, alignment: .topLeading)
     }
 
+    // MARK: - WP2d adaptive height pilot
+
+    @Test("WP2d: 380 pt adaptive pilot (280 pt compact floor & 560 pt scroll cap) and Classic fallback")
+    func adaptivePilotSnapshots() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        // 1. Capped 380 x 560 adaptive pilot with full multi-room demo list scrolling inside deviceColumn.
+        // `ControlCenterPanel.body` no longer writes the probe, so the slices measured here are the real
+        // ones; the case is only "capped" if that content overflows the pilot's 560 pt ceiling.
+        let cappedProbe = PanelAdaptiveHeightProbe()
+        assertRendered(
+            snapshotReady(
+                themedPanel(.liquidGlass, store: fixture.store)
+                    .environment(\.panelAdaptiveHeightProbe, cappedProbe)
+            ),
+            size: CGSize(width: MenuBarPanelController.pilotPanelWidth, height: MenuBarPanelController.pilotMaxHeight),
+            named: "liquid-adaptive-pilot-capped-zh-light"
+        )
+        #expect(
+            cappedProbe.resolvedContentHeight > MenuBarPanelController.pilotMaxHeight,
+            "the capped case must actually measure past the 560 pt pilot ceiling"
+        )
+
+        // 2. Classic fixed-height fallback (376 x 480 compact) remains untouched.
+        assertRendered(
+            snapshotReady(themedPanel(.classic, store: fixture.store)),
+            size: CGSize(width: MenuBarPanelController.panelWidth, height: PanelHeight.compact.points),
+            named: "classic-adaptive-fallback-compact-zh-light"
+        )
+
+        // 3. Sparse single-device home clamped to the 280 pt adaptive pilot floor at 380 pt width.
+        let singleLight = try #require(fixture.store.devices.first { $0.id == "demo_living_light" })
+        fixture.store.devices = [singleLight]
+        fixture.store.favoriteDeviceIds = []
+        fixture.store.favoriteOrder = []
+        assertRendered(
+            snapshotReady(themedPanel(.liquidGlass, store: fixture.store)),
+            size: CGSize(width: MenuBarPanelController.pilotPanelWidth, height: MenuBarPanelController.pilotMinHeight),
+            named: "liquid-adaptive-pilot-compact-zh-light"
+        )
+    }
+
     // MARK: - Rendering switches
 
     private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light, reduceMotion: Bool = true) -> some View {

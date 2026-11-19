@@ -225,6 +225,12 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var homes: [HomeOption] = []
     /// Per-account connection status when merged across several Mi accounts.
     public var accountStatuses: [String: ConnectionStatus] = [:]
+    /// Xiaomi account IDs whose sessions were rejected or expired, carried alongside snapshots so
+    /// downstream mergers never treat auth expiry as a transient disconnect.
+    public var expiredAccountIDs: Set<String> = []
+    /// All Xiaomi account IDs currently reporting each device `did` in preference order, allowing
+    /// shared devices to promote a surviving co-owner immediately when one account expires.
+    public var deviceAccountIDs: [String: [String]] = [:]
     /// Accounts in `MiAccountsProvider` that have delivered a post-poll snapshot (`closesAwayGap`).
     public var freshAccountIds: Set<String> = []
     /// Monotonic configuration epoch stamped by `MiAccountsProvider` so `HomeStore` ignores buffered pre-rebuild snapshots.

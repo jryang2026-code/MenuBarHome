@@ -369,6 +369,7 @@ struct FacetDragConfirmationTests {
             target: .property(entityId: "miot:wh:2", piid: 1)
         )
         let (store, mock, _) = try await makeStore(facets: [powerFacet, modeFacet])
+        defer { store.stop() }
         var prompts = 0
         store.manualControlConfirmationHandler = { _ in
             prompts += 1
@@ -383,6 +384,15 @@ struct FacetDragConfirmationTests {
         let modeOffTask = store.debounceTasks["wh.facet.2.2"]
         await offTask?.value
         await modeOffTask?.value
+
+        // Each command publishes its own echo snapshot, so the first frame still carries the old
+        // `2.2 = 1.0`. Awaiting the debounce only waits for `execute` to return, not for the store
+        // to consume both frames; on a loaded runner the assertions below otherwise read frame one.
+        await waitUntil { await mock.executedCommands.count == 2 }
+        await waitUntil {
+            store.lastReportedFacets["wh"]?.first { $0.id == "2.1" }?.value == .bool(false)
+                && store.lastReportedFacets["wh"]?.first { $0.id == "2.2" }?.value == .number(0)
+        }
 
         // Turning back on or picking a heating mode asks and sends nothing on refusal.
         store.setFacetValue("wh", controlId: "2.1", value: .bool(true))

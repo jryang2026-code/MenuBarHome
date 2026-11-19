@@ -908,8 +908,15 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.92", packet: makeHelloResponse64(unknown: UInt32.max, deviceId: sharedLow32, stamp: 12)),
             ]
         }
-        // Wide budgets: a loaded CI runner can starve the cooperative pool past the 80 ms / 2.5 s defaults.
-        let client = LocalMiIOClient(transport: transport, handshakeTimeout: .seconds(5), maxRetries: 0, maxDiscoveryDuration: .seconds(25))
+        // A synchronous mock transport answers on the same thread, so nothing here measures the
+        // clock; the generous budget only keeps a loaded CI runner from reordering the probe waves
+        // when the cooperative pool queues a continuation past the 1 s / 2.5 s defaults.
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .seconds(5),
+            maxRetries: 0,
+            maxDiscoveryDuration: .seconds(25)
+        )
         let discovered = try await client.discoverEndpoints(for: [
             MiIODeviceCandidate(did: didA, token: tokenAHex), MiIODeviceCandidate(did: didB, token: tokenBHex), MiIODeviceCandidate(did: didUnmatched, token: tokenUnmatchedHex),
         ])
@@ -933,8 +940,12 @@ struct LocalMiIOClientTests {
                 MiIOBroadcastReply(sourceIP: "192.168.1.95", packet: legacyHello),
             ]
         }
-        // Wide budgets: a loaded CI runner can starve the cooperative pool past the 80 ms / 2.5 s defaults.
-        let client = LocalMiIOClient(transport: transport, handshakeTimeout: .seconds(5), maxRetries: 0, maxDiscoveryDuration: .seconds(25))
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .seconds(5),
+            maxRetries: 0,
+            maxDiscoveryDuration: .seconds(25)
+        )
         let discovered = try await client.discoverEndpoints(for: [MiIODeviceCandidate(did: "501", token: validTokenHex), MiIODeviceCandidate(did: "502", token: validTokenHex)])
         #expect(discovered == ["501": "192.168.1.95"])
         await client.shutdown()
@@ -973,8 +984,14 @@ struct LocalMiIOClientTests {
             return replies
         }
 
-        // Wide budgets: a loaded CI runner can starve the cooperative pool past the 80 ms / 2.5 s defaults.
-        let client = LocalMiIOClient(transport: transport, handshakeTimeout: .seconds(5), maxRetries: 0, maxDiscoveryDuration: .seconds(25))
+        // The flood-protection budget below is what this test asserts; the discovery half only needs
+        // the crowded broadcast answered, which a loaded runner may not schedule inside 80 ms.
+        let client = LocalMiIOClient(
+            transport: transport,
+            handshakeTimeout: .seconds(5),
+            maxRetries: 0,
+            maxDiscoveryDuration: .seconds(25)
+        )
         let discovered = try await client.discoverEndpoints(for: [
             MiIODeviceCandidate(did: "lumi.curtain.v1", token: tokenLumiHex),
             MiIODeviceCandidate(did: "blt.3.sensor", token: tokenBltHex),

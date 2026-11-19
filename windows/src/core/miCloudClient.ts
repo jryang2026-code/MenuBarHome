@@ -42,5 +42,6 @@ export type {
   MiotDeviceSpec,
 } from "./miCloud/spec.js";
 export { MiotSynthesizer } from "./miCloud/synthesis.js";
+export type { MiotPlanReadKeys } from "./miCloud/synthesis.js";
 export { MiotCommandMapper } from "./miCloud/command.js";
 export type { MiotWrite } from "./miCloud/command.js";

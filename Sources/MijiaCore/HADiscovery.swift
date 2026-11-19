@@ -379,9 +379,9 @@ public enum HADiscovery {
     // MARK: - Live LAN Discovery Entry Point
 
     public static func discoverOnLAN(currentURLHint: String? = nil) async -> [HADiscoveredInstance] {
-        async let mdnsTask: [HADiscoveredInstance] = Task.detached(priority: .userInitiated) {
-            Self.queryMDNSInstances()
-        }.value
+        // Concurrent without `async let`: that form wrapped around `Task.detached` mis-orders the
+        // task allocations on x86_64 Debug builds (swiftlang/swift#87571).
+        let mdnsTask = Task.detached(priority: .userInitiated) { Self.queryMDNSInstances() }
 
         var initialCandidates: [String] = []
         var seenCandidates: Set<String> = []
@@ -404,10 +404,11 @@ public enum HADiscovery {
             addCandidate("http://\(ip):8123", into: &initialCandidates)
         }
 
-        async let initialProbeTask = probeCandidateURLs(initialCandidates)
+        let candidatesForInitialProbe = initialCandidates
+        let initialProbeTask = Task { await probeCandidateURLs(candidatesForInitialProbe) }
 
-        let mdnsFound = await mdnsTask
-        var probed = await initialProbeTask
+        let mdnsFound = await mdnsTask.value
+        var probed = await initialProbeTask.value
 
         var extraMDNSCandidates: [String] = []
         for inst in mdnsFound {

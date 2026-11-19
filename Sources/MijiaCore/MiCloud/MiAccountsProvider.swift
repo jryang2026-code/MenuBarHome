@@ -80,8 +80,41 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    private final class DisabledAccountsGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var disabled: Set<String> = []
+        private var revocationEpochs: [String: UInt64] = [:]
+
+        func markDisabled(_ accountId: String) {
+            lock.withLock {
+                _ = disabled.insert(accountId)
+                revocationEpochs[accountId, default: 0] &+= 1
+            }
+        }
+
+        func markDisabled(_ accountIds: Set<String>) {
+            lock.withLock {
+                for accountId in accountIds {
+                    _ = disabled.insert(accountId)
+                    revocationEpochs[accountId, default: 0] &+= 1
+                }
+            }
+        }
+
+        func markEnabled(_ accountId: String) {
+            lock.withLock { _ = disabled.remove(accountId) }
+        }
+
+        func state(for accountId: String) -> (isDisabled: Bool, revocationEpoch: UInt64) {
+            lock.withLock {
+                (disabled.contains(accountId), revocationEpochs[accountId, default: 0])
+            }
+        }
+    }
+
     private var accounts: [MiAccount]
     private let scopeBox: AccountScopeBox
+    private let disabledAccountsGate = DisabledAccountsGate()
     private let apiFactory: MiCloudProvider.APIFactory
     private let specSource: any MiotSpecSource
     private let cameraBridge: any XiaomiCameraBridging
@@ -210,8 +243,10 @@ public actor MiAccountsProvider: HomeProvider {
     @discardableResult
     private func startChild(for account: MiAccount) -> MiCloudProvider {
         if account.session.expiryState(at: Date()) == .expired {
+            let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
             expiredAccounts.insert(account.id)
-            disconnectedStatuses[account.id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+            disconnectedStatuses[account.id] = expiredStatus
+            statuses[account.id] = expiredStatus
         }
         let provider = MiCloudProvider(
             account: account,
@@ -434,6 +469,11 @@ public actor MiAccountsProvider: HomeProvider {
         guard !isShutDown, accounts.contains(where: { $0.id == accountId }) else { return }
         switch event {
         case .statusChanged(let status):
+            if expiredAccounts.contains(accountId) {
+                guard case .disconnected = status else { break }
+            }
+            let previousStatus = statuses[accountId]
+            let previousDisconnected = disconnectedStatuses[accountId]
             statuses[accountId] = status
             switch status {
             case .connected:
@@ -444,13 +484,20 @@ public actor MiAccountsProvider: HomeProvider {
                 break
             }
             publishStatus()
-            if !snapshots.isEmpty {
+            if !snapshots.isEmpty,
+               (previousStatus != statuses[accountId] || previousDisconnected != disconnectedStatuses[accountId]) {
                 publishSnapshot()
             }
         case .sessionExpired(let session):
+            let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
             expiredAccounts.insert(accountId)
-            disconnectedStatuses[accountId] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+            disconnectedStatuses[accountId] = expiredStatus
+            statuses[accountId] = expiredStatus
             publishLocalNetworkPermission()
+            if !snapshots.isEmpty {
+                publishSnapshot()
+            }
+            publishStatus()
             continuation?.yield(.sessionExpired(session))
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
@@ -540,6 +587,7 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func isDisconnected(_ accountId: String) -> Bool {
+        if expiredAccounts.contains(accountId) { return true }
         if disconnectedStatuses[accountId] != nil { return true }
         if case .disconnected? = statuses[accountId] { return true }
         return false
@@ -554,13 +602,19 @@ public actor MiAccountsProvider: HomeProvider {
         return true
     }
 
-    private static func deviceFreshnessRank(_ device: SmartDevice, accountDisconnected: Bool) -> Int {
+    private static func deviceFreshnessRank(
+        _ device: SmartDevice,
+        accountDisconnected: Bool,
+        accountExpired: Bool = false
+    ) -> Int {
+        if accountExpired { return 4 }
         if accountDisconnected { return 3 }
         if device.telemetryStale { return 2 }
         return device.isOnline ? 0 : 1
     }
 
     private func ownerFreshnessRank(accountId: String, key: String) -> Int {
+        if expiredAccounts.contains(accountId) { return 4 }
         let accountDisconnected = isDisconnected(accountId)
         guard !accountDisconnected, let home = snapshots[accountId] else {
             return 3
@@ -577,7 +631,8 @@ public actor MiAccountsProvider: HomeProvider {
 
     private func publishSnapshot() {
         let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
-            + accounts.filter { isDisconnected($0.id) }
+            + accounts.filter { isDisconnected($0.id) && !expiredAccounts.contains($0.id) }
+            + accounts.filter { expiredAccounts.contains($0.id) }
         let reported = orderedAccounts.compactMap { account -> (account: MiAccount, home: SynthesizedHome)? in
             guard let home = snapshots[account.id] else { return nil }
             return (account, home)
@@ -593,6 +648,7 @@ public actor MiAccountsProvider: HomeProvider {
         var deviceIndexById: [String: Int] = [:]
         var bestRankByDeviceId: [String: Int] = [:]
         var winningAccountByDeviceId: [String: String] = [:]
+        var deviceAccountIDs: [String: [String]] = [:]
         var readingIds = Set<String>()
         var sceneIds = Set<String>()
         var homeIds = Set<String>()
@@ -602,15 +658,29 @@ public actor MiAccountsProvider: HomeProvider {
         var transportDiagnosticsByDevice: [String: DeviceTransportDiagnostics] = [:]
         var closesAwayGap = true
         for (account, home) in reported {
-            let accountDisconnected = isDisconnected(account.id)
+            let accountExpired = expiredAccounts.contains(account.id)
+            let accountDisconnected = accountExpired || isDisconnected(account.id)
             closesAwayGap = closesAwayGap && home.closesAwayGap
             for rawDevice in home.devices {
+                if deviceAccountIDs[rawDevice.id]?.contains(account.id) != true {
+                    deviceAccountIDs[rawDevice.id, default: []].append(account.id)
+                }
                 var device = rawDevice
+                if device.accountId == nil || device.accountId?.isEmpty == true {
+                    device.accountId = account.id
+                }
+                if device.accountLabel == nil {
+                    device.accountLabel = account.maskedUserId
+                }
                 if accountDisconnected {
                     device.isOnline = false
                     device.telemetryStale = true
                 }
-                let rank = Self.deviceFreshnessRank(device, accountDisconnected: accountDisconnected)
+                let rank = Self.deviceFreshnessRank(
+                    device,
+                    accountDisconnected: accountDisconnected,
+                    accountExpired: accountExpired
+                )
                 if let existingIndex = deviceIndexById[device.id],
                    let existingRank = bestRankByDeviceId[device.id] {
                     if rank < existingRank {
@@ -678,7 +748,12 @@ public actor MiAccountsProvider: HomeProvider {
         for (id, disconnectedStatus) in disconnectedStatuses {
             effectiveStatuses[id] = disconnectedStatus
         }
+        for id in expiredAccounts where effectiveStatuses[id] == nil {
+            effectiveStatuses[id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+        }
         merged.accountStatuses = effectiveStatuses
+        merged.expiredAccountIDs = expiredAccounts
+        merged.deviceAccountIDs = deviceAccountIDs
         merged.freshAccountIds = freshAccounts
         merged.miAccountsEpoch = configEpoch
         merged.deviceIdentities = identities
@@ -738,6 +813,64 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    public nonisolated func markAccountDisabled(_ accountId: String) {
+        disabledAccountsGate.markDisabled(accountId)
+    }
+
+    public nonisolated func markAccountsDisabled(_ accountIds: Set<String>) {
+        disabledAccountsGate.markDisabled(accountIds)
+    }
+
+    public nonisolated func markAccountEnabled(_ accountId: String) {
+        disabledAccountsGate.markEnabled(accountId)
+    }
+
+    private func hasFreshOnlineDevice(accountId: String, did: String) -> Bool {
+        guard let home = snapshots[accountId] else { return false }
+        return home.devices.contains { device in
+            (device.id == did || device.miotCommandDids.contains(did))
+                && device.isOnline
+                && !device.telemetryStale
+        }
+    }
+
+    private struct WriteCandidate {
+        let ownerId: String
+        let session: MiSession
+        let child: MiCloudProvider
+        let revocationEpoch: UInt64
+    }
+
+    private func captureWriteCandidate(for ownerId: String) -> WriteCandidate? {
+        guard !isShutDown,
+              !expiredAccounts.contains(ownerId),
+              let account = accounts.first(where: { $0.id == ownerId }),
+              let child = childProvider(for: ownerId) else {
+            return nil
+        }
+        let gateState = disabledAccountsGate.state(for: ownerId)
+        guard !gateState.isDisabled else { return nil }
+        return WriteCandidate(
+            ownerId: ownerId,
+            session: account.session,
+            child: child,
+            revocationEpoch: gateState.revocationEpoch
+        )
+    }
+
+    private func isWriteCandidateStillValid(_ candidate: WriteCandidate) -> Bool {
+        guard !isShutDown,
+              !expiredAccounts.contains(candidate.ownerId),
+              let currentAccount = accounts.first(where: { $0.id == candidate.ownerId }),
+              currentAccount.session == candidate.session,
+              let currentChild = childProvider(for: candidate.ownerId),
+              currentChild === candidate.child else {
+            return false
+        }
+        let gateState = disabledAccountsGate.state(for: candidate.ownerId)
+        return !gateState.isDisabled && gateState.revocationEpoch == candidate.revocationEpoch
+    }
+
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
@@ -745,17 +878,60 @@ public actor MiAccountsProvider: HomeProvider {
         }
         let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
+
+        let initialCandidates = owners.compactMap { captureWriteCandidate(for: $0) }
+        if initialCandidates.isEmpty {
+            if owners.allSatisfy({ expiredAccounts.contains($0) }) {
+                throw MiCloudError.sessionExpired
+            }
+            throw MiotCommandError.noWritableSession(did)
+        }
+
+        var writableCandidates: [WriteCandidate] = []
+        writableCandidates.reserveCapacity(initialCandidates.count)
+        for candidate in initialCandidates {
+            guard isWriteCandidateStillValid(candidate),
+                  !isDisconnected(candidate.ownerId),
+                  hasFreshOnlineDevice(accountId: candidate.ownerId, did: did),
+                  await candidate.child.canExecute(command),
+                  isWriteCandidateStillValid(candidate) else {
+                continue
+            }
+            writableCandidates.append(candidate)
+        }
+
+        let candidatesToTry: [WriteCandidate]
+        if !writableCandidates.isEmpty {
+            candidatesToTry = writableCandidates
+        } else {
+            if owners.allSatisfy({ expiredAccounts.contains($0) }) {
+                throw MiCloudError.sessionExpired
+            }
+            let fallbackCandidates = initialCandidates.filter { isWriteCandidateStillValid($0) }
+            guard !fallbackCandidates.isEmpty else {
+                throw MiotCommandError.noWritableSession(did)
+            }
+            let hasGracedMultiAccountSplit = fallbackCandidates.count > 1
+                && fallbackCandidates.contains(where: { isDisconnected($0.ownerId) })
+                && fallbackCandidates.contains(where: { !isDisconnected($0.ownerId) })
+            if hasGracedMultiAccountSplit {
+                throw MiotCommandError.noWritableSession(did)
+            }
+            candidatesToTry = fallbackCandidates
+        }
+
         var lastFallbackError: (any Error)?
-        for ownerId in owners {
-            guard let child = childProvider(for: ownerId) else { continue }
+        for candidate in candidatesToTry {
+            guard isWriteCandidateStillValid(candidate) else { continue }
             let nonIdempotent: Bool
             if !command.isIdempotentForAccountFallback {
                 nonIdempotent = true
             } else {
-                nonIdempotent = await child.mapsToAction(command)
+                nonIdempotent = await candidate.child.mapsToAction(command)
             }
+            guard isWriteCandidateStillValid(candidate) else { continue }
             do {
-                try await child.execute(command)
+                try await candidate.child.execute(command)
                 return
             } catch MiCloudError.sessionExpired {
                 lastFallbackError = MiCloudError.sessionExpired
@@ -785,7 +961,7 @@ public actor MiAccountsProvider: HomeProvider {
                 throw error
             }
         }
-        throw lastFallbackError ?? MiCloudError.notLoggedIn
+        throw lastFallbackError ?? MiotCommandError.noWritableSession(did)
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {

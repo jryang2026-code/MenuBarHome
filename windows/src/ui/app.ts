@@ -1,5 +1,6 @@
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
 import {
   MiAccountsStore,
   type MiAccount,
@@ -240,6 +241,19 @@ export class MenuMijiaWindowsApp {
   }
   /** Device id → 更多设置 rows from the latest snapshot (#5); empty until one arrives. */
   public deviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
+  /**
+   * Devices whose category is turned off but whose enabled alerts still need their signal: kept out
+   * of `devices` so no card, search hit, AI target or control entry can reach them, and read only for
+   * `safetyAndHealth` evaluation (architecture.md §D, P3a-W).
+   */
+  public safetyRetainedDevices: SmartDevice[] = [];
+  /** Facet rows of `safetyRetainedDevices`; a retained generic card's alert labels live here. */
+  public safetyRetainedDeviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
+  /**
+   * Index entries for Mi cards the current type selection does not draw. They are not devices to
+   * show or control; the host write gate reads them to answer "该设备类型已关闭" (P3a-W).
+   */
+  public hiddenMiDevices: readonly CapabilityIndexedDevice[] = [];
   public scenes: HomeScene[];
   public environmentReadings: EnvironmentReading[] = [];
   public listCut: DeviceListCut = { kind: "all" };
@@ -330,6 +344,31 @@ export class MenuMijiaWindowsApp {
   public isSyncingCloud = false;
   /** Connection-source epoch; the single owner of the source/home/local-write invalidation counters. */
   public readonly sourceEpoch = new SourceEpoch();
+  /**
+   * Feature-level AI generation (P5a-W): every enable/disable or provider change advances
+   * it, and in-flight resolver results compare it before touching any device or cache.
+   */
+  private assistantEpochCount = 0;
+  public get assistantEpoch(): number {
+    return this.assistantEpochCount;
+  }
+  /**
+   * Invalidates every in-flight AI request: late natural-command results return before the
+   * write gate, and the proactive branch drops its cache, cooldown and in-flight marker so
+   * the next tick starts clean instead of resurrecting a stale run.
+   */
+  public advanceAssistantEpoch(): void {
+    this.assistantEpochCount += 1;
+    // A discarded in-flight command must not leave the resolving spinner up: a newer
+    // command re-sets the flag itself, so clearing here is always safe.
+    this.isResolvingIntent = false;
+    this.isRefreshingProactive = false;
+    this.proactiveRetryAfterMs = null;
+    this.aiProactiveSignature = null;
+    this.aiProactiveSuggestions = null;
+    this.pendingCloudConsent = null;
+    this.pendingSuggestions = [];
+  }
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
   public get sourceRevision(): number {
     return this.sourceEpoch.sourceRevision;
