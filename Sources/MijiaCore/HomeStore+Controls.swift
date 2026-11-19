@@ -58,7 +58,7 @@ extension HomeStore {
     }
 
     @discardableResult
-    public func togglePrimary(_ device: SmartDevice) -> Task<Bool, Never>? {
+    public func togglePrimary(_ device: SmartDevice, offersSwitchLightMark: Bool = true) -> Task<Bool, Never>? {
         // A tap on an LG TV is answered over the LAN, so the expired Mi session does not refuse it.
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard device.isOnline else {
@@ -98,7 +98,7 @@ extension HomeStore {
             default:
                 operation = .power(!previous.isActiveOn)
             }
-            guard allowManualControl(operation, for: previous) else { return nil }
+            guard allowManualControl(operation, for: previous, offersMarkAsLight: offersSwitchLightMark) else { return nil }
         }
         var updated = previous
         var command: DeviceCommand?
@@ -372,20 +372,24 @@ extension HomeStore {
             guard snapshotGeneration != before else { return .unmatched }
             if powerMatches(deviceId, requested: requested) { return .matched }
             readBackTickets.releaseTap(deviceId, ticket: ticket)
-            let again = snapshotGeneration
             if holdReadBackEcho {
-                isHoldingReadBackEcho = true
+                let key = ReadBackEchoHoldKey(deviceId: deviceId, ticket: ticket)
                 await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-                    self.readBackEchoHold = cont
+                    self.readBackEchoHolds.removeValue(forKey: key)?.resume()
+                    self.readBackEchoHolds[key] = cont
                 }
             } else {
                 try? await Task.sleep(for: readBackEchoDelay)
             }
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
+            let again = snapshotGeneration
             let second = await provider.readBack(deviceId: deviceId)
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
             if case .failed = second { return .unmatched }
             await settleSnapshot(after: again)
+            guard !isResumeShutdown, controlContextID == context else { return .superseded }
             // A newer toggle may have started and even finished during the second read.
             if !readBackTickets.isLatest(deviceId, ticket: ticket) { return .superseded }
             return powerMatches(deviceId, requested: requested) ? .matched : .unmatched

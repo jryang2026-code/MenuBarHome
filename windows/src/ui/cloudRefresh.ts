@@ -32,6 +32,7 @@ import {
 import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "../core/optimisticLock.js";
 import { STALE, type EpochToken, type SyncRunToken } from "./sourceEpoch.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { switchLightMarkIds } from "../core/switchLightMarks.js";
 import type { HASnapshotLike } from "../core/automationEngine.js";
 import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
 import { energyScopeForHost, plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
@@ -822,6 +823,8 @@ function knownPreferenceIdsForHost(host: MenuMijiaWindowsApp): Set<string> {
     ids.add(bar >= 0 ? key.slice(bar + 1) : key);
   }
   for (const id of Object.keys(host.settings.allOffOverrides)) ids.add(id);
+  // #104: wall switches marked as lights keep their mark across a source handoff.
+  for (const id of switchLightMarkIds()) ids.add(id);
   return ids;
 }
 

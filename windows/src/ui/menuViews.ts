@@ -8,6 +8,7 @@ import {
   pinnedDeviceIds,
   roomDisplayName,
   tr3,
+  withAliases,
 } from "./panelPrefs.js";
 import { KIND_CHIP } from "./listCut.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -36,6 +37,8 @@ import {
   renderConnectionsAndDiagModal,
   resolveHostMiAccounts,
 } from "./connectionsAndDiagView.js";
+import { ManualControlPolicy } from "../core/assistant.js";
+import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 
 export function renderHomeMenu(host: MenuMijiaWindowsApp): string {
     if (!host.isHomeMenuOpen) return "";
@@ -238,6 +241,12 @@ export function renderContextMenu(host: MenuMijiaWindowsApp): string {
             : ""
         }
         <button class="cc-menu-item" data-rename-device="${id}">${t("重命名…")}</button>
+        ${
+          ManualControlPolicy.wallSwitchMayControlLight(withAliases(host.layout, [dev])[0] ?? dev) &&
+          isSwitchMarkedAsLight(dev.id)
+            ? `<button class="cc-menu-item" data-unmark-switch-light="${id}">${t("撤销『这是灯』标记")}</button>`
+            : ""
+        }
         <button class="cc-menu-item" data-open-room-editor="rooms">${host.escapeHtml(tr3("调整房间与分类顺序…", "調整房間與分類順序…", "Reorder Rooms & Categories…"))}</button>
         <button class="cc-menu-item" data-start-editing>${t("编辑布局")}</button>
         <div class="cc-menu-sep"></div>

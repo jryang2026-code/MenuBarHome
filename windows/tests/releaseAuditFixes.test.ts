@@ -850,7 +850,7 @@ describe("Release audit fixes — UI, cloud refresh, camera & localization", () 
     app.openSettingsSheet("connection");
     const sheetText = element(".cc-sheet").textContent ?? "";
     assert.match(sheetText, /Real devices via Mi Cloud/);
-    assert.match(sheetText, /Demo devices/);
+    assert.match(sheetText, /Explore Demo Home|Demo devices/);
   });
 
   it("5-1: persistCredentials called while hydrateCredentials is awaiting vault.load does not clobber unhydrated preset keys", async () => {

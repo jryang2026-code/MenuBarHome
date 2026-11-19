@@ -25,6 +25,8 @@ public enum ViewPreferenceKeys {
     public static let menuBarTargetId = "menubar_target_id"
     public static let canonicalDeviceIds = "dual_source_canonical_ids_v1"
     public static let pinnedDeviceSources = "dual_source_pinned_sources_v1"
+    /// #104: wall switches the user marked as ordinary lights («这其实是灯»).
+    public static let switchesMarkedAsLights = "switches_marked_as_lights"
     /// Canonical card id → orphaned source ids already merged onto it (#24). Bookkeeping only:
     /// it is not a preference and stays out of `referencedIDs`.
     public static let adoptedPreferencePairs = "dual_source_adopted_preference_pairs_v1"
@@ -62,6 +64,7 @@ public enum DevicePreferenceIndex {
         addArray(ViewPreferenceKeys.favoriteDeviceIds)
         addArray(ViewPreferenceKeys.favoriteOrder)
         addArray(ViewPreferenceKeys.hiddenDeviceIds)
+        addArray(ViewPreferenceKeys.switchesMarkedAsLights)
         addDictionaryKeys(ViewPreferenceKeys.allOffOverrides)
         addDictionaryKeys(ViewPreferenceKeys.cameraStreamURLs)
         addDictionaryKeys(ViewPreferenceKeys.cameraStreamQuality)

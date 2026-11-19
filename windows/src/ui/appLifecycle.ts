@@ -16,7 +16,10 @@ import {
 import { credentialsFromSettings, hasCredentials } from "../core/secureStore.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
-import { assistantEndpointIdentity, inferAssistantPreset } from "../core/assistant.js";
+import {
+  assistantEndpointIdentity,
+  inferAssistantPreset,
+} from "../core/assistant.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
@@ -29,12 +32,15 @@ import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
   dispatchSystemContextEvent,
+  getHostActivityCenter,
+  isFullPanelHost,
   notifyDisplayPowerChanged,
   notifyPanelWakeLifecycle,
   notifySystemSleep,
   notifySystemWake,
   tickSafetyHealthAndAutomation,
 } from "./activityStackView.js";
+import { proactiveHasConsumer } from "./proactive.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
@@ -872,12 +878,18 @@ function clearRecoveryListeners(state: HostLifecycleState): void {
   for (const stop of state.recoveryDisposers.splice(0)) stop();
 }
 
-function clearTimerInterval(state: HostLifecycleState): void {
-  if (state.timerIntervalHandle !== null && state.timerScheduler) {
+function clearTimerInterval(state: HostLifecycleState, host?: unknown): void {
+  const hadTimer = state.timerIntervalHandle !== null;
+  if (hadTimer && state.timerScheduler) {
     state.timerScheduler.clearInterval(state.timerIntervalHandle);
   }
   state.timerIntervalHandle = null;
   state.timerScheduler = null;
+  if (hadTimer && isFullPanelHost(host)) {
+    const center = getHostActivityCenter(host);
+    center.systemSignalBaseline = null;
+    center.lastSystemPollAtMs = 0;
+  }
 }
 
 /** Idempotently cancels all tracked timers, debounce tasks, and global listeners for `host`. */
@@ -885,7 +897,7 @@ export function disposeAppLifecycle(host: object): void {
   const state = hostLifecycles.get(host);
   if (!state || state.disposed) return;
   state.disposed = true;
-  clearTimerInterval(state);
+  clearTimerInterval(state, host);
   clearRecoveryListeners(state);
   clearKeyListeners(state);
 }
@@ -1130,7 +1142,7 @@ export function startTimerLoop(
   options: { readonly scheduler?: LifecycleScheduler; readonly intervalMs?: number } = {},
 ): () => void {
   const state = ensureLifecycleState(host);
-  clearTimerInterval(state);
+  clearTimerInterval(state, host);
   state.disposed = false;
 
   const ownerWin = host.root.ownerDocument?.defaultView ?? window;
@@ -1146,7 +1158,9 @@ export function startTimerLoop(
       host.render();
     }
 
-    host.maybeRefreshProactiveInBackground();
+    if (proactiveHasConsumer(host)) {
+      host.maybeRefreshProactiveInBackground();
+    }
 
     const now = scheduler.now();
     // An expired undo row is a background change: defer its paint past a gesture. Scheduled
@@ -1174,6 +1188,6 @@ export function startTimerLoop(
   }, options.intervalMs ?? 1000);
 
   return () => {
-    clearTimerInterval(state);
+    clearTimerInterval(state, host);
   };
 }

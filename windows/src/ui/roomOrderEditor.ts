@@ -548,12 +548,16 @@ export function bindRoomOrderEditorEvents(host: MenuMijiaWindowsApp): void {
     });
   });
 
-  host.root.querySelector("#btn-unhide-all-devices")?.addEventListener("click", (e) => {
-    e.stopPropagation();
-    unhideAllDevices(host.layout);
-    host.saveLayout();
-    host.render();
-  });
+  host.root
+    .querySelectorAll<HTMLElement>("#btn-unhide-all-devices, #btn-settings-unhide-all-devices")
+    .forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        unhideAllDevices(host.layout);
+        host.saveLayout();
+        host.render();
+      });
+    });
 
   const session = getRoomOrderEditorSession(host);
   if (!session) return;
