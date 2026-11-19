@@ -1417,6 +1417,9 @@ public actor MiCloudProvider: HomeProvider {
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: visibleDevices)
         home.localNetworkBlockedFeatures = isLocalNetworkDenied ? [.xiaomiLAN] : []
+        if let rejected = rejectedSession, isRejected(session ?? currentSession()) {
+            home.expiredAccountIDs = [MiAccount(session: rejected).id]
+        }
         DeviceSynthesizer.reconcileLightGroups(&home)
         let currentNow = now()
         // Light groups advertise `mode` but their members reject it; hide scenes there too.

@@ -1576,6 +1576,466 @@ struct DualSourceFallbackGraceTests {
         #expect(await directCollector.latestHome?.devices.contains { $0.id == sharedPlugDID } == false)
     }
 
+    @Test("Single-account sessionExpired keeps cached devices stripped across premature connecting/connected statuses and stale snapshots until a fresh post-relogin snapshot arrives")
+    func singleAccountSessionExpiredWaitsForFreshPostReloginSnapshot() async throws {
+        let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let camSpec = MiotFixtures.decode(cameraSpecJSON)
+        struct CameraOnlySpecSource: MiotSpecSource {
+            let camSpec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                model == "chuangmi.camera.061a01" ? camSpec : nil
+            }
+        }
+
+        let session1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1", serviceToken: "tok-cn-old", region: "cn"
+        )
+        let rescannedSession1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1-new", serviceToken: "tok-cn-new", region: "cn"
+        )
+        let account1 = MiAccount(session: session1)
+
+        // 1. Deterministic interleaving: HA's paired camera is offline + streamless and pinned to
+        // `.xiaomiCloud`, so any premature recovery would immediately hand routing back to the
+        // cached Xiaomi device from the rejected session.
+        var offlineHADoorCam = camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)
+        offlineHADoorCam.isOnline = false
+        let haHome = home([offlineHADoorCam], identityID: Self.haID)
+        let miPlug = SmartDevice(
+            id: "mi-plug-1",
+            name: "客厅插座",
+            roomId: "door",
+            roomName: "门口",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:mi-plug-1:2", isOn: true))
+        )
+        let miCam = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+        let initialMiHome = home([miCam, miPlug], identityID: Self.did)
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let miMock = MockHomeProvider(snapshot: initialMiHome)
+        let clock = TestClock()
+        let gate = GraceSleepGate()
+        let dual = DualSourceHomeProvider(
+            homeAssistant: haMock,
+            xiaomiCloud: miMock,
+            pinnedBackends: { [Self.haID: .xiaomiCloud] },
+            graceNow: { clock.now },
+            graceSleep: { duration in try await gate.sleep(duration) }
+        )
+        let collector = RouteCollector()
+        let pump = Task {
+            for await event in dual.events() {
+                await collector.append(event)
+            }
+        }
+        defer {
+            pump.cancel()
+            Task { await dual.shutdown() }
+        }
+
+        await waitUntil {
+            let camBackend = await collector.backend(forCard: Self.haID)
+            let plugBackend = await collector.backend(forCard: "mi-plug-1")
+            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+        }
+        let liveCard = try #require(await collector.latestHome?.devices.first { $0.id == Self.haID })
+        _ = try await dual.resolveCameraStream(for: liveCard)
+        #expect(await miMock.stoppedCameraIDs.isEmpty)
+
+        await miMock.sendSessionExpired(session1)
+        await waitUntil { await collector.expiredSessions.count == 1 }
+        await waitUntil(timeout: .seconds(2)) { await collector.backend(forCard: Self.haID) == .homeAssistant }
+        await waitUntil(timeout: .seconds(2)) { await miMock.stoppedCameraIDs == [Self.did] }
+        #expect(await collector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await collector.latestHome?.devices.contains { $0.id == "mi-plug-1" } == false)
+        #expect(await collector.sourceIsDisconnected(.xiaomiCloud))
+
+        // Child emits `.statusChanged(.connecting)` before a fresh snapshot: Xiaomi shows connecting,
+        // while `miExpiredAccountIDs` remains active and cached rejected devices stay stripped.
+        await miMock.sendStatus(.connecting)
+        await waitUntil(timeout: .seconds(2)) {
+            if case .connecting = await collector.latestSourceStatuses[.xiaomiCloud] ?? .disconnected("") {
+                return true
+            }
+            return false
+        }
+        #expect(await collector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await collector.latestHome?.devices.contains { $0.id == "mi-plug-1" } == false)
+        #expect(await miMock.stoppedCameraIDs == [Self.did])
+
+        // Premature `.statusChanged(.connected)` BEFORE a fresh post-relogin snapshot must neither
+        // clear `miExpiredAccountIDs` nor mark Xiaomi `.connected`.
+        let beforePrematureConnected = await collector.snapshotCount
+        await miMock.sendStatus(.connected)
+        await waitUntil(timeout: .seconds(2)) { await collector.snapshotCount > beforePrematureConnected }
+        #expect(await collector.sourceIsConnected(.xiaomiCloud) == false)
+        #expect(await collector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await collector.latestHome?.devices.contains { $0.id == "mi-plug-1" } == false)
+        #expect(await miMock.stoppedCameraIDs == [Self.did])
+
+        // Stale/partial snapshot (`closesAwayGap == false`) after `.connecting` also cannot revive
+        // cached devices from the rejected session.
+        var stalePartialMiHome = initialMiHome
+        stalePartialMiHome.closesAwayGap = false
+        let beforeStaleSnapshot = await collector.snapshotCount
+        await miMock.updateSnapshot(stalePartialMiHome)
+        await waitUntil(timeout: .seconds(2)) { await collector.snapshotCount > beforeStaleSnapshot }
+        #expect(await collector.sourceIsConnected(.xiaomiCloud) == false)
+        #expect(await collector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await collector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await collector.latestHome?.devices.contains { $0.id == "mi-plug-1" } == false)
+
+        // Fresh post-relogin full-poll snapshot (`closesAwayGap == true`, `expiredAccountIDs == []`)
+        // cleanly clears `miExpiredAccountIDs`, marks Xiaomi `.connected`, and reclaims routing.
+        var freshPostReloginHome = initialMiHome
+        freshPostReloginHome.closesAwayGap = true
+        freshPostReloginHome.expiredAccountIDs = []
+        await miMock.updateSnapshot(freshPostReloginHome)
+        await waitUntil(timeout: .seconds(2)) {
+            let camBackend = await collector.backend(forCard: Self.haID)
+            let plugBackend = await collector.backend(forCard: "mi-plug-1")
+            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+        }
+        #expect(await collector.sourceIsConnected(.xiaomiCloud))
+        #expect(await collector.latestHome?.expiredAccountIDs.isEmpty == true)
+
+        // 2. End-to-end single-session `MiCloudProvider` (`account == nil`): rejected session stamps
+        // `expiredAccountIDs` on snapshots, holds HA routing across `.connecting` during re-login
+        // poll, and recovers once the rescanned credential's full poll finishes.
+        final class SessionBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: MiSession
+            init(_ session: MiSession) { value = session }
+            func get() -> MiSession { lock.withLock { value } }
+            func set(_ next: MiSession) { lock.withLock { value = next } }
+        }
+        let sessionBox = SessionBox(session1)
+        let oldAPI = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did], homeId: "h1", homeName: "家")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let rescannedAPI = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did], homeId: "h1", homeName: "家")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let (pollReleaseStream, pollReleaseCont) = AsyncStream<Void>.makeStream()
+        let (enteredPollStream, enteredPollCont) = AsyncStream<Void>.makeStream()
+        await rescannedAPI.setGetPropsHook {
+            enteredPollCont.yield(())
+            var iter = pollReleaseStream.makeAsyncIterator()
+            _ = await iter.next()
+        }
+        let bridge = StubXiaomiCameraBridge()
+        let singleMi = MiCloudProvider(
+            sessionLoader: { sessionBox.get() },
+            apiFactory: { $0.serviceToken == rescannedSession1.serviceToken ? rescannedAPI : oldAPI },
+            specSource: CameraOnlySpecSource(camSpec: camSpec),
+            cameraBridge: bridge,
+            localClient: nil,
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil }
+        )
+        let e2eHAMock = MockHomeProvider(snapshot: haHome)
+        let e2eDual = DualSourceHomeProvider(
+            homeAssistant: e2eHAMock,
+            xiaomiCloud: singleMi,
+            pinnedBackends: { [Self.haID: .xiaomiCloud] },
+            graceNow: { clock.now },
+            graceSleep: { duration in try await gate.sleep(duration) }
+        )
+        let e2eCollector = RouteCollector()
+        let e2ePump = Task {
+            for await event in e2eDual.events() {
+                await e2eCollector.append(event)
+            }
+        }
+        defer {
+            pollReleaseCont.finish()
+            enteredPollCont.finish()
+            e2ePump.cancel()
+            Task { await e2eDual.shutdown() }
+        }
+
+        await waitUntil { await e2eCollector.backend(forCard: Self.haID) == .xiaomiCloud }
+        let e2eInitialCard = try #require(await e2eCollector.latestHome?.devices.first { $0.id == Self.haID })
+        _ = try await e2eDual.resolveCameraStream(for: e2eInitialCard)
+        #expect(await bridge.startCalls.count == 1)
+
+        await oldAPI.setSetPropsFailure(.sessionExpired)
+        await #expect(throws: MiCloudError.sessionExpired) {
+            try await e2eDual.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: false))
+        }
+        await waitUntil(timeout: .seconds(2)) { await e2eCollector.backend(forCard: Self.haID) == .homeAssistant }
+        await waitUntil(timeout: .seconds(2)) { await bridge.stopCalls == [Self.did] }
+
+        // User scans a fresh token for the same account; while the post-relogin poll is in flight
+        // (`.connecting`), cached devices from the rejected session stay stripped.
+        sessionBox.set(rescannedSession1)
+        let refreshTask = Task { await e2eDual.refreshNow() }
+        var enteredIter = enteredPollStream.makeAsyncIterator()
+        _ = await enteredIter.next()
+        await waitUntil(timeout: .seconds(2)) {
+            if case .connecting = await e2eCollector.latestSourceStatuses[.xiaomiCloud] ?? .disconnected("") {
+                return true
+            }
+            return false
+        }
+        #expect(await e2eCollector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await e2eCollector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await bridge.stopCalls == [Self.did])
+
+        await rescannedAPI.setGetPropsHook(nil)
+        pollReleaseCont.yield(())
+        pollReleaseCont.finish()
+        await refreshTask.value
+
+        await waitUntil(timeout: .seconds(2)) { await e2eCollector.backend(forCard: Self.haID) == .xiaomiCloud }
+        #expect(await e2eCollector.sourceIsConnected(.xiaomiCloud))
+        #expect(await e2eCollector.latestHome?.expiredAccountIDs.isEmpty == true)
+    }
+
+    @Test("Multi-account sessionExpired re-login immediately surfaces connecting and clears miExpiredAccountIDs without waiting for connected")
+    func multiAccountReloginSurfacesConnectingAndClearsExpiredImmediately() async throws {
+        let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let plugSpecJSON = #"{"type":"urn:miot-spec-v2:device:outlet:0000A002:cuco-v3:1","services":[{"iid":2,"type":"urn:miot-spec-v2:service:switch:0000780C:cuco-v3:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:cuco-v3:1","format":"bool","access":["read","write","notify"]}]}]}"#
+        let camSpec = MiotFixtures.decode(cameraSpecJSON)
+        let plugSpec = MiotFixtures.decode(plugSpecJSON)
+        struct DualSpecSource: MiotSpecSource {
+            let camSpec: MiotDeviceSpec
+            let plugSpec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                switch model {
+                case "chuangmi.camera.061a01": return camSpec
+                case "cuco.plug.v3": return plugSpec
+                default: return nil
+                }
+            }
+        }
+
+        let session1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1", serviceToken: "tok-cn-old", region: "cn"
+        )
+        let refreshedSession1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1-new", serviceToken: "tok-cn-new", region: "cn"
+        )
+        let session2 = MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-2", serviceToken: "tok-de", region: "de"
+        )
+        let account1 = MiAccount(session: session1)
+        let refreshedAccount1 = MiAccount(session: refreshedSession1)
+        let account2 = MiAccount(session: session2)
+
+        // 1. Direct multi-account snapshot check: a stale snapshot still carrying
+        // `expiredAccountIDs: [account1.id]` stays demoted to `expiredStatus`, whereas a post-relogin
+        // `.connecting` snapshot with `expiredAccountIDs == []` immediately surfaces `.connecting`,
+        // clears `account1.id` from `miExpiredAccountIDs`, and lets any fresh device from `account1`
+        // participate without waiting for `.connected`.
+        var acc1Cam = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+        acc1Cam.accountId = account1.id
+        acc1Cam.roomId = MiAccountScope.id("door", account: account1.id)
+        let acc2Plug = SmartDevice(
+            id: "de-plug-1",
+            name: "书房插座",
+            roomId: MiAccountScope.id("r2", account: account2.id),
+            roomName: "书房",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:de-plug-1:2", isOn: true)),
+            accountId: account2.id
+        )
+        var initialMultiHome = home([acc1Cam, acc2Plug], identityID: Self.did)
+        initialMultiHome.accountStatuses = [account1.id: .connected, account2.id: .connected]
+        let haHome = home(
+            [camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)],
+            identityID: Self.haID
+        )
+        let clock = TestClock()
+        let directGate = GraceSleepGate()
+        let directHAMock = MockHomeProvider(snapshot: haHome)
+        let directMiMock = MockHomeProvider(snapshot: initialMultiHome)
+        let directDual = DualSourceHomeProvider(
+            homeAssistant: directHAMock,
+            xiaomiCloud: directMiMock,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await directGate.sleep(duration) }
+        )
+        let directCollector = RouteCollector()
+        let directPump = Task {
+            for await event in directDual.events() {
+                await directCollector.append(event)
+            }
+        }
+        defer {
+            directPump.cancel()
+            Task { await directDual.shutdown() }
+        }
+
+        await waitUntil { await directCollector.backend(forCard: Self.haID) == .xiaomiCloud }
+        await directMiMock.sendSessionExpired(session1)
+        await waitUntil(timeout: .seconds(2)) { await directCollector.backend(forCard: Self.haID) == .homeAssistant }
+        #expect(await directCollector.accountIsDisconnected(account1.id))
+        #expect(await directCollector.latestHome?.expiredAccountIDs == [account1.id])
+
+        // Stale snapshot still marked expired keeps `account1` demoted and in `expiredAccountIDs`.
+        var staleExpiredConnecting = initialMultiHome
+        staleExpiredConnecting.accountStatuses = [account1.id: .connecting, account2.id: .connected]
+        staleExpiredConnecting.expiredAccountIDs = [account1.id]
+        let beforeStaleMulti = await directCollector.snapshotCount
+        await directMiMock.updateSnapshot(staleExpiredConnecting)
+        await waitUntil(timeout: .seconds(2)) { await directCollector.snapshotCount > beforeStaleMulti }
+        #expect(await directCollector.accountIsDisconnected(account1.id))
+        #expect(await directCollector.latestHome?.expiredAccountIDs == [account1.id])
+        #expect(await directCollector.backend(forCard: Self.haID) == .homeAssistant)
+
+        // Post-relogin `.connecting` snapshot (`expiredAccountIDs == []`) immediately clears
+        // `account1.id` from `miExpiredAccountIDs` and surfaces `.connecting`.
+        var reloginConnectingSnapshot = home([acc2Plug], identityID: Self.did)
+        reloginConnectingSnapshot.deviceIdentities = [:]
+        reloginConnectingSnapshot.accountStatuses = [account1.id: .connecting, account2.id: .connected]
+        reloginConnectingSnapshot.expiredAccountIDs = []
+        await directMiMock.updateSnapshot(reloginConnectingSnapshot)
+        await waitUntil(timeout: .seconds(2)) {
+            await directCollector.latestHome?.accountStatuses[account1.id] == .connecting
+        }
+        #expect(await directCollector.latestHome?.expiredAccountIDs.isEmpty == true)
+        #expect(await directCollector.backend(forCard: Self.haID) == .homeAssistant)
+        #expect(await directGate.parkCount == 0)
+
+        // 2. Real `MiAccountsProvider.updateAccounts` flow: while `refreshedAccount1`'s first poll
+        // is parked in `.connecting`, `accountStatuses[account1.id]` immediately surfaces `.connecting`
+        // and `expiredAccountIDs` clears `account1.id` before `.connected` arrives.
+        let api1Old = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did], homeId: "h1", homeName: "家")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let api1Refreshed = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: Self.did,
+                name: "门口",
+                model: "chuangmi.camera.061a01",
+                isOnline: true,
+                localIp: "192.0.2.45"
+            )],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did], homeId: "h1", homeName: "家")],
+            values: [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)]
+        )
+        let (reloginGateStream, reloginGateCont) = AsyncStream<Void>.makeStream()
+        let (reloginEnteredStream, reloginEnteredCont) = AsyncStream<Void>.makeStream()
+        await api1Refreshed.setGetPropsHook {
+            reloginEnteredCont.yield(())
+            var iter = reloginGateStream.makeAsyncIterator()
+            _ = await iter.next()
+        }
+        let api2 = StubMiCloudAPI(
+            devices: [MiDeviceRecord(
+                did: "de-plug-1",
+                name: "书房插座",
+                model: "cuco.plug.v3",
+                isOnline: true
+            )],
+            rooms: [MiRoom(id: "r2", name: "书房", dids: ["de-plug-1"], homeId: "h2", homeName: "Office")],
+            values: [MiotPropKey(did: "de-plug-1", siid: 2, piid: 1): .bool(true)]
+        )
+        let miAccounts = MiAccountsProvider(
+            accounts: [account1, account2],
+            apiFactory: { session in
+                if session.userId == session2.userId { return api2 }
+                return session.serviceToken == refreshedSession1.serviceToken ? api1Refreshed : api1Old
+            },
+            specSource: DualSpecSource(camSpec: camSpec, plugSpec: plugSpec),
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let e2eHAMock = MockHomeProvider(snapshot: haHome)
+        let e2eGate = GraceSleepGate()
+        let e2eDual = DualSourceHomeProvider(
+            homeAssistant: e2eHAMock,
+            xiaomiCloud: miAccounts,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await e2eGate.sleep(duration) }
+        )
+        let e2eCollector = RouteCollector()
+        let e2ePump = Task {
+            for await event in e2eDual.events() {
+                await e2eCollector.append(event)
+            }
+        }
+        defer {
+            reloginGateCont.finish()
+            reloginEnteredCont.finish()
+            e2ePump.cancel()
+            Task { await e2eDual.shutdown() }
+        }
+
+        await waitUntil {
+            let camBackend = await e2eCollector.backend(forCard: Self.haID)
+            let plugBackend = await e2eCollector.backend(forCard: "de-plug-1")
+            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+        }
+
+        await api1Old.setSetPropsFailure(.sessionExpired)
+        await #expect(throws: MiCloudError.sessionExpired) {
+            try await e2eDual.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: false))
+        }
+        await waitUntil(timeout: .seconds(2)) { await e2eCollector.backend(forCard: Self.haID) == .homeAssistant }
+        #expect(await e2eCollector.accountIsDisconnected(account1.id))
+        #expect(await e2eCollector.latestHome?.expiredAccountIDs == [account1.id])
+
+        await miAccounts.updateAccounts([refreshedAccount1, account2])
+        var enteredIter = reloginEnteredStream.makeAsyncIterator()
+        _ = await enteredIter.next()
+        await waitUntil(timeout: .seconds(2)) {
+            await e2eCollector.latestHome?.accountStatuses[account1.id] == .connecting
+        }
+        #expect(await e2eCollector.latestHome?.expiredAccountIDs.contains(account1.id) == false)
+        #expect(await e2eCollector.latestHome?.expiredAccountIDs.isEmpty == true)
+        #expect(await e2eCollector.accountIsConnected(account2.id))
+        #expect(await e2eCollector.backend(forCard: "de-plug-1") == .xiaomiCloud)
+        #expect(await e2eGate.parkCount == 0)
+
+        await api1Refreshed.setGetPropsHook(nil)
+        reloginGateCont.yield(())
+        reloginGateCont.finish()
+
+        await waitUntil(timeout: .seconds(2)) {
+            let connected = await e2eCollector.accountIsConnected(account1.id)
+            let backend = await e2eCollector.backend(forCard: Self.haID)
+            return connected && backend == .xiaomiCloud
+        }
+    }
+
     @Test("The grace window is bounded and documented")
     func graceWindowIsBounded() {
         #expect(DualSourceHomeProvider.sourceFallbackGrace > 0)

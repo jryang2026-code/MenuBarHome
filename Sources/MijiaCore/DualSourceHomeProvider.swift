@@ -255,11 +255,17 @@ public actor DualSourceHomeProvider: HomeProvider {
                 haStatus = status
                 if case .connected = status { haLocalNetworkBlocks.remove(.homeAssistant) }
             } else if backend == .xiaomiCloud {
-                if status.isConnected, miAccountStatuses.isEmpty {
-                    miExpiredAccountIDs.removeAll()
+                let allKnownExpired = !miExpiredAccountIDs.isEmpty
+                    && (miAccountStatuses.isEmpty || miAccountStatuses.keys.allSatisfy { miExpiredAccountIDs.contains($0) })
+                if allKnownExpired {
+                    miOfflineSince = nil
+                    if !status.isConnected {
+                        miStatus = status
+                    }
+                } else {
+                    recordXiaomiStatusTransition(status, previous: miStatus, now: now)
+                    miStatus = status
                 }
-                recordXiaomiStatusTransition(status, previous: miStatus, now: now)
-                miStatus = status
             }
             emitStatus()
             emitSourceStatuses()
@@ -285,6 +291,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                         || hasDeviceForExpiredAccount {
                         miAccountStatuses[expiredID] = expiredStatus
                         miSnapshot?.accountStatuses[expiredID] = expiredStatus
+                        miSnapshot?.expiredAccountIDs.insert(expiredID)
                     }
                     if !miAccountStatuses.isEmpty {
                         let aggregate = Self.aggregateAccountStatus(miAccountStatuses)
@@ -301,6 +308,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                         miStatus = aggregate
                     }
                 } else {
+                    miSnapshot?.expiredAccountIDs.insert(expiredID)
                     var ownerIDs = Set(
                         (miSnapshot?.devices ?? []).compactMap {
                             Self.resolvedXiaomiAccountID(for: $0, knownAccountIDs: knownIDs)
@@ -554,11 +562,17 @@ public actor DualSourceHomeProvider: HomeProvider {
                 for owners in home.deviceAccountIDs.values {
                     deviceOwners.formUnion(owners.filter { !$0.isEmpty })
                 }
+                let hasNonExpiredDeviceOwner = deviceOwners.contains { !miExpiredAccountIDs.contains($0) }
                 let hasRecoveredAccount = snapshotExpiredIDs.isEmpty
-                    && (miStatus == .connecting || deviceOwners.contains { !miExpiredAccountIDs.contains($0) })
+                    && (home.closesAwayGap || hasNonExpiredDeviceOwner)
                 if hasRecoveredAccount, !home.devices.isEmpty {
                     clearXiaomiAccountGraceState()
                     miStatus = .connected
+                } else {
+                    home.expiredAccountIDs.formUnion(miExpiredAccountIDs)
+                    if !hasNonExpiredDeviceOwner {
+                        home.localNetworkBlockedFeatures = []
+                    }
                 }
                 miOfflineSince = nil
             } else {
@@ -601,6 +615,13 @@ public actor DualSourceHomeProvider: HomeProvider {
                         }
                     }
                     miAccountPreDropDevices[accountID] = owned
+                } else if case .connecting = nextAccStatus,
+                          !snapshotExpiredIDs.contains(accountID),
+                          miExpiredAccountIDs.contains(accountID) {
+                    miExpiredAccountIDs.remove(accountID)
+                    miAccountStatuses[accountID] = nextAccStatus
+                    miAccountOfflineSince.removeValue(forKey: accountID)
+                    miAccountPreDropDevices.removeValue(forKey: accountID)
                 } else if miExpiredAccountIDs.contains(accountID) {
                     let demotedStatus: ConnectionStatus
                     if case .disconnected = nextAccStatus {
@@ -621,6 +642,10 @@ public actor DualSourceHomeProvider: HomeProvider {
                 }
             }
 
+            if !miAccountStatuses.isEmpty,
+               miAccountStatuses.keys.allSatisfy({ miExpiredAccountIDs.contains($0) }) {
+                home.localNetworkBlockedFeatures = []
+            }
             let aggregate = Self.aggregateAccountStatus(home.accountStatuses)
             recordXiaomiStatusTransition(aggregate, previous: miStatus, now: now)
             miStatus = aggregate
