@@ -1119,6 +1119,9 @@ export async function setHaConnectionEnabledOnHost(
         });
       });
       if (drainRes.timedOut) return handleDrainTimeout();
+      if (drainRes.ready && isHostHaEnabled(host)) {
+        (host as Partial<MenuMijiaWindowsApp>).submitServiceEndpoints?.();
+      }
       revalidateAfterMiAccountReenable({
         context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)),
         scheduledCommandStore,
