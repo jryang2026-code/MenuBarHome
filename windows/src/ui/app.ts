@@ -149,6 +149,7 @@ import {
   markPanelSessionInteraction,
   renderLongTailBarHtml,
   renderOfflineDrawerHtml,
+  renderRoomBrowseMenuHtml,
   resetPanelSplitTransientState,
   type PanelPrioritySnapshot,
 } from "./panelSplitTiles.js";
@@ -1371,6 +1372,20 @@ export class MenuMijiaWindowsApp {
     return `${onlineHtml}${longTailHtml}${offlineHtml}`;
   }
 
+  public renderRoomBrowseMenu(): string {
+    if (
+      !this.isRoomBrowseMenuOpen ||
+      this.isEditingLayout ||
+      Boolean(normalizeSearch(this.panelSearch.query)) ||
+      this.devices.length === 0 ||
+      this.presentationDevices.length === 0
+    ) {
+      return "";
+    }
+    const gridModel = buildPanelDeviceGridModel(this);
+    return renderRoomBrowseMenuHtml(gridModel, this.isRoomBrowseMenuOpen, (v) => this.escapeHtml(v));
+  }
+
   public renderDeviceTile(dev: SmartDevice, span: number, index: number): string {
     if (this.sensorHistoryUi.lastRecordedDevicesRef !== this.devices) {
       syncSensorHistoryHost(this);
@@ -1639,11 +1654,14 @@ export class MenuMijiaWindowsApp {
       clearOpenTimer();
       clearDismissTimer();
       this.pipeline.clearTransientState();
+      const hadPendingHighRisk = this.pendingHighRisk !== null;
       const hadTransientSplit =
+        hadPendingHighRisk ||
         this.isLongTailExpanded ||
         this.isOfflineDrawerExpanded ||
         this.isRoomBrowseMenuOpen ||
         this.expandedDeviceId !== null;
+      this.clearPendingHighRisk({ syncPin: false });
       resetPanelSplitTransientState(this);
       if (hadTransientSplit) {
         this.expandedDeviceId = null;

@@ -769,7 +769,9 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       }
     }
 
-    const domTileElements = Array.from(host.root.querySelectorAll<HTMLElement>("[data-tile-id]"));
+    const domTileElements = Array.from(
+      host.root.querySelectorAll<HTMLElement>("[data-tile-id]:not([data-exit-ghost])"),
+    );
     const desiredRenders: Array<{ device: SmartDevice; span: number; index: number }> = [];
     let index = 0;
     for (const section of gridModel.onlineSections) {

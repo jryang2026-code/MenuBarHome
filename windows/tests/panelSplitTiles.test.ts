@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate as flushImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
@@ -22,6 +23,7 @@ import { resolveTilePresentation } from "../src/ui/panelTheme.js";
 import { setCustomApplyCommand } from "../src/ui/commandDispatch.js";
 import { loadSettings } from "../src/ui/settings.js";
 import { searchSettings, UNRESTRICTED_SETTINGS_AVAILABILITY } from "../src/ui/settingsSearch.js";
+import { getLockBlockCount } from "../src/ui/speechGuard.js";
 import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
 
 let dom: Window;
@@ -300,16 +302,16 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
     const adjustCurtain = makeAdjustOnlyCurtain("curtain-adjust", "卧室纱帘");
     const roSensor = makeReadOnlyGeneric("gen-ro", "门磁状态");
 
-    assert.deepEqual(resolveDeviceTileActionLayout(splitLight, [], false), {
+    assert.deepEqual(resolveDeviceTileActionLayout(splitLight, []), {
       kind: "split",
       primary: "togglePower",
     });
-    assert.deepEqual(resolveDeviceTileActionLayout(primaryPlug, [], false), {
+    assert.deepEqual(resolveDeviceTileActionLayout(primaryPlug, []), {
       kind: "primaryOnly",
       primary: "togglePower",
     });
-    assert.equal(resolveDeviceTileActionLayout(adjustCurtain, [], false).kind, "adjustOnly");
-    assert.equal(resolveDeviceTileActionLayout(roSensor, [], false).kind, "readOnly");
+    assert.equal(resolveDeviceTileActionLayout(adjustCurtain, []).kind, "adjustOnly");
+    assert.equal(resolveDeviceTileActionLayout(roSensor, []).kind, "readOnly");
 
     const { host, commands } = startApp([splitLight, primaryPlug, adjustCurtain, roSensor]);
 
@@ -338,6 +340,16 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
       assert.equal(el('[data-body-device="gen-ro"]').tagName, "DIV");
       el('[data-body-device="gen-ro"]').click();
       assert.equal(host.expandedDeviceId, null);
+
+      // In Fluent capsule, split/adjustOnly caption button exposes aria-expanded (never aria-pressed)
+      if (theme === "fluent") {
+        const splitCaption = el<HTMLButtonElement>('[data-body-device="light-split"]');
+        assert.equal(splitCaption.getAttribute("aria-expanded"), "false");
+        assert.equal(splitCaption.hasAttribute("aria-pressed"), false);
+        const primaryCaption = el<HTMLButtonElement>('[data-body-device="plug-primary"]');
+        assert.equal(primaryCaption.getAttribute("aria-pressed"), "true");
+        assert.equal(primaryCaption.hasAttribute("aria-expanded"), false);
+      }
 
       // split left primary zone toggles power without expanding drawer
       const beforeCount = commands.length;
@@ -393,25 +405,28 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
       panelTheme: "classic",
     });
 
-    assert.deepEqual(resolveDeviceTileActionLayout(sleepingCam, [], true), {
+    assert.deepEqual(resolveDeviceTileActionLayout(sleepingCam, []), {
       kind: "split",
       primary: "openCamera",
     });
+    assert.equal(getLockBlockCount(host), 0);
 
-    // Sleeping camera: opens camera sheet without silent wake writes and reports screen-lock banner
+    // Sleeping camera: opens camera sheet without silent wake writes, increments lockBlockCount once, and reports screen-lock banner
     el<HTMLButtonElement>('[data-open-camera="cam-sleep"]').click();
     await flushImmediate();
     await flushImmediate();
     assert.equal(commands.length, 0);
+    assert.equal(getLockBlockCount(host), 1);
     assert.ok(document.querySelector(".cc-camera-live-sheet"));
     assert.match(host.replyBanner?.text ?? "", /锁定/);
 
-    // Awake camera: opens camera sheet and surfaces lock notice directly inside the live sheet
+    // Awake camera: opens camera sheet, increments lockBlockCount once, and surfaces lock notice directly inside the live sheet
     host.cameraLive.closeCameraLiveView();
     el<HTMLButtonElement>('[data-open-camera="cam-awake"]').click();
     await flushImmediate();
     await flushImmediate();
     assert.equal(commands.length, 0);
+    assert.equal(getLockBlockCount(host), 2);
     assert.match(el(".cc-camera-live-sheet").textContent ?? "", /锁定/);
   });
 
@@ -432,7 +447,7 @@ describe("WP5b-2 · 4-way tile action layout, hit zones, a11y, camera lock guard
       },
     });
 
-    assert.deepEqual(resolveDeviceTileActionLayout(heater, [], false), {
+    assert.deepEqual(resolveDeviceTileActionLayout(heater, []), {
       kind: "split",
       primary: "togglePower",
     });
@@ -691,3 +706,324 @@ describe("WP5b-2 · Offline sinking drawer, empty-pinned suppression, cloudRefre
     assert.equal(formatBrowseByRoomTitle(), "By Room");
   });
 });
+
+describe("PR #283 review fixes · room-browse overlay, playDismiss high-risk, Escape priority, bare effects, tail order, sensor a11y, and ghost-safe patch", () => {
+  it("clears pendingHighRisk on native menumijia:panel-dismiss (playDismiss) and cancels pendingHighRisk before room-browse menu on Escape", async () => {
+    const heater = makeHeaterClimate("heater-main", "客厅取暖器");
+    const extras = Array.from({ length: 10 }, (_, idx) => {
+      const n = idx + 1;
+      const room = n <= 5 ? { roomId: "r-living", roomName: "客厅" } : { roomId: "r-bed", roomName: "卧室" };
+      return makeLight(`l-${n}`, `灯${n}`, room);
+    });
+    const { host } = startApp([heater, ...extras], {
+      panelTheme: "classic",
+      layout: {
+        order: [],
+        tileSizes: { "heater-main": "half" },
+        collapsed: [],
+        pinned: ["heater-main"],
+        hidden: [],
+        aliases: {},
+        roomOrder: [],
+        roomAliases: {},
+        sceneOrder: [],
+      },
+    });
+
+    // Open room-browse menu AND arm pendingHighRisk simultaneously
+    el<HTMLButtonElement>("[data-browse-room-toggle]").click();
+    assert.equal(host.isRoomBrowseMenuOpen, true);
+    host.pendingHighRisk = {
+      deviceId: "heater-main",
+      actionKey: "power:on",
+      expiresAtMs: Date.now() + 10_000,
+      sourceRevision: host.sourceRevision,
+    };
+    host.render();
+    assert.ok(el(".cc-popover > [data-browse-room-menu]"));
+
+    // First Escape cancels pendingHighRisk while keeping room-browse menu open (ui.md §4)
+    escape();
+    assert.equal(host.pendingHighRisk, null);
+    assert.equal(host.isRoomBrowseMenuOpen, true);
+
+    // Second Escape closes the room-browse menu
+    escape();
+    assert.equal(host.isRoomBrowseMenuOpen, false);
+
+    // Re-arm pendingHighRisk + open room-browse menu, then trigger native panel-dismiss (playDismiss)
+    host.isRoomBrowseMenuOpen = true;
+    host.pendingHighRisk = {
+      deviceId: "heater-main",
+      actionKey: "power:on",
+      expiresAtMs: Date.now() + 10_000,
+      sourceRevision: host.sourceRevision,
+    };
+    host.render();
+    assert.equal(el('[data-tile-id="heater-main"]').classList.contains("is-caution-armed"), true);
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:panel-dismiss", { detail: { seq: 7 } }));
+    assert.equal(host.pendingHighRisk, null);
+    assert.equal(host.isRoomBrowseMenuOpen, false);
+    assert.equal(el('[data-tile-id="heater-main"]').classList.contains("is-caution-armed"), false);
+  });
+
+  it("matches bare effect names from getUnsupportedLightEffects in resolveDeviceTileActionLayout", () => {
+    const effectOnlyLight: SmartDevice = {
+      id: "light-fx",
+      name: "氛围灯带",
+      roomName: "卧室",
+      roomId: "room-bed",
+      isOnline: true,
+      sourceBackend: "xiaomiCloud",
+      model: "yeelink.light.strip6",
+      kind: {
+        kind: "light",
+        entityId: "miot:light-fx:2",
+        isOn: true,
+        brightnessPercent: null,
+        brightnessWritable: false,
+        colorTempKelvin: null,
+        colorWritable: false,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: "Romantic",
+        availableEffects: ["Romantic"],
+      },
+    };
+
+    assert.deepEqual(resolveDeviceTileActionLayout(effectOnlyLight, []), {
+      kind: "split",
+      primary: "togglePower",
+    });
+    // Bare effect name (as returned by getUnsupportedLightEffects) degrades split -> primaryOnly
+    assert.deepEqual(resolveDeviceTileActionLayout(effectOnlyLight, [], new Set(["romantic"])), {
+      kind: "primaryOnly",
+      primary: "togglePower",
+    });
+    // Legacy prefixed form also works
+    assert.deepEqual(
+      resolveDeviceTileActionLayout(effectOnlyLight, [], new Set(["light-fx\u0000Romantic"])),
+      {
+        kind: "primaryOnly",
+        primary: "togglePower",
+      },
+    );
+  });
+
+  it("renders room-browse menu at .cc-popover level, excludes 0-online/hidden rooms, supports roving tabindex, focusout close, and || roomName fallback", async () => {
+    const devices: SmartDevice[] = [
+      ...Array.from({ length: 5 }, (_, i) =>
+        makeLight(`liv-${i + 1}`, `客厅灯${i + 1}`, { roomId: "r-living", roomName: "客厅" }),
+      ),
+      ...Array.from({ length: 4 }, (_, i) =>
+        makeLight(`bed-${i + 1}`, `卧室灯${i + 1}`, { roomId: "r-bed", roomName: "卧室" }),
+      ),
+      makeLight("off-only", "阳台离线灯", { roomId: "r-balcony", roomName: "阳台", isOnline: false }),
+      makeLight("hid-only", "储藏室隐藏灯", { roomId: "r-storage", roomName: "储藏室", isOnline: true }),
+    ];
+
+    const { host } = startApp(devices, {
+      layout: {
+        order: [],
+        tileSizes: {},
+        collapsed: [],
+        pinned: [],
+        hiddenDeviceIds: ["hid-only"],
+        aliases: {},
+        roomOrder: [],
+        roomAliases: {},
+        sceneOrder: [],
+      },
+    });
+
+    el<HTMLButtonElement>("[data-browse-room-toggle]").click();
+
+    // Mounted directly under .cc-popover, never inside .cc-scroll-area
+    const menu = el<HTMLElement>(".cc-popover > [data-browse-room-menu]");
+    assert.equal(document.querySelector(".cc-scroll-area [data-browse-room-menu]"), null);
+
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>("[data-browse-room-id]"));
+    assert.deepEqual(
+      items.map((b) => b.dataset.browseRoomId),
+      ["r-living", "r-bed"],
+    );
+
+    // Roving tabindex: first item 0, siblings -1; ArrowDown moves roving tabindex to second item
+    assert.equal(items[0]?.getAttribute("tabindex"), "0");
+    assert.equal(items[1]?.getAttribute("tabindex"), "-1");
+    items[0]!.focus();
+    items[0]!.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+    );
+    assert.equal(items[0]?.getAttribute("tabindex"), "-1");
+    assert.equal(items[1]?.getAttribute("tabindex"), "0");
+    assert.equal(document.activeElement, items[1]);
+
+    // Empty data-browse-room-name falls back via || to roomId rather than empty string
+    items[1]!.dataset.browseRoomName = "";
+    items[1]!.click();
+    assert.equal(host.selectedRoom, "r-bed");
+
+    // Re-open in All view and verify focusout outside trigger & menu closes the floating menu
+    host.selectRoom(null);
+    host.isRoomBrowseMenuOpen = true;
+    host.render();
+    const reopenedMenu = el<HTMLElement>("[data-browse-room-menu]");
+    const firstItem = el<HTMLButtonElement>('[data-browse-room-menu] [data-browse-room-id="r-living"]');
+    const outsideInput = el<HTMLInputElement>("#command-input");
+    firstItem.focus();
+    outsideInput.focus();
+    reopenedMenu.dispatchEvent(
+      new window.FocusEvent("focusout", { bubbles: true, relatedTarget: outsideInput }),
+    );
+    await flushImmediate();
+    assert.equal(host.isRoomBrowseMenuOpen, false);
+    assert.equal(document.querySelector("[data-browse-room-menu]"), null);
+  });
+
+  it("uses prioritizeAllViewOnlineDevices (pinned > active > habit > index) as tail fallback when layout.order is partial", () => {
+    const now = Date.now();
+    const devices = [
+      makeLight("d-first", "手动第一", { isOn: false }),
+      makeLight("d-tail-idle", "尾部普通", { isOn: false }),
+      makeLight("d-tail-habit", "尾部习惯", { isOn: false }),
+      makeLight("d-tail-active", "尾部亮灯", { isOn: true }),
+      makeLight("d-tail-pinned", "尾部置顶", { isOn: false }),
+    ];
+
+    startApp(devices, {
+      layout: {
+        order: ["d-first"],
+        tileSizes: {},
+        collapsed: [],
+        pinnedDeviceIds: ["d-tail-pinned"],
+        hidden: [],
+        aliases: {},
+        roomOrder: [],
+        roomAliases: {},
+        sceneOrder: [],
+      },
+      habitEntries: [
+        {
+          bucket: "evening",
+          targetId: "d-tail-habit",
+          operationKey: "power:on",
+          count: 4,
+          lastRecordedAtMs: now - 30_000,
+        },
+      ],
+    });
+
+    const ids = Array.from(document.querySelectorAll<HTMLElement>(".cc-group [data-tile-id]")).map(
+      (n) => n.dataset.tileId,
+    );
+    assert.deepEqual(ids, [
+      "d-tail-pinned",
+      "d-first",
+      "d-tail-active",
+      "d-tail-habit",
+      "d-tail-idle",
+    ]);
+  });
+
+  it("exposes keyboard a11y on compact/small adjustOnly sensors, default cursor on non-button climate names, and ignores [data-exit-ghost] in patchCloudPresentation", () => {
+    const sensorCompact: SmartDevice = {
+      id: "sensor-th",
+      name: "客厅温湿度计",
+      roomName: "客厅",
+      roomId: "r-living",
+      isOnline: true,
+      sourceBackend: "xiaomiCloud",
+      model: "miaomiaoce.sensor_ht.t2",
+      kind: {
+        kind: "sensor",
+        temperature: 24.6,
+        humidity: 51,
+        battery: 88,
+      },
+    };
+    const sensorSmall: SmartDevice = {
+      ...sensorCompact,
+      id: "sensor-small",
+      name: "书房温湿度计",
+    };
+    const nonExpandableClimate: SmartDevice = {
+      id: "clim-fixed",
+      name: "简易温控",
+      roomName: "卧室",
+      roomId: "r-bed",
+      isOnline: false,
+      sourceBackend: "xiaomiCloud",
+      model: "zhimi.aircondition.v1",
+      kind: {
+        kind: "climate",
+        entityId: "miot:clim-fixed:2",
+        isOn: false,
+        hvacMode: "off",
+        availableModes: [],
+        targetTemperature: 24,
+        currentTemperature: 25,
+        minTemp: 24,
+        maxTemp: 24,
+        step: 1,
+        fanMode: null,
+        availableFanModes: [],
+      },
+    };
+
+    const { host } = startApp([sensorCompact, sensorSmall, nonExpandableClimate], {
+      panelTheme: "classic",
+      layout: {
+        order: [],
+        tileSizes: { "sensor-small": "small", "clim-fixed": "full" },
+        collapsed: [],
+        pinned: [],
+        hidden: [],
+        aliases: {},
+        roomOrder: [],
+        roomAliases: {},
+        sceneOrder: [],
+      },
+    });
+
+    // Clone an exit-ghost tile with data-tile-id and verify patchCloudPresentation skips it without mutating it
+    const ghostTile = document.createElement("div");
+    ghostTile.setAttribute("data-tile-id", "sensor-th");
+    ghostTile.setAttribute("data-exit-ghost", "true");
+    ghostTile.className = "cc-tile is-active";
+    el(".cc-group").appendChild(ghostTile);
+    assert.equal(patchCloudPresentation(host), true);
+    assert.equal(ghostTile.classList.contains("is-active"), true);
+    ghostTile.remove();
+
+    // Compact sensor card has tabindex=0, role=button, aria-expanded=false, and Enter/Space toggles expansion
+    const compactEl = el<HTMLElement>('[data-sensor-card="sensor-th"]');
+    assert.equal(compactEl.getAttribute("tabindex"), "0");
+    assert.equal(compactEl.getAttribute("role"), "button");
+    assert.equal(compactEl.getAttribute("aria-expanded"), "false");
+    compactEl.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    assert.equal(host.expandedDeviceId, "sensor-th");
+    assert.equal(el('[data-sensor-card="sensor-th"]').getAttribute("aria-expanded"), "true");
+
+    // Small sensor orb also has tabindex=0, role=button, aria-expanded=false, and Space expands it
+    const smallEl = el<HTMLElement>('[data-sensor-card="sensor-small"]');
+    assert.equal(smallEl.getAttribute("tabindex"), "0");
+    assert.equal(smallEl.getAttribute("role"), "button");
+    assert.equal(smallEl.getAttribute("aria-expanded"), "false");
+    smallEl.dispatchEvent(
+      new window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }),
+    );
+    assert.equal(host.expandedDeviceId, "sensor-small");
+
+    // Expand offline drawer to verify non-expandable .cc-climate-name renders as DIV and CSS sets cursor: default
+    el<HTMLButtonElement>("[data-offline-drawer-toggle]").click();
+    const climateNameEl = el<HTMLElement>('[data-tile-id="clim-fixed"] .cc-climate-name');
+    assert.equal(climateNameEl.tagName, "DIV");
+    const cssText = readFileSync(new URL("../src/ui/styles.css", import.meta.url), "utf8");
+    assert.match(cssText, /\.cc-climate-name:not\(button\)\s*\{\s*cursor:\s*default;\s*\}/);
+  });
+});
+

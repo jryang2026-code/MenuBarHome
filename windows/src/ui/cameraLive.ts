@@ -30,8 +30,8 @@ import {
 } from "./cloudRefresh.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { writeSettingsForStorage } from "./settings.js";
-import { hasPendingUrlConfirmation } from "./speechGuard.js";
-import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
+import { hasPendingUrlConfirmation, rejectIfControlBlockedWhileLocked } from "./speechGuard.js";
+import { invokeTauriVoid } from "./transport.js";
 import { tr3 } from "./undoTracker.js";
 
 export type CameraRotationDeg = 0 | 90 | 180 | 270;
@@ -286,7 +286,10 @@ export class CameraLiveController {
     };
   }
 
-  public openCameraLiveView(deviceId: string): void {
+  public openCameraLiveView(
+    deviceId: string,
+    options?: { readonly alreadyCountedLockBlock?: boolean },
+  ): void {
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev || dev.kind.kind !== "camera") return;
     // Opening is idempotent even before the first frame or while cloud negotiation is
@@ -297,8 +300,17 @@ export class CameraLiveController {
       this.clearCameraKeepAlive();
       this.syncModalEscapeListener();
       invokeTauriVoid("set_pin_popover", { pin: true });
-      // A power-on while hidden skips the reconnect, so this is the first chance to start it.
-      if (dev.kind.isOn && !this.liveCameraImgEl && !this.liveCameraRawMediaEl && !this.liveCameraLoading && !this.liveCameraError) {
+      if (options?.alreadyCountedLockBlock) {
+        this.liveCameraLoading = false;
+        this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+      } else if (
+        dev.kind.isOn &&
+        !this.liveCameraImgEl &&
+        !this.liveCameraRawMediaEl &&
+        !this.liveCameraLoading &&
+        !this.liveCameraError
+      ) {
+        // A power-on while hidden skips the reconnect, so this is the first chance to start it.
         this.reconnectCameraLiveView();
       }
       this.host.render();
@@ -326,25 +338,24 @@ export class CameraLiveController {
       : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraLoading = false;
     invokeTauriVoid("set_pin_popover", { pin: true });
-    if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
+    if (options?.alreadyCountedLockBlock) {
+      this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+    } else if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
     } else if (!dev.kind.isOn && this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
       void (async () => {
-        if (await isWorkstationLockBlockingControl(this.host)) {
-          if (this.activeLiveCameraId === dev.id) {
-            this.liveCameraLoading = false;
-            this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
-            (this.host as unknown as MenuMijiaWindowsApp).replyBanner = {
-              text: t("屏幕已锁定，已拦截设备控制指令"),
-              source: t("锁屏保护"),
-              isError: true,
-            };
-            this.host.render();
-          }
-        }
+        if (this.activeLiveCameraId !== dev.id) return;
+        await rejectIfControlBlockedWhileLocked(this.host, {
+          beforeRender: () => {
+            if (this.activeLiveCameraId === dev.id) {
+              this.liveCameraLoading = false;
+              this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+            }
+          },
+        });
       })();
     }
     this.host.render();
@@ -1133,17 +1144,16 @@ export class CameraLiveController {
     };
     try {
       if (this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
-        if (await isWorkstationLockBlockingControl(this.host)) {
-          if (!stale()) {
-            this.liveCameraLoading = false;
-            this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
-            (this.host as unknown as MenuMijiaWindowsApp).replyBanner = {
-              text: t("屏幕已锁定，已拦截设备控制指令"),
-              source: t("锁屏保护"),
-              isError: true,
-            };
-            this.host.render();
-          }
+        if (
+          await rejectIfControlBlockedWhileLocked(this.host, {
+            beforeRender: () => {
+              if (!stale()) {
+                this.liveCameraLoading = false;
+                this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+              }
+            },
+          })
+        ) {
           return;
         }
         if (stale()) return;

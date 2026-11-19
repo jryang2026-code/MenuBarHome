@@ -22,7 +22,7 @@ import {
 import { nextSizeForTheme } from "./panelTheme.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
-import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
+import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
 import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
@@ -37,11 +37,19 @@ import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import { bindConnectionsAndDiagPanelEvents } from "./connectionsAndDiagView.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
-import { setVoiceInputEnabled, shouldKeepPopoverPinned } from "./speechGuard.js";
+import {
+  rejectIfControlBlockedWhileLocked,
+  setVoiceInputEnabled,
+  shouldKeepPopoverPinned,
+} from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
-import { resetPanelSplitTransientState, resolveDeviceTileActionLayout } from "./panelSplitTiles.js";
+import {
+  positionRoomBrowseMenu,
+  resetPanelSplitTransientState,
+  resolveDeviceTileActionLayout,
+} from "./panelSplitTiles.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -886,19 +894,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         return;
       }
       void (async () => {
-        const locked = await isWorkstationLockBlockingControl(host);
-        const latest = host.devices.find((d) => d.id === id);
-        if (!latest || latest.kind.kind !== "camera" || !latest.isOnline) return;
-        if (locked) {
-          host.cameraLive.openCameraLiveView(id);
-          host.replyBanner = {
-            text: t("屏幕已锁定，已拦截设备控制指令"),
-            source: t("锁屏保护"),
-            isError: true,
-          };
-          host.render();
+        if (await rejectIfControlBlockedWhileLocked(host)) {
+          const latestLocked = host.devices.find((d) => d.id === id);
+          if (latestLocked && latestLocked.kind.kind === "camera" && latestLocked.isOnline) {
+            host.cameraLive.openCameraLiveView(id, { alreadyCountedLockBlock: true });
+          }
           return;
         }
+        const latest = host.devices.find((d) => d.id === id);
+        if (!latest || latest.kind.kind !== "camera" || !latest.isOnline) return;
         if (deviceCanTogglePower(latest) && !latest.kind.isOn) {
           toggleDeviceForHost(host, id);
         }
@@ -919,7 +923,7 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelector(".cc-popover")?.addEventListener("click", (event) => {
       if (!host.isRoomBrowseMenuOpen) return;
       const target = event.target as Element | null;
-      if (target?.closest?.(".cc-room-browse-wrap")) return;
+      if (target?.closest?.(".cc-room-browse-wrap, [data-browse-room-menu]")) return;
       host.isRoomBrowseMenuOpen = false;
       host.render();
     });
@@ -933,6 +937,40 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     const browseRoomTrigger = host.root.querySelector<HTMLElement>("[data-browse-room-toggle]");
+    const browseRoomMenu = host.root.querySelector<HTMLElement>("[data-browse-room-menu]");
+    let pointerDownInsideRoomBrowse = false;
+    const markRoomBrowsePointerDown = (): void => {
+      pointerDownInsideRoomBrowse = true;
+      const ownerWin = host.root.ownerDocument.defaultView ?? window;
+      ownerWin.setTimeout(() => {
+        pointerDownInsideRoomBrowse = false;
+      }, 0);
+    };
+    const isInsideRoomBrowse = (node: Node | null): boolean =>
+      Boolean(
+        node &&
+          node.nodeType === 1 &&
+          typeof (node as Element).closest === "function" &&
+          (node as Element).closest(".cc-room-browse-wrap, [data-browse-room-menu]"),
+      );
+    const onRoomBrowseFocusOut = (e: FocusEvent): void => {
+      if (!host.isRoomBrowseMenuOpen || pointerDownInsideRoomBrowse) return;
+      const related = e.relatedTarget as Node | null;
+      if (related) {
+        if (isInsideRoomBrowse(related)) return;
+        host.isRoomBrowseMenuOpen = false;
+        host.render();
+        return;
+      }
+      queueMicrotask(() => {
+        if (!host.isRoomBrowseMenuOpen || pointerDownInsideRoomBrowse) return;
+        const active = host.root.ownerDocument.activeElement;
+        if (isInsideRoomBrowse(active)) return;
+        host.isRoomBrowseMenuOpen = false;
+        host.render();
+      });
+    };
+
     const toggleRoomBrowseMenu = (focusFirstItem: boolean): void => {
       const nextOpen = !host.isRoomBrowseMenuOpen;
       host.isRoomBrowseMenuOpen = nextOpen;
@@ -943,6 +981,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.root.querySelector<HTMLElement>("[data-browse-room-toggle]")?.focus({ preventScroll: true });
       }
     };
+    browseRoomTrigger?.addEventListener("pointerdown", markRoomBrowsePointerDown);
+    browseRoomTrigger?.addEventListener("mousedown", markRoomBrowsePointerDown);
+    browseRoomTrigger?.addEventListener("focusout", onRoomBrowseFocusOut);
     browseRoomTrigger?.addEventListener("click", (e) => {
       e.stopPropagation();
       toggleRoomBrowseMenu(true);
@@ -955,35 +996,58 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       }
     });
 
-    const browseRoomMenu = host.root.querySelector<HTMLElement>("[data-browse-room-menu]");
-    browseRoomMenu?.addEventListener("keydown", (e) => {
-      const items = Array.from(browseRoomMenu.querySelectorAll<HTMLElement>("[data-browse-room-id]"));
-      if (items.length === 0) return;
-      const activeIdx = items.indexOf(browseRoomMenu.ownerDocument.activeElement as HTMLElement);
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        e.stopPropagation();
-        items[(activeIdx + 1) % items.length]?.focus({ preventScroll: true });
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        e.stopPropagation();
-        items[(activeIdx - 1 + items.length) % items.length]?.focus({ preventScroll: true });
-      } else if (e.key === "Home") {
-        e.preventDefault();
-        e.stopPropagation();
-        items[0]?.focus({ preventScroll: true });
-      } else if (e.key === "End") {
-        e.preventDefault();
-        e.stopPropagation();
-        items[items.length - 1]?.focus({ preventScroll: true });
-      }
-    });
+    if (browseRoomMenu) {
+      const syncRoomBrowsePosition = (): void => {
+        if (!host.isRoomBrowseMenuOpen) return;
+        if (!positionRoomBrowseMenu(host.root)) {
+          host.isRoomBrowseMenuOpen = false;
+          host.render();
+        }
+      };
+      syncRoomBrowsePosition();
+      host.root.querySelector<HTMLElement>(".cc-scroll-area")?.addEventListener("scroll", syncRoomBrowsePosition, {
+        passive: true,
+      });
+      (host.root.ownerDocument.defaultView ?? window).addEventListener("resize", syncRoomBrowsePosition);
+      browseRoomMenu.addEventListener("pointerdown", markRoomBrowsePointerDown);
+      browseRoomMenu.addEventListener("mousedown", markRoomBrowsePointerDown);
+      browseRoomMenu.addEventListener("focusout", onRoomBrowseFocusOut);
+      browseRoomMenu.addEventListener("keydown", (e) => {
+        const items = Array.from(browseRoomMenu.querySelectorAll<HTMLElement>("[data-browse-room-id]"));
+        if (items.length === 0) return;
+        const activeIdx = items.indexOf(browseRoomMenu.ownerDocument.activeElement as HTMLElement);
+        const focusMenuItemAt = (targetIdx: number): void => {
+          const normalizedIdx = ((targetIdx % items.length) + items.length) % items.length;
+          items.forEach((item, idx) => {
+            item.setAttribute("tabindex", idx === normalizedIdx ? "0" : "-1");
+          });
+          items[normalizedIdx]?.focus({ preventScroll: true });
+        };
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          e.stopPropagation();
+          focusMenuItemAt(activeIdx + 1);
+        } else if (e.key === "ArrowUp") {
+          e.preventDefault();
+          e.stopPropagation();
+          focusMenuItemAt(activeIdx < 0 ? items.length - 1 : activeIdx - 1);
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          e.stopPropagation();
+          focusMenuItemAt(0);
+        } else if (e.key === "End") {
+          e.preventDefault();
+          e.stopPropagation();
+          focusMenuItemAt(items.length - 1);
+        }
+      });
+    }
 
     host.root.querySelectorAll<HTMLElement>("[data-browse-room-id]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const roomId = btn.dataset.browseRoomId ?? null;
-        const roomName = btn.dataset.browseRoomName ?? roomId ?? undefined;
+        const roomName = btn.dataset.browseRoomName || roomId || undefined;
         host.isRoomBrowseMenuOpen = false;
         host.selectRoom(roomId, roomName);
         host.animateEntrance = true;
@@ -1096,7 +1160,6 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const actionLayout = resolveDeviceTileActionLayout(
           dev,
           facets,
-          false,
           getUnsupportedLightEffects(host, id),
         );
         if (actionLayout.kind === "readOnly") return;

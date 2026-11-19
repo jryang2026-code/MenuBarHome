@@ -288,17 +288,12 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       closeConnectionsAndDiagModal(host);
       return true;
     }
-    if (host.ctxMenu !== null || host.isHomeMenuOpen || host.isRoomBrowseMenuOpen) {
-      const wasRoomBrowseOpen = host.isRoomBrowseMenuOpen && host.ctxMenu === null && !host.isHomeMenuOpen;
+    if (host.ctxMenu !== null || host.isHomeMenuOpen) {
       event.preventDefault();
       host.ctxMenu = null;
       host.isHomeMenuOpen = false;
-      host.isRoomBrowseMenuOpen = false;
       invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
       host.render();
-      if (wasRoomBrowseOpen) {
-        host.root.querySelector<HTMLButtonElement>("[data-browse-room-toggle]")?.focus();
-      }
       return true;
     }
     if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
@@ -329,6 +324,13 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       event.preventDefault();
       host.clearPendingHighRisk();
       host.render();
+      return true;
+    }
+    if (host.isRoomBrowseMenuOpen) {
+      event.preventDefault();
+      host.isRoomBrowseMenuOpen = false;
+      host.render();
+      host.root.querySelector<HTMLButtonElement>("[data-browse-room-toggle]")?.focus();
       return true;
     }
     // Temporary footer/popover state closes before search and before the panel hides, and gives focus back.

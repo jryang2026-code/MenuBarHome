@@ -237,8 +237,8 @@ describe("Apple Spring Physics, Reconciler Motion Upgrades & Dual-Theme CDP Snap
   it("validates both fluent (412px) and classic (472px) flyout layout snapshots in evaluateSnapshot", () => {
     const fluentScenarios = SCENARIOS.filter((s: { panelTheme?: string }) => s.panelTheme !== "classic");
     const classicScenarios = SCENARIOS.filter((s: { panelTheme?: string }) => s.panelTheme === "classic");
-    assert.equal(fluentScenarios.length, 8);
-    assert.equal(classicScenarios.length, 8);
+    assert.equal(fluentScenarios.length, 10);
+    assert.equal(classicScenarios.length, 10);
 
     const fluentSub = fluentScenarios.find((s: { view: string }) => s.view === "subpage")!;
     assert.deepEqual(evaluateSnapshot({

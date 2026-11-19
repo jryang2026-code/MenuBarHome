@@ -65,11 +65,14 @@ export {
     const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${k.battery !== null ? t("，电量 {percent}%", { percent: k.battery }) : ""}${dev.isOnline ? "" : t("，离线")}`;
     const canExpand = dev.isOnline && hasPlottableSensorMetrics(dev, facets);
     const effectiveExpanded = canExpand && isExpanded;
-    const sensorAttr = canExpand ? `data-sensor-card="${escapeHtml(dev.id)}" aria-expanded="${effectiveExpanded}"` : "";
+    const sensorAttr = canExpand
+      ? `data-sensor-card="${escapeHtml(dev.id)}" tabindex="0" aria-expanded="${effectiveExpanded}"`
+      : "";
+    const sensorRole = canExpand ? "button" : "group";
     const caret = canExpand ? `<i class="cc-mini-caret ${effectiveExpanded ? "is-open" : ""}" aria-hidden="true">${SF_ICONS.chevronDown}</i>` : "";
     if (compact && !effectiveExpanded) {
       return `
-        <div class="cc-tile cc-sensor is-compact is-action-${canExpand ? "adjustOnly" : "readOnly"} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+        <div class="cc-tile cc-sensor is-compact is-action-${canExpand ? "adjustOnly" : "readOnly"} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="${sensorRole}" aria-label="${escapeHtml(sensorAria)}">
           ${badge}
           <div class="cc-sensor-top">
             <span class="cc-sensor-name">${escapeHtml(name)}</span>
@@ -90,7 +93,7 @@ export {
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor is-action-${canExpand ? "adjustOnly" : "readOnly"} ${spansFullRow ? "is-span-row" : ""} ${effectiveExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+      <div class="cc-tile cc-sensor is-action-${canExpand ? "adjustOnly" : "readOnly"} ${spansFullRow ? "is-span-row" : ""} ${effectiveExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="${sensorRole}" aria-label="${escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -1260,10 +1263,6 @@ function renderSmallDeviceTile(options: {
         ? `data-expand-device="${id}"`
         : "";
 
-  const inner = actionAttr
-    ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
-    : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
-
   const isWaiting = state.waitingDeviceIds.has(dev.id);
   const hasActiveHighRisk =
     state.pendingHighRisk !== null &&
@@ -1274,7 +1273,22 @@ function renderSmallDeviceTile(options: {
     kind === "sensor" &&
     readout !== "possiblyStale" &&
     hasPlottableSensorMetrics(dev, state.deviceFacets[dev.id] ?? []);
-  return `<div class="cc-tile is-size-small is-action-${actionLayout.kind} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" data-action-layout="${actionLayout.kind}" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
+  const smallBtnA11y =
+    actionLayout.kind === "adjustOnly"
+      ? 'aria-expanded="false"'
+      : (actionLayout.kind === "split" || actionLayout.kind === "primaryOnly") &&
+          actionLayout.primary === "openCamera"
+        ? ""
+        : `aria-pressed="${isOn}"`;
+  const inner = actionAttr
+    ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" ${smallBtnA11y}><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
+    : canExpandSmallSensor
+      ? `<span class="cc-small-tile-btn" aria-hidden="true"><span class="cc-tile-orb">${svg}</span></span>`
+      : `<span class="cc-small-tile-btn is-readonly" role="img" title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}"><span class="cc-tile-orb">${svg}</span></span>`;
+  const smallSensorAttrs = canExpandSmallSensor
+    ? `data-sensor-card="${id}" tabindex="0" role="button" aria-expanded="false" aria-label="${escape(ariaLabel)}" title="${escape(tooltip)}"`
+    : "";
+  return `<div class="cc-tile is-size-small is-action-${actionLayout.kind} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" data-action-layout="${actionLayout.kind}" ${smallSensorAttrs} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
@@ -1310,7 +1324,6 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const actionLayout = resolveDeviceTileActionLayout(
     dev,
     facets,
-    false,
     state.unsupportedLightEffects,
   );
   const presentation = resolveTilePresentation({
@@ -1441,9 +1454,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
              type="button"
              class="cc-tile-chevron win-pill-expand"
              data-expand-device="${id}"
-             title="${escape(deviceAdjustTooltip(false))}"
-             aria-label="${escape(deviceAdjustAriaLabel(dev.name, false))}"
-             aria-expanded="false"
+             title="${escape(deviceAdjustTooltip(isExpanded))}"
+             aria-label="${escape(deviceAdjustAriaLabel(dev.name, isExpanded))}"
+             aria-expanded="${isExpanded}"
            >
              ${SF_ICONS.chevronRight}
            </button>`
@@ -1455,15 +1468,22 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
                    type="button"
                    class="cc-tile-chevron win-pill-expand is-full-pill"
                    data-expand-device="${id}"
-                   title="${escape(deviceAdjustTooltip(false))}"
-                   aria-label="${escape(deviceAdjustAriaLabel(dev.name, false))}"
-                   aria-expanded="false"
+                   title="${escape(deviceAdjustTooltip(isExpanded))}"
+                   aria-label="${escape(deviceAdjustAriaLabel(dev.name, isExpanded))}"
+                   aria-expanded="${isExpanded}"
                  >
                    <span class="cc-tile-orb win-pill-toggle" aria-hidden="true">${svg}</span>
                    <span class="cc-pill-adjust-arrow" aria-hidden="true">${SF_ICONS.chevronRight}</span>
                  </button>`
               : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
             : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`;
+
+    const captionA11yAttr =
+      kind === "camera"
+        ? ""
+        : actionLayout.kind === "adjustOnly" || (actionLayout.kind === "split" && hasDrawer)
+          ? `aria-expanded="${isExpanded}"`
+          : `aria-pressed="${isOn}"`;
 
     const captionHtml =
       actionLayout.kind === "readOnly"
@@ -1480,9 +1500,9 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
              type="button"
              class="cc-tile-body win-pill-caption"
              data-body-device="${id}"
-             title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(false)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+             title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
              aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-             ${actionLayout.kind === "adjustOnly" ? 'aria-expanded="false"' : `aria-pressed="${isOn}"`}
+             ${captionA11yAttr}
            >
              <div class="cc-tile-name">${escape(dev.name)}</div>
              <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>

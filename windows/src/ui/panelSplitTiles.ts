@@ -44,9 +44,19 @@ function filterUnsupportedEffectsForLayout(
   ) {
     return dev;
   }
-  const availableEffects = dev.kind.availableEffects.filter(
-    (effect) => !unsupportedLightEffects.has(`${dev.id}\u0000${effect}`),
-  );
+  const normalizedUnsupported = new Set<string>();
+  for (const entry of unsupportedLightEffects) {
+    normalizedUnsupported.add(entry.trim().toLowerCase());
+  }
+  const idPrefix = `${dev.id}\u0000`.toLowerCase();
+  const availableEffects = dev.kind.availableEffects.filter((effect) => {
+    const lower = effect.trim().toLowerCase();
+    return (
+      !normalizedUnsupported.has(lower) &&
+      !normalizedUnsupported.has(`${idPrefix}${lower}`) &&
+      !unsupportedLightEffects.has(`${dev.id}\u0000${effect}`)
+    );
+  });
   if (availableEffects.length === dev.kind.availableEffects.length) return dev;
   return {
     ...dev,
@@ -67,7 +77,6 @@ function filterUnsupportedEffectsForLayout(
 export function resolveDeviceTileActionLayout(
   dev: SmartDevice,
   facets: readonly FacetControl[] = [],
-  _isControlBlocked = false,
   unsupportedLightEffects?: ReadonlySet<string>,
 ): DeviceTileActionLayout {
   if (!dev.isOnline) {
@@ -198,7 +207,29 @@ export function prioritizeAllViewOnlineDevices(options: {
 }): SmartDevice[] {
   const { devices, pinnedIds, habitOrder, customOrder, isActive } = options;
   if (customOrder.length > 0) {
-    return applyOrder(customOrder, devices);
+    const byId = new Map(devices.map((device) => [device.id, device]));
+    const explicit: SmartDevice[] = [];
+    const seen = new Set<string>();
+    for (const id of customOrder) {
+      if (seen.has(id)) continue;
+      const dev = byId.get(id);
+      if (dev) {
+        seen.add(id);
+        explicit.push(dev);
+      }
+    }
+    if (explicit.length === devices.length) {
+      return explicit;
+    }
+    const remaining = devices.filter((device) => !seen.has(device.id));
+    const prioritizedTail = prioritizeAllViewOnlineDevices({
+      devices: remaining,
+      pinnedIds,
+      habitOrder,
+      customOrder: [],
+      isActive,
+    });
+    return [...explicit, ...prioritizedTail];
   }
   const favRank = new Map<string, number>();
   pinnedIds.forEach((id, idx) => {
@@ -381,22 +412,21 @@ export function buildPanelDeviceGridModel(
   const snapshot = captureOrFreezePrioritySnapshot(host, nowMs);
   const pinnedIds = pinnedDeviceIds(host.layout);
 
-  const orderedOnline =
-    isAllCut && host.layout.order.length === 0
-      ? prioritizeAllViewOnlineDevices({
-          devices: rawOnline,
-          pinnedIds,
-          habitOrder: snapshot.habitOrder,
-          customOrder: host.layout.order,
-          isActive: (dev) => {
-            if (dev.id in snapshot.activeByDeviceId) {
-              return snapshot.activeByDeviceId[dev.id]!;
-            }
-            const readout = deviceReadout(host.waitingDeviceIds.has(dev.id), host.valuesAreStale);
-            return devicePresentsAsActive(dev, readout === "possiblyStale");
-          },
-        })
-      : applyOrder(host.layout.order, rawOnline);
+  const orderedOnline = isAllCut
+    ? prioritizeAllViewOnlineDevices({
+        devices: rawOnline,
+        pinnedIds,
+        habitOrder: snapshot.habitOrder,
+        customOrder: host.layout.order,
+        isActive: (dev) => {
+          if (dev.id in snapshot.activeByDeviceId) {
+            return snapshot.activeByDeviceId[dev.id]!;
+          }
+          const readout = deviceReadout(host.waitingDeviceIds.has(dev.id), host.valuesAreStale);
+          return devicePresentsAsActive(dev, readout === "possiblyStale");
+        },
+      })
+    : applyOrder(host.layout.order, rawOnline);
 
   const rawOnlineSections = pageSections(host.layout, orderedOnline, isAllRoom);
   const flatOnline = rawOnlineSections.flatMap((section) => section.devices);
@@ -446,16 +476,22 @@ export function buildPanelDeviceGridModel(
   if (showsLongTailBar && !host.isLongTailExpanded && host.roomOptions.length > 1) {
     const hiddenSet = new Set(hiddenDeviceIds(host.layout));
     const onlineByRoomId = new Map<string, number>();
-    for (const dev of host.devices) {
+    for (const dev of rawOnline) {
       if (hiddenSet.has(dev.id) || !dev.isOnline || !dev.roomId) continue;
       onlineByRoomId.set(dev.roomId, (onlineByRoomId.get(dev.roomId) ?? 0) + 1);
     }
-    roomBrowseOptions = host.roomOptions.map((opt) => ({
-      id: opt.id,
-      name: opt.name,
-      onlineCount: onlineByRoomId.get(opt.id) ?? 0,
-    }));
-  } else if (host.isRoomBrowseMenuOpen && (host.isLongTailExpanded || !showsLongTailBar || host.roomOptions.length <= 1)) {
+    const visibleOnlineRooms = host.roomOptions
+      .map((opt) => ({
+        id: opt.id,
+        name: opt.name,
+        onlineCount: onlineByRoomId.get(opt.id) ?? 0,
+      }))
+      .filter((opt) => opt.onlineCount > 0);
+    if (visibleOnlineRooms.length > 1) {
+      roomBrowseOptions = visibleOnlineRooms;
+    }
+  }
+  if (host.isRoomBrowseMenuOpen && roomBrowseOptions.length <= 1) {
     host.isRoomBrowseMenuOpen = false;
   }
 
@@ -493,6 +529,7 @@ export function renderLongTailBarHtml(
           type="button"
           class="cc-long-tail-pill cc-room-browse-trigger ${menuOpen ? "is-open" : ""}"
           data-browse-room-toggle
+          data-room-browse-trigger
           aria-haspopup="menu"
           aria-expanded="${menuOpen}"
           aria-label="${escapeHtml(browseTitle)}"
@@ -501,26 +538,6 @@ export function renderLongTailBarHtml(
           <span class="cc-long-tail-icon" aria-hidden="true">${SF_ICONS.houseFill}</span>
           <span class="cc-long-tail-label">${escapeHtml(browseTitle)}</span>
         </button>
-        ${
-          menuOpen
-            ? `<div class="cc-room-browse-menu" role="menu" data-browse-room-menu aria-label="${escapeHtml(browseTitle)}">
-                ${model.roomBrowseOptions
-                  .map(
-                    (room) => `<button
-                      type="button"
-                      role="menuitem"
-                      class="cc-room-browse-item"
-                      data-browse-room-id="${escapeHtml(room.id)}"
-                      data-browse-room-name="${escapeHtml(room.name)}"
-                    >
-                      <span class="cc-room-browse-name">${escapeHtml(room.name)}</span>
-                      ${room.onlineCount > 0 ? `<span class="cc-room-browse-count">${room.onlineCount}</span>` : ""}
-                    </button>`,
-                  )
-                  .join("")}
-              </div>`
-            : ""
-        }
       </div>`
     : "";
 
@@ -538,6 +555,119 @@ export function renderLongTailBarHtml(
     </button>
     ${roomBrowseHtml}
   </div>`;
+}
+
+export function renderRoomBrowseMenuHtml(
+  model: PanelDeviceGridModel,
+  isRoomMenuOpen: boolean,
+  escapeHtml: (value: string) => string,
+): string {
+  if (!model.showsLongTailBar || model.isLongTailExpanded || model.roomBrowseOptions.length <= 1 || !isRoomMenuOpen) {
+    return "";
+  }
+  const browseTitle = formatBrowseByRoomTitle();
+  return `<div class="cc-room-browse-menu" role="menu" data-browse-room-menu data-overlay-key="room-browse-menu" aria-label="${escapeHtml(browseTitle)}">
+    ${model.roomBrowseOptions
+      .map(
+        (room, idx) => `<button
+          type="button"
+          role="menuitem"
+          tabindex="${idx === 0 ? "0" : "-1"}"
+          class="cc-room-browse-item"
+          data-browse-room-id="${escapeHtml(room.id)}"
+          data-browse-room-name="${escapeHtml(room.name)}"
+        >
+          <span class="cc-room-browse-name">${escapeHtml(room.name)}</span>
+          <span class="cc-room-browse-count">${room.onlineCount}</span>
+        </button>`,
+      )
+      .join("")}
+  </div>`;
+}
+
+/**
+ * Dynamically anchors `[data-browse-room-menu]` inside `.cc-popover` so it never clips against
+ * `.cc-scroll-area` or overflows narrow/compact flyouts. Returns `false` if the trigger scrolled
+ * completely out of `.cc-scroll-area`'s visible viewport and the menu should close.
+ */
+export function positionRoomBrowseMenu(root: ParentNode): boolean {
+  const menu = root.querySelector<HTMLElement>("[data-browse-room-menu]");
+  const trigger = root.querySelector<HTMLElement>("[data-browse-room-toggle]");
+  const popover = root.querySelector<HTMLElement>(".cc-popover");
+  if (!menu || !trigger || !popover) return true;
+
+  const popoverRect = popover.getBoundingClientRect();
+  const triggerRect = trigger.getBoundingClientRect();
+  if (popoverRect.width <= 0 || popoverRect.height <= 0) return true;
+
+  const scrollArea = root.querySelector<HTMLElement>(".cc-scroll-area");
+  if (scrollArea) {
+    const scrollRect = scrollArea.getBoundingClientRect();
+    if (
+      scrollRect.height > 0 &&
+      (triggerRect.bottom <= scrollRect.top + 2 || triggerRect.top >= scrollRect.bottom - 2)
+    ) {
+      return false;
+    }
+  }
+
+  const originLeft = popoverRect.left + popover.clientLeft;
+  const originTop = popoverRect.top + popover.clientTop;
+  const innerWidth = popover.clientWidth > 0 ? popover.clientWidth : popoverRect.width;
+  const innerHeight = popover.clientHeight > 0 ? popover.clientHeight : popoverRect.height;
+
+  const edgePad = 6;
+  const gap = 6;
+  const availWidth = Math.max(72, Math.floor(innerWidth - edgePad * 2));
+  menu.style.maxWidth = `${availWidth}px`;
+  menu.style.minWidth = `${Math.min(168, availWidth)}px`;
+  menu.style.right = "auto";
+  menu.style.bottom = "auto";
+  menu.style.left = `${edgePad}px`;
+  menu.style.top = `${edgePad}px`;
+  menu.style.maxHeight = "none";
+
+  const naturalHeight = Math.max(menu.scrollHeight + 2, 40);
+  const idealHeight = Math.min(220, naturalHeight);
+  const triggerTopRel = triggerRect.top - originTop;
+  const triggerBottomRel = triggerRect.bottom - originTop;
+  const spaceAbove = triggerTopRel - gap - edgePad;
+  const spaceBelow = innerHeight - edgePad - (triggerBottomRel + gap);
+
+  let openUp = true;
+  let maxHeightPx: number;
+  if (spaceAbove >= idealHeight) {
+    openUp = true;
+    maxHeightPx = Math.min(220, Math.floor(spaceAbove));
+  } else if (spaceBelow >= idealHeight) {
+    openUp = false;
+    maxHeightPx = Math.min(220, Math.floor(spaceBelow));
+  } else if (Math.max(spaceAbove, spaceBelow) >= 88) {
+    openUp = spaceAbove >= spaceBelow;
+    maxHeightPx = Math.min(220, Math.floor(openUp ? spaceAbove : spaceBelow));
+  } else {
+    openUp = spaceAbove >= spaceBelow;
+    maxHeightPx = Math.min(220, Math.max(48, Math.floor(innerHeight - edgePad * 2)));
+  }
+  menu.style.maxHeight = `${maxHeightPx}px`;
+
+  const measured = menu.getBoundingClientRect();
+  const menuW = measured.width;
+  const menuH = measured.height;
+  const desiredLeft = triggerRect.right - originLeft - menuW;
+  const clampedLeft = Math.min(
+    Math.max(edgePad, desiredLeft),
+    Math.max(edgePad, innerWidth - edgePad - menuW),
+  );
+  const desiredTop = openUp ? triggerTopRel - gap - menuH : triggerBottomRel + gap;
+  const clampedTop = Math.min(
+    Math.max(edgePad, desiredTop),
+    Math.max(edgePad, innerHeight - edgePad - menuH),
+  );
+
+  menu.style.left = `${Math.round(clampedLeft)}px`;
+  menu.style.top = `${Math.round(clampedTop)}px`;
+  return true;
 }
 
 export function renderOfflineDrawerHtml(options: {

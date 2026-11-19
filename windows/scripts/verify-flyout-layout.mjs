@@ -11,8 +11,8 @@ const windowsRoot = path.resolve(path.dirname(scriptPath), "..");
 const repoRoot = path.resolve(windowsRoot, "..");
 const usageText = "usage: npm --prefix windows run verify:ui -- [--require-chrome] [--no-build] [--dist <dir>] [--out-dir <dir>] [--chrome <bin>] [--self-test]";
 
-function scenario(id, panelHeight, height, interfaceLanguage, appearance, view, panelTheme = "fluent") {
-  const width = panelTheme === "classic" ? 472 : 412;
+function scenario(id, panelHeight, height, interfaceLanguage, appearance, view, panelTheme = "fluent", customWidth = null) {
+  const width = customWidth ?? (panelTheme === "classic" ? 472 : 412);
   return { id, panelTheme, panelHeight, width, height, interfaceLanguage, appearance, view };
 }
 
@@ -25,6 +25,8 @@ export const SCENARIOS = [
   scenario("compact-zh-hant-light-all", "compact", 580, "zh-Hant", "light", "all", "fluent"),
   scenario("compact-en-dark-all", "compact", 580, "en", "dark", "all", "fluent"),
   scenario("compact-en-light-room", "compact", 580, "en", "light", "room", "fluent"),
+  scenario("compact-zh-hans-dark-room-browse", "compact", 580, "zh-Hans", "dark", "roomBrowse", "fluent"),
+  scenario("narrow-190-zh-hans-dark-room-browse", "compact", 580, "zh-Hans", "dark", "roomBrowse", "fluent", 190),
   scenario("classic-standard-zh-hans-dark-all", "standard", 680, "zh-Hans", "dark", "all", "classic"),
   scenario("classic-standard-zh-hans-light-all", "standard", 680, "zh-Hans", "light", "all", "classic"),
   scenario("classic-standard-zh-hant-dark-room", "standard", 680, "zh-Hant", "dark", "room", "classic"),
@@ -33,6 +35,8 @@ export const SCENARIOS = [
   scenario("classic-compact-zh-hant-light-all", "compact", 580, "zh-Hant", "light", "all", "classic"),
   scenario("classic-compact-en-dark-all", "compact", 580, "en", "dark", "all", "classic"),
   scenario("classic-compact-en-light-room", "compact", 580, "en", "light", "room", "classic"),
+  scenario("classic-standard-zh-hans-dark-room-browse", "standard", 680, "zh-Hans", "dark", "roomBrowse", "classic"),
+  scenario("classic-compact-en-light-room-browse", "compact", 580, "en", "light", "roomBrowse", "classic"),
 ];
 
 function approxEqual(actual, expected, tolerance = 0.75) {
@@ -88,15 +92,20 @@ export function evaluateSnapshot(snapshot, sc) {
   if (typeof snapshot.documentElementScrollWidth !== "number" || snapshot.documentElementScrollWidth > expectedWidth) {
     failures.push(`documentElement.scrollWidth (${String(snapshot.documentElementScrollWidth)}) exceeds ${expectedWidth}`);
   }
+  if (typeof snapshot.horizontalOverflow === "number" && snapshot.horizontalOverflow > 0) {
+    failures.push(`horizontalOverflow must be 0 (got ${String(snapshot.horizontalOverflow)})`);
+  }
   if (snapshot.scrollAreaOverflowX === true) {
     failures.push(".cc-scroll-area has unexpected horizontal overflow");
   }
-  for (const label of Array.isArray(snapshot.chromeLabels) ? snapshot.chromeLabels : []) {
-    if (label.scrollWidth > label.clientWidth + 1) failures.push(`chrome label ${label.selector} (${JSON.stringify(label.text)}) truncated: scrollWidth=${label.scrollWidth} > clientWidth=${label.clientWidth}`);
+  if (expectedWidth >= 360) {
+    for (const label of Array.isArray(snapshot.chromeLabels) ? snapshot.chromeLabels : []) {
+      if (label.scrollWidth > label.clientWidth + 1) failures.push(`chrome label ${label.selector} (${JSON.stringify(label.text)}) truncated: scrollWidth=${label.scrollWidth} > clientWidth=${label.clientWidth}`);
+    }
   }
-  const minScrollHeight = expectedHeight <= 580 ? 140 : 200;
+  const minScrollHeight = expectedWidth < 360 ? 96 : expectedHeight <= 580 ? 140 : 200;
   if (typeof snapshot.scrollAreaHeight !== "number" || snapshot.scrollAreaHeight < minScrollHeight) {
-    failures.push(`.cc-scroll-area height (${String(snapshot.scrollAreaHeight)}px) is below minimum ${minScrollHeight}px for ${expectedHeight}px flyout`);
+    failures.push(`.cc-scroll-area height (${String(snapshot.scrollAreaHeight)}px) is below minimum ${minScrollHeight}px for ${expectedWidth}x${expectedHeight}px flyout`);
   }
   if (sc.view === "room" && snapshot.activeRoomId !== "room_living") failures.push(`room view did not activate room_living (activeRoomId=${String(snapshot.activeRoomId)})`);
   if (sc.view === "subpage") {
@@ -119,6 +128,23 @@ export function evaluateSnapshot(snapshot, sc) {
       if ((drw.visibleSiblingTileCount ?? 0) <= 0) failures.push(`classic drawer must keep sibling tiles visible (visibleSiblingTileCount=${drw.visibleSiblingTileCount})`);
       const sliders = Array.isArray(snapshot.liquidSliders) ? snapshot.liquidSliders : [];
       if (sliders.length === 0) failures.push("classic drawer expected at least one visible .cc-liquid-slider");
+    }
+  }
+  if (sc.view === "roomBrowse") {
+    const rb = snapshot.roomBrowse;
+    if (!rb || rb.mounted !== true) {
+      failures.push("[data-browse-room-menu] did not mount in roomBrowse view");
+    } else {
+      if (rb.longTailMounted !== true) failures.push("expected [data-long-tail-bar] for >8 online devices");
+      if (rb.offlineDrawerMounted !== true) failures.push("expected [data-offline-drawer] for offline devices");
+      if (rb.mountedOnPopover !== true) failures.push("[data-browse-room-menu] must be mounted as direct child of .cc-popover");
+      if ((rb.itemCount ?? 0) < 2) failures.push(`expected >=2 room options in [data-browse-room-menu] (got ${String(rb.itemCount)})`);
+      if (rb.insidePopover !== true) {
+        failures.push(`[data-browse-room-menu] clipped outside .cc-popover (${JSON.stringify(rb.rect)} vs ${JSON.stringify(pop)})`);
+      }
+      if (snapshot.horizontalOverflow !== 0) {
+        failures.push(`roomBrowse horizontalOverflow must be 0 (got ${String(snapshot.horizontalOverflow)})`);
+      }
     }
   }
   return failures;
@@ -330,13 +356,81 @@ async function connectCdpPage(wsUrl, timeoutMs = 8000) {
   return new CdpSession(ws);
 }
 
+function buildRoomBrowseSeedDevices() {
+  const rooms = [
+    { roomId: "room_living", roomName: "客厅" },
+    { roomId: "room_bed", roomName: "主卧" },
+    { roomId: "room_study", roomName: "书房" },
+    { roomId: "room_kitchen", roomName: "厨房" },
+    { roomId: "room_balcony", roomName: "阳台" },
+  ];
+  const online = Array.from({ length: 12 }, (_, idx) => {
+    const r = rooms[idx % rooms.length];
+    return {
+      id: `seed.light_${idx + 1}`,
+      name: `${r.roomName}灯${idx + 1}`,
+      roomName: r.roomName,
+      roomId: r.roomId,
+      isOnline: true,
+      sourceBackend: "xiaomiCloud",
+      model: "yeelink.light.color4",
+      kind: {
+        kind: "light",
+        entityId: `miot:seed.light_${idx + 1}:2`,
+        isOn: idx < 3,
+        brightnessPercent: 75,
+        colorTempKelvin: 4000,
+        minKelvin: 2700,
+        maxKelvin: 6500,
+        currentEffect: null,
+        availableEffects: [],
+      },
+    };
+  });
+  const offline = [1, 2].map((n) => ({
+    id: `seed.offline_${n}`,
+    name: `离线插座${n}`,
+    roomName: "玄关",
+    roomId: "room_entry",
+    isOnline: false,
+    sourceBackend: "xiaomiCloud",
+    model: "chuangmi.plug.212a01",
+    kind: {
+      kind: "plug",
+      switchEntityId: `miot:seed.offline_${n}:2`,
+      isOn: false,
+      powerWatts: null,
+      energyKwh: null,
+      childLockEntityId: null,
+      isChildLocked: false,
+    },
+  }));
+  return [...online, ...offline];
+}
+
 function buildInitScript(sc) {
+  const isRoomBrowse = sc.view === "roomBrowse";
   const settingsJson = JSON.stringify({
-    connectionMode: "demo", hasCompletedOnboarding: true, panelTheme: sc.panelTheme ?? "fluent",
-    interfaceLanguage: sc.interfaceLanguage, appearance: sc.appearance, panelHeight: sc.panelHeight,
+    connectionMode: isRoomBrowse ? "xiaomiCloud" : "demo",
+    hasCompletedOnboarding: true,
+    miSession: isRoomBrowse
+      ? {
+          userId: "90001234",
+          cUserId: "",
+          ssecurity: "AAAAAAAAAAAAAAAAAAAAAA==",
+          serviceToken: "seed-token",
+          passToken: "",
+          region: "cn",
+        }
+      : null,
+    cachedXiaomiDevices: isRoomBrowse ? buildRoomBrowseSeedDevices() : [],
+    panelTheme: sc.panelTheme ?? "fluent",
+    interfaceLanguage: sc.interfaceLanguage,
+    appearance: sc.appearance,
+    panelHeight: sc.panelHeight,
   });
   return `window.__MMB_SCENARIO_ID__ = ${JSON.stringify(sc.id)};
-    window.__TAURI_INTERNALS__ = { invoke: async (cmd) => (cmd === "panel_is_visible" ? true : undefined) };
+    window.__TAURI_INTERNALS__ = { invoke: async (cmd) => (cmd === "panel_is_visible" ? true : cmd === "native_http" ? new Promise(() => {}) : undefined) };
     try { localStorage.clear(); localStorage.setItem("menumijia.windows.settings.v2", ${JSON.stringify(settingsJson)}); } catch {}`;
 }
 
@@ -363,6 +457,7 @@ function buildSnapshotExpression(sc) {
       return window.getComputedStyle(el).display;
     };
     const view = ${JSON.stringify(sc.view)};
+    const scrollAreaPre = document.querySelector(".cc-scroll-area");
     if (view === "room") {
       const pill = document.querySelector('.cc-room-pill[data-room-id="room_living"]');
       if (pill && !pill.classList.contains("is-active")) pill.click();
@@ -372,6 +467,13 @@ function buildSnapshotExpression(sc) {
     } else if (view === "drawer") {
       const expandBtn = document.querySelector('[data-expand-device="light.living_ceiling"]');
       if (expandBtn && !document.querySelector('.cc-tile[data-tile-id="light.living_ceiling"] .cc-expander-grid')) expandBtn.click();
+    } else if (view === "roomBrowse") {
+      const browseBtn = document.querySelector("[data-browse-room-toggle]");
+      if (browseBtn && !document.querySelector("[data-browse-room-menu]")) {
+        if (scrollAreaPre) scrollAreaPre.scrollTop = scrollAreaPre.scrollHeight;
+        browseBtn.scrollIntoView({ block: "nearest" });
+        browseBtn.click();
+      }
     }
     const app = document.getElementById("app"), popover = document.querySelector(".cc-popover"), scrollArea = document.querySelector(".cc-scroll-area");
     const islandDomCount = document.querySelectorAll(".win-island").length;
@@ -415,6 +517,29 @@ function buildSnapshotExpression(sc) {
         visibleSiblingTileCount,
       };
     }
+    let roomBrowse = null;
+    if (view === "roomBrowse") {
+      const menuEl = document.querySelector("[data-browse-room-menu]");
+      const mRect = roundRect(menuEl);
+      const pRect = roundRect(popover);
+      const itemCount = menuEl ? menuEl.querySelectorAll("[data-browse-room-id]").length : 0;
+      const insidePopover = Boolean(
+        mRect && pRect && mRect.width > 0 && mRect.height > 0 &&
+        mRect.top >= pRect.top - 0.75 &&
+        mRect.bottom <= pRect.bottom + 0.75 &&
+        mRect.left >= pRect.left - 0.75 &&
+        mRect.right <= pRect.right + 0.75,
+      );
+      roomBrowse = {
+        mounted: Boolean(menuEl && effectiveDisplay(menuEl) !== "none" && mRect && mRect.height > 0),
+        mountedOnPopover: Boolean(menuEl && popover && menuEl.parentElement === popover),
+        longTailMounted: Boolean(document.querySelector("[data-long-tail-bar]")),
+        offlineDrawerMounted: Boolean(document.querySelector("[data-offline-drawer]")),
+        itemCount,
+        rect: mRect,
+        insidePopover,
+      };
+    }
     return {
       ready: Boolean(app && popover && scrollArea), scenarioId, locationScenario, readyState,
       panelThemeAttr: app ? app.getAttribute("data-panel-theme") : null,
@@ -424,10 +549,11 @@ function buildSnapshotExpression(sc) {
       isParked: Boolean(app && app.classList.contains("is-parked")), appRect: roundRect(app), popoverRect: roundRect(popover),
       islandDomCount, islands, liquidSliders,
       documentElementScrollWidth: document.documentElement.scrollWidth,
+      horizontalOverflow: Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth),
       scrollAreaOverflowX: Boolean(scrollArea && scrollArea.scrollWidth > scrollArea.clientWidth + 1),
       chromeLabels,
       scrollAreaHeight: scrollArea ? round(scrollArea.getBoundingClientRect().height) : 0,
-      activeRoomId: activeRoomPill ? activeRoomPill.getAttribute("data-room-id") : null, subpage, drawer,
+      activeRoomId: activeRoomPill ? activeRoomPill.getAttribute("data-room-id") : null, subpage, drawer, roomBrowse,
     };
   })()`;
 }
@@ -639,7 +765,8 @@ async function main() {
           snapshot.popoverRect?.height > 0 &&
           (sc.view !== "room" || snapshot.activeRoomId === "room_living") &&
           (sc.view !== "subpage" || snapshot.subpage?.mounted === true) &&
-          (sc.view !== "drawer" || snapshot.drawer?.mounted === true)
+          (sc.view !== "drawer" || snapshot.drawer?.mounted === true) &&
+          (sc.view !== "roomBrowse" || snapshot.roomBrowse?.mounted === true)
         ) break;
         await new Promise((r) => setTimeout(r, 35));
       }
