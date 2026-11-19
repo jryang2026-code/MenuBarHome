@@ -9,15 +9,17 @@ import {
   endpointAllowsSendingSecrets,
   forgetHabitItem,
   inferAssistantPreset,
+  isAiAssistantEnabled,
   isLocalNetworkEndpoint,
   listReadableHabits,
   parseAssistantEndpoint,
+  removeAssistantProviderState,
   shareHabitSentence,
   type AssistantConfig,
   type HabitLastAction,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
-import { normalizeMiCloudRegion, type HttpTransport } from "../core/miCloudClient.js";
+import { normalizeMiCloudRegion, type HttpRequest, type HttpResponse, type HttpTransport } from "../core/miCloudClient.js";
 import {
   joinsAllOffByDefault,
   type AssistantSuggestion,
@@ -133,6 +135,12 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
+  /** Invalidates in-flight AI requests after an enable/disable or provider change (P5a-W). */
+  advanceAssistantEpoch?(): void;
+  /** Current feature-level AI generation; request helpers capture and compare it (P5a-W). */
+  readonly assistantEpoch?: number;
+  /** False while startup credential hydration is still reading the vault (P5a-W). */
+  readonly timerCredentialsReady?: boolean;
 }
 
 interface SettingsUiSessionState {
@@ -275,6 +283,8 @@ export async function probeAssistantConnection(
     };
   },
   transport?: HttpTransport,
+  /** Wraps every HTTP attempt (initial call and in-resolver retries); see P5a-W #1/#3. */
+  gate?: (request: HttpRequest) => Promise<HttpResponse>,
 ): Promise<{ readonly ok: boolean; readonly latencyMs: number | null; readonly message: string }> {
   const trimmedBase = config.baseURL.trim();
   if (!trimmedBase) {
@@ -345,7 +355,8 @@ export async function probeAssistantConnection(
 
   const preset = inferAssistantPreset(trimmedBase);
   const model = config.model.trim() || preset.defaultModel || "gpt-4o-mini";
-  const effectiveTransport = transport ?? createTransport();
+  const baseTransport = transport ?? createTransport();
+  const effectiveTransport: HttpTransport = gate ? (request) => gate(request) : baseTransport;
   const resolver = new ModelIntentResolver(
     {
       baseURL: trimmedBase,
@@ -422,6 +433,96 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
   }
 }
 
+/**
+ * Removes the provider currently shown in the AI settings form (P5a-W acceptance #2):
+ * its saved key slot is deleted from the credential vault, its endpoint bindings and
+ * cloud-send consent are cleared, and — when it is the configured provider — the config
+ * falls back to the app default preset. Other providers' key slots and bindings stay.
+ */
+export async function removeActiveAssistantProvider(host: SettingsEventsHost): Promise<void> {
+  // Removal targets what the form currently shows: the active preset pill, which the pill
+  // clicks and the URL input keep in sync. The URL draft alone is ambiguous — an empty
+  // custom draft must mean "remove Custom", not fall back to the saved provider.
+  const activePill = host.root.querySelector<HTMLElement>("[data-ai-preset].is-active");
+  const selectedPresetId = activePill?.dataset.aiPreset;
+  const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
+  const draftBase = (baseEl?.value ?? "").trim();
+  const presetId =
+    selectedPresetId ?? inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id;
+  // Startup hydration may still be reading the vault: mutating before it finishes lets
+  // hydrateCredentials merge the removed key back and re-persist it on save. Wait (bounded)
+  // for the hydration flag before touching provider state.
+  const hydrationDeadline = Date.now() + 5000;
+  while (host.timerCredentialsReady === false && Date.now() < hydrationDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  // Snapshot for the vault-failure rollback: after a failed persist the retry must target
+  // the same provider, not whatever the default-preset fallback re-activation shows.
+  const rollback = {
+    assistantBaseURL: host.settings.assistantBaseURL,
+    assistantModel: host.settings.assistantModel,
+    openRouterApiKey: host.settings.openRouterApiKey,
+    assistantKeyEndpoint: host.settings.assistantKeyEndpoint,
+    assistantCustomKeyEndpoint: host.settings.assistantCustomKeyEndpoint,
+    assistantLegacyKeyEndpoint: host.settings.assistantLegacyKeyEndpoint,
+    cloudConsentEndpoints: [...host.settings.cloudConsentEndpoints],
+    removedKey: host.assistantKeysByPreset[presetId],
+  };
+  // Mutates the saved settings and the in-memory key map in place; the vault persist below
+  // turns the dropped preset entry into a credential-store delete.
+  removeAssistantProviderState({
+    presetId,
+    settings: host.settings,
+    keysByPreset: host.assistantKeysByPreset,
+  });
+  // Advance before any await: a model result landing during the vault persist must not
+  // dispatch against the just-removed configuration (P5a-W #3).
+  host.advanceAssistantEpoch?.();
+
+  // MenuMijiaWindowsApp always carries the vault; the structural settings host does not name it.
+  const vault = (host as Partial<MenuMijiaWindowsApp>).credentialVault;
+  if (vault) {
+    try {
+      await vault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
+    } catch {
+      host.settings.assistantBaseURL = rollback.assistantBaseURL;
+      host.settings.assistantModel = rollback.assistantModel;
+      host.settings.openRouterApiKey = rollback.openRouterApiKey;
+      host.settings.assistantKeyEndpoint = rollback.assistantKeyEndpoint;
+      host.settings.assistantCustomKeyEndpoint = rollback.assistantCustomKeyEndpoint;
+      host.settings.assistantLegacyKeyEndpoint = rollback.assistantLegacyKeyEndpoint;
+      host.settings.cloudConsentEndpoints = rollback.cloudConsentEndpoints;
+      if (rollback.removedKey !== undefined) {
+        host.assistantKeysByPreset[presetId] = rollback.removedKey;
+      }
+      host.replyBanner = {
+        text: t("无法从系统凭据库移除该服务商的密钥，请重试"),
+        source: t("出错提示"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
+  }
+  host.saveSettings();
+
+  host.replyBanner = {
+    text: t("已移除本机保存的该服务商配置与密钥"),
+    source: t("AI 一句话控制"),
+  };
+  // Drop the removed provider's typed draft (base URL / model / key): the draft capture
+  // would otherwise restore it after the re-render and a later save would re-write the
+  // removed key into the vault — the revoke-all path clears credential inputs the same way.
+  for (const selector of ["#settings-base-url", "#settings-model", "#settings-api-key"]) {
+    const field = host.root.querySelector<HTMLInputElement>(selector);
+    if (field) {
+      field.value = "";
+      field.defaultValue = "";
+    }
+  }
+  host.render();
+}
+
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
@@ -463,6 +564,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.settings.assistantLegacyKeyEndpoint = null;
   host.assistantKeysByPreset = {};
   host.settings.cloudConsentEndpoints = [];
+  host.advanceAssistantEpoch?.();
 
   const session = getSettingsSession(host);
   session.aiTestStatus = null;
@@ -588,6 +690,12 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   const haToken = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
 
   const prevHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  // Provider config comparison for the in-flight AI invalidation (P5a-W #3).
+  const prevAssistantBaseURL = host.settings.assistantBaseURL;
+  const prevAssistantModel = host.settings.assistantModel;
+  const prevOpenRouterApiKey = host.settings.openRouterApiKey;
+  const prevAssistantKeyEndpoint = host.settings.assistantKeyEndpoint;
+  const prevAssistantCustomKeyEndpoint = host.settings.assistantCustomKeyEndpoint;
 
   if (haUrl) {
     let endpoint = haUrl.value.trim();
@@ -681,6 +789,17 @@ function commitSettingsSave(host: SettingsEventsHost): void {
     if (modelEl) {
       host.settings.assistantModel = modelEl.value.trim() || fallbackModel;
     }
+  }
+
+  if (
+    host.settings.assistantBaseURL !== prevAssistantBaseURL ||
+    host.settings.assistantModel !== prevAssistantModel ||
+    host.settings.openRouterApiKey !== prevOpenRouterApiKey ||
+    host.settings.assistantKeyEndpoint !== prevAssistantKeyEndpoint ||
+    host.settings.assistantCustomKeyEndpoint !== prevAssistantCustomKeyEndpoint
+  ) {
+    // A provider switch or key change must discard results still in flight (P5a-W #3).
+    host.advanceAssistantEpoch?.();
   }
 
   if (askUnsureEl) {
@@ -1303,6 +1422,30 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     });
   });
 
+  const removeProviderBtn = host.root.querySelector<HTMLButtonElement>("#btn-remove-ai-provider");
+  if (removeProviderBtn) {
+    let armed = false;
+    let disarmTimer: number | undefined;
+    removeProviderBtn.addEventListener("click", () => {
+      if (!armed) {
+        armed = true;
+        removeProviderBtn.textContent = t("再点一次确认移除");
+        clearTimeout(disarmTimer);
+        disarmTimer = window.setTimeout(() => {
+          armed = false;
+          disarmTimer = undefined;
+          if (removeProviderBtn.isConnected) removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+        }, 4000);
+        return;
+      }
+      clearTimeout(disarmTimer);
+      disarmTimer = undefined;
+      armed = false;
+      removeProviderBtn.textContent = t("移除此服务商的本机配置与密钥");
+      void removeActiveAssistantProvider(host);
+    });
+  }
+
   host.root.querySelector<HTMLInputElement>("#settings-base-url")?.addEventListener("input", (event) => {
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
     const target = event.target as HTMLInputElement;
@@ -1331,6 +1474,17 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     writeAskWhenUnsure(host.settings, checked);
     syncSettingsSaveHint(host, "auto-saved");
     host.saveSettings();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-ai-enabled")?.addEventListener("change", (event) => {
+    const checked = (event.target as HTMLInputElement).checked;
+    if (isAiAssistantEnabled(host.settings) === checked) return;
+    host.settings.aiAssistantEnabled = checked;
+    host.saveSettings();
+    // Flipping the switch mid-request must discard the in-flight result (P5a-W #3).
+    host.advanceAssistantEpoch?.();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
   });
 
   const envStatusEl = host.root.querySelector<HTMLElement>("#settings-env-import-status");
@@ -1411,6 +1565,22 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   }
 
   aiTestBtn?.addEventListener("click", () => {
+    const aiTestStatusGate = host.root.querySelector<HTMLElement>("#settings-ai-test-status");
+    if (!isAiAssistantEnabled(host.settings)) {
+      // AI off (P5a-W): the probe is an AI request too, so it must not send.
+      const offText = tr3(
+        "AI 一句话控制已关闭，测试连接不可用",
+        "AI 一句話控制已關閉，測試連線不可用",
+        "AI command control is off; the connection check is unavailable",
+      );
+      session.aiTestStatus = { text: offText, state: "error" };
+      if (aiTestStatusGate) {
+        aiTestStatusGate.textContent = offText;
+        aiTestStatusGate.dataset.testState = "error";
+        aiTestStatusGate.style.color = "#e67e22";
+      }
+      return;
+    }
     const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
     const modelEl = host.root.querySelector<HTMLInputElement>("#settings-model");
     const apiKeyEl = host.root.querySelector<HTMLInputElement>("#settings-api-key");
@@ -1432,6 +1602,17 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       liveStatusEl.dataset.testState = "testing";
       liveStatusEl.style.color = "";
     }
+    // Gate every probe attempt: a disable (or provider change) while the probe runs must
+    // stop the initial POST and any in-resolver retry (P5a-W #1/#3). The gate wraps each
+    // attempt while the probe keeps its draft-endpoint authorization flow.
+    const probeEpoch = host.assistantEpoch;
+    const liveProbeTransport = createTransport();
+    const probeGate = (request: HttpRequest): Promise<HttpResponse> => {
+      if (host.assistantEpoch !== probeEpoch || !isAiAssistantEnabled(host.settings)) {
+        return Promise.reject(new Error("assistant request superseded"));
+      }
+      return liveProbeTransport(request);
+    };
 
     void (async () => {
       const result = await probeAssistantConnection({
@@ -1445,14 +1626,21 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
           assistantUrl: host.settings.assistantBaseURL,
           haUrl: host.settings.haBaseURL,
         }),
-      });
+      }, undefined, probeGate);
       const state = result.ok ? "ok" : "error";
-      session.aiTestStatus = { text: result.message, state };
+      const message = result.ok || result.message !== "assistant request superseded"
+        ? result.message
+        : tr3(
+            "AI 已关闭或服务商已切换，测试中止",
+            "AI 已關閉或服務商已切換，測試中止",
+            "AI was disabled or the provider changed; the check was aborted",
+          );
+      session.aiTestStatus = { text: message, state };
       const btnNow = host.root.querySelector<HTMLButtonElement>("#btn-test-ai-connection");
       if (btnNow) btnNow.disabled = false;
       const statusNow = host.root.querySelector<HTMLElement>("#settings-ai-test-status");
       if (statusNow) {
-        statusNow.textContent = result.message;
+        statusNow.textContent = message;
         statusNow.dataset.testState = state;
         statusNow.style.color = result.ok ? "" : "#e67e22";
       }

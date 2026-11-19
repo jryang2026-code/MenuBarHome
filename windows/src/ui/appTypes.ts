@@ -123,6 +123,12 @@ export interface PersistedSettings {
   blockControlWhileLocked: boolean;
   /** 语音输入; missing on legacy settings means on, so upgrades keep the existing mic entry. */
   voiceInputEnabled?: boolean;
+  /**
+   * AI 一句话控制 (P5a-W); missing on legacy settings means on. When off, no AI request,
+   * retry or cloud consent is sent — local parsing, learned shortcuts and saved timers
+   * keep working, and the provider config plus key slots are preserved for re-enabling.
+   */
+  aiAssistantEnabled?: boolean;
   /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
   enableRaycastIntegration: boolean;
   /** Runs `menumijia://` links without the external-link confirmation prompt when on. */

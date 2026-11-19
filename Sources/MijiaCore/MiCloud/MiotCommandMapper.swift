@@ -15,6 +15,7 @@ public enum MiotWrite: Equatable, Sendable {
 public enum MiotCommandError: LocalizedError, Equatable, Sendable {
     case invalidAddress(String)
     case unsupported(String)
+    case noWritableSession(String)
 
     public var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ public enum MiotCommandError: LocalizedError, Equatable, Sendable {
             return L10n.tr("无法识别的米家设备地址：", "Unrecognized Mijia device address: ") + id
         case .unsupported(let what):
             return L10n.tr("该设备暂不支持此操作：", "This device does not support this action yet: ") + what
+        case .noWritableSession(let did):
+            return L10n.tr("当前没有可控制该设备的在线米家账号：", "No online Xiaomi Home account currently has control permission for this device: ") + did
         }
     }
 }

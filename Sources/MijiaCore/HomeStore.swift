@@ -1193,6 +1193,7 @@ public final class HomeStore {
     @ObservationIgnored var lastPersistedCapabilitySelection: CapabilitySelection?
     @ObservationIgnored var lastPersistedDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var lastPersistedDisabledScopes: Set<String> = []
+    @ObservationIgnored var revokedMiAccountScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
     @ObservationIgnored var indexedScenesById: [String: SceneReference] = [:]
     @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]

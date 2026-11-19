@@ -17,6 +17,7 @@ import {
   assistantEndpointIdentity,
   buildAssistantContext,
   endpointAllowsSendingSecrets,
+  isAiAssistantEnabled,
   isLocalAssistantEndpoint,
   suggestionBaseId,
   withSuggestionDelay,
@@ -25,6 +26,7 @@ import {
   type SuggestionDelaySpec,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
+import type { HttpTransport } from "../core/miCloudClient.js";
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
@@ -52,6 +54,9 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
     let trimmed = rawInput.trim();
     if (!trimmed) return;
     const sourceRevision = host.sourceRevision;
+    // A disable or provider change mid-flight must discard this run's late model result
+    // before it can reach the write gate (P5a-W acceptance #3).
+    const assistantEpoch = host.assistantEpoch;
     // A new command replaces any question still waiting for cloud consent, and old suggestions.
     host.pendingCloudConsent = null;
     host.pendingSuggestions = [];
@@ -222,6 +227,18 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
       }
 
       if (!plan) {
+        if (!isAiAssistantEnabled(host.settings)) {
+          // AI is off: zero requests, zero retries, no cloud consent prompt. Local parsing,
+          // learned shortcuts and saved timers were already handled above.
+          host.pendingSuggestions = [];
+          host.replyBanner = {
+            text: t("AI 一句话控制已关闭，指令只在本机解析；可在设置中重新开启。"),
+            source: t("AI 一句话控制"),
+          };
+          host.isResolvingIntent = false;
+          host.render();
+          return;
+        }
         const baseURL = host.settings.assistantBaseURL.trim() || "https://openrouter.ai/api/v1";
         const apiKey = host.apiKeyFor(baseURL);
         const isLoopback = isLocalAssistantEndpoint(baseURL);
@@ -261,13 +278,21 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
             ? { threshold: settingsRecord.confirmationThreshold }
             : {}),
         };
+        // Gate every transport attempt (initial call and in-resolver retries alike): once
+        // the run is superseded or AI is off, no further request may leave (P5a-W #1/#3).
+        const gatedTransport: HttpTransport = (request) => {
+          if (assistantEpoch !== host.assistantEpoch || !isAiAssistantEnabled(host.settings)) {
+            return Promise.reject(new Error("assistant request superseded"));
+          }
+          return host.transport(request);
+        };
         const resolver = new ModelIntentResolver(
           {
             baseURL,
             model: host.settings.assistantModel,
             apiKey,
           },
-          host.transport,
+          gatedTransport,
           confirmationPolicy,
         );
         // Same ambient context macOS sends with Jev requests (#38); the getter falls
@@ -287,7 +312,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
           mention: { kind: "utterance", text: trimmed },
         });
         plan = await resolver.resolve(trimmed, aliasedDevices, host.scenes, context);
-        if (sourceRevision !== host.sourceRevision) return;
+        if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
         sourceLabel = resolver.usesSystemOne ? "Jev SystemOne" : host.settings.assistantModel;
       }
 
@@ -378,7 +403,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
       const succeeded = await host.executeIntents(sanitized, replyText, sourceLabel, {
         recordHabits: plan.source === "local" && !fromScheduled,
       });
-      if (sourceRevision !== host.sourceRevision) return;
+      if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
 
       if (
         succeeded &&
@@ -389,7 +414,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
         learnShortcut(host, trimmed, replyText, sanitized);
       }
     } catch (err) {
-      if (sourceRevision !== host.sourceRevision) return;
+      if (sourceRevision !== host.sourceRevision || assistantEpoch !== host.assistantEpoch) return;
       const msg = err instanceof Error ? err.message : String(err);
       host.replyBanner = {
         text: msg,
@@ -397,7 +422,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
         isError: true,
       };
     } finally {
-      if (sourceRevision === host.sourceRevision) {
+      if (sourceRevision === host.sourceRevision && assistantEpoch === host.assistantEpoch) {
         host.isResolvingIntent = false;
         host.render();
       }

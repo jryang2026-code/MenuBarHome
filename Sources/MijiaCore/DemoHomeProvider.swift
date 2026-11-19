@@ -153,6 +153,10 @@ public actor MockHomeProvider: HomeProvider {
         continuation?.yield(.statusChanged(status))
     }
 
+    public func sendSessionExpired(_ session: MiSession) {
+        continuation?.yield(.sessionExpired(session))
+    }
+
     /// Emits a doorbell press as if the source had detected it (#23 dual-source tests).
     public func sendDoorbellRing(_ ring: DoorbellRing) {
         continuation?.yield(.doorbellRang(ring))

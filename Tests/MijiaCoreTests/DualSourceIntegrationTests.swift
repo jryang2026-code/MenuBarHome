@@ -35,6 +35,16 @@ struct DualSourceIntegrationTests {
         return home
     }
 
+    /// Awaits the whole store teardown so a grace recheck or follow-up poll cannot outlive the
+    /// test and interleave with the next suite (#274). Each test keeps its `defer { store.stop() }`
+    /// as the fallback for an early `#require` throw. `HomeStore.shutdown()` is the awaited form of
+    /// `stop()`: it also drains the resume coordinator and any pending provider shutdown instead of
+    /// leaving those on an unstructured `Task`.
+    @MainActor
+    private func stopAndAwaitShutdown(_ store: HomeStore) async {
+        await store.shutdown()
+    }
+
     @MainActor
     @Test("HA disconnect hands the paired card to Mi Cloud with its favorite and alias intact")
     func haDisconnectKeepsPreferences() async throws {
@@ -89,6 +99,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -113,6 +124,14 @@ struct DualSourceIntegrationTests {
         #expect(haCommands.contains { $0.targetEntityId == "light.living_ceiling" })
 
         await haMock.sendStatus(.disconnected("LAN unreachable"))
+        // The fallback grace (#25) holds the HA route through a brief blip; the outage that
+        // outlasts the window adopts the Mi Cloud handoff. The drop must be observed before the
+        // seam rewinds it, or the seam races the still-in-flight status event.
+        await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
         await waitUntil {
             store.devices.count == 1 && store.deviceBackend(for: canonical) == .xiaomiCloud
         }
@@ -128,8 +147,8 @@ struct DualSourceIntegrationTests {
             Issue.record("handoff lost the light card")
         }
         _ = await store.togglePrimary(miDeviceForCommand)?.value
-        await store.executeQuickAction(.lightsOff)?.value
-        await store.undoTurnAllOff()?.value
+        _ = await store.executeQuickAction(.lightsOff)?.value
+        _ = await store.undoTurnAllOff()?.value
         let miCommands = await miMock.executedCommands
         #expect(miCommands.filter { $0.targetEntityId == "miot:\(did):2" }.count >= 2)
         #expect((await haMock.executedCommands).count == haCommands.count)
@@ -142,6 +161,7 @@ struct DualSourceIntegrationTests {
         #expect(store.devices.first?.id == canonical)
         #expect(store.devices.first?.name == "客厅主灯")
         #expect(store.favoriteDeviceIds.contains(canonical))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -198,6 +218,7 @@ struct DualSourceIntegrationTests {
             ),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
         }
@@ -205,6 +226,7 @@ struct DualSourceIntegrationTests {
         #expect(store.devices.first?.id == did)
         #expect(store.deviceBackend(for: did) == .homeAssistant)
         #expect(store.favoriteDeviceIds.contains(did))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -258,6 +280,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.devices.count == 1 && store.favoriteDeviceIds.contains(did)
@@ -270,6 +293,7 @@ struct DualSourceIntegrationTests {
         }
         #expect(store.devices.first?.id == did)
         #expect(store.favoriteDeviceIds.contains(did))
+        await stopAndAwaitShutdown(store)
     }
 
     @Test("HA registry identifiers, connections and unique ids become pairing evidence")
@@ -422,6 +446,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -440,6 +465,11 @@ struct DualSourceIntegrationTests {
         // HA disconnects before the user taps Undo; the card falls back to Mi Cloud (`miot:...`).
         await haMock.sendStatus(.disconnected("HA down"))
         await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
+        await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
 
@@ -448,6 +478,7 @@ struct DualSourceIntegrationTests {
 
         let miCommands = await miMock.executedCommands
         #expect(miCommands.contains(.setLightPower(entityId: "miot:\(did):2", isOn: true)))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -501,6 +532,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         store.controlDebounceInterval = .milliseconds(120)
 
         await waitUntil {
@@ -515,6 +547,11 @@ struct DualSourceIntegrationTests {
         let debouncedTask = try #require(store.debounceTasks["\(canonical).brightness"])
         await haMock.sendStatus(.disconnected("HA down"))
         await waitUntil {
+            if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
+        await waitUntil {
             store.deviceBackend(for: canonical) == .xiaomiCloud
         }
         await debouncedTask.value
@@ -525,6 +562,7 @@ struct DualSourceIntegrationTests {
             return
         }
         #expect(spec.entityId == "miot:\(did):2")
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -552,6 +590,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
         store.hasHASource = true
         store.miSessionMaskedUserId = "masked"
 
@@ -579,6 +618,7 @@ struct DualSourceIntegrationTests {
             "HA 连接中 · 米家云未连接",
             "HA connecting · Xiaomi Cloud offline"
         ))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -621,6 +661,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]) && store.devices.count == 1
@@ -653,6 +694,7 @@ struct DualSourceIntegrationTests {
             HomeBackend.homeAssistant.shortTitle,
             HomeBackend.xiaomiCloud.shortTitle
         ))
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -674,6 +716,7 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suite
         )
         defer { storeWithMi.logoutMiAccount() }
+        defer { storeWithMi.stop() }
         storeWithMi.hasHASource = true
         #expect(storeWithMi.hasHASource)
         #expect(storeWithMi.hasMiSource)
@@ -699,11 +742,14 @@ struct DualSourceIntegrationTests {
             defaultsSuiteName: suiteNoMi
         )
         defer { haOnlyStore.switchBackend(.demo) }
+        defer { haOnlyStore.stop() }
         await waitUntil { !haOnlyStore.devices.isEmpty }
         haOnlyStore.hasHASource = true
         #expect(haOnlyStore.disconnectHomeAssistant())
         #expect(haOnlyStore.devices.isEmpty)
         #expect(haOnlyStore.rooms.isEmpty)
+        await stopAndAwaitShutdown(haOnlyStore)
+        await stopAndAwaitShutdown(storeWithMi)
     }
 
     @MainActor
@@ -757,6 +803,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
@@ -772,6 +819,13 @@ struct DualSourceIntegrationTests {
         #expect(store.favoriteDeviceIds.contains(unpairedMiDid))
 
         await miMock.sendStatus(.disconnected("HTTP 429 Too Many Requests"))
+        // Within the fallback grace (#25) the kettle keeps its last known fresh state; once the
+        // drop outlasts the window it is retained as offline+stale rather than dropped.
+        await waitUntil {
+            if case .disconnected = store.sourceStatuses[.xiaomiCloud] ?? .connecting { return true }
+            return false
+        }
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
         await waitUntil {
             guard store.connectedBackends == Set([.homeAssistant]),
                   let kettle = store.devices.first(where: { $0.id == unpairedMiDid }) else { return false }
@@ -800,6 +854,7 @@ struct DualSourceIntegrationTests {
         let recoveredLight = try #require(store.devices.first { $0.id == pairedLightID })
         #expect(recoveredLight.isOnline == true)
         #expect(recoveredLight.telemetryStale == false)
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -874,6 +929,7 @@ struct DualSourceIntegrationTests {
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
+        defer { store.stop() }
 
         await waitUntil {
             store.devices.count == 2 && store.deviceBackend(for: haCamId) == .xiaomiCloud
@@ -885,6 +941,12 @@ struct DualSourceIntegrationTests {
             acc2Id: .connected,
         ]
         await miMock.updateSnapshot(miHomeAcc1Disconnected)
+        await waitUntil {
+            if case .disconnected = store.miAccountStatuses[acc1Id] ?? .connecting { return true }
+            return false
+        }
+        #expect(store.deviceBackend(for: haCamId) == .xiaomiCloud)
+        await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
 
         await waitUntil {
             store.deviceBackend(for: haCamId) == .homeAssistant
@@ -903,6 +965,7 @@ struct DualSourceIntegrationTests {
         let camCardDuringRetry = try #require(store.devices.first { $0.id == haCamId })
         #expect(camCardDuringRetry.isOnline == true)
         #expect(camCardDuringRetry.telemetryStale == false)
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1032,6 +1095,7 @@ struct DualSourceIntegrationTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(store.panelHealth == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
         }
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1076,6 +1140,7 @@ struct DualSourceIntegrationTests {
         }
         #expect(sawLocalNetworkBlockedWhenOnline == true)
         await haProvider.shutdown()
+        await stopAndAwaitShutdown(store)
     }
 
     @MainActor
@@ -1153,5 +1218,168 @@ struct DualSourceIntegrationTests {
         }
         #expect(standaloneSawBlocked == false)
         await standaloneProvider.shutdown()
+        await stopAndAwaitShutdown(store)
+    }
+
+    @MainActor
+    @Test("Expired Xiaomi account immediately switches paired cards and commands to HA while healthy accounts stay on Mi Cloud")
+    func expiredXiaomiAccountSwitchesPairedCardsAndCommandsToHA() async throws {
+        let suite = "test.dual.expired_acc_handoff.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let session1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1", serviceToken: "tok-cn", region: "cn"
+        )
+        let session2 = MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-2", serviceToken: "tok-de", region: "de"
+        )
+        let account1 = MiAccount(session: session1)
+        let account2 = MiAccount(session: session2)
+        let studyMiDID = "2234567890"
+        let studyHAID = "ha-study-light"
+        let hallMiDID = "3234567890"
+        let hallHAID = "ha-hall-light"
+
+        let api1 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(did: did, name: "客厅吸顶灯", model: "yeelink.light.ceiling22", isOnline: true),
+                MiDeviceRecord(did: hallMiDID, name: "玄关灯", model: "yeelink.light.ceiling22", isOnline: true),
+            ],
+            rooms: [MiRoom(id: "r1", name: "客厅", dids: [did, hallMiDID], homeId: "h1", homeName: "家")],
+            values: [
+                MiotFixtures.key(did, 2, 1): .bool(false),
+                MiotFixtures.key(hallMiDID, 2, 1): .bool(false),
+            ]
+        )
+        let api2 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(did: studyMiDID, name: "书房吸顶灯", model: "yeelink.light.ceiling22", isOnline: true),
+                MiDeviceRecord(did: "de-light-2", name: "客卧吸顶灯", model: "yeelink.light.ceiling22", isOnline: true),
+            ],
+            rooms: [MiRoom(id: "r2", name: "书房", dids: [studyMiDID, "de-light-2"], homeId: "h2", homeName: "Office")],
+            values: [
+                MiotFixtures.key(studyMiDID, 2, 1): .bool(false),
+                MiotFixtures.key("de-light-2", 2, 1): .bool(false),
+            ]
+        )
+        let miAccounts = MiAccountsProvider(
+            accounts: [account1, account2],
+            apiFactory: { session in session.userId == session1.userId ? api1 : api2 },
+            specSource: StubSpecSource(),
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+
+        // `haID` starts offline on HA and pinned to Xiaomi Cloud so tie-breakers + pin would keep
+        // Xiaomi winning if expired candidates were merely marked offline; `hallHAID` is online on HA
+        // and pinned to Xiaomi Cloud so commands can be dispatched right after failover.
+        let haLivingOffline = light(
+            id: haID,
+            name: "客厅吸顶灯",
+            roomID: "ha-living",
+            roomName: "客厅",
+            entityId: "light.living_ceiling",
+            online: false
+        )
+        let haHallOnline = light(
+            id: hallHAID,
+            name: "玄关灯",
+            roomID: "ha-living",
+            roomName: "客厅",
+            entityId: "light.hall_ceiling",
+            online: true
+        )
+        let haStudyOnline = light(
+            id: studyHAID,
+            name: "书房吸顶灯",
+            roomID: "ha-study",
+            roomName: "书房",
+            entityId: "light.study_ceiling",
+            online: true
+        )
+        let haHome = home(
+            [haLivingOffline, haHallOnline, haStudyOnline],
+            identities: [
+                haID: DeviceSourceIdentity(
+                    dids: [did],
+                    model: "yeelink.light.ceiling22",
+                    name: "客厅吸顶灯",
+                    roomName: "客厅",
+                    kindTag: .light
+                ),
+                hallHAID: DeviceSourceIdentity(
+                    dids: [hallMiDID],
+                    model: "yeelink.light.ceiling22",
+                    name: "玄关灯",
+                    roomName: "客厅",
+                    kindTag: .light
+                ),
+                studyHAID: DeviceSourceIdentity(
+                    dids: [studyMiDID],
+                    model: "yeelink.light.ceiling22",
+                    name: "书房吸顶灯",
+                    roomName: "书房",
+                    kindTag: .light
+                ),
+            ]
+        )
+        let haMock = MockHomeProvider(snapshot: haHome)
+        let store = HomeStore(
+            dualSource: (homeAssistant: haMock, xiaomiCloud: miAccounts),
+            defaultsSuiteName: suite
+        )
+        defer { store.stop() }
+
+        await waitUntil {
+            store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
+                && store.devices.count == 4
+        }
+        store.pinDeviceSource(haID, to: .xiaomiCloud)
+        store.pinDeviceSource(hallHAID, to: .xiaomiCloud)
+        store.pinDeviceSource(studyHAID, to: .xiaomiCloud)
+        await waitUntil {
+            store.deviceBackend(for: haID) == .xiaomiCloud
+                && store.deviceBackend(for: hallHAID) == .xiaomiCloud
+                && store.deviceBackend(for: studyHAID) == .xiaomiCloud
+                && store.deviceBackend(for: "de-light-2") == .xiaomiCloud
+        }
+
+        // Trigger `.sessionExpired` on `account1` via a control write on `hallHAID`.
+        await api1.setSetPropsFailure(.sessionExpired)
+        let hallBefore = try #require(store.devices.first { $0.id == hallHAID })
+        _ = await store.togglePrimary(hallBefore)?.value
+        let api1CallsAfterRejection = await api1.setPropsCalls.count
+        #expect(api1CallsAfterRejection == 1)
+
+        // Both paired cards on `account1` must immediately route to HA without waiting for grace,
+        // even `haID` whose HA copy is offline and pinned to `.xiaomiCloud`.
+        await waitUntil(timeout: .seconds(2)) {
+            store.deviceBackend(for: haID) == .homeAssistant
+                && store.deviceBackend(for: hallHAID) == .homeAssistant
+        }
+        #expect(store.deviceBackend(for: studyHAID) == .xiaomiCloud)
+        #expect(store.deviceBackend(for: "de-light-2") == .xiaomiCloud)
+
+        // Subsequent command on `hallHAID` goes straight to HA (`light.hall_ceiling`), never `api1`.
+        let hallAfter = try #require(store.devices.first { $0.id == hallHAID })
+        _ = await store.togglePrimary(hallAfter)?.value
+        let haCommands = await haMock.executedCommands
+        #expect(haCommands.contains(.setLightPower(entityId: "light.hall_ceiling", isOn: true)))
+        #expect(await api1.setPropsCalls.count == api1CallsAfterRejection)
+
+        // Healthy `account2` paired and unpaired devices continue routing commands to `api2`.
+        let studyCard = try #require(store.devices.first { $0.id == studyHAID })
+        _ = await store.togglePrimary(studyCard)?.value
+        let guestCard = try #require(store.devices.first { $0.id == "de-light-2" })
+        _ = await store.togglePrimary(guestCard)?.value
+        let api2Targets = await api2.setPropsCalls.flatMap { $0.map(\.did) }
+        #expect(api2Targets.contains(studyMiDID))
+        #expect(api2Targets.contains("de-light-2"))
+        await stopAndAwaitShutdown(store)
     }
 }

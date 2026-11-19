@@ -1079,10 +1079,16 @@ actor StubMiCloudAPI: MiCloudAPI {
     }
 
     private var setPropsFailure: MiCloudError?
+    var setPropsHook: (@Sendable () async -> Void)?
 
     func setSetPropsFailure(_ failure: MiCloudError?) { setPropsFailure = failure }
 
+    func setSetPropsHook(_ hook: (@Sendable () async -> Void)?) {
+        setPropsHook = hook
+    }
+
     func setProps(_ writes: [MiotPropWrite]) async throws {
+        if let hook = setPropsHook { await hook() }
         setPropsCalls.append(writes)
         if let setPropsFailure { throw setPropsFailure }
         for w in writes { values[MiotPropKey(did: w.did, siid: w.siid, piid: w.piid)] = w.value }
