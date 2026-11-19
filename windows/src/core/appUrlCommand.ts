@@ -700,6 +700,10 @@ async function runIntentOnDevice(
       const confirmed = await host.openExternalUrlConfirmPrompt({ device: effectiveDev, description: labelForHighRisk, actionLabel: labelForHighRisk, summary, commandLabel: options.bridgeContext.commandLabel, intent, command: firstCommand, ...(options.bridgeContext.requestId ? { requestId: options.bridgeContext.requestId } : {}), sourceRevision: revisionBeforePrompt});
       if (!confirmed || host.sourceRevision !== revisionBeforePrompt) {
         host.clearPendingHighRisk();
+        if (host.sourceRevision !== revisionBeforePrompt) {
+          const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases });
+          if (disabledMsg !== null) return { message: disabledMsg, isError: true };
+        }
         return {
           message: trText("已取消「{name}」的操作", 'Cancelled the action for "{name}"', {
             name: displayNameFor(dev, host),
@@ -709,7 +713,11 @@ async function runIntentOnDevice(
       }
       if (await host.isControlBlockedByScreenLock()) { return { message: screenLockBlockedMessage(), isError: true }; }
       const latestDev = host.devices.find((d) => d.id === deviceId);
-      if (!latestDev) { return { message: trText("设备已不在面板中", "The device is no longer available"), isError: true}; }
+      if (!latestDev) {
+        const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases });
+        if (disabledMsg !== null) return { message: disabledMsg, isError: true };
+        return { message: trText("设备已不在面板中", "The device is no longer available"), isError: true};
+      }
       if (!latestDev.isOnline) {
         return {
           message: trText("{name} 当前离线", "{name} is offline", {
@@ -1126,20 +1134,23 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     await host.waitForInitialSnapshotIfNeeded();
   }
 
+  const urlSettingsWithAliases = () => ({ ...host.settings, deviceAliases: host.layout.aliases });
+  const checkUrlDisabledGate = (): string | null => {
+    if ("deviceId" in envelope.command) {
+      return evaluateDisabledDeviceUrlGate(envelope.command.deviceId, urlSettingsWithAliases());
+    }
+    if (envelope.command.kind === "scene") {
+      return evaluateDisabledSceneUrlGate(envelope.command.name, host.settings);
+    }
+    return null;
+  };
+
   const initialResolved = resolveTarget(envelope.command, host);
   if (!initialResolved) {
-    if ("deviceId" in envelope.command) {
-      const disabledMsg = evaluateDisabledDeviceUrlGate(envelope.command.deviceId, host.settings);
-      if (disabledMsg !== null) {
-        finish(disabledMsg, true);
-        return;
-      }
-    } else if (envelope.command.kind === "scene") {
-      const disabledMsg = evaluateDisabledSceneUrlGate(envelope.command.name, host.settings);
-      if (disabledMsg !== null) {
-        finish(disabledMsg, true);
-        return;
-      }
+    const disabledMsg = checkUrlDisabledGate();
+    if (disabledMsg !== null) {
+      finish(disabledMsg, true);
+      return;
     }
     finish(
       trText( "链接里的设备或场景不存在，或尚未加载", "The device or scene in the link is missing or not loaded yet"),
@@ -1175,6 +1186,13 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
       sourceRevision: revisionBeforeConfirm,
     });
     if (!approved || host.sourceRevision !== revisionBeforeConfirm) {
+      if (host.sourceRevision !== revisionBeforeConfirm) {
+        const disabledMsg = checkUrlDisabledGate();
+        if (disabledMsg !== null) {
+          finish(disabledMsg, true);
+          return;
+        }
+      }
       host.recordRaycastCommandFeedback({
         ...(envelope.requestId ? { requestId: envelope.requestId } : {}),
         command: commandLabel,
@@ -1193,18 +1211,10 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
 
   const resolved = resolveTarget(envelope.command, host);
   if (!resolved) {
-    if ("deviceId" in envelope.command) {
-      const disabledMsg = evaluateDisabledDeviceUrlGate(envelope.command.deviceId, host.settings);
-      if (disabledMsg !== null) {
-        finish(disabledMsg, true);
-        return;
-      }
-    } else if (envelope.command.kind === "scene") {
-      const disabledMsg = evaluateDisabledSceneUrlGate(envelope.command.name, host.settings);
-      if (disabledMsg !== null) {
-        finish(disabledMsg, true);
-        return;
-      }
+    const disabledMsg = checkUrlDisabledGate();
+    if (disabledMsg !== null) {
+      finish(disabledMsg, true);
+      return;
     }
     finish(
       trText("设备或场景已不在面板中", "The device or scene is no longer available"),

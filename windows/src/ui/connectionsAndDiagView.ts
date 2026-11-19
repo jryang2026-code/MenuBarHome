@@ -5,18 +5,33 @@ import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   applyPauseItemsFromVerdict,
   filterEnabledMiAccounts,
+  haConnectionScope,
   miAccountScope,
+  previewHaConnectionDisable,
   previewMiAccountDisable,
   queueMiAccountReenableFromLogin,
+  removeDisconnectedHaFromSelection,
   removeSignedOutMiAccountFromSelection,
   resolveDeviceMiAccountOwner,
   resolveSceneMiAccountOwner,
   revalidateAfterMiAccountReenable,
+  snapshotDisabledHaDevice,
+  snapshotDisabledHaScene,
   snapshotDisabledMiDevice,
   snapshotDisabledMiScene,
   writeMiAccountSelectionMutation,
   type HostCapabilityContextInput,
 } from "../core/miAccountControl.js";
+import {
+  abandonHungHaScopeInFlight,
+  beginHaScopeDisable,
+  clearHaScopeLifecycle,
+  getHaScopeLifecyclePhase,
+  isHaNativeCancelReady,
+  isHaScopeDisabledInStorage,
+  isHaScopeStopTimedOut,
+  requestHaScopeEnableAfterDrain,
+} from "../core/haTransportGate.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
@@ -24,7 +39,7 @@ import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWit
 import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, miAccountId, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
 import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
 import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
-import { ScheduledCommandStore } from "../core/scheduledCommands.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
@@ -32,13 +47,13 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { switchHome, switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { isPlainHttpRemoteEndpoint, type SettingsTab, type SettingsViewContext } from "./settingsViews.js";
-import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
+import { dismissPendingUrlConfirmation, hasPendingMiVaultDeletion, hasPendingUrlConfirmation, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 
 export const CUSTOM_HOME_TITLE_STORAGE_KEY = "menumijia.windows.customHomeTitle.v1";
@@ -255,6 +270,12 @@ export interface HostConnDiagSession {
     readonly generation: number;
   } | null;
   disableErrorByAccountId: Record<string, string>;
+  pendingHaDisablePreview: {
+    readonly scope: string;
+    readonly verdict: CapabilityDeactivationVerdict;
+    readonly generation: number;
+  } | null;
+  haDisableError: string | null;
 }
 
 export interface ConnectionsAndDiagHost extends SourceSwitchHost {
@@ -287,6 +308,8 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
     closeCameraLiveView(): void;
     closeXiaomiCameraLiveView?(accountId?: string): void;
     activeLiveCameraUsesXiaomiCloud?(accountId?: string): boolean;
+    closeHomeAssistantCameraLiveView?(): boolean;
+    activeLiveCameraUsesHomeAssistant?(): boolean;
     retargetActiveLiveCamera?(deviceId: string): boolean;
     discardRetainedCloudSessions?(): void;
   };
@@ -303,9 +326,14 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   miAccountsStore?: MiAccountsStore | null;
   miAccountsOverride?: readonly MiAccount[] | null;
   dualSourceEnabledOverride?: boolean | null;
+  haDisableUiEnabled?: boolean;
   multiAccountState?: HostMultiAccountState | null;
   dualSourceCoordinator?: DualSourceCoordinator | null;
   connDiagSession?: HostConnDiagSession;
+}
+
+export function isHostHaDisableUiEnabled(host?: ConnectionsAndDiagHost): boolean {
+  return host?.haDisableUiEnabled !== undefined ? host.haDisableUiEnabled : isHaNativeCancelReady();
 }
 
 type ConnectionsAndDiagViewContext =
@@ -340,6 +368,8 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
     },
     pendingDisablePreview: null,
     disableErrorByAccountId: {},
+    pendingHaDisablePreview: null,
+    haDisableError: null,
   };
 }
 
@@ -617,6 +647,23 @@ function formatReenablePersistErrorMessage(lang: AppLanguage): string {
   );
 }
 
+function readRawStorageItem(key: string): string | null {
+  try {
+    return typeof localStorage !== "undefined" ? localStorage.getItem(key) : null;
+  } catch {
+    return null;
+  }
+}
+
+function restoreRawStorageItem(key: string, prevValue: string | null): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      if (prevValue === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, prevValue);
+    }
+  } catch {}
+}
+
 export async function setMiAccountEnabledOnHost(
   host: ConnectionsAndDiagHost,
   accountId: string,
@@ -776,7 +823,9 @@ export async function setMiAccountEnabledOnHost(
     disablingAccountId: accountId,
     ...(deviceOwners ? { deviceOwners } : {}),
   });
+  const haActiveForAlternate = isHostHaEnabled(host);
   const hasHaAlternate = (dev: SmartDevice): boolean => {
+    if (!haActiveForAlternate) return false;
     const route = dualRoutes?.[dev.id];
     return route ? route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null) : wasDualSource && dev.sourceBackend === "homeAssistant";
   };
@@ -820,9 +869,9 @@ export async function setMiAccountEnabledOnHost(
     : [];
   const sceneSnapshots = ownedScenes.map((s) => snapshotDisabledMiScene(s, accountId));
   const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
-  const prevRawSelection = (() => {
-    try { return typeof localStorage !== "undefined" ? localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) : null; } catch { return null; }
-  })();
+  const prevRawSelection = readRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+  const prevRawTimers = readRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY);
+  const prevRawRules = readRawStorageItem(AutomationRuleStore.storageKey);
   const timerSnapshot = scheduledCommandStore.snapshotQueues();
   const prevRules = ruleStore.load();
   const targetScope = miAccountScope(accountId);
@@ -851,14 +900,11 @@ export async function setMiAccountEnabledOnHost(
     activeConnectionScopes: context.state.selection.enabledConnectionScopes,
   });
   if (!pauseRes.ok) {
-    scheduledCommandStore.restoreQueues(timerSnapshot);
-    ruleStore.save(prevRules);
-    try {
-      if (typeof localStorage !== "undefined") {
-        if (prevRawSelection === null) localStorage.removeItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
-        else localStorage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
-      }
-    } catch {}
+    try { scheduledCommandStore.restoreQueues(timerSnapshot); } catch {}
+    try { ruleStore.save(prevRules); } catch {}
+    restoreRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY, prevRawTimers);
+    restoreRawStorageItem(AutomationRuleStore.storageKey, prevRawRules);
+    restoreRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
     const lang = activeLanguage(host.settings.interfaceLanguage);
     const msg = formatDisableBlockedMessage(null, lang);
     session.disableErrorByAccountId[accountId] = msg;
@@ -928,7 +974,7 @@ export async function setMiAccountEnabledOnHost(
     const prio = new Map(host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]));
     host.environmentReadings = applyOrder(host.environmentReadings.map((r) => r.id), nextDual.home.environmentReadings).sort((a, b) => (prio.get(a.id) ?? 0) - (prio.get(b.id) ?? 0));
     reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
-  } else if (!wasDualSource && host.settings.connectionMode === "xiaomiCloud" && enabledAfter.length === 0) {
+  } else if (enabledAfter.length === 0 && ((!wasDualSource && host.settings.connectionMode === "xiaomiCloud") || (wasDualSource && !haActiveForAlternate))) {
     host.devices = []; host.scenes = []; host.environmentReadings = []; host.homes = [];
     host.groupOwnerByMemberDid = new Map(); host.deviceFacets = {}; host.cloudValuesStale = false; host.selectRoom(null);
   } else if (isXiaomiSnapshot) {
@@ -982,9 +1028,460 @@ export async function setMiAccountEnabledOnHost(
   if (isXiaomiSnapshot && host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) {
     host.expandedDeviceId = null;
   }
-  const hasRemainingActiveSource = enabledAfter.length > 0 || wasDualSource || host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "demo";
+  const hasRemainingActiveSource =
+    enabledAfter.length > 0 ||
+    (wasDualSource && haActiveForAlternate) ||
+    (host.settings.connectionMode === "homeAssistant" && haActiveForAlternate) ||
+    host.settings.connectionMode === "demo";
   if (isXiaomiSnapshot && hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) {
     markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  }
+  host.saveSettings();
+  host.render();
+  return { status: "applied" };
+}
+
+export type SetHaConnectionEnabledOutcome = SetMiAccountEnabledOutcome;
+
+export function retryTimedOutHaStopOnHost(host: ConnectionsAndDiagHost): void {
+  const haScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  if (!haScope) return;
+  abandonHungHaScopeInFlight(haScope);
+  const session = getHostConnDiagSession(host);
+  session.haDisableError = null;
+  host.render();
+}
+
+export async function setHaConnectionEnabledOnHost(
+  host: ConnectionsAndDiagHost,
+  enabled: boolean,
+  options: { readonly confirmPause?: boolean; readonly expectedGeneration?: number; readonly currentGeneration?: number; readonly nowMs?: number } = {},
+): Promise<SetHaConnectionEnabledOutcome> {
+  const session = getHostConnDiagSession(host);
+  const haScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+  if (!haScope) {
+    session.pendingHaDisablePreview = null;
+    session.haDisableError = null;
+    host.render();
+    return { status: "applied" };
+  }
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore = (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ?? new ScheduledCommandStore(fallbackStorage);
+  const ruleStore = new AutomationRuleStore();
+  const allAccounts = resolveHostMiAccounts(host);
+
+  if (enabled) {
+    session.pendingHaDisablePreview = null;
+    session.haDisableError = null;
+    if (isHaScopeStopTimedOut(haScope)) {
+      abandonHungHaScopeInFlight(haScope);
+    }
+    const prevRawSelection = readRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+    const handleDrainTimeout = (): SetHaConnectionEnabledOutcome => {
+      restoreRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      const msg = tr3(
+        "Home Assistant 仍在等待上一轮请求结束，请点击重试或稍后再启用。",
+        "Home Assistant 仍在等待上一輪請求結束，請點擊重試或稍後再啟用。",
+        "Home Assistant is still waiting for an in-flight request to finish. Retry stopping or try re-enabling again.",
+        lang,
+      );
+      session.haDisableError = msg;
+      host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+      host.render();
+      return { status: "blocked", verdict: null };
+    };
+    if (host.settings.connectionMode === "demo" && !isDualSourceEnabled(host)) {
+      const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+        ...prev,
+        disabledHaScopes: prev.disabledHaScopes.filter((s) => (haConnectionScope(s) ?? s) !== haScope),
+        pendingRevalidationHaScopes: prev.pendingRevalidationHaScopes.filter((s) => (haConnectionScope(s) ?? s) !== haScope),
+        knownDisabledHaDevices: prev.knownDisabledHaDevices.filter((d) => d.scope !== haScope),
+        knownDisabledHaScenes: prev.knownDisabledHaScenes.filter((s) => s.scope !== haScope),
+      }) });
+      if (!wrote) {
+        const lang = activeLanguage(host.settings.interfaceLanguage);
+        const msg = formatReenablePersistErrorMessage(lang);
+        session.haDisableError = msg;
+        host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+        host.render();
+        return { status: "blocked", verdict: null };
+      }
+      resetHostUnsupportedScanner(host);
+      const drainRes = await new Promise<{ readonly ready: boolean; readonly timedOut: boolean }>((resolve) => {
+        requestHaScopeEnableAfterDrain(haScope, (ready, meta) => {
+          resolve({ ready, timedOut: Boolean(meta?.timedOut) });
+        });
+      });
+      if (drainRes.timedOut) return handleDrainTimeout();
+      revalidateAfterMiAccountReenable({
+        context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)),
+        scheduledCommandStore,
+        activeTimerIdentity: scheduledCommandIdentity(host.settings),
+        ruleStore,
+        ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      });
+      host.render();
+      return { status: "applied" };
+    }
+
+    const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+      ...prev,
+      disabledHaScopes: prev.disabledHaScopes.filter((s) => (haConnectionScope(s) ?? s) !== haScope),
+      pendingRevalidationHaScopes: [...new Set([...prev.pendingRevalidationHaScopes, haScope])],
+    }) });
+    if (!wrote) {
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      const msg = formatReenablePersistErrorMessage(lang);
+      session.haDisableError = msg;
+      host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+      host.render();
+      return { status: "blocked", verdict: null };
+    }
+    resetHostUnsupportedScanner(host);
+    host.render();
+    const drainRes = await new Promise<{ readonly ready: boolean; readonly timedOut: boolean }>((resolve) => {
+      requestHaScopeEnableAfterDrain(haScope, (ready, meta) => {
+        resolve({ ready, timedOut: Boolean(meta?.timedOut) });
+      });
+    });
+    if (drainRes.timedOut) return handleDrainTimeout();
+    if (!drainRes.ready || !isHostHaEnabled(host)) {
+      host.render();
+      return { status: "applied" };
+    }
+    const maybeApp = host as unknown as Partial<MenuMijiaWindowsApp>;
+    if (typeof maybeApp.submitServiceEndpoints === "function") {
+      maybeApp.submitServiceEndpoints(false);
+    } else {
+      invokeTauriVoid("set_service_endpoints", {
+        assistantUrl: host.settings.assistantBaseURL?.trim?.() ?? "",
+        haUrl: host.settings.haBaseURL.trim(),
+      });
+    }
+    if (isDualSourceEnabled(host) || host.settings.connectionMode === "homeAssistant") {
+      switchHome(host);
+      host.render();
+      const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
+      if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
+      try {
+        if (isDualSourceEnabled(host)) {
+          await host.refreshDevices(false);
+        } else {
+          await host.refreshHADevices(false);
+        }
+      } finally {
+        delete hostWithReenableTs.pendingReenableNowMs;
+      }
+    }
+    host.render();
+    return { status: "applied" };
+  }
+
+  const context = buildHostCapabilityContext(host, allAccounts);
+  if (context.state.disabledHaScopes.has(haScope)) {
+    session.pendingHaDisablePreview = null;
+    session.haDisableError = null;
+    host.render();
+    return { status: "applied" };
+  }
+  const currentGen = options.currentGeneration ?? computeDisablePreviewGeneration(context, scheduledCommandStore, ruleStore);
+  const expectedGen = options.expectedGeneration !== undefined
+    ? options.expectedGeneration
+    : options.confirmPause && session.pendingHaDisablePreview?.scope === haScope
+      ? session.pendingHaDisablePreview.generation
+      : null;
+  let verdict = previewHaConnectionDisable({
+    haScope,
+    context,
+    scheduledCommandStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore,
+    expectedGeneration: expectedGen,
+    currentGeneration: currentGen,
+    languagePreference: host.settings.interfaceLanguage,
+  });
+  if (
+    options.confirmPause &&
+    options.expectedGeneration === undefined &&
+    verdict.blockingReasons.some((r) => r.kind === "stalePreviewGeneration")
+  ) {
+    const freshVerdict = previewHaConnectionDisable({
+      haScope,
+      context,
+      scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(host.settings),
+      ruleStore,
+      currentGeneration: currentGen,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (freshVerdict.disposition === "requiresPauseConfirmation") {
+      session.pendingHaDisablePreview = { scope: haScope, verdict: freshVerdict, generation: currentGen };
+      session.haDisableError = null;
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      host.replyBanner = {
+        text: formatDisableBlockedMessage(verdict, lang),
+        source: tr3("连接管理", "連線管理", "Connections", lang),
+        isError: true,
+      };
+      host.render();
+      return { status: "requiresPauseConfirmation", verdict: freshVerdict };
+    }
+    verdict = freshVerdict;
+  }
+  if (verdict.disposition === "blocked") {
+    session.pendingHaDisablePreview = null;
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(verdict, lang);
+    session.haDisableError = msg;
+    host.replyBanner = {
+      text: msg,
+      source: tr3("连接管理", "連線管理", "Connections", lang),
+      isError: true,
+    };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  if (verdict.disposition === "requiresPauseConfirmation" && !options.confirmPause) {
+    session.pendingHaDisablePreview = { scope: haScope, verdict, generation: currentGen };
+    session.haDisableError = null;
+    host.render();
+    return { status: "requiresPauseConfirmation", verdict };
+  }
+
+  session.pendingHaDisablePreview = null;
+  const wasDualSource = isDualSourceEnabled(host);
+  const isHaActiveMode = wasDualSource || host.settings.connectionMode === "homeAssistant";
+  const dualRoutes = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+  const deviceOwners = getHostMiAccountsState(host)?.merged?.deviceOwners;
+  const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
+  const matchedCachedHa =
+    currentHAIdentity !== null && host.settings.cachedHAHome?.identity === currentHAIdentity
+      ? host.settings.cachedHAHome
+      : null;
+
+  const miOwnerOf = (dev: SmartDevice): string | null =>
+    resolveDeviceMiAccountOwner({
+      device: dev,
+      accounts: allAccounts,
+      connectionMode: host.settings.connectionMode,
+      dualSourceEnabled: wasDualSource,
+      disabledAccountIds: context.state.disabledAccountIds,
+      ...(deviceOwners ? { deviceOwners } : {}),
+      ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
+    });
+  const hasEnabledMiOwner = (dev: SmartDevice): boolean => {
+    const owner = miOwnerOf(dev);
+    return Boolean(owner && !context.state.disabledAccountIds.has(miAccountScope(owner)));
+  };
+  const isHaRepresented = (dev: SmartDevice): boolean => {
+    const route = dualRoutes?.[dev.id];
+    if (route) {
+      return route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null);
+    }
+    return dev.sourceBackend === "homeAssistant" || dev.id.startsWith("ha:");
+  };
+  const sceneOwnerOf = (sc: HomeScene): string | null =>
+    resolveSceneMiAccountOwner({
+      scene: sc,
+      accounts: allAccounts,
+      connectionMode: host.settings.connectionMode,
+      dualSourceEnabled: wasDualSource,
+      haBaseURL: host.settings.haBaseURL,
+      haToken: host.settings.haToken,
+    });
+
+  const disabledHaDevices: SmartDevice[] = [];
+  const seenDisabledIds = new Set<string>();
+  const addDisabledDevice = (dev: SmartDevice): void => {
+    if (seenDisabledIds.has(dev.id)) return;
+    seenDisabledIds.add(dev.id);
+    disabledHaDevices.push(dev);
+  };
+  if (wasDualSource) {
+    for (const dev of host.devices) {
+      if (isHaRepresented(dev) && !hasEnabledMiOwner(dev)) addDisabledDevice(dev);
+    }
+  } else if (host.settings.connectionMode === "homeAssistant") {
+    for (const dev of host.devices) addDisabledDevice(dev);
+    for (const dev of matchedCachedHa?.home.devices ?? []) addDisabledDevice(dev);
+  } else if (matchedCachedHa) {
+    for (const dev of matchedCachedHa.home.devices) addDisabledDevice(dev);
+  }
+
+  const haDeviceSnapshots = disabledHaDevices.map((d) =>
+    snapshotDisabledHaDevice(
+      d,
+      haScope,
+      host.deviceFacets[d.id] ?? matchedCachedHa?.home.deviceFacets?.[d.id] ?? [],
+      host.layout?.aliases?.[d.id] ?? null,
+    ),
+  );
+  const ownedHaScenes = wasDualSource
+    ? collectHostKnownScenes(host).filter((s) => sceneOwnerOf(s) === null)
+    : host.settings.connectionMode === "homeAssistant"
+      ? collectHostKnownScenes(host)
+      : [...(matchedCachedHa?.home.scenes ?? [])];
+  const haSceneSnapshots = ownedHaScenes.map((s) => snapshotDisabledHaScene(s, haScope));
+  const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
+  const prevRawSelection = readRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+  const prevRawTimers = readRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY);
+  const prevRawRules = readRawStorageItem(AutomationRuleStore.storageKey);
+  const timerSnapshot = scheduledCommandStore.snapshotQueues();
+  const prevRules = ruleStore.load();
+
+  const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+    ...prev,
+    disabledHaScopes: [...new Set([...prev.disabledHaScopes, haScope])],
+    pendingRevalidationHaScopes: prev.pendingRevalidationHaScopes.filter((s) => (haConnectionScope(s) ?? s) !== haScope),
+    pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...newlyPausedQaIds])],
+    knownDisabledHaDevices: [
+      ...prev.knownDisabledHaDevices.filter((d) => d.scope !== haScope && !haDeviceSnapshots.some((s) => s.id === d.id)),
+      ...haDeviceSnapshots,
+    ],
+    knownDisabledHaScenes: [
+      ...prev.knownDisabledHaScenes.filter((s) => s.scope !== haScope && !haSceneSnapshots.some((snap) => snap.id === s.id)),
+      ...haSceneSnapshots,
+    ],
+  }) });
+  if (!wrote) {
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.haDisableError = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  const pauseRes = applyPauseItemsFromVerdict({
+    verdict,
+    scheduledCommandStore,
+    ruleStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    activeConnectionScopes: context.state.selection.enabledConnectionScopes,
+  });
+  if (!pauseRes.ok) {
+    try { scheduledCommandStore.restoreQueues(timerSnapshot); } catch {}
+    try { ruleStore.save(prevRules); } catch {}
+    restoreRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY, prevRawTimers);
+    restoreRawStorageItem(AutomationRuleStore.storageKey, prevRawRules);
+    restoreRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.haDisableError = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  session.haDisableError = null;
+
+  beginHaScopeDisable(haScope);
+
+  if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
+    if (host.cameraLive.closeHomeAssistantCameraLiveView) {
+      host.cameraLive.closeHomeAssistantCameraLiveView();
+    } else if (!wasDualSource && host.settings.connectionMode === "homeAssistant") {
+      host.cameraLive.closeCameraLiveView();
+    }
+  }
+  const removedIds = new Set(disabledHaDevices.map((d) => d.id));
+  for (const dev of host.devices) {
+    if (removedIds.has(dev.id) || isHaRepresented(dev)) {
+      cancelDelayedReadBack(host as unknown as OptimisticLockHost, dev.id);
+      cancelEchoReadBack(host as unknown as MenuMijiaWindowsApp, dev.id);
+    }
+  }
+
+  const hadTimerSnapshot = Boolean((host as { readonly timerSnapshot?: { readonly identity: string; readonly sourceRevision: number } | null }).timerSnapshot);
+  if (isHaActiveMode) {
+    switchSource(host, "ha-disabled");
+    host.clearPendingHighRisk();
+    (host as { pendingHighRiskUndoAction?: unknown }).pendingHighRiskUndoAction = null;
+    if (hasPendingUrlConfirmation(host as unknown as MenuMijiaWindowsApp)) {
+      dismissPendingUrlConfirmation(host as unknown as MenuMijiaWindowsApp, false);
+    }
+  }
+  resetHostUnsupportedScanner(host);
+  host.haConnectionError = null;
+
+  const enabledMiAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
+  const nextDual = wasDualSource
+    ? (host.dualSourceCoordinator?.removeHomeAssistant(host.settings.interfaceLanguage, {
+        reason: "disabled",
+      }) ?? null)
+    : null;
+  if (isHaActiveMode && host.waitingDeviceIds) {
+    for (const id of removedIds) host.waitingDeviceIds.delete(id);
+  }
+
+  const removedSceneIds = new Set(ownedHaScenes.map((s) => s.id));
+  if (nextDual) {
+    host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
+    host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
+    host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
+    host.deviceFacets = nextDual.home.deviceFacets ?? {};
+    host.scenes = nextDual.home.scenes.filter((s) => !removedSceneIds.has(s.id));
+    const prio = new Map(host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]));
+    host.environmentReadings = applyOrder(host.environmentReadings.map((r) => r.id), nextDual.home.environmentReadings).sort((a, b) => (prio.get(a.id) ?? 0) - (prio.get(b.id) ?? 0));
+  } else if (!wasDualSource && host.settings.connectionMode === "homeAssistant") {
+    host.devices = [];
+    host.scenes = [];
+    host.environmentReadings = [];
+    host.homes = [];
+    host.groupOwnerByMemberDid = new Map();
+    host.deviceFacets = {};
+    host.selectRoom(null);
+    host.waitingDeviceIds?.clear();
+  } else if (wasDualSource) {
+    if (enabledMiAfter.length === 0) {
+      host.devices = [];
+      host.scenes = [];
+      host.environmentReadings = [];
+      host.homes = [];
+      host.groupOwnerByMemberDid = new Map();
+      host.deviceFacets = {};
+      host.selectRoom(null);
+    } else {
+      host.devices = host.devices
+        .filter((d) => !removedIds.has(d.id))
+        .map((d) => {
+          const route = dualRoutes?.[d.id];
+          if (route?.backend === "homeAssistant" && route.alternateBackend === "xiaomiCloud" && route.alternateDevice) {
+            return {
+              ...route.alternateDevice,
+              id: d.id,
+              roomId: d.roomId,
+              roomName: d.roomName,
+              sourceBackend: "xiaomiCloud",
+            };
+          }
+          return d;
+        });
+      host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
+      const nextFacets = { ...host.deviceFacets };
+      for (const id of removedIds) delete nextFacets[id];
+      host.deviceFacets = nextFacets;
+      host.scenes = host.scenes.filter((s) => !removedSceneIds.has(s.id));
+    }
+  }
+
+  if (isHaActiveMode && host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) {
+    host.expandedDeviceId = null;
+  }
+  const hasRemainingActiveSource =
+    (wasDualSource && enabledMiAfter.length > 0) ||
+    (!wasDualSource && host.settings.connectionMode === "xiaomiCloud" && enabledMiAfter.length > 0) ||
+    host.settings.connectionMode === "demo";
+  if (isHaActiveMode && hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) {
+    markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  }
+  const maybeApp = host as unknown as Partial<MenuMijiaWindowsApp>;
+  if (typeof maybeApp.submitServiceEndpoints === "function") {
+    maybeApp.submitServiceEndpoints(false);
+  } else {
+    invokeTauriVoid("set_service_endpoints", {
+      assistantUrl: host.settings.assistantBaseURL?.trim?.() ?? "",
+      haUrl: "",
+    });
   }
   host.saveSettings();
   host.render();
@@ -1405,7 +1902,23 @@ export function finishAllMiAccountsSignedOutOnHost(
   setHostDualSourceEnabled(host, false, { persist: true });
 
   if (hasHA && (wasDualSource || host.settings.connectionMode === "homeAssistant")) {
+    const haEnabled = isHostHaEnabled(host);
     host.settings.connectionMode = "homeAssistant";
+    if (!haEnabled) {
+      host.homes = [];
+      host.groupOwnerByMemberDid = new Map();
+      host.selectRoom(null);
+      host.devices = [];
+      host.scenes = [];
+      host.environmentReadings = [];
+      host.deviceFacets = {};
+      host.expandedDeviceId = null;
+      if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
+        host.cameraLive.closeCameraLiveView();
+      }
+      revalidateHostAfterAccountRemoval(host, []);
+      return { transitionedToHASingleSource: false };
+    }
     if (wasDualSource) {
       host.homes = [];
       host.groupOwnerByMemberDid = new Map();
@@ -1470,8 +1983,9 @@ export function finishAllMiAccountsSignedOutOnHost(
   return { transitionedToHASingleSource: false };
 }
 
-async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
+export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Promise<boolean> {
   const lang = activeLanguage(host.settings.interfaceLanguage);
+  const oldHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
 
   try {
     if (host.credentialVault) {
@@ -1494,18 +2008,31 @@ async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost): Prom
   }
 
   if (host.cameraLive?.activeLiveCameraId || host.cameraLive?.liveCameraKeepAliveTimer) {
-    host.cameraLive.closeCameraLiveView();
+    if (host.cameraLive.closeHomeAssistantCameraLiveView) {
+      host.cameraLive.closeHomeAssistantCameraLiveView();
+    } else {
+      host.cameraLive.closeCameraLiveView();
+    }
   }
   host.expandedDeviceId = null;
   host.waitingDeviceIds?.clear();
   switchSource(host, "ha-disconnected");
   host.clearPendingHighRisk();
+  (host as { pendingHighRiskUndoAction?: unknown }).pendingHighRiskUndoAction = null;
+
+  clearHaScopeLifecycle(oldHaScope);
+  removeDisconnectedHaFromSelection(oldHaScope);
+  if (host.connDiagSession) {
+    host.connDiagSession.pendingHaDisablePreview = null;
+    host.connDiagSession.haDisableError = null;
+  }
 
   host.settings.haToken = "";
   host.settings.cachedHAHome = null;
   host.haConnectionError = null;
   setHostDualSourceEnabled(host, false, { persist: true });
   resetHostUnsupportedScanner(host);
+  revalidateHostAfterAccountRemoval(host, resolveHostMiAccounts(host));
 
   const tokenField = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
   if (tokenField) {
@@ -1667,6 +2194,7 @@ function buildUnsupportedScanOptions(
     ...(host.specResolver ? { specResolver: host.specResolver } : {}),
     haBaseURL: host.settings.haBaseURL,
     haToken: host.settings.haToken,
+    haDisabled: !isHostHaEnabled(host),
     ...(haInvoke ? { haInvoke } : {}),
     languagePreference: host.settings.interfaceLanguage,
   };
@@ -1686,7 +2214,7 @@ function syncConnectionContextWatcher(host: ConnectionsAndDiagHost): void {
   session.scanner.invalidateIfContextChanged(options);
 }
 
-async function runUnsupportedDevicesScanOnHost(
+export async function runUnsupportedDevicesScanOnHost(
   host: ConnectionsAndDiagHost,
 ): Promise<readonly UnsupportedDevice[]> {
   const session = getHostConnDiagSession(host);
@@ -1980,8 +2508,6 @@ export function renderConnectionsAndDiagSection(
       : [];
   const multiState = host ? getHostMiAccountsState(host) : null;
 
-  const hasHAToken = ctx.settings.haToken.trim() !== "";
-  const hasHAUrl = ctx.settings.haBaseURL.trim() !== "";
   const hasHAConfigured = homeAssistantIdentity(ctx.settings.haBaseURL, ctx.settings.haToken) !== null;
   const hasMiConfigured = accounts.length > 0 || hasSecondaryMiAccountsInIndex();
   const dualSupported = host
@@ -2096,21 +2622,6 @@ export function renderConnectionsAndDiagSection(
     : "";
 
   const pairedCount = dualState ? dualState.pairedDeviceIds.size : 0;
-  const haDisconnectHint = hasHAToken
-    ? tr3(
-        "独立断开 Home Assistant：清除 HA 令牌并自动切回米家单源（未登录米家时清空残留设备）。",
-        "獨立中斷 Home Assistant：清除 HA 權杖並自動切回米家單源（未登入米家時清空殘留裝置）。",
-        "Disconnect HA independently: clears HA token and falls back to Xiaomi Cloud (or clears devices if signed out).",
-        lang,
-      )
-    : hasHAUrl
-      ? tr3(
-          "Home Assistant 令牌未连接（保留服务器地址以便后续重连）。",
-          "Home Assistant 權杖未連線（保留伺服器位址以便後續重連）。",
-          "Home Assistant token disconnected (server URL kept for reconnecting).",
-          lang,
-        )
-      : tr3("当前未连接 Home Assistant。", "目前未連線 Home Assistant。", "Home Assistant is not connected.", lang);
   const dualHint =
     dualChecked && pairedCount > 0
       ? tr3(
@@ -2135,10 +2646,7 @@ export function renderConnectionsAndDiagSection(
 
   return `
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
-      <div class="cc-field" id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-        <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
-        <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
-      </div>
+      ${renderHaDisconnectRowHtml(ctx, host, session, esc)}
 
       <details class="cc-conn-secondary" data-conn-section="advancedConnectionOptions">
         <summary class="cc-conn-secondary-summary">${esc(tr3("高级连接选项", "進階連線選項", "Advanced Connection Options", lang))}</summary>
@@ -2246,6 +2754,172 @@ function bindElementListener<E extends HTMLElement, K extends keyof HTMLElementE
   });
 }
 
+function renderHaDisconnectRowHtml(
+  ctx: ConnectionsAndDiagViewContext,
+  host: ConnectionsAndDiagHost | undefined,
+  session: HostConnDiagSession | null,
+  esc: (v: string) => string,
+): string {
+  const lang = activeLanguage(ctx.settings.interfaceLanguage);
+  const hasHAToken = ctx.settings.haToken.trim() !== "";
+  const hasHAUrl = ctx.settings.haBaseURL.trim() !== "";
+  const hasHAConfigured = homeAssistantIdentity(ctx.settings.haBaseURL, ctx.settings.haToken) !== null;
+  const dualChecked = host ? isDualSourceEnabled(host) : Boolean(ctx.settings.dualSourceEnabled);
+  const currentHaScope = haConnectionScope(ctx.settings.haBaseURL, ctx.settings.haToken);
+  const haPhase = host ? getHostHaLifecyclePhase(host) : getHaScopeLifecyclePhase(currentHaScope);
+  const haEnabled = host ? isHostHaEnabled(host) : !isHaScopeDisabledInStorage(currentHaScope);
+  const haPreview =
+    currentHaScope && session?.pendingHaDisablePreview?.scope === currentHaScope
+      ? session.pendingHaDisablePreview.verdict
+      : null;
+  const haPreviewSep = lang === "en" ? ", " : "、";
+  const haPreviewShown = haPreview
+    ? haPreview.itemsToPause.slice(0, 4).map((item) => item.name).join(haPreviewSep)
+    : "";
+  const haPreviewSummary =
+    haPreview && haPreview.itemsToPause.length > 4
+      ? tr3(`${haPreviewShown} 等`, `${haPreviewShown} 等`, `${haPreviewShown}, etc.`, lang)
+      : haPreviewShown;
+  const haDisableErr = session?.haDisableError ?? null;
+  const haDisableUiEnabled = isHostHaDisableUiEnabled(host);
+  const haCheckboxBusy = haPhase === "stopping" || haPhase === "stop_timeout";
+  const showHaStatusRow = hasHAConfigured && (haDisableUiEnabled || !haEnabled || haPhase !== "enabled");
+  const haStatusBadgeHtml = showHaStatusRow
+    ? haPhase === "stop_timeout"
+      ? `<span class="cc-inline-pill" data-ha-connection-status="stop_timeout" style="font-size:11px;padding:2px 7px;color:#e67e22;background:rgba(230,126,34,0.16);border:1px solid rgba(230,126,34,0.36);">${esc(tr3("还在停止 · 重试", "還在停止 · 重試", "Still stopping · Retry", lang))}</span>`
+      : haPhase === "stopping"
+        ? `<span class="cc-inline-pill" data-ha-connection-status="stopping" style="font-size:11px;padding:2px 7px;color:#e67e22;background:rgba(230,126,34,0.14);border:1px solid rgba(230,126,34,0.32);">${esc(tr3("正在停止", "正在停止", "Stopping", lang))}</span>`
+        : !haEnabled || haPhase === "disabled"
+          ? `<span class="cc-inline-pill" data-ha-connection-status="disabled" style="font-size:11px;padding:2px 7px;color:#8a8f98;background:rgba(128,128,128,0.16);border:1px solid rgba(128,128,128,0.28);">${esc(tr3("已停用", "已停用", "Turned Off", lang))}</span>`
+          : `<span class="cc-inline-pill" data-ha-connection-status="enabled" style="font-size:11px;padding:2px 7px;color:#2ecc71;background:rgba(46,204,113,0.12);border:1px solid rgba(46,204,113,0.28);">${esc(tr3("状态正常", "狀態正常", "Active", lang))}</span>`
+    : "";
+  const haDisableErrHtml = haDisableErr
+    ? `<p class="cc-field-hint" data-ha-disable-error style="margin:6px 0 0;width:100%;color:#e74c3c;">${esc(haDisableErr)}</p>`
+    : "";
+  const haPreviewHtml = haPreview
+    ? `<div data-ha-pause-preview style="margin-top:8px;width:100%;padding:8px;border-radius:8px;background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.28);">
+        <p class="cc-field-hint" style="margin:0 0 6px;">${esc(tr3(`停用 Home Assistant 会影响 ${haPreview.itemsToPause.length} 项定时、自动化或快捷动作（${haPreviewSummary}）。暂停后不会执行，重新启用时恢复重验。`, `停用 Home Assistant 會影響 ${haPreview.itemsToPause.length} 項定時、自動化或捷徑動作（${haPreviewSummary}）。暫停後不會執行，重新啟用時恢復重驗。`, `Turning off Home Assistant affects ${haPreview.itemsToPause.length} timer(s), automation(s), or quick action(s) (${haPreviewSummary}). They stay paused until re-enabled.`, lang))}</p>
+        <div style="display:flex;gap:6px;justify-content:flex-end;">
+          <button type="button" class="cc-btn-secondary" data-ha-cancel-disable style="padding:3px 9px;font-size:11.5px;">${esc(tr3("保持开启", "保持開啟", "Keep On", lang))}</button>
+          <button type="button" class="cc-btn-primary" data-ha-confirm-disable style="padding:3px 9px;font-size:11.5px;">${esc(tr3("暂停这些项并关闭", "暫停這些項並關閉", "Pause & Turn Off", lang))}</button>
+        </div>
+      </div>`
+    : "";
+  const haDisconnectHint = hasHAToken
+    ? haPhase === "stop_timeout"
+      ? tr3(
+          "Home Assistant 还在停止：上一轮请求长时间未返回，可点击「还在停止 · 重试」完成停用或直接重新启用。",
+          "Home Assistant 還在停止：上一輪請求長時間未返回，可點擊「還在停止 · 重試」完成停用或直接重新啟用。",
+          "Home Assistant is still stopping: an earlier request has not returned. Click 'Still stopping · Retry' to finish stopping or re-enable directly.",
+          lang,
+        )
+      : haPhase === "stopping"
+        ? tr3(
+            "Home Assistant 正在停止：等待在途请求结束后完成停用。",
+            "Home Assistant 正在停止：等待在途請求結束後完成停用。",
+            "Home Assistant is stopping: waiting for in-flight requests to settle.",
+            lang,
+          )
+        : !haEnabled
+          ? tr3(
+              "Home Assistant 已停用 · 重新启用后恢复同步并重验受影响的定时与自动化（服务器地址与令牌已保留）。",
+              "Home Assistant 已停用 · 重新啟用後恢復同步並重驗受影響的定時與自動化（伺服器位址與權杖已保留）。",
+              "Home Assistant is turned off · Re-enable to resume sync and revalidate paused items (URL & token kept).",
+              lang,
+            )
+          : tr3(
+              "独立断开 Home Assistant：清除 HA 令牌并自动切回米家单源（未登录米家时清空残留设备）。",
+              "獨立中斷 Home Assistant：清除 HA 權杖並自動切回米家單源（未登入米家時清空殘留裝置）。",
+              "Disconnect HA independently: clears HA token and falls back to Xiaomi Cloud (or clears devices if signed out).",
+              lang,
+            )
+    : hasHAUrl
+      ? tr3(
+          "Home Assistant 令牌未连接（保留服务器地址以便后续重连）。",
+          "Home Assistant 權杖未連線（保留伺服器位址以便後續重連）。",
+          "Home Assistant token disconnected (server URL kept for reconnecting).",
+          lang,
+        )
+      : tr3("当前未连接 Home Assistant。", "目前未連線 Home Assistant。", "Home Assistant is not connected.", lang);
+
+  return `<div class="cc-field" id="conn-diag-ha-disconnect-row" data-settings-anchor="haDisconnect" style="display:flex;flex-direction:column;gap:6px;">
+        ${
+          showHaStatusRow
+            ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <strong style="font-size:12.5px;">Home Assistant</strong>
+                ${haStatusBadgeHtml}
+                <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+                  ${
+                    haDisableUiEnabled
+                      ? `<label style="display:inline-flex;align-items:center;gap:4px;margin:0;font-size:11.5px;cursor:${haCheckboxBusy ? "not-allowed" : "pointer"};">
+                          <span>${esc(tr3("连接", "連線", "Connected", lang))}</span>
+                          <input type="checkbox" data-ha-connection-enabled ${haEnabled && !haCheckboxBusy ? "checked" : ""} ${haCheckboxBusy ? "disabled" : ""} />
+                        </label>`
+                      : ""
+                  }
+                  ${haPhase === "stop_timeout" ? `<button type="button" class="cc-inline-pill" data-ha-stop-retry>${esc(tr3("还在停止 · 重试", "還在停止 · 重試", "Still stopping · Retry", lang))}</button>` : ""}
+                  ${!haEnabled && haPhase !== "stopping" ? `<button type="button" class="cc-inline-pill" data-ha-reenable>${esc(tr3("重新启用", "重新啟用", "Re-enable", lang))}</button>` : ""}
+                </div>
+              </div>`
+            : ""
+        }
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span class="cc-field-hint" style="margin:0;flex:1;">${esc(haDisconnectHint)}</span>
+          <button type="button" class="cc-btn-danger" id="btn-disconnect-ha" ${hasHAToken || ctx.settings.connectionMode === "homeAssistant" || dualChecked ? "" : "disabled"}>${esc(tr3("断开连接", "中斷連線", "Disconnect", lang))}</button>
+        </div>
+        ${haDisableErrHtml}
+        ${haPreviewHtml}
+      </div>`;
+}
+
+function bindHaDisconnectRowScope(host: ConnectionsAndDiagHost, scopeRoot: ParentNode): void {
+  const session = getHostConnDiagSession(host);
+  const onClick = (sel: string, fn: () => void) =>
+    bindElementListener(scopeRoot.querySelector<HTMLButtonElement>(sel), "click", () => fn());
+
+  const haEnabledBox = scopeRoot.querySelector<HTMLInputElement>("[data-ha-connection-enabled]");
+  if (haEnabledBox) {
+    haEnabledBox.checked = haEnabledBox.hasAttribute("checked");
+    bindElementListener(haEnabledBox, "change", (el) => {
+      if (el.disabled) return;
+      void setHaConnectionEnabledOnHost(host, el.checked);
+    });
+  }
+  onClick("[data-ha-stop-retry]", () => {
+    retryTimedOutHaStopOnHost(host);
+  });
+  onClick("[data-ha-reenable]", () => {
+    void setHaConnectionEnabledOnHost(host, true);
+  });
+  onClick("[data-ha-confirm-disable]", () => {
+    void setHaConnectionEnabledOnHost(host, false, { confirmPause: true });
+  });
+  onClick("[data-ha-cancel-disable]", () => {
+    session.pendingHaDisablePreview = null;
+    host.render();
+  });
+  onClick("#btn-disconnect-ha", () => void disconnectHomeAssistantOnHost(host));
+}
+
+export function syncHaDisconnectRowOnHost(host: ConnectionsAndDiagHost): void {
+  const existingRow = host.root.querySelector<HTMLElement>("#conn-diag-ha-disconnect-row");
+  if (!existingRow) return;
+  const session = getHostConnDiagSession(host);
+  const hostEsc = host.escapeHtml;
+  const esc = hostEsc ? (v: string) => hostEsc.call(host, v) : escapeFallback;
+  const wrapper = document.createElement("div");
+  wrapper.innerHTML = renderHaDisconnectRowHtml(
+    { settings: host.settings, devices: host.devices, host, escapeHtml: esc },
+    host,
+    session,
+    esc,
+  );
+  const nextRow = wrapper.firstElementChild as HTMLElement | null;
+  if (!nextRow) return;
+  existingRow.replaceWith(nextRow);
+  bindHaDisconnectRowScope(host, nextRow);
+}
+
 export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void {
   const session = getHostConnDiagSession(host);
   syncConnectionContextWatcher(host);
@@ -2254,6 +2928,8 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
   }
   const onClick = (sel: string, fn: () => void) =>
     bindElementListener(host.root.querySelector<HTMLButtonElement>(sel), "click", () => fn());
+
+  bindHaDisconnectRowScope(host, host.root);
 
   host.root.querySelectorAll<HTMLInputElement>("[data-mi-account-enabled]").forEach((box) => {
     box.checked = box.hasAttribute("checked");
@@ -2313,7 +2989,6 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
       void toggleDualSourceOnHost(host, box.checked);
     },
   );
-  onClick("#btn-disconnect-ha", () => void disconnectHomeAssistantOnHost(host));
   const titleInput = host.root.querySelector<HTMLInputElement>("#settings-custom-home-title");
   bindElementListener(titleInput, "input", (input) => {
     session.titleDraft = input.value;

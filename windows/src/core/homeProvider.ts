@@ -1,4 +1,5 @@
 import { t } from "./i18n.js";
+import { HaBlockedRequestError, getHaScopeLifecyclePhase, haConnectionScope } from "./haTransportGate.js";
 import type { HomeAssistantClient } from "./homeAssistant.js";
 import { MiotCommandMapper, miotShortName, propKeyString } from "./miCloudClient.js";
 import type { MiCloudClient, MiotSpecResolver } from "./miCloudClient.js";
@@ -49,12 +50,19 @@ export class DemoHomeProvider implements HomeProvider {
 export class HomeAssistantProvider implements HomeProvider {
   /** `ready` settles once the endpoint the client talks to has been accepted by the native side. */
   constructor(
-    private readonly client: Pick<HomeAssistantClient, "execute">,
+    private readonly client: Pick<HomeAssistantClient, "execute"> & { readonly baseURL?: string },
     private readonly ready: Promise<unknown> = Promise.resolve(),
   ) {}
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<null> {
+    const scope = this.client.baseURL ? haConnectionScope(this.client.baseURL) : null;
+    if (scope && getHaScopeLifecyclePhase(scope) !== "enabled") {
+      throw new HaBlockedRequestError(scope);
+    }
     await this.ready;
+    if (scope && getHaScopeLifecyclePhase(scope) !== "enabled") {
+      throw new HaBlockedRequestError(scope);
+    }
     options.beforeSend?.();
     await this.client.execute(command);
     return null;

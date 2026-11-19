@@ -48,7 +48,8 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostMiAccountsState, isDualSourceEnabled, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
+import { evaluateAutomationRuleWriteGate } from "../core/miAccountControl.js";
 import {
   MAX_RECENT_AUTOMATION_RUNS,
   computeActivityScopeKey,
@@ -147,6 +148,7 @@ export interface AutoSafetySettingsHost {
   readonly multiAccountState?: import("./cloudRefresh.js").HostMultiAccountState | null;
   readonly dualSourceEnabledOverride?: boolean | null;
   readonly dualSourceCoordinator?: import("../core/dualSourceProvider.js").DualSourceCoordinator | null;
+  readonly lastManuallyUsedLightId?: string | null;
   autoSafetySession?: HostAutoSafetySession;
   activityCenter?: HostActivityCenter | null;
   manualControlConfirmationHandler?: ((prompt: AutomationHighRiskConfirmation) => boolean) | null;
@@ -405,7 +407,7 @@ function aliasedDevicesFor(devices: readonly SmartDevice[], layout: LayoutPrefs 
 
 function resolveScenesForContext(ctx: Pick<SettingsViewContext, "settings" | "scenes">): readonly HomeScene[] {
   if (ctx.scenes && ctx.scenes.length > 0) return ctx.scenes;
-  if (ctx.settings.connectionMode === "homeAssistant") return ctx.settings.cachedHAHome?.home.scenes ?? [];
+  if (ctx.settings.connectionMode === "homeAssistant") return settingsHaCacheIfEnabled(ctx.settings)?.home.scenes ?? [];
   if (ctx.settings.connectionMode === "demo") return demoScenes();
   return ctx.scenes ?? [];
 }
@@ -1255,6 +1257,24 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const ruleId = target.dataset.autoRuleToggle;
       const existing = ruleStore.load().find((r) => r.id === ruleId);
       if (target.checked && existing && !existing.isEnabled) {
+        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const gateMsg = evaluateAutomationRuleWriteGate({
+            rule: existing,
+            context: buildHostCapabilityContext(host),
+            lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            target.checked = false;
+            host.replyBanner = {
+              text: gateMsg,
+              source: uiText(lang, "控制失败", "控制失敗", "Control Failed"),
+              isError: true,
+            };
+            host.render();
+            return;
+          }
+        }
         const confirmation = automationRuleHighRiskConfirmation(existing.action, aliasedDevices, host.settings.interfaceLanguage);
         if (confirmation) {
           if (typeof host.manualControlConfirmationHandler === "function") {
@@ -1387,6 +1407,23 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     if (runId) {
       const rule = ruleStore.load().find((r) => r.id === runId);
       if (!rule || typeof host.applyCommand !== "function") return;
+      if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+        const gateMsg = evaluateAutomationRuleWriteGate({
+          rule,
+          context: buildHostCapabilityContext(host),
+          lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+          languagePreference: host.settings.interfaceLanguage,
+        });
+        if (gateMsg !== null) {
+          host.replyBanner = {
+            text: gateMsg,
+            source: uiText(lang, "控制失败", "控制失敗", "Control Failed"),
+            isError: true,
+          };
+          host.render();
+          return;
+        }
+      }
       const scopeAtStart = center?.scopeKey ?? computeActivityScopeKey(host);
       const sourceRevisionAtStart = host.sourceRevision ?? 0;
       const isSameScope = (): boolean =>
@@ -1401,6 +1438,15 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
         const run = await executeAutomationRule(execHost, rule, {
           scope: scopeAtStart,
           displayDevices: aliasedDevices,
+          evaluateRuleWriteGate: (r) =>
+            host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)
+              ? evaluateAutomationRuleWriteGate({
+                  rule: r,
+                  context: buildHostCapabilityContext(host),
+                  lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+                  languagePreference: host.settings.interfaceLanguage,
+                })
+              : null,
           recordUndoKindSnapshots,
           onUndoRecorded: (recorded) => {
             if (!center || !isSameScope()) return;

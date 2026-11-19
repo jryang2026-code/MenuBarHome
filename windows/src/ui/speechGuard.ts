@@ -26,7 +26,8 @@ import type {
   UndoStep,
 } from "./appTypes.js";
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
-import { foldGrouped, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { evaluateQuickActionSourceWriteGate } from "../core/miAccountControl.js";
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
@@ -653,13 +654,29 @@ export async function executeBuiltInQuickAction(
         `"${title}" is paused because its linked connection is turned off; turn the connection back on to resume`,
       ),
       source: tr3("快捷功能", "捷徑功能", "Quick Actions"),
+      isError: true,
     };
     host.render();
     return;
   }
+  const scopeDevices = quickActionScopeDevices(host);
+  if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateQuickActionSourceWriteGate({
+      actionId,
+      scopeDevices,
+      lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      host.render();
+      return;
+    }
+  }
   if (await rejectIfControlBlockedWhileLocked(host)) return;
   const sourceRevision = host.sourceRevision;
-  const planned = planQuickAction(actionId, quickActionScopeDevices(host), host.lastManuallyUsedLightId);
+  const planned = planQuickAction(actionId, scopeDevices, host.lastManuallyUsedLightId);
 
   if (planned.targets.length === 0) {
     host.replyBanner = {
@@ -1198,6 +1215,19 @@ function createUrlCommandHostAdapter(
         };
       }
       if (scene === "allOff") {
+        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+          const gateMsg = evaluateQuickActionSourceWriteGate({
+            actionId: "lightsOff",
+            scopeDevices: [],
+            context: buildHostCapabilityContext(host),
+            languagePreference: host.settings.interfaceLanguage,
+          });
+          if (gateMsg !== null) {
+            host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+            host.render();
+            return { message: gateMsg, isError: true };
+          }
+        }
         const targets = allOffTargets(
           foldGrouped(host, host.devices),
           host.settings.allOffOverrides,

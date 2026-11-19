@@ -39,7 +39,7 @@ import {
 import { recordUndoKindSnapshots } from "./speechGuard.js";
 import { tr3 } from "./undoTracker.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
-import { evaluateIntentsWriteGate } from "../core/miAccountControl.js";
+import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
 
@@ -793,6 +793,23 @@ export async function executeSingleCommand(
   intent?: DeviceIntent,
   readBackPower = false,
 ): Promise<void> {
+  if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const activeId = host.devices.some((d) => d.id === device.id) ? device.id : null;
+    const gateMsg = evaluateDeviceEntityWriteGate({
+      targetKind: command.kind === "activateScene" ? "scene" : "device",
+      targetIdOrEntityId: activeId ? device.id : command.entityId || device.id,
+      resolvedActiveDeviceId: activeId,
+      context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
+      languagePreference: host.settings?.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.clearPendingHighRisk?.();
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      if (typeof host.render === "function") host.render();
+      return;
+    }
+  }
   const sourceRevision = host.sourceRevision;
   const preKind = structuredClone(device.kind);
   const inverses = inverseCommands(device, command);
