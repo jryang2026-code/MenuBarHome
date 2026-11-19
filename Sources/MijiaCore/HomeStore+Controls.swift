@@ -1867,12 +1867,8 @@ extension HomeStore {
     }
 
     public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
-        if let indexed = indexedDevicesById[deviceId],
-           indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) {
-            let gate = evaluateDeviceControlGate(deviceId: deviceId)
-            if !gate.allowed, let reason = gate.rejectionReason {
-                throw CapabilityControlBlockedError(reason: reason)
-            }
+        if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
+            throw CapabilityControlBlockedError(reason: reason)
         }
         guard let device = devices.first(where: { $0.id == deviceId }),
               case .camera = device.kind else {

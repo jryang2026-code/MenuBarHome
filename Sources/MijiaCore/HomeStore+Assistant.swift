@@ -751,6 +751,8 @@ extension HomeStore {
     }
 
     private func timerScopeMatches(_ entry: ScheduledCommand) -> Bool {
+        // A plan whose targets are all LG LAN cards never depends on a cloud scope (ADR-0023).
+        if timerTargetsAreAllLGLan(entry.plan) { return true }
         guard let scopes = entry.effectiveSourceScopes else { return false }
         return Self.sourceScopesMatch(scopes, active: activeConnectionScopes)
     }
@@ -837,8 +839,10 @@ extension HomeStore {
             } else {
                 entry = stored
             }
-            guard let entryScopes = entry.effectiveSourceScopes,
-                  Self.sourceScopesMatch(entryScopes, active: scopes) else {
+            // Disabling the last Mi account empties the active scope set, but a timer that only
+            // targets LG LAN cards is still driven locally and must stay armed (ADR-0023).
+            let lgOnly = timerTargetsAreAllLGLan(entry.plan)
+            guard lgOnly || (entry.effectiveSourceScopes.map { Self.sourceScopesMatch($0, active: scopes) } ?? false) else {
                 foreign.append(entry)
                 continue
             }
@@ -912,6 +916,7 @@ extension HomeStore {
     }
 
     /// Cancels one pending command, or all of them when `id` is nil. Returns how many were cancelled.
+    /// Paused timers count too: they are shown in the bar and "cancel every timer" has to include them.
     @discardableResult
     public func cancelScheduledCommands(id: UUID? = nil) -> Int {
         let targets = scheduledCommands.filter { id == nil || $0.id == id }
@@ -926,8 +931,15 @@ extension HomeStore {
             notifiedMissedTimerIds.remove(entry.id)
         }
         missedScheduledCommands.removeAll { entry in missedTargets.contains { $0.id == entry.id } }
+
+        let pausedTargets = pausedScheduledCommands.filter { id == nil || $0.command.id == id }
+        if !pausedTargets.isEmpty {
+            let removed = Set(pausedTargets.map(\.command.id))
+            pausedScheduledCommands.removeAll { removed.contains($0.command.id) }
+            PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
+        }
         persistAllScheduledCommands()
-        return targets.count + missedTargets.count
+        return targets.count + missedTargets.count + pausedTargets.count
     }
 
     /// Where an executed plan came from; only explicit user actions train habits (#34).
@@ -1134,12 +1146,8 @@ extension HomeStore {
             }
         }
 
-        if let indexed = indexedDevicesById[intent.targetId],
-           indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) {
-            let gate = evaluateDeviceControlGate(deviceId: intent.targetId)
-            if !gate.allowed {
-                return .failed(gate.rejectionReason?.userMessage ?? indexed.name)
-            }
+        if let reason = capabilityWriteRejection(forDeviceId: intent.targetId) {
+            return .failed(reason.userMessage)
         }
         guard let previous = devices.first(where: { $0.id == intent.targetId }) else { return .skipped }
         guard previous.isOnline else { return .offline(previous.name) }

@@ -62,6 +62,10 @@ public struct MiAccountSection: View {
         let itemsToPause: [AffectedReferenceItem]
         let generation: Int
 
+        /// The exact list shown in the alert. A confirmation applies only while the live preview still
+        /// matches it; otherwise the sheet re-previews (M3).
+        var pauseItemKeys: Set<String> { Set(itemsToPause.map(\.pauseKey)) }
+
         var title: String { L10n.tr("停用米家账号连接？", "Turn off Xiaomi Home connection?") }
         var confirmButtonTitle: String { L10n.tr("暂停并停用连接", "Pause & Turn Off Connection") }
         var messageText: String {
@@ -109,7 +113,8 @@ public struct MiAccountSection: View {
         let verdict = store.previewSetMiAccountEnabled(false, id: account.id)
         switch verdict.disposition {
         case .allowed:
-            store.setMiAccountEnabled(false, id: account.id, expectedGeneration: generation)
+            let applied = store.setMiAccountEnabled(false, id: account.id, expectedGeneration: generation)
+            if applied.disposition == .blocked { reportBlockedDisable(applied) }
         case .requiresPauseConfirmation:
             pendingDisableConfirmation = DisableConnectionConfirmation(
                 account: account,
@@ -117,11 +122,33 @@ public struct MiAccountSection: View {
                 generation: generation
             )
         case .blocked:
-            let message = verdict.blockingReasons.first.map { _ in
-                L10n.tr("无法停用该连接，请检查本地设置数据后重试", "Could not turn off this connection; check local settings data and try again")
-            } ?? L10n.tr("无法停用该连接", "Could not turn off this connection")
-            store.showToast(message, isError: true)
+            reportBlockedDisable(verdict)
         }
+    }
+
+    /// A blocked preview is never silent: name the reason and what to do about it (L2).
+    private func reportBlockedDisable(_ verdict: CapabilityDeactivationVerdict) {
+        let kinds = Set(verdict.blockingReasons.map(\.kind))
+        let message: String
+        if kinds.contains(.corruptedReferenceStore) {
+            message = L10n.tr(
+                "无法停用该连接：本地保存的定时、自动化或布局数据已损坏。请先在对应页面修复或删除这些数据后重试",
+                "Could not turn off this connection: saved timers, automations or layout data are damaged. Fix or delete them in their pages and try again"
+            )
+        } else if kinds.contains(.unresolvedReferenceOwnership) {
+            message = L10n.tr(
+                "无法停用该连接：有定时或自动化无法确认目标属于哪个连接。请先在这些项目里重新选择目标",
+                "Could not turn off this connection: a timer or automation has targets that cannot be attributed to a connection. Reselect their targets first"
+            )
+        } else if kinds.contains(.stalePreviewGeneration) {
+            message = L10n.tr(
+                "连接状态刚刚发生变化，请再试一次",
+                "The connection state just changed; try again"
+            )
+        } else {
+            message = L10n.tr("无法停用该连接", "Could not turn off this connection")
+        }
+        store.showToast(message, isError: true)
     }
 
     public var body: some View {
@@ -263,10 +290,25 @@ public struct MiAccountSection: View {
             Button(confirmation.confirmButtonTitle) {
                 pendingDisableConfirmation = nil
                 let verdict = store.setMiAccountEnabled(
-                    false, id: confirmation.account.id, pauseConfirmed: true, expectedGeneration: confirmation.generation
+                    false, id: confirmation.account.id, pauseConfirmed: true,
+                    expectedGeneration: confirmation.generation,
+                    expectedPauseItemKeys: confirmation.pauseItemKeys
                 )
-                if verdict.disposition == .requiresPauseConfirmation {
-                    requestDisableConnection(for: confirmation.account)
+                switch verdict.disposition {
+                case .allowed:
+                    break
+                case .requiresPauseConfirmation:
+                    // The affected list changed after the preview. Show the fresh one instead of
+                    // pausing a set the user never confirmed; present it on the next tick so SwiftUI
+                    // does not drop an alert raised while this one is still dismissing.
+                    let fresh = DisableConnectionConfirmation(
+                        account: confirmation.account,
+                        itemsToPause: verdict.itemsToPause,
+                        generation: store.capabilityGeneration
+                    )
+                    Task { @MainActor in pendingDisableConfirmation = fresh }
+                case .blocked:
+                    reportBlockedDisable(verdict)
                 }
             }
         } message: { confirmation in

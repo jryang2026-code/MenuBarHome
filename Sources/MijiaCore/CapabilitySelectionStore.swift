@@ -2,16 +2,42 @@ import Foundation
 
 extension CapabilityManifest {
     public static let shared: CapabilityManifest = {
-        if let url = Bundle.module.url(forResource: "capability-manifest", withExtension: "json"),
-           let data = try? Data(contentsOf: url),
-           let parsed = try? parse(from: data) {
-            return parsed
+        guard let data = bundledData(), let parsed = try? parse(from: data) else {
+            preconditionFailure("capability-manifest.json is missing from the MijiaCore bundle")
         }
-        let fallback = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .appendingPathComponent("Resources/capability-manifest.json")
-        return try! parse(from: try! Data(contentsOf: fallback))
+        return parsed
     }()
+
+    /// Bytes of the bundled document. Resolved only through runtime bundle paths: a compile-time
+    /// source-location fallback would write the build machine's checkout into the release binary,
+    /// which `scripts/build_app.sh` rejects (#275).
+    static func bundledData() -> Data? {
+        var urls: [URL] = []
+        if let url = Bundle.module.url(forResource: "capability-manifest", withExtension: "json", subdirectory: "Resources") {
+            urls.append(url)
+        }
+        if let url = Bundle.module.url(forResource: "capability-manifest", withExtension: "json") {
+            urls.append(url)
+        }
+        if let root = Bundle.module.resourceURL {
+            urls.append(root.appendingPathComponent("Resources/capability-manifest.json"))
+            urls.append(root.appendingPathComponent("capability-manifest.json"))
+        }
+        for base in L10n.translationSearchBases {
+            urls.append(base.appendingPathComponent("Resources/capability-manifest.json"))
+            urls.append(base.appendingPathComponent("capability-manifest.json"))
+            for name in L10n.resourceDirectoryNames(in: base) {
+                let bundle = base.appendingPathComponent(name)
+                urls.append(bundle.appendingPathComponent("Resources/capability-manifest.json"))
+                urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/capability-manifest.json"))
+                urls.append(bundle.appendingPathComponent("Contents/Resources/capability-manifest.json"))
+            }
+        }
+        for url in urls {
+            if let data = try? Data(contentsOf: url), !data.isEmpty { return data }
+        }
+        return nil
+    }
 }
 
 /// Persists capability and connection-scope enablement in `UserDefaults` using lossless
@@ -115,21 +141,32 @@ public enum CapabilitySelectionStore {
         return resolution
     }
 
+    /// True when `save` can write: the stored envelope is either absent or still readable. Callers
+    /// that pair a write with a side effect (pausing references) check this first, so a refused write
+    /// never leaves a half-applied disable behind.
+    public static func canPersist(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: storageKey) == nil || readValidEnvelope(defaults: defaults) != nil
+    }
+
+    @discardableResult
     static func save(
         selection: CapabilitySelection,
         configuredScopes: Set<String>,
         explicitlyDisabledConnections: Set<ConnectionCapabilityID>? = nil,
         removingScopes: Set<String> = [],
         defaults: UserDefaults
-    ) {
+    ) -> Bool {
         if defaults.object(forKey: storageKey) != nil && readValidEnvelope(defaults: defaults) == nil {
-            return
+            return false
         }
         var dict = readValidEnvelope(defaults: defaults) ?? [:]
         dict[Keys.schemaVersion] = schemaVersion
         dict[Keys.migrationComplete] = true
         dict[Keys.enabledConnections] = mergeKnown(
             selection.enabledConnections, existing: dict[Keys.enabledConnections] as? [String], known: knownConnections
+        )
+        let disabledConnections = explicitlyDisabledConnections ?? Set(
+            (dict[Keys.disabledConnections] as? [String] ?? []).compactMap(ConnectionCapabilityID.init(rawValue:))
         )
         if let explicitlyDisabledConnections {
             dict[Keys.disabledConnections] = mergeKnown(
@@ -139,7 +176,12 @@ public enum CapabilitySelectionStore {
         var disabledScopes = Set(dict[Keys.disabledConnectionScopes] as? [String] ?? [])
         disabledScopes.subtract(removingScopes)
         disabledScopes.subtract(selection.enabledConnectionScopes)
-        disabledScopes.formUnion(configuredScopes.subtracting(selection.enabledConnectionScopes))
+        // A scope of a connection the user turned off as a whole is not an explicit per-scope
+        // decision. Recording it would keep the scope off after the connection is turned back on and
+        // would write a freshly accepted Home Assistant address down as a disabled scope (H1).
+        disabledScopes.formUnion(configuredScopes.subtracting(selection.enabledConnectionScopes).filter { scope in
+            CapabilityReferenceEngine.connectionCapability(forScope: scope).map { !disabledConnections.contains($0) } ?? true
+        })
         dict[Keys.disabledConnectionScopes] = disabledScopes.sorted()
         dict[Keys.enabledFeatures] = mergeKnown(
             selection.enabledFeatures, existing: dict[Keys.enabledFeatures] as? [String], known: knownFeatures
@@ -147,9 +189,9 @@ public enum CapabilitySelectionStore {
         dict[Keys.enabledCategories] = mergeKnown(
             selection.enabledCategories, existing: dict[Keys.enabledCategories] as? [String], known: knownCategories
         )
-        if let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) {
-            defaults.set(data, forKey: storageKey)
-        }
+        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) else { return false }
+        defaults.set(data, forKey: storageKey)
+        return true
     }
 
     private static func readValidEnvelope(defaults: UserDefaults) -> [String: Any]? {

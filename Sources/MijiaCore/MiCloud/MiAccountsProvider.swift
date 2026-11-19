@@ -448,7 +448,11 @@ public actor MiAccountsProvider: HomeProvider {
                     statuses[accountId] = .connected
                 }
             }
-            if home.closesAwayGap {
+            // An expired or disconnected account still emits a gap-closing snapshot, but its empty
+            // device list proves nothing: treating it as fresh lets a re-enable move its paused timers
+            // into "missed" and clear paused rules as if their targets were gone (H3).
+            let accountIsLive = !expiredAccounts.contains(accountId) && !isDisconnected(accountId)
+            if home.closesAwayGap, accountIsLive {
                 freshAccounts.insert(accountId)
             } else {
                 freshAccounts.remove(accountId)

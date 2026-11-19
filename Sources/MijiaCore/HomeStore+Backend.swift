@@ -349,13 +349,20 @@ extension HomeStore {
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
             if miAccounts.contains(where: { shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch) }) {
-                let disabledDeviceIds = Set(snapshot.devices.filter {
-                    guard let acc = $0.accountId else { return false }
-                    return shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch)
-                }.map(\.id))
-                snapshot.devices.removeAll {
-                    $0.accountId.map { shouldSuppressMiAccountInSnapshot($0, snapshotEpoch: snapshotEpoch) } ?? false
-                }
+                // Some MIoT rows carry no `accountId`; the persisted index still knows which account
+                // unites them, so a disabled account's devices cannot come back through them.
+                let disabledDeviceIds = Set(snapshot.devices.compactMap { device -> String? in
+                    if let acc = device.accountId, shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch) {
+                        return device.id
+                    }
+                    if let indexed = indexedDevicesById[device.id],
+                       CapabilityReferenceEngine.connectionCapability(forScope: indexed.sourceScope) == .xiaomiCloud,
+                       shouldSuppressMiAccountInSnapshot(indexed.sourceScope, snapshotEpoch: snapshotEpoch) {
+                        return device.id
+                    }
+                    return nil
+                })
+                snapshot.devices.removeAll { disabledDeviceIds.contains($0.id) }
                 snapshot.rooms.removeAll {
                     MiAccountScope.owner(of: $0.id).map { shouldSuppressMiAccountInSnapshot($0, snapshotEpoch: snapshotEpoch) } ?? false
                 }
@@ -1116,6 +1123,9 @@ extension HomeStore {
             if hasHASource { self.homeBackend = .homeAssistant }
             rebuildLiveProvider()
         }
+        // Removing a source is exactly the moment its paused timers/rules lose their targets; run the
+        // revalidation now that the rows are gone instead of leaving the pause markers stuck (H2).
+        revalidatePausedItems()
         showToast(L10n.tr("已退出米家账号", "Signed out of Xiaomi Home"))
         return cleared
     }
@@ -1230,6 +1240,9 @@ extension HomeStore {
             }
             rebuildLiveProvider()
         }
+        // The removed account's rows are gone; let its paused references move on (missed, foreign or
+        // still paused for a remaining scope) instead of staying paused forever (H2).
+        revalidatePausedItems()
         showToast(miAccounts.isEmpty
             ? L10n.tr("已退出米家账号", "Signed out of Xiaomi Home")
             : L10n.tr("已移除米家账号", "Removed Xiaomi account"))
@@ -1642,7 +1655,9 @@ extension HomeStore {
             },
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus,
-            localNetworkBlocks: effectiveLocalNetworkBlocks
+            localNetworkBlocks: effectiveLocalNetworkBlocks,
+            allConfiguredSourcesTurnedOff: (hasHASource || hasMiSource || !miAccounts.isEmpty)
+                && !(hasHASource && isHAConnectionEnabled) && !hasEnabledMiSource
         ))
     }
 }
@@ -1676,6 +1691,9 @@ struct PanelHealthInput: Equatable, Sendable {
     var deviceValuesAreStale: Bool
     var connectionStatus: ConnectionStatus
     var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    /// Every configured source exists but the user turned it off. Distinct from "nothing connected
+    /// yet": the panel must not claim the user never configured anything (L1).
+    var allConfiguredSourcesTurnedOff: Bool = false
 }
 
 /// Priority is the thing the user must deal with first.
@@ -1704,6 +1722,12 @@ enum PanelHealthResolver {
         }
         if input.isDemo {
             return .ok
+        }
+        if input.allConfiguredSourcesTurnedOff {
+            return .blocked(
+                reason: L10n.tr("连接已停用 · 点此重新启用", "Connections turned off · Turn one back on"),
+                action: .openConnectionSettings
+            )
         }
         if !input.hasHASource && !input.hasMiSource {
             return .notConfigured

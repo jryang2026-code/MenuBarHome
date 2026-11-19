@@ -202,20 +202,43 @@ struct AutomationSettingsSection: View {
             get: { rules.first(where: { $0.id == rule.id })?.isEnabled ?? rule.isEnabled },
             set: { enabled in
                 guard let index = rules.firstIndex(where: { $0.id == rule.id }) else { return }
-                if enabled, !rules[index].isEnabled,
-                   let confirmation = rules[index].highRiskConfirmation(devices: store.devices) {
+                var updated = rules[index]
+                if enabled, !updated.isEnabled,
+                   let confirmation = updated.highRiskConfirmation(devices: store.devices) {
                     guard confirmHighRiskRule(confirmation) else { return }
-                    rules[index].highRiskApproved = true
+                    updated.highRiskApproved = true
                 }
-                rules[index].isEnabled = enabled
-                persist()
+                updated.isEnabled = enabled
+                // A manual switch overrides the pause bookkeeping: turning a paused rule on runs it
+                // now, and turning one off keeps it off even if the lost scope comes back (M5).
+                updated.pausedCapabilities = []
+                updated.pausedScopes = []
+                update(updated)
             }
         )
     }
 
     private func delete(_ rule: AutomationRule) {
         rules.removeAll { $0.id == rule.id }
-        persist()
+        var stored = AutomationRuleStore().load()
+        stored.removeAll { $0.id == rule.id }
+        AutomationRuleStore().save(stored)
+        rules = stored
+        AutomationEngine.shared.rulesDidChange()
+    }
+
+    /// Writes one rule against the current store instead of the array read on appear, so a background
+    /// revalidation that paused or resumed another rule is not overwritten with stale rows (M5).
+    private func update(_ rule: AutomationRule) {
+        var stored = AutomationRuleStore().load()
+        if let index = stored.firstIndex(where: { $0.id == rule.id }) {
+            stored[index] = rule
+        } else {
+            stored.append(rule)
+        }
+        AutomationRuleStore().save(stored)
+        rules = stored
+        AutomationEngine.shared.rulesDidChange()
     }
 
     /// One line under the action summary: the trigger's own parameter, then the conditions.
@@ -691,9 +714,12 @@ struct AutomationSettingsSection: View {
             guard confirmHighRiskRule(confirmation) else { return }
             rule.highRiskApproved = true
         }
-        rules.append(rule)
+        var stored = AutomationRuleStore().load()
+        stored.append(rule)
+        AutomationRuleStore().save(stored)
+        rules = stored
         newDeviceIds = []
-        persist()
+        AutomationEngine.shared.rulesDidChange()
     }
 
     private func confirmHighRiskRule(_ confirmation: ManualControlConfirmation) -> Bool {
@@ -705,10 +731,6 @@ struct AutomationSettingsSection: View {
         return approved
     }
 
-    private func persist() {
-        AutomationRuleStore().save(rules)
-        // #174: a newly enabled Wi-Fi/Focus/calendar rule asks for its permission now, not at the
-        // next app launch. Existing permissions are never re-prompted.
-        AutomationEngine.shared.rulesDidChange()
-    }
+    /// #174: a newly enabled Wi-Fi/Focus/calendar rule asks for its permission now, not at the next
+    /// app launch. Every write above calls `AutomationEngine.shared.rulesDidChange()` after saving.
 }

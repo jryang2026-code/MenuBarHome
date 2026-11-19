@@ -662,6 +662,9 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
     public var conditions: AutomationConditions
     public var highRiskApproved: Bool
     public var pausedCapabilities: [CapabilityID]
+    /// Connection scopes whose loss paused this rule. Re-enabling one of them is not enough while
+    /// another is still off, and the resume decision compares these against the current selection.
+    public var pausedScopes: [String]
 
     public init(
         id: UUID = UUID(),
@@ -671,7 +674,8 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         triggerOptions: AutomationTriggerOptions = AutomationTriggerOptions(),
         conditions: AutomationConditions = AutomationConditions(),
         highRiskApproved: Bool = false,
-        pausedCapabilities: [CapabilityID] = []
+        pausedCapabilities: [CapabilityID] = [],
+        pausedScopes: [String] = []
     ) {
         self.id = id
         self.trigger = trigger
@@ -681,6 +685,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         self.conditions = conditions
         self.highRiskApproved = highRiskApproved
         self.pausedCapabilities = pausedCapabilities
+        self.pausedScopes = pausedScopes
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -692,6 +697,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         case conditions
         case highRiskApproved
         case pausedCapabilities
+        case pausedScopes
     }
 
     public init(from decoder: any Decoder) throws {
@@ -707,6 +713,7 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
             ?? AutomationConditions()
         highRiskApproved = try container.decodeIfPresent(Bool.self, forKey: .highRiskApproved) ?? false
         pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
+        pausedScopes = try container.decodeIfPresent([String].self, forKey: .pausedScopes) ?? []
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -720,6 +727,9 @@ public struct AutomationRule: Codable, Identifiable, Equatable, Sendable {
         try container.encode(highRiskApproved, forKey: .highRiskApproved)
         if !pausedCapabilities.isEmpty {
             try container.encode(pausedCapabilities, forKey: .pausedCapabilities)
+        }
+        if !pausedScopes.isEmpty {
+            try container.encode(pausedScopes, forKey: .pausedScopes)
         }
     }
 
@@ -756,8 +766,31 @@ public struct AutomationRuleStore {
     }
 
     public func save(_ rules: [AutomationRule]) {
-        guard let data = try? JSONEncoder().encode(rules) else { return }
-        defaults.set(data, forKey: Self.storageKey)
+        guard let data = try? JSONEncoder().encode(rules),
+              var merged = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return }
+        // `load()` skips entries it cannot decode so one damaged rule cannot hide the rest. Saving the
+        // decoded list alone would then delete those entries for good — a capability disable pausing a
+        // valid rule must not destroy a rule a later build could still read. Keep them verbatim.
+        merged.append(contentsOf: rawUndecodableEntries(excluding: Set(rules.map(\.id.uuidString))))
+        guard let output = try? JSONSerialization.data(withJSONObject: merged) else { return }
+        defaults.set(output, forKey: Self.storageKey)
+    }
+
+    /// Stored elements that no longer decode (older or renamed trigger, damaged write). An element is
+    /// not kept when its `id` is already written by this save, so a rule that parses again is not
+    /// duplicated.
+    private func rawUndecodableEntries(excluding savedIDs: Set<String>) -> [Any] {
+        guard let data = defaults.data(forKey: Self.storageKey),
+              let raw = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else { return [] }
+        let decoder = JSONDecoder()
+        return raw.filter { element in
+            guard let elementData = try? JSONSerialization.data(withJSONObject: element) else { return false }
+            if (try? decoder.decode(AutomationRule.self, from: elementData)) != nil { return false }
+            if let dict = element as? [String: Any], let id = dict["id"] as? String, savedIDs.contains(id) {
+                return false
+            }
+            return true
+        }
     }
 }
 

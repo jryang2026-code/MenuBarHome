@@ -560,6 +560,7 @@ public final class HomeStore {
 
     public var serverURLString: String {
         didSet {
+            migrateHomeAssistantScope(from: oldValue)
             userDefaults.set(serverURLString, forKey: "ha_server_url")
             syncHistoryConnectionScopes()
         }
@@ -1042,7 +1043,9 @@ public final class HomeStore {
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
-    @ObservationIgnored var pausedScheduledCommands: [PausedScheduledCommand] = []
+    /// Timers paused by an account/connection disable. Observed so the assistant bar can list them;
+    /// they stay cancellable while paused.
+    public internal(set) var pausedScheduledCommands: [PausedScheduledCommand] = []
     @ObservationIgnored var pausedQuickActionIDs: Set<String> = []
     @ObservationIgnored var pendingRevalidationScopes: Set<String> = []
 
@@ -1225,10 +1228,11 @@ public final class HomeStore {
         )
         self.capabilitySelection = capResolution.selection
         self.capabilityResolutionMode = capResolution.mode
-        if capResolution.mode != .uncertainFallback {
-            self.explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: ud)
-            self.explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: ud)
-        }
+        // Bookkeeping is loaded whenever the envelope is readable, including `uncertainFallback`
+        // caused by an unavailable credential slot: dropping the explicit disables there would
+        // re-enable an account the user turned off as soon as `miAccounts` loads (H4).
+        self.explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: ud)
+        self.explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: ud)
         let initialEnabledAccounts = initialAccounts.filter {
             capResolution.selection.enabledConnections.contains(.xiaomiCloud)
                 && capResolution.selection.enabledConnectionScopes.contains($0.id)

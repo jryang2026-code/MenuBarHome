@@ -841,12 +841,8 @@ extension HomeStore {
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
         if let ownerId = owningDeviceIdForCommand(command),
-           let indexed = indexedDevicesById[ownerId],
-           indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) {
-            let gate = evaluateDeviceControlGate(deviceId: ownerId)
-            if !gate.allowed, let reason = gate.rejectionReason {
-                throw CapabilityControlBlockedError(reason: reason)
-            }
+           let reason = capabilityWriteRejection(forDeviceId: ownerId) {
+            throw CapabilityControlBlockedError(reason: reason)
         }
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
