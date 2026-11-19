@@ -665,4 +665,120 @@ struct MiAccountsProviderTests {
         })
         await provider.shutdown()
     }
+
+    @Test("Disabling an account after eligibility checks pass prevents sending setProps to its stale child")
+    func disablingAccountAfterEligibilityCheckSkipsStaleWriteCandidate() async throws {
+        let values: [MiotPropKey: JSONValue] = [MiotFixtures.key("shared", 2, 1): .bool(true)]
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["shared"], homeId: "home-cn", homeName: "国内家")],
+            values: values
+        )
+        let deApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared"], homeId: "home-de", homeName: "海外家")],
+            values: values
+        )
+        let provider = Self.makeProvider([Self.cn, Self.de], cnAPI: cnApi, deAPI: deApi)
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let merged = await log.wait { events in
+            await events.snapshots.contains { $0.isInitialLoadComplete && $0.homes.count == 2 }
+        }
+        #expect(merged)
+
+        // Pause inside the first candidate's setProps (after eligibility checks already passed for
+        // both cn and de), then disable `de` before letting `cn` fail with a fallback-eligible 502.
+        let (enteredStream, enteredCont) = AsyncStream<Void>.makeStream()
+        let (releaseStream, releaseCont) = AsyncStream<Void>.makeStream()
+        await cnApi.setSetPropsFailure(.http(502))
+        await cnApi.setSetPropsHook {
+            enteredCont.yield(())
+            enteredCont.finish()
+            var iter = releaseStream.makeAsyncIterator()
+            _ = await iter.next()
+        }
+
+        let execTask = Task {
+            try await provider.execute(.setSwitch(entityId: "miot:shared:2", isOn: false))
+        }
+
+        var enteredIter = enteredStream.makeAsyncIterator()
+        let entered = await enteredIter.next() != nil
+        #expect(entered)
+
+        provider.markAccountDisabled(Self.de.id)
+        releaseCont.yield(())
+        releaseCont.finish()
+
+        await #expect(throws: MiCloudError.http(502)) {
+            try await execTask.value
+        }
+        #expect(await cnApi.setPropsCalls.count == 1)
+        #expect(await deApi.setPropsCalls.isEmpty, "Disabled account must receive 0 setProps after eligibility pause")
+
+        await cnApi.setSetPropsHook(nil)
+        await provider.shutdown()
+    }
+
+    @Test("A single account marked disconnected still receives commands via fallback routing")
+    func singleDisconnectedAccountStillReceivesCommand() async throws {
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light"], homeId: "home-cn", homeName: "国内家")],
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true)]
+        )
+        let deApi = StubMiCloudAPI(devices: [], rooms: [], values: [:])
+        let provider = Self.makeProvider([Self.cn], cnAPI: cnApi, deAPI: deApi)
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let connected = await log.wait { events in
+            guard let latest = await events.snapshots.last else { return false }
+            return latest.devices.map(\.id) == ["cn-light"]
+                && latest.accountStatuses[Self.cn.id] == .connected
+        }
+        #expect(connected)
+
+        await cnApi.setGetPropsFailure(.http(502))
+        await provider.refreshNow()
+        let disconnected = await log.wait { events in
+            guard let status = await events.snapshots.last?.accountStatuses[Self.cn.id] else { return false }
+            if case .disconnected = status { return true }
+            return false
+        }
+        #expect(disconnected)
+
+        try await provider.execute(.setSwitch(entityId: "miot:cn-light:2", isOn: false))
+        #expect(await cnApi.setPropsCalls == [
+            [MiotPropWrite(did: "cn-light", siid: 2, piid: 1, value: .bool(false))],
+        ])
+        await provider.shutdown()
+    }
+
+    @Test("When only disabled accounts remain, execute throws noWritableSession with zero writes")
+    func onlyDisabledAccountThrowsNoWritableSessionWithZeroWrites() async throws {
+        let cnApi = StubMiCloudAPI(
+            devices: [MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light"], homeId: "home-cn", homeName: "国内家")],
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true)]
+        )
+        let deApi = StubMiCloudAPI(devices: [], rooms: [], values: [:])
+        let provider = Self.makeProvider([Self.cn], cnAPI: cnApi, deAPI: deApi)
+        let (log, task) = consume(provider)
+        defer { task.cancel() }
+
+        let ready = await log.wait { events in
+            await events.snapshots.contains { $0.devices.map(\.id) == ["cn-light"] }
+        }
+        #expect(ready)
+
+        provider.markAccountDisabled(Self.cn.id)
+        await #expect(throws: MiotCommandError.noWritableSession("cn-light")) {
+            try await provider.execute(.setSwitch(entityId: "miot:cn-light:2", isOn: false))
+        }
+        #expect(await cnApi.setPropsCalls.isEmpty)
+        await provider.shutdown()
+    }
 }

@@ -83,21 +83,32 @@ public actor MiAccountsProvider: HomeProvider {
     private final class DisabledAccountsGate: @unchecked Sendable {
         private let lock = NSLock()
         private var disabled: Set<String> = []
+        private var revocationEpochs: [String: UInt64] = [:]
 
         func markDisabled(_ accountId: String) {
-            lock.withLock { _ = disabled.insert(accountId) }
+            lock.withLock {
+                _ = disabled.insert(accountId)
+                revocationEpochs[accountId, default: 0] &+= 1
+            }
         }
 
         func markDisabled(_ accountIds: Set<String>) {
-            lock.withLock { disabled.formUnion(accountIds) }
+            lock.withLock {
+                for accountId in accountIds {
+                    _ = disabled.insert(accountId)
+                    revocationEpochs[accountId, default: 0] &+= 1
+                }
+            }
         }
 
         func markEnabled(_ accountId: String) {
             lock.withLock { _ = disabled.remove(accountId) }
         }
 
-        func contains(_ accountId: String) -> Bool {
-            lock.withLock { disabled.contains(accountId) }
+        func state(for accountId: String) -> (isDisabled: Bool, revocationEpoch: UInt64) {
+            lock.withLock {
+                (disabled.contains(accountId), revocationEpochs[accountId, default: 0])
+            }
         }
     }
 
@@ -816,6 +827,43 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    private struct WriteCandidate {
+        let ownerId: String
+        let session: MiSession
+        let child: MiCloudProvider
+        let revocationEpoch: UInt64
+    }
+
+    private func captureWriteCandidate(for ownerId: String) -> WriteCandidate? {
+        guard !isShutDown,
+              !expiredAccounts.contains(ownerId),
+              let account = accounts.first(where: { $0.id == ownerId }),
+              let child = childProvider(for: ownerId) else {
+            return nil
+        }
+        let gateState = disabledAccountsGate.state(for: ownerId)
+        guard !gateState.isDisabled else { return nil }
+        return WriteCandidate(
+            ownerId: ownerId,
+            session: account.session,
+            child: child,
+            revocationEpoch: gateState.revocationEpoch
+        )
+    }
+
+    private func isWriteCandidateStillValid(_ candidate: WriteCandidate) -> Bool {
+        guard !isShutDown,
+              !expiredAccounts.contains(candidate.ownerId),
+              let currentAccount = accounts.first(where: { $0.id == candidate.ownerId }),
+              currentAccount.session == candidate.session,
+              let currentChild = childProvider(for: candidate.ownerId),
+              currentChild === candidate.child else {
+            return false
+        }
+        let gateState = disabledAccountsGate.state(for: candidate.ownerId)
+        return !gateState.isDisabled && gateState.revocationEpoch == candidate.revocationEpoch
+    }
+
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
@@ -824,43 +872,59 @@ public actor MiAccountsProvider: HomeProvider {
         let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
 
-        var writableOwners: [(ownerId: String, child: MiCloudProvider)] = []
-        writableOwners.reserveCapacity(owners.count)
-        for ownerId in owners {
-            guard accounts.contains(where: { $0.id == ownerId }),
-                  !disabledAccountsGate.contains(ownerId),
-                  !expiredAccounts.contains(ownerId),
-                  !isDisconnected(ownerId),
-                  let child = childProvider(for: ownerId),
-                  hasFreshOnlineDevice(accountId: ownerId, did: did),
-                  await child.canExecute(command) else {
-                continue
-            }
-            writableOwners.append((ownerId, child))
-        }
-
-        if writableOwners.isEmpty {
+        let initialCandidates = owners.compactMap { captureWriteCandidate(for: $0) }
+        if initialCandidates.isEmpty {
             if owners.allSatisfy({ expiredAccounts.contains($0) }) {
                 throw MiCloudError.sessionExpired
-            }
-            if owners.allSatisfy({ ownerId in
-                !accounts.contains(where: { $0.id == ownerId }) || disabledAccountsGate.contains(ownerId)
-            }) {
-                throw MiCloudError.notLoggedIn
             }
             throw MiotCommandError.noWritableSession(did)
         }
 
+        var writableCandidates: [WriteCandidate] = []
+        writableCandidates.reserveCapacity(initialCandidates.count)
+        for candidate in initialCandidates {
+            guard isWriteCandidateStillValid(candidate),
+                  !isDisconnected(candidate.ownerId),
+                  hasFreshOnlineDevice(accountId: candidate.ownerId, did: did),
+                  await candidate.child.canExecute(command),
+                  isWriteCandidateStillValid(candidate) else {
+                continue
+            }
+            writableCandidates.append(candidate)
+        }
+
+        let candidatesToTry: [WriteCandidate]
+        if !writableCandidates.isEmpty {
+            candidatesToTry = writableCandidates
+        } else {
+            if owners.allSatisfy({ expiredAccounts.contains($0) }) {
+                throw MiCloudError.sessionExpired
+            }
+            let fallbackCandidates = initialCandidates.filter { isWriteCandidateStillValid($0) }
+            guard !fallbackCandidates.isEmpty else {
+                throw MiotCommandError.noWritableSession(did)
+            }
+            let hasGracedMultiAccountSplit = fallbackCandidates.count > 1
+                && fallbackCandidates.contains(where: { isDisconnected($0.ownerId) })
+                && fallbackCandidates.contains(where: { !isDisconnected($0.ownerId) })
+            if hasGracedMultiAccountSplit {
+                throw MiotCommandError.noWritableSession(did)
+            }
+            candidatesToTry = fallbackCandidates
+        }
+
         var lastFallbackError: (any Error)?
-        for (_, child) in writableOwners {
+        for candidate in candidatesToTry {
+            guard isWriteCandidateStillValid(candidate) else { continue }
             let nonIdempotent: Bool
             if !command.isIdempotentForAccountFallback {
                 nonIdempotent = true
             } else {
-                nonIdempotent = await child.mapsToAction(command)
+                nonIdempotent = await candidate.child.mapsToAction(command)
             }
+            guard isWriteCandidateStillValid(candidate) else { continue }
             do {
-                try await child.execute(command)
+                try await candidate.child.execute(command)
                 return
             } catch MiCloudError.sessionExpired {
                 lastFallbackError = MiCloudError.sessionExpired
@@ -890,7 +954,7 @@ public actor MiAccountsProvider: HomeProvider {
                 throw error
             }
         }
-        throw lastFallbackError ?? MiCloudError.notLoggedIn
+        throw lastFallbackError ?? MiotCommandError.noWritableSession(did)
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
