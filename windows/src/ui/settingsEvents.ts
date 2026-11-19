@@ -43,6 +43,11 @@ import { demoDevices, demoScenes } from "./demo.js";
 import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
 import { buildHostCapabilityContext, haCacheIfEnabled, isHostHaEnabled } from "./cloudRefresh.js";
 import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
+import {
+  clearConnectionRemovals,
+  haConnectionRemovalScope,
+  isConnectionRemovalPending,
+} from "../core/connectionRemoval.js";
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
@@ -419,6 +424,9 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
 
 export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<void> {
   setPendingMiVaultDeletion(true);
+  // Revoke-all supersedes any single-connection removal: everything is being wiped here, and a
+  // stale record would keep a later sign-in disabled by the removal overlay (P2c-W).
+  clearConnectionRemovals();
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
   }
@@ -582,6 +590,30 @@ function commitSettingsSave(host: SettingsEventsHost): void {
   const haToken = host.root.querySelector<HTMLInputElement>("#settings-ha-token");
 
   const prevHaScope = haConnectionScope(host.settings.haBaseURL, host.settings.haToken);
+
+  // P2c-W: a failed removal still owns this Home Assistant scope. Saving a token for it now would
+  // be deleted by the retry, so the rebind is refused until the cleanup finishes.
+  if (haUrl && haToken && haToken.value.trim() !== "") {
+    let candidateEndpoint = haUrl.value.trim();
+    if (candidateEndpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(candidateEndpoint)) {
+      candidateEndpoint = `http://${candidateEndpoint}`;
+    }
+    candidateEndpoint = candidateEndpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
+    const candidateScope = haConnectionScope(candidateEndpoint, haToken.value.trim());
+    if (isConnectionRemovalPending(haConnectionRemovalScope(candidateScope))) {
+      host.replyBanner = {
+        text: tr3(
+          "有一个连接还没移除完，请先重试清理再保存连接",
+          "有一個連線還沒移除完，請先重試清理再儲存連線",
+          "A connection removal is still unfinished; retry the cleanup before saving this connection",
+        ),
+        source: tr3("连接管理", "連線管理", "Connections"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
+  }
 
   if (haUrl) {
     let endpoint = haUrl.value.trim();

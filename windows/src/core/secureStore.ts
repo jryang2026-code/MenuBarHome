@@ -280,6 +280,18 @@ export async function secureStoreListMiAccountSlots(
   return out.sort();
 }
 
+/** Reports which slots of one deletion request were cleared, so a retry knows what is left. */
+export class CredentialSlotDeletionError extends Error {
+  constructor(
+    message: string,
+    readonly failed: readonly SecureCredentialName[],
+    readonly deleted: readonly SecureCredentialName[],
+  ) {
+    super(message);
+    this.name = "CredentialSlotDeletionError";
+  }
+}
+
 export class CredentialVault {
   private readonly known = new Map<SecureCredentialName, string>();
   private opChain: Promise<void> = Promise.resolve();
@@ -536,6 +548,35 @@ export class CredentialVault {
       const slotName = miAccountSessionCredentialName(slotId);
       await secureStoreDelete(slotName, this.invoke);
       this.known.set(slotName, "");
+    });
+  }
+
+    /**
+     * Deletes exactly `names` and nothing else.
+     *
+     * Connection removal must never widen to "every Xiaomi slot" or "every key": the caller passes
+     * the slots one removed account or one removed Home Assistant connection owns. A rejected slot
+     * keeps its previous `known` value so a retry still sees the credential it must delete.
+     */
+    async deleteCredentialSlots(names: readonly SecureCredentialName[]): Promise<void> {
+    return this.serialize(async () => {
+      const unique = [...new Set<SecureCredentialName>(names)];
+      const results = await Promise.allSettled(unique.map((name) => secureStoreDelete(name, this.invoke)));
+      const deleted: SecureCredentialName[] = [];
+      const failed: SecureCredentialName[] = [];
+      results.forEach((result, index) => {
+        const name = unique[index]!;
+        if (result.status === "fulfilled") deleted.push(name);
+        else failed.push(name);
+      });
+      for (const name of deleted) this.known.set(name, "");
+      if (failed.length > 0) {
+        throw new CredentialSlotDeletionError(
+          `Could not delete credential slots: ${failed.join(", ")}`,
+          failed,
+          deleted,
+        );
+      }
     });
   }
 
