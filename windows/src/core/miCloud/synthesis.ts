@@ -76,6 +76,30 @@ export function normalizedKelvinBounds(
 
 /** A read-only property map: synthesis also runs to discover which keys it polls. */
 const EMPTY_VALUES: ReadonlyMap<string, unknown> = new Map<string, unknown>();
+const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
+
+/** One card's read keys, from the same builder pass that draws it. */
+export interface MiotPlanReadKeys {
+  readonly planId: string;
+  readonly name: string;
+  readonly spec: MiotDeviceSpec;
+  /** The card the builder produced, or null when only the generic facet card is left. */
+  readonly kind: DeviceKind | null;
+  readonly required: readonly MiotPropKey[];
+  readonly facets: readonly MiotPropKey[];
+}
+
+function dedupePropKeys(keys: readonly MiotPropKey[]): MiotPropKey[] {
+  const out: MiotPropKey[] = [];
+  const seen = new Set<string>();
+  for (const key of keys) {
+    const id = `${key.did}|${key.siid}|${key.piid}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(key);
+  }
+  return out;
+}
 
 export function miotBool(val: unknown): boolean | null {
   if (typeof val === "boolean") return val;
@@ -1069,24 +1093,51 @@ export const MiotSynthesizer = {
   },
 
   /**
+   * Read keys per card, so a read plan can drop one card without touching the rest of the record
+   * (a dual-track curtain, a split panel). `required` feeds the card and its alerts, `facets` the
+   * 更多设置 rows behind it (#5).
+   */
+  planReadKeys(device: MiDeviceRecord, spec: MiotDeviceSpec): MiotPlanReadKeys[] {
+    const did = miotDid(device);
+    const toKeys = (keys: Iterable<string>): MiotPropKey[] => {
+      const out: MiotPropKey[] = [];
+      for (const key of keys) {
+        const [siid, piid] = key.split(".");
+        out.push({ did, siid: Number(siid), piid: Number(piid) });
+      }
+      return out;
+    };
+    const readable = (facetSpec: MiotDeviceSpec, excluding: ReadonlySet<string>): string[] => {
+      const keys: string[] = [];
+      for (const facet of buildMiotFacets(facetSpec)) {
+        if (facet.propertyId === undefined) continue;
+        const service = facetSpec.services.find((s) => s.iid === facet.serviceId);
+        const property = service?.properties.find((p) => p.iid === facet.propertyId);
+        if (!property?.access.includes("read")) continue;
+        const key = `${facet.serviceId}.${facet.propertyId}`;
+        if (excluding.has(key) || keys.includes(key)) continue;
+        keys.push(key);
+      }
+      return keys;
+    };
+    const mainsBreaker = isMainsBreaker(spec);
+    return this.buildPlans(device, spec).map((plan) => {
+      const touched = new Set<string>();
+      const consumed = new Set<string>();
+      const kind = this.buildDeviceKind(did, plan.spec, EMPTY_VALUES, touched, consumed, device.model, device.name);
+      // A card without a dedicated builder is drawn from every readable facet property, so those
+      // properties are its state (and its only source of alert labels) rather than drawer rows.
+      const facets = mainsBreaker ? [] : readable(plan.spec, kind ? new Set([...touched, ...consumed]) : EMPTY_KEYS);
+      return { planId: plan.id, name: plan.name, spec: plan.spec, kind, required: toKeys(touched), facets: toKeys(facets) };
+    });
+  },
+
+  /**
    * The (did, siid, piid) triples the synthesizer reads for this device; poll exactly these.
    * A builder records every property it reads, so `facetProps` can poll the rest (#5).
    */
   requiredProps(device: MiDeviceRecord, spec: MiotDeviceSpec): MiotPropKey[] {
-    const did = miotDid(device);
-    const touched: MiotPropKey[] = [];
-    const seen = new Set<string>();
-    for (const plan of this.buildPlans(device, spec)) {
-      const keys = new Set<string>();
-      this.buildDeviceKind(did, plan.spec, EMPTY_VALUES, keys);
-      for (const key of keys) {
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const parts = key.split(".");
-        touched.push({ did, siid: Number(parts[0]), piid: Number(parts[1]) });
-      }
-    }
-    return touched;
+    return dedupePropKeys(this.planReadKeys(device, spec).flatMap((plan) => plan.required));
   },
 
   /**
@@ -1096,35 +1147,7 @@ export const MiotSynthesizer = {
    */
   facetProps(device: MiDeviceRecord, spec: MiotDeviceSpec): MiotPropKey[] {
     if (isMainsBreaker(spec)) return [];
-    const did = miotDid(device);
-    const scoped = specForRecord(device, spec);
-    const plans = this.buildPlans(device, spec);
-    const keys: MiotPropKey[] = [];
-    const seen = new Set<string>();
-    const addReadable = (facetSpec: MiotDeviceSpec, excluding: ReadonlySet<string>) => {
-      for (const facet of buildMiotFacets(facetSpec)) {
-        if (facet.propertyId === undefined) continue;
-        const service = facetSpec.services.find((s) => s.iid === facet.serviceId);
-        const property = service?.properties.find((p) => p.iid === facet.propertyId);
-        if (!property?.access.includes("read")) continue;
-        const key = `${facet.serviceId}.${facet.propertyId}`;
-        if (excluding.has(key) || seen.has(key)) continue;
-        seen.add(key);
-        keys.push({ did, siid: facet.serviceId, piid: facet.propertyId });
-      }
-    };
-    // A generic card has no dedicated builder, so every readable facet property is its state.
-    if (plans.length === 0) {
-      addReadable(scoped, new Set());
-      return keys;
-    }
-    for (const plan of plans) {
-      const touched = new Set<string>();
-      const consumed = new Set<string>();
-      this.buildDeviceKind(did, plan.spec, EMPTY_VALUES, touched, consumed);
-      addReadable(plan.spec, new Set([...touched, ...consumed]));
-    }
-    return keys;
+    return dedupePropKeys(this.planReadKeys(device, spec).flatMap((plan) => plan.facets));
   },
 
   buildDeviceKind(

@@ -148,9 +148,10 @@ enum PanelFoldMeasure {
                 .transaction { $0.disablesAnimations = true }
                 .focusEffectDisabled()
         )
-        hosting.frame = NSRect(x: 0, y: 0, width: 376, height: 560)
+        let width = MenuBarPanelController.panelWidth(for: theme)
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: 560)
         let window = NSWindow(
-            contentRect: NSRect(x: 60, y: 120, width: 376, height: 560),
+            contentRect: NSRect(x: 60, y: 120, width: width, height: 560),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false

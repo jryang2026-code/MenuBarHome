@@ -1,14 +1,119 @@
 import Carbon
 import Foundation
+import MijiaCore
+
+/// Tracks transient panel interactions that live outside `HomeStore` — an active 0.6 s All-Off hold
+/// and expanded ordinary-reminder / offline drawers — without `@Observable` invalidations on hidden
+/// `ViewGraph` trees.
+@MainActor
+final class PanelTransientUIState {
+    static let shared = PanelTransientUIState()
+
+    private(set) var isAllOffHoldActive = false
+    private var nextHoldSessionId: UInt64 = 0
+    private var activeHoldSessionId: UInt64?
+    private var cancelActiveHoldHandler: (() -> Void)?
+    private var suppressTapUntilUptime: TimeInterval = 0
+
+    var hasExpandedReminders = false
+    var hasExpandedOfflineDrawer = false
+    var collapseRemindersHandler: (() -> Void)?
+    var collapseOfflineDrawerHandler: (() -> Void)?
+
+    func beginAllOffHold(onCancel: @escaping () -> Void) -> UInt64 {
+        nextHoldSessionId &+= 1
+        let session = nextHoldSessionId
+        activeHoldSessionId = session
+        isAllOffHoldActive = true
+        suppressTapUntilUptime = 0
+        cancelActiveHoldHandler = onCancel
+        return session
+    }
+
+    /// The pointer lifted. `onPressingChanged(false)` runs *before* a completed 0.6 s long press's
+    /// `perform` closure, so a release only stops the key/tap semantics: it keeps the session
+    /// consumable. Otherwise SwiftUI's own callback order would reject every successful hold.
+    /// Only an explicit cancel (Esc, focus loss, panel hide) invalidates the session.
+    func releaseAllOffHold(session: UInt64?) {
+        guard let session, activeHoldSessionId == session else { return }
+        isAllOffHoldActive = false
+        cancelActiveHoldHandler = nil
+    }
+
+    /// Esc, key-focus loss, or the panel hiding: the hold is over, and a late `perform` must not fire.
+    func cancelAllOffHold(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        let handler = cancelActiveHoldHandler
+        let wasActive = activeHoldSessionId != nil
+        activeHoldSessionId = nil
+        isAllOffHoldActive = false
+        cancelActiveHoldHandler = nil
+        if wasActive {
+            // The cancelled press must not turn into the button's tap on mouse-up.
+            suppressTapUntilUptime = now + 0.8
+            handler?()
+        }
+    }
+
+    func consumeConfirmedHold(session: UInt64?) -> Bool {
+        guard let session, activeHoldSessionId == session else { return false }
+        activeHoldSessionId = nil
+        isAllOffHoldActive = false
+        cancelActiveHoldHandler = nil
+        return true
+    }
+
+    func shouldSuppressTap(now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> Bool {
+        guard now < suppressTapUntilUptime else {
+            suppressTapUntilUptime = 0
+            return false
+        }
+        suppressTapUntilUptime = 0
+        return true
+    }
+
+    func collapseReminders() {
+        hasExpandedReminders = false
+        collapseRemindersHandler?()
+    }
+
+    func collapseOfflineDrawer() {
+        hasExpandedOfflineDrawer = false
+        collapseOfflineDrawerHandler?()
+    }
+
+    /// Cleans up pending confirmations, in-flight All-Off holds, and temporary drawers/popovers when
+    /// the panel hides or loses focus (`ui.md` §4 `全关` & `键盘`).
+    func resetOnPanelHide(store: HomeStore?) {
+        cancelAllOffHold()
+        if store?.pendingCloudConsent != nil {
+            store?.declinePendingCloudRequest()
+        }
+        LayoutUIState.shared.dismissActivePrompt()
+        PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
+        store?.expandedDeviceId = nil
+        collapseReminders()
+        collapseOfflineDrawer()
+    }
+
+    func resetForTesting() {
+        activeHoldSessionId = nil
+        isAllOffHoldActive = false
+        cancelActiveHoldHandler = nil
+        suppressTapUntilUptime = 0
+        hasExpandedReminders = false
+        hasExpandedOfflineDrawer = false
+        collapseRemindersHandler = nil
+        collapseOfflineDrawerHandler = nil
+    }
+}
 
 /// Who owns a key press in the panel, decided without touching AppKit or any singleton.
 ///
-/// The panel's keyboard is a priority chain: the re-auth modal, the GrokBall stage, search, an
-/// open prompt, the global shortcut, a focused text field, the room-order session, device-layout
-/// mode, the assistant keys and finally the device shortcuts. `HotkeyAndNotificationManager`
-/// snapshots the state into a `Context`, asks the router, and performs the action. The order is
-/// therefore a table tests can assert key by key. Search keeps its own handler and runs between
-/// the two stages, because its state lives in `PanelSearchKeyboard`.
+/// Escape walks a strict three-tier priority (`ui.md` §4 `键盘`):
+/// 1. Active confirmations or an in-progress 0.6 s All-Off hold (`reauth`, `allOffHold`, cloud consent, prompt);
+/// 2. Expanded transient surfaces (`GrokBall` stage, connection detail, assistant bar, device drawer,
+///    ordinary reminder list, offline drawer);
+/// 3. Active search query / focused form field / edit mode / device focus, then hiding the panel.
 enum PanelKeyRouter {
     struct Key: Equatable {
         var code: Int
@@ -25,6 +130,8 @@ enum PanelKeyRouter {
     struct Context: Equatable {
         var isPanelWindow = true
         var isShowingMiReauth = false
+        var isAllOffHoldActive = false
+        var hasPendingConfirmation = false
         var isGrokBallStageExpanded = false
         var isShowingConnectionDetail = false
         var isConnectionStatusFocused = false
@@ -34,9 +141,15 @@ enum PanelKeyRouter {
         var isGlobalHotkeyRegistered = false
         var isHotkeyPhysicallyDown = false
         var isTextFieldFocused = false
+        var isFormFieldFocused = false
+        /// An IME has uncommitted marked text in the focused field: Esc cancels the composition, not the panel.
+        var isComposingText = false
+        var isShowingOnboarding = false
         var isShowingAssistantBar = false
         var editMode: PanelEditMode = .none
         var hasExpandedDevice = false
+        var hasExpandedReminders = false
+        var hasExpandedOfflineDrawer = false
         var hasFocusedDevice = false
         var voiceInputEnabled = true
     }
@@ -48,6 +161,8 @@ enum PanelKeyRouter {
         case consume
         case openSettings
         case dismissMiReauth
+        case cancelAllOffHold
+        case cancelPendingConfirmation
         case dismissGrokBallStage
         case dismissConnectionDetail
         case focusConnectionStatus
@@ -67,6 +182,8 @@ enum PanelKeyRouter {
         case cycleRoom(Int)
         case dismissAssistantBar
         case collapseExpandedDevice
+        case collapseExpandedReminders
+        case collapseOfflineDrawer
         case clearFocus
         case hidePanel
         case selectQuickIndex(Int)
@@ -85,18 +202,41 @@ enum PanelKeyRouter {
         ) {
             return consumes ? .dismissMiReauth : .passThrough
         }
-        if key.code == kVK_Escape, context.isGrokBallStageExpanded, context.isPanelWindow {
-            return .dismissGrokBallStage
+        if key.code == kVK_Escape, context.isPanelWindow {
+            if context.isAllOffHoldActive { return .cancelAllOffHold }
+            if context.hasPendingConfirmation { return .cancelPendingConfirmation }
+        }
+        if context.isPanelWindow, context.hasActivePrompt {
+            // Esc belongs to the prompt; Return and ↑↓ go to the prompt's field, never to search or cards.
+            if key.code == kVK_Escape { return .dismissPrompt }
+            if key.code == kVK_Return || key.code == kVK_UpArrow || key.code == kVK_DownArrow { return .passThrough }
+        }
+        // The IME owns Esc while it has marked text, so a Chinese/Japanese composition can be abandoned
+        // without a panel-level surface collapsing behind it.
+        if key.code == kVK_Escape, context.isPanelWindow, !context.isFormFieldFocused, !context.isComposingText {
+            if context.isGrokBallStageExpanded { return .dismissGrokBallStage }
+            if context.isShowingConnectionDetail { return .dismissConnectionDetail }
+            if !context.isTextFieldFocused, context.isShowingAssistantBar { return .dismissAssistantBar }
+            if context.editMode == .none, !context.isShowingAssistantBar {
+                if context.hasExpandedDevice { return .collapseExpandedDevice }
+                if context.hasExpandedReminders { return .collapseExpandedReminders }
+                if context.hasExpandedOfflineDrawer { return .collapseOfflineDrawer }
+            }
+            if context.isConnectionStatusFocused { return .clearConnectionStatusFocus }
         }
         if context.isShowingConnectionDetail, context.isPanelWindow {
-            return key.code == kVK_Escape ? .dismissConnectionDetail : .passThrough
+            // The detail keeps its own form keys (the reader is a text field, not the panel's search), but
+            // Esc still leaves the field first instead of also tearing down the assistant bar behind it.
+            // A live IME composition keeps its own Esc, as in tier 2 above.
+            if key.code == kVK_Escape, context.isFormFieldFocused, !context.isComposingText {
+                return .leaveTextField(dismissAssistant: false)
+            }
+            return .passThrough
         }
         if context.isConnectionStatusFocused, context.isPanelWindow {
             switch key.code {
             case kVK_Return, kVK_ANSI_KeypadEnter, kVK_Space:
                 return .passThrough
-            case kVK_Escape:
-                return .clearConnectionStatusFocus
             default:
                 break
             }
@@ -106,10 +246,8 @@ enum PanelKeyRouter {
 
     /// Keys search did not take.
     static func afterSearch(_ key: Key, _ context: Context) -> Action {
-        if context.hasActivePrompt {
-            // Esc belongs to the prompt; the text-field guard below would only resign focus.
+        if context.isPanelWindow, context.hasActivePrompt {
             if key.code == kVK_Escape { return .dismissPrompt }
-            // Return and ↑↓ go to the prompt's field, never to the card behind it.
             if key.code == kVK_Return || key.code == kVK_UpArrow || key.code == kVK_DownArrow { return .passThrough }
         }
 
@@ -118,12 +256,16 @@ enum PanelKeyRouter {
             return .globalHotkeyEcho(hidePanel: hide)
         }
 
-        if context.isTextFieldFocused {
+        if context.isTextFieldFocused || context.isFormFieldFocused {
             return key.code == kVK_Escape ? .leaveTextField(dismissAssistant: context.isShowingAssistantBar) : .passThrough
         }
 
         // Device shortcuts belong to the menu-bar panel; Settings keeps normal AppKit behaviour (#42).
         guard context.isPanelWindow else { return .passThrough }
+
+        if context.isShowingOnboarding {
+            return key.code == kVK_Escape ? .hidePanel : .passThrough
+        }
 
         if context.editMode == .roomOrder,
            let action = HotkeyAndNotificationManager.roomOrderKeyAction(
@@ -178,9 +320,13 @@ enum PanelKeyRouter {
             if context.hasFocusedDevice { return .focusConnectionStatus }
             return .cycleRoom(key.shift ? -1 : 1)
         case kVK_Escape:
+            if context.isAllOffHoldActive { return .cancelAllOffHold }
+            if context.hasPendingConfirmation { return .cancelPendingConfirmation }
             if context.isShowingConnectionDetail { return .dismissConnectionDetail }
             if context.isShowingAssistantBar { return .dismissAssistantBar }
             if context.hasExpandedDevice { return .collapseExpandedDevice }
+            if context.hasExpandedReminders { return .collapseExpandedReminders }
+            if context.hasExpandedOfflineDrawer { return .collapseOfflineDrawer }
             if context.hasFocusedDevice { return .clearFocus }
             return .hidePanel
         default:

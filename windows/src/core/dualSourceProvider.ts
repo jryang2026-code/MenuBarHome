@@ -11,12 +11,14 @@ import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePrefer
 } from "./i18n.js";
 import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
+import { miAccountScope } from "./miAccountControl.js";
 import { parseMiotActionAddress, parseMiotAddress } from "./miCloud/spec.js";
 import type { MiDeviceRecord } from "./miCloudClient.js";
 import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionStatus, type DeviceCommand,
   type DeviceKind, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type RoomCategory,
   type SmartDevice, type SynthesizedHome,
 } from "./models.js";
+import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
 
 function tr3(zhHans: string, zhHant: string, en: string, params?: Readonly<Record<string, string | number>>,
   preference?: LanguagePreference): string { const lang: AppLanguage = preference !== undefined
@@ -376,6 +378,11 @@ export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
   readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
   readonly homes?: readonly AccountScopedHomeOption[];
   readonly accountStatuses?: Readonly<Record<string, ConnectionStatus>>;
+  /** Devices a turned-off category still reads for its enabled alerts; never shown as cards. */
+  readonly safetyDevices?: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Index entries of the cards the type selection withholds, for the host write gate. */
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
 }
 
 export interface DeviceMergeRoute { readonly backend: HomeBackend;
@@ -1360,6 +1367,31 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
+    // The retained alert signals and hidden index entries follow the same ownership rule as cards:
+    // the removed account's half goes, the sibling accounts keep theirs (P3a-W).
+    const removedScope = miAccountScope(accountId);
+    const removedSafetyIds = new Set(
+      (this.lastMi.safetyDevices ?? [])
+        .filter((device) => isRemovedMiDevice(device.id, device.accountId))
+        .map((device) => device.id),
+    );
+    const nextSafetyDevices = this.lastMi.safetyDevices?.filter(
+      (device) => !removedSafetyIds.has(device.id),
+    );
+    let nextSafetyDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
+    if (this.lastMi.safetyDeviceFacets) {
+      nextSafetyDeviceFacets = {};
+      for (const [id, controls] of Object.entries(this.lastMi.safetyDeviceFacets)) {
+        // An alert-only device is not a card, so `removedDeviceIds` never learnt its id: the
+        // retained set computed above is the only record that it belonged to this account.
+        if (removedSafetyIds.has(id) || isRemovedMiDevice(id)) continue;
+        nextSafetyDeviceFacets[id] = controls;
+      }
+    }
+    const nextHiddenDevices = this.lastMi.hiddenDevices?.filter(
+      (device) => device.sourceScope !== removedScope,
+    );
+
     const remainingStatuses = Object.values(nextAccountStatuses ?? {});
     const noRemainingAccounts =
       options.remainingEnabledCount !== undefined
@@ -1388,6 +1420,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         ...(nextLightGroupOwners !== undefined ? { lightGroupOwners: nextLightGroupOwners } : {}),
         ...(nextHomes !== undefined ? { homes: nextHomes } : {}),
         ...(nextAccountStatuses !== undefined ? { accountStatuses: nextAccountStatuses } : {}),
+        ...(nextSafetyDevices !== undefined ? { safetyDevices: nextSafetyDevices } : {}),
+        ...(nextSafetyDeviceFacets !== undefined ? { safetyDeviceFacets: nextSafetyDeviceFacets } : {}),
+        ...(nextHiddenDevices !== undefined ? { hiddenDevices: nextHiddenDevices } : {}),
       };
       if (remainingStatuses.length > 0) {
         if (remainingStatuses.some((s) => s.kind === "connected")) {

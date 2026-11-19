@@ -372,6 +372,8 @@ export interface AppURLCommandHost {
   readonly devices: SmartDevice[];
   readonly scenes: HomeScene[];
   readonly sourceRevision: number;
+  /** Identity index of the cards the device-type selection withholds (P3a-W). */
+  readonly hiddenMiDevices?: readonly import("./capabilityReferenceVerdict.js").CapabilityIndexedDevice[];
   readonly settings: {
     readonly enableRaycastIntegration: boolean;
     readonly allowDirectURLControl: boolean;
@@ -701,7 +703,7 @@ async function runIntentOnDevice(
       if (!confirmed || host.sourceRevision !== revisionBeforePrompt) {
         host.clearPendingHighRisk();
         if (host.sourceRevision !== revisionBeforePrompt) {
-          const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases });
+          const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenMiDevices });
           if (disabledMsg !== null) return { message: disabledMsg, isError: true };
         }
         return {
@@ -714,7 +716,7 @@ async function runIntentOnDevice(
       if (await host.isControlBlockedByScreenLock()) { return { message: screenLockBlockedMessage(), isError: true }; }
       const latestDev = host.devices.find((d) => d.id === deviceId);
       if (!latestDev) {
-        const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases });
+        const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenMiDevices });
         if (disabledMsg !== null) return { message: disabledMsg, isError: true };
         return { message: trText("设备已不在面板中", "The device is no longer available"), isError: true};
       }
@@ -1134,7 +1136,11 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     await host.waitForInitialSnapshotIfNeeded();
   }
 
-  const urlSettingsWithAliases = () => ({ ...host.settings, deviceAliases: host.layout.aliases });
+  const urlSettingsWithAliases = () => ({
+    ...host.settings,
+    deviceAliases: host.layout.aliases,
+    hiddenDevices: host.hiddenMiDevices,
+  });
   const checkUrlDisabledGate = (): string | null => {
     if ("deviceId" in envelope.command) {
       return evaluateDisabledDeviceUrlGate(envelope.command.deviceId, urlSettingsWithAliases());

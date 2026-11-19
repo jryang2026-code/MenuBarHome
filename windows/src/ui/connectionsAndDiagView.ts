@@ -47,7 +47,8 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, dropMiotTypePruneSnapshotForAccount, applyMiotTypePruneSnapshot, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -291,6 +292,10 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   assistantKeysByPreset: Record<string, string>;
   cloudValuesStale: boolean;
   deviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Off-panel Mi devices of the current snapshot, kept only for enabled safety alerts (P3a-W). */
+  safetyRetainedDevices?: SmartDevice[];
+  safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenMiDevices?: readonly CapabilityIndexedDevice[];
   /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
   groupOwnerByMemberDid: Map<string, string>;
@@ -931,6 +936,10 @@ export async function setMiAccountEnabledOnHost(
   clearAccountRateLimitBackoff(accountId);
   const targetAccount = allAccounts.find((acc) => acc.id === accountId);
   const enabledAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
+  // Disabling an account drops the alert-only devices and hidden index entries it owned; with no
+  // enabled account left there is nothing to evaluate, so the whole retained set goes (P3a-W).
+  if (enabledAfter.length === 0) applyMiotTypePruneSnapshot(host, null);
+  else dropMiotTypePruneSnapshotForAccount(host, accountId);
   if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId) || (targetAccount && getXiaomiBackoffUntilMs(host, targetAccount.session) !== null)) {
     clearXiaomiRateLimitBackoff(host);
     clearCachedXiaomiTopology(host);
@@ -1618,6 +1627,13 @@ async function performSignOutSingleMiAccountOnHost(
           }) ?? null)
         : null;
 
+    // A signed-out account's retained sensors and hidden cards must go whether or not the dual-source
+    // coordinator rewrites the merged snapshot (P3a-W); the last account takes the whole set with it.
+    if (isXiaomiSnapshot) {
+      if (enabledRemaining.length === 0) applyMiotTypePruneSnapshot(host, null);
+      else dropMiotTypePruneSnapshotForAccount(host, accountId);
+    }
+
     if (isXiaomiSnapshot && host.waitingDeviceIds) {
       for (const id of removedIds) host.waitingDeviceIds.delete(id);
       if (nextDual) {
@@ -1875,6 +1891,7 @@ export function finishAllMiAccountsSignedOutOnHost(
     host.waitingDeviceIds?.clear();
   }
   host.cameraLive?.discardRetainedCloudSessions?.();
+  applyMiotTypePruneSnapshot(host, null);
   host.settings.cachedXiaomiDevices = [];
   host.miSessionExpired = false;
   host.cloudValuesStale = false;
