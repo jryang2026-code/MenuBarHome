@@ -437,6 +437,9 @@ export async function removeActiveAssistantProvider(host: SettingsEventsHost): P
     settings: host.settings,
     keysByPreset: host.assistantKeysByPreset,
   });
+  // Advance before any await: a model result landing during the vault persist must not
+  // dispatch against the just-removed configuration (P5a-W #3).
+  host.advanceAssistantEpoch?.();
 
   // MenuMijiaWindowsApp always carries the vault; the structural settings host does not name it.
   const vault = (host as Partial<MenuMijiaWindowsApp>).credentialVault;
@@ -454,13 +457,21 @@ export async function removeActiveAssistantProvider(host: SettingsEventsHost): P
     }
   }
   host.saveSettings();
-  // The active config may have changed; in-flight requests must not land afterwards.
-  host.advanceAssistantEpoch?.();
 
   host.replyBanner = {
     text: t("已移除本机保存的该服务商配置与密钥"),
     source: t("AI 一句话控制"),
   };
+  // Drop the removed provider's typed draft (base URL / model / key): the draft capture
+  // would otherwise restore it after the re-render and a later save would re-write the
+  // removed key into the vault — the revoke-all path clears credential inputs the same way.
+  for (const selector of ["#settings-base-url", "#settings-model", "#settings-api-key"]) {
+    const field = host.root.querySelector<HTMLInputElement>(selector);
+    if (field) {
+      field.value = "";
+      field.defaultValue = "";
+    }
+  }
   host.render();
 }
 

@@ -29,6 +29,7 @@ import type { HttpRequest } from "../src/core/miCloudClient.js";
 import type { HttpResponse } from "../src/core/miCloud/session.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
+import { removeActiveAssistantProvider } from "../src/ui/settingsEvents.js";
 import { runScheduledCommand } from "../src/ui/naturalCommand.js";
 import { maybeRefreshProactiveInBackground, proactiveHasConsumer } from "../src/ui/proactive.js";
 
@@ -195,6 +196,48 @@ describe("P5a-W acceptance 2: removing a provider clears only its own config and
     assert.equal(keysByPreset["custom"], "sk-custom-test");
   });
 
+  it("removing the non-default active provider keeps the default preset's saved key", async () => {
+    const store = new Map<string, string>([
+      ["assistant_api_key_openrouter_jev", "sk-or-test"],
+      ["assistant_api_key_deepseek", "sk-deepseek-test"],
+    ]);
+    const vault = new CredentialVault(async <T>(cmd: string, args: Record<string, unknown>): Promise<T | null> => {
+      const name = String(args["name"]);
+      if (cmd === "secure_store_get") return (store.get(name) ?? null) as T | null;
+      if (cmd === "secure_store_set") {
+        store.set(name, String(args["value"] ?? ""));
+        return null;
+      }
+      store.delete(name);
+      return null;
+    });
+    const settings = removalSettings({
+      assistantBaseURL: "https://api.deepseek.com/v1",
+      assistantModel: "deepseek-chat",
+      openRouterApiKey: "sk-deepseek-test",
+      assistantKeyEndpoint: "api.deepseek.com",
+      cloudConsentEndpoints: ["api.deepseek.com", "openrouter.ai"],
+    });
+    const keysByPreset: Record<string, string> = {
+      openrouter_jev: "sk-or-test",
+      deepseek: "sk-deepseek-test",
+    };
+
+    const outcome = removeAssistantProviderState({ presetId: "deepseek", settings, keysByPreset });
+    assert.equal(outcome.activeProviderRemoved, true);
+
+    await vault.load("deepseek");
+    await vault.persist({ miSession: null, haToken: "", assistantApiKey: "", assistantApiKeys: keysByPreset });
+
+    assert.equal(store.get("assistant_api_key_openrouter_jev"), "sk-or-test", "default preset's saved key must survive");
+    assert.equal(store.has("assistant_api_key_deepseek"), false, "removed provider's slot must go");
+    // The default preset becomes active again with its own saved key surfaced.
+    assert.equal(settings.assistantBaseURL, "https://openrouter.ai/api/v1");
+    assert.equal(settings.openRouterApiKey, "sk-or-test");
+    assert.equal(settings.assistantKeyEndpoint, "openrouter.ai");
+    assert.deepEqual([...settings.cloudConsentEndpoints], ["openrouter.ai"]);
+  });
+
   it("removing a non-active provider leaves the active config untouched", () => {
     const settings = removalSettings({
       assistantBaseURL: "https://api.deepseek.com/v1",
@@ -241,6 +284,35 @@ describe("P5a-W acceptance 2: removing a provider clears only its own config and
     assert.deepEqual([...app.settings.cloudConsentEndpoints], ["api.deepseek.com"]);
     assert.match(app.replyBanner?.text ?? "", /已移除/);
   });
+
+  it("removal targeting an unsaved draft provider clears the draft instead of resurrecting it", async () => {
+    const app = mountDemoApp();
+    app.settings.openRouterApiKey = "sk-or-test";
+    app.settings.assistantKeyEndpoint = "openrouter.ai";
+    app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
+    app.assistantKeysByPreset["deepseek"] = "sk-deepseek-test";
+    app.activeSheet = "settings";
+    app.render();
+
+    // The user picks DeepSeek in the form but has not saved the draft.
+    const baseEl = element("#settings-base-url") as HTMLInputElement;
+    baseEl.value = "https://api.deepseek.com/v1";
+
+    const removeBtn = element("#btn-remove-ai-provider");
+    removeBtn.click();
+    removeBtn.click();
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.assistantKeysByPreset["deepseek"], undefined, "draft provider's key must go");
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "active provider's key must stay");
+    // The draft capture must not restore the removed provider's URL after the re-render;
+    // otherwise 完成并保存 would write it back into the vault.
+    const baseAfter = element("#settings-base-url") as HTMLInputElement;
+    assert.equal(baseAfter.value, "https://openrouter.ai/api/v1");
+    const keyAfter = element("#settings-api-key") as HTMLInputElement;
+    assert.equal(keyAfter.value, "sk-or-test");
+  });
 });
 
 describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
@@ -272,6 +344,54 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.equal(desk?.kind.kind === "light" ? desk.kind.isOn : false, false, "late result must not actuate the device");
     assert.notEqual(app.replyBanner?.text ?? "", "已打开书房台灯", "late reply banner must not show");
     assert.equal(app.isResolvingIntent, false, "the discarded run must not leave the spinner up");
+  });
+
+  it("discards an in-flight result that lands while the provider removal persists", async () => {
+    const app = mountDemoApp();
+    enableAiForRequest(app);
+    await app.handleNaturalCommand("关闭书房台灯");
+    const transport = deferredTransport();
+    Object.defineProperty(app, "transport", { value: transport.stub, configurable: true });
+
+    const pending = app.handleNaturalCommand("魔法彩虹泡泡机启动");
+    await setImmediate();
+    assert.equal(transport.calls.length, 1);
+
+    // The removal advances the epoch before awaiting the vault, so a result landing
+    // during the persist window is already stale.
+    await removeActiveAssistantProvider(app);
+    transport.release(0, chatCompletion({ reply: "已打开书房台灯", actions: [{ device: "light.study_desk", op: "power", value: true }] }));
+    await pending;
+    await setImmediate();
+
+    const desk = app.devices.find((d) => d.id === "light.study_desk");
+    assert.equal(desk?.kind.kind === "light" ? desk.kind.isOn : false, false, "result landing during removal must not actuate");
+    assert.equal(app.isResolvingIntent, false);
+  });
+
+  it("refuses the in-resolver retry once AI is switched off mid-flight", async () => {
+    const app = mountDemoApp();
+    enableAiForRequest(app);
+    await app.handleNaturalCommand("关闭书房台灯");
+    const transport = deferredTransport();
+    Object.defineProperty(app, "transport", { value: transport.stub, configurable: true });
+
+    const pending = app.handleNaturalCommand("魔法彩虹泡泡机启动");
+    await setImmediate();
+    assert.equal(transport.calls.length, 1);
+
+    app.settings.aiAssistantEnabled = false;
+    app.advanceAssistantEpoch();
+    // A temperature-400 would normally trigger one in-resolver retry; the gated transport
+    // must refuse it now that AI is off.
+    transport.release(0, { status: 400, headers: {}, body: '{"error":{"message":"temperature is not supported"}}' });
+    await pending;
+    await setImmediate();
+
+    assert.equal(transport.calls.length, 1, "no retry may leave after the switch is off");
+    const desk = app.devices.find((d) => d.id === "light.study_desk");
+    assert.equal(desk?.kind.kind === "light" ? desk.kind.isOn : false, false);
+    assert.equal(app.isResolvingIntent, false);
   });
 
   it("discards a proactive refresh result that lands after a provider change", async () => {

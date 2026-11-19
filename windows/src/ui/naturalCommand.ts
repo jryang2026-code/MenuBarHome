@@ -26,6 +26,7 @@ import {
   type SuggestionDelaySpec,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, DeviceIntent, IntentPlan, ScheduledCommand } from "../core/models.js";
+import type { HttpTransport } from "../core/miCloudClient.js";
 import { withAliases } from "./panelPrefs.js";
 import { executeBuiltInQuickAction } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
@@ -277,13 +278,21 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
             ? { threshold: settingsRecord.confirmationThreshold }
             : {}),
         };
+        // Gate every transport attempt (initial call and in-resolver retries alike): once
+        // the run is superseded or AI is off, no further request may leave (P5a-W #1/#3).
+        const gatedTransport: HttpTransport = (request) => {
+          if (assistantEpoch !== host.assistantEpoch || !isAiAssistantEnabled(host.settings)) {
+            return Promise.reject(new Error("assistant request superseded"));
+          }
+          return host.transport(request);
+        };
         const resolver = new ModelIntentResolver(
           {
             baseURL,
             model: host.settings.assistantModel,
             apiKey,
           },
-          host.transport,
+          gatedTransport,
           confirmationPolicy,
         );
         // Same ambient context macOS sends with Jev requests (#38); the getter falls

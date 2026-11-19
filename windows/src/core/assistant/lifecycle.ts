@@ -6,7 +6,7 @@
  * slots stay on disk so re-enabling restores the previous setup.
  */
 
-import { ASSISTANT_PROVIDER_PRESETS, inferAssistantPreset } from "./provider.js";
+import { ASSISTANT_PROVIDER_PRESETS, assistantEndpointIdentity, inferAssistantPreset } from "./provider.js";
 
 /** Missing field means enabled: every pre-existing user keeps the old always-on behavior. */
 export function isAiAssistantEnabled(settings: { readonly aiAssistantEnabled?: boolean }): boolean {
@@ -83,14 +83,18 @@ export function removeAssistantProviderState(args: {
   let nextBaseURL = settings.assistantBaseURL;
   let nextModel = settings.assistantModel;
   if (activeProviderRemoved) {
-    // The active provider is gone: fall back to the app default preset. Its key field is
-    // empty, so requests stop at the "需要 API Key" gate until another provider is set up.
+    // The active provider is gone: fall back to the app default preset.
     const fallback = ASSISTANT_PROVIDER_PRESETS[0]!;
     nextBaseURL = fallback.defaultBaseURL;
     nextModel = fallback.defaultModel;
     settings.assistantBaseURL = nextBaseURL;
     settings.assistantModel = nextModel;
-    settings.openRouterApiKey = "";
+    // The default preset's saved key (if any) becomes the active key again. Leaving the
+    // field empty would make `credentialsFromSettings` read it as "active preset has no
+    // key" and delete that unrelated slot on the next vault persist.
+    settings.openRouterApiKey = keysByPreset[fallback.id]?.trim() ?? "";
+    settings.assistantKeyEndpoint =
+      settings.openRouterApiKey !== "" ? assistantEndpointIdentity(nextBaseURL) : null;
   }
 
   return { activeProviderRemoved, prunedConsentEndpoints, clearedBindings, nextBaseURL, nextModel };

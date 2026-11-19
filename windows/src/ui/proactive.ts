@@ -13,6 +13,7 @@ import {
   timeBucketLabel,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
+import type { HttpTransport } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
 import { applyOrder, withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import { tr3 } from "./undoTracker.js";
@@ -227,9 +228,17 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
   const assistantEpoch = host.assistantEpoch;
   const selectedHomeId = host.settings.selectedHomeId;
   host.isRefreshingProactive = true;
+  // Gate every transport attempt (initial call and in-resolver retries alike): a run that
+  // was superseded or disabled mid-flight must not send anything further (P5a-W #1/#3).
+  const gatedTransport: HttpTransport = (request) => {
+    if (assistantEpoch !== host.assistantEpoch || !isAiAssistantEnabled(host.settings)) {
+      return Promise.reject(new Error("assistant request superseded"));
+    }
+    return host.transport(request);
+  };
   const resolver = new ModelIntentResolver(
     { baseURL, model: host.settings.assistantModel, apiKey },
-    host.transport,
+    gatedTransport,
   );
   const aliasedDevices = proactiveVisibleDevices(host);
   resolver
