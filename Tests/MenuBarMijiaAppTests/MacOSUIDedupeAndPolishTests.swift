@@ -189,4 +189,185 @@ struct MacOSUIDedupeAndPolishTests {
         #expect(store.toastNotice?.isError == false)
         #expect(store.toastNotice?.message.contains("192.168.1.55") == true)
     }
+
+    @Test("Stale sensor cards keep child actions accessible when collapsed and never announce stale readings")
+    func staleSensorCardAccessibilityExposesActionsAndSuppressesStaleReadings() async throws {
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: false, isStale: false) == true)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: true, isStale: false) == false)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: false, isStale: true) == false)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: true, isStale: true) == false)
+
+        let spec = SensorSpec(
+            temperature: 26.4,
+            humidity: 58,
+            battery: 87
+        )
+        let staleSensor = SmartDevice(
+            id: "sensor-1",
+            name: "书房温湿度计",
+            roomId: "r1",
+            roomName: "书房",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(spec),
+            telemetryStale: true
+        )
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let freshSummary = SensorCardView.accessibilitySummary(device: staleSensor, spec: spec, isStale: false)
+            #expect(freshSummary.contains("26.4"))
+            #expect(freshSummary.contains("58%"))
+            #expect(freshSummary.contains("87%"))
+
+            let staleSummary = SensorCardView.accessibilitySummary(device: staleSensor, spec: spec, isStale: true)
+            #expect(staleSummary == "书房温湿度计，可能过期")
+            #expect(!staleSummary.contains("26.4"))
+            #expect(!staleSummary.contains("58%"))
+            #expect(!staleSummary.contains("87%"))
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            let enDevice = SmartDevice(
+                id: "sensor-en",
+                name: "Study Sensor",
+                roomId: "r1",
+                roomName: "Study",
+                model: "miaomiaoce.sensor_ht.t2",
+                isOnline: true,
+                kind: .sensor(spec),
+                telemetryStale: true
+            )
+            let staleSummary = SensorCardView.accessibilitySummary(device: enDevice, spec: spec, isStale: true)
+            #expect(staleSummary == "Study Sensor, possibly stale")
+            #expect(!staleSummary.contains("26.4"))
+        }
+
+        let suite = "test.sensor.stale.a11y.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        var snapshot = SynthesizedHome(devices: [staleSensor], scenes: [])
+        snapshot.deviceTransportDiagnostics = [
+            "sensor-1": DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 2),
+        ]
+        let store = HomeStore(provider: MockHomeProvider(snapshot: snapshot), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        #expect(SensorCardView.showsStaleTransportReadout(device: staleSensor, store: store) == true)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let liquid = NSHostingView(
+                rootView: SensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            liquid.layoutSubtreeIfNeeded()
+            #expect(liquid.fittingSize.height >= 120)
+
+            let classic = NSHostingView(
+                rootView: ClassicSensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            classic.layoutSubtreeIfNeeded()
+            #expect(classic.fittingSize.height >= 120)
+        }
+        await store.shutdown()
+    }
+
+    @Test("Climate power button accessibility label and help match HomeStore.togglePrimary when telemetry is stale")
+    func climatePowerButtonAccessibilityMatchesTogglePrimaryWhenStale() async throws {
+        let onSpec = ClimateSpec(
+            entityId: "climate.living_ac",
+            isOn: true,
+            hvacMode: "cool",
+            availableModes: ["off", "cool", "heat"],
+            targetTemperature: 24,
+            currentTemperature: 27,
+            minTemp: 16,
+            maxTemp: 30,
+            step: 1
+        )
+        let offSpec = ClimateSpec(
+            entityId: "climate.living_ac",
+            isOn: false,
+            hvacMode: "off",
+            availableModes: ["off", "cool", "heat"],
+            targetTemperature: 24,
+            currentTemperature: 27,
+            minTemp: 16,
+            maxTemp: 30,
+            step: 1
+        )
+
+        #expect(ClimatePanelModule.powerToggleTurnsOff(onSpec) == true)
+        #expect(ClimatePanelModule.powerToggleTurnsOff(offSpec) == false)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "客厅空调", spec: onSpec) == "关闭 客厅空调")
+            #expect(ClimatePanelModule.powerHelpText(onSpec) == "关闭空调")
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "客厅空调", spec: offSpec) == "打开 客厅空调")
+            #expect(ClimatePanelModule.powerHelpText(offSpec) == "打开空调")
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "Living Room AC", spec: onSpec) == "Turn off Living Room AC")
+            #expect(ClimatePanelModule.powerHelpText(onSpec) == "Turn off")
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "Living Room AC", spec: offSpec) == "Turn on Living Room AC")
+            #expect(ClimatePanelModule.powerHelpText(offSpec) == "Turn on")
+        }
+
+        let staleOnClimate = SmartDevice(
+            id: "ac-1",
+            name: "客厅空调",
+            roomId: "r1",
+            roomName: "客厅",
+            model: "xiaomi.aircondition.mc5",
+            isOnline: true,
+            kind: .climate(onSpec),
+            telemetryStale: true
+        )
+        let staleOffClimate = SmartDevice(
+            id: "ac-2",
+            name: "卧室空调",
+            roomId: "r2",
+            roomName: "卧室",
+            model: "xiaomi.aircondition.mc5",
+            isOnline: true,
+            kind: .climate(offSpec),
+            telemetryStale: true
+        )
+        let suite = "test.climate.stale.a11y.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [staleOnClimate, staleOffClimate], scenes: []))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let liquid = NSHostingView(
+                rootView: ClimatePanelModule(device: staleOnClimate, spec: onSpec, store: store, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            liquid.layoutSubtreeIfNeeded()
+            #expect(liquid.fittingSize.height > 0)
+
+            let classic = NSHostingView(
+                rootView: ClassicClimatePanelModule(device: staleOnClimate, spec: onSpec, store: store, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            classic.layoutSubtreeIfNeeded()
+            #expect(classic.fittingSize.height > 0)
+        }
+
+        if let turnOffTask = store.togglePrimary(staleOnClimate) {
+            _ = await turnOffTask.result
+        }
+        if let turnOnTask = store.togglePrimary(staleOffClimate) {
+            _ = await turnOnTask.result
+        }
+        let executed = await provider.executedCommands
+        #expect(executed == [
+            .setClimatePower(entityId: "climate.living_ac", isOn: false, fallbackMode: "off"),
+            .setClimatePower(entityId: "climate.living_ac", isOn: true, fallbackMode: "cool"),
+        ])
+        await store.shutdown()
+    }
 }

@@ -3080,6 +3080,233 @@ struct HybridProviderAndDoorbellTests {
 
         await provider.shutdown()
     }
+
+    @Test("retryLAN and HomeStore.retryDeviceLAN clear ordinary LAN failure cooldowns immediately without waiting for cooldown or wake windows")
+    func retryLANClearsOrdinaryCooldownImmediately() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case timeout
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let onProp = MiotProperty(
+            iid: 1,
+            type: "urn:miot-spec-v2:property:on:00000006:lemesh-sw2f12:1",
+            format: "bool",
+            access: ["read", "write", "notify"]
+        )
+        let wallSwitchSpec = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:switch:0000A003:lemesh-sw2f12:1",
+            services: [
+                MiotService(iid: 2, type: "urn:miot-spec-v2:service:switch:0000780C:lemesh-sw2f12:1", properties: [onProp]),
+            ]
+        )
+        let udpMode = LockedBox(UDPMode.healthy)
+        let udpTransport = MockUDPTransport { packet, host, _ in
+            guard udpMode.withValue({ $0 }) == .healthy else { throw MiIOError.timeout }
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: host == "192.168.1.50" ? 101 : 100, stamp: 10)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+            let reply: String
+            if host == "192.168.1.50" {
+                reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":65,"code":0}]}"#
+            } else {
+                reply = #"{"id":\#(reqId),"result":[{"did":"100","siid":2,"piid":1,"value":true,"code":0}]}"#
+            }
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let light = MiDeviceRecord(
+            did: "101",
+            name: "Desk Lamp",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.50",
+            mac: "AA:BB:CC:DD:EE:01",
+            token: tokenHex,
+            isShared: false
+        )
+        let splitParent = MiDeviceRecord(
+            did: "100",
+            name: "Wall Switch",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            localIp: "192.168.1.60",
+            token: tokenHex,
+            isShared: false
+        )
+        let splitChild = MiDeviceRecord(
+            did: "100.s2",
+            name: "Ceiling Key",
+            model: "lemesh.switch.sw2f12",
+            isOnline: true,
+            splitParentDid: "100",
+            splitSiid: 2
+        )
+        let api = HybridMockCloudAPI(
+            devices: [light, splitParent, splitChild],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "100.s2"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(55),
+                MiotPropKey(did: "100", siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        let specSource = HybridMockSpecSource(specs: [
+            "yeelink.light.color4": lightSpec(),
+            "lemesh.switch.sw2f12": wallSwitchSpec,
+        ])
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: specSource,
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .lan
+        })
+
+        // Trigger ordinary LAN timeouts so both devices enter `.cooldown` (not `.localNetworkBlocked`).
+        udpMode.withValue { $0 = .timeout }
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown
+                && $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .cooldown
+                && $0.snapshots.last?.localNetworkBlockedFeatures.isEmpty == true
+        })
+
+        // Network recovers while still inside the 30s LAN cooldown. Plain `refreshNow()` polls cloud
+        // and emits snapshots, but must NOT clear ordinary LAN failure cooldowns.
+        udpMode.withValue { $0 = .healthy }
+        clock.advance(by: 2)
+        let snapsBeforePlainRefresh = await collector.snapshots.count
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.count > snapsBeforePlainRefresh })
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown)
+        #expect(await collector.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .cooldown)
+
+        // Explicit per-device `retryLAN(deviceId: "101")` clears `"101"`'s cooldown right away and
+        // leaves `"100.s2"`'s cooldown intact.
+        await provider.retryLAN(deviceId: "101")
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .cooldown
+        })
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+        #expect(await provider.lanTransportState(for: "101").consecutiveFailures == 0)
+
+        // Put `"101"` back into `.cooldown` via system wake (arming `lastWakePollAt` on `ContinuousClock`),
+        // then verify `retryLAN` bypasses `withinWakeCooldown` AND resolves split child `"100.s2"` -> `"100"`.
+        udpMode.withValue { $0 = .timeout }
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: false))
+        clock.advance(by: 1)
+        await provider.setPollingContext(PollingContext(panelVisible: true, systemActive: true))
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown
+                && $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .cooldown
+        })
+        udpMode.withValue { $0 = .healthy }
+        clock.advance(by: 1)
+        await provider.refreshNow()
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+
+        await provider.retryLAN(deviceId: "100.s2")
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown
+        })
+
+        // `retryLAN(deviceId: nil)` clears all remaining LAN failure cooldowns.
+        await provider.retryLAN(deviceId: nil)
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["100.s2"]?.route == .lan
+        })
+
+        await provider.shutdown()
+
+        // End-to-end check through HomeStore.retryDeviceLAN -> DualSourceHomeProvider (canonical HA ID)
+        // -> MiAccountsProvider -> MiCloudProvider without waiting for the 30s cooldown to expire.
+        let haLight = SmartDevice(
+            id: "ha-desk-lamp",
+            name: "Desk Lamp",
+            roomId: "ha-r1",
+            roomName: "Study",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            kind: .light(LightSpec(entityId: "light.desk_lamp", isOn: true, brightnessPercent: 55))
+        )
+        var haSnapshot = SynthesizedHome(devices: [haLight], scenes: [])
+        haSnapshot.deviceIdentities = [
+            "ha-desk-lamp": DeviceSourceIdentity(
+                dids: [],
+                macAddresses: ["AA:BB:CC:DD:EE:01"],
+                uniqueIds: ["ha-desk-lamp"],
+                model: "yeelink.light.color4",
+                name: "Desk Lamp",
+                roomName: "Study",
+                kindTag: .light
+            ),
+        ]
+        let haMock = MockHomeProvider(snapshot: haSnapshot)
+        let accounts = MiAccountsProvider(
+            accounts: [MiAccount(session: self.stubSession)],
+            apiFactory: { _ in api },
+            specSource: specSource,
+            localClientFactory: { LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }) },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+        let dual = DualSourceHomeProvider(
+            homeAssistant: haMock,
+            xiaomiCloud: accounts,
+            pinnedBackends: { ["ha-desk-lamp": .xiaomiCloud] }
+        )
+        let suiteName = "test.retrylan.store.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let store = await MainActor.run { HomeStore(provider: dual, defaultsSuiteName: suiteName) }
+        try await store.waitForTestSnapshot()
+        await waitUntil {
+            store.deviceTransportDiagnostics["ha-desk-lamp"]?.route == DeviceTransportRoute.lan
+        }
+
+        // Default child `lanFailureThreshold` is 3: three failed polls enter `.cooldown`.
+        udpMode.withValue { $0 = .timeout }
+        await dual.refreshNow()
+        await dual.refreshNow()
+        await dual.refreshNow()
+        await waitUntil {
+            store.deviceTransportDiagnostics["ha-desk-lamp"]?.route == DeviceTransportRoute.cooldown
+        }
+        #expect(await MainActor.run { store.effectiveLocalNetworkBlocks.isEmpty })
+
+        // Recover via `store.retryDeviceLAN("ha-desk-lamp")` (canonical HA card ID mapped to Mi `"101"`).
+        udpMode.withValue { $0 = .healthy }
+        let retryTask = await MainActor.run { store.retryDeviceLAN("ha-desk-lamp") }
+        _ = await retryTask.result
+        await waitUntil {
+            store.deviceTransportDiagnostics["ha-desk-lamp"]?.route == DeviceTransportRoute.lan
+        }
+        #expect(await MainActor.run { store.deviceTransportDiagnostics["ha-desk-lamp"]?.route == DeviceTransportRoute.lan })
+
+        await store.shutdown()
+    }
 }
 
 func lightBrightness(_ device: SmartDevice?) -> Int? {

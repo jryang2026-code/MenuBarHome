@@ -27,6 +27,34 @@ struct SensorCardView: View {
         return store.deviceTransportDiagnostics[device.id] != nil
     }
 
+    static func collapsesAccessibilityChildren(isExpanded: Bool, isStale: Bool) -> Bool {
+        !isExpanded && !isStale
+    }
+
+    static func accessibilitySummary(device: SmartDevice, spec: SensorSpec, isStale: Bool) -> String {
+        if isStale {
+            return L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")
+        }
+        guard device.isOnline else {
+            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
+        }
+        var parts: [String] = [device.name]
+        if let t = spec.temperature {
+            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
+        }
+        if let h = spec.humidity {
+            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
+        }
+        if let b = spec.battery {
+            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
+        }
+        return parts.joined(separator: L10n.tr("，", ", "))
+    }
+
+    private var isStale: Bool {
+        store?.deviceValuesAreStale == true || device.telemetryStale
+    }
+
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 6) {
@@ -67,7 +95,7 @@ struct SensorCardView: View {
 
     var body: some View {
         Group {
-            if store?.deviceValuesAreStale == true || device.telemetryStale {
+            if isStale {
                 staleSensor
             } else if isExpanded {
                 expandedContainer
@@ -104,30 +132,16 @@ struct SensorCardView: View {
             }
         }
         .opacity(device.isOnline ? 1 : 0.58)
-        // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
-        .accessibilityElement(children: isExpanded ? .contain : .ignore)
-        .accessibilityLabel(Text(accessibilitySummary))
-        .accessibilityAddTraits(.isButton)
+        // Display-only card when collapsed and fresh: VoiceOver reads one sentence instead of five
+        // loose labels (#41); expanded and stale states keep child controls reachable.
+        .sensorCardAccessibility(isExpanded: isExpanded, isStale: isStale, summary: accessibilitySummary)
         .panelHelp(isExpanded
             ? L10n.tr("点击卡片顶部收起折线图", "Click header to collapse chart")
             : L10n.tr("点击展开温湿度分时段折线", "Click to expand temperature & humidity chart"))
     }
 
     private var accessibilitySummary: String {
-        guard device.isOnline else {
-            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
-        }
-        var parts: [String] = [device.name]
-        if let t = spec.temperature {
-            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
-        }
-        if let h = spec.humidity {
-            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
-        }
-        if let b = spec.battery {
-            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
-        }
-        return parts.joined(separator: L10n.tr("，", ", "))
+        Self.accessibilitySummary(device: device, spec: spec, isStale: isStale)
     }
 
     // MARK: Layouts
@@ -850,6 +864,21 @@ struct SensorCardView: View {
         case ..<65: return "battery.50percent"
         case ..<90: return "battery.75percent"
         default: return "battery.100percent"
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func sensorCardAccessibility(isExpanded: Bool, isStale: Bool, summary: @autoclosure () -> String) -> some View {
+        if SensorCardView.collapsesAccessibilityChildren(isExpanded: isExpanded, isStale: isStale) {
+            self
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(summary()))
+                .accessibilityAddTraits(.isButton)
+        } else {
+            self
+                .accessibilityElement(children: .contain)
         }
     }
 }

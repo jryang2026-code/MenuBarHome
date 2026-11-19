@@ -22,6 +22,10 @@ struct ClassicSensorCardView: View {
     @State private var selectedMetric: SensorMetricKind = .temperature
     @State private var hoveredSlotIndex: Int? = nil
 
+    private var isStale: Bool {
+        store?.deviceValuesAreStale == true || device.telemetryStale
+    }
+
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
             VStack(alignment: .leading, spacing: 6) {
@@ -62,7 +66,7 @@ struct ClassicSensorCardView: View {
 
     var body: some View {
         Group {
-            if store?.deviceValuesAreStale == true || device.telemetryStale {
+            if isStale {
                 staleSensor
             } else if isExpanded {
                 expandedContainer
@@ -86,30 +90,16 @@ struct ClassicSensorCardView: View {
                 .strokeBorder(isKeyboardFocused ? accent.opacity(0.85) : Color.clear, lineWidth: 1.6)
         )
         .opacity(device.isOnline ? 1 : 0.58)
-        // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
-        .accessibilityElement(children: isExpanded ? .contain : .ignore)
-        .accessibilityLabel(Text(accessibilitySummary))
-        .accessibilityAddTraits(.isButton)
+        // Display-only card when collapsed and fresh: VoiceOver reads one sentence instead of five
+        // loose labels (#41); expanded and stale states keep child controls reachable.
+        .sensorCardAccessibility(isExpanded: isExpanded, isStale: isStale, summary: accessibilitySummary)
         .panelHelp(isExpanded
             ? L10n.tr("点击卡片顶部收起折线图", "Click header to collapse chart")
             : L10n.tr("点击展开温湿度分时段折线", "Click to expand temperature & humidity chart"))
     }
 
     private var accessibilitySummary: String {
-        guard device.isOnline else {
-            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
-        }
-        var parts: [String] = [device.name]
-        if let t = spec.temperature {
-            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
-        }
-        if let h = spec.humidity {
-            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
-        }
-        if let b = spec.battery {
-            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
-        }
-        return parts.joined(separator: L10n.tr("，", ", "))
+        SensorCardView.accessibilitySummary(device: device, spec: spec, isStale: isStale)
     }
 
     // MARK: Layouts

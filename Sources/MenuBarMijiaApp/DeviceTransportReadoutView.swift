@@ -67,7 +67,7 @@ struct DeviceTransportReadoutRow: View {
         case .cloud:
             DetailValueText(text: L10n.tr("云端转发", "Cloud Relay"), color: .secondary)
         case .cooldown:
-            Button(L10n.tr("重试", "Retry")) { store.refreshNow() }
+            Button(L10n.tr("重试", "Retry")) { store.retryDeviceLAN(deviceId) }
                 .themedPillButtonStyle(theme)
         case .localNetworkBlocked:
             Button(L10n.tr("打开系统设置", "Open System Settings")) { LocalNetworkSystemSettings.open() }

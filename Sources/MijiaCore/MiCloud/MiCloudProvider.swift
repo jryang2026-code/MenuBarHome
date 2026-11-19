@@ -264,6 +264,56 @@ public actor MiCloudProvider: HomeProvider {
         }
         lastBroadcastSweepAt = nil
         prepareLocalNetworkRetryOnRefresh()
+        await performImmediatePoll(api)
+    }
+
+    public func retryLAN(deviceId: String?) async {
+        guard !isShutDown else { return }
+        clearLANCooldownForRetry(deviceId: deviceId)
+        lastBroadcastSweepAt = nil
+        lastWakePollAt = nil
+        if let rejected = rejectedSession {
+            guard let current = currentSession(), !current.sharesCredentials(with: rejected) else { return }
+            restartLoop()
+            return
+        }
+        guard let api else {
+            restartLoop()
+            return
+        }
+        if isPolling {
+            pendingRefreshAfterPoll = true
+            return
+        }
+        prepareLocalNetworkRetryOnRefresh()
+        await performImmediatePoll(api)
+    }
+
+    private func clearLANCooldownForRetry(deviceId: String?) {
+        if let deviceId {
+            var targetDids: Set<String> = [deviceId]
+            for record in devices where record.did == deviceId {
+                targetDids.insert(record.miotDid)
+            }
+            if let members = groupMembersByGroup[deviceId] {
+                targetDids.formUnion(members)
+            }
+            for did in targetDids {
+                guard var state = lanHealthByDid[did] else { continue }
+                state.cooldownUntil = nil
+                state.consecutiveFailures = 0
+                lanHealthByDid[did] = state
+            }
+        } else {
+            for (did, var state) in lanHealthByDid {
+                state.cooldownUntil = nil
+                state.consecutiveFailures = 0
+                lanHealthByDid[did] = state
+            }
+        }
+    }
+
+    private func performImmediatePoll(_ api: any MiCloudAPI) async {
         if (lastCloudError as? MiCloudError) != .http(429) {
             cloudRetryNotBefore = nil
         }

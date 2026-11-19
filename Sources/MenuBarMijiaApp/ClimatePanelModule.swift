@@ -17,6 +17,22 @@ struct ClimatePanelModule: View {
     let showRoomBadge: Bool
     var forceExpanded = false
 
+    static func powerToggleTurnsOff(_ spec: ClimateSpec) -> Bool {
+        spec.isOn
+    }
+
+    static func powerAccessibilityLabel(deviceName: String, spec: ClimateSpec) -> String {
+        powerToggleTurnsOff(spec)
+            ? L10n.tr("关闭 \(deviceName)", "Turn off \(deviceName)")
+            : L10n.tr("打开 \(deviceName)", "Turn on \(deviceName)")
+    }
+
+    static func powerHelpText(_ spec: ClimateSpec) -> String {
+        powerToggleTurnsOff(spec)
+            ? L10n.tr("关闭空调", "Turn off")
+            : L10n.tr("打开空调", "Turn on")
+    }
+
     private var isWaiting: Bool { store.waitingDeviceIds.contains(device.id) }
     private var valuesAreStale: Bool { store.deviceValuesAreStale || device.telemetryStale }
     private var isRunning: Bool {
@@ -99,10 +115,8 @@ struct ClimatePanelModule: View {
                 orb
             }
             .buttonStyle(PressableCardButtonStyle())
-            .accessibilityLabel(Text(isRunning
-                ? L10n.tr("关闭 \(device.name)", "Turn off \(device.name)")
-                : L10n.tr("打开 \(device.name)", "Turn on \(device.name)")))
-            .panelHelp(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
+            .accessibilityLabel(Text(Self.powerAccessibilityLabel(deviceName: device.name, spec: spec)))
+            .panelHelp(Self.powerHelpText(spec))
             } else {
                 iconBadge
             }

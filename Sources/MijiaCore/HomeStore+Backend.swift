@@ -1517,6 +1517,20 @@ extension HomeStore {
             }
         }
     }
+
+    @discardableResult
+    public func retryDeviceLAN(_ deviceId: String) -> Task<Void, Never> {
+        let targetProvider = provider
+        let lgClient = (homeBackend != .demo && lgConfig.isEnabled && lgConfig.hasConfiguredHost && deviceId == LGWebOSProtocol.deviceId)
+            ? lgWebOSClient
+            : nil
+        return Task {
+            await targetProvider.retryLAN(deviceId: deviceId)
+            if let lgClient {
+                await lgClient.start()
+            }
+        }
+    }
 }
 
 // MARK: - Mi Session Expiry (#181)

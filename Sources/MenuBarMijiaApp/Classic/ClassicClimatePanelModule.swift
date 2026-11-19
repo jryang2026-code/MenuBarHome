@@ -107,10 +107,8 @@ struct ClassicClimatePanelModule: View {
                 }
             }
             .buttonStyle(PressableCardButtonStyle())
-            .accessibilityLabel(Text(isRunning
-                ? L10n.tr("关闭 \(device.name)", "Turn off \(device.name)")
-                : L10n.tr("打开 \(device.name)", "Turn on \(device.name)")))
-            .panelHelp(isRunning ? L10n.tr("关闭空调", "Turn off") : L10n.tr("打开空调", "Turn on"))
+            .accessibilityLabel(Text(ClimatePanelModule.powerAccessibilityLabel(deviceName: device.name, spec: spec)))
+            .panelHelp(ClimatePanelModule.powerHelpText(spec))
             } else {
                 iconBadge
             }
