@@ -216,6 +216,10 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_Escape), detailForm) == .leaveTextField(dismissAssistant: false))
         // Other keys still belong to the detail's own form controls.
         #expect(route(Key(code: kVK_Tab), detailForm) == .passThrough)
+        // A connection-detail field that is mid-composition keeps Esc for the IME.
+        var composingDetail = detailForm
+        composingDetail.isComposingText = true
+        #expect(route(Key(code: kVK_Escape), composingDetail) == .passThrough)
         // With no field focused, Esc closes the detail itself.
         var unfocused = detailForm
         unfocused.isTextFieldFocused = false

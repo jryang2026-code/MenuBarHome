@@ -227,7 +227,8 @@ enum PanelKeyRouter {
         if context.isShowingConnectionDetail, context.isPanelWindow {
             // The detail keeps its own form keys (the reader is a text field, not the panel's search), but
             // Esc still leaves the field first instead of also tearing down the assistant bar behind it.
-            if key.code == kVK_Escape, context.isFormFieldFocused {
+            // A live IME composition keeps its own Esc, as in tier 2 above.
+            if key.code == kVK_Escape, context.isFormFieldFocused, !context.isComposingText {
                 return .leaveTextField(dismissAssistant: false)
             }
             return .passThrough
