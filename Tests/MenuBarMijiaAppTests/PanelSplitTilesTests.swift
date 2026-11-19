@@ -200,7 +200,7 @@ struct PanelSplitTilesTests {
             kind: .light(LightSpec(entityId: "light.off_lamp", isOn: false, brightnessPercent: 50))
         )
 
-        let (store, provider, suiteName) = try await makeIsolatedStore(devices: [offlineLamp, onlineLight])
+        let (store, _, suiteName) = try await makeIsolatedStore(devices: [offlineLamp, onlineLight])
         defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
         store.favoriteDeviceIds = ["off_lamp", "on_light"]
         store.favoriteOrder = ["off_lamp", "on_light"]
@@ -215,22 +215,37 @@ struct PanelSplitTilesTests {
         #expect(store.expandedDeviceId == "on_light")
         var wentOffline = onlineLight
         wentOffline.isOnline = false
-        await provider.updateSnapshot(SynthesizedHome(
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(
             rooms: store.rooms,
             devices: [offlineLamp, wentOffline],
             scenes: []
-        ))
-        await waitUntil { store.expandedDeviceId == nil }
+        )))
         #expect(store.expandedDeviceId == nil)
 
         // Partition sinks offline devices out of top sections into the collapsed bottom drawer,
         // even when only 1 offline device exists.
-        await provider.updateSnapshot(SynthesizedHome(
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(
             rooms: store.rooms,
             devices: [offlineLamp, onlineLight],
             scenes: []
-        ))
-        await waitUntil { store.devices.first(where: { $0.id == "on_light" })?.isOnline == true }
+        )))
+        #expect(store.devices.first(where: { $0.id == "on_light" })?.isOnline == true)
+
+        // Removing the expanded device from a snapshot also clears expandedDeviceId (P3-11).
+        store.toggleExpanded("on_light")
+        #expect(store.expandedDeviceId == "on_light")
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(
+            rooms: store.rooms,
+            devices: [offlineLamp],
+            scenes: []
+        )))
+        #expect(store.expandedDeviceId == nil)
+
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(
+            rooms: store.rooms,
+            devices: [offlineLamp, onlineLight],
+            scenes: []
+        )))
 
         let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: [])
         #expect(partition.online.map(\.id) == ["on_light"])
@@ -250,6 +265,153 @@ struct PanelSplitTilesTests {
         store.hideOfflineDevices = true
         let hiddenPartition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: [])
         #expect(hiddenPartition.offline.isEmpty)
+    }
+
+    @Test("Screen lock blocks camera live view without expanding non-toggleable camera drawer, and custom stream URL falls back when wake returns nil")
+    func cameraLockScreenGateAndCustomStreamFallback() async throws {
+        let nonToggleableCamWithDrawer = SmartDevice(
+            id: "cam_fixed",
+            name: "入户门铃摄像机",
+            roomId: "living",
+            roomName: "客厅",
+            model: "chuangmi.camera.doorbell",
+            isOnline: true,
+            kind: .camera(CameraSpec(
+                entityId: "camera.doorbell",
+                isOn: true,
+                nightShot: "Auto",
+                availableNightShots: ["Off", "On", "Auto"],
+                streamEntityId: "camera.doorbell",
+                powerWritable: false
+            ))
+        )
+        let sleepingToggleableCam = SmartDevice(
+            id: "cam_sleep",
+            name: "卧室摄像机",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "chuangmi.camera.ipc019",
+            isOnline: true,
+            kind: .camera(CameraSpec(
+                entityId: "camera.bedroom",
+                isOn: false,
+                nightShot: "Auto",
+                availableNightShots: ["Off", "On", "Auto"],
+                streamEntityId: "camera.bedroom",
+                powerWritable: true
+            ))
+        )
+
+        let expiredSession = MiSession(
+            userId: "42",
+            cUserId: "c",
+            ssecurity: "c2VjcmV0",
+            serviceToken: "tok",
+            expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
+        )
+        let (store, provider, suiteName) = try await makeIsolatedStore(
+            devices: [nonToggleableCamWithDrawer, sleepingToggleableCam]
+        ) { defaults in
+            defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+            _ = MiSessionStore.save(expiredSession, defaults: defaults)
+        }
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.toastAutoDismissInterval = nil
+
+        #expect(!nonToggleableCamWithDrawer.kind.canTogglePower)
+        #expect(store.hasDetailDrawer(for: nonToggleableCamWithDrawer))
+        #expect(DeviceTileActionLayout.resolve(for: nonToggleableCamWithDrawer, store: store) == .split(primary: .cameraLive))
+
+        // 1. Screen lock + blockControlWhileLocked on non-toggleable camera with drawer:
+        //    neither opens live view nor expands the detail drawer, and shows the lock-screen toast.
+        store.setScreenLocked(true)
+        store.blockControlWhileLocked = true
+        let lockedPrimary = DeviceTileActionLayout.performPrimary(for: nonToggleableCamWithDrawer, store: store)
+        #expect(lockedPrimary == nil)
+        #expect(store.activeLiveCameraDeviceId == nil)
+        #expect(store.expandedDeviceId == nil)
+        #expect(store.toastNotice?.isError == true)
+
+        // Direct openCameraLiveView (full-row PiP button / context menu) shares the same lock-screen gate.
+        store.dismissToast()
+        store.openCameraLiveView(nonToggleableCamWithDrawer.id)
+        #expect(store.activeLiveCameraDeviceId == nil)
+        #expect(store.expandedDeviceId == nil)
+        #expect(store.toastNotice?.isError == true)
+        #expect(await provider.executedCommands.isEmpty)
+
+        // 2. Unlocked screen, expired Mi session blocks wake (`togglePrimary` returns nil):
+        //    without custom stream URL, live view stays closed; with custom stream URL, live view opens.
+        store.setScreenLocked(false)
+        store.dismissToast()
+        #expect(store.miSessionBlocksControl)
+        let blockedWake = DeviceTileActionLayout.performPrimary(for: sleepingToggleableCam, store: store)
+        #expect(blockedWake == nil)
+        #expect(store.activeLiveCameraDeviceId == nil)
+
+        store.setCameraCustomStreamURL("rtsp://192.0.2.50:8554/live", for: sleepingToggleableCam.id)
+        let customStreamWake = DeviceTileActionLayout.performPrimary(for: sleepingToggleableCam, store: store)
+        #expect(customStreamWake == nil)
+        #expect(store.activeLiveCameraDeviceId == sleepingToggleableCam.id)
+    }
+
+    @Test("PanelPrioritySnapshot freezes active and habit ordering while open and promotes newly active devices on recapture")
+    func panelPrioritySnapshotFreezesSessionOrder() async throws {
+        let devices = (1...3).map { idx in
+            SmartDevice(
+                id: "lamp_\(idx)",
+                name: "台灯 \(idx)",
+                roomId: "study",
+                roomName: "书房",
+                model: "yeelink.light.lamp4",
+                isOnline: true,
+                kind: .light(LightSpec(entityId: "light.lamp_\(idx)", isOn: false, brightnessPercent: 50))
+            )
+        }
+        let (store, _, suiteName) = try await makeIsolatedStore(devices: devices)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.favoriteDeviceIds = []
+        store.favoriteOrder = []
+
+        let initialSnapshot = PanelPrioritySnapshot.capture(from: store)
+        let beforeOrder = PanelDeviceOrganizer.prioritizeOnline(
+            store.visibleDevices,
+            favoriteIds: store.favoriteDeviceIds,
+            favoriteOrder: store.favoriteOrder,
+            habitOrder: initialSnapshot.habitOrder,
+            customOrder: [],
+            isActive: { initialSnapshot.activeByDeviceId[$0.id] ?? store.presentsAsActive($0) }
+        ).map(\.id)
+        #expect(beforeOrder == ["lamp_1", "lamp_2", "lamp_3"])
+
+        // Turning on lamp_3 flips optimistic state & habit memory, yet frozen snapshot keeps grid slots fixed.
+        let lamp3 = try #require(store.devices.first(where: { $0.id == "lamp_3" }))
+        let toggleTask = try #require(DeviceTileActionLayout.performPrimary(for: lamp3, store: store))
+        _ = await toggleTask.value
+        let updatedLamp3 = try #require(store.devices.first(where: { $0.id == "lamp_3" }))
+        #expect(store.presentsAsActive(updatedLamp3))
+
+        let frozenOrder = PanelDeviceOrganizer.prioritizeOnline(
+            store.visibleDevices,
+            favoriteIds: store.favoriteDeviceIds,
+            favoriteOrder: store.favoriteOrder,
+            habitOrder: initialSnapshot.habitOrder,
+            customOrder: [],
+            isActive: { initialSnapshot.activeByDeviceId[$0.id] ?? store.presentsAsActive($0) }
+        ).map(\.id)
+        #expect(frozenOrder == ["lamp_1", "lamp_2", "lamp_3"])
+
+        // Next panel open recaptures the snapshot and promotes lamp_3 to the front.
+        let reopenedSnapshot = PanelPrioritySnapshot.capture(from: store)
+        let reopenedOrder = PanelDeviceOrganizer.prioritizeOnline(
+            store.visibleDevices,
+            favoriteIds: store.favoriteDeviceIds,
+            favoriteOrder: store.favoriteOrder,
+            habitOrder: reopenedSnapshot.habitOrder,
+            customOrder: [],
+            isActive: { reopenedSnapshot.activeByDeviceId[$0.id] ?? store.presentsAsActive($0) }
+        ).map(\.id)
+        #expect(reopenedOrder == ["lamp_3", "lamp_1", "lamp_2"])
     }
 
     @Test("Online ordering prioritizes favorites, frequent habits, and active devices; >8 devices in All view offer long-tail expand and room browse")

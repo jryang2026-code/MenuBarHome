@@ -243,13 +243,16 @@ extension ClassicControlCenterPanel {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
         let order = currentOrder
-        let habitOrder = store.userHabitMemory.usageOrder()
+        let habitOrder = prioritySnapshot?.habitOrder ?? store.userHabitMemory.usageOrder()
+        let activeState: (SmartDevice) -> Bool = { device in
+            prioritySnapshot?.activeByDeviceId[device.id] ?? store.presentsAsActive(device)
+        }
         func prioritized(_ devices: [SmartDevice]) -> [SmartDevice] {
             PanelDeviceOrganizer.prioritizePool(
                 devices,
                 habitOrder: habitOrder,
                 customOrder: order,
-                isActive: { store.presentsAsActive($0) }
+                isActive: activeState
             )
         }
 
@@ -287,7 +290,7 @@ extension ClassicControlCenterPanel {
                 favoriteOrder: store.favoriteOrder,
                 habitOrder: habitOrder,
                 customOrder: order,
-                isActive: { store.presentsAsActive($0) }
+                isActive: activeState
             )
             if !favDevices.isEmpty {
                 sections.append(PageSection(id: "fav", title: L10n.tr("常用控制", "Favorites"), devices: favDevices, groupId: nil))
@@ -300,7 +303,7 @@ extension ClassicControlCenterPanel {
                 favoriteOrder: store.favoriteOrder,
                 habitOrder: habitOrder,
                 customOrder: order,
-                isActive: { store.presentsAsActive($0) }
+                isActive: activeState
             )
         }
 

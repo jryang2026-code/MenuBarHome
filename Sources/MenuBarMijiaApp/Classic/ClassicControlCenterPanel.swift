@@ -56,6 +56,8 @@ public struct ClassicControlCenterPanel: View {
     @State var isLongTailExpanded = false
     /// Bottom offline/unpowered drawer expansion; resets on panel close.
     @State var isOfflineDrawerExpanded = false
+    /// Frozen habit/active ordering for the current open session so toggling a tile does not jump it away from the pointer.
+    @State var prioritySnapshot: PanelPrioritySnapshot?
     /// Expansion ends on panel close, backend change, or an empty activity feed.
     @State var activitiesExpanded = false
     /// Measured by the transient surface; reset when that surface disappears.
@@ -82,9 +84,15 @@ public struct ClassicControlCenterPanel: View {
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
+    public init(
+        store: HomeStore,
+        initialActivitiesExpanded: Bool = false,
+        initialTransientExpanded: Bool = false,
+        initialOfflineExpanded: Bool = false
+    ) {
         self.store = store
         _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        _isOfflineDrawerExpanded = State(initialValue: initialOfflineExpanded)
         self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
@@ -102,6 +110,7 @@ public struct ClassicControlCenterPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
+                prioritySnapshot = .capture(from: store)
                 isPresented = true
             }
             .onAppear { handlePanelAppear() }
@@ -115,6 +124,9 @@ public struct ClassicControlCenterPanel: View {
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
             .onChange(of: store.homeBackend) { _, _ in
                 activitiesExpanded = false
+                isLongTailExpanded = false
+                isOfflineDrawerExpanded = false
+                prioritySnapshot = .capture(from: store)
                 PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             .onChange(of: store.panelActivities.count) { _, _ in
@@ -201,6 +213,7 @@ public struct ClassicControlCenterPanel: View {
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
         // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
         .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
+        .onChange(of: hasVisibleOfflineDevices) { _, hasOffline in if !hasOffline { isOfflineDrawerExpanded = false } }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -233,10 +246,15 @@ public struct ClassicControlCenterPanel: View {
         }
     }
 
+    private var hasVisibleOfflineDevices: Bool {
+        store.visibleDevices.contains { !$0.isOnline }
+    }
+
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
         syncMenuBarWindowSize()
+        prioritySnapshot = .capture(from: store)
         isPresented = true
     }
 
@@ -251,6 +269,7 @@ public struct ClassicControlCenterPanel: View {
         lastSwapTarget = nil
         isLongTailExpanded = false
         isOfflineDrawerExpanded = false
+        prioritySnapshot = nil
         layoutUI.dismissActivePrompt()
         search.end()
         isSearchFieldFocused = false
@@ -276,9 +295,15 @@ public struct ClassicControlCenterPanel: View {
     private func handleHomeContextChange() {
         layoutUI.commitRoomOrderIfNeeded()
         layoutUI.dismissActivePrompt()
+        isLongTailExpanded = false
+        isOfflineDrawerExpanded = false
+        prioritySnapshot = .capture(from: store)
     }
 
     private func pruneStalePrompts() {
+        if let snapshot = prioritySnapshot {
+            prioritySnapshot = snapshot.freezingNewDevices(from: store)
+        }
         layoutUI.pruneStalePrompts(
             deviceIds: Set(store.devices.map(\.id)),
             groupIds: Set(groups.map(\.id)),
@@ -393,7 +418,7 @@ public struct ClassicControlCenterPanel: View {
 
             footerBar
                 .padding(.horizontal, 14)
-                .padding(.vertical, 9)
+                .padding(.vertical, 6)
         }
         .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
@@ -404,11 +429,25 @@ public struct ClassicControlCenterPanel: View {
         .onChange(of: store.expandedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
     }
 
-    private func revealClassicDeviceIfNeeded(_ deviceId: String?) {
+    func revealClassicDeviceIfNeeded(_ deviceId: String?) {
         guard let deviceId, !isEditingLayout else { return }
         let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: currentOrder)
         if partition.offline.contains(where: { $0.id == deviceId }), !isOfflineDrawerExpanded {
             withAnimation(AppleMotion.snappySpring) { isOfflineDrawerExpanded = true }
+            return
+        }
+        if partition.online.contains(where: { $0.id == deviceId }), !isLongTailExpanded {
+            let unkeptSlice = PanelDeviceOrganizer.overviewSlice(
+                orderedOnline: pageSections.flatMap(\.devices),
+                listCut: store.listCut,
+                isExpanded: isLongTailExpanded,
+                keepingVisibleIds: []
+            )
+            let isInCurrentOverview = unkeptSlice.visible.contains(where: { $0.id == deviceId })
+                && classicDeviceLayoutState.sections.flatMap(\.devices).contains(where: { $0.id == deviceId })
+            if !isInCurrentOverview {
+                withAnimation(AppleMotion.snappySpring) { isLongTailExpanded = true }
+            }
         }
     }
 

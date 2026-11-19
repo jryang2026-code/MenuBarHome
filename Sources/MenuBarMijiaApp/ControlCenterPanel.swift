@@ -45,6 +45,8 @@ public struct ControlCenterPanel: View {
     @AppStorage(PanelGrouping.storageKey) var groupingRaw: String = PanelGrouping.room.rawValue
     /// Stacks opened this session; Notification Center also forgets an opened group on close.
     @State var expandedStacks: Set<String> = []
+    /// Frozen habit/active priority snapshot for the current open session; cleared on panel close.
+    @State var prioritySnapshot: PanelPrioritySnapshot?
     /// The search field is folded behind the header's magnifier until asked for.
     @State private var isSearchRevealed = false
     /// Expansion ends on panel close, backend change, or an empty activity feed.
@@ -72,9 +74,15 @@ public struct ControlCenterPanel: View {
     /// resolve the effective scheme locally (#51).
     var effectiveScheme: ColorScheme { appearance.colorScheme ?? colorScheme }
 
-    public init(store: HomeStore, initialActivitiesExpanded: Bool = false, initialTransientExpanded: Bool = false) {
+    public init(
+        store: HomeStore,
+        initialActivitiesExpanded: Bool = false,
+        initialTransientExpanded: Bool = false,
+        initialOfflineExpanded: Bool = false
+    ) {
         self.store = store
         _activitiesExpanded = State(initialValue: initialActivitiesExpanded)
+        _expandedStacks = State(initialValue: initialOfflineExpanded ? [PanelDeviceOrganizer.offlineSectionId] : [])
         self.initialTransientExpanded = initialTransientExpanded
     }
     public var body: some View {
@@ -92,6 +100,7 @@ public struct ControlCenterPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didShowNotification)) { _ in
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
+                prioritySnapshot = .capture(from: store)
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
@@ -105,6 +114,8 @@ public struct ControlCenterPanel: View {
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
             .onChange(of: store.homeBackend) { _, _ in
                 activitiesExpanded = false
+                expandedStacks = []
+                prioritySnapshot = .capture(from: store)
                 PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             .onChange(of: store.panelActivities.count) { _, _ in
@@ -192,6 +203,7 @@ public struct ControlCenterPanel: View {
         .onChange(of: store.rooms.map(\.id)) { _, ids in handleRoomIds(ids) }
         // Another home, account, or server brings another room set: a draft or open prompt must never cross that boundary.
         .onChange(of: homeContextSignature) { _, _ in handleHomeContextChange() }
+        .onChange(of: hasVisibleOfflineDevices) { _, hasOffline in if !hasOffline { resetOfflineExpansion() } }
         // The saved key caught up with the commit (or something else rewrote it): drop the mirror.
         .onChange(of: roomOrderRaw) { _, _ in liveRoomOrder = nil }
         .onChange(of: kindOrderRaw) { _, _ in liveKindOrder = nil }
@@ -224,9 +236,18 @@ public struct ControlCenterPanel: View {
         }
     }
 
+    private var hasVisibleOfflineDevices: Bool {
+        store.visibleDevices.contains { !$0.isOnline }
+    }
+
+    private func resetOfflineExpansion() {
+        expandedStacks.remove(PanelDeviceOrganizer.offlineSectionId)
+    }
+
     private func handlePanelAppear() {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
+        prioritySnapshot = .capture(from: store)
     }
 
     private func handlePanelDidHide() {
@@ -235,6 +256,7 @@ public struct ControlCenterPanel: View {
         dragLocation = nil
         activeResize = nil
         lastSwapTarget = nil
+        prioritySnapshot = nil
         search.end()
         isSearchFieldFocused = false
         isSearchRevealed = false
@@ -260,9 +282,14 @@ public struct ControlCenterPanel: View {
     private func handleHomeContextChange() {
         layoutUI.commitRoomOrderIfNeeded()
         layoutUI.dismissActivePrompt()
+        expandedStacks = []
+        prioritySnapshot = .capture(from: store)
     }
 
     private func pruneStalePrompts() {
+        if let snapshot = prioritySnapshot {
+            prioritySnapshot = snapshot.freezingNewDevices(from: store)
+        }
         layoutUI.pruneStalePrompts(
             deviceIds: Set(store.devices.map(\.id)),
             groupIds: Set(groups.map(\.id)),
@@ -356,7 +383,7 @@ public struct ControlCenterPanel: View {
 
                 footerBar
                     .padding(.horizontal, Self.columnInset + 2)
-                    .padding(.vertical, 9)
+                    .padding(.vertical, 6)
             }
         }
         .foldOrigin { $0.panelMinY = $1 }
@@ -450,7 +477,7 @@ public struct ControlCenterPanel: View {
                         ForEach(onlineStacks) { stack in
                             stackView(
                                 stack,
-                                totalStacks: onlineStacks.count,
+                                totalStacks: stacks.count,
                                 overviewFolded: overviewFolded,
                                 quickIndexMap: quickIndexBadges
                             )

@@ -243,8 +243,9 @@ extension ClassicControlCenterPanel {
                     collapsedRaw = GroupPrefs.encode(set)
                 }
             }
+            revealClassicDeviceIfNeeded(env.id)
             store.toggleExpanded(env.id)
-            if store.expandedDeviceId == env.id {
+            if store.expandedDeviceId == env.id || store.visibleDevices.contains(where: { $0.id == env.id }) {
                 pendingScrollToDeviceId = env.id
             }
         }

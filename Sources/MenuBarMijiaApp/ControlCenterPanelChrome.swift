@@ -1280,7 +1280,7 @@ struct PanelConnectionFooterBar: View {
             BreathingDot(color: status.color, animate: statusDotAnimates)
                 .id(status.color)
             PanelConnectionStatusControl(store: store, theme: theme)
-            Spacer()
+            Spacer(minLength: 4)
 
             if let release = store.updateState.badgeRelease {
                 Button {
@@ -1304,21 +1304,23 @@ struct PanelConnectionFooterBar: View {
                     : L10n.tr("发现新版本 v\(release.version)，点击直接打开更新", "New version v\(release.version) available"))
             }
 
-            if store.undoBanner == nil, !store.isShowingAssistantBar, UndoAvailabilityTracker.shared.isAvailable {
-                footerIconButton("arrow.uturn.backward", label: L10n.tr("撤销上一步", "Undo last action"), help: L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)")) {
-                    store.presentAssistantBar()
-                    Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+            HStack(spacing: 2) {
+                if store.undoBanner == nil, !store.isShowingAssistantBar, UndoAvailabilityTracker.shared.isAvailable {
+                    footerIconButton("arrow.uturn.backward", label: L10n.tr("撤销上一步", "Undo last action"), help: L10n.tr("撤销上一步（10 分钟内有效）", "Undo the last assistant action (valid for 10 minutes)")) {
+                        store.presentAssistantBar()
+                        Task { await UndoAvailabilityTracker.shared.performUndo(store: store) }
+                    }
                 }
-            }
 
-            footerIconButton("arrow.clockwise", label: L10n.tr("立即同步", "Refresh now"), help: L10n.tr("立即同步最新状态", "Refresh device states now")) {
-                store.refreshNow()
-            }
-            footerIconButton("slider.horizontal.3", size: DesignTokens.TypeSize.body, label: L10n.tr("打开设置", "Open Settings"), help: L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)") ) {
-                presentSettingsWindow()
-            }
-            footerIconButton("power", label: L10n.tr("退出应用", "Quit App"), help: L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)")) {
-                NSApplication.shared.terminate(nil)
+                footerIconButton("arrow.clockwise", label: L10n.tr("立即同步", "Refresh now"), help: L10n.tr("立即同步最新状态", "Refresh device states now")) {
+                    store.refreshNow()
+                }
+                footerIconButton("slider.horizontal.3", size: DesignTokens.TypeSize.body, label: L10n.tr("打开设置", "Open Settings"), help: L10n.tr("偏好设置与连接配置（⌘,）", "Preferences & connection settings (⌘,)") ) {
+                    presentSettingsWindow()
+                }
+                footerIconButton("power", label: L10n.tr("退出应用", "Quit App"), help: L10n.tr("完全退出 MenuBarHome（⌘Q）", "Quit MenuBarHome (⌘Q)")) {
+                    NSApplication.shared.terminate(nil)
+                }
             }
         }
     }
@@ -1328,7 +1330,7 @@ struct PanelConnectionFooterBar: View {
             Image(systemName: symbol)
                 .font(.system(size: size, weight: .semibold))
                 .foregroundStyle(.primary.opacity(0.72))
-                .frame(width: 24, height: 22)
+                .frame(minWidth: DesignTokens.minHitTarget, minHeight: DesignTokens.minHitTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)

@@ -532,7 +532,7 @@ extension HomeStore {
             let nextDevices = devicesWithAliases(merged)
             if devices != nextDevices { devices = nextDevices }
             if let expandedId = expandedDeviceId,
-               devices.first(where: { $0.id == expandedId })?.isOnline == false {
+               devices.first(where: { $0.id == expandedId })?.isOnline != true {
                 expandedDeviceId = nil
             }
             removeActivitiesForMissingDevices()

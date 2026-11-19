@@ -189,7 +189,10 @@ extension ControlCenterPanel {
         let known = Set(groups.map(\.id))
         let map = groupMap.filter { known.contains($0.value) }
         let order = currentOrder
-        let habitOrder = store.userHabitMemory.usageOrder()
+        let habitOrder = prioritySnapshot?.habitOrder ?? store.userHabitMemory.usageOrder()
+        let isActive: (SmartDevice) -> Bool = {
+            prioritySnapshot?.activeByDeviceId[$0.id] ?? store.presentsAsActive($0)
+        }
         func ordered(_ devices: [SmartDevice]) -> [SmartDevice] {
             DeviceLayoutPrefs.apply(order: order, to: devices)
         }
@@ -198,7 +201,7 @@ extension ControlCenterPanel {
                 devices,
                 habitOrder: habitOrder,
                 customOrder: order,
-                isActive: { store.presentsAsActive($0) }
+                isActive: isActive
             )
         }
 
@@ -228,7 +231,7 @@ extension ControlCenterPanel {
             favoriteOrder: store.favoriteOrder,
             habitOrder: habitOrder,
             customOrder: order,
-            isActive: { store.presentsAsActive($0) }
+            isActive: isActive
         )
 
         var stacks: [DeviceStack] = []
@@ -315,7 +318,8 @@ extension ControlCenterPanel {
     }
 
     /// Single-device non-favorite stacks beyond the initial 8-card overview fold into the long tail
-    /// until opened by the user.
+    /// until opened by the user. Independent of `expandedStacks` so manually opening a long-tail
+    /// single-device stack keeps its `"收起"` header and never displaces earlier overview stacks.
     func overviewFoldedStackIds(in stacks: [DeviceStack]) -> Set<String> {
         guard !isEditingLayout, store.listCut == .all else { return [] }
         let onlineStacks = stacks.filter { $0.source != .offline }
@@ -325,9 +329,9 @@ extension ControlCenterPanel {
         var openCount = 0
         var folded: Set<String> = []
         for stack in onlineStacks {
-            if stack.isPinned || expandedStacks.contains(stack.id) {
+            if stack.isPinned {
                 openCount += stack.devices.count
-            } else if stack.isOpen(expandedStacks: expandedStacks, listCut: store.listCut) {
+            } else if stack.isOpen(expandedStacks: [], listCut: store.listCut) {
                 if openCount + stack.devices.count <= PanelDeviceOrganizer.initialOverviewLimit {
                     openCount += stack.devices.count
                 } else {
@@ -505,7 +509,11 @@ extension ControlCenterPanel {
         let open = isStackOpen(stack, overviewFolded: overviewFolded)
         let showsHeader = stack.showsHeader(totalStacks: totalStacks, listCut: store.listCut)
             || (expandedStacks.contains(stack.id) && overviewFolded.contains(stack.id))
-        let showRoomBadge = stack.showsRoomBadge(totalStacks: totalStacks, listCut: store.listCut)
+        let showRoomBadge: Bool = if case .room = stack.source, showsHeader {
+            false
+        } else {
+            stack.showsRoomBadge(totalStacks: totalStacks, listCut: store.listCut)
+        }
         let dimmedInEdit = !stack.isPinned && isEditingLayout
         VStack(alignment: .leading, spacing: 8) {
             if open {

@@ -44,21 +44,22 @@ public enum DeviceTileActionLayout: Equatable, Sendable {
     @discardableResult
     public static func performPrimary(for device: SmartDevice, store: HomeStore) -> Task<Bool, Never>? {
         if case .camera(let cam) = device.kind, device.isOnline {
-            var wakeTask: Task<Bool, Never>?
-            if device.kind.canTogglePower, !cam.isOn {
-                guard let task = store.togglePrimary(device) else {
-                    return nil
-                }
-                wakeTask = task
-            } else if store.isControlBlockedByScreenLock {
-                _ = store.togglePrimary(device)
+            if store.isControlBlockedByScreenLock {
+                store.openCameraLiveView(device.id)
                 return nil
             }
+            var wakeTask: Task<Bool, Never>?
+            if device.kind.canTogglePower, !cam.isOn {
+                wakeTask = store.togglePrimary(device)
+                if wakeTask == nil, store.cameraCustomStreamURL(for: device.id) == nil {
+                    return nil
+                }
+            }
             store.openCameraLiveView(device.id)
-            if device.isPrimaryToggleable {
+            if device.isPrimaryToggleable, cam.isOn || wakeTask != nil {
                 SoundFeedback.playSuccess()
             }
-            return wakeTask ?? Task { true }
+            return wakeTask
         }
         guard device.isPrimaryToggleable else { return nil }
         let task = store.togglePrimary(device)
@@ -290,7 +291,48 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
     }
 }
 
-// MARK: - Shared Panel Device Organizer (Priority, >8 Long-Tail, Offline Drawer)
+// MARK: - Frozen Panel Priority Snapshot & Organizer
+
+/// Freezes habit frequency and active-on state for the duration of one panel open session so
+/// clicking a toggle never reshuffles tiles underneath the pointer or changes quick-index digits.
+public struct PanelPrioritySnapshot: Equatable, Sendable {
+    public let habitOrder: [String]
+    public let activeByDeviceId: [String: Bool]
+
+    public init(habitOrder: [String], activeByDeviceId: [String: Bool]) {
+        self.habitOrder = habitOrder
+        self.activeByDeviceId = activeByDeviceId
+    }
+
+    @MainActor
+    public static func capture(from store: HomeStore) -> PanelPrioritySnapshot {
+        let activeMap = Dictionary(
+            store.devices.map { ($0.id, store.presentsAsActive($0)) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return PanelPrioritySnapshot(
+            habitOrder: store.userHabitMemory.usageOrder(),
+            activeByDeviceId: activeMap
+        )
+    }
+
+    /// Freezes newly arrived devices (e.g. initial snapshot arriving after panel open) without
+    /// unfreezing devices already shown in the current session.
+    @MainActor
+    public func freezingNewDevices(from store: HomeStore) -> PanelPrioritySnapshot {
+        guard !activeByDeviceId.isEmpty else {
+            return .capture(from: store)
+        }
+        var updated = activeByDeviceId
+        var changed = false
+        for device in store.devices where updated[device.id] == nil {
+            updated[device.id] = store.presentsAsActive(device)
+            changed = true
+        }
+        guard changed else { return self }
+        return PanelPrioritySnapshot(habitOrder: habitOrder, activeByDeviceId: updated)
+    }
+}
 
 public enum PanelDeviceOrganizer {
     public static let initialOverviewLimit = 8
@@ -567,7 +609,11 @@ struct ClassicOfflineDrawerHeader: View {
             .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text("\(PanelDeviceOrganizer.offlineDrawerTitle())，\(summary)"))
+        .accessibilityLabel(Text(
+            summary.isEmpty
+                ? PanelDeviceOrganizer.offlineDrawerTitle()
+                : "\(PanelDeviceOrganizer.offlineDrawerTitle())\(L10n.tr("，", ", "))\(summary)"
+        ))
         .accessibilityHint(Text(isExpanded
             ? L10n.tr("收起离线设备列表", "Collapse offline devices")
             : L10n.tr("展开查看 \(count) 台设备", "Expand to show \(count) devices")))
