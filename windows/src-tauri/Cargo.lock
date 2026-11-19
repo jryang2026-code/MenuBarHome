@@ -1901,6 +1901,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "tokio",
+ "tokio-util",
  "tungstenite",
  "windows-sys 0.59.0",
 ]
@@ -3866,6 +3867,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

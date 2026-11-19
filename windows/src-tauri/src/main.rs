@@ -17,7 +17,7 @@ use camera::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
-use home_assistant::{ha_execute, ha_snapshot};
+use home_assistant::{ha_execute, ha_http, ha_set_connection, ha_snapshot, HaConnections};
 use network::*;
 use placement::{
     drag_settle_finished, fit_panel_height, key_state_is_down, move_is_user_driven,
@@ -226,6 +226,7 @@ fn main() {
     }
 
     tauri::Builder::default()
+        .manage(HaConnections::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -242,6 +243,8 @@ fn main() {
                 .build(),
         )
         .invoke_handler(tauri::generate_handler![
+            ha_set_connection,
+            ha_http,
             ha_snapshot,
             ha_execute,
             native_http,

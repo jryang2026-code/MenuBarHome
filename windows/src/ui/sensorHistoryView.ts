@@ -34,7 +34,7 @@ import {
   isDualSourceEnabled,
   isHostHaEnabled,
 } from "./cloudRefresh.js";
-import { acquireHaTransportLease } from "../core/haTransportGate.js";
+import { acquireHaTransportLease, invokeHaWithLease } from "../core/haTransportGate.js";
 import { seedDemoSensorHistory } from "./demo.js";
 import { comfort, tr3 } from "./panelPrefs.js";
 
@@ -340,10 +340,10 @@ async function discoverHASensorEntitiesViaSnapshot(
     host.haInvokeOverride ??
     (typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined);
   if (!invoke) return direct;
-  const lease = acquireHaTransportLease(host.settings.haBaseURL);
+  const lease = acquireHaTransportLease(host.settings.haBaseURL, { token: host.settings.haToken });
   if (!lease) return direct;
   try {
-    const raw = await invoke<Record<string, unknown>>("ha_snapshot", {
+    const raw = await invokeHaWithLease<Record<string, unknown>>(lease, invoke, "ha_snapshot", {
       baseUrl: host.settings.haBaseURL,
       token: host.settings.haToken,
     });

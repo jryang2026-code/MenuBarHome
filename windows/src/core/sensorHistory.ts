@@ -1,4 +1,4 @@
-import { acquireHaTransportLease } from "./haTransportGate.js";
+import { acquireHaTransportLease, normalizeHomeAssistantScopeUrl } from "./haTransportGate.js";
 import { MiCloudClient } from "./miCloud/client.js";
 import { normalizeMiCloudRegion, type HttpTransport, type MiSession } from "./miCloud/session.js";
 import { miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
@@ -1423,11 +1423,11 @@ export async function fetchHomeAssistantSensorHistory(options: {
   readonly entityMetricHints?: Readonly<Record<string, SensorMetricKind>>;
   readonly now?: number | Date;
 }): Promise<SensorHistorySample[]> {
-  const base = options.baseURL.trim().replace(/\/+$/, "").replace(/\/api$/, "");
+  const base = normalizeHomeAssistantScopeUrl(options.baseURL);
   const token = options.token.trim();
   const entityIds = [...new Set(options.entityIds.map((e) => e.trim()).filter(Boolean))];
   if (!base || !token || entityIds.length === 0) return [];
-  const lease = acquireHaTransportLease(base);
+  const lease = acquireHaTransportLease(base, { token: options.token });
   if (!lease) return [];
 
   const nowMs = toTimestampMs(options.now ?? Date.now()) ?? Date.now();
@@ -1437,9 +1437,12 @@ export async function fetchHomeAssistantSensorHistory(options: {
   const url = `${base}/api/history/period/${encodeURIComponent(startIso)}?filter_entity_id=${encodeURIComponent(entityIds.join(","))}&end_time=${encodeURIComponent(endIso)}&minimal_response`;
 
   try {
+    if (lease.nativeReady) await lease.nativeReady;
+    if (!lease.isCurrent()) return [];
     const resp = await options.transport({
       url,
       method: "GET",
+      haConnection: { baseUrl: options.baseURL, generation: lease.generation, signal: lease.signal },
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       timeoutMs: 15_000,
     });
