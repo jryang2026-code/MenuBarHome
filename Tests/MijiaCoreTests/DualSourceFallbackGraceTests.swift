@@ -127,6 +127,7 @@ struct DualSourceFallbackGraceTests {
         private(set) var latestHome: SynthesizedHome?
         private(set) var latestSourceStatuses: [HomeBackend: ConnectionStatus] = [:]
         private(set) var snapshotCount = 0
+        private(set) var snapshots: [SynthesizedHome] = []
         private(set) var expiredSessions: [MiSession] = []
 
         func append(_ event: HomeProviderEvent) {
@@ -135,6 +136,7 @@ struct DualSourceFallbackGraceTests {
                 latestHome = home
                 latestSourceStatuses = home.sourceStatuses
                 snapshotCount += 1
+                snapshots.append(home)
             case .sourceStatusesChanged(let statuses):
                 latestSourceStatuses = statuses
             case .sessionExpired(let session):
@@ -142,6 +144,10 @@ struct DualSourceFallbackGraceTests {
             case .statusChanged, .doorbellRang, .localNetworkPermissionChanged:
                 break
             }
+        }
+
+        func clearSnapshots() {
+            snapshots.removeAll()
         }
 
         func backend(forCard cardID: String) -> HomeBackend? {
@@ -1126,6 +1132,448 @@ struct DualSourceFallbackGraceTests {
         await waitUntil(timeout: .seconds(2)) { await unattributedCollector.backend(forCard: Self.did) == .homeAssistant }
         #expect(await unattributedCollector.latestHome?.deviceFacets[Self.did] == nil)
         #expect(await unattributedCollector.backend(forCard: "de-plug-2") == .xiaomiCloud)
+    }
+
+    @Test("Shared Xiaomi devices stay uninterrupted on surviving co-owner when another account's session expires")
+    func sharedXiaomiDevicesSurviveCoOwnerSessionExpiry() async throws {
+        let cameraSpecJSON = #"{"type":"urn:miot-spec-v2:device:camera:0000A01C:chuangmi-061a01:3","services":[{"iid":2,"type":"urn:miot-spec-v2:service:camera-control:0000782F:chuangmi-061a01:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:chuangmi-061a01:1","format":"bool","access":["read","write","notify"]}]},{"iid":9,"type":"urn:miot-spec-v2:service:p2p-stream:00007881:chuangmi-061a01:1","actions":[{"iid":1,"type":"urn:miot-spec-v2:action:start-p2p-stream:00002839:chuangmi-061a01:1"},{"iid":2,"type":"urn:miot-spec-v2:action:stop-stream:00002822:chuangmi-061a01:1"}]}]}"#
+        let plugSpecJSON = #"{"type":"urn:miot-spec-v2:device:outlet:0000A002:cuco-v3:1","services":[{"iid":2,"type":"urn:miot-spec-v2:service:switch:0000780C:cuco-v3:1","properties":[{"iid":1,"type":"urn:miot-spec-v2:property:on:00000006:cuco-v3:1","format":"bool","access":["read","write","notify"]}]}]}"#
+        let camSpec = MiotFixtures.decode(cameraSpecJSON)
+        let plugSpec = MiotFixtures.decode(plugSpecJSON)
+        struct DualSpecSource: MiotSpecSource {
+            let camSpec: MiotDeviceSpec
+            let plugSpec: MiotDeviceSpec
+            func spec(model: String, specType: String?) async throws -> MiotDeviceSpec? {
+                switch model {
+                case "chuangmi.camera.061a01": return camSpec
+                case "cuco.plug.v3": return plugSpec
+                default: return nil
+                }
+            }
+        }
+
+        let session1 = MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1", serviceToken: "tok-cn", region: "cn"
+        )
+        let session2 = MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-2", serviceToken: "tok-de", region: "de"
+        )
+        let account1 = MiAccount(session: session1)
+        let account2 = MiAccount(session: session2)
+        let sharedPlugDID = "shared-plug-1"
+        let exclusiveCamDID = "2205610999"
+        let exclusiveHAID = "ha-exclusive-cam"
+
+        // 1. End-to-end MiAccountsProvider + DualSourceHomeProvider (`setProps` -> `.sessionExpired`
+        // followed by `.statusChanged(.disconnected)` on `account1`):
+        // - `Self.did` (paired with `Self.haID`, HA lacks stream) and `sharedPlugDID` (unpaired) are
+        //   shared by `account1` and `account2`, initially deduplicated to `account1`.
+        // - `exclusiveCamDID` (paired with `exclusiveHAID`) belongs only to `account1`.
+        // When `account1` expires, exclusive devices must immediately fail over to HA without
+        // parking a grace sleeper, while shared devices promote to `account2` with zero frames
+        // missing and zero frames bouncing to HA (keeping the live camera bridge uninterrupted).
+        let api1 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(
+                    did: Self.did,
+                    name: "门口",
+                    model: "chuangmi.camera.061a01",
+                    isOnline: true,
+                    localIp: "192.0.2.45"
+                ),
+                MiDeviceRecord(
+                    did: sharedPlugDID,
+                    name: "共享插座",
+                    model: "cuco.plug.v3",
+                    isOnline: true
+                ),
+                MiDeviceRecord(
+                    did: exclusiveCamDID,
+                    name: "玄关独享摄像机",
+                    model: "chuangmi.camera.061a01",
+                    isOnline: true,
+                    localIp: "192.0.2.47"
+                ),
+            ],
+            rooms: [
+                MiRoom(
+                    id: "r1",
+                    name: "门口",
+                    dids: [Self.did, sharedPlugDID, exclusiveCamDID],
+                    homeId: "h1",
+                    homeName: "主家庭"
+                )
+            ],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: sharedPlugDID, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: exclusiveCamDID, siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        let api2 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(
+                    did: Self.did,
+                    name: "门口",
+                    model: "chuangmi.camera.061a01",
+                    isOnline: true,
+                    localIp: "192.0.2.45"
+                ),
+                MiDeviceRecord(
+                    did: sharedPlugDID,
+                    name: "共享插座",
+                    model: "cuco.plug.v3",
+                    isOnline: true
+                ),
+            ],
+            rooms: [
+                MiRoom(
+                    id: "r1-shared",
+                    name: "门口",
+                    dids: [Self.did, sharedPlugDID],
+                    homeId: "h2",
+                    homeName: "共享家庭"
+                )
+            ],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: sharedPlugDID, siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        let bridge = StubXiaomiCameraBridge()
+        let miAccounts = MiAccountsProvider(
+            accounts: [account1, account2],
+            apiFactory: { session in session.userId == session1.userId ? api1 : api2 },
+            specSource: DualSpecSource(camSpec: camSpec, plugSpec: plugSpec),
+            cameraBridge: bridge,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let haSharedDoorCam = camera(id: Self.haID, entity: "switch.door_cam_power", stream: nil)
+        let haExclusiveCam = SmartDevice(
+            id: exclusiveHAID,
+            name: "玄关独享摄像机",
+            roomId: "door",
+            roomName: "门口",
+            model: "chuangmi.camera.061a01",
+            isOnline: true,
+            kind: .camera(CameraSpec(entityId: "switch.exclusive_cam_power", isOn: true, streamEntityId: nil))
+        )
+        var haMultiHome = SynthesizedHome(devices: [haSharedDoorCam, haExclusiveCam])
+        haMultiHome.deviceIdentities = [
+            Self.haID: DeviceSourceIdentity(
+                dids: [Self.did],
+                model: "chuangmi.camera.061a01",
+                name: "门口",
+                roomName: "门口",
+                kindTag: .camera
+            ),
+            exclusiveHAID: DeviceSourceIdentity(
+                dids: [exclusiveCamDID],
+                model: "chuangmi.camera.061a01",
+                name: "玄关独享摄像机",
+                roomName: "门口",
+                kindTag: .camera
+            ),
+        ]
+        let haMock = MockHomeProvider(snapshot: haMultiHome)
+        let clock = TestClock()
+        let gate = GraceSleepGate()
+        let provider = DualSourceHomeProvider(
+            homeAssistant: haMock,
+            xiaomiCloud: miAccounts,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await gate.sleep(duration) }
+        )
+        let collector = RouteCollector()
+        let pump = Task {
+            for await event in provider.events() {
+                await collector.append(event)
+            }
+        }
+        defer {
+            pump.cancel()
+            Task { await provider.shutdown() }
+        }
+
+        await waitUntil {
+            let sharedCamBackend = await collector.backend(forCard: Self.haID)
+            let sharedPlugBackend = await collector.backend(forCard: sharedPlugDID)
+            let exclusiveBackend = await collector.backend(forCard: exclusiveHAID)
+            return sharedCamBackend == .xiaomiCloud
+                && sharedPlugBackend == .xiaomiCloud
+                && exclusiveBackend == .xiaomiCloud
+        }
+
+        let initialHome = try #require(await collector.latestHome)
+        let initialSharedCam = try #require(initialHome.devices.first { $0.id == Self.haID })
+        let initialSharedPlug = try #require(initialHome.devices.first { $0.id == sharedPlugDID })
+        let initialExclusiveCam = try #require(initialHome.devices.first { $0.id == exclusiveHAID })
+        #expect(initialSharedCam.accountId == account1.id)
+        #expect(initialSharedPlug.accountId == account1.id)
+        #expect(initialExclusiveCam.accountId == account1.id)
+
+        _ = try await provider.resolveCameraStream(for: initialSharedCam)
+        _ = try await provider.resolveCameraStream(for: initialExclusiveCam)
+        #expect(await bridge.startCalls.count == 2)
+
+        await collector.clearSnapshots()
+        await api1.setSetPropsFailure(.sessionExpired)
+        try await provider.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: false))
+
+        await waitUntil { await collector.expiredSessions.count == 1 }
+        await waitUntil(timeout: .seconds(2)) { await collector.backend(forCard: exclusiveHAID) == .homeAssistant }
+        await waitUntil(timeout: .seconds(2)) { await bridge.stopCalls == [exclusiveCamDID] }
+        await waitUntil(timeout: .seconds(2)) {
+            await collector.latestHome?.devices.first { $0.id == Self.haID }?.accountId == account2.id
+        }
+
+        let postExpiryFrames = await collector.snapshots
+        #expect(!postExpiryFrames.isEmpty)
+        for frame in postExpiryFrames {
+            #expect(frame.deviceBackends[Self.haID] == .xiaomiCloud)
+            #expect(frame.devices.contains { $0.id == Self.haID })
+            let plugInFrame = frame.devices.first { $0.id == sharedPlugDID }
+            #expect(plugInFrame != nil)
+            #expect(plugInFrame?.isOnline == true)
+            #expect(plugInFrame?.telemetryStale == false)
+            #expect(frame.deviceBackends[sharedPlugDID] == .xiaomiCloud)
+        }
+        let stoppedAfterExpiry = await bridge.stopCalls
+        #expect(!stoppedAfterExpiry.contains(Self.did))
+        #expect(stoppedAfterExpiry == [exclusiveCamDID])
+        #expect(await gate.parkCount == 0)
+
+        let promotedHome = try #require(await collector.latestHome)
+        #expect(promotedHome.expiredAccountIDs == [account1.id])
+        let promotedCam = try #require(promotedHome.devices.first { $0.id == Self.haID })
+        let promotedPlug = try #require(promotedHome.devices.first { $0.id == sharedPlugDID })
+        #expect(promotedCam.accountId == account2.id)
+        #expect(promotedCam.accountLabel == account2.maskedUserId)
+        #expect(promotedPlug.accountId == account2.id)
+        #expect(promotedPlug.accountLabel == account2.maskedUserId)
+        #expect(promotedHome.rooms.contains { $0.id == promotedPlug.roomId })
+
+        // 2. Follow-up poll `.sessionExpired` path (`MiCloudProvider.followUpPoll` emits ONLY
+        // `.sessionExpired(session1)` via `latchRejection` without `.statusChanged(.disconnected)`):
+        // MiAccountsProvider must still publish the promoted snapshot ahead of `.sessionExpired`.
+        let followUpAPI1 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(
+                    did: Self.did,
+                    name: "门口",
+                    model: "chuangmi.camera.061a01",
+                    isOnline: true,
+                    localIp: "192.0.2.45"
+                ),
+                MiDeviceRecord(
+                    did: sharedPlugDID,
+                    name: "共享插座",
+                    model: "cuco.plug.v3",
+                    isOnline: true
+                ),
+            ],
+            rooms: [MiRoom(id: "r1", name: "门口", dids: [Self.did, sharedPlugDID], homeId: "h1", homeName: "主家庭")],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: sharedPlugDID, siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        let followUpAPI2 = StubMiCloudAPI(
+            devices: [
+                MiDeviceRecord(
+                    did: Self.did,
+                    name: "门口",
+                    model: "chuangmi.camera.061a01",
+                    isOnline: true,
+                    localIp: "192.0.2.45"
+                ),
+                MiDeviceRecord(
+                    did: sharedPlugDID,
+                    name: "共享插座",
+                    model: "cuco.plug.v3",
+                    isOnline: true
+                ),
+            ],
+            rooms: [MiRoom(id: "r2", name: "门口", dids: [Self.did, sharedPlugDID], homeId: "h2", homeName: "共享家庭")],
+            values: [
+                MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: sharedPlugDID, siid: 2, piid: 1): .bool(true),
+            ]
+        )
+        let followUpBridge = StubXiaomiCameraBridge()
+        let followUpAccounts = MiAccountsProvider(
+            accounts: [account1, account2],
+            apiFactory: { session in session.userId == session1.userId ? followUpAPI1 : followUpAPI2 },
+            specSource: DualSpecSource(camSpec: camSpec, plugSpec: plugSpec),
+            cameraBridge: followUpBridge,
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            followUpDelay: .zero,
+            cameraSessionReleaseDelay: .zero,
+            selectedHomeLoader: { nil },
+            clearSelectedHome: {}
+        )
+        let followUpHAMock = MockHomeProvider(snapshot: home([haSharedDoorCam], identityID: Self.haID))
+        let followUpGate = GraceSleepGate()
+        let followUpDual = DualSourceHomeProvider(
+            homeAssistant: followUpHAMock,
+            xiaomiCloud: followUpAccounts,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await followUpGate.sleep(duration) }
+        )
+        let followUpCollector = RouteCollector()
+        let followUpPump = Task {
+            for await event in followUpDual.events() {
+                await followUpCollector.append(event)
+            }
+        }
+        defer {
+            followUpPump.cancel()
+            Task { await followUpDual.shutdown() }
+        }
+
+        await waitUntil {
+            let camBackend = await followUpCollector.backend(forCard: Self.haID)
+            let plugBackend = await followUpCollector.backend(forCard: sharedPlugDID)
+            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+        }
+        let followUpDoorCard = try #require(
+            await followUpCollector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await followUpDual.resolveCameraStream(for: followUpDoorCard)
+        #expect(await followUpBridge.startCalls.map(\.did) == [Self.did])
+
+        await followUpCollector.clearSnapshots()
+        await followUpAPI1.setGetPropsFailure(.sessionExpired)
+        try await followUpDual.execute(.setSwitch(entityId: "miot:\(sharedPlugDID):2", isOn: false))
+        await waitUntil { await followUpCollector.expiredSessions.count == 1 }
+        await waitUntil(timeout: .seconds(2)) {
+            await followUpCollector.latestHome?.devices.first { $0.id == Self.haID }?.accountId == account2.id
+        }
+
+        let followUpFrames = await followUpCollector.snapshots
+        #expect(!followUpFrames.isEmpty)
+        for frame in followUpFrames {
+            #expect(frame.deviceBackends[Self.haID] == .xiaomiCloud)
+            let plugInFrame = frame.devices.first { $0.id == sharedPlugDID }
+            #expect(plugInFrame != nil)
+            #expect(plugInFrame?.isOnline == true)
+            #expect(plugInFrame?.telemetryStale == false)
+        }
+        #expect(await followUpBridge.stopCalls.isEmpty)
+        #expect(await followUpGate.parkCount == 0)
+
+        // 3. Direct DualSourceHomeProvider defense: even if `.sessionExpired(session1)` arrives on a
+        // multi-account snapshot before a re-synthesized snapshot is published, `deviceAccountIDs`
+        // promotes the surviving co-owner in-place instead of dropping shared devices; once the last
+        // surviving co-owner also expires, failover to HA happens immediately.
+        var directSharedCam = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+        directSharedCam.roomId = MiAccountScope.id("door", account: account1.id)
+        directSharedCam.accountId = account1.id
+        directSharedCam.accountLabel = account1.maskedUserId
+        let directSharedPlug = SmartDevice(
+            id: sharedPlugDID,
+            name: "共享插座",
+            roomId: MiAccountScope.id("balcony", account: account1.id),
+            roomName: "阳台",
+            model: "cuco.plug.v3",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:\(sharedPlugDID):2", isOn: true)),
+            accountId: account1.id,
+            accountLabel: account1.maskedUserId
+        )
+        var directMiHome = home([directSharedCam, directSharedPlug], identityID: Self.did)
+        directMiHome.rooms = [
+            RoomArea(id: MiAccountScope.id("door", account: account1.id), name: "门口"),
+            RoomArea(id: MiAccountScope.id("balcony", account: account1.id), name: "阳台"),
+            RoomArea(id: MiAccountScope.id("door-shared", account: account2.id), name: "门口"),
+            RoomArea(id: MiAccountScope.id("balcony-shared", account: account2.id), name: "阳台"),
+        ]
+        directMiHome.homes = [
+            HomeOption(
+                id: MiAccountScope.id("h1", account: account1.id),
+                name: "主家庭",
+                deviceCount: 2,
+                accountId: account1.id,
+                accountLabel: account1.maskedUserId
+            ),
+            HomeOption(
+                id: MiAccountScope.id("h2", account: account2.id),
+                name: "共享家庭",
+                deviceCount: 2,
+                accountId: account2.id,
+                accountLabel: account2.maskedUserId
+            ),
+        ]
+        directMiHome.accountStatuses = [account1.id: .connected, account2.id: .connected]
+        directMiHome.deviceAccountIDs = [
+            Self.did: [account1.id, account2.id],
+            sharedPlugDID: [account1.id, account2.id],
+        ]
+        let directHAMock = MockHomeProvider(snapshot: home([haSharedDoorCam], identityID: Self.haID))
+        let directMiMock = MockHomeProvider(snapshot: directMiHome)
+        let directGate = GraceSleepGate()
+        let directDual = DualSourceHomeProvider(
+            homeAssistant: directHAMock,
+            xiaomiCloud: directMiMock,
+            graceNow: { clock.now },
+            graceSleep: { duration in try await directGate.sleep(duration) }
+        )
+        let directCollector = RouteCollector()
+        let directPump = Task {
+            for await event in directDual.events() {
+                await directCollector.append(event)
+            }
+        }
+        defer {
+            directPump.cancel()
+            Task { await directDual.shutdown() }
+        }
+
+        await waitUntil {
+            let camBackend = await directCollector.backend(forCard: Self.haID)
+            let plugBackend = await directCollector.backend(forCard: sharedPlugDID)
+            return camBackend == .xiaomiCloud && plugBackend == .xiaomiCloud
+        }
+        let directDoorCard = try #require(
+            await directCollector.latestHome?.devices.first { $0.id == Self.haID }
+        )
+        _ = try await directDual.resolveCameraStream(for: directDoorCard)
+
+        await directCollector.clearSnapshots()
+        await directMiMock.sendSessionExpired(session1)
+        await waitUntil { await directCollector.expiredSessions.count == 1 }
+
+        let directFramesAfterFirstExpiry = await directCollector.snapshots
+        #expect(!directFramesAfterFirstExpiry.isEmpty)
+        for frame in directFramesAfterFirstExpiry {
+            #expect(frame.deviceBackends[Self.haID] == .xiaomiCloud)
+            let camInFrame = frame.devices.first { $0.id == Self.haID }
+            #expect(camInFrame?.accountId == account2.id)
+            #expect(camInFrame?.accountLabel == account2.maskedUserId)
+            let plugInFrame = frame.devices.first { $0.id == sharedPlugDID }
+            #expect(plugInFrame != nil)
+            #expect(plugInFrame?.accountId == account2.id)
+            #expect(plugInFrame?.accountLabel == account2.maskedUserId)
+            #expect(plugInFrame?.roomId == MiAccountScope.id("balcony-shared", account: account2.id))
+            #expect(frame.rooms.contains { $0.id == MiAccountScope.id("balcony-shared", account: account2.id) })
+            #expect(!frame.rooms.contains { $0.id == MiAccountScope.id("balcony", account: account1.id) })
+        }
+        #expect(await directMiMock.stoppedCameraIDs.isEmpty)
+        #expect(await directGate.parkCount == 0)
+
+        await directMiMock.sendSessionExpired(session2)
+        await waitUntil { await directCollector.expiredSessions.count == 2 }
+        await waitUntil(timeout: .seconds(2)) { await directCollector.backend(forCard: Self.haID) == .homeAssistant }
+        await waitUntil(timeout: .seconds(2)) { await directMiMock.stoppedCameraIDs == [Self.did] }
+        #expect(await directCollector.latestHome?.devices.contains { $0.id == sharedPlugDID } == false)
     }
 
     @Test("The grace window is bounded and documented")

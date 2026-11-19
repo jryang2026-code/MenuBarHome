@@ -198,8 +198,10 @@ public actor MiAccountsProvider: HomeProvider {
     @discardableResult
     private func startChild(for account: MiAccount) -> MiCloudProvider {
         if account.session.expiryState(at: Date()) == .expired {
+            let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
             expiredAccounts.insert(account.id)
-            disconnectedStatuses[account.id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+            disconnectedStatuses[account.id] = expiredStatus
+            statuses[account.id] = expiredStatus
         }
         let provider = MiCloudProvider(
             account: account,
@@ -389,6 +391,11 @@ public actor MiAccountsProvider: HomeProvider {
         guard !isShutDown, accounts.contains(where: { $0.id == accountId }) else { return }
         switch event {
         case .statusChanged(let status):
+            if expiredAccounts.contains(accountId) {
+                guard case .disconnected = status else { break }
+            }
+            let previousStatus = statuses[accountId]
+            let previousDisconnected = disconnectedStatuses[accountId]
             statuses[accountId] = status
             switch status {
             case .connected:
@@ -399,13 +406,20 @@ public actor MiAccountsProvider: HomeProvider {
                 break
             }
             publishStatus()
-            if !snapshots.isEmpty {
+            if !snapshots.isEmpty,
+               (previousStatus != statuses[accountId] || previousDisconnected != disconnectedStatuses[accountId]) {
                 publishSnapshot()
             }
         case .sessionExpired(let session):
+            let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
             expiredAccounts.insert(accountId)
-            disconnectedStatuses[accountId] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+            disconnectedStatuses[accountId] = expiredStatus
+            statuses[accountId] = expiredStatus
             publishLocalNetworkPermission()
+            if !snapshots.isEmpty {
+                publishSnapshot()
+            }
+            publishStatus()
             continuation?.yield(.sessionExpired(session))
             if resetSelection(ownedBy: accountId) {
                 await refreshNow()
@@ -489,6 +503,7 @@ public actor MiAccountsProvider: HomeProvider {
     }
 
     private func isDisconnected(_ accountId: String) -> Bool {
+        if expiredAccounts.contains(accountId) { return true }
         if disconnectedStatuses[accountId] != nil { return true }
         if case .disconnected? = statuses[accountId] { return true }
         return false
@@ -503,13 +518,19 @@ public actor MiAccountsProvider: HomeProvider {
         return true
     }
 
-    private static func deviceFreshnessRank(_ device: SmartDevice, accountDisconnected: Bool) -> Int {
+    private static func deviceFreshnessRank(
+        _ device: SmartDevice,
+        accountDisconnected: Bool,
+        accountExpired: Bool = false
+    ) -> Int {
+        if accountExpired { return 4 }
         if accountDisconnected { return 3 }
         if device.telemetryStale { return 2 }
         return device.isOnline ? 0 : 1
     }
 
     private func ownerFreshnessRank(accountId: String, key: String) -> Int {
+        if expiredAccounts.contains(accountId) { return 4 }
         let accountDisconnected = isDisconnected(accountId)
         guard !accountDisconnected, let home = snapshots[accountId] else {
             return 3
@@ -526,7 +547,8 @@ public actor MiAccountsProvider: HomeProvider {
 
     private func publishSnapshot() {
         let orderedAccounts = accounts.filter { !isDisconnected($0.id) }
-            + accounts.filter { isDisconnected($0.id) }
+            + accounts.filter { isDisconnected($0.id) && !expiredAccounts.contains($0.id) }
+            + accounts.filter { expiredAccounts.contains($0.id) }
         let reported = orderedAccounts.compactMap { account -> (account: MiAccount, home: SynthesizedHome)? in
             guard let home = snapshots[account.id] else { return nil }
             return (account, home)
@@ -542,6 +564,7 @@ public actor MiAccountsProvider: HomeProvider {
         var deviceIndexById: [String: Int] = [:]
         var bestRankByDeviceId: [String: Int] = [:]
         var winningAccountByDeviceId: [String: String] = [:]
+        var deviceAccountIDs: [String: [String]] = [:]
         var readingIds = Set<String>()
         var sceneIds = Set<String>()
         var homeIds = Set<String>()
@@ -551,9 +574,13 @@ public actor MiAccountsProvider: HomeProvider {
         var transportDiagnosticsByDevice: [String: DeviceTransportDiagnostics] = [:]
         var closesAwayGap = true
         for (account, home) in reported {
-            let accountDisconnected = isDisconnected(account.id)
+            let accountExpired = expiredAccounts.contains(account.id)
+            let accountDisconnected = accountExpired || isDisconnected(account.id)
             closesAwayGap = closesAwayGap && home.closesAwayGap
             for rawDevice in home.devices {
+                if deviceAccountIDs[rawDevice.id]?.contains(account.id) != true {
+                    deviceAccountIDs[rawDevice.id, default: []].append(account.id)
+                }
                 var device = rawDevice
                 if device.accountId == nil || device.accountId?.isEmpty == true {
                     device.accountId = account.id
@@ -565,7 +592,11 @@ public actor MiAccountsProvider: HomeProvider {
                     device.isOnline = false
                     device.telemetryStale = true
                 }
-                let rank = Self.deviceFreshnessRank(device, accountDisconnected: accountDisconnected)
+                let rank = Self.deviceFreshnessRank(
+                    device,
+                    accountDisconnected: accountDisconnected,
+                    accountExpired: accountExpired
+                )
                 if let existingIndex = deviceIndexById[device.id],
                    let existingRank = bestRankByDeviceId[device.id] {
                     if rank < existingRank {
@@ -633,7 +664,12 @@ public actor MiAccountsProvider: HomeProvider {
         for (id, disconnectedStatus) in disconnectedStatuses {
             effectiveStatuses[id] = disconnectedStatus
         }
+        for id in expiredAccounts where effectiveStatuses[id] == nil {
+            effectiveStatuses[id] = .disconnected(MiCloudError.sessionExpired.localizedDescription)
+        }
         merged.accountStatuses = effectiveStatuses
+        merged.expiredAccountIDs = expiredAccounts
+        merged.deviceAccountIDs = deviceAccountIDs
         merged.deviceIdentities = identities
         merged.deviceFacets = facetsByDevice
         merged.deviceTransportDiagnostics = transportDiagnosticsByDevice

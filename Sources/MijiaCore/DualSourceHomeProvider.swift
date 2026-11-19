@@ -278,6 +278,7 @@ public actor DualSourceHomeProvider: HomeProvider {
                 if !miAccountStatuses.isEmpty || !(miSnapshot?.accountStatuses.isEmpty ?? true) {
                     let hasDeviceForExpiredAccount = miSnapshot?.devices.contains {
                         Self.resolvedXiaomiAccountID(for: $0, knownAccountIDs: knownIDs) == expiredID
+                            || miSnapshot?.deviceAccountIDs[$0.id]?.contains(expiredID) == true
                     } == true
                     if miAccountStatuses[expiredID] != nil
                         || miSnapshot?.accountStatuses[expiredID] != nil
@@ -300,11 +301,16 @@ public actor DualSourceHomeProvider: HomeProvider {
                         miStatus = aggregate
                     }
                 } else {
-                    let ownerIDs = Set(
+                    var ownerIDs = Set(
                         (miSnapshot?.devices ?? []).compactMap {
                             Self.resolvedXiaomiAccountID(for: $0, knownAccountIDs: knownIDs)
                         }
                     )
+                    if let coOwnersByDevice = miSnapshot?.deviceAccountIDs {
+                        for owners in coOwnersByDevice.values {
+                            ownerIDs.formUnion(owners.filter { !$0.isEmpty })
+                        }
+                    }
                     if ownerIDs.subtracting(miExpiredAccountIDs).isEmpty {
                         miOfflineSince = nil
                         miStatus = expiredStatus
@@ -430,6 +436,10 @@ public actor DualSourceHomeProvider: HomeProvider {
         ids.formUnion(miExpiredAccountIDs)
         if let snapshot {
             ids.formUnion(snapshot.accountStatuses.keys)
+            ids.formUnion(snapshot.expiredAccountIDs.filter { !$0.isEmpty })
+            for owners in snapshot.deviceAccountIDs.values {
+                ids.formUnion(owners.filter { !$0.isEmpty })
+            }
             for device in snapshot.devices {
                 if let accountId = device.accountId, !accountId.isEmpty {
                     ids.insert(accountId)
@@ -458,6 +468,69 @@ public actor DualSourceHomeProvider: HomeProvider {
         return nil
     }
 
+    private static func accountLabel(for accountID: String, in snapshot: SynthesizedHome) -> String? {
+        snapshot.homes.first(where: { $0.accountId == accountID && $0.accountLabel != nil })?.accountLabel
+            ?? snapshot.devices.first(where: { $0.accountId == accountID && $0.accountLabel != nil })?.accountLabel
+    }
+
+    private static func survivingXiaomiCoOwner(
+        for deviceID: String,
+        in snapshot: SynthesizedHome,
+        miAccountStatuses: [String: ConnectionStatus],
+        statusAccountIDs: Set<String>,
+        expiredAccountIDs: Set<String>
+    ) -> String? {
+        guard let owners = snapshot.deviceAccountIDs[deviceID], !owners.isEmpty else {
+            return nil
+        }
+        let candidates = owners.filter { candidate in
+            guard !candidate.isEmpty, !expiredAccountIDs.contains(candidate) else { return false }
+            return statusAccountIDs.isEmpty || statusAccountIDs.contains(candidate)
+        }
+        guard !candidates.isEmpty else { return nil }
+        if let connected = candidates.first(where: { candidate in
+            let status = snapshot.accountStatuses[candidate] ?? miAccountStatuses[candidate]
+            return status?.isConnected ?? true
+        }) {
+            return connected
+        }
+        return candidates.first
+    }
+
+    private static func promoteSharedXiaomiDevice(
+        _ device: inout SmartDevice,
+        from expiredOwnerID: String?,
+        to survivingID: String,
+        in snapshot: SynthesizedHome,
+        miAccountStatuses: [String: ConnectionStatus],
+        ensuredRooms: inout [RoomArea]
+    ) {
+        device.accountId = survivingID
+        device.accountLabel = accountLabel(for: survivingID, in: snapshot)
+        if let expiredOwnerID, MiAccountScope.isOwned(device.roomId, by: expiredOwnerID) {
+            let localSlug = MiAccountScope.localId(of: device.roomId)
+            let scopedCandidateID = MiAccountScope.id(localSlug, account: survivingID)
+            if let exactRoom = snapshot.rooms.first(where: { $0.id == scopedCandidateID }) {
+                device.roomId = exactRoom.id
+                device.roomName = exactRoom.name
+            } else if let sameNamedRoom = snapshot.rooms.first(where: {
+                MiAccountScope.isOwned($0.id, by: survivingID) && $0.name == device.roomName
+            }) {
+                device.roomId = sameNamedRoom.id
+            } else {
+                device.roomId = scopedCandidateID
+                if !ensuredRooms.contains(where: { $0.id == scopedCandidateID }) {
+                    ensuredRooms.append(RoomArea(id: scopedCandidateID, name: device.roomName))
+                }
+            }
+        }
+        if let status = snapshot.accountStatuses[survivingID] ?? miAccountStatuses[survivingID],
+           !status.isConnected {
+            device.isOnline = false
+            device.telemetryStale = true
+        }
+    }
+
     /// Updates Xiaomi source and per-account grace tracking from `MiAccountsProvider` snapshots.
     /// `MiAccountsProvider` publishes a snapshot right after `.statusChanged(.disconnected)` with
     /// the dropped account's devices marked offline+stale; preserving pre-drop account state keeps
@@ -466,14 +539,23 @@ public actor DualSourceHomeProvider: HomeProvider {
         var home = home
         let now = effectiveGraceNow()
         let previousMiStatus = miStatus
+        let snapshotExpiredIDs = Set(home.expiredAccountIDs.filter { !$0.isEmpty })
+        for expiredID in snapshotExpiredIDs {
+            miExpiredAccountIDs.insert(expiredID)
+            miAccountOfflineSince.removeValue(forKey: expiredID)
+            miAccountPreDropDevices.removeValue(forKey: expiredID)
+        }
         let knownIDs = knownXiaomiAccountIDs(in: home)
         if home.accountStatuses.isEmpty {
             if !miExpiredAccountIDs.isEmpty {
-                let deviceOwners = Set(
+                var deviceOwners = Set(
                     home.devices.compactMap { Self.resolvedXiaomiAccountID(for: $0, knownAccountIDs: knownIDs) }
                 )
-                let hasRecoveredAccount = miStatus == .connecting
-                    || deviceOwners.contains { !miExpiredAccountIDs.contains($0) }
+                for owners in home.deviceAccountIDs.values {
+                    deviceOwners.formUnion(owners.filter { !$0.isEmpty })
+                }
+                let hasRecoveredAccount = snapshotExpiredIDs.isEmpty
+                    && (miStatus == .connecting || deviceOwners.contains { !miExpiredAccountIDs.contains($0) })
                 if hasRecoveredAccount, !home.devices.isEmpty {
                     clearXiaomiAccountGraceState()
                     miStatus = .connected
@@ -488,6 +570,9 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
         } else {
             let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
+            for expiredID in snapshotExpiredIDs where home.accountStatuses[expiredID] == nil {
+                home.accountStatuses[expiredID] = expiredStatus
+            }
             let presentIDs = Set(home.accountStatuses.keys)
             for staleID in Set(miAccountStatuses.keys).union(miExpiredAccountIDs)
             where !presentIDs.contains(staleID) {
@@ -498,14 +583,22 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
             for (accountID, nextAccStatus) in home.accountStatuses {
                 let prevAccStatus = miAccountStatuses[accountID]
-                if nextAccStatus.isConnected {
+                if nextAccStatus.isConnected, !snapshotExpiredIDs.contains(accountID) {
                     miExpiredAccountIDs.remove(accountID)
                     miAccountStatuses[accountID] = nextAccStatus
                     miAccountOfflineSince.removeValue(forKey: accountID)
                     var owned: [String: SmartDevice] = [:]
-                    for device in home.devices
-                    where Self.resolvedXiaomiAccountID(for: device, knownAccountIDs: knownIDs) == accountID {
-                        owned[device.id] = device
+                    for device in home.devices {
+                        if Self.resolvedXiaomiAccountID(for: device, knownAccountIDs: knownIDs) == accountID {
+                            owned[device.id] = device
+                        } else if home.deviceAccountIDs[device.id]?.contains(accountID) == true {
+                            var copy = device
+                            copy.accountId = accountID
+                            if let label = Self.accountLabel(for: accountID, in: home) {
+                                copy.accountLabel = label
+                            }
+                            owned[device.id] = copy
+                        }
                     }
                     miAccountPreDropDevices[accountID] = owned
                 } else if miExpiredAccountIDs.contains(accountID) {
@@ -557,15 +650,17 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     /// Drops expired Xiaomi account candidates immediately so paired cards fail over to a
     /// surviving source instead of letting offline/pinned tie-breakers keep a dead session winning,
-    /// while restoring pre-drop freshness for non-expired accounts still in their grace window (#25).
+    /// while promoting surviving Xiaomi co-owners for shared devices and restoring pre-drop
+    /// freshness for non-expired accounts still in their grace window (#25).
     private func effectiveXiaomiSnapshot(
         now: SuspendingClock.Instant
     ) -> (snapshot: SynthesizedHome?, gracedAccountIDs: Set<String>) {
         guard var snapshot = miSnapshot else { return (nil, []) }
         let knownIDs = knownXiaomiAccountIDs(in: snapshot)
-        if !miExpiredAccountIDs.isEmpty {
+        let activeExpiredIDs = miExpiredAccountIDs.union(snapshot.expiredAccountIDs.filter { !$0.isEmpty })
+        if !activeExpiredIDs.isEmpty {
             let expiredStatus = ConnectionStatus.disconnected(MiCloudError.sessionExpired.localizedDescription)
-            for expiredID in miExpiredAccountIDs where snapshot.accountStatuses[expiredID] != nil {
+            for expiredID in activeExpiredIDs where snapshot.accountStatuses[expiredID] != nil {
                 if case .disconnected = snapshot.accountStatuses[expiredID] {} else {
                     snapshot.accountStatuses[expiredID] = miAccountStatuses[expiredID] ?? expiredStatus
                 }
@@ -573,22 +668,65 @@ public actor DualSourceHomeProvider: HomeProvider {
             let statusAccountIDs = Set(snapshot.accountStatuses.keys).union(miAccountStatuses.keys)
             let hasNonExpiredAccount: Bool
             if !statusAccountIDs.isEmpty {
-                hasNonExpiredAccount = statusAccountIDs.contains { !miExpiredAccountIDs.contains($0) }
+                hasNonExpiredAccount = statusAccountIDs.contains { !activeExpiredIDs.contains($0) }
             } else {
-                let deviceOwners = Set(
+                var deviceOwners = Set(
                     snapshot.devices.compactMap { Self.resolvedXiaomiAccountID(for: $0, knownAccountIDs: knownIDs) }
                 )
-                hasNonExpiredAccount = deviceOwners.contains { !miExpiredAccountIDs.contains($0) }
+                for owners in snapshot.deviceAccountIDs.values {
+                    deviceOwners.formUnion(owners.filter { !$0.isEmpty })
+                }
+                hasNonExpiredAccount = deviceOwners.contains { !activeExpiredIDs.contains($0) }
             }
 
-            snapshot.devices.removeAll { device in
+            var promotedDevices: [SmartDevice] = []
+            promotedDevices.reserveCapacity(snapshot.devices.count)
+            var ensuredRooms: [RoomArea] = []
+            for var device in snapshot.devices {
                 guard let ownerID = Self.resolvedXiaomiAccountID(for: device, knownAccountIDs: knownIDs) else {
-                    // Unattributed Xiaomi devices (`accountId == nil` and unscoped `roomId`) cannot
-                    // be verified against a healthy account once a Xiaomi session has expired.
-                    return true
+                    if let survivingID = Self.survivingXiaomiCoOwner(
+                        for: device.id,
+                        in: snapshot,
+                        miAccountStatuses: miAccountStatuses,
+                        statusAccountIDs: statusAccountIDs,
+                        expiredAccountIDs: activeExpiredIDs
+                    ) {
+                        Self.promoteSharedXiaomiDevice(
+                            &device,
+                            from: nil,
+                            to: survivingID,
+                            in: snapshot,
+                            miAccountStatuses: miAccountStatuses,
+                            ensuredRooms: &ensuredRooms
+                        )
+                        promotedDevices.append(device)
+                    }
+                    // Unattributed Xiaomi devices (`accountId == nil`, unscoped `roomId`, and no
+                    // surviving co-owner) cannot be verified once a Xiaomi session has expired.
+                    continue
                 }
-                return miExpiredAccountIDs.contains(ownerID)
+                if activeExpiredIDs.contains(ownerID) {
+                    guard let survivingID = Self.survivingXiaomiCoOwner(
+                        for: device.id,
+                        in: snapshot,
+                        miAccountStatuses: miAccountStatuses,
+                        statusAccountIDs: statusAccountIDs,
+                        expiredAccountIDs: activeExpiredIDs
+                    ) else {
+                        continue
+                    }
+                    Self.promoteSharedXiaomiDevice(
+                        &device,
+                        from: ownerID,
+                        to: survivingID,
+                        in: snapshot,
+                        miAccountStatuses: miAccountStatuses,
+                        ensuredRooms: &ensuredRooms
+                    )
+                }
+                promotedDevices.append(device)
             }
+            snapshot.devices = promotedDevices
             let remainingDeviceIDs = Set(snapshot.devices.map(\.id))
             snapshot.deviceIdentities = snapshot.deviceIdentities.filter { remainingDeviceIDs.contains($0.key) }
             snapshot.deviceFacets = snapshot.deviceFacets.filter { remainingDeviceIDs.contains($0.key) }
@@ -604,15 +742,19 @@ public actor DualSourceHomeProvider: HomeProvider {
             snapshot.rooms.removeAll { room in
                 if let roomOwner = MiAccountScope.owner(of: room.id),
                    knownIDs.contains(roomOwner) {
-                    return miExpiredAccountIDs.contains(roomOwner)
+                    return activeExpiredIDs.contains(roomOwner)
                 }
                 return !hasNonExpiredAccount
+            }
+            for room in ensuredRooms
+            where !snapshot.rooms.contains(where: { $0.id == room.id }) {
+                snapshot.rooms.append(room)
             }
             snapshot.homes.removeAll { option in
                 let ownerID = (option.accountId?.isEmpty == false ? option.accountId : nil)
                     ?? MiAccountScope.owner(of: option.id).flatMap { knownIDs.contains($0) ? $0 : nil }
                 if let ownerID {
-                    return miExpiredAccountIDs.contains(ownerID)
+                    return activeExpiredIDs.contains(ownerID)
                 }
                 return !hasNonExpiredAccount
             }
@@ -623,7 +765,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         guard !snapshot.accountStatuses.isEmpty else { return (snapshot, []) }
         var gracedAccountIDs: Set<String> = []
         for (accountID, accStatus) in snapshot.accountStatuses where !accStatus.isConnected {
-            guard !miExpiredAccountIDs.contains(accountID),
+            guard !activeExpiredIDs.contains(accountID),
                   let since = miAccountOfflineSince[accountID],
                   let preDrop = miAccountPreDropDevices[accountID],
                   !preDrop.isEmpty,
@@ -990,10 +1132,15 @@ public actor DualSourceHomeProvider: HomeProvider {
                         break
                     }
                 }
+            } else if let nextRoute {
+                activeCameraRoutes[deviceID] = nextRoute
             }
         }
         var home = result.home
         home.accountStatuses = miSnapshot?.accountStatuses ?? [:]
+        home.expiredAccountIDs = xiaomiCloud != nil
+            ? miExpiredAccountIDs.union((miSnapshot?.expiredAccountIDs ?? []).filter { !$0.isEmpty })
+            : []
         home.sourceStatuses = configuredSourceStatuses()
         home.localNetworkBlockedFeatures = currentLocalNetworkBlocks()
         continuation?.yield(.snapshotUpdated(home))
