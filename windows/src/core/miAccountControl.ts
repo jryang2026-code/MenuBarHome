@@ -1292,7 +1292,11 @@ export function resolveDisabledDeviceByEntity(entityId: string, knownDisabledDev
 
 function hiddenTypeDeviceIdentifierMatches(rec: CapabilityIndexedDevice, targetIdOrEntityId: string): boolean {
   const base = targetIdOrEntityId.split("#")[0] ?? targetIdOrEntityId;
-  // A multi-account card is `<accountId>/<raw did>`; the index entry keeps the raw did.
+  // A multi-account card is `<accountId>/<raw did>`; the index entry keeps the raw did. The
+  // namespace owner is the account, so the same raw did on another account is a different device and
+  // its closed type must not answer for this one.
+  const owner = MiAccountScope.owner(base);
+  if (owner !== null && miAccountScope(owner) !== rec.sourceScope) return false;
   const wanted = [base, MiAccountScope.localId(base)];
   const ids = [rec.id, MiAccountScope.localId(rec.id)];
   return wanted.some(

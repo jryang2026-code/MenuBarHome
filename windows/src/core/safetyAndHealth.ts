@@ -213,17 +213,58 @@ export function stripLockNeutralTokens(text: string): string {
  * `inferSensorKindFromMetadata` prefers. A read plan asks this to decide which alert signals a
  * hidden device must keep reading (P3a-W); evaluation still asks the single-kind form.
  */
-export function inferSensorAlertKindsFromMetadata(text: string): SensorAlertKind[] {
+export interface SensorAlertMetadataOptions {
+  /** Match the short ASCII tokens on word edges; a read plan opts in, evaluation does not. */
+  readonly wordBoundedShortTokens?: boolean;
+}
+
+export function inferSensorAlertKindsFromMetadata(
+  text: string,
+  options: SensorAlertMetadataOptions = {},
+): SensorAlertKind[] {
   const lower = text.toLowerCase();
+  const has = (tokens: readonly string[]): boolean =>
+    tokens.some((token) => options.wordBoundedShortTokens === true
+      ? tokenMatchesOnWordEdge(lower, token)
+      : lower.includes(token));
   const kinds: SensorAlertKind[] = [];
-  if (SMOKE_TOKENS.some((t) => lower.includes(t))) kinds.push("smoke");
-  if (GAS_TOKENS.some((t) => lower.includes(t))) kinds.push("gas");
-  if (LEAK_TOKENS.some((t) => lower.includes(t))) kinds.push("leak");
-  if (VIBRATION_TOKENS.some((t) => lower.includes(t))) kinds.push("vibration");
+  if (has(SMOKE_TOKENS)) kinds.push("smoke");
+  if (has(GAS_TOKENS)) kinds.push("gas");
+  if (has(LEAK_TOKENS)) kinds.push("leak");
+  if (has(VIBRATION_TOKENS)) kinds.push("vibration");
   if (looksLikeLockMetadata(lower)) kinds.push("lock");
-  if (CONTACT_TOKENS.some((t) => lower.includes(t))) kinds.push("contact");
-  if (MOTION_TOKENS.some((t) => lower.includes(t))) kinds.push("motion");
+  if (has(CONTACT_TOKENS)) kinds.push("contact");
+  if (has(MOTION_TOKENS)) kinds.push("motion");
   return kinds;
+}
+
+/**
+ * A read plan asks for word edges on the short tokens: `Expiration` ends in `pir`, `Indoor` hides
+ * `door`, `Milkshake` hides `shake`, and `gas` sits inside `GasStove`, so a plain substring match
+ * keeps a hidden card alive for an alert it can never raise. Evaluation keeps the substring form so
+ * an alert that already fires never disappears. Longer tokens stay substring matches, which is what
+ * `submersion-state` and `water-leak` need. The edge test uses the same letter/digit boundary the
+ * facet layer's own alert labels (`isMiotAlertLabel`) use, so a label like `Leaking` is neither a
+ * card alert nor a reason to keep reading a hidden card.
+ */
+const SHORT_ALERT_TOKEN_LENGTH = 5;
+const WORD_CHAR = /[a-z0-9]/;
+const isWordChar = (char: string): boolean => char !== "" && WORD_CHAR.test(char);
+
+function tokenMatchesOnWordEdge(lowerText: string, token: string): boolean {
+  // The hyphen and the underscore are separators here: `water-leak` and `door-dect` name a leak or a
+  // door, while `Milkshake` and `Leakage` do not.
+  const wordBounded = token.length <= SHORT_ALERT_TOKEN_LENGTH && /^[a-z]+$/.test(token);
+  if (!wordBounded) return lowerText.includes(token);
+  let from = 0;
+  for (;;) {
+    const at = lowerText.indexOf(token, from);
+    if (at < 0) return false;
+    const before = at === 0 ? "" : lowerText.charAt(at - 1);
+    const after = lowerText.charAt(at + token.length);
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+    from = at + 1;
+  }
 }
 
 function inferSensorKindFromMetadata(text: string): SensorAlertKind | null {

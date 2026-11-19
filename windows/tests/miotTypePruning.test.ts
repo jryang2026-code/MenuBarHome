@@ -489,32 +489,72 @@ describe("Mi device-type pruning review fixes (P3a-W)", () => {
     assert.equal(withParent.visibleRecords.some((device) => device.did === "panel"), false);
   });
 
-  it("retains nothing once the safety-alert master switch is off", () => {
+  it("keeps the sensor alerts while the master switch above them is off", () => {
     const off: MiotSafetyPrefs = {
       enableSafetyAlerts: false, longRunningPlug: true, longRunningClimate: true, lowBattery: true,
+      favoriteOffline: true,
     };
-    assert.deepEqual(miotSafetySignalsForPrefs(off, createDefaultSensorAlertPolicy(false)), []);
-    // ...including the sensor alerts the user left on: the master switch wins.
+    // 主动安全守护与低电量提醒 only owns its own four rows; the sensor block below it has its own
+    // switches, so smoke/gas/leak/lock keep reading while it is off.
     assert.deepEqual(
-      miotSafetySignalsForPrefs(off, { enabled: { leak: true, lock: true }, onlyWhenAway: false, includesAway: false }),
-      [],
+      miotSafetySignalsForPrefs(off, createDefaultSensorAlertPolicy(false)),
+      ["leak", "smoke", "gas", "lock"],
+    );
+    // ...and the master switch's own rows really are off, even though the user left them ticked.
+    for (const kind of ["lowBattery", "longRunningPlug", "longRunningClimate", "highPower", "starredOffline"] as const) {
+      assert.equal(miotSafetySignalsForPrefs(off, createDefaultSensorAlertPolicy(false)).includes(kind), false, kind);
+    }
+    // A sensor alert the user switched off is still off, and an unspecified kind keeps its default.
+    assert.deepEqual(
+      miotSafetySignalsForPrefs(off, { enabled: { leak: false }, onlyWhenAway: false, includesAway: false }),
+      ["smoke", "gas", "lock"],
     );
   });
 
-  it("maps the long-run and battery switches onto their own signals", () => {
+  it("keeps a hidden smoke, gas, leak or lock sensor while the master switch is off", () => {
+    const off: MiotSafetyPrefs = {
+      enableSafetyAlerts: false, longRunningPlug: false, longRunningClimate: false, lowBattery: false,
+      favoriteOffline: false,
+    };
+    const defaultPolicy = createDefaultSensorAlertPolicy(false);
+    const signals = miotSafetySignalsForPrefs(off, defaultPolicy);
+    const plan = planWith(["light"], signals);
+    for (const did of ["smoke", "gas", "leak"] as const) {
+      assert.ok(plan.safetyRetainedDeviceIds.has(did), did);
+      assert.ok(readsOf(plan.readKeys, did).length > 0, did);
+    }
+    assert.ok(plan.safetyRetainedDeviceIds.has("lock"));
+    // The water-leak sensor still raises its alert from the retained record's own state.
+    const safetyHome = MiotSynthesizer.synthesize(plan.safetyRecords, [], specs, new Map([["leak.2.1006", true]]));
+    const leakCard = safetyHome.devices.find((device) => device.id === "leak");
+    assert.ok(leakCard);
+    assert.equal(evaluateSensorAlerts([leakCard] as SmartDevice[], {}, 1_700_000_000_000, defaultPolicy).alerts.length, 1);
+    // ...and with every sensor switch off too, nothing is retained at all.
+    const everySensorOff = { enabled: { leak: false, smoke: false, gas: false, lock: false, contact: false, motion: false, vibration: false }, onlyWhenAway: false, includesAway: false };
+    assert.deepEqual(miotSafetySignalsForPrefs(off, everySensorOff), []);
+    assert.equal(planWith(["light"], miotSafetySignalsForPrefs(off, everySensorOff)).safetyRetainedDeviceIds.size, 0);
+  });
+
+  it("maps the long-run, battery and pinned-offline switches onto their own signals", () => {
     const policy = createDefaultSensorAlertPolicy(false);
     const all = miotSafetySignalsForPrefs(
-      { enableSafetyAlerts: true, longRunningPlug: true, longRunningClimate: true, lowBattery: true },
+      {
+        enableSafetyAlerts: true, longRunningPlug: true, longRunningClimate: true, lowBattery: true,
+        favoriteOffline: true,
+      },
       policy,
     );
-    for (const kind of ["gas", "leak", "lock", "smoke", "highPower", "longRunningPlug", "longRunningClimate", "lowBattery"] as const) {
+    for (const kind of ["gas", "leak", "lock", "smoke", "highPower", "longRunningPlug", "longRunningClimate", "lowBattery", "starredOffline"] as const) {
       assert.ok(all.includes(kind), kind);
     }
     const none = miotSafetySignalsForPrefs(
-      { enableSafetyAlerts: true, longRunningPlug: false, longRunningClimate: false, lowBattery: false },
+      {
+        enableSafetyAlerts: true, longRunningPlug: false, longRunningClimate: false, lowBattery: false,
+        favoriteOffline: false,
+      },
       policy,
     );
-    for (const kind of ["highPower", "longRunningPlug", "longRunningClimate", "lowBattery"] as const) {
+    for (const kind of ["highPower", "longRunningPlug", "longRunningClimate", "lowBattery", "starredOffline"] as const) {
       assert.equal(none.includes(kind), false, kind);
     }
     // Turning the plug switch on is what keeps a closed plug reading its power draw.
@@ -597,5 +637,135 @@ describe("Mi device-type pruning review fixes (P3a-W)", () => {
       evaluateDisabledDeviceUrlGate("curtain", { connectionMode: "xiaomiCloud", miSession: session }, storage),
       null,
     );
+  });
+});
+
+describe("Mi device-type pruning: pinned cards, word edges and battery kinds (P3a-W r2)", () => {
+  const ACCOUNT = "acc1";
+  const planStarred = (
+    categories: readonly DeviceCategoryID[],
+    safetySignals: readonly SafetySignalKind[],
+    starredDeviceIds: readonly string[],
+  ) => buildMiotTypePrunePlan({
+    rawDevices: devices,
+    specs,
+    selection: selection(categories),
+    connectionScope: SCOPE,
+    safetySignals,
+    starredDeviceIds,
+  });
+
+  it("keeps a pinned hidden card as a topology record and reads nothing for it", () => {
+    // The panel stores the id it drew: `<accountId>/<did>` on a multi-account host, the bare did on a
+    // single-account one. Both must match.
+    const plan = planStarred(["plug"], ["starredOffline"], [`${ACCOUNT}/light`, "tank"]);
+    for (const did of ["light", "tank"] as const) {
+      assert.equal(plan.visibleDeviceIds.has(did), false, did);
+      assert.ok(plan.safetyRetainedDeviceIds.has(did), did);
+      // The offline alert reads `isOnline`, which the record already carries: no getProps key.
+      assert.deepEqual(readsOf(plan.readKeys, did), [], did);
+      assert.ok(plan.safetyRecords.some((record) => record.did === did), did);
+      assert.ok(plan.hiddenIndexedDevices.some((device) => device.id === did), did);
+    }
+    // The topology record still synthesizes, so the alert engine sees the device's own online state.
+    const retired = plan.safetyRecords.find((record) => record.did === "light")!;
+    const home = MiotSynthesizer.synthesize([retired], [], specs, new Map());
+    assert.equal(home.devices.find((device) => device.id === "light")?.isOnline, true);
+
+    // Everything else that only a signal could keep is gone, and nothing else is read.
+    for (const did of ["curtain", "leak", "contact"] as const) {
+      assert.equal(plan.safetyRetainedDeviceIds.has(did), false, did);
+    }
+    assert.deepEqual(
+      readIds(plan.readKeys).sort(),
+      readIds(plan.readKeys.filter((key) => key.did === "plug")).sort(),
+    );
+  });
+
+  it("matches a pin's namespace against the plan's own account", () => {
+    // `acc2/light` is another account's card: the same raw did there is a different device.
+    const otherAccount = planStarred(["plug"], ["starredOffline"], ["acc2/light"]);
+    assert.equal(otherAccount.safetyRetainedDeviceIds.has("light"), false);
+    assert.equal(otherAccount.skippedDeviceIds.has("light"), true);
+
+    // A cloud account id already carries the `mi:` prefix (`mi:cn:<hash>`), and its namespace is
+    // that same id, not a second `mi:` in front of it.
+    const scope = "mi:cn:abc123";
+    const cloudPlan = buildMiotTypePrunePlan({
+      rawDevices: devices,
+      specs,
+      selection: selection(["plug"], [scope]),
+      connectionScope: scope,
+      safetySignals: ["starredOffline"],
+      starredDeviceIds: [`${scope}/light`],
+    });
+    assert.ok(cloudPlan.safetyRetainedDeviceIds.has("light"));
+    assert.deepEqual(readsOf(cloudPlan.readKeys, "light"), []);
+  });
+
+  it("still reads a pinned card that a signal of its own keeps", () => {
+    const plan = planStarred(["plug"], ["starredOffline", "leak"], [`${ACCOUNT}/leak`]);
+    assert.ok(plan.safetyRetainedDeviceIds.has("leak"));
+    assert.ok(readsOf(plan.readKeys, "leak").length > 0);
+    // ...and the offline alert stays off while its switch is off, pinned or not.
+    const off = planStarred(["plug"], ["leak"], [`${ACCOUNT}/light`]);
+    assert.equal(off.safetyRetainedDeviceIds.has("light"), false);
+  });
+
+  it("changes nothing while every type is enabled, pinned cards included", () => {
+    const plain = planStarred(DEVICE_CATEGORY_IDS, ALL_SENSOR_SIGNALS, []);
+    const pinned = planStarred(DEVICE_CATEGORY_IDS, ALL_SENSOR_SIGNALS, [`${ACCOUNT}/light`]);
+    assert.deepEqual(readIds(pinned.readKeys).sort(), readIds(plain.readKeys).sort());
+    assert.deepEqual([...pinned.hiddenIndexedDevices], []);
+  });
+
+  it("matches the short alert tokens on word edges only", () => {
+    const strict = (text: string): string[] =>
+      inferSensorAlertKindsFromMetadata(text, { wordBoundedShortTokens: true });
+    // The reviewed collisions: a token inside a longer word never names a sensor.
+    assert.deepEqual(strict("Expiration"), []);
+    assert.deepEqual(strict("Indoor"), []);
+    assert.deepEqual(strict("Milkshake"), []);
+    // Real metadata still matches, because `-` and `_` are word separators.
+    assert.deepEqual(strict("door-dect"), ["contact"]);
+    assert.deepEqual(strict("pir-state"), ["motion"]);
+    assert.deepEqual(strict("shake-sensor"), ["vibration"]);
+    assert.deepEqual(strict("contact-state"), ["contact"]);
+    assert.deepEqual(strict("water-leak"), ["leak"]);
+    // Evaluation keeps the substring form, so an alert that fires today never disappears.
+    assert.deepEqual(inferSensorAlertKindsFromMetadata("Expiration"), ["motion"]);
+  });
+
+  it("keeps a water-leak alert for leak sensors, not for an appliance's leakage code", () => {
+    const plan = corpusPlan(["light"], ["leak"]);
+    const models = new Set([...plan.safetyRetainedDeviceIds].map(modelForPlanId));
+    assert.ok(models.has("bkxh.flood.yf02"));
+    // `Leakage-current` on an EV charger is electrical, and `In Gas Leakage Alarm` is a gas code.
+    assert.equal(models.has("careco.evc.a07a01"), false);
+    assert.equal(models.has("bkxh.sensor_gas.s2"), false);
+  });
+
+  it("never reads a value label from a card that renders no facets", () => {
+    // `viomi.hood.c26` labels a fan speed "GasStove"; only a builder-less card surfaces value labels.
+    const gas = corpusPlan(["light"], ["gas"]);
+    assert.equal(new Set([...gas.safetyRetainedDeviceIds].map(modelForPlanId)).has("viomi.hood.c26"), false);
+    assert.ok(new Set([...gas.safetyRetainedDeviceIds].map(modelForPlanId)).has("bkxh.sensor_gas.s2"));
+    // A microwave's `CookingOpenDoor` status is a door state, not a contact sensor.
+    const contact = corpusPlan(["light"], ["contact"]);
+    const contactModels = new Set([...contact.safetyRetainedDeviceIds].map(modelForPlanId));
+    assert.equal(contactModels.has("chunmi.microwave.cmwb3"), false);
+    assert.ok(contactModels.has("bkxh.magnet.yf01"));
+  });
+
+  it("keeps the low-battery read only on the kinds that publish a battery percentage", () => {
+    const plan = corpusPlan(["light"], ["lowBattery"]);
+    assert.ok(plan.safetyRetainedDeviceIds.size > 0);
+    for (const id of plan.safetyRetainedDeviceIds) {
+      const indexed = plan.hiddenIndexedDevices.find((device) => device.id === id);
+      assert.ok(indexed, id);
+      assert.ok(["sensor", "cover", "vacuum"].includes(indexed.category), `${modelForPlanId(id)}: ${indexed.category}`);
+    }
+    // A water-leak sensor's own card kind is `sensor`, so the battery switch still reaches it.
+    assert.ok(plan.safetyRetainedDeviceIds.size > 1);
   });
 });

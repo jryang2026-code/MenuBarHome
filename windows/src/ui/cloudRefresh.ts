@@ -138,14 +138,28 @@ export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts?
 export interface HostMiotTypePruneOptions {
   readonly selection: CapabilitySelection;
   readonly safetySignals: readonly SafetySignalKind[];
+  /** Pinned cards, whose offline alert keeps only their topology record. */
+  readonly starredDeviceIds: readonly string[];
 }
 
-export function hostMiotTypePruneOptions(host: MiSelectionHost): HostMiotTypePruneOptions {
+export function hostMiotTypePruneOptions(
+  host: MiSelectionHost & {
+    readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+    readonly settings: DualSourceInspectableHost["settings"] & {
+      readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+    };
+  },
+): HostMiotTypePruneOptions {
   return {
     selection: resolveHostMiSelectionState(host).selection,
-    // "安全与提醒" owns these: the master switch drops every retained signal, and each long-run or
-    // battery alert keeps only its own (architecture.md §D, ruling 3).
+    // "安全与提醒" owns these: the master switch drops the long-run, battery and pinned-offline
+    // alerts, and each keeps only its own signal. The sensor alerts have their own switches below
+    // it, so they stay on (architecture.md §D, ruling 3).
     safetySignals: miotSafetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
+    starredDeviceIds: [...new Set([
+      ...(host.layout?.pinnedDeviceIds ?? []),
+      ...(host.settings.layout?.pinnedDeviceIds ?? []),
+    ])],
   };
 }
 
@@ -351,19 +365,21 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (host.settings.connectionMode === "xiaomiCloud") {
-      // A host whose every Mi account is turned off or signed out must not keep evaluating the alert
-      // signals it left behind. A multi-account host with any enabled account keeps its snapshot:
-      // its own refresh rewrites the per-account retained set, so clearing here would drop the
-      // sibling accounts' sensors until that refresh returns (P3a-W).
-      if (resolveEnabledMiAccountsForHost(host).length === 0) {
-        applyMiotTypePruneSnapshot(host, null);
-      }
       // The store's first load of this window enumerates the credential slots; later loads read
       // the assembled list. This replaces the old "only multi-account indexes hydrate" gate (#228).
       const storeToken = host.sourceEpoch.capture();
       const store = getHostMiAccountsStore(host);
       const storeAccounts = host.miAccountsOverride ?? (await store.load().catch(() => []));
       if ((await storeToken.guard(adoptRecoveredPrimarySession(host, store, storeAccounts))) === STALE) return;
+      // A host whose every Mi account is turned off or signed out must not keep evaluating the alert
+      // signals it left behind. A multi-account host with any enabled account keeps its snapshot:
+      // its own refresh rewrites the per-account retained set, so clearing here would drop the
+      // sibling accounts' sensors until that refresh returns (P3a-W). The verdict needs the loaded
+      // list: judging it before `store.load()` would clear a multi-account host's snapshot.
+      const knownAccounts = hostKnownMiAccounts(host, storeAccounts);
+      if (knownAccounts.length > 0 && resolveEnabledMiAccountsForHost(host, storeAccounts).length === 0) {
+        applyMiotTypePruneSnapshot(host, null);
+      }
       if (storeAccounts.length > 1 || hasMultipleMiAccountsForHost(host)) {
         return refreshMultiAccountXiaomiDevices(host, silent);
       }
@@ -441,6 +457,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         selection: pruneOptions.selection,
         connectionScope: scope,
         safetySignals: pruneOptions.safetySignals,
+        starredDeviceIds: pruneOptions.starredDeviceIds,
       });
     const stateToken = host.sourceEpoch.capture();
     const selectedHomeAtStart = host.settings.selectedHomeId;

@@ -1370,14 +1370,21 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     // The retained alert signals and hidden index entries follow the same ownership rule as cards:
     // the removed account's half goes, the sibling accounts keep theirs (P3a-W).
     const removedScope = miAccountScope(accountId);
+    const removedSafetyIds = new Set(
+      (this.lastMi.safetyDevices ?? [])
+        .filter((device) => isRemovedMiDevice(device.id, device.accountId))
+        .map((device) => device.id),
+    );
     const nextSafetyDevices = this.lastMi.safetyDevices?.filter(
-      (device) => !isRemovedMiDevice(device.id, device.accountId),
+      (device) => !removedSafetyIds.has(device.id),
     );
     let nextSafetyDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
     if (this.lastMi.safetyDeviceFacets) {
       nextSafetyDeviceFacets = {};
       for (const [id, controls] of Object.entries(this.lastMi.safetyDeviceFacets)) {
-        if (isRemovedMiDevice(id)) continue;
+        // An alert-only device is not a card, so `removedDeviceIds` never learnt its id: the
+        // retained set computed above is the only record that it belonged to this account.
+        if (removedSafetyIds.has(id) || isRemovedMiDevice(id)) continue;
         nextSafetyDeviceFacets[id] = controls;
       }
     }

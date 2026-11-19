@@ -1874,6 +1874,9 @@ export function buildActivityFeed(
 
   const aliased = aliasedHostDevices(host);
   const presentIds = alertDeviceIds(host, aliased);
+  // A device of a turned-off type is only read for its alert: it has no card, so "立即关闭" would
+  // name a control the panel no longer offers (architecture.md §D).
+  const controllableIds = new Set(aliased.map((device) => device.id));
   for (const entry of center.doorbellCoordinator.recentRings) {
     if (entry.scope !== center.scopeKey || !presentIds.has(entry.ring.deviceId)) continue;
     const itemId = `doorbell:${entry.ring.key}`;
@@ -1920,7 +1923,7 @@ export function buildActivityFeed(
       title: recorded.alert.title,
       subtitle: recorded.alert.body,
       tone: isDanger ? "danger" : "warning",
-      ...(recorded.alert.turnOffCommand
+      ...(recorded.alert.turnOffCommand && controllableIds.has(recorded.alert.deviceId)
         ? {
             actionLabel: tr3("立即关闭", "立即關閉", "Turn Off Now", undefined, pref),
             actionAttr: "data-activity-safety-off",

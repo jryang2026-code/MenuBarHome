@@ -955,15 +955,17 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     }
 
     // Alert-only devices stay off the panel but still feed evaluation, so a connected account's
-    // retained sensors merge first-seen like cards do.
+    // retained sensors merge first-seen like cards do. Two accounts can hold the same raw did, and
+    // their index entries are only the same device when the source scope matches too.
     if (isConnected) { for (const device of child.safetyDevices ?? []) { if (safetyDeviceIds.has(device.id)) continue;
         safetyDeviceIds.add(device.id);
         safetyDevices.push(device);
         const facets = child.safetyDeviceFacets?.[device.id];
         if (facets && facets.length > 0) safetyDeviceFacets[device.id] = facets;
       }
-      for (const hidden of child.hiddenDevices ?? []) { if (hiddenDeviceIds.has(hidden.id)) continue;
-        hiddenDeviceIds.add(hidden.id);
+      for (const hidden of child.hiddenDevices ?? []) { const key = `${hidden.sourceScope}|${hidden.id}`;
+        if (hiddenDeviceIds.has(key)) continue;
+        hiddenDeviceIds.add(key);
         hiddenDevices.push(hidden);
       }
     }
@@ -1207,6 +1209,8 @@ interface RefreshMiAccountsOptions {
 export interface MiotAccountPruneOptions {
   readonly selection: CapabilitySelection;
   readonly safetySignals: readonly SafetySignalKind[];
+  /** Pinned cards, whose offline alert keeps only their topology record (P3a-W). */
+  readonly starredDeviceIds?: readonly string[];
 }
 
 /** Connection scope of a Mi account, in the vocabulary the host selection stores. */
@@ -1322,6 +1326,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
             selection: options.prune.selection,
             connectionScope: miAccountScopeOf(account.id),
             safetySignals: options.prune.safetySignals,
+            ...(options.prune.starredDeviceIds ? { starredDeviceIds: options.prune.starredDeviceIds } : {}),
           })
         : null;
       // One plan per round: the same keys feed LAN/cloud batching, single source, dual source and
