@@ -3,7 +3,7 @@ import { AutomationRuleStore, automationTriggerTitle, summarizeAutomationAction,
 import { DEVICE_CATEGORY_IDS, FEATURE_IDS, deviceCategoryForDevice, loadSharedCapabilityManifest, type CapabilityID, type ConnectionCapabilityID, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
   QUICK_ACTION_TARGET_CATEGORIES, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
-  partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
+  isValidCapabilityIndexedDevice, partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
   type CapabilityDeactivationVerdict, type CapabilityIndexedDevice, type CapabilityInstallResolutionMode,
   type CapabilityReferenceGraph, type CapabilitySelection, type ControlTargetKind, type ControlTargetRejectionReason,
   type QuickActionReference, type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
@@ -83,7 +83,9 @@ export interface MiAccountSelectionState {
   readonly knownDisabledHaScenes: readonly DisabledHaSceneSnapshot[];
   persistIfMigrationReady(): boolean;
 }
-export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; }
+export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[];
+  /** Index entries of cards a device-type selection withholds; they answer the gate, never display. */
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const defaultStorage = (): StorageLike | null => { try { return typeof localStorage !== "undefined" ? localStorage : null; } catch { return null; } };
@@ -595,6 +597,16 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
       isSourceAvailable,
       upstreamHiddenOrDisabled: false, participatesInAllOff: joinsAllOff(dev, input.allOffOverrides ?? {}),
       safetySignals: [], readKeys: [dev.id], safetyReadKeys: [],
+    });
+  }
+  // A closed device type stays in the identity index so the gate can name it instead of claiming
+  // the device never existed (architecture.md §D). Availability still comes from the live account.
+  for (const hidden of input.hiddenDevices ?? []) {
+    if (!isValidCapabilityIndexedDevice(hidden) || seenIds.has(hidden.id)) continue;
+    seenIds.add(hidden.id);
+    indexedDevices.push({
+      ...hidden,
+      isSourceAvailable: input.state.disabledAccountIds.has(hidden.sourceScope) ? false : hidden.isSourceAvailable,
     });
   }
   for (const snap of input.state.knownDisabledDevices) {

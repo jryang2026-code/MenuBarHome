@@ -38,6 +38,8 @@ import { environmentReadingPriority,
   type SmartDevice,
   type SynthesizedHome,
 } from "./models.js";
+import { buildMiotTypePrunePlan } from "./miotTypePruning.js";
+import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import { clearPersistedMiSessionExpired,
   clearPersistedMiSessionExpiredFor,
   isXiaomiRateLimitError,
@@ -732,6 +734,11 @@ export interface AccountChildSnapshot { readonly account: MiAccount;
   readonly allRooms: readonly MiRoom[];
   readonly specs: Readonly<Record<string, MiotDeviceSpec>>;
   readonly lightGroupOwners: ReadonlyMap<string, string>;
+  /** Devices of a turned-off category whose enabled alerts still need their signal (P3a-W). */
+  readonly safetyDevices?: readonly AccountScopedSmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Index entries of the cards the type selection withholds, for the host write gate. */
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
   readonly status: ConnectionStatus;
   readonly tokenStatus: MiAccountTokenStatus;
   readonly error?: unknown;
@@ -751,6 +758,11 @@ export interface MergedMiAccountsSnapshot {
   readonly lightGroupOwners: Map<string, string>;
   readonly resetSelectedHome: boolean;
   readonly staleDeviceIds: ReadonlySet<string>;
+  /** Union of the children's alert-only devices and their facets; never shown as cards. */
+  readonly safetyDevices?: readonly AccountScopedSmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Union of the children's withheld index entries, for the host write gate. */
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
 }
 
 export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
@@ -925,6 +937,11 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const allDevicesByAccount: Record<string, readonly MiDeviceRecord[]> = {};
   const allRoomsByAccount: Record<string, readonly MiRoom[]> = {};
   const specsByModel: Record<string, MiotDeviceSpec> = {};
+  const safetyDevices: AccountScopedSmartDevice[] = [];
+  const safetyDeviceFacets: Record<string, readonly FacetControl[]> = {};
+  const safetyDeviceIds = new Set<string>();
+  const hiddenDevices: CapabilityIndexedDevice[] = [];
+  const hiddenDeviceIds = new Set<string>();
 
   for (const account of accounts) { const child = children[account.id];
     if (!child) continue;
@@ -935,6 +952,20 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     allDevicesByAccount[account.id] = child.allDevices;
     allRoomsByAccount[account.id] = child.allRooms;
     for (const [model, spec] of Object.entries(child.specs)) { if (!specsByModel[model]) specsByModel[model] = spec;
+    }
+
+    // Alert-only devices stay off the panel but still feed evaluation, so a connected account's
+    // retained sensors merge first-seen like cards do.
+    if (isConnected) { for (const device of child.safetyDevices ?? []) { if (safetyDeviceIds.has(device.id)) continue;
+        safetyDeviceIds.add(device.id);
+        safetyDevices.push(device);
+        const facets = child.safetyDeviceFacets?.[device.id];
+        if (facets && facets.length > 0) safetyDeviceFacets[device.id] = facets;
+      }
+      for (const hidden of child.hiddenDevices ?? []) { if (hiddenDeviceIds.has(hidden.id)) continue;
+        hiddenDeviceIds.add(hidden.id);
+        hiddenDevices.push(hidden);
+      }
     }
 
     const childFacets = child.home.deviceFacets ?? {};
@@ -1057,6 +1088,9 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     lightGroupOwners: filteredGroupOwners,
     resetSelectedHome,
     staleDeviceIds,
+    safetyDevices,
+    safetyDeviceFacets,
+    hiddenDevices,
   };
 }
 
@@ -1166,7 +1200,17 @@ interface RefreshMiAccountsOptions {
   readonly namespaceSingleAccount?: boolean;
   readonly previousSnapshots?: Readonly<Record<string, AccountChildSnapshot>>;
   readonly clientFactory?: (session: MiSession, transport: HttpTransport) => MiCloudClient;
+  /** Device-type pruning inputs; absent means every card is synthesized and read as before. */
+  readonly prune?: MiotAccountPruneOptions;
 }
+
+export interface MiotAccountPruneOptions {
+  readonly selection: CapabilitySelection;
+  readonly safetySignals: readonly SafetySignalKind[];
+}
+
+/** Connection scope of a Mi account, in the vocabulary the host selection stores. */
+const miAccountScopeOf = (accountId: string): string => (accountId.startsWith("mi:") ? accountId : `mi:${accountId}`);
 
 export async function discoverMiAccountDevicesAndRooms(
   client: MiCloudClient,
@@ -1271,18 +1315,33 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
           : Promise.resolve(new Map<string, string[]>()),
       ]);
 
-      const propKeys = collectAccountMiotPropKeys(filtered.devices, specs);
+      const prune = options.prune
+        ? buildMiotTypePrunePlan({
+            rawDevices: filtered.devices,
+            specs,
+            selection: options.prune.selection,
+            connectionScope: miAccountScopeOf(account.id),
+            safetySignals: options.prune.safetySignals,
+          })
+        : null;
+      // One plan per round: the same keys feed LAN/cloud batching, single source, dual source and
+      // every account, and a closed category's alert-only devices keep just the reads they need.
+      const propKeys = prune ? [...prune.readKeys] : collectAccountMiotPropKeys(filtered.devices, specs);
       const values = propKeys.length > 0
           ? await client.getProps(propKeys)
           : new Map<string, unknown>();
 
-      const rawHome = MiotSynthesizer.synthesize(filtered.devices,
+      const rawHome = MiotSynthesizer.synthesize(prune ? prune.visibleRecords : filtered.devices,
         filtered.rooms,
         specs,
         values,
       );
+      const safetyHome = prune && prune.safetyRecords.length > 0
+        ? MiotSynthesizer.synthesize(prune.safetyRecords, filtered.rooms, specs, values)
+        : null;
       const rawHomes = buildHomeOptionsFromMiRooms(discovered.rooms);
       const stamped = stampAccountSnapshot(rawHome, rawHomes, account, namespaceIds);
+      const stampedSafety = safetyHome ? stampAccountSnapshot(safetyHome, [], account, namespaceIds) : null;
 
       clearAccountRateLimitBackoff(account.id);
       markAccountSessionRejected(account.session, false, {
@@ -1300,6 +1359,10 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         allRooms: discovered.rooms,
         specs,
         lightGroupOwners: buildMemberGroupOwners(membersByGroup),
+        ...(stampedSafety
+          ? { safetyDevices: stampedSafety.home.devices, safetyDeviceFacets: stampedSafety.home.deviceFacets ?? {} }
+          : {}),
+        ...(prune && prune.hiddenIndexedDevices.length > 0 ? { hiddenDevices: prune.hiddenIndexedDevices } : {}),
         status: { kind: "connected" },
         tokenStatus: freshTokenStatus,
       };

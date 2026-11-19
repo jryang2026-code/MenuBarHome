@@ -1,5 +1,6 @@
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
+import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
 import {
   MiAccountsStore,
   type MiAccount,
@@ -239,6 +240,19 @@ export class MenuMijiaWindowsApp {
   }
   /** Device id → 更多设置 rows from the latest snapshot (#5); empty until one arrives. */
   public deviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
+  /**
+   * Devices whose category is turned off but whose enabled alerts still need their signal: kept out
+   * of `devices` so no card, search hit, AI target or control entry can reach them, and read only for
+   * `safetyAndHealth` evaluation (architecture.md §D, P3a-W).
+   */
+  public safetyRetainedDevices: SmartDevice[] = [];
+  /** Facet rows of `safetyRetainedDevices`; a retained generic card's alert labels live here. */
+  public safetyRetainedDeviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
+  /**
+   * Index entries for Mi cards the current type selection does not draw. They are not devices to
+   * show or control; the host write gate reads them to answer "该设备类型已关闭" (P3a-W).
+   */
+  public hiddenMiDevices: readonly CapabilityIndexedDevice[] = [];
   public scenes: HomeScene[];
   public environmentReadings: EnvironmentReading[] = [];
   public listCut: DeviceListCut = { kind: "all" };

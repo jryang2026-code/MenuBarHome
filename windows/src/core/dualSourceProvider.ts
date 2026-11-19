@@ -16,6 +16,7 @@ import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionSt
   type DeviceKind, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type RoomCategory,
   type SmartDevice, type SynthesizedHome,
 } from "./models.js";
+import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
 
 function tr3(zhHans: string, zhHant: string, en: string, params?: Readonly<Record<string, string | number>>,
   preference?: LanguagePreference): string { const lang: AppLanguage = preference !== undefined
@@ -375,6 +376,11 @@ export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
   readonly lightGroupOwners?: ReadonlyMap<string, string> | Readonly<Record<string, string>>;
   readonly homes?: readonly AccountScopedHomeOption[];
   readonly accountStatuses?: Readonly<Record<string, ConnectionStatus>>;
+  /** Devices a turned-off category still reads for its enabled alerts; never shown as cards. */
+  readonly safetyDevices?: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  /** Index entries of the cards the type selection withholds, for the host write gate. */
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
 }
 
 export interface DeviceMergeRoute { readonly backend: HomeBackend;
