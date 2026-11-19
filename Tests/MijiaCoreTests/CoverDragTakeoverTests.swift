@@ -9,6 +9,16 @@ import Testing
 struct CoverDragTakeoverTests {
     private typealias SleepGate = ScheduledCommandTestSupport.SleepGate
 
+    /// A clock the test moves by hand. The cover lease is a timed one (`coverOptimisticLockDuration`),
+    /// so the case that pins what a report may own after it expires must not wait on wall clock.
+    private final class ManualClock: @unchecked Sendable {
+        var now = Date(timeIntervalSince1970: 1_700_000_000)
+
+        func advance(by seconds: TimeInterval) {
+            now = now.addingTimeInterval(seconds)
+        }
+    }
+
     private static let curtain = SmartDevice(
         id: "curtain", name: "客厅窗帘", roomId: "ke_ting", roomName: "客厅",
         model: "lumi.curtain.hagl04", isOnline: true,
@@ -83,6 +93,15 @@ struct CoverDragTakeoverTests {
             provider: mock,
             defaultsSuiteName: "test.coverdrag.\(UUID().uuidString)"
         )
+        // Every case here asks what a report does to a drag, and the answer is written against the
+        // 8 s cover lease staying live: an intermediate travel report settles nothing because the
+        // lease still holds the row, and a pending drag is re-based (or dropped) because the same
+        // lease still owns the cover position. That lease is wall clock, and on a loaded runner it
+        // expired mid-test, so a report that must not settle the card did. Freeze the clock through
+        // the existing `optimisticNow` seam: these cases measure the takeover rules, not the lease
+        // length, and the case below pins what happens once the lease deliberately runs out.
+        let frozenNow = Date(timeIntervalSince1970: 1_700_000_000)
+        store.optimisticNow = { frozenNow }
         store.toastAutoDismissInterval = nil
         store.controlDebounceSleep = { _ in await gate.sleep() }
         try await store.waitForTestSnapshot()
@@ -401,6 +420,32 @@ struct CoverDragTakeoverTests {
         let travelling = try #require(store.devices.first?.coverSpec)
         #expect(travelling.positionPercent == 20, "the card keeps the target until the motor reaches it")
         #expect(travelling.motion == .opening)
+    }
+
+    @Test("A report after the cover lease expires owns the row")
+    @MainActor
+    func reportAfterLeaseExpiryOwnsRow() async throws {
+        let (store, mock, gate) = try await makeStore()
+        let clock = ManualClock()
+        store.optimisticNow = { clock.now }
+        let id = Self.curtain.id
+
+        store.setCoverPosition(id, percent: 50)
+        await waitUntil { gate.waiting == 1 }
+        gate.release()
+        await waitUntil { await mock.executedCommands.count == 1 }
+        await waitUntil { hasSucceededPatch(store, id) }
+
+        // The lease is measured on the clock, so this test moves it instead of sleeping: past the
+        // lease the intermediate report is the only truth left on the row.
+        clock.advance(by: 9)
+        let beforeReport = store.snapshotGeneration
+        await mock.updateSnapshot(SynthesizedHome(devices: [Self.curtain(at: 16, motion: .opening)]))
+        await waitUntil { store.snapshotGeneration > beforeReport }
+
+        let shown = try #require(store.devices.first?.coverSpec)
+        #expect(shown.positionPercent == 16, "an expired lease no longer hides the report")
+        #expect(store.optimisticLockUntil[id] == nil)
     }
 
     @Test("A missing position report cannot turn the optimistic target into the drag's start")
