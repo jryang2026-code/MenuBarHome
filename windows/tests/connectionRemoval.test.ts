@@ -301,6 +301,35 @@ describe("P2c-W retryable connection removal records", () => {
     assert.equal(findConnectionRemoval(record.scope, storage), null);
   });
 
+  it("reports an incomplete removal when the record cannot be cleared, and finishes a superseded intent", async () => {
+    const base = memoryStorage();
+    const lockable = memoryStorage();
+    const locked: Storage = {
+      ...lockable,
+      removeItem: () => {
+        throw new Error("storage is locked");
+      },
+    };
+    const record = beginConnectionRemoval(
+      { kind: "ha", scope: HA_SCOPE, stage: "cleaning" },
+      base,
+    )!;
+    const port = makePort();
+    // Its own document, so clearing it is the only write that can fail.
+    const lockedRecord = beginConnectionRemoval({ kind: "ha", scope: `${HA_SCOPE}/locked` }, locked)!;
+    const stuck = await executeConnectionRemoval(lockedRecord, port.port, locked);
+    assert.equal(stuck.status, "incomplete");
+    assert.equal(stuck.status === "incomplete" ? stuck.reason : "", "removal_record_not_cleared");
+    assert.ok(findConnectionRemoval(lockedRecord.scope, locked), "the record must stay for a retry");
+
+    // A newer intent owns the record, so the older cleanup reports success without clearing it.
+    const supersededPort = makePort();
+    const old = beginConnectionRemoval({ kind: "ha", scope: record.scope }, base)!;
+    beginConnectionRemoval({ kind: "ha", scope: record.scope }, base);
+    assert.deepEqual(await executeConnectionRemoval(old, supersededPort.port, base), { status: "completed" });
+    assert.ok(findConnectionRemoval(record.scope, base), "the newer intent keeps its record");
+  });
+
   it("never deletes a primary credential another account was promoted into, and fails closed when it is unreadable", async () => {
     const storage = memoryStorage();
     const rebound = beginConnectionRemoval(
@@ -397,9 +426,18 @@ describe("P2c-W host removal: retryable cleanup and no restart of a removed conn
       );
       assert.equal(coldApp.settings.miSession === null || coldApp.settings.miSession.userId === SESS_A.userId, true);
 
+      // The interrupted removal is visible in Settings with an actionable retry (P2c-W).
+      coldApp.openSettingsSheet("connection");
+      const retryBtn = coldApp.root.querySelector<HTMLButtonElement>("[data-connection-removal-retry]");
+      assert.ok(retryBtn, "expected a retry control for the unfinished removal");
+
       // Retry finishes the cleanup, and the removed account never comes back.
       secure.failOnDelete.delete(`mi_session_${slotB}`);
-      assert.equal(await retryConnectionRemovalOnHost(coldApp, miConnectionRemovalScope(ACC_B)), true);
+      retryBtn.click();
+      for (let i = 0; i < 40 && findConnectionRemoval(miConnectionRemovalScope(ACC_B)) !== null; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      assert.equal(findConnectionRemoval(miConnectionRemovalScope(ACC_B)), null);
       assert.equal(secure.data.has(`mi_session_${slotB}`), false);
       assert.equal(findConnectionRemoval(miConnectionRemovalScope(ACC_B)), null);
       requests.length = 0;
@@ -491,6 +529,17 @@ describe("P2c-W host removal: retryable cleanup and no restart of a removed conn
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.match(app.replyBanner?.text ?? "", /还没移除完/);
     assert.equal(app.settings.haToken, "", "a refused rebind must not store the new token");
+
+    // Home Assistant has one credential slot, so a *different* endpoint must be refused as well:
+    // the pending removal owns that shared slot until it finishes.
+    url.value = "https://other-ha.connection-removal.test:8123";
+    url.dispatchEvent(new window.Event("input", { bubbles: true }));
+    token.value = "other-token";
+    token.dispatchEvent(new window.Event("input", { bubbles: true }));
+    save.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.match(app.replyBanner?.text ?? "", /Home Assistant 连接还没移除完/);
+    assert.equal(app.settings.haBaseURL, "", "a refused endpoint change must not be stored");
     assert.equal(findConnectionRemoval(HA_SCOPE)?.stage, "failed", "the retry record stays authoritative");
     app.dispose();
   });

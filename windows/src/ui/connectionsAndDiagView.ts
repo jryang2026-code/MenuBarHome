@@ -40,6 +40,7 @@ import {
   haConnectionRemovalScope,
   markConnectionRemovalStage,
   miConnectionRemovalScope,
+  readConnectionRemovalState,
   type ConnectionRemovalExecution,
   type ConnectionRemovalRecord,
   type ConnectionRemovalVaultPort,
@@ -1600,6 +1601,39 @@ async function drainHaScopeForRemoval(
   return false;
 }
 
+/**「未完成移除 · 重试」rows: the only entry point back into an interrupted cleanup (P2c-W). */
+function renderPendingConnectionRemovalsHtml(
+  esc: (raw: string) => string,
+  lang: AppLanguage,
+): string {
+  const removals = readConnectionRemovalState().records;
+  if (removals.length === 0) return "";
+  const rows = removals
+    .map((record) => {
+      const target =
+        record.kind === "ha"
+          ? record.scope.replace(/^ha:/, "")
+          : tr3("米家账号", "米家帳號", "Xiaomi account", lang);
+      return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <span style="flex:1;min-width:160px;">${esc(target)}</span>
+        <button type="button" class="cc-btn-secondary" data-connection-removal-retry="${esc(record.scope)}">${esc(tr3("重试清理", "重試清理", "Retry cleanup", lang))}</button>
+      </div>`;
+    })
+    .join("");
+  return `<div class="cc-field" id="conn-diag-pending-removals">
+    <label style="margin:0;font-weight:600;">${esc(tr3("未完成移除", "未完成移除", "Removal not finished", lang))}</label>
+    <span class="cc-field-hint" style="margin:0;">${esc(
+      tr3(
+        "下面这些连接的钥匙还留在本机，重启后也不会重新连接。点「重试清理」继续清除。",
+        "下面這些連線的鑰匙還留在本機，重新啟動後也不會重新連線。點「重試清理」繼續清除。",
+        "These connections still have credentials on this PC and will not reconnect after a restart. Use Retry cleanup to finish deleting them.",
+        lang,
+      ),
+    )}</span>
+    ${rows}
+  </div>`;
+}
+
 function connectionRemovalRecordFailedText(lang: AppLanguage): string {
   return tr3(
     "无法记录移除进度，凭据未改动，请重试",
@@ -2907,6 +2941,7 @@ export function renderConnectionsAndDiagSection(
 
   return `
     <div id="connections-and-diag-root" style="display:flex;flex-direction:column;gap:12px;">
+      ${renderPendingConnectionRemovalsHtml(esc, lang)}
       ${renderHaDisconnectRowHtml(ctx, host, session, esc)}
 
       <details class="cc-conn-secondary" data-conn-section="advancedConnectionOptions">
@@ -3215,6 +3250,14 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
         session.pendingDisablePreview = null;
       }
       host.render();
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-connection-removal-retry]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const scope = el.dataset.connectionRemovalRetry;
+      if (!scope || el.disabled) return;
+      el.disabled = true;
+      void retryConnectionRemovalOnHost(host, scope);
     });
   });
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]").forEach((btn) => {

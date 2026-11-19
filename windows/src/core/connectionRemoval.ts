@@ -447,6 +447,9 @@ export async function executeConnectionRemoval(
         : names;
     return incomplete(errorMessage(error), failed);
   }
-  completeConnectionRemoval(record.scope, record.ownerVersion, storage);
-  return { status: "completed" };
+  if (completeConnectionRemoval(record.scope, record.ownerVersion, storage)) return { status: "completed" };
+  // A newer intent took the record over: it owns the cleanup now, so this one is finished. Anything
+  // else means the record could not be cleared and would keep the scope blocked after a restart.
+  const stillOwned = findConnectionRemoval(record.scope, storage)?.ownerVersion === record.ownerVersion;
+  return stillOwned ? incomplete("removal_record_not_cleared", names) : { status: "completed" };
 }
