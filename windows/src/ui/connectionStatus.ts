@@ -1,13 +1,13 @@
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import type { LanguagePreference } from "../core/i18n.js";
-import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
+import { hasSecondaryMiAccountsInIndex, makeMiAccount } from "../core/miAccountsStore.js";
 import type { ConnectionStatus } from "../core/models.js";
 import type { MiSession } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
-import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { getHostMiAccountsState, isDualSourceEnabled, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
 import { hasMatchingDomShape, morphMatchingDom } from "./dom.js";
 import { isVerboseConnectionFooter } from "./panelView.js";
 /** Plain-language connection state for the footer and its keyboard-reachable detail card. */
@@ -64,6 +64,15 @@ const hasHA = (host: MenuMijiaWindowsApp): boolean =>
 /** One owner for dual-source detection so the footer can never disagree with the merge pipeline. */
 const usesDualSource = (host: MenuMijiaWindowsApp): boolean =>
   host.settings.connectionMode !== "demo" && isDualSourceEnabled(host);
+/**
+ * A Xiaomi login that still exists but was turned off in Settings is configured, not connected. Reporting the
+ * platform as connected would promise control the gates then refuse, so the footer names the disabled state.
+ */
+function allMiAccountsDisabled(host: MenuMijiaWindowsApp): boolean {
+  const listed = host.miAccountsOverride ?? getHostMiAccountsState(host)?.accounts ?? [];
+  const known = listed.length > 0 ? listed : host.settings.miSession !== null ? [makeMiAccount(host.settings.miSession)] : [];
+  return known.length > 0 && resolveEnabledMiAccountsForHost(host, known).length === 0;
+}
 /** One Xiaomi login the footer judges on its own: the live session plus every hydrated secondary account. */
 interface MiSessionEntry {
   /** Account id from the account list, so a merged 401 can be matched to this login; `""` for the live session. */
@@ -154,6 +163,10 @@ function miAccountsConnected(host: MenuMijiaWindowsApp): number {
  */
 function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
   if (!IS_ACTIVE_MI(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
+  // Turning an account off is a deliberate choice, not an expiry: name it before the session-expiry check.
+  if (allMiAccountsDisabled(host)) {
+    return { badge: "unconfigured", text: tr(host, "米家已停用", "米家已停用", "Xiaomi Home is turned off") };
+  }
   const expiry = miExpirySummary(host);
   if (expiry.configured > 0 && expiry.expired >= expiry.configured) {
     return { badge: "reauth", text: tr(host, "登录已过期 · 需要重新扫码", "登入已過期 · 需要重新掃碼", "Session expired · re-scan required") };
@@ -261,7 +274,9 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home"))
     : miView.badge === "reauth"
       ? miExpiredText
-      : host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView.text;
+      : miView.badge === "unconfigured"
+        ? miView.text
+        : host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView.text;
   const haDownText = haView === null
     ? unavailableText(host, "Home Assistant")
     : haView.badge === "reauth"
@@ -312,6 +327,7 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
   if (miView) {
+    if (miView.badge === "unconfigured") return present("unconfigured", SF_ICONS.wifiSlash, miView.text, actions.settings);
     if (miView.badge === "reauth") return present("offline", SF_ICONS.qrcode, miExpiredText, actions.qr);
     if (miView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, miDownText, actions.retry);
     if (miView.badge === "degraded") return present("degraded", SF_ICONS.wifi, miDownText, actions.retry);

@@ -85,6 +85,9 @@ struct ActivityStackView<Content: View>: View {
     let dismiss: (PanelActivity) -> Void
     let clear: () -> Void
     var runMissedTimer: ((UUID) -> Void)? = nil
+    /// 确认 on a legacy timer saved before scopes existed (#22): stamps the sources on screen at
+    /// the tap and arms the timer for its own `fireDate` instead of running it.
+    var confirmMissedTimer: ((UUID) -> Void)? = nil
     var dismissMissedTimer: ((UUID) -> Void)? = nil
     let label: (PanelActivity) -> String
     @ViewBuilder let content: (PanelActivity) -> Content
@@ -156,24 +159,43 @@ struct ActivityStackView<Content: View>: View {
     }
 
     private func missedTimerCard(_ entry: ScheduledCommand) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+        // A timer saved before scopes existed has no recorded owner. It is not a missed timer of
+        // this home: while it is still ahead it offers 确认 (arm for its own time), and once due it
+        // can be run once. Neither path arms it automatically (#22).
+        let unscoped = entry.effectiveSourceScopes == nil
+        let awaitsConfirmation = unscoped && entry.fireDate > Date()
+        return VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Label(
-                    L10n.tr("已错过的定时：\(entry.reply)", "Missed timer: \(entry.reply)"),
-                    systemImage: "exclamationmark.clock.fill"
+                    unscoped
+                        ? L10n.tr("来源待确认：\(entry.reply)", "Source unverified: \(entry.reply)")
+                        : L10n.tr("已错过的定时：\(entry.reply)", "Missed timer: \(entry.reply)"),
+                    systemImage: unscoped ? "questionmark.circle.fill" : "exclamationmark.clock.fill"
                 )
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                 .foregroundStyle(.primary)
                 Spacer(minLength: 4)
             }
             HStack(spacing: 8) {
-                Button(L10n.tr("立即执行", "Run Now")) { runMissedTimer?(entry.id) }
-                    .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                if awaitsConfirmation {
+                    Button(L10n.tr("确认", "Confirm")) { confirmMissedTimer?(entry.id) }
+                        .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                        .help(L10n.tr(
+                            "确认这个定时属于当前家庭，到点后照常执行",
+                            "Confirm this timer belongs to the current home; it runs at its set time"
+                        ))
+                } else {
+                    Button(L10n.tr("立即执行", "Run Now")) { runMissedTimer?(entry.id) }
+                        .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                }
                 Button(L10n.tr("忽略", "Dismiss")) {
                     withAnimation(animation) { dismissMissedTimer?(entry.id) }
                 }
                 .themedPillButtonStyle(theme)
-                .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
+                .accessibilityLabel(Text(L10n.tr(
+                    unscoped ? "忽略来源待确认的定时" : "忽略已错过的定时",
+                    unscoped ? "Dismiss unverified timer" : "Dismiss missed timer"
+                )))
             }
         }
         .padding(10)

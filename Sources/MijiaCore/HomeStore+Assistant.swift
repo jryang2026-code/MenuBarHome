@@ -796,6 +796,14 @@ extension HomeStore {
         return reply
     }
 
+    /// True when the rows on screen were produced by the connected sources. `startListening()` marks
+    /// the generation at the switch and only the next snapshot advances it, so the list left over from
+    /// the previous home is exactly the equality `schedule()` refuses. LG rows come from the LAN client,
+    /// so an all-LG plan is current without a cloud snapshot.
+    private func rowsBelongToConnectedSources(for plan: IntentPlan) -> Bool {
+        planHasOnlyLGTargets(plan) || snapshotGeneration != listeningSnapshotGeneration
+    }
+
     /// True when every target is a local LG card. Those rows come from the LAN client rather than a
     /// cloud snapshot, so a stale `snapshotGeneration` says nothing about their freshness.
     private func planHasOnlyLGTargets(_ plan: IntentPlan) -> Bool {
@@ -930,8 +938,9 @@ extension HomeStore {
     /// `missedScheduledCommands` so an overdue heater or light timer never fires silently hours later.
     /// Timers the Mac sleeps through take the same path when they wake up late (see `startScheduledTask`).
     /// Only timers whose captured sources still match the connected ones are armed or shown; the other
-    /// sources' entries stay persisted (ADR-0019). Legacy entries with no scope are adopted here, once,
-    /// when a primary source is known.
+    /// sources' entries stay persisted (ADR-0019). Legacy entries with no scope never arm against the
+    /// connected home: with a primary source known they wait visibly in the missed list until the user
+    /// confirms them, and stay parked on disk while no source is known (#22).
     public func restoreScheduledCommands(now: Date? = nil) {
         for task in scheduledTasks.values {
             task.cancel()
@@ -956,12 +965,19 @@ extension HomeStore {
         var missed: [ScheduledCommand] = []
         var foreign: [ScheduledCommand] = []
         for stored in persisted {
-            let entry: ScheduledCommand
-            if stored.effectiveSourceScopes == nil, let primaryScope {
-                entry = stored.adoptingScope(primaryScope)
-            } else {
-                entry = stored
+            if stored.effectiveSourceScopes == nil {
+                // No recorded scope means the creating home is unknown. Adopting it to whichever
+                // source happens to be connected could fire it in a home it never belonged to, so
+                // it only becomes visible — never armed, never announced as missed — until the user
+                // confirms it (`confirmScheduledCommandSource`) or, once due, runs it (#22).
+                if primaryScope != nil {
+                    missed.append(stored)
+                } else {
+                    foreign.append(stored)
+                }
+                continue
             }
+            let entry = stored
             guard let entryScopes = entry.effectiveSourceScopes,
                   Self.sourceScopesMatch(entryScopes, active: scopes) else {
                 foreign.append(entry)
@@ -990,7 +1006,11 @@ extension HomeStore {
 
     public func notifyMissedScheduledCommandsIfNeeded() {
         guard let handler = onMissedScheduledCommand else { return }
-        for entry in missedScheduledCommands where !notifiedMissedTimerIds.contains(entry.id) {
+        // A legacy entry with no recorded source is not a missed timer of this home: it may not be
+        // due yet and nobody has confirmed its owner, so the "missed while closed" banner and its
+        // Run Now action are not offered for it. The panel activity stack shows it as 来源待确认 (#22).
+        for entry in missedScheduledCommands
+        where entry.effectiveSourceScopes != nil && !notifiedMissedTimerIds.contains(entry.id) {
             notifiedMissedTimerIds.insert(entry.id)
             handler(entry)
         }
@@ -1002,13 +1022,39 @@ extension HomeStore {
         // before anything else: a refused run stays in the list and can be retried after unlocking.
         if rejectControlWhileLocked() { return nil }
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
-        guard let entryScopes = entry.effectiveSourceScopes,
-              Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        // A scoped entry must still match the connected sources. An unscoped legacy entry has no
+        // owner to match: the tap confirms that the home on screen owns it (#22), so the run is bound
+        // to that home. A legacy timer that is not due yet never runs early; it is confirmed instead.
+        let entryScopes = entry.effectiveSourceScopes
+        let tappedOwner: LegacyTimerOwner?
+        if let entryScopes {
+            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+            tappedOwner = nil
+        } else {
+            guard entry.fireDate <= assistantNow(), let owner = currentLegacyTimerOwner() else { return nil }
+            tappedOwner = owner
+        }
         await waitForInitialSnapshotIfNeeded()
         // A switch or a lock can land while we wait for the snapshot. Re-check before consuming the
         // entry: it is removed and persisted only once the run is actually going ahead.
         if rejectControlWhileLocked() { return nil }
-        guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        if let entryScopes {
+            guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        } else {
+            guard currentLegacyTimerOwner() == tappedOwner else { return nil }
+            // The previous home's rows are still on screen right after a switch; running against them
+            // would check the targets in one home and send to the other (#22).
+            guard rowsBelongToConnectedSources(for: entry.plan) else {
+                showToast(
+                    L10n.tr(
+                        "数据源尚未就绪，定时未执行",
+                        "The home source is not ready; the timer did not run"
+                    ),
+                    isError: true
+                )
+                return nil
+            }
+        }
         guard missingPlanTargets(entry.plan).isEmpty else {
             showToast(
                 L10n.tr(
@@ -1033,6 +1079,84 @@ extension HomeStore {
         missedScheduledCommands.removeAll { $0.id == id }
         notifiedMissedTimerIds.remove(id)
         persistAllScheduledCommands()
+    }
+
+    /// 确认 on a legacy timer saved before scopes existed (#22). It stamps the timer with the sources
+    /// on screen at the tap, and from then on the ADR-0019 rules apply: a timer still ahead arms for
+    /// its own time, and one that fell due meanwhile becomes an ordinary missed timer that still needs
+    /// 立即补执行. Confirming never sends a command. Returns false and keeps the entry unconfirmed when
+    /// the source or home changed during the snapshot wait, when the device rows still come from the
+    /// previous home, or when the plan's devices are not here.
+    @discardableResult
+    public func confirmScheduledCommandSource(id: UUID) async -> Bool {
+        guard let entry = missedScheduledCommands.first(where: { $0.id == id }),
+              entry.effectiveSourceScopes == nil,
+              let tappedOwner = currentLegacyTimerOwner() else { return false }
+        await waitForInitialSnapshotIfNeeded()
+        guard currentLegacyTimerOwner() == tappedOwner else { return false }
+        // Confirming stamps the newly connected sources; it must not do that while the device rows
+        // still come from the previous home (#22).
+        guard rowsBelongToConnectedSources(for: entry.plan) else {
+            showToast(
+                L10n.tr(
+                    "数据源尚未就绪，定时未确认",
+                    "The home source is not ready; the timer was not confirmed"
+                ),
+                isError: true
+            )
+            return false
+        }
+        guard missingPlanTargets(entry.plan).isEmpty else {
+            showToast(
+                L10n.tr(
+                    "定时的目标设备不在当前家庭，未确认",
+                    "The timer's devices are not in the current home; it was not confirmed"
+                ),
+                isError: true
+            )
+            return false
+        }
+        // Same single stretch as 立即补执行: a dismiss or a second tap during the wait wins cleanly.
+        guard let current = missedScheduledCommands.first(where: { $0.id == id }),
+              current.effectiveSourceScopes == nil else { return false }
+        let confirmed = ScheduledCommand(
+            id: current.id,
+            reply: current.reply,
+            fireDate: current.fireDate,
+            plan: current.plan,
+            sourceScope: connectionScopeIdentifier,
+            sourceScopes: tappedOwner.scopes.sorted()
+        )
+        missedScheduledCommands.removeAll { $0.id == id }
+        let now = assistantNow()
+        if confirmed.fireDate > now {
+            notifiedMissedTimerIds.remove(id)
+            scheduledCommands.append(confirmed)
+            scheduledCommands.sort { $0.fireDate < $1.fireDate }
+            persistAllScheduledCommands()
+            startScheduledTask(for: confirmed, delay: confirmed.fireDate.timeIntervalSince(now))
+        } else {
+            // The user is looking at it in the panel; a "missed while closed" banner would only repeat it.
+            notifiedMissedTimerIds.insert(id)
+            missedScheduledCommands.append(confirmed)
+            missedScheduledCommands.sort { $0.fireDate < $1.fireDate }
+            persistAllScheduledCommands()
+        }
+        return true
+    }
+
+    /// What a tap on a legacy (unscoped) timer vouches for: the sources connected and the home on
+    /// screen at that moment. Selecting another Mi Home keeps the scopes but resets the control
+    /// context, so both are compared after the snapshot wait (#22).
+    private struct LegacyTimerOwner: Equatable {
+        let scopes: Set<String>
+        let controlContext: UUID
+    }
+
+    private func currentLegacyTimerOwner() -> LegacyTimerOwner? {
+        let scopes = activeConnectionScopes
+        guard !scopes.isEmpty, connectionScopeIdentifier != nil else { return nil }
+        return LegacyTimerOwner(scopes: scopes, controlContext: controlContextID)
     }
 
     /// Cancels one pending command, or all of them when `id` is nil. Returns how many were cancelled.

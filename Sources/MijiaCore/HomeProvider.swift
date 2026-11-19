@@ -241,7 +241,7 @@ public actor HAWebSocketProvider: HomeProvider {
         rediscover: @escaping @Sendable (String) async -> [HADiscoveredInstance] = { await HADiscovery.discoverOnLAN(currentURLHint: $0) },
         allowsToken: @escaping @Sendable (String) -> Bool = { HAPlaintextConsent.allowsToken(to: $0, defaults: .standard) },
         onPlaintextConsentNeeded: (@Sendable (String) -> Void)? = nil,
-        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { true }
+        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { false }
     ) {
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
@@ -441,9 +441,13 @@ public actor HAWebSocketProvider: HomeProvider {
                 if Task.isCancelled { break }
                 let networkSatisfied = await isNetworkSatisfied()
                 let host = URL(string: Self.normalizeBaseURL(baseURLString))?.host?.lowercased()
-                updateLocalNetworkDenied(LocalNetworkPermissionClassifier.isDeniedConnectionError(
+                if LocalNetworkPermissionClassifier.isDeniedConnectionError(
                     error, targetHost: host, isGeneralNetworkSatisfied: networkSatisfied
-                ))
+                ) {
+                    updateLocalNetworkDenied(true)
+                } else if isLocalNetworkDenied, Self.provesPacketCrossedPermissionBoundary(error) {
+                    updateLocalNetworkDenied(false)
+                }
                 if case HomeProviderError.unauthorized = error {
                     activeWebSocket = nil
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
@@ -461,6 +465,35 @@ public actor HAWebSocketProvider: HomeProvider {
                 backoffSeconds = min(backoffSeconds * 1.8, 10.0)
             }
         }
+    }
+
+    private static func provesPacketCrossedPermissionBoundary(_ error: any Error) -> Bool {
+        if let providerError = error as? HomeProviderError {
+            switch providerError {
+            case .unauthorized, .networkError, .serviceCallFailed:
+                return true
+            case .invalidURL, .backendNotConfigured:
+                return false
+            }
+        }
+        var current: NSError? = error as NSError
+        for _ in 0..<8 {
+            guard let nsError = current else { break }
+            if nsError.domain == NSURLErrorDomain,
+               nsError.code == URLError.badServerResponse.rawValue || nsError.code == URLError.userAuthenticationRequired.rawValue {
+                return true
+            }
+            if nsError.domain == NSPOSIXErrorDomain, nsError.code == Int(ECONNREFUSED) {
+                return true
+            }
+            if let sd = (nsError.userInfo["_kCFStreamErrorDomainKey"] as? NSNumber)?.intValue,
+               let sc = (nsError.userInfo["_kCFStreamErrorCodeKey"] as? NSNumber)?.intValue,
+               sd == 1, sc == Int(ECONNREFUSED) {
+                return true
+            }
+            current = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 
     private func updateLocalNetworkDenied(_ denied: Bool) {
