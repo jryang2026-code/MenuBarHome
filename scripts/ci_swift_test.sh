@@ -31,8 +31,6 @@ dump_macos_crash_reports() {
         return 0
     fi
     echo "=== macOS crash reports (ReportCrash)"
-    # ReportCrash flushes asynchronously; give it a moment to land the `.ips` on disk.
-    sleep 3 || true
     CRASH_REPORT_SEARCH_DIRS="$(printf '%s\n%s\n' "$HOME/Library/Logs/DiagnosticReports" "/Library/Logs/DiagnosticReports")" \
         python3 - <<'PY' || echo "::warning::could not read the macOS crash reports (see the log above)"
 import glob
@@ -43,26 +41,41 @@ import time
 
 # The directories also hold months of unrelated crashes; only this run's reports are interesting.
 WINDOW_SECONDS = 600
+# ReportCrash flushes the `.ips` asynchronously after the abort and a loaded runner can take a while,
+# so poll instead of racing a fixed sleep: one run already lost its report to a 3s wait.
+REPORT_WAIT_SECONDS = 45
+POLL_SECONDS = 2
 NAME_PATTERNS = ("*swiftpm-testing*", "*MenuBarMijia*", "*xctest*")
 EXTENSIONS = (".ips", ".crash")
 MAX_REPORTS = 2
 # Only our own modules are worth an `atos` call: system frames keep the symbols ReportCrash recorded.
 SYMBOLIZE_IMAGES = ("MenuBarMijiaPackageTests", "MijiaCore", "MenuBarMijiaApp")
 
-now = time.time()
 search_dirs = [line for line in os.environ.get("CRASH_REPORT_SEARCH_DIRS", "").splitlines() if line]
-candidates = []
-for directory in search_dirs:
-    for pattern in NAME_PATTERNS:
-        for extension in EXTENSIONS:
-            for path in glob.glob(os.path.join(directory, pattern + extension)):
-                try:
-                    modified = os.path.getmtime(path)
-                except OSError:
-                    continue
-                if now - modified <= WINDOW_SECONDS:
-                    candidates.append((modified, path))
-candidates.sort(reverse=True)
+
+
+def recent_reports():
+    now = time.time()
+    found = []
+    for directory in search_dirs:
+        for pattern in NAME_PATTERNS:
+            for extension in EXTENSIONS:
+                for path in glob.glob(os.path.join(directory, pattern + extension)):
+                    try:
+                        modified = os.path.getmtime(path)
+                    except OSError:
+                        continue
+                    if now - modified <= WINDOW_SECONDS:
+                        found.append((modified, path))
+    found.sort(reverse=True)
+    return found
+
+
+deadline = time.time() + REPORT_WAIT_SECONDS
+candidates = recent_reports()
+while not candidates and time.time() < deadline:
+    time.sleep(POLL_SECONDS)
+    candidates = recent_reports()
 
 
 def to_int(value):
