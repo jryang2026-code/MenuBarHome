@@ -622,6 +622,8 @@ export interface ResumeRecoveryHost {
   readonly cloudValuesStale: boolean;
   readonly haConnectionError: string | null;
   readonly root?: OptimisticLockRootLike;
+  /** Present on the real panel; the narrow slice keeps lifecycle tests free of a full render pipeline. */
+  render?(): void;
   isPanelVisible(): boolean;
   refreshDevices(silent?: boolean): Promise<void>;
 }
@@ -935,7 +937,8 @@ export function bindLifecycleRecovery(
       return;
     }
     if ((ownerDoc as { readonly visibilityState?: string }).visibilityState === "hidden") {
-      collapseActivityStackOnHide(host);
+      // Clearing the flags is not enough: the mounted dialog/expanded list must leave the DOM too.
+      if (collapseActivityStackOnHide(host)) host.render?.();
     } else {
       notifyPanelWakeLifecycle(host);
     }
@@ -1116,7 +1119,7 @@ export function bindGlobalKeys(
         host.render();
         return;
       }
-      collapseActivityStackOnHide(host);
+      if (collapseActivityStackOnHide(host)) host.render();
       resumeUndoHoverPause(host);
       invokeTauriVoid("hide_panel");
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {

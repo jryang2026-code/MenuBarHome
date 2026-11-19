@@ -8,8 +8,10 @@ import {
   primaryPowerSwitchLightMarkDevice,
   renderActivityStack,
   renderClassicUnifiedUpperStack,
+  renderMissedScheduledCards,
 } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
+import { renderConnectionStatus, resolveConnectionStatus, type ConnectionStatusPresentation } from "./connectionStatus.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
@@ -21,6 +23,39 @@ import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
 import { renderPersistentUndoPill, tr3 } from "./undoTracker.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+
+/** A full-width status row costs two footer lines; footer actions need more headroom than a bare label. */
+const FULL_WIDTH_STATUS_COLUMNS = 20;
+const ACTION_STATUS_COLUMNS = 16;
+
+/** CJK and emoji glyphs take roughly two Latin columns, so `String.length` is the wrong wrap threshold. */
+function visualColumns(text: string): number {
+  let columns = 0;
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0;
+    const wide = (code >= 0x1100 && code <= 0x115f)
+      || code === 0x2329 || code === 0x232a
+      || (code >= 0x2e80 && code <= 0xa4cf)
+      || (code >= 0xac00 && code <= 0xd7a3)
+      || (code >= 0xf900 && code <= 0xfaff)
+      || (code >= 0xfe30 && code <= 0xfe6f)
+      || (code >= 0xff00 && code <= 0xff60)
+      || (code >= 0xffe0 && code <= 0xffe6)
+      || (code >= 0x1f300 && code <= 0x1f64f)
+      || (code >= 0x1f900 && code <= 0x1f9ff);
+    columns += wide ? 2 : 1;
+  }
+  return columns;
+}
+
+/**
+ * Healthy copy must stay on the same row as the footer actions in every language: `Devices synced` is 14 ASCII
+ * characters while 设备同步正常 measures 12 visual columns, so a character count cannot drive the threshold.
+ */
+export function isVerboseConnectionFooter(status: ConnectionStatusPresentation): boolean {
+  if (status.tone === "online" && !status.action) return false;
+  return visualColumns(status.text) > (status.action ? ACTION_STATUS_COLUMNS : FULL_WIDTH_STATUS_COLUMNS);
+}
 
 export function renderPanel(host: MenuMijiaWindowsApp): void {
   syncSensorHistoryHost(host);
@@ -193,8 +228,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
         </main>`;
+  const verboseFooter = isVerboseConnectionFooter(resolveConnectionStatus(host));
   const footerHtml = `
-        <footer class="cc-footer">
+        <footer class="cc-footer${verboseFooter ? " is-verbose-status" : ""}">
           <div class="cc-footer-status">
             ${footerStatus(host)}
             ${isClassic ? "" : host.renderAllOffControl()}
@@ -297,7 +333,9 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
     );
   }
 
-  const activityStack = renderActivityStack(host);
+  // Pinned alerts -> missed timers -> ordinary capsule: the missed list keeps its place between the safety
+  // cards and the foldable capsule instead of trailing every reminder (#280 review).
+  const activityStack = renderActivityStack(host, Date.now(), renderMissedScheduledCards(host));
   if (activityStack) cards.push(activityStack);
 
   if (host.pendingSuggestions.length > 0) {
@@ -307,16 +345,6 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
           (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
             item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
           }</button>`,
-        )
-        .join("")}</div></div>`,
-    );
-  }
-
-  if (host.missedScheduledCommands.length > 0) {
-    cards.push(
-      `<div class="win-notif-card cc-feedback-card is-warning"><div class="cc-timers-stack">${host.missedScheduledCommands
-        .map(
-          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`,
         )
         .join("")}</div></div>`,
     );
@@ -560,13 +588,7 @@ export function renderSliderDeck(host: MenuMijiaWindowsApp): string {
 }
 
 function footerStatus(host: MenuMijiaWindowsApp): string {
-  const health = host.panelHealth();
-  const dot = `<span class="cc-status-dot ${health.dot}"></span>`;
-  const escaped = host.escapeHtml(health.label);
-  if (health.kind === "offline" && health.recovery === "qr") {
-    return `${dot}<button type="button" class="cc-footer-label is-action" id="btn-footer-health" title="${escaped}">${escaped}</button>`;
-  }
-  return `${dot}<span class="cc-footer-label" title="${escaped}">${escaped}</span>`;
+  return renderConnectionStatus(host);
 }
 
 function liveBanner(host: MenuMijiaWindowsApp): string {

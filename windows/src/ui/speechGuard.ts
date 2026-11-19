@@ -27,6 +27,7 @@ import type {
 } from "./appTypes.js";
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { foldGrouped } from "./cloudRefresh.js";
+import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
@@ -866,7 +867,8 @@ export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): Rayc
   return buildRaycastSnapshot({
     connectionMode: host.settings.connectionMode,
     selectedHomeId: host.settings.selectedHomeId,
-    connectionSummary: host.panelHealth().label,
+    // The Raycast snapshot speaks the same plain-language status as the footer: one owner, one truth.
+    connectionSummary: resolveConnectionStatus(host).text,
     bridgeToken: token,
     isStale: host.valuesAreStale,
     devices: visibleDevices,
