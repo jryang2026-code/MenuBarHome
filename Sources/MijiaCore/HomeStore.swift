@@ -568,6 +568,7 @@ public final class HomeStore {
     /// A genuine first completion applies the guide's launch-at-login checkbox. Reopening the guide
     /// or closing an old install's checklist must not register anything by itself (#281).
     public func completeOnboarding() {
+        guard identityMigrationDiagnostic == nil else { return }
         if !hasCompletedOnboarding, let launchAtLoginSystem {
             LaunchAtLoginCoordinator(system: launchAtLoginSystem, store: self)
                 .applyOnboardingChoiceIfNeeded()
@@ -1189,6 +1190,9 @@ public final class HomeStore {
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
+    @ObservationIgnored var lastPersistedCapabilitySelection: CapabilitySelection?
+    @ObservationIgnored var lastPersistedDisabledConnections: Set<ConnectionCapabilityID> = []
+    @ObservationIgnored var lastPersistedDisabledScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
     @ObservationIgnored var indexedScenesById: [String: SceneReference] = [:]
     @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]
@@ -1268,20 +1272,9 @@ public final class HomeStore {
         self.miSessionMaskedUserId = initialMiSession?.maskedUserId
         self.miSessionExpiresAt = initialAccounts.compactMap(\.session.expiresAt).min()
         self.miSessionScopeIdentifier = initialMiSession?.historyScopeIdentifier
-        // A home id saved before multi-account has no account prefix. The only account owns it; with
-        // zero or several accounts a bare id is ambiguous, so it is dropped rather than guessed.
-        var initialSelectedHomeId = ud.string(forKey: MiCloudProvider.selectedHomeKey)
-        if let selection = initialSelectedHomeId, MiAccountScope.owner(of: selection) == nil {
-            if initialAccounts.count == 1, let onlyAccount = initialAccounts.first {
-                let scoped = MiAccountScope.id(selection, account: onlyAccount.id)
-                initialSelectedHomeId = scoped
-                ud.set(scoped, forKey: MiCloudProvider.selectedHomeKey)
-            } else {
-                initialSelectedHomeId = nil
-                ud.removeObject(forKey: MiCloudProvider.selectedHomeKey)
-            }
-        }
-        self.selectedMiHomeId = initialSelectedHomeId
+        // Defer legacy bare home ID migration until `resolveLaunchCapabilities` confirms Keychain/account
+        // readability so a transient Keychain failure never deletes `mi_selected_home_id` (P1-1).
+        self.selectedMiHomeId = ud.string(forKey: MiCloudProvider.selectedHomeKey)
         let initialLGConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
         self.lgConfig = initialLGConfig
         self.homeName = HomePreferences.homeName.load(from: ud)
@@ -1376,6 +1369,11 @@ public final class HomeStore {
         self.capabilityResolutionMode = capResolution.mode
         self.identityMigrationDiagnostic = capResolution.retryDiagnostic
         self.capabilityStoreRevision = CapabilitySelectionStore.currentRevision(defaults: ud)
+        self.selectedMiHomeId = Self.resolveSelectedMiHomeId(
+            defaults: ud,
+            accounts: initialAccounts,
+            canMigrateLegacySelection: capResolution.retryDiagnostic == nil
+        )
         switch capResolution.mode {
         case .freshInstall:
             // Record explicit `false` so a second launch before connecting/skipping still opens
@@ -1399,6 +1397,9 @@ public final class HomeStore {
         // re-enable an account the user turned off as soon as `miAccounts` loads (H4).
         self.explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: ud)
         self.explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: ud)
+        self.lastPersistedCapabilitySelection = capResolution.selection
+        self.lastPersistedDisabledConnections = self.explicitlyDisabledConnections
+        self.lastPersistedDisabledScopes = self.explicitlyDisabledScopes
         let initialEnabledAccounts = initialAccounts.filter {
             capResolution.selection.enabledConnections.contains(.xiaomiCloud)
                 && capResolution.selection.enabledConnectionScopes.contains($0.id)
@@ -1416,21 +1417,32 @@ public final class HomeStore {
                 defaults: ud,
                 pinBox: pinnedDeviceSourcesBox
             )
+        } else if initialBackend == .demo {
+            initialProvider = DemoHomeProvider()
+        } else if capResolution.retryDiagnostic != nil {
+            initialProvider = Self.makeComposite(
+                homeAssistant: nil,
+                xiaomiCloud: nil,
+                defaults: ud,
+                pinBox: pinnedDeviceSourcesBox
+            )
         } else {
             initialProvider = DemoHomeProvider()
         }
         self.provider = initialProvider
         loadPersistedCapabilityState()
-        if provider == nil, dualSource == nil, initialBackend != .demo {
+        if provider == nil, dualSource == nil, initialBackend != .demo, !isIdentityUncertain {
             self.provider = makeLiveProvider()
         }
         syncHistoryConnectionScopes()
         scheduleMiSessionExpiryTransition()
-        startListening()
+        if !isIdentityUncertain || usesInjectedProvider || initialBackend == .demo {
+            startListening()
+        }
         restoreScheduledCommands()
-        // Demo mode and unconfigured fresh installs are strictly offline: no LAN discovery at
-        // launch, and LG webOS only starts when a host is already enabled and configured (#47, P4a-M).
-        if provider == nil, dualSource == nil, initialBackend != .demo {
+        // Demo mode, uncertain identity launches, and unconfigured fresh installs are strictly offline:
+        // no LAN discovery at launch, and LG webOS only starts when identity is confirmed and a host is configured (#47, P4a-M).
+        if provider == nil, dualSource == nil, initialBackend != .demo, !isIdentityUncertain {
             startLGWebOSIfNeeded()
         }
     }

@@ -44,7 +44,7 @@ extension HomeStore {
     // MARK: - LG TV & Provider Events
 
     func startLGWebOSIfNeeded() {
-        guard homeBackend != .demo else { return }
+        guard homeBackend != .demo, !isIdentityUncertain else { return }
         let trustStore: LGCertificateTrust = if let credentialVault {
             LGCertificateTrust(vault: credentialVault)
         } else if userDefaults !== UserDefaults.standard {
@@ -81,7 +81,7 @@ extension HomeStore {
         }
         self.lgWebOSClient = client
         self.lgWebOSClientID = clientID
-        if lgConfig.isEnabled && lgConfig.hasConfiguredHost {
+        if !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task { await client.start() }
         }
     }
@@ -988,6 +988,18 @@ extension HomeStore {
     }
 
     func makeLiveProvider() -> any HomeProvider {
+        guard !isIdentityUncertain else {
+            activeHAProvider = nil
+            activeHAConfig = nil
+            activeMiAccountsProvider = nil
+            activeDualProvider = nil
+            return Self.makeComposite(
+                homeAssistant: nil,
+                xiaomiCloud: nil,
+                defaults: userDefaults,
+                pinBox: pinnedDeviceSourcesBox
+            )
+        }
         let token = loadHAToken()
         let active = activeBackends
         let wantsHA = active.contains(.homeAssistant)
@@ -1044,6 +1056,23 @@ extension HomeStore {
 
     func rebuildLiveProvider(forceHAReconnect: Bool = false) {
         haPlaintextPrompt = nil
+        guard !isIdentityUncertain else {
+            eventTask?.cancel()
+            eventTask = nil
+            shutdownCurrentProvider()
+            activeHAProvider = nil
+            activeHAConfig = nil
+            activeMiAccountsProvider = nil
+            activeDualProvider = nil
+            miAccountsConfigEpoch = 0
+            self.provider = Self.makeComposite(
+                homeAssistant: nil,
+                xiaomiCloud: nil,
+                defaults: userDefaults,
+                pinBox: pinnedDeviceSourcesBox
+            )
+            return
+        }
         guard let dual = activeDualProvider,
               provider as AnyObject === dual,
               homeBackend != .demo else {
@@ -1246,7 +1275,7 @@ extension HomeStore {
     /// config is disabled or has no host. A launch in demo mode never created the client, so
     /// create it now instead of leaving a configured TV missing until relaunch.
     private func resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: Bool) {
-        guard wasDemo, homeBackend != .demo else { return }
+        guard wasDemo, homeBackend != .demo, !isIdentityUncertain else { return }
         if let lgClient = lgWebOSClient {
             Task { await lgClient.start() }
         } else {
@@ -1501,6 +1530,9 @@ extension HomeStore {
 
     @discardableResult
     public func updateConnection(serverURL: String, token: String) -> Bool {
+        if identityMigrationDiagnostic != nil, !retryIdentityMigration() {
+            return false
+        }
         // A refused Keychain write must not report "Saved": the token would be gone after relaunch.
         guard KeychainHelper.saveToken(token, defaults: userDefaults, vault: credentialVault) else {
             showToast(
@@ -1688,12 +1720,21 @@ extension HomeStore {
             )
             return true
         }
-        if let lgClient = lgWebOSClient {
-            Task {
-                await lgClient.updateConfig(newConfig)
+        var lgStartedDuringRetry = false
+        if identityMigrationDiagnostic != nil {
+            guard retryIdentityMigration() else {
+                return true
             }
-        } else {
-            startLGWebOSIfNeeded()
+            lgStartedDuringRetry = lgWebOSClient != nil
+        }
+        if !lgStartedDuringRetry {
+            if let lgClient = lgWebOSClient {
+                Task {
+                    await lgClient.updateConfig(newConfig)
+                }
+            } else {
+                startLGWebOSIfNeeded()
+            }
         }
         if newConfig.isEnabled {
             showToast(
@@ -1861,7 +1902,7 @@ extension HomeStore {
     }
 
     public func refreshNow() {
-        guard !allConfiguredSourcesTurnedOff else { return }
+        guard !allConfiguredSourcesTurnedOff, !isIdentityUncertain else { return }
         Task {
             await provider.refreshNow()
             if homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost, let lgClient = lgWebOSClient {

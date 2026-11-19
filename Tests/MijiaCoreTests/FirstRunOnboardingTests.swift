@@ -430,4 +430,541 @@ struct FirstRunOnboardingTests {
             #expect(store.homeBackend == .homeAssistant)
         }
     }
+
+    @Test("P1-1: Uncertain Keychain read preserves legacy bare Mi home ID and migrates it on retry")
+    @MainActor
+    func uncertainKeychainPreservesLegacySelectedMiHomeAndMigratesOnRetry() throws {
+        let (suite, defaults) = try Self.makeFreshSuite("p1-1-legacy-home")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let box = ToggleableVaultBox()
+        let seedVault = CredentialVault(storage: box.storage)
+        let session = MiSession(
+            userId: "66100", cUserId: "c", ssecurity: "s", serviceToken: "tok",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults, vault: seedVault))
+        defaults.set("legacy-home-42", forKey: MiCloudProvider.selectedHomeKey)
+
+        // Simulate locked Keychain on cold launch: legacy bare home ID must not be deleted.
+        box.failReads = true
+        let launchVault = CredentialVault(storage: box.storage)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: launchVault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        #expect(store.identityMigrationDiagnostic != nil)
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == "legacy-home-42")
+        #expect(!store.retryIdentityMigration())
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == "legacy-home-42")
+
+        // Once Keychain becomes readable, retry migrates the bare ID with the account prefix.
+        box.failReads = false
+        #expect(store.retryIdentityMigration())
+        let account = try #require(store.miAccounts.first)
+        let expectedScoped = MiAccountScope.id("legacy-home-42", account: account.id)
+        #expect(store.selectedMiHomeId == expectedScoped)
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == expectedScoped)
+    }
+
+    @Test("P1-2: Uncertain identity blocks live providers, LG TV, wake refresh, and Settings auto checks")
+    @MainActor
+    func uncertainIdentityBlocksLaunchWakeAndSettingsAutoNetworkWork() async throws {
+        let (suite, defaults) = try Self.makeFreshSuite("p1-2-uncertain-network")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        let session = MiSession(
+            userId: "55100", cUserId: "c", ssecurity: "s", serviceToken: "mi-tok",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.save(session, defaults: defaults, vault: vault))
+        #expect(KeychainHelper.saveToken("valid-ha-token", defaults: defaults, vault: vault))
+        defaults.set("https://ha.example.local:8123", forKey: "ha_server_url")
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        let lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.55")
+        #expect(lgConfig.save(to: defaults, vault: vault))
+
+        // Corrupt capability selection while HA token, Mi account, and LG TV are all valid.
+        defaults.set(Data("{corrupt".utf8), forKey: CapabilitySelectionStore.storageKey)
+
+        let haFactoryCalls = RequestCounter()
+        let miFactoryCalls = RequestCounter()
+        let updateFetchCalls = RequestCounter()
+        let lanDiscoverCalls = RequestCounter()
+        let resumeHookCalls = RequestCounter()
+
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: { _ in
+                miFactoryCalls.requests += 1
+                return Self.stubMiFactory([])
+            },
+            haProviderFactory: { _, _ in
+                haFactoryCalls.requests += 1
+                return MockHomeProvider()
+            }
+        )
+        var driver = UpdateSystemDriver.live
+        driver.fetchData = { _ in
+            updateFetchCalls.requests += 1
+            throw URLError(.notConnectedToInternet)
+        }
+        store.updater = AppUpdater(currentVersion: "1.0.0", driver: driver)
+        store.haLANDiscoverer = { _ in
+            lanDiscoverCalls.requests += 1
+            return []
+        }
+        let fixedNow = ContinuousClock.now
+        store.resumeDebounceInterval = .zero
+        store.resumeScheduler = DebouncedResumeScheduler(
+            now: { fixedNow },
+            sleep: { _ in }
+        )
+        store.onDebouncedResumeHook = { _ in
+            resumeHookCalls.requests += 1
+        }
+
+        // 1. Launch must not build live providers or start the LG TV connection loop.
+        #expect(store.identityMigrationDiagnostic != nil)
+        #expect(store.shouldSuppressBackgroundNetworkWork)
+        #expect(haFactoryCalls.requests == 0, "uncertain launch must not construct live HA provider")
+        #expect(miFactoryCalls.requests == 0, "uncertain launch must not construct live Mi provider")
+        #expect(store.activeHAProvider == nil)
+        #expect(store.activeMiAccountsProvider == nil)
+        #expect(store.lgWebOSClient == nil, "uncertain launch must not start LG webOS client")
+
+        // Direct rebuild attempts while identity is uncertain must also stay offline.
+        store.rebuildLiveProvider()
+        #expect(haFactoryCalls.requests == 0)
+        #expect(miFactoryCalls.requests == 0)
+
+        // 2. Wake / resume refresh must not run while identity is uncertain.
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(resumeHookCalls.requests == 0)
+
+        // 3. Settings auto checks (update check & automatic LAN discovery) must not run.
+        await store.checkForUpdatesIfNeeded()
+        _ = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
+        #expect(updateFetchCalls.requests == 0)
+        #expect(lanDiscoverCalls.requests == 0)
+
+        // 4. Once corruption is resolved and retry succeeds, live providers and LG resume normally.
+        defaults.removeObject(forKey: CapabilitySelectionStore.storageKey)
+        #expect(store.retryIdentityMigration())
+        #expect(store.identityMigrationDiagnostic == nil)
+        #expect(haFactoryCalls.requests >= 1)
+        #expect(miFactoryCalls.requests >= 1)
+        #expect(store.lgWebOSClient != nil)
+        await store.shutdown()
+    }
+
+    @Test("P1-4: Revision conflict preserves account/connection disables alongside unrelated feature changes and syncs memory")
+    @MainActor
+    func revisionConflictPreservesAccountDisableAndUnrelatedFeatureChangeAndSyncsMemory() async throws {
+        let (suite, defaults) = try Self.makeFreshSuite("p1-4-conflict")
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        let sessionA = MiSession(
+            userId: "11101", cUserId: "c1", ssecurity: "s1", serviceToken: "t1",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        let sessionB = MiSession(
+            userId: "22202", cUserId: "c2", ssecurity: "s2", serviceToken: "t2",
+            expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+        )
+        #expect(MiSessionStore.upsert(sessionA, defaults: defaults, vault: vault))
+        #expect(MiSessionStore.upsert(sessionB, defaults: defaults, vault: vault))
+        #expect(KeychainHelper.saveToken("ha-tok", defaults: defaults, vault: vault))
+        defaults.set("https://ha.example.local:8123", forKey: "ha_server_url")
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        // Seed revision 1 via an initial store, then load two concurrent stores A & B from revision 1.
+        let seedStore = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        let acctA = try #require(seedStore.miAccounts.first { $0.session.userId == "11101" })
+        let baseRev = try #require(seedStore.capabilityStoreRevision)
+
+        let storeA = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        let storeB = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        #expect(storeA.capabilityStoreRevision == baseRev)
+        #expect(storeB.capabilityStoreRevision == baseRev)
+
+        // Writer A disables Mi account A.
+        let verdictA = storeA.setMiAccountEnabled(false, id: acctA.id, pauseConfirmed: true)
+        #expect(verdictA.disposition == .allowed)
+        #expect(!storeA.isMiAccountEnabled(acctA.id))
+        #expect(storeA.capabilityStoreRevision == baseRev + 1)
+
+        // Writer B (still at baseRev!) toggles an unrelated feature (.grokball) and persists.
+        storeB.capabilitySelection.enabledFeatures.remove(.grokball)
+        #expect(storeB.persistCapabilitySelection())
+
+        // Both A's account disable AND B's feature disable must be preserved on disk AND synced into B's memory.
+        let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
+        let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
+        #expect(diskDisabledScopes.contains(acctA.id), "A's account disable must survive B's stale feature write")
+        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue), "B's feature disable must be persisted")
+        #expect(diskEnabledFeatures.contains(FeatureID.voiceInput.rawValue), "untouched features must stay enabled")
+
+        #expect(!storeB.isMiAccountEnabled(acctA.id), "storeB memory must sync A's disabled account after conflict merge")
+        #expect(storeB.explicitlyDisabledScopes.contains(acctA.id))
+        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.grokball))
+        #expect(storeB.capabilityStoreRevision == baseRev + 2)
+        #expect(storeB.capabilityMergeConflictCount == 1)
+
+        // Also verify whole-connection disable (HA) survives an unrelated stale feature edit.
+        let storeC = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        let storeD = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
+        _ = storeC.setHAConnectionEnabled(false, pauseConfirmed: true)
+        #expect(!storeC.isHAConnectionEnabled)
+
+        storeD.capabilitySelection.enabledFeatures.remove(.voiceInput)
+        #expect(storeD.persistCapabilitySelection())
+
+        #expect(!storeD.isHAConnectionEnabled, "C's HA connection disable must survive D's stale feature write")
+        #expect(storeD.explicitlyDisabledConnections.contains(.homeAssistant))
+        #expect(!storeD.capabilitySelection.enabledFeatures.contains(.voiceInput))
+        #expect(!storeD.capabilitySelection.enabledFeatures.contains(.grokball))
+    }
+
+    @Test("P1-4: Concurrent in-process CapabilitySelectionStore writes serialize cleanly without losing disables or features")
+    func concurrentInProcessCapabilityWritesPreserveAllDisjointPatches() async throws {
+        let suite = "test.p4a.p1-4-concurrent-lock.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let baseSelection = CapabilitySelection(
+            enabledConnections: [.homeAssistant, .xiaomiCloud],
+            enabledConnectionScopes: ["mi:cn:1", "mi:cn:2", "ha:https://ha.local:8123"],
+            enabledFeatures: Set(FeatureID.allCases),
+            enabledCategories: Set(DeviceCategoryID.allCases)
+        )
+        let seed = CapabilitySelectionStore.saveMergingConflicts(
+            selection: baseSelection,
+            configuredScopes: baseSelection.enabledConnectionScopes,
+            explicitlyDisabledConnections: [],
+            expectedRevision: nil,
+            defaults: defaults
+        )
+        let baseRev = try #require(seed.revision)
+
+        nonisolated(unsafe) let sharedDefaults = defaults
+        let results = await withTaskGroup(of: CapabilitySelectionSaveResult.self, returning: [CapabilitySelectionSaveResult].self) { group in
+            group.addTask {
+                var sel = baseSelection
+                sel.enabledConnectionScopes.remove("mi:cn:1")
+                return CapabilitySelectionStore.saveMergingConflicts(
+                    selection: sel,
+                    configuredScopes: baseSelection.enabledConnectionScopes,
+                    explicitlyDisabledConnections: [],
+                    patch: CapabilitySelectionPatch(disabledScopes: ["mi:cn:1"]),
+                    expectedRevision: baseRev,
+                    defaults: sharedDefaults
+                )
+            }
+            group.addTask {
+                var sel = baseSelection
+                sel.enabledFeatures.remove(.grokball)
+                return CapabilitySelectionStore.saveMergingConflicts(
+                    selection: sel,
+                    configuredScopes: baseSelection.enabledConnectionScopes,
+                    explicitlyDisabledConnections: [],
+                    patch: CapabilitySelectionPatch(removedFeatures: [.grokball]),
+                    expectedRevision: baseRev,
+                    defaults: sharedDefaults
+                )
+            }
+            group.addTask {
+                var sel = baseSelection
+                sel.enabledFeatures.remove(.voiceInput)
+                return CapabilitySelectionStore.saveMergingConflicts(
+                    selection: sel,
+                    configuredScopes: baseSelection.enabledConnectionScopes,
+                    explicitlyDisabledConnections: [],
+                    patch: CapabilitySelectionPatch(removedFeatures: [.voiceInput]),
+                    expectedRevision: baseRev,
+                    defaults: sharedDefaults
+                )
+            }
+            var collected: [CapabilitySelectionSaveResult] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        #expect(results.count == 3)
+        #expect(results.allSatisfy { $0.succeeded })
+        #expect(Set(results.compactMap(\.revision)) == Set([baseRev + 1, baseRev + 2, baseRev + 3]))
+
+        let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
+        let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
+        let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
+        #expect(diskDisabledScopes.contains("mi:cn:1"))
+        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue))
+        #expect(!diskEnabledFeatures.contains(FeatureID.voiceInput.rawValue))
+    }
+
+    private actor AsyncSignal {
+        private var signaled = false
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func signal() {
+            signaled = true
+            let pending = waiters
+            waiters.removeAll()
+            pending.forEach { $0.resume() }
+        }
+
+        func wait() async {
+            if signaled { return }
+            await withCheckedContinuation { cont in
+                waiters.append(cont)
+            }
+        }
+    }
+
+    private actor CancellableGate {
+        private var waiters: [UUID: CheckedContinuation<Void, Error>] = [:]
+        private var cancelSignalWaiters: [CheckedContinuation<Void, Never>] = []
+        private var released = false
+        private var sawCancellation = false
+
+        func wait() async throws {
+            if Task.isCancelled {
+                markCancelled()
+                throw CancellationError()
+            }
+            if released { return }
+            let id = UUID()
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                    if released {
+                        cont.resume()
+                    } else if Task.isCancelled {
+                        markCancelled()
+                        cont.resume(throwing: CancellationError())
+                    } else {
+                        waiters[id] = cont
+                    }
+                }
+            } onCancel: {
+                Task { await self.cancel(id: id) }
+            }
+        }
+
+        private func markCancelled() {
+            sawCancellation = true
+            let pending = cancelSignalWaiters
+            cancelSignalWaiters.removeAll()
+            pending.forEach { $0.resume() }
+        }
+
+        private func cancel(id: UUID) {
+            markCancelled()
+            if let cont = waiters.removeValue(forKey: id) {
+                cont.resume(throwing: CancellationError())
+            }
+        }
+
+        func waitUntilCancelled() async {
+            if sawCancellation { return }
+            await withCheckedContinuation { cont in
+                cancelSignalWaiters.append(cont)
+            }
+        }
+
+        func releaseAll() {
+            released = true
+            let pending = waiters.values
+            waiters.removeAll()
+            for cont in pending {
+                cont.resume()
+            }
+        }
+    }
+
+    private final class AtomicCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+
+        @discardableResult
+        func increment() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            value += 1
+            return value
+        }
+
+        var count: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+    }
+
+    @Test("P2-1: HA onboarding verification shuts down probe and stops retries on timeout, retryable error, and cancellation")
+    func haOnboardingVerificationShutsDownProbeOnTimeoutErrorAndCancel() async throws {
+        // 1. Timeout exit: probe must be shut down and must never start a second connection attempt.
+        do {
+            let connectAttempts = AtomicCounter()
+            let firstConnectStarted = AsyncSignal()
+            let hangConnect = CancellableGate()
+            let reconnectGate = CancellableGate()
+            let probe = HAWebSocketProvider(baseURLString: "https://ha.example.local:8123", token: "tok")
+            await probe.setTestSeams(
+                connectOverride: {
+                    connectAttempts.increment()
+                    await firstConnectStarted.signal()
+                    try await hangConnect.wait()
+                    return .failedBeforeAuth(URLError(.timedOut))
+                },
+                reconnectSleep: { _ in
+                    try await reconnectGate.wait()
+                }
+            )
+
+            var caughtTimeout = false
+            do {
+                try await HomeStore.verifyHomeAssistantSnapshot(
+                    baseURLString: "https://ha.example.local:8123",
+                    token: "tok",
+                    probeFactory: { _, _ in probe },
+                    timeoutSleep: {
+                        await firstConnectStarted.wait()
+                    }
+                )
+            } catch let error as HomeStore.HAOnboardingVerifyError {
+                caughtTimeout = (error == .timedOut)
+            }
+
+            #expect(caughtTimeout)
+            #expect(await probe.isShutDownForTesting, "timeout must shut down probe provider")
+            await hangConnect.waitUntilCancelled()
+            await reconnectGate.releaseAll()
+            await probe.refreshNow()
+            #expect(connectAttempts.count == 1, "timed-out probe must not retry in the background")
+        }
+
+        // 2. Retryable disconnect error exit: probe must be shut down and never reconnect.
+        do {
+            let connectAttempts = AtomicCounter()
+            let reconnectGate = CancellableGate()
+            let probe = HAWebSocketProvider(baseURLString: "https://ha.example.local:8123", token: "tok")
+            await probe.setTestSeams(
+                connectOverride: {
+                    connectAttempts.increment()
+                    return .failedBeforeAuth(URLError(.cannotConnectToHost))
+                },
+                reconnectSleep: { _ in
+                    try await reconnectGate.wait()
+                }
+            )
+
+            var caughtFailure = false
+            do {
+                try await HomeStore.verifyHomeAssistantSnapshot(
+                    baseURLString: "https://ha.example.local:8123",
+                    token: "tok",
+                    probeFactory: { _, _ in probe },
+                    timeoutSleep: {
+                        try await CancellableGate().wait()
+                    }
+                )
+            } catch let error as HomeStore.HAOnboardingVerifyError {
+                if case .failed = error { caughtFailure = true }
+            }
+
+            #expect(caughtFailure)
+            #expect(await probe.isShutDownForTesting, "retryable error must shut down probe provider")
+            await reconnectGate.releaseAll()
+            await probe.refreshNow()
+            #expect(connectAttempts.count == 1, "errored probe must not reconnect in the background")
+        }
+
+        // 3. External cancellation exit: probe must be shut down before returning.
+        do {
+            let connectAttempts = AtomicCounter()
+            let firstConnectStarted = AsyncSignal()
+            let hangConnect = CancellableGate()
+            let hangTimeout = CancellableGate()
+            let probe = HAWebSocketProvider(baseURLString: "https://ha.example.local:8123", token: "tok")
+            await probe.setTestSeams(
+                connectOverride: {
+                    connectAttempts.increment()
+                    await firstConnectStarted.signal()
+                    try await hangConnect.wait()
+                    return .failedBeforeAuth(URLError(.cancelled))
+                },
+                reconnectSleep: { _ in }
+            )
+
+            let verifyTask = Task {
+                try await HomeStore.verifyHomeAssistantSnapshot(
+                    baseURLString: "https://ha.example.local:8123",
+                    token: "tok",
+                    probeFactory: { _, _ in probe },
+                    timeoutSleep: {
+                        try await hangTimeout.wait()
+                    }
+                )
+            }
+            await firstConnectStarted.wait()
+            verifyTask.cancel()
+
+            var caughtCancel = false
+            do {
+                try await verifyTask.value
+            } catch is CancellationError {
+                caughtCancel = true
+            }
+
+            #expect(caughtCancel)
+            #expect(await probe.isShutDownForTesting, "cancelled verification must shut down probe provider")
+            await hangConnect.waitUntilCancelled()
+            await hangTimeout.waitUntilCancelled()
+            await probe.refreshNow()
+            #expect(connectAttempts.count == 1, "cancelled probe must not retry in the background")
+        }
+    }
 }

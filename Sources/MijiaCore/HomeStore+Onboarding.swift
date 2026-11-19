@@ -32,12 +32,41 @@ extension HomeStore {
         return false
     }
 
+    /// Whether launch identity/capability reads failed closed and have not yet recovered.
+    var isIdentityUncertain: Bool {
+        identityMigrationDiagnostic != nil
+    }
+
     /// Whether passive background network work (auto update checks, debounced resume refresh) must
     /// stay silent: true on uncertain identity reads and on unconfigured live installs (P4a-M).
     var shouldSuppressBackgroundNetworkWork: Bool {
-        if identityMigrationDiagnostic != nil { return true }
+        if isIdentityUncertain { return true }
         if usesInjectedProvider { return false }
         return !hasEnabledConfiguredSource
+    }
+
+    /// Resolves the persisted Xiaomi home selection. A bare home ID saved before multi-account has
+    /// no account prefix; only migrate or drop it once account reads are confirmed reliable
+    /// (`canMigrateLegacySelection == true`), so a transient Keychain failure never deletes it.
+    static func resolveSelectedMiHomeId(
+        defaults: UserDefaults,
+        accounts: [MiAccount],
+        canMigrateLegacySelection: Bool
+    ) -> String? {
+        let stored = defaults.string(forKey: MiCloudProvider.selectedHomeKey)
+        guard let selection = stored, MiAccountScope.owner(of: selection) == nil else {
+            return stored
+        }
+        guard canMigrateLegacySelection else {
+            return stored
+        }
+        if accounts.count == 1, let onlyAccount = accounts.first {
+            let scoped = MiAccountScope.id(selection, account: onlyAccount.id)
+            defaults.set(scoped, forKey: MiCloudProvider.selectedHomeKey)
+            return scoped
+        }
+        defaults.removeObject(forKey: MiCloudProvider.selectedHomeKey)
+        return nil
     }
 
     /// #144: leave the offline demo for a real home. A configured source takes over directly
@@ -137,6 +166,9 @@ extension HomeStore {
         capabilityStoreRevision = CapabilitySelectionStore.currentRevision(defaults: userDefaults)
         explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: userDefaults)
         explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: userDefaults)
+        lastPersistedCapabilitySelection = capabilitySelection
+        lastPersistedDisabledConnections = explicitlyDisabledConnections
+        lastPersistedDisabledScopes = explicitlyDisabledScopes
 
         guard resolution.retryDiagnostic == nil else {
             showToast(
@@ -151,6 +183,11 @@ extension HomeStore {
 
         miAccounts = reloadedAccounts
         hasHASource = reloadedHasHA
+        selectedMiHomeId = Self.resolveSelectedMiHomeId(
+            defaults: userDefaults,
+            accounts: reloadedAccounts,
+            canMigrateLegacySelection: true
+        )
         miSessionMaskedUserId = reloadedAccounts.first?.maskedUserId
         miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
         miSessionScopeIdentifier = enabledMiAccounts.first?.session.historyScopeIdentifier
@@ -234,7 +271,9 @@ extension HomeStore {
         let attemptID = UUID()
         activeHAOnboardingAttemptID = attemptID
         isVerifyingHAOnboarding = true
-        let verifier = haOnboardingVerifier ?? Self.verifyHomeAssistantSnapshot
+        let verifier: @Sendable (String, String) async throws -> Void = haOnboardingVerifier ?? { url, tok in
+            try await Self.verifyHomeAssistantSnapshot(baseURLString: url, token: tok)
+        }
         let task = Task<HAOnboardingConnectOutcome, Never> { @MainActor [weak self] in
             do {
                 try await verifier(normalized, trimmedToken)
@@ -278,7 +317,7 @@ extension HomeStore {
         return outcome
     }
 
-    private enum HAOnboardingVerifyError: LocalizedError {
+    enum HAOnboardingVerifyError: LocalizedError, Equatable {
         case failed(String)
         case timedOut
 
@@ -292,48 +331,63 @@ extension HomeStore {
         }
     }
 
-    private nonisolated static func verifyHomeAssistantSnapshot(
+    nonisolated static func verifyHomeAssistantSnapshot(
         baseURLString: String,
-        token: String
+        token: String,
+        probeFactory: @Sendable (String, String) async -> HAWebSocketProvider = { url, tok in
+            HAWebSocketProvider(baseURLString: url, token: tok)
+        },
+        timeoutSleep: @escaping @Sendable () async throws -> Void = {
+            try await Task.sleep(for: .seconds(12))
+        }
     ) async throws {
-        let probe = HAWebSocketProvider(baseURLString: baseURLString, token: token)
-        try await withTaskCancellationHandler {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                group.addTask {
-                    let stream = probe.events()
-                    for await event in stream {
-                        try Task.checkCancellation()
-                        switch event {
-                        case .snapshotUpdated:
-                            return
-                        case .statusChanged(.disconnected(let reason)):
-                            let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-                            if !detail.isEmpty {
-                                throw HAOnboardingVerifyError.failed(detail)
+        let probe = await probeFactory(baseURLString, token)
+        do {
+            try await withTaskCancellationHandler {
+                try await withThrowingTaskGroup(of: Void.self) { group in
+                    group.addTask {
+                        let stream = probe.events()
+                        for await event in stream {
+                            try Task.checkCancellation()
+                            switch event {
+                            case .snapshotUpdated:
+                                return
+                            case .statusChanged(.disconnected(let reason)):
+                                let detail = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if !detail.isEmpty {
+                                    throw HAOnboardingVerifyError.failed(detail)
+                                }
+                            case .statusChanged(.connecting),
+                                 .statusChanged(.connected),
+                                 .sourceStatusesChanged,
+                                 .localNetworkPermissionChanged,
+                                 .sessionExpired,
+                                 .doorbellRang:
+                                break
                             }
-                        case .statusChanged(.connecting),
-                             .statusChanged(.connected),
-                             .sourceStatusesChanged,
-                             .localNetworkPermissionChanged,
-                             .sessionExpired,
-                             .doorbellRang:
-                            break
                         }
+                        try Task.checkCancellation()
+                        throw HAOnboardingVerifyError.failed(
+                            L10n.tr("Home Assistant 连接提前中断", "Home Assistant connection closed before sending a snapshot")
+                        )
                     }
-                    throw HAOnboardingVerifyError.failed(
-                        L10n.tr("Home Assistant 连接提前中断", "Home Assistant connection closed before sending a snapshot")
-                    )
+                    group.addTask {
+                        try await timeoutSleep()
+                        throw HAOnboardingVerifyError.timedOut
+                    }
+                    defer { group.cancelAll() }
+                    _ = try await group.next()
                 }
-                group.addTask {
-                    try await Task.sleep(for: .seconds(12))
-                    throw HAOnboardingVerifyError.timedOut
-                }
-                defer { group.cancelAll() }
-                _ = try await group.next()
+            } onCancel: {
+                Task { await probe.shutdown() }
             }
             await probe.shutdown()
-        } onCancel: {
-            Task { await probe.shutdown() }
+        } catch {
+            await probe.shutdown()
+            if Task.isCancelled {
+                throw CancellationError()
+            }
+            throw error
         }
     }
 
