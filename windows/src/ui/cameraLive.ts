@@ -24,6 +24,7 @@ import type { PersistedSettings } from "./appTypes.js";
 import { computeQuarterTurnScale, renderCameraLiveModalView } from "./cameraLiveModalView.js";
 import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
 import { waitForCameraFrameGap } from "./dom.js";
+import { writeSettingsForStorage } from "./settings.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 import { tr3 } from "./undoTracker.js";
@@ -443,6 +444,43 @@ export class CameraLiveController {
   }
 
   /**
+   * Per-camera live state is keyed by device id, so a card that changes id would otherwise lose its
+   * saved turn, lens, manual IP, custom stream URL and quality (#254). Entries are copied, not moved:
+   * a later dual-source re-enable still finds them under the paired card's canonical id.
+   */
+  private carryOverCameraLiveState(fromId: string, toId: string): void {
+    const copy = <T>(record: Record<string, T>): Record<string, T> | null => {
+      const value = record[fromId];
+      if (value === undefined || record[toId] !== undefined) return null;
+      return { ...record, [toId]: value };
+    };
+    const channels = copy(this.cameraChannels);
+    if (channels) {
+      this.cameraChannels = channels;
+      savePersistedRecord(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY, channels);
+    }
+    const rotations = copy(this.cameraRotations);
+    if (rotations) {
+      this.cameraRotations = rotations;
+      savePersistedRecord(CameraLiveController.CAMERA_ROTATIONS_STORAGE_KEY, rotations);
+    }
+    const localIps = copy(this.cameraLocalIPs);
+    if (localIps) {
+      this.cameraLocalIPs = localIps;
+      savePersistedRecord(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY, localIps);
+    }
+    const streamUrls = copy(this.cameraStreamURLs);
+    if (streamUrls) this.cameraStreamURLs = streamUrls;
+    const qualities = copy(this.cameraStreamQualities);
+    if (qualities) this.cameraStreamQualities = qualities;
+    if (streamUrls || qualities) {
+      this.host.settings.cameraStreamURLs = { ...this.cameraStreamURLs };
+      this.host.settings.cameraStreamQualities = { ...this.cameraStreamQualities };
+      writeSettingsForStorage(this.host.settings);
+    }
+  }
+
+  /**
    * Follows an open live view to the card that replaced it: ending dual-source mode restores raw
    * Home Assistant ids, so a stream opened under a paired card's canonical id would otherwise keep
    * an id the device list no longer has (#254). The transport keeps running: it already points at
@@ -454,15 +492,14 @@ export class CameraLiveController {
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev || dev.kind.kind !== "camera") return false;
     if (previousId === dev.id) return true;
+    this.carryOverCameraLiveState(previousId, dev.id);
     const pendingStart =
       this.liveCameraLoading &&
       !this.liveCameraAbort &&
       !this.liveCameraImgEl &&
       !this.liveCameraRawMediaEl;
     const preservedStreamUrl =
-      this.cameraStreamURLs[dev.id] ??
-      this.cameraStreamURLs[previousId] ??
-      (pendingStart ? this.liveCameraStreamURL : null);
+      this.cameraStreamURLs[dev.id] ?? (pendingStart ? this.liveCameraStreamURL : null);
     // Teardown reads the bridge binding by the active id, so the binding has to move with the view.
     const bridge = this.cameraBridgeBindings.get(previousId);
     if (bridge) {

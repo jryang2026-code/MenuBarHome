@@ -8,6 +8,7 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MiCloudClient } from "../src/core/miCloudClient.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { CameraLiveController } from "../src/ui/cameraLive.js";
 
 let dom: Window;
@@ -940,4 +941,79 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     const restartedCall = ctx.hlsBridgeCalls.find((call) => call["did"] === "ha-cam-a");
     assert.equal(restartedCall?.["hlsUrl"], customHls);
   });
+
+  it("carries saved per-camera live state over when a sign-out retarget renames the card (#254)", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [{ did: "cam-a", name: "客厅摄像机", model: "isa.camera.hlc7", roomName: "客厅" }],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    const customUrl = "http://192.168.50.10:1984/snapshot.jpg?src=cam";
+    ctrl.activeLiveCameraId = "cam-a";
+    ctrl.rotateActiveCamera();
+    ctrl.setCameraLensChannel("cam-a", 1);
+    ctrl.setCameraStreamQuality("cam-a", "hd");
+    ctrl.cameraLocalIPs = { ...ctrl.cameraLocalIPs, "cam-a": "192.168.50.88" };
+    ctrl.cameraStreamURLs = { ...ctrl.cameraStreamURLs, "cam-a": customUrl };
+    ctx.app.settings.cameraStreamURLs = { ...ctrl.cameraStreamURLs };
+    assert.equal(ctrl.cameraRotation("cam-a"), 90);
+
+    const source = ctx.app.devices.find((d) => d.id === "cam-a")!;
+    ctx.app.devices = [...ctx.app.devices, { ...source, id: "ha-cam-a" }];
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+
+    assert.equal(ctrl.cameraRotation("ha-cam-a"), 90, "a saved turn must survive the rename");
+    assert.equal(ctrl.cameraChannels["ha-cam-a"], 1, "the selected lens must survive the rename");
+    assert.equal(ctrl.cameraLocalIPs["ha-cam-a"], "192.168.50.88");
+    assert.equal(ctrl.cameraStreamQualities["ha-cam-a"], "hd");
+    assert.equal(ctrl.cameraStreamURLs["ha-cam-a"], customUrl);
+
+    // Copied rather than moved: a later dual-source re-enable still finds them under the canonical id.
+    assert.equal(ctrl.cameraRotation("cam-a"), 90);
+    assert.equal(ctrl.cameraStreamURLs["cam-a"], customUrl);
+
+    // Both stores are persisted, so a reload after sign-out keeps them on the restored card.
+    const savedRotations = JSON.parse(
+      localStorage.getItem(CameraLiveController.CAMERA_ROTATIONS_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    assert.equal(savedRotations["ha-cam-a"], 90);
+    const savedChannels = JSON.parse(
+      localStorage.getItem(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    assert.equal(savedChannels["ha-cam-a"], 1);
+    const savedIPs = JSON.parse(
+      localStorage.getItem(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY) ?? "{}",
+    ) as Record<string, unknown>;
+    assert.equal(savedIPs["ha-cam-a"], "192.168.50.88");
+    const savedSettings = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as {
+      cameraStreamURLs?: Record<string, string>;
+      cameraStreamQualities?: Record<string, string>;
+    };
+    assert.equal(savedSettings.cameraStreamURLs?.["ha-cam-a"], customUrl);
+    assert.equal(savedSettings.cameraStreamQualities?.["ha-cam-a"], "hd");
+  });
+
+  it("keeps the custom stream URL reachable by Reload after a sign-out retarget (#254)", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [{ did: "cam-a", name: "客厅摄像机", model: "isa.camera.hlc7", roomName: "客厅" }],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    const customUrl = "http://192.168.50.10:1984/snapshot.jpg?src=cam";
+    ctrl.activeLiveCameraId = "cam-a";
+    ctrl.cameraStreamURLs = { ...ctrl.cameraStreamURLs, "cam-a": customUrl };
+    ctx.app.settings.cameraStreamURLs = { ...ctrl.cameraStreamURLs };
+
+    const source = ctx.app.devices.find((d) => d.id === "cam-a")!;
+    ctx.app.devices = [...ctx.app.devices, { ...source, id: "ha-cam-a" }];
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+
+    ctrl.reconnectCameraLiveView();
+    assert.equal(
+      ctrl.liveCameraStreamURL,
+      customUrl,
+      "Reload must keep using the custom URL saved on the paired card",
+    );
+  });
+
 });
