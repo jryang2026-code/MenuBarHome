@@ -1,4 +1,4 @@
-import { speechLocale } from "./i18n.js";
+import { speechLocale, type LanguagePreference } from "./i18n.js";
 import type { DeviceCommand, DeviceIntent, SmartDevice } from "./models.js";
 import { tr3 } from "./safetyAndHealth.js";
 
@@ -29,14 +29,14 @@ export interface BuiltInQuickActionDescriptor {
   readonly command: string;
 }
 
-export function quickActionTitle(id: QuickActionId): string {
+export function quickActionTitle(id: QuickActionId, preference?: LanguagePreference): string {
   switch (id) {
     case "lightsOff":
-      return tr3("全屋关灯", "全屋關燈", "All Lights Off");
+      return tr3("全屋关灯", "全屋關燈", "All Lights Off", undefined, preference);
     case "softNightLight":
-      return tr3("柔和夜灯", "柔和夜燈", "Soft Night Light");
+      return tr3("柔和夜灯", "柔和夜燈", "Soft Night Light", undefined, preference);
     case "climateSleepOff":
-      return tr3("关温控风扇", "關溫控風扇", "Sleep Climate Off");
+      return tr3("关温控风扇", "關溫控風扇", "Sleep Climate Off", undefined, preference);
   }
 }
 

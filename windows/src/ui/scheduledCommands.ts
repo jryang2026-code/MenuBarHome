@@ -5,6 +5,7 @@ import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
 import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
+import { resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
@@ -111,11 +112,21 @@ export async function confirmMissedScheduledCommand(
 
 export function cancelScheduledCommands(host: MenuMijiaWindowsApp, id?: string): number {
   const queue = host.scheduledCommandStore.queue(scheduledCommandIdentity(host.settings));
-  const previous = { ...queue };
+  const previous = {
+    scheduledCommands: queue.scheduledCommands,
+    missedScheduledCommands: queue.missedScheduledCommands,
+    pausedScheduledCommands: queue.pausedScheduledCommands ?? [],
+  };
   queue.scheduledCommands = queue.scheduledCommands.filter((item) => id !== undefined && item.id !== id);
   queue.missedScheduledCommands = queue.missedScheduledCommands.filter((item) => id !== undefined && item.id !== id);
-  const count = previous.scheduledCommands.length + previous.missedScheduledCommands.length -
-    queue.scheduledCommands.length - queue.missedScheduledCommands.length;
+  queue.pausedScheduledCommands = previous.pausedScheduledCommands.filter((entry) => id !== undefined && entry.command.id !== id);
+  const count =
+    previous.scheduledCommands.length +
+    previous.missedScheduledCommands.length +
+    previous.pausedScheduledCommands.length -
+    queue.scheduledCommands.length -
+    queue.missedScheduledCommands.length -
+    queue.pausedScheduledCommands.length;
   if (!host.scheduledCommandStore.persist()) {
     Object.assign(queue, previous);
     timerStorageFailure(host);
@@ -131,7 +142,13 @@ export function enqueueScheduledCommand(host: MenuMijiaWindowsApp, item: Schedul
     return false;
   }
   if (!item.intents?.length) return false;
-  host.scheduledCommands.push(structuredClone(item));
+  const activeScopes = resolveHostMiSelectionState(host).selection.enabledConnectionScopes;
+  const cloned = structuredClone(item);
+  host.scheduledCommands.push(
+    cloned.sourceScopes?.length || activeScopes.length === 0
+      ? cloned
+      : { ...cloned, sourceScopes: [...activeScopes] },
+  );
   if (host.scheduledCommandStore.persist()) return true;
   host.scheduledCommands = host.scheduledCommands.filter((entry) => entry.id !== item.id);
   timerStorageFailure(host);

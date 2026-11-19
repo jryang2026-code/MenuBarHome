@@ -17,12 +17,17 @@ import {
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
 import type { CameraLens, SmartDevice } from "../core/models.js";
-import { getCachedXiaomiTopology } from "../core/pollingPolicy.js";
+import { getCachedXiaomiTopology, miAccountId } from "../core/pollingPolicy.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { PersistedSettings } from "./appTypes.js";
 import { computeQuarterTurnScale, renderCameraLiveModalView } from "./cameraLiveModalView.js";
-import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import {
+  getHostDualSourceState,
+  getHostMiAccountsState,
+  isDualSourceEnabled,
+  isHostMiSessionEnabled,
+} from "./cloudRefresh.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { writeSettingsForStorage } from "./settings.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
@@ -190,7 +195,7 @@ export class CameraLiveController {
       dev.accountId ??
       scopedSourceAccountId ??
       scopedDevAccountId ??
-      (this.host.settings.miSession ? `${this.host.settings.miSession.region}:${this.host.settings.miSession.userId}` : null) ??
+      (this.host.settings.miSession ? miAccountId(this.host.settings.miSession) : null) ??
       accounts[0]?.id ??
       null;
     if (targetAccountId) {
@@ -386,6 +391,7 @@ export class CameraLiveController {
   public clearCameraKeepAlive(): void {
     if (this.liveCameraKeepAliveTimer !== null) {
       window.clearTimeout(this.liveCameraKeepAliveTimer);
+      window.clearInterval(this.liveCameraKeepAliveTimer);
       this.liveCameraKeepAliveTimer = null;
     }
   }
@@ -550,7 +556,7 @@ export class CameraLiveController {
     // the fallback after logout clears the store; a caller can still pin the session
     // that actually started an in-flight stream.
     const session = sessionOverride ?? miSession ?? dropLease?.session ?? null;
-    if (backend !== "xiaomiCloud" || !session) {
+    if (backend !== "xiaomiCloud" || !session || !isHostMiSessionEnabled(this.host, session)) {
       this.dropRetainedCloudStream(dev.id, dropLease);
       return Promise.resolve();
     }
@@ -1061,7 +1067,7 @@ export class CameraLiveController {
 
   public async resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
     const { backend, sourceDev, miSession: session } = this.resolveCameraSource(dev);
-    if (dev.kind.kind !== "camera" || backend !== "xiaomiCloud" || !session) return;
+    if (dev.kind.kind !== "camera" || backend !== "xiaomiCloud" || !session || !isHostMiSessionEnabled(this.host, session)) return;
     if (CameraHubCatalog.isHub(sourceDev.model)) {
       this.liveCameraQualityApplies = false;
       this.liveCameraNeedsManualIp = false;
@@ -1087,7 +1093,10 @@ export class CameraLiveController {
     const token = this.liveCameraToken;
     const hasCustomUrl = () => Boolean(this.cameraStreamURLs[dev.id]);
     const stale = () =>
-      this.liveCameraToken !== token || this.activeLiveCameraId !== dev.id || hasCustomUrl();
+      this.liveCameraToken !== token ||
+      this.activeLiveCameraId !== dev.id ||
+      hasCustomUrl() ||
+      !isHostMiSessionEnabled(this.host, session);
     const shouldReleaseStaleCloudSession = () =>
       this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;

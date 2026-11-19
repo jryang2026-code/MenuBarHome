@@ -38,6 +38,8 @@ import {
 } from "../core/optimisticLock.js";
 import { recordUndoKindSnapshots } from "./speechGuard.js";
 import { tr3 } from "./undoTracker.js";
+import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
+import { evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 
 export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
 
@@ -394,6 +396,19 @@ export async function executeIntents(
   sourceLabel: string,
   options: ExecuteIntentsOptions = {},
 ): Promise<boolean> {
+  if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+    const gateMsg = evaluateIntentsWriteGate({
+      intents,
+      context: buildHostCapabilityContext(host),
+      languagePreference: host.settings?.interfaceLanguage,
+    });
+    if (gateMsg !== null) {
+      host.clearPendingHighRisk?.();
+      host.replyBanner = { text: gateMsg, source: t("控制失败"), isError: true };
+      if (typeof host.render === "function") host.render();
+      return false;
+    }
+  }
   const sourceRevision = host.sourceRevision;
   const commands: Array<{ deviceId: string; command: DeviceCommand; intentIndex: number }> = [];
   const candidateIntents: Array<{ intent: DeviceIntent; commandCount: number; succeededCount: number }> = [];
