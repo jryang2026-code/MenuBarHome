@@ -28,6 +28,7 @@ import {
   defaultSafetyStorage,
   loadSensorAlertPolicy,
   renderWeeklyHealthMarkdown,
+  sensorAlertEnabledByDefault,
   tr3,
   weeklyHealthNotificationSummary,
   type HealthClimateRange,
@@ -36,6 +37,7 @@ import {
   type KeyValueStorageLike,
   type RecordedSafetyAlert,
   type SafetyAlert,
+  type SensorAlertKind,
   type SensorAlertPolicy,
   type SensorObservation,
   type WeeklyHealthReport,
@@ -110,6 +112,8 @@ export interface HostActivityCenter {
   lastSourceRevision: number;
   hasObservedNonEmptyDevices: boolean;
   isExpanded: boolean;
+  /** Ordinary (offline, low battery) reminders only; safety tiering never folds into this list. */
+  ordinaryExpanded: boolean;
   recentSafetyAlerts: RecordedSafetyAlert[];
   recentAutomationRuns: RecordedAutomationRun[];
   weeklyReportCard: WeeklyReportNoticeCard | null;
@@ -258,6 +262,7 @@ function createHostActivityCenter(
     lastSourceRevision: host.sourceRevision ?? 0,
     hasObservedNonEmptyDevices: host.devices.length > 0,
     isExpanded: false,
+    ordinaryExpanded: false,
     recentSafetyAlerts: [],
     recentAutomationRuns: [],
     weeklyReportCard: null,
@@ -330,6 +335,7 @@ export function syncSingleOwnerLifecycle(
 
 function clearCenterActivities(center: HostActivityCenter): void {
   center.isExpanded = false;
+  center.ordinaryExpanded = false;
   center.recentSafetyAlerts = [];
   center.recentAutomationRuns = [];
   center.weeklyReportCard = null;
@@ -366,10 +372,12 @@ export function collapseActivityStackOnHide(host: unknown): boolean {
   if (!isFullPanelHost(host)) return false;
   const center = (host as HostWithActivity).activityCenter;
   if (!center) return false;
+  const wasOpen = center.isExpanded || center.ordinaryExpanded || host.connectionDetailsOpen;
   center.pendingHighRiskUndoRunId = null;
-  if (!center.isExpanded) return false;
   center.isExpanded = false;
-  return true;
+  center.ordinaryExpanded = false;
+  host.connectionDetailsOpen = false;
+  return wasOpen;
 }
 
 export function pruneOrphanedDeviceActivities(
@@ -1887,6 +1895,69 @@ export function buildActivityFeed(
   return items;
 }
 
+/** Split the activity feed into always-visible safety cards and the foldable ordinary capsule. */
+export interface TieredActivityFeed {
+  readonly pinned: ActivityFeedItem[];
+  readonly ordinary: ActivityFeedItem[];
+}
+
+const rawSafetyAlertId = (item: ActivityFeedItem): string =>
+  item.id.startsWith("safety:") ? item.id.slice("safety:".length) : item.id;
+
+const sensorKindFromAlertId = (id: string): SensorAlertKind | null => {
+  const match = /^sensor:(smoke|gas|leak|contact|motion|vibration|lock):/.exec(id);
+  return match ? (match[1] as SensorAlertKind) : null;
+};
+
+/**
+ * macOS `ActivityStackPolicy` parity: smoke, gas, leak, doorbell, missed timers and long-run alerts
+ * never fold. Contact, motion, vibration and lock stay pinned only while their alert setting is on and
+ * the away-only policy still covers the current presence sample. Offline and low battery are ordinary.
+ */
+export function isPinnedActivityItem(host: MenuMijiaWindowsApp, item: ActivityFeedItem): boolean {
+  if (item.kind !== "safety") return true;
+  const raw = rawSafetyAlertId(item);
+  const kind = sensorKindFromAlertId(raw);
+  if (kind === null) return raw.startsWith("longrun:") || item.actionAttr === "data-activity-safety-off";
+  if (kind === "smoke" || kind === "gas" || kind === "leak") return true;
+  const center = getHostActivityCenter(host);
+  const policy = center.sensorPolicyOverride ?? loadSensorAlertPolicy(center.storage, center.lastSampledLockState ?? false);
+  const enabled = policy.enabled[kind] ?? sensorAlertEnabledByDefault(kind);
+  return enabled && !(policy.onlyWhenAway && !policy.includesAway);
+}
+
+export function partitionActivityFeed(host: MenuMijiaWindowsApp, items: readonly ActivityFeedItem[]): TieredActivityFeed {
+  return items.reduce<TieredActivityFeed>(
+    (tiered, item) => {
+      (isPinnedActivityItem(host, item) ? tiered.pinned : tiered.ordinary).push(item);
+      return tiered;
+    },
+    { pinned: [], ordinary: [] },
+  );
+}
+
+export function ordinaryCapsuleSummary(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): string {
+  return tr3("{first} 等 {count} 条提醒", "{first} 等 {count} 條提醒", "{first} and {count} alerts",
+    { first: ordinary[0]?.title ?? "", count: ordinary.length }, host.settings.interfaceLanguage);
+}
+
+function renderOrdinaryAlertCapsule(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): string {
+  const expanded = getHostActivityCenter(host).ordinaryExpanded;
+  const pref = host.settings.interfaceLanguage;
+  const summary = ordinaryCapsuleSummary(host, ordinary);
+  const dismissLabel = tr3("收起普通提醒", "收起普通提醒", "Dismiss ordinary alerts", undefined, pref);
+  const hintLabel = tr3(expanded ? "收起" : "查看", expanded ? "收起" : "查看", expanded ? "Collapse" : "View", undefined, pref);
+  const list = expanded
+    ? `<div class="cc-ordinary-list" id="cc-ordinary-alert-list" data-ordinary-list>${ordinary.map((item) => renderSingleActivityRow(host, item, { stackCount: ordinary.length, showStackControls: false })).join("")}</div>`
+    : `<div class="cc-ordinary-list" id="cc-ordinary-alert-list" data-ordinary-list hidden></div>`;
+  return `<div class="cc-ordinary-alerts" data-ordinary-alerts><div class="cc-ordinary-capsule"><button type="button" class="cc-ordinary-toggle" data-ordinary-alerts-toggle aria-expanded="${expanded}" aria-controls="cc-ordinary-alert-list" title="${host.escapeHtml(summary)}"><span class="cc-ordinary-icon" aria-hidden="true">${SF_ICONS.exclamationTriangleFill}</span><span class="cc-ordinary-summary">${host.escapeHtml(summary)}</span><span class="cc-ordinary-hint">${host.escapeHtml(hintLabel)}</span></button><button type="button" class="cc-ordinary-dismiss" data-ordinary-dismiss aria-label="${host.escapeHtml(dismissLabel)}" title="${host.escapeHtml(dismissLabel)}">${SF_ICONS.xmark}</button></div>${list}</div>`;
+}
+
+export function dismissOrdinaryActivities(host: MenuMijiaWindowsApp): void {
+  for (const item of partitionActivityFeed(host, buildActivityFeed(host)).ordinary) dismissActivityById(host, item.id);
+  getHostActivityCenter(host).ordinaryExpanded = false;
+}
+
 export const StackedCardGeometry = {
   maxVisible: 3,
   peekReservePx: 15,
@@ -1910,7 +1981,8 @@ export const StackedCardGeometry = {
 
 export type UpperStackCardKind =
   | "consent" | "voice" | "haError" | "miExpiry" | "doorbell" | "safety" | "automation"
-  | "weeklyReport" | "undo" | "reply" | "suggestions" | "missedTimers" | "proactive" | "timers";
+  | "weeklyReport" | "undo" | "reply" | "suggestions" | "missedTimers" | "proactive" | "timers"
+  | "ordinary";
 
 export interface UpperStackCard {
   readonly id: string;
@@ -1977,34 +2049,20 @@ function renderPeekBackplates(totalCount: number): string {
 }
 
 export function renderActivityStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
-  const center = getHostActivityCenter(host);
   const items = buildActivityFeed(host, nowMs);
   if (items.length === 0) return "";
-  const pref = host.settings.interfaceLanguage;
-  if (items.length === 1) {
-    return `<section class="cc-activity-stack" data-activity-stack data-activity-count="1" data-activity-expanded="false">${renderSingleActivityRow(host, items[0]!, { stackCount: 1, showStackControls: false })}</section>`;
+  const tiered = partitionActivityFeed(host, items);
+  const pinnedHtml = tiered.pinned
+    .map((item) => renderSingleActivityRow(host, item, { stackCount: tiered.pinned.length, showStackControls: false }))
+    .join("");
+  const ordinaryHtml = tiered.ordinary.length > 0 ? renderOrdinaryAlertCapsule(host, tiered.ordinary) : "";
+  if (tiered.pinned.length === 1 && tiered.ordinary.length === 0) {
+    return `<section class="cc-activity-stack" data-activity-stack data-activity-count="1" data-activity-expanded="false">${pinnedHtml}</section>`;
   }
-  if (!center.isExpanded) {
-    return `<section class="cc-activity-stack is-collapsed" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="false" style="position:relative;">
-      ${renderPeekBackplates(items.length)}
-      ${renderSingleActivityRow(host, items[0]!, { stackCount: items.length, showStackControls: true })}
-      <div class="cc-activity-deck-shadow" data-activity-deck aria-hidden="true" style="height:4px;margin:0 10px 4px;border-radius:0 0 var(--r-card, 8px) var(--r-card, 8px);opacity:0.45;border-bottom:1px solid currentColor;"></div>
-    </section>`;
-  }
-  const countTitle = tr3("{count} 条家庭动态", "{count} 條家庭動態", "{count} Home Activities", { count: items.length }, pref);
-  const collapseLabel = tr3("收起", "收起", "Collapse", undefined, pref);
-  const clearAllText = tr3("全部忽略", "全部忽略", "Dismiss All", undefined, pref);
-  return `<section class="cc-activity-stack is-expanded" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="true">
-    <div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;">
-      <strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong>
-      <div style="display:inline-flex;gap:6px;">
-        <button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>
-        <button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>
-      </div>
-    </div>
-    <div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">
-      ${items.map((item) => renderSingleActivityRow(host, item, { stackCount: items.length, showStackControls: false })).join("")}
-    </div>
+  const ordinaryExpanded = getHostActivityCenter(host).ordinaryExpanded;
+  return `<section class="cc-activity-stack is-expanded cc-activity-stack--tiered" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="${ordinaryExpanded}" data-activity-tiered="true">
+    ${pinnedHtml ? `<div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${pinnedHtml}</div>` : ""}
+    ${ordinaryHtml}
   </section>`;
 }
 
@@ -2075,7 +2133,8 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
   }
 
   let replyConsumedByArmedAuto = false;
-  for (const item of buildActivityFeed(host, nowMs)) {
+  const tieredFeed = partitionActivityFeed(host, buildActivityFeed(host, nowMs));
+  for (const item of tieredFeed.pinned) {
     const isArmedHighRisk = item.kind === "automation" && Boolean(center.pendingHighRiskUndoRunId) && (item.actionValue === center.pendingHighRiskUndoRunId || item.id === `auto:${center.pendingHighRiskUndoRunId}`);
     const isDismissible = !isArmedHighRisk;
     const renderedItem = isArmedHighRisk
@@ -2092,6 +2151,16 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     const factory: UpperCardFactory = { id: item.id, kind: item.kind, isDismissible, render: (opts) => renderSingleActivityRow(host, renderedItem, { stackCount: opts.stackCount, showStackControls: opts.showStackControls, isDismissible }) };
     if (isArmedHighRisk) factories.unshift(factory);
     else factories.push(factory);
+  }
+
+  if (tieredFeed.ordinary.length > 0) {
+    const ordinary = tieredFeed.ordinary;
+    factories.push({
+      id: "ordinary:alerts",
+      kind: "ordinary",
+      isDismissible: true,
+      render: () => `<div class="win-notif-card cc-feedback-card cc-ordinary-card" data-upper-card-id="ordinary:alerts" data-upper-kind="ordinary" data-upper-dismissible="true">${renderOrdinaryAlertCapsule(host, ordinary)}</div>`,
+    });
   }
 
   const undoState = computeUndoAvailability(host, nowMs);
@@ -2165,6 +2234,8 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
 export function collectUpperStackCards(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperStackCard[] {
   const center = getHostActivityCenter(host);
   const factories = buildUpperCardFactories(host, nowMs);
+  // Classic keeps the unified stack, but two or more urgent cards may never hide behind the peak card.
+  if (partitionActivityFeed(host, buildActivityFeed(host, nowMs)).pinned.length > 1) center.isExpanded = true;
   if (factories.length <= 1) center.isExpanded = false;
   const showCollapsedControls = !center.isExpanded && factories.length > 1;
   return factories.map((f, idx) => ({ id: f.id, kind: f.kind, isDismissible: f.isDismissible, html: f.render({ stackCount: factories.length, showStackControls: showCollapsedControls && idx === 0 }) }));
@@ -2196,6 +2267,10 @@ export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: strin
     Boolean(host.pendingCloudConsent) ||
     host.pendingHighRisk !== null ||
     (Boolean(center.pendingHighRiskUndoRunId) && Boolean(host.replyBanner && !host.replyBanner.isError));
+  if (activityId === "ordinary:alerts") {
+    dismissOrdinaryActivities(host);
+    return;
+  }
   if (activityId === "undo:manual") {
     if (host.lastUndoAction) center.dismissedActivityIds.add(`undo:${host.lastUndoAction.expiresAtMs}:${host.lastUndoAction.summary}`);
     host.lastUndoAction = null;
@@ -2250,6 +2325,7 @@ export function dismissAllActivities(host: MenuMijiaWindowsApp): void {
     for (const id of ["undo:manual", "proactive:suggestions", "reply:banner", "suggestions:pending", "missed:timers", "timers:active"]) dismissActivityById(host, id);
   }
   center.isExpanded = false;
+  center.ordinaryExpanded = false;
 }
 
 export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
@@ -2325,6 +2401,28 @@ export function bindUnifiedUpperStack(host: MenuMijiaWindowsApp): void {
 
 export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
   const center = getHostActivityCenter(host);
+
+  for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-ordinary-alerts-toggle]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      center.ordinaryExpanded = !center.ordinaryExpanded;
+      host.render();
+      if (center.ordinaryExpanded) {
+        host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
+      }
+    });
+  }
+
+  for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-ordinary-dismiss]")) {
+    if (btn.closest("[data-exit-ghost]")) continue;
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dismissOrdinaryActivities(host);
+      host.render();
+      host.root.querySelector<HTMLButtonElement>("#btn-connection-status")?.focus();
+    });
+  }
 
   for (const btn of host.root.querySelectorAll<HTMLButtonElement>("[data-activity-toggle-expand]")) {
     if (btn.closest("[data-exit-ghost]")) continue;

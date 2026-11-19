@@ -318,11 +318,12 @@ describe("Settings category routing (#78)", () => {
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     const deadline = performance.now() + 2000;
-    while (!document.querySelector("#btn-footer-health")) {
+    while (!/登录已过期/.test(document.querySelector("#btn-connection-status")?.textContent ?? "")) {
       if (performance.now() >= deadline) assert.fail("the session never expired");
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    await click("#btn-footer-health");
+    await click("#btn-connection-status");
+    await click('[data-connection-action="qr"]');
     assert.equal(app.settingsTab, "connection");
     assert.equal(visibleTab(), "connection");
   });

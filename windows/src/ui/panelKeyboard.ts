@@ -325,6 +325,21 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.render();
       return true;
     }
+    // Temporary footer/popover state closes before search and before the panel hides, and gives focus back.
+    if (host.connectionDetailsOpen) {
+      event.preventDefault();
+      host.connectionDetailsOpen = false;
+      host.render();
+      host.root.querySelector<HTMLButtonElement>("#btn-connection-status")?.focus();
+      return true;
+    }
+    if (host.activityCenter?.ordinaryExpanded) {
+      event.preventDefault();
+      host.activityCenter.ordinaryExpanded = false;
+      host.render();
+      host.root.querySelector<HTMLButtonElement>("[data-ordinary-alerts-toggle]")?.focus();
+      return true;
+    }
     if (isEditable && !inInput) return true;
     if (host.expandedDeviceId !== null && (hasSubpage || !inInput || !host.panelSearch.query)) {
       event.preventDefault();

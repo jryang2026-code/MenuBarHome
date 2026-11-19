@@ -385,6 +385,8 @@ export class MenuMijiaWindowsApp {
   // Personalisation / layout editing state (see panelPrefs.ts).
   public homes: HomeOption[] = [];
   public isHomeMenuOpen = false;
+  /** Footer connection card; cleared on hide so the next open starts collapsed. */
+  public connectionDetailsOpen = false;
   public isEditingLayout = false;
   public draggingId: string | null = null;
   public dragPointer: { x: number; y: number; grabX: number; grabY: number } | null = null;

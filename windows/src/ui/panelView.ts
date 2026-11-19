@@ -10,6 +10,7 @@ import {
   renderClassicUnifiedUpperStack,
 } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
+import { renderConnectionStatus, resolveConnectionStatus } from "./connectionStatus.js";
 import { applyPanelOpacity, withAliases } from "./panelPrefs.js";
 import { quickActions } from "./demo.js";
 import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
@@ -193,8 +194,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
         </main>`;
+  const verboseFooter = resolveConnectionStatus(host).text.length > 10;
   const footerHtml = `
-        <footer class="cc-footer">
+        <footer class="cc-footer${verboseFooter ? " is-verbose-status" : ""}">
           <div class="cc-footer-status">
             ${footerStatus(host)}
             ${isClassic ? "" : host.renderAllOffControl()}
@@ -560,13 +562,7 @@ export function renderSliderDeck(host: MenuMijiaWindowsApp): string {
 }
 
 function footerStatus(host: MenuMijiaWindowsApp): string {
-  const health = host.panelHealth();
-  const dot = `<span class="cc-status-dot ${health.dot}"></span>`;
-  const escaped = host.escapeHtml(health.label);
-  if (health.kind === "offline" && health.recovery === "qr") {
-    return `${dot}<button type="button" class="cc-footer-label is-action" id="btn-footer-health" title="${escaped}">${escaped}</button>`;
-  }
-  return `${dot}<span class="cc-footer-label" title="${escaped}">${escaped}</span>`;
+  return renderConnectionStatus(host);
 }
 
 function liveBanner(host: MenuMijiaWindowsApp): string {
