@@ -137,4 +137,60 @@ struct ManualControlConfirmationPresenterTests {
         let commands = await provider.executedCommands
         #expect(commands == [.setSwitch(entityId: "switch.wall_modal", isOn: true)])
     }
+
+    @Test("Choosing «这是灯，以后不再询问» neither marks nor executes when device becomes high-risk non-light or invalidates modal context")
+    func thirdButtonAbortsWithoutMarkWhenSwitchBecomesHighRiskOrSwitchesSourceDuringModal() async throws {
+        let wall = SmartDevice(
+            id: "wall-race", name: "左键", roomId: "hall", roomName: "玄关",
+            model: "lumi.switch.b1nacn02", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.wall_race", isOn: false, powerWritable: true)),
+            accountId: "acc-1"
+        )
+        var initialHome = SynthesizedHome(devices: [wall], scenes: [])
+        initialHome.deviceBackends = [wall.id: .xiaomiCloud]
+        let provider = MockHomeProvider(snapshot: initialHome)
+        let suiteName = "test.presenter.modal.race.\(UUID().uuidString)"
+        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        store.toastAutoDismissInterval = nil
+        try await store.waitForTestSnapshot()
+
+        // 1. Snapshot reclassifies the wall switch into a UV sterilizer lamp during modal.
+        store.manualControlConfirmationHandler = { prompt in
+            var reclassified = wall
+            reclassified.name = "杀菌灯"
+            var nextHome = SynthesizedHome(devices: [reclassified], scenes: [])
+            nextHome.deviceBackends = [wall.id: .xiaomiCloud]
+            store.handleProviderEvent(.snapshotUpdated(nextHome))
+            return ManualControlConfirmationPresenter.applyModalResponse(
+                .alertThirdButtonReturn,
+                for: prompt,
+                in: store
+            )
+        }
+        let initialCard = try #require(store.devices.first { $0.id == wall.id })
+        #expect(store.togglePrimary(initialCard) == nil)
+        #expect(!store.isSwitchMarkedAsLight(wall.id))
+        #expect(await provider.executedCommands.isEmpty)
+
+        // 2. Restore wall switch, then switch backend (.xiaomiCloud -> .homeAssistant) during modal.
+        store.handleProviderEvent(.snapshotUpdated(initialHome))
+        store.manualControlConfirmationHandler = { prompt in
+            var switchedHome = SynthesizedHome(devices: [wall], scenes: [])
+            switchedHome.deviceBackends = [wall.id: .homeAssistant]
+            store.handleProviderEvent(.snapshotUpdated(switchedHome))
+            return ManualControlConfirmationPresenter.applyModalResponse(
+                .alertThirdButtonReturn,
+                for: prompt,
+                in: store
+            )
+        }
+        let restoredCard = try #require(store.devices.first { $0.id == wall.id })
+        #expect(store.togglePrimary(restoredCard) == nil)
+        #expect(
+            !store.isSwitchMarkedAsLight(wall.id),
+            "must not persist switch-light mark when the device switched backend during the modal"
+        )
+        #expect(await provider.executedCommands.isEmpty)
+    }
 }
