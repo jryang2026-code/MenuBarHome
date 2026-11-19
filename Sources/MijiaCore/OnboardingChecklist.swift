@@ -70,8 +70,13 @@ public enum OnboardingPresentation: Equatable, Sendable {
     public static func resolve(
         checklist: OnboardingChecklist,
         hasCompletedOnboarding: Bool,
-        isReopened: Bool
+        isReopened: Bool,
+        isIdentityUncertain: Bool = false,
+        keepFullGuideOpen: Bool = false
     ) -> OnboardingPresentation {
+        // Fail-closed: never present first-run onboarding when config or credential read failed.
+        if isIdentityUncertain { return .hidden }
+        if keepFullGuideOpen { return .fullGuide }
         // An explicit reopen asks to review the guide, even after everything is done.
         if isReopened {
             return checklist.hasConfiguredSource ? .dashboardChecklist : .fullGuide

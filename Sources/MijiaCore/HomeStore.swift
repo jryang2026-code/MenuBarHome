@@ -533,6 +533,10 @@ public final class HomeStore {
     /// Transient flag allowing the user to reopen the onboarding guide from Settings at any time.
     public var isShowingOnboarding: Bool = false
 
+    /// Keeps the onboarding guide visible after a first source connects so the user can optionally
+    /// add a second platform (dual-source) before entering the dashboard.
+    public var isKeepingOnboardingGuideOpenForDualSource: Bool = false
+
     /// Which onboarding surface to draw. The full guide only replaces the dashboard while nothing
     /// is configured; after connecting, the remaining lessons ride above the dashboard so search and
     /// All Off/Undo can be tried while the instructions stay visible (#180 review).
@@ -540,7 +544,9 @@ public final class HomeStore {
         OnboardingPresentation.resolve(
             checklist: onboardingChecklist,
             hasCompletedOnboarding: hasCompletedOnboarding,
-            isReopened: isShowingOnboarding
+            isReopened: isShowingOnboarding,
+            isIdentityUncertain: identityMigrationDiagnostic != nil,
+            keepFullGuideOpen: isKeepingOnboardingGuideOpenForDualSource
         )
     }
 
@@ -568,6 +574,14 @@ public final class HomeStore {
         }
         hasCompletedOnboarding = true
         isShowingOnboarding = false
+    }
+
+    /// Leaves the onboarding guide cleanly, cancelling any in-flight HA verification and rolling back
+    /// pending dual-source onboarding state.
+    public func finishOnboardingGuide() {
+        cancelPendingHAOnboardingVerification()
+        isKeepingOnboardingGuideOpenForDualSource = false
+        completeOnboarding()
     }
 
     public func reopenOnboarding() {
@@ -1157,7 +1171,17 @@ public final class HomeStore {
         enabledCategories: Set(DeviceCategoryID.allCases)
     )
     public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
+    public internal(set) var identityMigrationDiagnostic: String?
     public internal(set) var capabilityGeneration: Int = 0
+    public internal(set) var capabilityMergeConflictCount: Int = 0
+    public internal(set) var lastCapabilityMergeDiagnostic: String?
+    public internal(set) var isVerifyingHAOnboarding: Bool = false
+    @ObservationIgnored var capabilityStoreRevision: Int?
+    @ObservationIgnored let usesInjectedProvider: Bool
+    @ObservationIgnored var preDemoBackend: HomeBackend?
+    @ObservationIgnored var haOnboardingVerifier: (@Sendable (String, String) async throws -> Void)?
+    @ObservationIgnored var activeHAOnboardingAttemptID: UUID?
+    @ObservationIgnored var activeHAOnboardingTask: Task<HAOnboardingConnectOutcome, Never>?
     public var onMiAccountDisabled: (@MainActor (String, Set<String>) -> Void)?
     public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
@@ -1190,6 +1214,7 @@ public final class HomeStore {
     ) {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
+        self.usesInjectedProvider = (provider != nil || dualSource != nil)
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
         self.haProviderFactory = haProviderFactory
@@ -1257,7 +1282,8 @@ public final class HomeStore {
             }
         }
         self.selectedMiHomeId = initialSelectedHomeId
-        self.lgConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
+        let initialLGConfig = LGWebOSConfig.load(from: ud, vault: credentialVault)
+        self.lgConfig = initialLGConfig
         self.homeName = HomePreferences.homeName.load(from: ud)
         self.isHabitLearningEnabled = boolOrDefaultTrue("assistant_habit_learning_enabled")
         let habitShareKey = "assistant_habit_share_enabled"
@@ -1333,32 +1359,41 @@ public final class HomeStore {
         self.allOffOverrides = HomePreferences.allOffOverrides.load(from: ud)
 
         let initialHasHASource = !initialHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        var initialScopes = initialAccounts.map(\.id)
-        if initialHasHASource {
-            initialScopes.append("ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(savedURL))")
-        }
-        let hasLegacySettings = ud.bool(forKey: "has_completed_onboarding")
-            || ud.object(forKey: "home_backend") != nil
-            || ud.object(forKey: "ha_server_url") != nil
-            || ud.object(forKey: "mi_cloud_region") != nil
-        let hasLocalData = !DevicePreferenceIndex.referencedIDs(defaults: ud).isEmpty
-            || ud.object(forKey: ScheduledCommand.storageKey) != nil
-            || ud.object(forKey: AutomationRuleStore.storageKey) != nil
-        let checkMiVault = credentialVault != nil || (!isTestEnvironment && ud === UserDefaults.standard)
-        let initialVoiceInput = HomePreferences.enableVoiceInput.load(from: ud)
-        let initialGrokBall = HomePreferences.enableGrokBall.load(from: ud)
-        let capResolution = CapabilitySelectionStore.resolveAtLaunch(
+        let hasExplicitOnboardingFlag = ud.object(forKey: "has_completed_onboarding") != nil
+        let capResolution = Self.resolveLaunchCapabilities(
             defaults: ud,
             vault: credentialVault,
-            configuredScopes: initialScopes,
-            checkMiVault: checkMiVault,
+            accounts: initialAccounts,
+            hasHASource: initialHasHASource,
+            serverURLString: savedURL,
+            lgHasConfiguredHost: initialLGConfig.hasConfiguredHost,
+            isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsInitialHAToken,
-            hasLegacySettingsOrOnboarding: hasLegacySettings,
-            hasPersistedLocalData: hasLocalData,
-            legacyFeatureFlags: [.voiceInput: initialVoiceInput, .grokball: initialGrokBall]
+            legacyVoiceInput: HomePreferences.enableVoiceInput.load(from: ud),
+            legacyGrokBall: HomePreferences.enableGrokBall.load(from: ud)
         )
         self.capabilitySelection = capResolution.selection
         self.capabilityResolutionMode = capResolution.mode
+        self.identityMigrationDiagnostic = capResolution.retryDiagnostic
+        self.capabilityStoreRevision = CapabilitySelectionStore.currentRevision(defaults: ud)
+        switch capResolution.mode {
+        case .freshInstall:
+            // Record explicit `false` so a second launch before connecting/skipping still opens
+            // first-run onboarding even after `capability_selection_v1` seals `migrationComplete`.
+            if !hasExplicitOnboardingFlag {
+                ud.set(false, forKey: "has_completed_onboarding")
+            }
+        case .legacyPreserved, .explicit:
+            // Upgraded installs (including demo-only or capability-selection-only records) migrate
+            // silently without popping onboarding or registering launch-at-login.
+            if !hasExplicitOnboardingFlag {
+                self.hasCompletedOnboarding = true
+                ud.set(true, forKey: "has_completed_onboarding")
+            }
+        case .uncertainFallback:
+            // Fail-closed: never seal onboarding or migration state while reads are uncertain.
+            break
+        }
         // Bookkeeping is loaded whenever the envelope is readable, including `uncertainFallback`
         // caused by an unavailable credential slot: dropping the explicit disables there would
         // re-enable an account the user turned off as soon as `miAccounts` loads (H4).
@@ -1393,14 +1428,10 @@ public final class HomeStore {
         scheduleMiSessionExpiryTransition()
         startListening()
         restoreScheduledCommands()
-        // Demo mode is strictly offline: no LAN discovery, no LG connection (#47).
+        // Demo mode and unconfigured fresh installs are strictly offline: no LAN discovery at
+        // launch, and LG webOS only starts when a host is already enabled and configured (#47, P4a-M).
         if provider == nil, dualSource == nil, initialBackend != .demo {
             startLGWebOSIfNeeded()
-            if shouldAutoDiscoverHomeAssistantOnLAN {
-                Task { [weak self] in
-                    _ = await self?.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
-                }
-            }
         }
     }
 

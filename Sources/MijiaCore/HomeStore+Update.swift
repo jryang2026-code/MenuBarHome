@@ -44,6 +44,9 @@ extension HomeStore {
             }
             return
         }
+        if !userInitiated && shouldSuppressBackgroundNetworkWork {
+            return
+        }
         var previousStaged: VerifiedStagedApp?
         switch updateState {
         case .checking, .downloading, .verifying, .installing:

@@ -456,10 +456,28 @@ extension ControlCenterPanel {
 
     var emptyStateView: some View {
         VStack(spacing: 8) {
-            Image(systemName: store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles")
+            Image(systemName: store.identityMigrationDiagnostic != nil
+                ? "exclamationmark.triangle"
+                : (store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles"))
                 .font(.system(size: DesignTokens.TypeSize.reading))
-                .foregroundStyle(.secondary)
-            if store.allConfiguredSourcesTurnedOff {
+                .foregroundStyle(store.identityMigrationDiagnostic != nil ? .orange : .secondary)
+            if store.identityMigrationDiagnostic != nil {
+                Text(L10n.tr("配置或凭据读取受阻", "Could not read settings or credentials"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(L10n.tr(
+                    "暂时无法确认历史连接与凭据，已保持现有配置不变，不会清空或覆盖原设置。",
+                    "Existing connections or credentials could not be read. Your settings were left untouched."
+                ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                Button(L10n.tr("重试读取", "Retry Reading")) {
+                    _ = store.retryIdentityMigration()
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                .padding(.top, 2)
+            } else if store.allConfiguredSourcesTurnedOff {
                 Text(L10n.tr("已停用当前连接", "Connections turned off"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(.primary)
@@ -832,7 +850,7 @@ enum PanelConnectionBadgeKind: Equatable, Sendable {
 }
 
 enum PanelConnectionInlineAction: Equatable, Sendable {
-    case leaveDemo, openConnectionSettings, presentMiReauth, openDetail, openLocalNetworkSettings
+    case leaveDemo, openConnectionSettings, presentMiReauth, openDetail, openLocalNetworkSettings, retryIdentityMigration
 }
 
 struct PanelConnectionStatusPresentation: Equatable, Sendable {
@@ -851,6 +869,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
         case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
         case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
         case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
+        case .retryIdentityMigration: _ = store.retryIdentityMigration()
         }
     }
 
@@ -862,11 +881,20 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
         case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
         case .openDetail: PanelConnectionDetailState.shared.toggle()
         case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
+        case .retryIdentityMigration: _ = store.retryIdentityMigration()
         }
     }
 
     @MainActor
     static func resolve(store: HomeStore) -> PanelConnectionStatusPresentation {
+        if store.identityMigrationDiagnostic != nil {
+            return PanelConnectionStatusPresentation(
+                badge: .degraded,
+                text: L10n.tr("配置或凭据读取受阻", "Could not read settings or credentials"),
+                inlineActionTitle: L10n.tr("重试读取", "Retry Reading"),
+                inlineAction: .retryIdentityMigration
+            )
+        }
         if store.homeBackend == .demo {
             return PanelConnectionStatusPresentation(
                 badge: .demo,
@@ -1302,7 +1330,12 @@ struct PanelConnectionDetailPopover: View {
             Divider()
 
             HStack(spacing: 8) {
-                if store.homeBackend != .demo, (store.hasEnabledMiSource || store.hasEnabledHASource) {
+                if store.identityMigrationDiagnostic != nil {
+                    Button(L10n.tr("重试读取", "Retry Reading")) {
+                        if store.retryIdentityMigration() { onClose() }
+                    }
+                    .themedPillButtonStyle(theme, isSelected: true, tintColor: .orange)
+                } else if store.homeBackend != .demo, (store.hasEnabledMiSource || store.hasEnabledHASource) {
                     Button(L10n.tr("重试连接", "Retry Connection")) { store.refreshNow() }
                         .themedPillButtonStyle(theme)
                 }

@@ -1716,19 +1716,6 @@ private struct ConnectionSettingsTab: View {
             haBaselineURL = urlDraft
             haBaselineToken = tokenDraft
             registerUnsavedForm()
-            if store.discoveredHAInstances.isEmpty,
-               store.shouldAutoDiscoverHomeAssistantOnLAN,
-               !store.isDiscoveringHA {
-                Task {
-                    let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: true)
-                    if let first = found.first,
-                       urlDraft.isEmpty || HAWebSocketProvider.normalizeBaseURL(urlDraft) == KeychainHelper.defaultNASURL {
-                        urlDraft = first.baseURL
-                        // An automatic suggestion is not an edit the user would lose.
-                        haBaselineURL = urlDraft
-                    }
-                }
-            }
         }
         .alert(
             pendingHADisableConfirmation?.title ?? "",

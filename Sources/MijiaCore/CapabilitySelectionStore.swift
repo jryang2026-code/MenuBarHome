@@ -40,6 +40,21 @@ extension CapabilityManifest {
     }
 }
 
+/// Outcome of persisting `CapabilitySelectionStore`, including optimistic-revision conflict merge diagnostics.
+public struct CapabilitySelectionSaveResult: Equatable, Sendable {
+    public let succeeded: Bool
+    public let revision: Int?
+    public let hadConflict: Bool
+    public let diagnostic: String?
+
+    public init(succeeded: Bool, revision: Int?, hadConflict: Bool, diagnostic: String?) {
+        self.succeeded = succeeded
+        self.revision = revision
+        self.hadConflict = hadConflict
+        self.diagnostic = diagnostic
+    }
+}
+
 /// Persists capability and connection-scope enablement in `UserDefaults` using lossless
 /// read-merge-write so unknown future keys or capability identifiers survive upgrades and downgrades.
 public enum CapabilitySelectionStore {
@@ -48,6 +63,7 @@ public enum CapabilitySelectionStore {
 
     private enum Keys {
         static let schemaVersion = "schemaVersion"
+        static let revision = "revision"
         static let migrationComplete = "migrationComplete"
         static let enabledConnections = "enabledConnections"
         static let disabledConnections = "disabledConnections"
@@ -62,6 +78,10 @@ public enum CapabilitySelectionStore {
 
     public static func hasCompletedMigration(defaults: UserDefaults = .standard) -> Bool {
         (readValidEnvelope(defaults: defaults)?[Keys.migrationComplete] as? Bool) == true
+    }
+
+    static func currentRevision(defaults: UserDefaults) -> Int? {
+        readValidEnvelope(defaults: defaults)?[Keys.revision] as? Int
     }
 
     static func explicitlyDisabledConnections(defaults: UserDefaults) -> Set<ConnectionCapabilityID> {
@@ -156,11 +176,42 @@ public enum CapabilitySelectionStore {
         removingScopes: Set<String> = [],
         defaults: UserDefaults
     ) -> Bool {
+        saveMergingConflicts(
+            selection: selection,
+            configuredScopes: configuredScopes,
+            explicitlyDisabledConnections: explicitlyDisabledConnections,
+            removingScopes: removingScopes,
+            expectedRevision: nil,
+            defaults: defaults
+        ).succeeded
+    }
+
+    /// Read-merge-write with optimistic revision tracking. When another writer advanced the stored
+    /// revision since `expectedRevision`, unknown fields and non-conflicting scope disables from disk
+    /// are preserved, the revision advances monotonically, and a merge diagnostic is reported.
+    @discardableResult
+    static func saveMergingConflicts(
+        selection: CapabilitySelection,
+        configuredScopes: Set<String>,
+        explicitlyDisabledConnections: Set<ConnectionCapabilityID>? = nil,
+        removingScopes: Set<String> = [],
+        expectedRevision: Int? = nil,
+        defaults: UserDefaults
+    ) -> CapabilitySelectionSaveResult {
         if defaults.object(forKey: storageKey) != nil && readValidEnvelope(defaults: defaults) == nil {
-            return false
+            return CapabilitySelectionSaveResult(
+                succeeded: false,
+                revision: nil,
+                hadConflict: false,
+                diagnostic: "corrupt_capability_selection"
+            )
         }
         var dict = readValidEnvelope(defaults: defaults) ?? [:]
+        let diskRevision = dict[Keys.revision] as? Int
+        let hadConflict = expectedRevision != nil && diskRevision != expectedRevision
+        let nextRevision = (diskRevision ?? 0) + 1
         dict[Keys.schemaVersion] = schemaVersion
+        dict[Keys.revision] = nextRevision
         dict[Keys.migrationComplete] = true
         dict[Keys.enabledConnections] = mergeKnown(
             selection.enabledConnections, existing: dict[Keys.enabledConnections] as? [String], known: knownConnections
@@ -189,15 +240,31 @@ public enum CapabilitySelectionStore {
         dict[Keys.enabledCategories] = mergeKnown(
             selection.enabledCategories, existing: dict[Keys.enabledCategories] as? [String], known: knownCategories
         )
-        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) else { return false }
+        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]) else {
+            return CapabilitySelectionSaveResult(
+                succeeded: false,
+                revision: diskRevision,
+                hadConflict: hadConflict,
+                diagnostic: "encode_capability_selection_failed"
+            )
+        }
         defaults.set(data, forKey: storageKey)
-        return true
+        let diagnostic = hadConflict
+            ? "merged_revision_conflict:\(expectedRevision ?? 0)->\(diskRevision ?? 0)->\(nextRevision)"
+            : nil
+        return CapabilitySelectionSaveResult(
+            succeeded: true,
+            revision: nextRevision,
+            hadConflict: hadConflict,
+            diagnostic: diagnostic
+        )
     }
 
     private static func readValidEnvelope(defaults: UserDefaults) -> [String: Any]? {
         guard let data = defaults.data(forKey: storageKey),
               let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               (json[Keys.schemaVersion] as? Int) == schemaVersion else { return nil }
+        if let rev = json[Keys.revision], !(rev is Int) { return nil }
         if let flag = json[Keys.migrationComplete], !(flag is Bool) { return nil }
         for key in [Keys.enabledConnections, Keys.disabledConnections, Keys.disabledConnectionScopes, Keys.enabledFeatures, Keys.enabledCategories] {
             if let value = json[key], !(value is [String]) { return nil }

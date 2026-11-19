@@ -492,6 +492,26 @@ struct PanelAlertsAndStatusTests {
                 #expect(status.text == "No smart home platform connected")
                 #expect(status.inlineActionTitle == "Connect")
             }
+
+            // 6b. Uncertain config/credential read -> fail-closed retryable status (never "not connected")
+            store.identityMigrationDiagnostic = "vault_read_failed"
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "配置或凭据读取受阻")
+                #expect(status.inlineActionTitle == "重试读取")
+                #expect(status.inlineAction == .retryIdentityMigration)
+                #expect(status.badge == .degraded)
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "設定或憑據讀取受阻")
+                #expect(status.inlineActionTitle == "重試讀取")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                let status = PanelConnectionStatusPresentation.resolve(store: store)
+                #expect(status.text == "Could not read settings or credentials")
+                #expect(status.inlineActionTitle == "Retry Reading")
+            }
         }
 
         // 7. Credential expired -> "米家登录已过期" + inline action "重新扫码", while primary status button still opens detail popover

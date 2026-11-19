@@ -1202,6 +1202,11 @@ extension HomeStore {
         invalidateUndoContext()
 
         let previousBackend = homeBackend
+        if backend == .demo, previousBackend != .demo {
+            preDemoBackend = (hasHASource || hasMiSource || !miAccounts.isEmpty) ? previousBackend : nil
+        } else if backend != .demo {
+            preDemoBackend = nil
+        }
         self.homeBackend = backend
         if backend == .demo {
             clearHATeardownState()
@@ -1494,14 +1499,15 @@ extension HomeStore {
         }
     }
 
-    public func updateConnection(serverURL: String, token: String) {
+    @discardableResult
+    public func updateConnection(serverURL: String, token: String) -> Bool {
         // A refused Keychain write must not report "Saved": the token would be gone after relaunch.
         guard KeychainHelper.saveToken(token, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
                 isError: true
             )
-            return
+            return false
         }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
@@ -1545,7 +1551,7 @@ extension HomeStore {
                 "已保存 Home Assistant 配置（连接仍处于停用状态）",
                 "Saved Home Assistant settings (connection remains turned off)"
             ))
-            return
+            return true
         }
         invalidateUndoContext()
         if self.hasHASource {
@@ -1567,6 +1573,7 @@ extension HomeStore {
         rebuildLiveProvider()
         resumeLGWebOSAfterLeavingDemoIfNeeded(wasDemo: wasDemo)
         showToast(L10n.tr("已保存并重新连接 Home Assistant", "Saved and reconnecting to Home Assistant"))
+        return true
     }
 
     /// The user chose `instance` (a tap in setup or settings, or 切换 on a suggestion).
@@ -1599,6 +1606,9 @@ extension HomeStore {
     }
 
     public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
+        guard capabilityResolutionMode != .freshInstall,
+              identityMigrationDiagnostic == nil,
+              hasCompletedOnboarding else { return false }
         guard homeBackend != .demo, homeBackend != .xiaomiCloud, isHAConnectionEnabled else { return false }
         guard !hasHASource, !hasMiSource else { return false }
         if let lastAutoHADiscoveryAt,
@@ -2042,7 +2052,8 @@ extension HomeStore {
             deviceValuesAreStale: deviceValuesAreStale,
             connectionStatus: connectionStatus,
             localNetworkBlocks: effectiveLocalNetworkBlocks,
-            allConfiguredSourcesTurnedOff: allConfiguredSourcesTurnedOff
+            allConfiguredSourcesTurnedOff: allConfiguredSourcesTurnedOff,
+            identityMigrationDiagnostic: identityMigrationDiagnostic
         ))
     }
 }
@@ -2052,6 +2063,7 @@ public enum PanelHealthAction: Equatable, Sendable {
     case presentMiReauth
     case openConnectionSettings
     case openLocalNetworkSettings
+    case retryIdentityMigration
 }
 
 /// Connection health for every status surface. Derived, never stored.
@@ -2084,13 +2096,22 @@ struct PanelHealthInput: Equatable, Sendable {
     /// Every configured source exists but the user turned it off. Distinct from "nothing connected
     /// yet": the panel must not claim the user never configured anything (L1).
     var allConfiguredSourcesTurnedOff: Bool = false
+    /// Non-nil when persisted capability selection or Keychain credentials failed to read at launch.
+    /// Surfaces a retryable blocked state instead of claiming "nothing connected".
+    var identityMigrationDiagnostic: String? = nil
 }
 
 /// Priority is the thing the user must deal with first.
-/// A blocked Mi login hides a declined Home Assistant address, and a declined address hides
-/// "nothing configured", because each of those has its own recovery.
+/// An uncertain identity read fails closed ahead of demo and "nothing configured"; a blocked Mi
+/// login hides a declined Home Assistant address, because each has its own recovery.
 enum PanelHealthResolver {
     static func resolve(_ input: PanelHealthInput) -> PanelHealth {
+        if input.identityMigrationDiagnostic != nil {
+            return .blocked(
+                reason: L10n.tr("配置或凭据读取受阻 · 点此重试", "Could not read settings or credentials · Retry"),
+                action: .retryIdentityMigration
+            )
+        }
         if input.miSessionBlocksControl {
             return .blocked(
                 reason: L10n.tr("米家登录已过期 · 点此扫码", "Xiaomi Home session expired · Scan to sign in"),

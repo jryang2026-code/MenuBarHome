@@ -130,13 +130,24 @@ extension HomeStore {
 
     @discardableResult
     func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
-        CapabilitySelectionStore.save(
+        let result = CapabilitySelectionStore.saveMergingConflicts(
             selection: capabilitySelection,
             configuredScopes: configuredConnectionScopes(),
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
+            expectedRevision: capabilityStoreRevision,
             defaults: userDefaults
         )
+        if result.succeeded {
+            capabilityStoreRevision = result.revision
+            if result.hadConflict {
+                capabilityMergeConflictCount &+= 1
+                lastCapabilityMergeDiagnostic = result.diagnostic
+            }
+        } else if let diagnostic = result.diagnostic {
+            lastCapabilityMergeDiagnostic = diagnostic
+        }
+        return result.succeeded
     }
 
     /// Commit order for a disable: the selection must be writable before any reference is paused, or
