@@ -1267,6 +1267,46 @@ struct MiAccountDisableTestsReview {
         #expect(store.foreignScheduledCommands.isEmpty)
     }
 
+    @Test("A missed LG-only timer still runs after the last Xiaomi account is turned off")
+    func missedLGTimerRunsAfterDisable() async throws {
+        let suite = Self.makeSuite()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+
+        let mock = MockHomeProvider()
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let tv = SmartDevice(
+            id: LGWebOSProtocol.deviceId, name: "LG 电视", roomId: "ke_ting", roomName: "客厅",
+            model: "lg.webos", isOnline: true,
+            kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
+        )
+        store.devices = [tv]
+        let missed = ScheduledCommand(
+            reply: "关闭电视",
+            fireDate: Date().addingTimeInterval(-60),
+            plan: IntentPlan(
+                intents: [DeviceIntent(targetId: LGWebOSProtocol.deviceId, operation: .power(false))],
+                reply: "关闭电视", source: .local
+            ),
+            sourceScope: Self.cn.id,
+            sourceScopes: [Self.cn.id]
+        )
+        ScheduledCommand.save([missed], to: defaults)
+        store.restoreScheduledCommands()
+        #expect(store.missedScheduledCommands.map(\.id) == [missed.id])
+
+        store.setMiAccountEnabled(false, id: Self.cn.id)
+        #expect(store.missedScheduledCommands.map(\.id) == [missed.id])
+
+        let ran = await store.runMissedScheduledCommand(id: missed.id)
+        #expect(ran != nil)
+        #expect(store.missedScheduledCommands.isEmpty)
+        #expect(!(await mock.executedCommands.isEmpty))
+    }
+
     // MARK: L1 – All accounts turned off is not "not configured"
 
     @Test("Turning off the only Xiaomi account reports a turned-off connection, not an unconfigured home")

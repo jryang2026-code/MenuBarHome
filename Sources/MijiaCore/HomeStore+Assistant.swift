@@ -882,13 +882,19 @@ extension HomeStore {
         // before anything else: a refused run stays in the list and can be retried after unlocking.
         if rejectControlWhileLocked() { return nil }
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
-        guard let entryScopes = entry.effectiveSourceScopes,
-              Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        // Same exemption as the armed path: a plan targeting only LG LAN cards is driven locally, so
+        // an unrelated cloud scope being off must not block "Run Now" either (ADR-0023).
+        let lgOnly = timerTargetsAreAllLGLan(entry.plan)
+        func scopesStillMatch() -> Bool {
+            guard let scopes = entry.effectiveSourceScopes else { return false }
+            return Self.sourceScopesMatch(scopes, active: activeConnectionScopes)
+        }
+        guard lgOnly || scopesStillMatch() else { return nil }
         await waitForInitialSnapshotIfNeeded()
         // A switch or a lock can land while we wait for the snapshot. Re-check before consuming the
         // entry: it is removed and persisted only once the run is actually going ahead.
         if rejectControlWhileLocked() { return nil }
-        guard Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
+        guard lgOnly || scopesStillMatch() else { return nil }
         guard missingPlanTargets(entry.plan).isEmpty else {
             showToast(
                 L10n.tr(
