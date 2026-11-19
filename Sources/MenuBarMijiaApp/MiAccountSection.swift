@@ -57,11 +57,41 @@ public struct MiAccountSection: View {
         }
     }
 
+    struct RegionDisclosureState: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false, hasAppliedInitialDefaults: Bool = false) {
+            self.isExpanded = isExpanded
+            self.hasAppliedInitialDefaults = hasAppliedInitialDefaults
+        }
+
+        mutating func applyInitialNonDefaultIfNeeded(region: MiCloudRegion) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if region != .cn {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forHighlight anchor: SettingsAnchor?) {
+            if anchor == .miAccount {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(isScanning: Bool) {
+            if isScanning {
+                isExpanded = true
+            }
+        }
+    }
+
     @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var phase: ScanPhase
     @State private var loginTask: Task<Void, Never>?
     @State private var pendingLogoutConfirmation: LogoutConfirmation?
-    @State private var showsRegionDisclosure = false
+    @State private var regionDisclosure: RegionDisclosureState
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
     private let showsInlineAddAccountButton: Bool
@@ -82,10 +112,12 @@ public struct MiAccountSection: View {
         self.addAccountTrigger = addAccountTrigger
         if let previewTicket {
             self._phase = State(initialValue: .waitingForScan(ticket: previewTicket, expiresAt: Date().addingTimeInterval(previewTicket.timeout)))
-            self._showsRegionDisclosure = State(initialValue: true)
+            self._regionDisclosure = State(initialValue: RegionDisclosureState(isExpanded: true, hasAppliedInitialDefaults: true))
         } else {
             self._phase = State(initialValue: .idle)
-            self._showsRegionDisclosure = State(initialValue: store.miCloudRegion != .cn)
+            var initialDisclosure = RegionDisclosureState()
+            initialDisclosure.applyInitialNonDefaultIfNeeded(region: store.miCloudRegion)
+            self._regionDisclosure = State(initialValue: initialDisclosure)
         }
     }
 
@@ -114,16 +146,6 @@ public struct MiAccountSection: View {
     private var isScanningPhase: Bool {
         if case .idle = phase { return false }
         return true
-    }
-
-    private func latchRegionDisclosureIfNeeded(highlight: SettingsAnchor?) {
-        if Self.shouldExpandRegionPicker(
-            region: store.miCloudRegion,
-            isScanning: isScanningPhase,
-            forHighlight: highlight
-        ) {
-            showsRegionDisclosure = true
-        }
     }
 
     public var body: some View {
@@ -189,7 +211,7 @@ public struct MiAccountSection: View {
             unofficialRiskNotice
 
             if showsRegionPicker {
-                DisclosureGroup(isExpanded: $showsRegionDisclosure) {
+                DisclosureGroup(isExpanded: $regionDisclosure.isExpanded) {
                     HStack {
                         Text(L10n.tr("云端服务器地区", "Cloud Region"))
                             .font(.system(size: DesignTokens.TypeSize.body))
@@ -226,17 +248,19 @@ public struct MiAccountSection: View {
             startQRLogin()
         }
         .onAppear {
-            latchRegionDisclosureIfNeeded(highlight: searchFocus?.highlight)
+            regionDisclosure.applyInitialNonDefaultIfNeeded(region: store.miCloudRegion)
+            regionDisclosure.expandIfNeeded(forHighlight: searchFocus?.highlight)
+            regionDisclosure.expandIfNeeded(isScanning: isScanningPhase)
         }
         .onChange(of: searchFocus?.highlight) { _, highlight in
-            latchRegionDisclosureIfNeeded(highlight: highlight)
+            regionDisclosure.expandIfNeeded(forHighlight: highlight)
         }
-        .onChange(of: isScanningPhase) { _, _ in
-            latchRegionDisclosureIfNeeded(highlight: searchFocus?.highlight)
+        .onChange(of: isScanningPhase) { _, isScanning in
+            regionDisclosure.expandIfNeeded(isScanning: isScanning)
         }
         .onChange(of: addAccountTrigger) { oldValue, newValue in
             guard newValue != oldValue else { return }
-            showsRegionDisclosure = true
+            regionDisclosure.isExpanded = true
             startQRLogin()
         }
         .onChange(of: store.homeBackend) { _, backend in

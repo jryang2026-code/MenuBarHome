@@ -1271,6 +1271,12 @@ enum ConnectionSettingsDisclosure {
         guard let highlight else { return false }
         return advancedConnectionAnchors.contains(highlight)
     }
+
+    @MainActor
+    static func requestAddMiAccount(trigger: inout Int, focus: SettingsSearchFocus?) {
+        trigger &+= 1
+        focus?.jump(to: .miAccount)
+    }
 }
 
 private struct ConnectionSettingsTab: View {
@@ -1468,7 +1474,12 @@ private struct ConnectionSettingsTab: View {
                                     .fixedSize(horizontal: false, vertical: true)
                                 }
                                 Spacer(minLength: 8)
-                                Button { addMiAccountTrigger &+= 1 } label: {
+                                Button {
+                                    ConnectionSettingsDisclosure.requestAddMiAccount(
+                                        trigger: &addMiAccountTrigger,
+                                        focus: searchFocus
+                                    )
+                                } label: {
                                     HStack(spacing: 4) {
                                         Image(systemName: "plus.circle")
                                         Text(L10n.tr("添加更多米家账号", "Add Another Xiaomi Home Account"))

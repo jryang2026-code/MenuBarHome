@@ -105,12 +105,17 @@ public struct ClassicControlCenterPanel: View {
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
                 activitiesExpanded = false
+                PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
-            .onChange(of: store.homeBackend) { _, _ in activitiesExpanded = false }
-            .onChange(of: store.panelActivities.count) { _, count in
-                activitiesExpanded = ActivityStackPolicy.sanitizedExpansion(isExpanded: activitiesExpanded, count: count)
+            .onChange(of: store.homeBackend) { _, _ in
+                activitiesExpanded = false
+                PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
+            }
+            .onChange(of: store.panelActivities.count) { _, _ in
+                let ordinaryCount = ActivityStackPolicy.partition(activities: store.panelActivities, store: store).ordinary.count
+                activitiesExpanded = ordinaryCount > 0 ? activitiesExpanded : false
             }
             // #180: typing a query — through the key monitor or the field — ticks the guide's search step.
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }
@@ -311,7 +316,7 @@ public struct ClassicControlCenterPanel: View {
                 .padding(.top, 12)
                 .padding(.bottom, 8)
 
-            if !store.panelActivities.isEmpty {
+            if !store.panelActivities.isEmpty || !store.missedScheduledCommands.isEmpty {
                 activityStack
                     .layoutPriority(activitiesExpanded ? 1 : 0)
                     .foldOrigin { $0.systemNoticeMinY = $1 }

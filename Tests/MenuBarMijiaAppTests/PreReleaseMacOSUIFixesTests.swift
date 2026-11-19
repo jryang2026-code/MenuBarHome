@@ -577,6 +577,50 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(!state.isExpanded)
     }
 
+    @Test("Non-CN region expands Cloud Region picker once and preserves user collapse across highlight expiry and scan completion")
+    func regionDisclosurePreservesUserCollapseAfterInitialNonCNExpansion() {
+        var cnState = MiAccountSection.RegionDisclosureState()
+        cnState.applyInitialNonDefaultIfNeeded(region: .cn)
+        #expect(!cnState.isExpanded)
+
+        var sgState = MiAccountSection.RegionDisclosureState()
+        sgState.applyInitialNonDefaultIfNeeded(region: .sg)
+        #expect(sgState.isExpanded)
+
+        // User collapses the region picker while staying on `.sg`.
+        sgState.isExpanded = false
+        sgState.applyInitialNonDefaultIfNeeded(region: .sg)
+        #expect(!sgState.isExpanded)
+
+        // Search highlight expiring to `nil` or a scan finishing (`isScanning: false`) must not reopen it.
+        sgState.expandIfNeeded(forHighlight: nil)
+        sgState.expandIfNeeded(forHighlight: .haServerAddress)
+        sgState.expandIfNeeded(isScanning: false)
+        #expect(!sgState.isExpanded)
+
+        // Explicit `.miAccount` jump or starting a new QR scan still expands it.
+        sgState.expandIfNeeded(forHighlight: .miAccount)
+        #expect(sgState.isExpanded)
+        sgState.isExpanded = false
+        sgState.expandIfNeeded(isScanning: true)
+        #expect(sgState.isExpanded)
+        sgState.isExpanded = false
+        sgState.expandIfNeeded(isScanning: false)
+        #expect(!sgState.isExpanded)
+    }
+
+    @MainActor
+    @Test("Add Another Xiaomi Home Account bumps trigger and jumps scroll focus to the Xiaomi card")
+    func addAnotherXiaomiAccountJumpsToXiaomiCard() {
+        let focus = SettingsSearchFocus()
+        var trigger = 0
+        ConnectionSettingsDisclosure.requestAddMiAccount(trigger: &trigger, focus: focus)
+        #expect(trigger == 1)
+        #expect(focus.highlight == .miAccount)
+        #expect(focus.generation == 1)
+        focus.endHighlight()
+    }
+
 
     // MARK: - #148: unsaved edits are resolved, never dropped silently
 

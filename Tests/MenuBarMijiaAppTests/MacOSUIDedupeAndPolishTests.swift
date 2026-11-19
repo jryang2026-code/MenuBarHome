@@ -8,10 +8,10 @@ import Testing
 @MainActor
 @Suite("macOS UI dedupe & polish regressions", .serialized)
 struct MacOSUIDedupeAndPolishTests {
-    private func stackHeight(_ list: [PanelActivity], expanded: Bool, theme: PanelTheme) -> CGFloat {
+    private func stackHeight(_ list: [PanelActivity], store: HomeStore, expanded: Bool, theme: PanelTheme) -> CGFloat {
         _ = NSApplication.shared
         let root = ActivityStackView(
-            activities: list, isExpanded: .constant(expanded), expandedViewportHeight: 220, theme: theme,
+            activities: list, store: store, isExpanded: .constant(expanded), expandedViewportHeight: 220, theme: theme,
             dismiss: { _ in }, clear: {}, label: { _ in "Kettle Running" }, content: { _ in Text("Card").padding(12) }
         ).frame(width: 340)
         let view = NSHostingView(rootView: root)
@@ -19,27 +19,26 @@ struct MacOSUIDedupeAndPolishTests {
         return view.fittingSize.height
     }
 
-    @Test("ActivityStackView collapses when count drops to 1 and preserves single-card VoiceOver body")
+    @Test("ActivityStackView collapses ordinary reminders into a 32pt capsule and expands them on demand")
     func activityStackSingleCardCollapseAndAccessibility() {
+        let suiteName = "com.menubarmijia.tests.dedupe.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suiteName) }
+        let store = HomeStore(provider: DemoHomeProvider(), defaultsSuiteName: suiteName)
+
         L10n.$overrideLanguage.withValue(.en) {
             let t0 = Date(timeIntervalSince1970: 1_700_000_000)
-            let a1 = RecordedSafetyAlert(alert: SafetyAlert(id: "a1", deviceId: "d1", title: "Kettle Running", body: "Check kitchen outlet now.", turnOffCommand: nil), scope: "demo", date: t0)
-            let a2 = RecordedSafetyAlert(alert: SafetyAlert(id: "a2", deviceId: "d2", title: "Heater On", body: "Study heater active.", turnOffCommand: nil), scope: "demo", date: t0)
+            let a1 = RecordedSafetyAlert(alert: SafetyAlert(id: "offline:d1", deviceId: "d1", title: "Kettle Offline", body: "Check kitchen outlet now.", turnOffCommand: nil), scope: "demo", date: t0)
+            let a2 = RecordedSafetyAlert(alert: SafetyAlert(id: "battery:d2", deviceId: "d2", title: "Sensor Low Battery", body: "Battery at 9%.", turnOffCommand: nil), scope: "demo", date: t0)
             let items = PanelActivityFeed.items(notices: [], safety: [a1, a2], doorbells: [], dismissedIds: [])
             let first = items[0]
 
-            #expect(ActivityStackPolicy.rendersExpanded(isExpanded: true, count: 2))
-            #expect(!ActivityStackPolicy.rendersExpanded(isExpanded: true, count: 1))
-            #expect(ActivityStackPolicy.sanitizedExpansion(isExpanded: true, count: 2))
-            #expect(!ActivityStackPolicy.sanitizedExpansion(isExpanded: true, count: 1))
-            #expect(ActivityStackPolicy.collapsedAccessibilitySummary(count: 1, firstLabel: "Kettle Running") == nil)
-            #expect(ActivityStackPolicy.collapsedAccessibilitySummary(count: 2, firstLabel: "Kettle Running") == "2 notifications. First: Kettle Running")
+            #expect(ActivityStackPolicy.ordinaryCapsuleSummary(labels: ["Kettle Offline"]) == "Kettle Offline")
+            #expect(ActivityStackPolicy.ordinaryCapsuleSummary(labels: ["Kettle Offline", "Sensor Low Battery"]) == "Kettle Offline and 1 more")
 
             for theme in PanelTheme.allCases {
-                #expect(stackHeight(items, expanded: true, theme: theme) > stackHeight(items, expanded: false, theme: theme))
-                let staleOne = stackHeight([first], expanded: true, theme: theme)
-                #expect(staleOne == stackHeight([first], expanded: false, theme: theme))
-                #expect(staleOne < 120)
+                #expect(stackHeight(items, store: store, expanded: true, theme: theme) > stackHeight(items, store: store, expanded: false, theme: theme))
+                let collapsedOne = stackHeight([first], store: store, expanded: false, theme: theme)
+                #expect(collapsedOne < 60)
             }
         }
     }
