@@ -220,6 +220,8 @@ interface OnboardingSessionState {
   haConnectError: string | null;
   haConnecting: boolean;
   haConnectGeneration: number;
+  /** Undo for the in-flight HA verification, replayed when the guide closes before it settles. */
+  haPendingRollback: (() => void) | null;
   haConnectedCount: number | null;
   addingSecondPlatform: boolean;
   assistantDraft: AssistantDraftState;
@@ -291,6 +293,7 @@ function ensureSession(host: OnboardingRenderViewHost): OnboardingSessionState {
     haConnectError: null,
     haConnecting: false,
     haConnectGeneration: 0,
+    haPendingRollback: null,
     haConnectedCount: null,
     addingSecondPlatform: false,
     assistantDraft: createInitialAssistantDraftState(
@@ -783,17 +786,20 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         return false;
       }
     })();
-    const rollbackDualSource = (): void => {
-      if (!shouldEnableDual) return;
-      if (host.settings.haBaseURL !== endpoint || host.settings.haToken !== token) return;
+    /** Puts back the credentials this attempt replaced, so an unverified token never stays stored. */
+    const restoreHaCredentials = (): void => {
       host.settings.haBaseURL = prevHaBaseURL;
       host.settings.haToken = prevHaToken;
       host.settings.cachedHAHome = prevCachedHAHome;
       host.settings.connectionMode = prevConnectionMode;
+      host.haConnectionError = null;
+    };
+    /** Undoes the dual-source write; only meaningful when this attempt was the one enabling it. */
+    const restoreDualSource = (): void => {
+      if (!shouldEnableDual) return;
       if (prevDualEnabled === undefined) delete host.settings.dualSourceEnabled;
       else host.settings.dualSourceEnabled = prevDualEnabled;
       dualHost.dualSourceEnabledOverride = prevDualOverride ?? null;
-      host.haConnectionError = null;
       host.dualSourceCoordinator?.reset();
       try {
         if (typeof localStorage !== "undefined") {
@@ -803,13 +809,22 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       } catch {
         // Ignore storage failures during rollback.
       }
-      host.submitServiceEndpoints?.(true);
+    };
+    /** Full undo of the attempt; skipped when a later connect already wrote different credentials. */
+    const rollbackAttempt = (): void => {
+      if (host.settings.haBaseURL !== endpoint || host.settings.haToken !== token) return;
+      // The non-dual path persists the attempt before verifying, so only a previously working HA
+      // (or a dual-source attempt, which must never leave an unverified token behind) is restored.
+      if (shouldEnableDual || prevIdentity !== null) restoreHaCredentials();
+      restoreDualSource();
+      host.saveSettings(true);
     };
 
     const connectGen = ++session.haConnectGeneration;
     session.haURLDraft = endpoint;
     session.haConnectError = null;
     session.haConnecting = true;
+    session.haPendingRollback = rollbackAttempt;
     session.haConnectedCount = null;
     switchSource(host, "onboarding-ha-endpoint");
     host.settings.cachedHAHome = null;
@@ -848,11 +863,13 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) {
           if (session.haConnectGeneration === connectGen) {
             session.haConnecting = false;
+            session.haPendingRollback = null;
             if (onboardingSessionByHost.get(host) === session) host.render();
           }
           return;
         }
         session.haConnecting = false;
+        session.haPendingRollback = null;
         const err = typeof host.haConnectionError === "string" ? host.haConnectionError.trim() : "";
         const verifiedHaHome = shouldEnableDual
           ? (() => {
@@ -872,7 +889,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
           session.haConnectedCount = verifiedHaHome.devices.length;
           session.statusNote = null;
         } else {
-          rollbackDualSource();
+          rollbackAttempt();
           session.haConnectError = err
             ? mapHaErrorToPlainLanguage(err)
             : t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
@@ -884,12 +901,14 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) {
           if (session.haConnectGeneration === connectGen) {
             session.haConnecting = false;
+            session.haPendingRollback = null;
             if (onboardingSessionByHost.get(host) === session) host.render();
           }
           return;
         }
         session.haConnecting = false;
-        rollbackDualSource();
+        session.haPendingRollback = null;
+        rollbackAttempt();
         session.haConnectError = t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
         session.statusNote = null;
         host.render();
@@ -1015,7 +1034,17 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     })();
   });
 
+  /** Closing the guide with a verification still in flight must not persist that unverified HA. */
+  const abandonPendingHaVerification = (): void => {
+    if (!session.haConnecting) return;
+    session.haConnecting = false;
+    const rollback = session.haPendingRollback;
+    session.haPendingRollback = null;
+    rollback?.();
+  };
+
   const completeAndClose = (markCompleted: boolean) => {
+    abandonPendingHaVerification();
     const keyInput = sheet.querySelector<HTMLInputElement>("#onboarding-api-key");
     if (keyInput) session.assistantDraft = { ...session.assistantDraft, apiKey: keyInput.value };
     const baseInput = sheet.querySelector<HTMLInputElement>("#onboarding-base-url");

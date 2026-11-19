@@ -366,6 +366,137 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     );
   });
 
+  it("restores the previously working HA address and token when a mistyped reconnect fails", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") throw new Error("401 Unauthorized");
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "homeAssistant",
+      hasCompletedOnboarding: true,
+      haBaseURL: "http://192.168.1.50:8123",
+    }));
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    app.settings.haToken = "live-ha-token";
+
+    app.activeSheet = "onboarding";
+    app.render();
+    await click('[data-onboarding-card="homeAssistant"]');
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-token").value, "live-ha-token", "reconnect step pre-fills the working token");
+
+    typeInput("#onboarding-ha-url", "http://192.168.1.77:8123");
+    typeInput("#onboarding-ha-token", "mistyped-token");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /专属连接钥匙无效或已过期.*设备还未同步/);
+    assert.equal(app.settings.haBaseURL, "http://192.168.1.50:8123", "failed attempt restores the working HA address");
+    assert.equal(app.settings.haToken, "live-ha-token", "failed attempt restores the working HA token");
+    assert.equal(app.settings.connectionMode, "homeAssistant");
+    const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as { haBaseURL?: string };
+    assert.equal(stored.haBaseURL, "http://192.168.1.50:8123", "unverified address is not left on disk");
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-url").value, "http://192.168.1.77:8123", "draft URL kept for retry");
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-token").value, "mistyped-token", "draft token kept for retry");
+  });
+
+  it("does not persist an unverified HA token or dual-source when the guide closes mid-verification", async () => {
+    const haFixture = JSON.parse(readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/ha_snapshot.json"), "utf8")) as unknown;
+    const pending: Array<(value: unknown) => void> = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") {
+            return await new Promise((resolve) => {
+              pending.push(resolve);
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    const miDevices = [
+      {
+        id: "mi-d1",
+        name: "客厅吸顶灯",
+        roomId: "r1",
+        roomName: "客厅",
+        model: "yeelink.light.lamp1",
+        isOnline: true,
+        kind: {
+          kind: "light" as const,
+          entityId: "mi-d1",
+          isOn: true,
+          brightnessPercent: 80,
+          colorTempKelvin: 4000,
+          minKelvin: 2700,
+          maxKelvin: 6500,
+          currentEffect: null,
+          availableEffects: [],
+        },
+      },
+    ];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "xiaomiCloud",
+      hasCompletedOnboarding: true,
+      cachedXiaomiDevices: miDevices,
+    }));
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    app.settings.miSession = {
+      userId: "10086",
+      cUserId: "c10086",
+      passToken: "pt-secret",
+      serviceToken: "st-secret",
+      ssecurity: "ss-secret",
+      region: "cn",
+    };
+    app.devices = miDevices;
+    setHostDualSourceEnabled(app, false, { persist: true });
+
+    app.activeSheet = "onboarding";
+    app.render();
+    await click('[data-onboarding-card="xiaomiCloud"]');
+    await click("#btn-onboarding-add-second-platform");
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "unverified-token");
+    await click("#btn-onboarding-connect-ha");
+    assert.equal(pending.length, 1, "verification request is in flight");
+    assert.equal(el<HTMLButtonElement>("#btn-onboarding-connect-ha").disabled, true);
+
+    await click("#btn-onboarding-skip");
+    await setImmediate();
+
+    assert.equal(app.activeSheet, "none", "skip closes the guide while verification is pending");
+    assert.equal(app.settings.haToken, "", "unverified token is rolled back in memory");
+    assert.equal(app.settings.haBaseURL, "", "unverified address is rolled back in memory");
+    assert.notEqual(app.settings.dualSourceEnabled, true, "dual-source is not left enabled in memory");
+    assert.notEqual(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1", "dual-source flag is not left on disk");
+    const storedAfterClose = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}") as {
+      haBaseURL?: string;
+      dualSourceEnabled?: boolean;
+    };
+    assert.equal(storedAfterClose.haBaseURL ?? "", "", "unverified address is not left on disk");
+    assert.notEqual(storedAfterClose.dualSourceEnabled, true, "unverified dual-source flag is not left on disk");
+
+    // A verification that resolves after the guide closed must not resurrect the unverified state.
+    pending[0]!(haFixture);
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.settings.haToken, "", "late verification resolution does not persist the unverified token");
+    assert.notEqual(app.settings.dualSourceEnabled, true);
+    assert.notEqual(localStorage.getItem(DUAL_SOURCE_ENABLED_STORAGE_KEY), "1");
+  });
+
   it("supports skip without forcing demo and restores prior mode when leaving demo home", async () => {
     const app = new MenuMijiaWindowsApp(el("#app"));
     await setImmediate();
