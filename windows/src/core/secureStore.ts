@@ -285,6 +285,7 @@ export class CredentialVault {
   private opChain: Promise<void> = Promise.resolve();
   private lastPrimaryReadFailed = false;
   private lastAccountSlotsReadFailed = false;
+  private lastCredentialLoadFailed = false;
 
   constructor(private readonly invoke: SecureInvoke = tauriInvoke) {}
 
@@ -294,6 +295,10 @@ export class CredentialVault {
 
   didLastMiAccountSlotsReadFail(): boolean {
     return this.lastAccountSlotsReadFailed;
+  }
+
+  didLastCredentialLoadFail(): boolean {
+    return this.lastCredentialLoadFailed;
   }
 
   /** Slot ids present in the credential store, or `null` when enumeration is unavailable (#228). */
@@ -321,10 +326,16 @@ export class CredentialVault {
     activePresetId: string,
     legacyKeyEndpoint?: string | null,
   ): Promise<CredentialSnapshot> {
+    this.lastCredentialLoadFailed = false;
     const presetIds = ASSISTANT_PROVIDER_PRESETS.map((preset) => preset.id);
+    const readIdentitySecret = (name: "mi_session" | "ha_token") =>
+      secureStoreGet(name, this.invoke).catch(() => {
+        this.lastCredentialLoadFailed = true;
+        return null;
+      });
     const [sessionRaw, haToken, legacyAssistantKey, ...presetValues] = await Promise.all([
-      secureStoreGet("mi_session", this.invoke).catch(() => null),
-      secureStoreGet("ha_token", this.invoke).catch(() => null),
+      readIdentitySecret("mi_session"),
+      readIdentitySecret("ha_token"),
       secureStoreGet("assistant_api_key", this.invoke).catch(() => null),
       ...presetIds.map((id) => secureStoreGet(assistantApiKeyCredentialName(id), this.invoke).catch(() => null)),
     ]);

@@ -73,9 +73,14 @@ import {
   isHaScopeDisabledInStorage,
   type HaConnectionLifecyclePhase,
 } from "../core/haTransportGate.js";
-import type { PersistedSettings } from "./appTypes.js";
+import type { LoadedSettings, PersistedSettings } from "./appTypes.js";
 
-type MiSelectionHost = DualSourceInspectableHost & { readonly miAccountsStore?: MiAccountsStore | null };
+type MiSelectionHost = DualSourceInspectableHost & {
+  readonly miAccountsStore?: MiAccountsStore | null;
+  readonly loadedSettings?: LoadedSettings;
+  readonly identityMigrationDiagnostic?: string | null;
+  readonly timerCredentialsReady?: boolean;
+};
 
 function hostKnownMiAccounts(host: MiSelectionHost, accounts?: readonly MiAccount[]): readonly MiAccount[] {
   if (accounts) return accounts;
@@ -89,13 +94,31 @@ function hostKnownMiAccounts(host: MiSelectionHost, accounts?: readonly MiAccoun
 export function resolveHostMiSelectionState(host: MiSelectionHost, accounts?: readonly MiAccount[]): MiAccountSelectionState {
   const list = hostKnownMiAccounts(host, accounts);
   const partial = host.miAccountsStore?.getAccountsReadState() === "partial";
+  const loaded = host.loadedSettings;
+  const hasHaScope = Boolean(haConnectionScope(host.settings.haBaseURL ?? null, host.settings.haToken ?? null));
+  const hasExistingPreferences = loaded
+    ? loaded.hasPersistedSettings || loaded.hasExplicitOnboardingFlag || loaded.settings.hasCompletedOnboarding
+    : Boolean(list.length > 0 || hasHaScope || isDualSourceEnabled(host));
+  const hasPersistedLocalData = loaded?.hasPersistedLocalData ?? false;
+  const identityReadFailure =
+    (partial ? "partial_mi_accounts_vault" : null) ??
+    loaded?.settingsReadError ??
+    host.identityMigrationDiagnostic ??
+    (hasCorruptMiAccountIndex() ? "corrupt_mi_accounts_index" : null);
   const state = resolveMiAccountSelectionState({
-    accounts: list, haBaseURL: host.settings.haBaseURL ?? null, haToken: host.settings.haToken ?? null,
+    accounts: list,
+    haBaseURL: host.settings.haBaseURL ?? null,
+    haToken: host.settings.haToken ?? null,
     ...(host.settings.connectionMode ? { connectionMode: host.settings.connectionMode } : {}),
-    dualSourceEnabled: isDualSourceEnabled(host), hasExistingPreferences: true,
-    identityReadFailure: partial ? "partial_mi_accounts_vault" : null,
+    dualSourceEnabled: isDualSourceEnabled(host),
+    hasExistingPreferences,
+    hasPersistedLocalData,
+    identityReadFailure,
   });
-  if (list.length > 0 && !partial) state.persistIfMigrationReady();
+  const canSealMigration =
+    !identityReadFailure &&
+    (list.length > 0 || hasHaScope || (host.timerCredentialsReady === true && (hasExistingPreferences || hasPersistedLocalData)));
+  if (canSealMigration) state.persistIfMigrationReady();
   return state;
 }
 

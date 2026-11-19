@@ -243,6 +243,10 @@ describe("AI prompt sanitization, scene policy, delayed confirmation, room filte
   });
 
   it("schedules delayed AI and high-risk confirmation chips on click instead of running immediately (#23)", async () => {
+    localStorage.setItem(
+      "menumijia.windows.settings.v2",
+      JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true }),
+    );
     const root = document.getElementById("app") as HTMLElement;
     const instance = new MenuMijiaWindowsApp(root);
     instance.devices = [
