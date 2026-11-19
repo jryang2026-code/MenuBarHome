@@ -1153,16 +1153,19 @@ struct MenuBarPanelControllerTests {
         #expect(panel.hasShadow == false)
         #expect(panel.canBecomeKey, "arrow keys and text fields need a key panel")
         #expect(panel.canBecomeMain == false)
-        #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
+        #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth(for: theme)) < 1)
         #expect(controller.hostedPanelTheme == theme)
 
-        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        let screen = try #require(panel.screen ?? NSScreen.main)
+        let visible = screen.visibleFrame
         switch theme {
         case .classic:
             let expectedHeight = min(PanelHeight.standard.points, visible.height - 24)
             #expect(abs(panel.frame.height - expectedHeight) <= 1, "the classic panel follows PanelHeight")
         case .liquidGlass:
-            #expect(panel.frame.height > visible.height - 30, "the column runs almost the whole visible height")
+            let maxAllowed = min(MenuBarPanelController.pilotMaxHeight, visible.height - 14)
+            let minAllowed = min(MenuBarPanelController.pilotMinHeight, maxAllowed)
+            #expect(panel.frame.height >= minAllowed - 1 && panel.frame.height <= maxAllowed + 1, "adaptive pilot clamps within 280...560 and visibleFrame")
         }
     }
 
@@ -1319,13 +1322,14 @@ struct MenuBarPanelControllerTests {
         #expect(controller.isPanelVisible)
         #expect(controller.hostedPanelTheme == .liquidGlass)
         let liquidContent = try #require(panel.contentView)
-        let liquidVisible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        let liquidScreen = try #require(panel.screen ?? NSScreen.main)
+        let liquidVisible = liquidScreen.visibleFrame
         #expect(liquidContent !== classicContent)
-        // With an auto-hidden or notch menu bar, `pumpMainRunLoop()` lets WindowServer place the
-        // status-item window ~24-38 pt below `visibleFrame.maxY`; `liquidFrame` anchors 6 pt under
-        // that item down to `visible.minY + 8`, so allow up to 60 pt of top chrome + margins.
-        #expect(panel.frame.height > liquidVisible.height - 60, "liquid glass uses the full-height column")
-        #expect(abs(panel.frame.minY - (liquidVisible.minY + 8)) <= 1)
+        #expect(abs(panel.frame.width - MenuBarPanelController.pilotPanelWidth) < 1)
+        let maxLiquidHeight = min(MenuBarPanelController.pilotMaxHeight, liquidVisible.height - 14)
+        let minLiquidHeight = min(MenuBarPanelController.pilotMinHeight, maxLiquidHeight)
+        #expect(panel.frame.height >= minLiquidHeight - 1 && panel.frame.height <= maxLiquidHeight + 1)
+        #expect(panel.frame.minY >= liquidVisible.minY + 8 - 1)
         #expect(abs(panel.frame.maxX - (liquidVisible.maxX - 16)) <= 0.5)
         #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball returns with the liquid panel")
 
@@ -2928,6 +2932,157 @@ struct MenuBarPanelControllerTests {
         #expect(speech.activeAudioTapCount == 0)
         #expect(speech.activeRecognitionTaskCount == 0)
         #expect(speech.isAudioEngineRunning == false)
+    }
+
+    @Test("WP2d: Liquid Glass pilot measures 380 pt width, clamps 280-560 pt or tight visibleFrame, and serializes open/close/room/drawer passes")
+    func adaptivePilotHeightAndSerialGeometry() async throws {
+        #expect(MenuBarPanelController.clampAdaptiveHeight(160, availableHeight: 800) == 280)
+        #expect(MenuBarPanelController.clampAdaptiveHeight(412.2, availableHeight: 800) == 413)
+        #expect(MenuBarPanelController.clampAdaptiveHeight(720, availableHeight: 800) == 560)
+        #expect(MenuBarPanelController.clampAdaptiveHeight(520, availableHeight: 340) == 340)
+        #expect(MenuBarPanelController.preferredContentSize(screen: nil, theme: .liquidGlass, adaptiveContentHeight: nil).width == 380)
+
+        let tightScreen = NSRect(x: 1_440, y: 0, width: 1_280, height: 360)
+        let tightAnchor = NSRect(x: 2_660, y: 360, width: 24, height: 24)
+        let tightFrame = MenuBarPanelController.liquidFrame(
+            for: NSSize(width: 380, height: 560), within: tightScreen, anchor: tightAnchor
+        )
+        #expect(tightFrame.width == 380)
+        #expect(tightFrame.minY >= tightScreen.minY + 8)
+        #expect(tightFrame.maxY <= tightAnchor.minY - 6)
+        #expect(tightFrame.maxX == tightScreen.maxX - 16)
+
+        let themeScope = PanelPreferenceScope(theme: .liquidGlass, height: .compact)
+        defer { themeScope.restore() }
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        store.hasCompletedOnboarding = true
+        store.dismissLaunchAtLoginSuggestion()
+
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        // Multi-room demo content overflows 560 pt -> caps at 560 pt (or screen available height) and scrolls inside.
+        controller.showPanel()
+        Self.pumpMainRunLoop()
+        let panel = try #require(controller.panelWindow)
+        let screen = try #require(panel.screen ?? NSScreen.main)
+        let maxCap = min(MenuBarPanelController.pilotMaxHeight, screen.visibleFrame.height - 14)
+        #expect(abs(panel.frame.width - 380) < 1)
+        #expect(abs(panel.frame.height - maxCap) <= 2)
+
+        // Switching to a sparse room shrinks the panel toward the 280 pt pilot floor without closing.
+        let singleLight = try #require(store.devices.first {
+            if case .light = $0.kind { return true }
+            return false
+        })
+        store.devices = [singleLight]
+        store.favoriteDeviceIds = []
+        store.favoriteOrder = []
+        _ = store.selectRoom(singleLight.roomId)
+        Self.pumpMainRunLoop(0.08)
+        let compactHeight = panel.frame.height
+        #expect(compactHeight >= MenuBarPanelController.pilotMinHeight - 1)
+        #expect(compactHeight < maxCap - 40, "sparse room shrinks well below the 560 pt cap")
+
+        // Expanding a drawer grows serially, and hiding stops further geometry passes.
+        store.expandedDeviceId = singleLight.id
+        Self.pumpMainRunLoop(0.08)
+        #expect(panel.frame.height >= compactHeight)
+        let passesBeforeHide = controller.serialGeometryApplyCount
+        #expect(passesBeforeHide < 16, "coalesced probe avoids layout feedback loops")
+
+        controller.hidePanel()
+        Self.pumpMainRunLoop(0.05)
+        let passesWhileHidden = controller.serialGeometryApplyCount
+        controller.panelAdaptiveHeightProbe.recordDuringLayout(slice: .scrollContent, height: 500)
+        Self.pumpMainRunLoop(0.05)
+        #expect(controller.serialGeometryApplyCount == passesWhileHidden, "hidden panel ignores layout slice churn")
+    }
+
+    @Test("WP2d: Hiding or losing key focus cancels an active 0.6s All-Off hold, declines pending confirmation, and collapses transient surfaces")
+    func panelHideAndFocusLossCleanup() async throws {
+        let transient = PanelTransientUIState.shared
+        defer {
+            transient.resetForTesting()
+            PanelConnectionDetailState.shared.isPresented = false
+        }
+
+        let (store, suite) = try await makeStore()
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        controller.showPanel()
+        var cancelledCount = 0
+        let holdToken = transient.beginAllOffHold { cancelledCount += 1 }
+        #expect(transient.isAllOffHoldActive)
+
+        // Losing key status cancels the active hold and suppresses the trailing button tap on mouse-up.
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: controller.panelWindow)
+        #expect(cancelledCount == 1)
+        #expect(transient.isAllOffHoldActive == false)
+        #expect(transient.consumeConfirmedHold(session: holdToken) == false)
+        #expect(transient.shouldSuppressTap() == true)
+
+        // Hiding the panel cleans up pending cloud consent, active hold, and expanded transient drawers.
+        let secondHold = transient.beginAllOffHold { cancelledCount += 1 }
+        _ = secondHold
+        var remindersCollapsed = false
+        var offlineCollapsed = false
+        transient.hasExpandedReminders = true
+        transient.collapseRemindersHandler = { remindersCollapsed = true; transient.hasExpandedReminders = false }
+        transient.hasExpandedOfflineDrawer = true
+        transient.collapseOfflineDrawerHandler = { offlineCollapsed = true; transient.hasExpandedOfflineDrawer = false }
+        store.pendingCloudConsent = PendingCloudConsent(
+            utterance: "全部关闭",
+            endpoint: "api.example.invalid",
+            providerTitle: "Test"
+        )
+        let firstId = try #require(store.devices.first?.id)
+        store.expandedDeviceId = firstId
+        PanelConnectionDetailState.shared.isPresented = true
+
+        controller.hidePanel()
+
+        #expect(cancelledCount == 2)
+        #expect(transient.isAllOffHoldActive == false)
+        #expect(transient.shouldSuppressTap() == true)
+        #expect(store.pendingCloudConsent == nil)
+        #expect(store.expandedDeviceId == nil)
+        #expect(PanelConnectionDetailState.shared.isPresented == false)
+        #expect(remindersCollapsed)
+        #expect(offlineCollapsed)
+    }
+
+    @Test("WP2d: GrokBall stays top-anchored across 280->560 pt adaptive growth and flips without overlapping the 380 pt column")
+    func grokBallTopAnchorAndAdaptiveEdgeRecalibration() {
+        let visible = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        // Right-aligned 380 pt adaptive column growing downward from 280 pt to 560 pt (fixed maxY = 870).
+        let compactParent = NSRect(x: 1_044, y: 590, width: 380, height: 280)
+        let tallParent = NSRect(x: 1_044, y: 310, width: 380, height: 560)
+
+        #expect(GrokBallSidecarPlacement.anchorOrigin(for: compactParent) == GrokBallSidecarPlacement.anchorOrigin(for: tallParent))
+
+        for expanded in [false, true] {
+            let compactPlacement = GrokBallSidecarPlacement.resolve(parent: compactParent, visible: visible, expanded: expanded)
+            let tallPlacement = GrokBallSidecarPlacement.resolve(parent: tallParent, visible: visible, expanded: expanded)
+            #expect(compactPlacement.side == .left)
+            #expect(tallPlacement.side == .left)
+            #expect(compactPlacement.ballCenter == tallPlacement.ballCenter, "bottom-edge growth never shifts a top-anchored ball")
+            #expect(compactPlacement.frame.intersects(compactParent) == false || compactPlacement.suggestionsFrame?.intersects(compactParent) != true)
+            if let suggestions = tallPlacement.suggestionsFrame {
+                let ballRect = NSRect(
+                    x: tallPlacement.ballCenter.x - GrokBallSidecarPlacement.ballDiameter / 2,
+                    y: tallPlacement.ballCenter.y - GrokBallSidecarPlacement.ballDiameter / 2,
+                    width: GrokBallSidecarPlacement.ballDiameter,
+                    height: GrokBallSidecarPlacement.ballDiameter
+                )
+                #expect(suggestions.intersects(tallParent) == false)
+                #expect(suggestions.intersects(ballRect) == false)
+                #expect(visible.contains(suggestions))
+            }
+        }
     }
 
     private static func waitUntilCondition(_ predicate: () -> Bool) async -> Bool {

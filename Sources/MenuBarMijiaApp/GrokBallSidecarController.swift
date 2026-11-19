@@ -5,10 +5,18 @@ import MijiaCore
 
 /// Screen coordinates keep the ball anchored while the suggestion surface grows around it.
 struct GrokBallSidecarPlacement {
-    enum Side {
+    enum Side: CaseIterable, Equatable {
         case left, right, above, below
         fileprivate static let directions: [Self] = [.left, .right, .above, .below]
         var isVertical: Bool { self == .left || self == .right }
+        var opposite: Self {
+            switch self {
+            case .left: return .right
+            case .right: return .left
+            case .above: return .below
+            case .below: return .above
+            }
+        }
     }
 
     static let ballDiameter: CGFloat = 72
@@ -35,36 +43,71 @@ struct GrokBallSidecarPlacement {
         return CGPoint(x: suggestionsFrame.minX - frame.minX, y: frame.maxY - suggestionsFrame.maxY)
     }
 
+    /// Top-edge reference point on `parent` so adaptive bottom-edge height changes (`280...560` pt)
+    /// never shift a placed or dragged ball vertically.
+    static func anchorOrigin(for parent: NSRect) -> NSPoint {
+        NSPoint(x: parent.midX, y: parent.maxY)
+    }
+
     static func resolve(parent: NSRect, visible: NSRect, expanded: Bool, ballCenter requested: NSPoint? = nil) -> Self {
         let safe = visible.insetBy(dx: gap, dy: gap)
-        let defaultRight = safe.maxX - parent.maxX - gap >= expandedWidth
-        let initial = requested ?? NSPoint(
-            x: defaultRight ? parent.maxX + gap + collapsedRadius : parent.minX - gap - collapsedRadius,
-            y: parent.maxY - topInset - collapsedRadius
-        )
+        let initial = requested ?? defaultBallCenter(parent: parent, safe: safe)
         let center = NSPoint(
             x: clamp(initial.x, lower: safe.minX + collapsedRadius, upper: safe.maxX - collapsedRadius),
             y: clamp(initial.y, lower: safe.minY + collapsedRadius, upper: safe.maxY - collapsedRadius)
         )
-        let dx = (center.x - parent.midX) / max(1, parent.width / 2)
-        let dy = (center.y - parent.midY) / max(1, parent.height / 2)
-        let preferred: Side = abs(dx) > abs(dy) ? (dx < 0 ? .left : .right) : (dy < 0 ? .below : .above)
+        let preferred = preferredSide(for: center, relativeTo: parent)
         let ball = NSRect(x: center.x - ballRadius, y: center.y - ballRadius, width: ballDiameter, height: ballDiameter)
         var side = preferred
         var suggestions = suggestionLayout(side: preferred, ball: ball, safe: safe)
-        var bestScore = score(suggestions.frame, side: preferred, preferred: preferred, safe: safe, parent: parent)
+        var bestScore = score(suggestions.frame, side: preferred, preferred: preferred, ball: ball, safe: safe, parent: parent)
         for candidate in Side.directions where candidate != preferred {
             let layout = suggestionLayout(side: candidate, ball: ball, safe: safe)
-            let candidateScore = score(layout.frame, side: candidate, preferred: preferred, safe: safe, parent: parent)
+            let candidateScore = score(layout.frame, side: candidate, preferred: preferred, ball: ball, safe: safe, parent: parent)
             if candidateScore < bestScore {
                 side = candidate
                 suggestions = layout
                 bestScore = candidateScore
             }
         }
-        let frame = (expanded ? ball.union(suggestions.frame) : ball).insetBy(dx: -outerInset, dy: -outerInset)
+        let clampedSuggestions = clampSuggestionsToSafeIfDisjoint(suggestions.frame, ball: ball, safe: safe)
+        let frame = (expanded ? ball.union(clampedSuggestions) : ball).insetBy(dx: -outerInset, dy: -outerInset)
         return Self(side: side, frame: frame, ballCenter: center,
-                    suggestionsFrame: expanded ? suggestions.frame : nil, suggestionColumns: suggestions.columns)
+                    suggestionsFrame: expanded ? clampedSuggestions : nil, suggestionColumns: suggestions.columns)
+    }
+
+    private static func defaultBallCenter(parent: NSRect, safe: NSRect) -> NSPoint {
+        let rightSpace = safe.maxX - parent.maxX - gap
+        let leftSpace = parent.minX - gap - safe.minX
+        let topAlignedY = parent.maxY - min(topInset, max(12, parent.height - collapsedWidth)) - collapsedRadius
+        if max(rightSpace, leftSpace) >= collapsedWidth {
+            let defaultRight = rightSpace >= expandedWidth || (leftSpace < expandedWidth && rightSpace > leftSpace)
+            return NSPoint(
+                x: defaultRight ? parent.maxX + gap + collapsedRadius : parent.minX - gap - collapsedRadius,
+                y: topAlignedY
+            )
+        }
+        let belowSpace = parent.minY - gap - safe.minY
+        let aboveSpace = safe.maxY - parent.maxY - gap
+        if belowSpace >= aboveSpace {
+            return NSPoint(x: parent.midX, y: parent.minY - gap - collapsedRadius)
+        }
+        return NSPoint(x: parent.midX, y: parent.maxY + gap + collapsedRadius)
+    }
+
+    private static func preferredSide(for center: NSPoint, relativeTo parent: NSRect) -> Side {
+        let clearances: [(Side, CGFloat)] = [
+            (.left, parent.minX - center.x),
+            (.right, center.x - parent.maxX),
+            (.below, parent.minY - center.y),
+            (.above, center.y - parent.maxY),
+        ]
+        if let outside = clearances.max(by: { $0.1 < $1.1 }), outside.1 > 0 {
+            return outside.0
+        }
+        let dx = (center.x - parent.midX) / max(1, parent.width / 2)
+        let dy = (center.y - parent.midY) / max(1, parent.height / 2)
+        return abs(dx) > abs(dy) ? (dx < 0 ? .left : .right) : (dy < 0 ? .below : .above)
     }
 
     private static func suggestionLayout(side: Side, ball: NSRect, safe: NSRect) -> (frame: NSRect, columns: Int) {
@@ -87,10 +130,32 @@ struct GrokBallSidecarPlacement {
         return (NSRect(x: x, y: y, width: width, height: height), columns)
     }
 
-    private static func score(_ rect: NSRect, side: Side, preferred: Side, safe: NSRect, parent: NSRect) -> (CGFloat, CGFloat, Int) {
+    private static func clampSuggestionsToSafeIfDisjoint(_ rect: NSRect, ball: NSRect, safe: NSRect) -> NSRect {
+        let bounds = safe.insetBy(dx: outerInset, dy: outerInset)
+        guard bounds.width > 0, bounds.height > 0 else { return rect }
+        let clamped = NSRect(
+            x: clamp(rect.minX, lower: bounds.minX, upper: bounds.maxX - rect.width),
+            y: clamp(rect.minY, lower: bounds.minY, upper: bounds.maxY - rect.height),
+            width: min(rect.width, bounds.width),
+            height: min(rect.height, bounds.height)
+        )
+        return clamped.intersects(ball.insetBy(dx: -2, dy: -2)) ? rect : clamped
+    }
+
+    private static func score(
+        _ rect: NSRect,
+        side: Side,
+        preferred: Side,
+        ball: NSRect,
+        safe: NSRect,
+        parent: NSRect
+    ) -> (CGFloat, CGFloat, Int, CGFloat) {
         let footprint = rect.insetBy(dx: -outerInset, dy: -outerInset)
         let clipped = max(0, area(footprint) - area(footprint.intersection(safe)))
-        return (clipped, area(rect.intersection(parent)), side == preferred ? 0 : 1)
+        let overlap = area(rect.intersection(parent)) + area(rect.intersection(ball))
+        let preferenceRank = side == preferred ? 0 : (side == preferred.opposite ? 1 : 2)
+        let alignmentDrift = side.isVertical ? abs(rect.maxY - ball.maxY) : abs(rect.midX - ball.midX)
+        return (clipped, overlap, preferenceRank, alignmentDrift)
     }
 
     private static func area(_ rect: NSRect) -> CGFloat { rect.isNull ? 0 : max(0, rect.width) * max(0, rect.height) }
@@ -172,13 +237,16 @@ final class GrokBallSidecarController {
         panelWindow.appearance = parent.appearance
         panelWindow.alphaValue = parent.alphaValue
         guard parent.isVisible, !store.showsFullOnboardingGuide, store.enableGrokBall else { hide(); return }
-        let requested = ballOffset.map { NSPoint(x: parent.frame.midX + $0.x, y: parent.frame.midY + $0.y) }
+        let anchor = GrokBallSidecarPlacement.anchorOrigin(for: parent.frame)
+        let requested = ballOffset.map { NSPoint(x: anchor.x + $0.x, y: anchor.y + $0.y) }
         let visible = screen(at: requested)?.visibleFrame ?? parent.screen?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let placement = GrokBallSidecarPlacement.resolve(parent: parent.frame, visible: visible,
                                                         expanded: store.isGrokBallStageExpanded, ballCenter: requested)
         state.placement = placement
-        panelWindow.setFrame(placement.frame, display: true)
+        if panelWindow.frame != placement.frame {
+            panelWindow.setFrame(placement.frame, display: true)
+        }
         if panelWindow.parent !== parent { parent.addChildWindow(panelWindow, ordered: .above) }
         state.isVisible = true
         panelWindow.orderFront(nil)
@@ -325,10 +393,12 @@ final class GrokBallSidecarController {
 
     private func moveBall(to point: NSPoint) {
         guard let parent else { return }
-        ballOffset = NSPoint(x: point.x - parent.frame.midX, y: point.y - parent.frame.midY)
+        let anchor = GrokBallSidecarPlacement.anchorOrigin(for: parent.frame)
+        ballOffset = NSPoint(x: point.x - anchor.x, y: point.y - anchor.y)
         synchronize()
         if let actual = state.placement?.ballCenter {
-            ballOffset = NSPoint(x: actual.x - parent.frame.midX, y: actual.y - parent.frame.midY)
+            let refreshedAnchor = GrokBallSidecarPlacement.anchorOrigin(for: parent.frame)
+            ballOffset = NSPoint(x: actual.x - refreshedAnchor.x, y: actual.y - refreshedAnchor.y)
         }
     }
 
@@ -357,7 +427,7 @@ private final class GrokBallSidecarPanel: NSPanel {
     override func cancelOperation(_ sender: Any?) { onCancel?() }
 }
 
-private struct GrokBallSidecarView: View {
+struct GrokBallSidecarView: View {
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw = AppAppearance.system.rawValue
     let store: HomeStore

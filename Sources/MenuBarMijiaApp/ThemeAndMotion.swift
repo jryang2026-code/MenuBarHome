@@ -48,6 +48,119 @@ public extension EnvironmentValues {
         get { self[PanelVisibleKey.self] }
         set { self[PanelVisibleKey.self] = newValue }
     }
+
+    var panelAdaptiveHeightProbe: PanelAdaptiveHeightProbe? {
+        get { self[PanelAdaptiveHeightProbeKey.self] }
+        set { self[PanelAdaptiveHeightProbeKey.self] = newValue }
+    }
+}
+
+private struct PanelAdaptiveHeightProbeKey: EnvironmentKey {
+    static let defaultValue: PanelAdaptiveHeightProbe? = nil
+}
+
+/// Non-observable probe collecting the Liquid Glass pilot panel's vertical slices (`topChrome`,
+/// `scrollContent`, `bottomChrome`) at 380 pt width without invalidating SwiftUI `ViewGraph` state.
+///
+/// Measuring the inner stack of `ScrollView` keeps `scrollContentHeight` independent of `panel.frame`,
+/// preventing resize feedback loops while keeping hidden-panel layout passes at zero.
+@MainActor
+public final class PanelAdaptiveHeightProbe: @unchecked Sendable {
+    public enum Slice {
+        case topChrome
+        case scrollContent
+        case bottomChrome
+    }
+
+    public private(set) var topChromeHeight: CGFloat = 0
+    public private(set) var scrollContentHeight: CGFloat = 0
+    public private(set) var bottomChromeHeight: CGFloat = 0
+    public private(set) var usesMaximumHeight = false
+    private var lastNotifiedHeight: CGFloat = 0
+    public var onHeightChange: (@MainActor (CGFloat) -> Void)?
+
+    public init(onHeightChange: (@MainActor (CGFloat) -> Void)? = nil) {
+        self.onHeightChange = onHeightChange
+    }
+
+    public var resolvedContentHeight: CGFloat {
+        if usesMaximumHeight {
+            return MenuBarPanelController.pilotMaxHeight
+        }
+        return topChromeHeight + scrollContentHeight + bottomChromeHeight
+    }
+
+    public func recordDuringLayout(slice: Slice, height: CGFloat) {
+        guard height.isFinite, height >= 0 else { return }
+        switch slice {
+        case .topChrome: topChromeHeight = height
+        case .scrollContent: scrollContentHeight = height
+        case .bottomChrome: bottomChromeHeight = height
+        }
+    }
+
+    public func updateAndNotify(slice: Slice, height: CGFloat) {
+        recordDuringLayout(slice: slice, height: height)
+        notifyIfNeeded()
+    }
+
+    public func setUsesMaximumHeight(_ flag: Bool, notify: Bool) {
+        guard usesMaximumHeight != flag else { return }
+        usesMaximumHeight = flag
+        if notify {
+            notifyIfNeeded()
+        }
+    }
+
+    public func resetNotificationBaseline() {
+        lastNotifiedHeight = 0
+    }
+
+    public func notifyIfNeeded() {
+        let next = resolvedContentHeight
+        guard next > 0, abs(next - lastNotifiedHeight) >= 0.5 else { return }
+        lastNotifiedHeight = next
+        onHeightChange?(next)
+    }
+}
+
+private struct AdaptiveSliceWriter: View {
+    @Environment(\.panelAdaptiveHeightProbe) private var probe
+    @Environment(\.isPanelVisible) private var isPanelVisible
+    let slice: PanelAdaptiveHeightProbe.Slice
+    let clearOnDisappear: Bool
+
+    var body: some View {
+        if let probe, isPanelVisible {
+            GeometryReader { geo in
+                let height = geo.size.height
+                let _ = probe.recordDuringLayout(slice: slice, height: height)
+                Color.clear
+                    .onAppear {
+                        probe.updateAndNotify(slice: slice, height: height)
+                    }
+                    .onChange(of: height) { _, newHeight in
+                        probe.updateAndNotify(slice: slice, height: newHeight)
+                    }
+                    .onDisappear {
+                        if clearOnDisappear {
+                            probe.updateAndNotify(slice: slice, height: 0)
+                        }
+                    }
+            }
+        }
+    }
+}
+
+extension View {
+    func adaptiveHeightSlice(
+        _ slice: PanelAdaptiveHeightProbe.Slice,
+        clearOnDisappear: Bool = false
+    ) -> some View {
+        background {
+            AdaptiveSliceWriter(slice: slice, clearOnDisappear: clearOnDisappear)
+        }
+    }
 }
 
 // MARK: - Apple Design Motion Curves & Springs

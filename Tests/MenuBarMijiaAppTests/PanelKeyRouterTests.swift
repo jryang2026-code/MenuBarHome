@@ -134,4 +134,51 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_Space, characters: " "), detailOpen) == .passThrough)
         #expect(route(Key(code: kVK_Tab), detailOpen) == .passThrough)
     }
+
+    @Test("WP2d Escape priority: confirmation/hold -> expanded surfaces -> search/focus/hide, without hijacking form fields")
+    func escapePriorityTiersAndFormGuards() {
+        let esc = Key(code: kVK_Escape)
+
+        // Tier 1: active confirmation or 0.6s All-Off hold beats expanded drawers and search.
+        let holdAndDrawer = Context(
+            isAllOffHoldActive: true,
+            hasPendingConfirmation: true,
+            hasExpandedDevice: true,
+            hasExpandedReminders: true,
+            hasExpandedOfflineDrawer: true,
+            hasFocusedDevice: true
+        )
+        #expect(route(esc, holdAndDrawer) == .cancelAllOffHold)
+
+        var confirmAndDrawer = holdAndDrawer
+        confirmAndDrawer.isAllOffHoldActive = false
+        #expect(route(esc, confirmAndDrawer) == .cancelPendingConfirmation)
+
+        // Tier 2: expanded device drawer -> expanded reminders -> expanded offline drawer -> focus/hide.
+        var expandedSurfaces = confirmAndDrawer
+        expandedSurfaces.hasPendingConfirmation = false
+        #expect(route(esc, expandedSurfaces) == .collapseExpandedDevice)
+
+        expandedSurfaces.hasExpandedDevice = false
+        #expect(route(esc, expandedSurfaces) == .collapseExpandedReminders)
+
+        expandedSurfaces.hasExpandedReminders = false
+        #expect(route(esc, expandedSurfaces) == .collapseOfflineDrawer)
+
+        expandedSurfaces.hasExpandedOfflineDrawer = false
+        #expect(route(esc, expandedSurfaces) == .clearFocus)
+
+        // Form fields and onboarding keep typing/digits/arrows instead of being hijacked by panel shortcuts.
+        let formFocused = Context(isFormFieldFocused: true, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_ANSI_2, characters: "2"), formFocused) == .passThrough)
+        #expect(route(Key(code: kVK_DownArrow), formFocused) == .passThrough)
+        #expect(route(Key(code: kVK_ANSI_Slash, characters: "/"), formFocused) == .passThrough)
+        #expect(route(esc, formFocused) == .leaveTextField(dismissAssistant: false))
+
+        let onboarding = Context(isShowingOnboarding: true, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_ANSI_1, characters: "1"), onboarding) == .passThrough)
+        #expect(route(Key(code: kVK_Space, characters: " "), onboarding) == .passThrough)
+        #expect(route(esc, onboarding) == .hidePanel)
+    }
 }
+

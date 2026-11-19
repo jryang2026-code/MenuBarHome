@@ -340,6 +340,7 @@ struct HoldToConfirmButton: View {
     let onTap: () -> Void
 
     @State private var holding = false
+    @State private var holdSessionId: UInt64?
 
     var body: some View {
         let capsule = Capsule(style: .continuous)
@@ -366,14 +367,35 @@ struct HoldToConfirmButton: View {
         .modifier(ChipSurface(shape: capsule, tint: nil, interactive: true, clear: false))
         .scaleEffect(holding ? 0.95 : 1)
         .contentShape(capsule)
-        .onTapGesture(perform: onTap)
+        .onTapGesture {
+            guard !PanelTransientUIState.shared.shouldSuppressTap() else { return }
+            onTap()
+        }
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
+            let session = holdSessionId
+            holdSessionId = nil
             holding = false
+            guard PanelTransientUIState.shared.consumeConfirmedHold(session: session) else { return }
             // #54: a confirm that turns off the whole room deserves a level-change tap.
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
             onConfirm()
         } onPressingChanged: { pressing in
-            withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
+            if pressing {
+                holdSessionId = PanelTransientUIState.shared.beginAllOffHold {
+                    holdSessionId = nil
+                    withAnimation(.easeOut(duration: 0.15)) { holding = false }
+                }
+                withAnimation(.linear(duration: 0.6)) { holding = true }
+            } else {
+                PanelTransientUIState.shared.endAllOffHold(session: holdSessionId)
+                holdSessionId = nil
+                withAnimation(.easeOut(duration: 0.2)) { holding = false }
+            }
+        }
+        .onDisappear {
+            PanelTransientUIState.shared.endAllOffHold(session: holdSessionId)
+            holdSessionId = nil
+            holding = false
         }
         .panelHelp(helpText)
         // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.

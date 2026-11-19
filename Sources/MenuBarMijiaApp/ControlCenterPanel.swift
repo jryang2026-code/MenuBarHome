@@ -6,6 +6,7 @@ import MijiaCore
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isPanelVisible) private var isPanelVisible
+    @Environment(\.panelAdaptiveHeightProbe) private var panelAdaptiveHeightProbe
     @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
@@ -66,7 +67,7 @@ public struct ControlCenterPanel: View {
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     public let store: HomeStore
 
-    private static let panelWidth: CGFloat = 376
+    private static let panelWidth: CGFloat = MenuBarPanelController.pilotPanelWidth
     /// One inset for the header, the grouping capsule and every card, so their edges line up.
     static let columnInset: CGFloat = 12
     private var appearance: AppAppearance { AppAppearance(rawValue: appearanceRaw) ?? .system }
@@ -88,7 +89,7 @@ public struct ControlCenterPanel: View {
     public var body: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
         return dashboardRoot
-            .frame(width: Self.panelWidth)
+            .frame(minWidth: MenuBarPanelController.panelWidth, idealWidth: Self.panelWidth, maxWidth: .infinity)
             .frame(maxHeight: .infinity, alignment: .top)
             .onChange(of: store.lastAssistantActionAt) { _, date in
                 UndoAvailabilityTracker.shared.syncAction(at: date)
@@ -101,6 +102,8 @@ public struct ControlCenterPanel: View {
                 UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
                 LaunchAtLoginCoordinator.live(store: store).refresh()
                 prioritySnapshot = .capture(from: store)
+                registerTransientUIHandlers()
+                syncAdaptiveMaximumHeight(notify: true)
             }
             .onAppear { handlePanelAppear() }
             // The panel tree survives a close, so a half-typed query would come back on the next open.
@@ -139,6 +142,7 @@ public struct ControlCenterPanel: View {
     /// type-check this expression in reasonable time", so the chain is split in two.
     private var dashboardRoot: some View {
         let _ = (store.effectiveLanguage, store.selectedRoomId, store.rooms.count)
+        let _ = syncAdaptiveMaximumHeight(notify: false)
         return ZStack(alignment: .bottom) {
             if store.showsFullOnboardingGuide {
                 OnboardingGuideView(store: store)
@@ -164,6 +168,9 @@ public struct ControlCenterPanel: View {
                     .transition(.opacity)
                     .zIndex(3)
             }
+        }
+        .onChange(of: usesMaximumAdaptiveHeight) { _, _ in
+            syncAdaptiveMaximumHeight(notify: isPanelVisible)
         }
         .onChange(of: store.favoriteOrder) { _, favOrder in
             guard !favOrder.isEmpty else { return }
@@ -240,6 +247,34 @@ public struct ControlCenterPanel: View {
         store.visibleDevices.contains { !$0.isOnline }
     }
 
+    private var isOfflineDrawerExpanded: Bool {
+        expandedStacks.contains(PanelDeviceOrganizer.offlineSectionId) && hasVisibleOfflineDevices
+    }
+
+    private var usesMaximumAdaptiveHeight: Bool {
+        store.showsFullOnboardingGuide || isRoomOrdering
+    }
+
+    private func syncAdaptiveMaximumHeight(notify: Bool) {
+        panelAdaptiveHeightProbe?.setUsesMaximumHeight(usesMaximumAdaptiveHeight, notify: notify)
+    }
+
+    private func registerTransientUIHandlers() {
+        guard isPanelVisible else { return }
+        PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
+        PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerExpanded
+        PanelTransientUIState.shared.collapseRemindersHandler = {
+            withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) {
+                activitiesExpanded = false
+            }
+        }
+        PanelTransientUIState.shared.collapseOfflineDrawerHandler = {
+            withAnimation(reduceMotion ? nil : AppleMotion.reveal) {
+                _ = expandedStacks.remove(PanelDeviceOrganizer.offlineSectionId)
+            }
+        }
+    }
+
     private func resetOfflineExpansion() {
         expandedStacks.remove(PanelDeviceOrganizer.offlineSectionId)
     }
@@ -248,6 +283,8 @@ public struct ControlCenterPanel: View {
         UndoAvailabilityTracker.shared.syncAction(at: store.lastAssistantActionAt)
         SettingsWindowOpener.shared.open = { openSettings() }
         prioritySnapshot = .capture(from: store)
+        registerTransientUIHandlers()
+        syncAdaptiveMaximumHeight(notify: false)
     }
 
     private func handlePanelDidHide() {
@@ -326,46 +363,49 @@ public struct ControlCenterPanel: View {
     /// notices, the pinned favorites and the room or kind stacks.
     private var mainDashboard: some View {
         VStack(alignment: .leading, spacing: 0) {
-            panelHeader
-                .padding(.horizontal, Self.columnInset + 2)
-                .padding(.top, 4)
-                .padding(.bottom, 10)
+            VStack(alignment: .leading, spacing: 0) {
+                panelHeader
+                    .padding(.horizontal, Self.columnInset + 2)
+                    .padding(.top, 4)
+                    .padding(.bottom, 10)
 
-            // One input for search and assistant commands (#60), folded behind the magnifier.
-            if showsOmnibar, !isRoomOrdering {
-                VStack(alignment: .leading, spacing: 8) {
-                    omnibar
-                        .foldOrigin { $0.omnibarMinY = $1 }
-                    if showsInputDrawer {
-                        inputDrawer
-                            .transition(AppleMotion.drawerTransition)
+                // One input for search and assistant commands (#60), folded behind the magnifier.
+                if showsOmnibar, !isRoomOrdering {
+                    VStack(alignment: .leading, spacing: 8) {
+                        omnibar
+                            .foldOrigin { $0.omnibarMinY = $1 }
+                        if showsInputDrawer {
+                            inputDrawer
+                                .transition(AppleMotion.drawerTransition)
+                        }
                     }
-                }
-                .padding(.horizontal, Self.columnInset)
-                .padding(.bottom, 10)
-                .transition(.opacity.combined(with: .offset(y: -6)))
-            }
-
-            if store.isShowingAssistantBar || speech.errorMessage != nil {
-                AssistantResponseArea(store: store)
                     .padding(.horizontal, Self.columnInset)
                     .padding(.bottom, 10)
-                    .transition(AppleMotion.drawerTransition)
-            }
+                    .transition(.opacity.combined(with: .offset(y: -6)))
+                }
 
-            if !isRoomOrdering, !search.isSearching {
-                if isEditingLayout {
-                    layoutEditToolbar
+                if store.isShowingAssistantBar || speech.errorMessage != nil {
+                    AssistantResponseArea(store: store)
                         .padding(.horizontal, Self.columnInset)
-                        .padding(.bottom, 12)
-                        .transition(.opacity)
-                } else if showsGroupingBar {
-                    groupingBar
-                        .padding(.horizontal, Self.columnInset)
-                        .padding(.bottom, 12)
-                        .transition(.opacity)
+                        .padding(.bottom, 10)
+                        .transition(AppleMotion.drawerTransition)
+                }
+
+                if !isRoomOrdering, !search.isSearching {
+                    if isEditingLayout {
+                        layoutEditToolbar
+                            .padding(.horizontal, Self.columnInset)
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
+                    } else if showsGroupingBar {
+                        groupingBar
+                            .padding(.horizontal, Self.columnInset)
+                            .padding(.bottom, 12)
+                            .transition(.opacity)
+                    }
                 }
             }
+            .adaptiveHeightSlice(.topChrome)
 
             if isRoomOrdering {
                 // The order list replaces the whole scrolling column: one vertical scroll only,
@@ -378,12 +418,15 @@ public struct ControlCenterPanel: View {
             }
 
             if !isEditing {
-                Divider()
-                    .overlay(Color.primary.opacity(0.07))
+                VStack(alignment: .leading, spacing: 0) {
+                    Divider()
+                        .overlay(Color.primary.opacity(0.07))
 
-                footerBar
-                    .padding(.horizontal, Self.columnInset + 2)
-                    .padding(.vertical, 6)
+                    footerBar
+                        .padding(.horizontal, Self.columnInset + 2)
+                        .padding(.vertical, 6)
+                }
+                .adaptiveHeightSlice(.bottomChrome, clearOnDisappear: true)
             }
         }
         .foldOrigin { $0.panelMinY = $1 }
@@ -403,6 +446,12 @@ public struct ControlCenterPanel: View {
         // A device reached by keyboard, the status line or the assistant opens its stack first.
         .onChange(of: store.focusedDeviceId) { _, id in openStack(containing: id) }
         .onChange(of: store.expandedDeviceId) { _, id in openStack(containing: id) }
+        .onChange(of: activitiesExpanded) { _, expanded in
+            if isPanelVisible { PanelTransientUIState.shared.hasExpandedReminders = expanded }
+        }
+        .onChange(of: isOfflineDrawerExpanded) { _, expanded in
+            if isPanelVisible { PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded }
+        }
     }
 
     /// The field shows while asked for, while something is typed, and while voice or the assistant
@@ -524,6 +573,7 @@ public struct ControlCenterPanel: View {
                 .padding(.horizontal, Self.columnInset)
                 .padding(.top, 2)
                 .padding(.bottom, max(16, transientStackHeight + 8))
+                .adaptiveHeightSlice(.scrollContent)
             }
             .scrollDisabled(draggingId != nil || activeResize != nil)
             .softTopScrollEdge()
@@ -921,6 +971,7 @@ enum PanelSearchKeyboard {
     static func handle(_ event: NSEvent, store: HomeStore, state: PanelSearchState = .shared) -> Bool {
         // The Settings window and every other window keep their own typing.
         guard MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow) else { return false }
+        guard !store.showsFullOnboardingGuide else { return false }
         guard let key = key(for: event) else { return false }
 
         // A text field that is not the search field (assistant bar, layout rename) owns the keyboard.

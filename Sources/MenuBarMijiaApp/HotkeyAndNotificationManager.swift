@@ -451,9 +451,13 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
 
     private func keyContext(store: HomeStore) -> PanelKeyRouter.Context {
         let responder = NSApp.keyWindow?.firstResponder
+        let isFieldResponder = responder is NSTextView || responder is NSTextField
+        let transient = PanelTransientUIState.shared
         return PanelKeyRouter.Context(
             isPanelWindow: MenuBarPanelController.shared.isPanelWindow(NSApp.keyWindow),
             isShowingMiReauth: store.isShowingMiReauth,
+            isAllOffHoldActive: transient.isAllOffHoldActive,
+            hasPendingConfirmation: store.pendingCloudConsent != nil,
             isGrokBallStageExpanded: store.isGrokBallStageExpanded,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
@@ -462,10 +466,14 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isRecordingHotkey: HotkeyRecorderController.shared.isRecording,
             isGlobalHotkeyRegistered: HotkeySettingsState.shared.isRegistered,
             isHotkeyPhysicallyDown: isHotkeyPhysicallyDown,
-            isTextFieldFocused: responder is NSTextView || responder is NSTextField,
+            isTextFieldFocused: isFieldResponder,
+            isFormFieldFocused: isFieldResponder && !PanelSearchState.shared.isFieldFocused,
+            isShowingOnboarding: store.showsFullOnboardingGuide,
             isShowingAssistantBar: store.isShowingAssistantBar,
             editMode: LayoutUIState.shared.editMode,
             hasExpandedDevice: store.expandedDeviceId != nil,
+            hasExpandedReminders: transient.hasExpandedReminders,
+            hasExpandedOfflineDrawer: transient.hasExpandedOfflineDrawer,
             hasFocusedDevice: store.focusedDeviceId != nil,
             voiceInputEnabled: store.enableVoiceInput
         )
@@ -483,6 +491,10 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             SettingsWindowOpener.shared.show()
         case .dismissMiReauth:
             store.dismissMiReauth()
+        case .cancelAllOffHold:
+            PanelTransientUIState.shared.cancelAllOffHold()
+        case .cancelPendingConfirmation:
+            store.declinePendingCloudRequest()
         case .dismissGrokBallStage:
             store.dismissGrokBallStage()
         case .dismissConnectionDetail:
@@ -522,6 +534,10 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             store.dismissAssistantBar()
         case .collapseExpandedDevice:
             store.expandedDeviceId = nil
+        case .collapseExpandedReminders:
+            PanelTransientUIState.shared.collapseReminders()
+        case .collapseOfflineDrawer:
+            PanelTransientUIState.shared.collapseOfflineDrawer()
         case .clearFocus:
             store.focusedDeviceId = nil
         case .hidePanel:
