@@ -2,11 +2,14 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import type { LanguagePreference } from "../core/i18n.js";
 import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
 import type { ConnectionStatus } from "../core/models.js";
+import type { MiSession } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { tr3 } from "../core/safetyAndHealth.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { SF_ICONS } from "./appConstants.js";
 import { getHostMiAccountsState, isDualSourceEnabled } from "./cloudRefresh.js";
+import { hasMatchingDomShape, morphMatchingDom } from "./dom.js";
+import { isVerboseConnectionFooter } from "./panelView.js";
 /** Plain-language connection state for the footer and its keyboard-reachable detail card. */
 export type ConnectionBadge = "online" | "connecting" | "degraded" | "reauth" | "offline" | "demo" | "unconfigured";
 export interface ConnectionSourceItem {
@@ -61,10 +64,59 @@ const hasHA = (host: MenuMijiaWindowsApp): boolean =>
 /** One owner for dual-source detection so the footer can never disagree with the merge pipeline. */
 const usesDualSource = (host: MenuMijiaWindowsApp): boolean =>
   host.settings.connectionMode !== "demo" && isDualSourceEnabled(host);
-function miExpired(host: MenuMijiaWindowsApp): boolean {
-  return host.miSessionExpired
-    || (host.settings.miSession !== null && miSessionExpiryState(host.settings.miSession).kind === "expired");
+/** One Xiaomi login the footer judges on its own: the live session plus every hydrated secondary account. */
+interface MiSessionEntry {
+  /** Account id from the account list, so a merged 401 can be matched to this login; `""` for the live session. */
+  readonly id: string;
+  readonly session: MiSession;
 }
+
+function miSessionEntries(host: MenuMijiaWindowsApp): readonly MiSessionEntry[] {
+  const accounts = host.miAccountsOverride ?? getHostMiAccountsState(host)?.accounts ?? [];
+  const entries: MiSessionEntry[] = [];
+  const seen = new Set<string>();
+  const add = (id: string, session: MiSession): void => {
+    const key = `${session.userId}:${session.region}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    entries.push({ id, session });
+  };
+  // The account list first: it carries the ids `accountTokenStatuses` is keyed by.
+  for (const account of accounts) add(account.id, account.session);
+  if (host.settings.miSession !== null) add("", host.settings.miSession);
+  return entries;
+}
+
+interface MiExpirySummary {
+  readonly configured: number;
+  readonly expired: number;
+}
+
+/**
+ * Expiry belongs to one login, not to the platform. A secondary account can keep serving devices after the
+ * primary cookie lapses (or a merged 401 lands on only one account), so the footer may only say `reauth` when no
+ * Xiaomi login is left; a partial outage stays `degraded` (#280 review).
+ */
+function miExpirySummary(host: MenuMijiaWindowsApp): MiExpirySummary {
+  const entries = miSessionEntries(host);
+  // Dual-source refreshes write the same merged snapshot, so one owner covers both merge pipelines.
+  const tokenStatuses = host.multiAccountState?.merged?.accountTokenStatuses ?? {};
+  let expired = 0;
+  for (const entry of entries) {
+    const rejected = entry.id !== "" && tokenStatuses[entry.id]?.kind === "expired";
+    if (rejected || miSessionExpiryState(entry.session).kind === "expired") expired += 1;
+  }
+  // `miSessionExpired` is either the one live session's own rejection or, after a multi-account refresh, that
+  // every configured account expired; both mean no usable Xiaomi login remains.
+  if (host.miSessionExpired) {
+    const configured = Math.max(entries.length, 1);
+    return { configured, expired: configured };
+  }
+  // An index-only secondary login proves the platform is configured without exposing a session to inspect.
+  if (entries.length === 0 && hasSecondaryMiAccountsInIndex()) return { configured: 1, expired: 0 };
+  return { configured: entries.length, expired };
+}
+
 const IS_ACTIVE_MI = (host: MenuMijiaWindowsApp): boolean => host.settings.connectionMode !== "homeAssistant";
 const IS_ACTIVE_HA = (host: MenuMijiaWindowsApp): boolean => host.settings.connectionMode === "homeAssistant";
 function platformName(host: MenuMijiaWindowsApp): string {
@@ -102,7 +154,10 @@ function miAccountsConnected(host: MenuMijiaWindowsApp): number {
  */
 function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses: Readonly<Record<string, ConnectionStatus>> | null): SourcePresentation {
   if (!IS_ACTIVE_MI(host) && !dual) return { badge: "unconfigured", text: tr(host, "未启用", "未啟用", "Not in use") };
-  if (miExpired(host)) return { badge: "reauth", text: tr(host, "登录已过期 · 需要重新扫码", "登入已過期 · 需要重新掃碼", "Session expired · re-scan required") };
+  const expiry = miExpirySummary(host);
+  if (expiry.configured > 0 && expiry.expired >= expiry.configured) {
+    return { badge: "reauth", text: tr(host, "登录已过期 · 需要重新扫码", "登入已過期 · 需要重新掃碼", "Session expired · re-scan required") };
+  }
   if (host.isSyncingCloud) return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
   const cloud = dual ? statuses?.xiaomiCloud ?? null : null;
   if (cloud?.kind === "connecting") return { badge: "connecting", text: tr(host, "正在连接…", "正在連線…", "Connecting…") };
@@ -118,6 +173,13 @@ function miSourcePresentation(host: MenuMijiaWindowsApp, dual: boolean, statuses
         text: tr(host, "部分米家账号异常 · 部分设备暂无数据", "部分米家帳號異常 · 部分裝置暫無資料", "Some Xiaomi Home accounts unavailable · some devices have no data"),
       };
     }
+  }
+  // A lapsed login the server still accepts one moment longer is still a partial outage, not a healthy platform.
+  if (expiry.expired > 0) {
+    return {
+      badge: "degraded",
+      text: tr(host, "部分米家账号异常 · 部分设备暂无数据", "部分米家帳號異常 · 部分裝置暫無資料", "Some Xiaomi Home accounts unavailable · some devices have no data"),
+    };
   }
   return dual
     ? { badge: "online", text: tr(host, "已连接", "已連線", "Connected") }
@@ -182,31 +244,43 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
   };
   const present = (tone: ConnectionTone, icon: string, text: string, action: ConnectionStatusAction | null) =>
     ({ tone, icon, text, action, sources });
-  if (hasMi(host) && miExpired(host) && (IS_ACTIVE_MI(host) || dual)) {
-    return present("offline", SF_ICONS.qrcode, tr(host, "米家登录已过期 · 重新扫码", "米家登入已過期 · 重新掃碼", "Xiaomi Home session expired · re-scan"), actions.qr);
-  }
+  const miExpiredText = tr(host, "米家登录已过期 · 重新扫码", "米家登入已過期 · 重新掃碼", "Xiaomi Home session expired · re-scan");
+  const haAuthText = tr(host, "Home Assistant 凭据或地址需更新", "Home Assistant 憑證或地址需更新", "Home Assistant credentials or address need attention");
+  const haPlaintextText = tr(host, "Home Assistant 未连接（已拒绝明文 http）", "Home Assistant 未連線（已拒絕明文 http）", "Home Assistant not connected (plaintext http declined)");
   const haMessage = haErrorMessage(host);
-  if ((IS_ACTIVE_HA(host) || dual) && haMessage.includes("Home Assistant authentication rejected")) {
-    return present("offline", SF_ICONS.exclamationTriangleFill, tr(host, "Home Assistant 凭据或地址需更新", "Home Assistant 憑證或地址需更新", "Home Assistant credentials or address need attention"), actions.settings);
-  }
-  if ((IS_ACTIVE_HA(host) || dual) && (haMessage.includes("Home Assistant endpoint has not been approved") || haMessage.includes("未授权的网络来源"))) {
-    return present("offline", SF_ICONS.wifiSlash, tr(host, "Home Assistant 未连接（已拒绝明文 http）", "Home Assistant 未連線（已拒絕明文 http）", "Home Assistant not connected (plaintext http declined)"), actions.settings);
-  }
+  const haPlaintextDeclined = haMessage.includes("Home Assistant endpoint has not been approved") || haMessage.includes("未授权的网络来源");
+  /** Every badge owns one recovery entry point, so a partial outage never offers a dead-end retry. */
+  const recoveryFor = (id: "mi" | "ha", badge: ConnectionBadge): ConnectionStatusAction | null => {
+    if (badge === "connecting") return null;
+    if (badge === "unconfigured") return actions.settings;
+    if (id === "mi") return badge === "reauth" ? actions.qr : actions.retry;
+    // A dead credential or a declined plaintext endpoint is fixed in Settings, not by retrying.
+    return badge === "reauth" || haPlaintextDeclined ? actions.settings : actions.retry;
+  };
+  const miDownText = miView === null
+    ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home"))
+    : miView.badge === "reauth"
+      ? miExpiredText
+      : host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView.text;
+  const haDownText = haView === null
+    ? unavailableText(host, "Home Assistant")
+    : haView.badge === "reauth"
+      ? haAuthText
+      : haPlaintextDeclined ? haPlaintextText : haView.text;
   if (dual) {
     // Each platform stands on its own status; `cloudValuesStale` and `valuesAreStale` never cross over here.
     const miBadge = miView?.badge ?? "online";
     const haBadge = haView?.badge ?? "online";
     const miUp = miBadge === "online";
     const haUp = haBadge === "online";
-    // A stale Xiaomi cache names Xiaomi in the footer; partial accounts keep their own specific copy.
-    const miDegradedText = host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView?.text ?? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home"));
     if (!miUp && haUp) {
       if (miBadge === "connecting") return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接米家…", "正在連線米家…", "Connecting to Xiaomi Home…"), null);
-      return present("degraded", SF_ICONS.wifi, miDegradedText, actions.retry);
+      // A healthy Home Assistant keeps the panel usable; name the specific Xiaomi fault and its own recovery.
+      return present("degraded", BADGE_ICON[miBadge], miDownText, recoveryFor("mi", miBadge));
     }
     if (miUp && !haUp) {
       if (haBadge === "connecting") return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接 Home Assistant…", "正在連線 Home Assistant…", "Connecting to Home Assistant…"), null);
-      return present("degraded", SF_ICONS.wifi, haView?.text ?? unavailableText(host, "Home Assistant"), actions.retry);
+      return present("degraded", BADGE_ICON[haBadge], haDownText, recoveryFor("ha", haBadge));
     }
     if (!miUp && !haUp) {
       if (miBadge === "connecting" || haBadge === "connecting") {
@@ -214,15 +288,23 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
       }
       // A partially reachable account is not a total outage: keep the degraded tone and name the dead platform.
       if (miBadge === "degraded" || haBadge === "degraded") {
-        return present("degraded", SF_ICONS.wifi, unavailableText(host, haBadge === "offline" ? "Home Assistant" : tr(host, "米家", "米家", "Xiaomi Home")), actions.retry);
+        const haFullyDown = haBadge === "offline" || haBadge === "reauth";
+        return present(
+          "degraded",
+          SF_ICONS.wifi,
+          unavailableText(host, haFullyDown ? "Home Assistant" : tr(host, "米家", "米家", "Xiaomi Home")),
+          haFullyDown ? recoveryFor("ha", haBadge) : recoveryFor("mi", miBadge),
+        );
       }
+      // Both sides are dead (expired, declined, or disconnected): the detail card carries each reason.
       return present("offline", SF_ICONS.wifiSlash, tr(host, "米家与 Home Assistant 均不可用", "米家與 Home Assistant 均不可用", "Xiaomi Home and Home Assistant are both unavailable"), actions.settings);
     }
     if (host.isSyncingCloud) return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在同步家居平台…", "正在同步家居平台…", "Syncing smart home platforms…"), null);
     return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
   if (IS_ACTIVE_HA(host) && haView) {
-    if (haView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, unavailableText(host), actions.settings);
+    if (haView.badge === "reauth") return present("offline", SF_ICONS.exclamationTriangleFill, haDownText, actions.settings);
+    if (haView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, haDownText, actions.settings);
     if (haView.badge === "degraded") return present("degraded", SF_ICONS.wifi, haView.text, actions.retry);
     if (haView.badge === "connecting") {
       return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接{platform}…", "正在連線{platform}…", "Connecting to {platform}…", { platform: platformName(host) }), null);
@@ -230,11 +312,9 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
     return present("online", SF_ICONS.checkmarkCircleFill, tr(host, "设备同步正常", "裝置同步正常", "Devices synced"), null);
   }
   if (miView) {
-    if (miView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, miView.text, actions.retry);
-    if (miView.badge === "degraded") {
-      const text = host.cloudValuesStale ? unavailableText(host, tr(host, "米家", "米家", "Xiaomi Home")) : miView.text;
-      return present("degraded", SF_ICONS.wifi, text, actions.retry);
-    }
+    if (miView.badge === "reauth") return present("offline", SF_ICONS.qrcode, miExpiredText, actions.qr);
+    if (miView.badge === "offline") return present("offline", SF_ICONS.wifiSlash, miDownText, actions.retry);
+    if (miView.badge === "degraded") return present("degraded", SF_ICONS.wifi, miDownText, actions.retry);
     if (miView.badge === "connecting") {
       return present("syncing", SF_ICONS.arrowClockwise, tr(host, "正在连接{platform}…", "正在連線{platform}…", "Connecting to {platform}…", { platform: platformName(host) }), null);
     }
@@ -244,8 +324,8 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
 const dotClass = (tone: ConnectionTone): string =>
   tone === "syncing" ? "is-syncing" : tone === "degraded" ? "is-degraded" : tone === "demo" ? "is-demo" : tone === "online" ? "is-online" : "is-offline";
 /** The footer trigger and its detail card; rendered inside the footer so both themes keep one DOM shape. */
-export function renderConnectionStatus(host: MenuMijiaWindowsApp): string {
-  const status = resolveConnectionStatus(host);
+export function renderConnectionStatus(host: MenuMijiaWindowsApp, resolved?: ConnectionStatusPresentation): string {
+  const status = resolved ?? resolveConnectionStatus(host);
   const label = host.escapeHtml(status.text);
   const title = host.escapeHtml(tr(host, "连接详情", "連線詳情", "Connection details"));
   // The trigger's accessible name carries the plain-language state before naming what the click opens;
@@ -260,10 +340,37 @@ export function renderConnectionStatus(host: MenuMijiaWindowsApp): string {
     : `<li class="cc-conn-source is-empty">${host.escapeHtml(tr(host, "还没连接家居平台", "還沒連線家居平台", "No smart home platform connected"))}</li>`;
   const details = open
     ? `<div class="cc-conn-popover" id="cc-connection-details" data-connection-details role="dialog" aria-label="${title}">
-        <div class="cc-conn-popover-header"><strong>${title}</strong><button type="button" class="cc-conn-close" data-close-connection-details aria-label="${host.escapeHtml(tr(host, "关闭连接详情", "關閉連線詳情", "Close connection details"))}">${SF_ICONS.xmark}</button></div>
+        <div class="cc-conn-popover-header"><strong>${title}</strong><button type="button" class="cc-conn-close" data-close-connection-details aria-label="${host.escapeHtml(tr(host, "关闭连接详情", "關閉連線詳情", "Close connection details"))}" title="${host.escapeHtml(tr(host, "关闭连接详情", "關閉連線詳情", "Close connection details"))}">${SF_ICONS.xmark}</button></div>
         <ul class="cc-conn-sources">${sources}</ul>
         <div class="cc-conn-actions"><button type="button" class="cc-inline-pill" data-connection-retry>${host.escapeHtml(tr(host, "重试连接", "重試連線", "Retry connection"))}</button><button type="button" class="cc-inline-pill" data-connection-settings>${host.escapeHtml(tr(host, "连接设置…", "連線設定…", "Connection settings…"))}</button></div>
       </div>`
     : "";
   return `<button type="button" class="cc-status-trigger" id="btn-connection-status" data-connection-status-trigger aria-expanded="${open}" aria-controls="cc-connection-details" aria-label="${accessibleName}" title="${label}"><span class="cc-status-dot ${dotClass(status.tone)}" aria-hidden="true"></span><span class="cc-status-icon" aria-hidden="true">${status.icon}</span><span class="cc-footer-label">${label}</span></button>${action}${details}`;
+}
+
+const CONNECTION_PART_SELECTOR = "#btn-connection-status, #btn-connection-action, #cc-connection-details";
+
+/**
+ * Keeps the mounted footer honest after a silent cloud refresh. Writing a legacy label straight into
+ * `.cc-footer-label` reverted the plain-language copy and left the trigger, the recovery action and the detail
+ * card disagreeing with each other, so the whole connection block is re-derived from `resolveConnectionStatus`.
+ * Returns `false` when the caller must do a full render (a different structure, or the detail dialog is open).
+ */
+export function patchConnectionStatusFooter(host: MenuMijiaWindowsApp): boolean {
+  const container = host.root.querySelector<HTMLElement>(".cc-footer-status");
+  if (!container) return true;
+  // The dialog holds keyboard focus and re-binds its own handlers on a full render: defer to that render.
+  if (host.connectionDetailsOpen) return false;
+  const status = resolveConnectionStatus(host);
+  const template = host.root.ownerDocument.createElement("template");
+  template.innerHTML = renderConnectionStatus(host, status).trim();
+  const desired = Array.from(template.content.children);
+  const current = Array.from(container.children).filter((el) => el.matches(CONNECTION_PART_SELECTOR));
+  if (current.length !== desired.length) return false;
+  if (!current.every((el, index) => hasMatchingDomShape(el, desired[index]!))) return false;
+  // Morph instead of replace: the trigger and the dialog buttons keep their delegated click handlers.
+  current.forEach((el, index) => morphMatchingDom(el, desired[index]!));
+  // A longer warning needs the two-row footer, or the honest copy would be truncated instead of wrapped.
+  container.closest<HTMLElement>(".cc-footer")?.classList.toggle("is-verbose-status", isVerboseConnectionFooter(status));
+  return true;
 }

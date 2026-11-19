@@ -154,7 +154,8 @@ export interface HostActivityCenter {
 
 type HostWithActivity = MenuMijiaWindowsApp & {
   activityCenter?: HostActivityCenter | null;
-  activityWindowLifecycleBound?: boolean;
+  /** Owns the window-level hide listeners so they never outlive the host that bound them. */
+  activityWindowLifecycleAbort?: AbortController | null;
 };
 
 export function isFullPanelHost(host: unknown): host is MenuMijiaWindowsApp {
@@ -330,6 +331,8 @@ export function syncSingleOwnerLifecycle(
   center.lastSourceRevision = currentRev;
   center.hasObservedNonEmptyDevices = host.devices.length > 0;
   clearCenterActivities(center);
+  // A source/home switch invalidates the footer dialog's platform list, so it closes with the rest.
+  host.connectionDetailsOpen = false;
   return true;
 }
 
@@ -366,6 +369,24 @@ export function clearHostActivitiesOnSignOut(host: unknown): void {
   center.hasObservedNonEmptyDevices = false;
   center.offlineHistory.clear();
   clearCenterActivities(center);
+  // The footer connection dialog is panel state too: a sign-out must not leave it mounted.
+  host.connectionDetailsOpen = false;
+}
+
+/**
+ * Hiding the panel must also drop the DOM a keyboard/menu surface left mounted, otherwise the next open shows
+ * `#cc-connection-details` or an expanded reminder list that the state already forgot (WP5b-1 review).
+ */
+function hideActivitySurfaces(host: MenuMijiaWindowsApp): void {
+  if (collapseActivityStackOnHide(host)) host.render();
+}
+
+/** Unbinds the window-level hide listeners; `dispose` calls it so a re-created panel never stacks duplicates. */
+export function releaseActivityWindowLifecycle(host: unknown): void {
+  if (!isFullPanelHost(host)) return;
+  const hostWithActivity = host as HostWithActivity;
+  hostWithActivity.activityWindowLifecycleAbort?.abort();
+  hostWithActivity.activityWindowLifecycleAbort = null;
 }
 
 export function collapseActivityStackOnHide(host: unknown): boolean {
@@ -1958,16 +1979,16 @@ function syncOrdinaryExpansion(host: MenuMijiaWindowsApp, ordinary: readonly Act
   getHostActivityCenter(host).ordinaryExpanded = false;
 }
 
-function renderOrdinaryAlertCapsule(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[]): string {
+function renderOrdinaryAlertCapsule(host: MenuMijiaWindowsApp, ordinary: readonly ActivityFeedItem[], stackControlsHtml = ""): string {
   const expanded = getHostActivityCenter(host).ordinaryExpanded;
   const pref = host.settings.interfaceLanguage;
   const summary = ordinaryCapsuleSummary(host, ordinary);
-  const dismissLabel = tr3("收起普通提醒", "收起普通提醒", "Dismiss ordinary alerts", undefined, pref);
+  const dismissLabel = tr3("清除全部普通提醒", "清除全部普通提醒", "Dismiss all ordinary alerts", undefined, pref);
   const hintLabel = tr3(expanded ? "收起" : "查看", expanded ? "收起" : "查看", expanded ? "Collapse" : "View", undefined, pref);
   const list = expanded
     ? `<div class="cc-ordinary-list" id="cc-ordinary-alert-list" data-ordinary-list>${ordinary.map((item) => renderSingleActivityRow(host, item, { stackCount: ordinary.length, showStackControls: false })).join("")}</div>`
     : `<div class="cc-ordinary-list" id="cc-ordinary-alert-list" data-ordinary-list hidden></div>`;
-  return `<div class="cc-ordinary-alerts" data-ordinary-alerts><div class="cc-ordinary-capsule"><button type="button" class="cc-ordinary-toggle" data-ordinary-alerts-toggle aria-expanded="${expanded}" aria-controls="cc-ordinary-alert-list" title="${host.escapeHtml(summary)}"><span class="cc-ordinary-icon" aria-hidden="true">${SF_ICONS.exclamationTriangleFill}</span><span class="cc-ordinary-summary">${host.escapeHtml(summary)}</span><span class="cc-ordinary-hint">${host.escapeHtml(hintLabel)}</span></button><button type="button" class="cc-ordinary-dismiss" data-ordinary-dismiss aria-label="${host.escapeHtml(dismissLabel)}" title="${host.escapeHtml(dismissLabel)}">${SF_ICONS.xmark}</button></div>${list}</div>`;
+  return `<div class="cc-ordinary-alerts" data-ordinary-alerts><div class="cc-ordinary-capsule"><button type="button" class="cc-ordinary-toggle" data-ordinary-alerts-toggle aria-expanded="${expanded}" aria-controls="cc-ordinary-alert-list" title="${host.escapeHtml(summary)}"><span class="cc-ordinary-icon" aria-hidden="true">${SF_ICONS.exclamationTriangleFill}</span><span class="cc-ordinary-summary">${host.escapeHtml(summary)}</span><span class="cc-ordinary-hint">${host.escapeHtml(hintLabel)}</span></button>${stackControlsHtml}<button type="button" class="cc-ordinary-dismiss" data-ordinary-dismiss aria-label="${host.escapeHtml(dismissLabel)}" title="${host.escapeHtml(dismissLabel)}">${SF_ICONS.xmark}</button></div>${list}</div>`;
 }
 
 export function dismissOrdinaryActivities(host: MenuMijiaWindowsApp): void {
@@ -2065,21 +2086,26 @@ function renderPeekBackplates(totalCount: number): string {
   return plates.join("");
 }
 
-export function renderActivityStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
+export function renderActivityStack(host: MenuMijiaWindowsApp, nowMs = Date.now(), interleavedHtml = ""): string {
   const items = buildActivityFeed(host, nowMs);
-  if (items.length === 0) return "";
+  if (items.length === 0) {
+    if (interleavedHtml === "") return "";
+    return `<section class="cc-activity-stack is-expanded" data-activity-stack data-activity-count="0" data-activity-expanded="false">${interleavedHtml}</section>`;
+  }
   const tiered = partitionActivityFeed(host, items);
   syncOrdinaryExpansion(host, tiered.ordinary);
   const pinnedHtml = tiered.pinned
     .map((item) => renderSingleActivityRow(host, item, { stackCount: tiered.pinned.length, showStackControls: false }))
     .join("");
   const ordinaryHtml = tiered.ordinary.length > 0 ? renderOrdinaryAlertCapsule(host, tiered.ordinary) : "";
-  if (tiered.pinned.length === 1 && tiered.ordinary.length === 0) {
+  if (tiered.pinned.length === 1 && tiered.ordinary.length === 0 && interleavedHtml === "") {
     return `<section class="cc-activity-stack" data-activity-stack data-activity-count="1" data-activity-expanded="false">${pinnedHtml}</section>`;
   }
   const ordinaryExpanded = getHostActivityCenter(host).ordinaryExpanded;
+  // Pinned alerts first, then the never-auto-run missed timers, then the foldable ordinary capsule.
   return `<section class="cc-activity-stack is-expanded cc-activity-stack--tiered" data-activity-stack data-activity-count="${items.length}" data-activity-expanded="${ordinaryExpanded}" data-activity-tiered="true">
     ${pinnedHtml ? `<div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${pinnedHtml}</div>` : ""}
+    ${interleavedHtml}
     ${ordinaryHtml}
   </section>`;
 }
@@ -2122,13 +2148,30 @@ function feedbackHint(host: MenuMijiaWindowsApp, reply: ReplyBannerState | null,
   return text ? `<p class="cc-feedback-hint">${host.escapeHtml(text)}</p>` : "";
 }
 
+/** Missed timers never auto-run; one shared row keeps both shells on the same copy and actions. */
+function missedTimerRows(host: MenuMijiaWindowsApp): string {
+  return host.missedScheduledCommands
+    .map((item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`)
+    .join("");
+}
+
+/** Liquid Glass missed-timer card; `renderActivityStack` interleaves it between the pinned cards and the capsule. */
+export function renderMissedScheduledCards(host: MenuMijiaWindowsApp): string {
+  if (host.missedScheduledCommands.length === 0) return "";
+  return `<div class="win-notif-card cc-feedback-card is-warning" role="status" data-missed-timers><div class="cc-timers-stack">${missedTimerRows(host)}</div></div>`;
+}
+
 function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()): UpperCardFactory[] {
   const center = getHostActivityCenter(host);
   const pref = host.settings.interfaceLanguage;
   const dismissLabel = host.escapeHtml(tr3("划掉此条提醒", "劃掉此條提醒", "Dismiss activity", undefined, pref));
   const clearAllLabel = host.escapeHtml(tr3("清空全部提醒", "清空全部提醒", "Clear all activities", undefined, pref));
+  const expandStackBtn = (opts: { readonly stackCount: number; readonly showStackControls: boolean }): string =>
+    opts.showStackControls && opts.stackCount > 1
+      ? `<button type="button" class="cc-inline-pill cc-stack-expand-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="false" title="${host.escapeHtml(tr3("展开全部 {count} 条提醒", "展開全部 {count} 條提醒", "Expand all {count} activities", { count: opts.stackCount }, pref))}">+${opts.stackCount - 1}</button>`
+      : "";
   const renderStackBtns = (opts: { readonly stackCount: number; readonly showStackControls: boolean }, cardId: string, isDismissible: boolean, extraDismissId?: string): string => {
-    const expandBtn = opts.showStackControls && opts.stackCount > 1 ? `<button type="button" class="cc-inline-pill cc-stack-expand-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="false" title="${host.escapeHtml(tr3("展开全部 {count} 条提醒", "展開全部 {count} 條提醒", "Expand all {count} activities", { count: opts.stackCount }, pref))}">+${opts.stackCount - 1}</button>` : "";
+    const expandBtn = expandStackBtn(opts);
     const clearBtn = opts.showStackControls && opts.stackCount > 1 ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1" aria-label="${clearAllLabel}" title="${clearAllLabel}">${host.escapeHtml(tr3("清空", "清空", "Clear", undefined, pref))}</button>` : "";
     const dismissBtn = isDismissible ? `<button type="button" class="cc-inline-pill"${extraDismissId ? ` id="${extraDismissId}"` : ""} data-upper-dismiss="${host.escapeHtml(cardId)}" data-activity-dismiss="${host.escapeHtml(cardId)}" aria-label="${dismissLabel}" title="${dismissLabel}">×</button>` : "";
     return `${expandBtn}${clearBtn}${dismissBtn}`;
@@ -2172,13 +2215,24 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
     else factories.push(factory);
   }
 
+  // Pinned alerts -> missed timers -> ordinary capsule: the foldable capsule never jumps ahead of a missed
+  // timer, and an expanded timer list can never hide the safety cards above it.
+  if (host.missedScheduledCommands.length > 0) {
+    factories.push({
+      id: "missed:timers", kind: "missedTimers", isDismissible: true,
+      render: (opts) => `<div class="win-notif-card cc-feedback-card is-warning" data-upper-card-id="missed:timers" data-upper-kind="missedTimers" data-upper-dismissible="true"><div class="cc-timers-stack">${missedTimerRows(host)}</div>${opts.showStackControls && opts.stackCount > 1 ? `<div class="cc-feedback-row">${renderStackBtns(opts, "missed:timers", true)}</div>` : ""}</div>`,
+    });
+  }
+
   if (tieredFeed.ordinary.length > 0) {
     const ordinary = tieredFeed.ordinary;
     factories.push({
       id: "ordinary:alerts",
       kind: "ordinary",
       isDismissible: true,
-      render: () => `<div class="win-notif-card cc-feedback-card cc-ordinary-card" data-upper-card-id="ordinary:alerts" data-upper-kind="ordinary" data-upper-dismissible="true">${renderOrdinaryAlertCapsule(host, ordinary)}</div>`,
+      // The capsule ignores the stack controls, so a collapsed stack led by it would have no keyboard path to
+      // the reminders behind it; hand the +N pill to the capsule row instead (#280 review).
+      render: (opts) => `<div class="win-notif-card cc-feedback-card cc-ordinary-card" data-upper-card-id="ordinary:alerts" data-upper-kind="ordinary" data-upper-dismissible="true">${renderOrdinaryAlertCapsule(host, ordinary, expandStackBtn(opts))}</div>`,
     });
   }
 
@@ -2229,12 +2283,6 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
   if (host.pendingSuggestions.length > 0) {
     factories.push(wrapCard("suggestions:pending", "suggestions", true, "cc-feedback-card", (btns) => `<div class="cc-feedback-row"><div class="cc-suggestion-row" style="flex:1;">${host.pendingSuggestions.map((item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""}</button>`).join("")}</div>${btns}</div>`));
   }
-  if (host.missedScheduledCommands.length > 0) {
-    factories.push({
-      id: "missed:timers", kind: "missedTimers", isDismissible: true,
-      render: (opts) => `<div class="win-notif-card cc-feedback-card is-warning" data-upper-card-id="missed:timers" data-upper-kind="missedTimers" data-upper-dismissible="true"><div class="cc-timers-stack">${host.missedScheduledCommands.map((item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`).join("")}</div>${opts.showStackControls && opts.stackCount > 1 ? `<div class="cc-feedback-row">${renderStackBtns(opts, "missed:timers", true)}</div>` : ""}</div>`,
-    });
-  }
   if (host.pendingSuggestions.length === 0) {
     const items = host.currentProactiveSuggestions();
     if (items.length > 0) {
@@ -2261,11 +2309,18 @@ export function collectUpperStackCards(host: MenuMijiaWindowsApp, nowMs = Date.n
 }
 
 /**
- * Safety and urgent cards stay visible: with two or more pinned cards the Classic stack is pinned open, so the
- * header must not offer a 收起/Collapse control that the next render would immediately undo.
+ * Safety and urgent cards stay visible: whenever more than one card can never be folded away, the Classic stack
+ * is pinned open, so the header must not offer a 收起/Collapse control that the next render would immediately undo.
+ * The confirmation/error cards render *above* the pinned list, so one smoke card behind `ha:error` would otherwise
+ * be the hidden `cards[1]`; missed timers join the same never-folded group (#280 review).
  */
 export function classicStackForcedExpanded(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
-  return partitionActivityFeed(host, buildActivityFeed(host, nowMs)).pinned.length > 1;
+  const leading =
+    (host.pendingCloudConsent || host.isListeningVoice ? 1 : 0) +
+    (host.haConnectionError ? 1 : 0);
+  const pinned = partitionActivityFeed(host, buildActivityFeed(host, nowMs)).pinned.length;
+  const missed = host.missedScheduledCommands.length > 0 ? 1 : 0;
+  return leading + pinned + missed > 1;
 }
 
 export function renderClassicUnifiedUpperStack(host: MenuMijiaWindowsApp, nowMs = Date.now()): string {
@@ -2543,25 +2598,20 @@ export function bindActivityStackAfterRender(host: MenuMijiaWindowsApp): void {
 
   const hideBtn = host.root.querySelector<HTMLButtonElement>("#btn-hide-panel");
   if (hideBtn) {
-    hideBtn.addEventListener("click", () => {
-      if (collapseActivityStackOnHide(host)) {
-        host.render();
-      }
-    });
+    hideBtn.addEventListener("click", () => hideActivitySurfaces(host));
   }
 
   const hostWithActivity = host as HostWithActivity;
-  if (!hostWithActivity.activityWindowLifecycleBound) {
-    hostWithActivity.activityWindowLifecycleBound = true;
+  if (!hostWithActivity.activityWindowLifecycleAbort) {
+    // One controller per host: re-renders never add a second copy, and `dispose` aborts every listener.
+    const controller = new AbortController();
+    hostWithActivity.activityWindowLifecycleAbort = controller;
+    const { signal } = controller;
     const ownerDoc = host.root.ownerDocument ?? document;
     const ownerWin = ownerDoc.defaultView ?? window;
     ownerDoc.addEventListener("visibilitychange", () => {
-      if (ownerDoc.visibilityState === "hidden") {
-        collapseActivityStackOnHide(host);
-      }
-    });
-    ownerWin.addEventListener("blur", () => {
-      collapseActivityStackOnHide(host);
-    });
+      if (ownerDoc.visibilityState === "hidden") hideActivitySurfaces(host);
+    }, { signal });
+    ownerWin.addEventListener("blur", () => hideActivitySurfaces(host), { signal });
   }
 }

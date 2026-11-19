@@ -722,6 +722,14 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelector("#btn-connection-action")?.addEventListener("click", (event) => {
       runConnectionAction((event.currentTarget as HTMLElement).dataset.connectionAction);
     });
+    // Anywhere else in the panel dismisses the footer dialog instead of leaving it floating over the tiles.
+    host.root.querySelector(".cc-popover")?.addEventListener("click", (event) => {
+      if (!host.connectionDetailsOpen) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.("#cc-connection-details, #btn-connection-status")) return;
+      host.connectionDetailsOpen = false;
+      host.render();
+    });
     host.root.querySelector("#btn-dismiss-banner")?.addEventListener("click", () => {
       host.replyBanner = null;
       host.render();

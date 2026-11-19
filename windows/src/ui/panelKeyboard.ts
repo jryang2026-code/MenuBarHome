@@ -1,4 +1,5 @@
 import { normalizeSearch, panelQueryKind } from "../core/panelSearch.js";
+import { collapseActivityStackOnHide, classicStackForcedExpanded } from "./activityStackView.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { closeConnectionsAndDiagModal, isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
@@ -333,6 +334,23 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.root.querySelector<HTMLButtonElement>("#btn-connection-status")?.focus();
       return true;
     }
+    // Classic's unified stack is the same reminder list the Liquid Glass capsule represents: a manually expanded
+    // stack collapses first. A forced-open safety stack stays mounted so one Escape never hides an urgent card.
+    if (
+      host.settings.panelTheme === "classic" &&
+      host.activityCenter?.isExpanded &&
+      host.root.querySelector("[data-upper-stack].is-expanded") &&
+      !classicStackForcedExpanded(host)
+    ) {
+      event.preventDefault();
+      host.activityCenter.isExpanded = false;
+      host.render();
+      const collapsed = host.root.querySelector("[data-upper-stack].is-collapsed");
+      (collapsed
+        ? collapsed.querySelector<HTMLButtonElement>("[data-activity-toggle-expand]")
+        : host.root.querySelector<HTMLButtonElement>("[data-upper-stack] [data-activity-toggle-expand]"))?.focus();
+      return true;
+    }
     // A leftover `ordinaryExpanded` without a mounted capsule toggle has nothing to close: drop it and keep
     // routing Escape to search/hide instead of swallowing the key with no place to return focus (WP5b-1 review).
     if (host.activityCenter?.ordinaryExpanded) {
@@ -375,6 +393,9 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
     if (!isEditable) {
       event.preventDefault();
       resumeUndoHoverPause(host);
+      // Hiding must drop the footer dialog and any expanded list the state already forgot, or the next open
+      // shows ghost DOM (#280 review).
+      if (collapseActivityStackOnHide(host)) host.render();
       invokeTauriVoid("hide_panel");
       return true;
     }
@@ -389,6 +410,8 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
   if (
     host.activeSheet !== "none" ||
     hasPendingUrlConfirmation(host) ||
+    // The footer connection dialog owns focus: room jumps and search stealing would rip the user out of it.
+    host.connectionDetailsOpen ||
     (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden)
   ) {
     return false;

@@ -3255,7 +3255,7 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
   color: var(--text-primary);
 }
 .cc-conn-popover-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; line-height: 16px; }
-.cc-conn-close { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.cc-conn-close { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .cc-conn-sources { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .cc-conn-source { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; }
 .cc-conn-source.is-empty { display: block; color: var(--text-secondary); }
@@ -3303,7 +3303,7 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
 .cc-ordinary-icon svg { width: 12px; height: 12px; }
 .cc-ordinary-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-ordinary-hint { flex-shrink: 0; color: var(--win-accent); font-weight: 600; }
-.cc-ordinary-dismiss { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
+.cc-ordinary-dismiss { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; border: none; border-radius: 50%; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .cc-ordinary-dismiss svg { width: 10px; height: 10px; }
 .cc-ordinary-list { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .cc-ordinary-list[hidden] { display: none; }

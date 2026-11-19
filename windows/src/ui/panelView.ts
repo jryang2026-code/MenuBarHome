@@ -8,6 +8,7 @@ import {
   primaryPowerSwitchLightMarkDevice,
   renderActivityStack,
   renderClassicUnifiedUpperStack,
+  renderMissedScheduledCards,
 } from "./activityStackView.js";
 import { SF_ICONS } from "./appConstants.js";
 import { renderConnectionStatus, resolveConnectionStatus, type ConnectionStatusPresentation } from "./connectionStatus.js";
@@ -332,7 +333,9 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
     );
   }
 
-  const activityStack = renderActivityStack(host);
+  // Pinned alerts -> missed timers -> ordinary capsule: the missed list keeps its place between the safety
+  // cards and the foldable capsule instead of trailing every reminder (#280 review).
+  const activityStack = renderActivityStack(host, Date.now(), renderMissedScheduledCards(host));
   if (activityStack) cards.push(activityStack);
 
   if (host.pendingSuggestions.length > 0) {
@@ -342,16 +345,6 @@ function renderNotificationStack(host: MenuMijiaWindowsApp, includeCameraDeck = 
           (item) => `<button class="cc-inline-pill" data-suggestion-id="${host.escapeHtml(item.id)}">${host.escapeHtml(item.title)}${
             item.confidencePercent !== null ? ` · ${item.confidencePercent}%` : ""
           }</button>`,
-        )
-        .join("")}</div></div>`,
-    );
-  }
-
-  if (host.missedScheduledCommands.length > 0) {
-    cards.push(
-      `<div class="win-notif-card cc-feedback-card is-warning"><div class="cc-timers-stack">${host.missedScheduledCommands
-        .map(
-          (item) => `<div class="cc-timer-row"><span>${t("已错过定时：{command}（没有自动执行，请确认后运行）", { command: host.escapeHtml(item.command) })}</span><button class="cc-inline-pill" data-run-missed="${host.escapeHtml(item.id)}">${t("立即执行")}</button><button class="cc-inline-pill" data-dismiss-missed="${host.escapeHtml(item.id)}">${t("忽略")}</button></div>`,
         )
         .join("")}</div></div>`,
     );
