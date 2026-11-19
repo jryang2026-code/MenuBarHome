@@ -1854,6 +1854,69 @@ struct SnapshotTests {
         }
     }
 
+    @Test("General settings renders ContinueOnboardingSection when initial setup is incomplete")
+    func settingsGeneralContinueOnboardingSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false, completedOnboarding: false)
+        defer { fixture.restore() }
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .general)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-general-continue-onboarding-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("About & Diagnostics renders UnsupportedDeviceScanner results grouped by reason")
+    func settingsAboutUnsupportedDevicesGroupedSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        UnsupportedDeviceScanner.shared.seedForTesting(
+            devices: [
+                UnsupportedDevice(
+                    id: "skip_1",
+                    name: "智能香薰机",
+                    model: "hl.aromatherapy.v2",
+                    reason: .unknownModel
+                ),
+                UnsupportedDevice(
+                    id: "skip_2",
+                    name: "卧室蓝牙音箱",
+                    model: "xiaomi.speaker.v3",
+                    reason: .unknownModel
+                ),
+                UnsupportedDevice(
+                    id: "skip_3",
+                    name: "厨房燃气表",
+                    model: "miot.meter.v1",
+                    reason: .noControllableItems
+                ),
+                UnsupportedDevice(
+                    id: "skip_4",
+                    name: "客厅蓝牙网关",
+                    model: "xiaomi.gateway.v1",
+                    reason: .filteredDuplicate
+                ),
+            ],
+            for: fixture.store
+        )
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .about)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1420),
+                named: "settings-about-unsupported-grouped-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     // MARK: - Camera live HUD audio states (#29)
 
     @Test("Camera HUD labels video-only streams and offers unmute for HLS")
@@ -2357,7 +2420,8 @@ struct SnapshotFixture {
         editMode: PanelEditMode = .none,
         includeCamera: Bool = false,
         includeDualLensCamera: Bool = false,
-        configuredHASource: Bool = true
+        configuredHASource: Bool = true,
+        completedOnboarding: Bool = true
     ) async throws {
         previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         previousTemperatureUnit = UserDefaults.standard.string(forKey: TemperatureUnitPreference.storageKey)
@@ -2399,7 +2463,7 @@ struct SnapshotFixture {
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             throw MissingDefaults()
         }
-        defaults.set(true, forKey: "has_completed_onboarding")
+        defaults.set(completedOnboarding, forKey: "has_completed_onboarding")
         defaults.set(AppLanguagePreference.zhHans.rawValue, forKey: "app_language")
         defaults.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
         // The panel's `.task` checks for updates; keep the snapshot offline and deterministic.

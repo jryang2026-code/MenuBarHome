@@ -528,7 +528,7 @@ struct DeviceFacetSection: View {
             .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 8)
             Button(L10n.tr("允许修改…", "Allow changes…")) {
-                SettingsWindowOpener.shared.show(tab: .privacy)
+                SettingsWindowOpener.shared.show(tab: .privacy, anchor: .advancedDeviceWrites)
             }
             .buttonStyle(.plain)
             .font(.system(size: DesignTokens.TypeSize.control, weight: .semibold))

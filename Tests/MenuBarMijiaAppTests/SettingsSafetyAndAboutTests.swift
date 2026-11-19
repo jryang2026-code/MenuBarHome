@@ -203,6 +203,67 @@ struct SettingsSafetyAndAboutTests {
         #expect(store.allOffIncludedDevices.map(\.id) == ["plug_1", "valve_closed"])
     }
 
+    @Test("All Off Scope shows global included devices while panel All Off only targets active online included devices in the selected room slice")
+    func allOffIncludedDevicesVersusRoomSliceTargets() async throws {
+        let suite = "test.wp3c.alloff.slice.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let rooms = [
+            RoomArea(id: "living", name: "客厅", sortOrder: 0),
+            RoomArea(id: "bedroom", name: "卧室", sortOrder: 1),
+        ]
+        let livingOnLight = SmartDevice(
+            id: "living_on", name: "客厅吸顶灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.ceiling13", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living_on", isOn: true))
+        )
+        let livingOffLight = SmartDevice(
+            id: "living_off", name: "客厅氛围灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.strip1", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living_off", isOn: false))
+        )
+        let livingOfflineLight = SmartDevice(
+            id: "living_offline", name: "客厅落地灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.lamp4", isOnline: false,
+            kind: .light(LightSpec(entityId: "light.living_offline", isOn: true))
+        )
+        let livingHiddenLight = SmartDevice(
+            id: "living_hidden", name: "客厅隐藏夜灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.lamp2", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living_hidden", isOn: true))
+        )
+        let bedroomOnLight = SmartDevice(
+            id: "bedroom_on", name: "卧室主灯", roomId: "bedroom", roomName: "卧室",
+            model: "yeelink.light.ceiling13", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.bedroom_on", isOn: true))
+        )
+
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: rooms,
+            devices: [livingOnLight, livingOffLight, livingOfflineLight, livingHiddenLight, bedroomOnLight]
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.hideDevice(livingHiddenLight.id)
+
+        // Settings summary counts all non-hidden participating devices across rooms regardless of power/online state.
+        #expect(store.allOffIncludedDevices.map(\.id) == [
+            "living_on",
+            "living_off",
+            "living_offline",
+            "bedroom_on",
+        ])
+
+        // Under "All" rooms, only online & currently-on participating non-hidden devices are targeted.
+        #expect(store.allOffTargets.map(\.id) == ["living_on", "bedroom_on"])
+
+        // Selecting a local room slice narrows All Off execution to that room's online & currently-on participating devices.
+        store.selectRoom("living")
+        #expect(store.allOffIncludedDevices.count == 4)
+        #expect(store.allOffTargets.map(\.id) == ["living_on"])
+    }
+
     @Test("Unsupported device scan results group deterministically by reason with localized titles and counts")
     func unsupportedDeviceGroupingByReason() {
         let items: [UnsupportedDevice] = [
@@ -225,7 +286,7 @@ struct SettingsSafetyAndAboutTests {
         }
     }
 
-    @Test("Top update prompt banner shows on non-About tabs when a release badge is active and hides on About")
+    @Test("Top update prompt banner covers release badges and update failures on non-About tabs with unified View Update action")
     func topUpdateBannerVisibilityAndActionTitle() throws {
         let pageURL = try #require(URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v2.1.0"))
         let downloadURL = try #require(URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases/download/v2.1.0/MenuBarHome.dmg"))
@@ -242,30 +303,129 @@ struct SettingsSafetyAndAboutTests {
                 kind: .dmg
             )
         )
+        let stagedApp = VerifiedStagedApp(
+            release: dmgRelease,
+            stagedBundleURL: URL(fileURLWithPath: "/tmp/MenuBarHome.app"),
+            stagingRootURL: URL(fileURLWithPath: "/tmp")
+        )
+        let checkFailure = AppUpdateFailure(release: nil, message: "Network offline", recovery: .recheck)
+        let installFailure = AppUpdateFailure(release: dmgRelease, message: "Disk full", recovery: .retryInstall)
 
-        #expect(SettingsTopUpdateBanner.releaseToShow(updateState: .idle, activeTab: .general) == nil)
-        #expect(SettingsTopUpdateBanner.releaseToShow(updateState: .checking, activeTab: .privacy) == nil)
-        #expect(SettingsTopUpdateBanner.releaseToShow(updateState: .upToDate(checkedAt: Date()), activeTab: .general) == nil)
+        #expect(!SettingsTopUpdateBanner.showsSidebarBadge(for: .idle))
+        #expect(!SettingsTopUpdateBanner.showsSidebarBadge(for: .checking))
+        #expect(!SettingsTopUpdateBanner.showsSidebarBadge(for: .upToDate(checkedAt: Date())))
+        #expect(SettingsTopUpdateBanner.showsSidebarBadge(for: .available(notesOnlyRelease)))
+        #expect(SettingsTopUpdateBanner.showsSidebarBadge(for: .readyToRelaunch(stagedApp)))
+        #expect(SettingsTopUpdateBanner.showsSidebarBadge(for: .failed(checkFailure)))
+        #expect(SettingsTopUpdateBanner.showsSidebarBadge(for: .failed(installFailure)))
+
+        #expect(SettingsTopUpdateBanner.prompt(for: .idle, activeTab: .general) == nil)
+        #expect(SettingsTopUpdateBanner.prompt(for: .checking, activeTab: .privacy) == nil)
+        #expect(SettingsTopUpdateBanner.prompt(for: .upToDate(checkedAt: Date()), activeTab: .general) == nil)
 
         for tab in [SettingsTab.general, .connection, .assistant, .privacy, .appearance] {
             #expect(
                 SettingsTopUpdateBanner.releaseToShow(updateState: .available(notesOnlyRelease), activeTab: tab) == notesOnlyRelease,
                 "Banner should appear on \(tab.rawValue)"
             )
+            #expect(
+                SettingsTopUpdateBanner.prompt(for: .failed(checkFailure), activeTab: tab) == .failure(checkFailure),
+                "Failure banner should appear on \(tab.rawValue)"
+            )
         }
         #expect(SettingsTopUpdateBanner.releaseToShow(updateState: .available(notesOnlyRelease), activeTab: .about) == nil)
+        #expect(SettingsTopUpdateBanner.prompt(for: .failed(checkFailure), activeTab: .about) == nil)
+        #expect(
+            SettingsTopUpdateBanner.prompt(for: .readyToRelaunch(stagedApp), activeTab: .general)
+                == .release(dmgRelease, readyToRelaunch: true)
+        )
 
         L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(SettingsTopUpdateBanner.actionTitle == "前往查看")
             #expect(
                 SettingsTopUpdateBanner.actionTitle(for: notesOnlyRelease, updateState: .available(notesOnlyRelease)) == "前往查看"
             )
             #expect(
-                SettingsTopUpdateBanner.actionTitle(for: dmgRelease, updateState: .available(dmgRelease)) == "立即更新"
+                SettingsTopUpdateBanner.actionTitle(for: dmgRelease, updateState: .available(dmgRelease)) == "前往查看"
             )
+            #expect(
+                SettingsTopUpdateBanner.actionTitle(for: dmgRelease, updateState: .readyToRelaunch(stagedApp)) == "前往查看"
+            )
+            #expect(SettingsTopUpdateBanner.failureHeadline(for: checkFailure) == "更新检查失败")
+            #expect(SettingsTopUpdateBanner.failureHeadline(for: installFailure) == "软件更新失败")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(SettingsTopUpdateBanner.actionTitle == "View Update")
+            #expect(SettingsTopUpdateBanner.failureHeadline(for: checkFailure) == "Update Check Failed")
+            #expect(SettingsTopUpdateBanner.failureHeadline(for: installFailure) == "Software Update Failed")
         }
     }
 
-    @Test("Traditional Chinese translations cover WP3c risk warnings, diagnostics redaction, and reset copy")
+    @Test("SettingsWindowOpener records target anchor and ContinueOnboardingSection respects unsaved draft cancellation")
+    func openerAnchorRoutingAndUnsavedOnboardingGuard() throws {
+        let opener = SettingsWindowOpener.shared
+        let previousOpen = opener.open
+        let previousTab = opener.requestedTab
+        let previousAnchor = opener.requestedAnchor
+        defer {
+            opener.open = previousOpen
+            opener.requestedTab = previousTab
+            opener.requestedAnchor = previousAnchor
+        }
+
+        var didCallOpen = false
+        opener.open = { didCallOpen = true }
+        opener.show(tab: .privacy, anchor: .advancedDeviceWrites)
+        #expect(didCallOpen)
+        #expect(opener.requestedTab == .privacy)
+        #expect(opener.requestedAnchor == .advancedDeviceWrites)
+
+        opener.show(tab: .general)
+        #expect(opener.requestedTab == .general)
+        #expect(opener.requestedAnchor == nil)
+
+        let suite = "test.wp3c.onboarding.guard.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "has_completed_onboarding")
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(rooms: [], devices: [])), defaultsSuiteName: suite)
+        #expect(!store.isShowingOnboarding)
+
+        let unsaved = SettingsUnsavedChanges()
+        var discarded = false
+        unsaved.register(
+            "ha",
+            .init(
+                title: "Home Assistant",
+                isDirty: true,
+                save: { false },
+                discard: { discarded = true }
+            )
+        )
+
+        // User cancels the unsaved prompt: onboarding does not reopen and window stays open.
+        let cancelled = ContinueOnboardingSection.reopenIfUnsavedResolved(
+            store: store,
+            unsaved: unsaved,
+            ask: { _, _ in .cancel }
+        )
+        #expect(!cancelled)
+        #expect(!store.isShowingOnboarding)
+        #expect(!discarded)
+
+        // User discards draft: onboarding reopens cleanly.
+        let proceeded = ContinueOnboardingSection.reopenIfUnsavedResolved(
+            store: store,
+            unsaved: unsaved,
+            ask: { _, _ in .discard }
+        )
+        #expect(proceeded)
+        #expect(discarded)
+        #expect(store.isShowingOnboarding)
+    }
+
+    @Test("Traditional Chinese translations cover WP3c risk warnings, diagnostics redaction, reset copy, and review additions")
     func traditionalChineseWP3cTranslations() {
         L10n.$overrideLanguage.withValue(.zhHant) {
             #expect(L10n.tr(
@@ -287,6 +447,18 @@ struct SettingsSafetyAndAboutTests {
                 "退出并清除所有账号与密钥",
                 "Sign Out & Clear All Accounts and Keys"
             ) == "登出並清除所有帳號與金鑰")
+
+            #expect(L10n.tr("前往查看", "View Update") == "前往查看")
+            #expect(L10n.tr("更新检查失败", "Update Check Failed") == "更新檢查失敗")
+            #expect(L10n.tr("软件更新失败", "Software Update Failed") == "軟體更新失敗")
+            #expect(L10n.tr(
+                "面板执行「全关」时，仅关闭当前房间或筛选范围内已开启的参与设备。",
+                "Running All Off in the panel only turns off participating devices that are currently on in the active room or filter."
+            ) == "面板執行「全關」時，僅關閉目前房間或篩選範圍內已開啟的參與裝置。")
+            #expect(L10n.tr(
+                "请先开启「门铃响时自动弹出摄像头画面」。",
+                "Turn on “Show the doorbell camera when it rings” first."
+            ) == "請先開啟「門鈴響時自動彈出攝影機畫面」。")
         }
     }
 }

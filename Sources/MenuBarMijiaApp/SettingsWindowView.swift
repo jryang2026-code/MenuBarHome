@@ -39,16 +39,43 @@ private enum SettingsSearchMemoCache {
 }
 
 enum SettingsTopUpdateBanner {
+    enum Prompt: Equatable {
+        case release(AppRelease, readyToRelaunch: Bool)
+        case failure(AppUpdateFailure)
+    }
+
+    static func showsSidebarBadge(for updateState: AppUpdateState) -> Bool {
+        updateState.badgeRelease != nil || updateState.isFailure
+    }
+
+    static func prompt(for updateState: AppUpdateState, activeTab: SettingsTab) -> Prompt? {
+        guard activeTab.canonicalTab != .about else { return nil }
+        if let release = updateState.badgeRelease {
+            return .release(release, readyToRelaunch: updateState.isReadyToRelaunch)
+        }
+        if case .failed(let failure) = updateState {
+            return .failure(failure)
+        }
+        return nil
+    }
+
     static func releaseToShow(updateState: AppUpdateState, activeTab: SettingsTab) -> AppRelease? {
         guard activeTab.canonicalTab != .about else { return nil }
         return updateState.badgeRelease
     }
 
-    static func actionTitle(for release: AppRelease, updateState: AppUpdateState) -> String {
-        if updateState.isReadyToRelaunch || release.packageAsset != nil {
-            return L10n.tr("立即更新", "Update Now")
-        }
-        return L10n.tr("前往查看", "View Update")
+    static var actionTitle: String {
+        L10n.tr("前往查看", "View Update")
+    }
+
+    static func actionTitle(for _: AppRelease, updateState _: AppUpdateState) -> String {
+        actionTitle
+    }
+
+    static func failureHeadline(for failure: AppUpdateFailure) -> String {
+        failure.release == nil
+            ? L10n.tr("更新检查失败", "Update Check Failed")
+            : L10n.tr("软件更新失败", "Software Update Failed")
     }
 }
 
@@ -120,7 +147,7 @@ public struct SettingsWindowView: View {
                     selection: guardedTab,
                     isSearching: focus.isSearching,
                     searchField: AnyView(searchField),
-                    hasUpdateBadge: store.updateState.badgeRelease != nil,
+                    hasUpdateBadge: SettingsTopUpdateBanner.showsSidebarBadge(for: store.updateState),
                     onSelectCategory: selectCategory
                 )
                 Divider()
@@ -172,23 +199,18 @@ public struct SettingsWindowView: View {
             // holds the row. Leaving search itself is `selectCategory`'s job: `onChange` does not
             // fire when the clicked category is already selected, which is how a query used to
             // survive a click on the category already on screen.
-            if let highlight = focus.highlight, highlight.tab != newTab {
+            if let highlight = focus.highlight, destinationTab(for: highlight) != newTab {
                 focus.endHighlight()
             }
         }
         .onAppear {
-            if let requested = opener.requestedTab {
-                advancedDisplay.expandIfNeeded(forRequestedTab: requested)
-                tab = requested.canonicalTab
-                opener.requestedTab = nil
-            }
+            consumeOpenerRequestIfNeeded(opener)
         }
-        .onChange(of: opener.requestedTab) { _, requested in
-            guard let requested else { return }
-            // A panel button asking for a pane is a category choice like a sidebar click, so it
-            // leaves search too; otherwise the result list keeps covering the rail.
-            selectCategory(requested)
-            opener.requestedTab = nil
+        .onChange(of: opener.requestedTab) { _, _ in
+            consumeOpenerRequestIfNeeded(opener)
+        }
+        .onChange(of: opener.requestedAnchor) { _, _ in
+            consumeOpenerRequestIfNeeded(opener)
         }
         .task {
             await store.checkForUpdatesIfNeeded()
@@ -236,6 +258,21 @@ public struct SettingsWindowView: View {
         highlightedResult = nil
     }
 
+    private func consumeOpenerRequestIfNeeded(_ opener: SettingsWindowOpener) {
+        if let requestedAnchor = opener.requestedAnchor {
+            opener.requestedTab = nil
+            opener.requestedAnchor = nil
+            jump(toAnchor: requestedAnchor)
+            return
+        }
+        if let requested = opener.requestedTab {
+            opener.requestedTab = nil
+            // A panel button asking for a pane is a category choice like a sidebar click, so it
+            // leaves search too; otherwise the result list keeps covering the rail.
+            selectCategory(requested)
+        }
+    }
+
     /// A click on a category in the rail. It leaves search *here*, not through `onChange(of: tab)`:
     /// clicking the category already on screen does not change `selection`, so the callback was never
     /// reached and a live query kept covering the rail with no selected row in sight.
@@ -261,6 +298,13 @@ public struct SettingsWindowView: View {
         Binding(get: { tab.canonicalTab }, set: { _ in })
     }
 
+    private func destinationTab(for anchor: SettingsAnchor) -> SettingsTab {
+        if anchor == .setupGuide && !store.hasCompletedOnboarding {
+            return .general
+        }
+        return anchor.tab.canonicalTab
+    }
+
     private func expandDisclosures(for anchor: SettingsAnchor) {
         advancedDisplay.expandIfNeeded(forHighlight: anchor)
         connectionAdvancedDisclosure.expandForHighlightIfNeeded(anchor)
@@ -269,26 +313,25 @@ public struct SettingsWindowView: View {
         aboutDisclosure.expandForHighlightIfNeeded(anchor)
     }
 
-    private func jump(to hit: SettingsSearchHit) {
+    private func jump(toAnchor anchor: SettingsAnchor) {
         // Order matters. `clearQuery()` hides the result list and ends any previous highlight, so
         // the landing highlight has to be requested *after* it; setting it first would be wiped by
         // the query change and the jump would arrive with nothing to scroll to or point at.
         focus.clearQuery()
         highlightedResult = nil
-        let destination = hit.anchor.tab.canonicalTab
+        let destination = destinationTab(for: anchor)
         guard leavesTabSafely(for: destination) else { return }
-        expandDisclosures(for: hit.anchor)
+        expandDisclosures(for: anchor)
         tab = destination
-        focus.jump(to: hit.anchor)
+        focus.jump(to: anchor)
+    }
+
+    private func jump(to hit: SettingsSearchHit) {
+        jump(toAnchor: hit.anchor)
     }
 
     private func jumpToSoftwareUpdate() {
-        focus.clearQuery()
-        highlightedResult = nil
-        guard leavesTabSafely(for: .about) else { return }
-        expandDisclosures(for: .softwareUpdate)
-        tab = .about
-        focus.jump(to: .softwareUpdate)
+        jump(toAnchor: .softwareUpdate)
     }
 
     // MARK: Detail
@@ -312,11 +355,11 @@ public struct SettingsWindowView: View {
             // jump would silently do nothing and the lower cards would be unreachable.
             ScrollView(.vertical, showsIndicators: true) {
                 VStack(alignment: .leading, spacing: DesignTokens.Settings.cardSpacing) {
-                    if let release = SettingsTopUpdateBanner.releaseToShow(
-                        updateState: store.updateState,
+                    if let prompt = SettingsTopUpdateBanner.prompt(
+                        for: store.updateState,
                         activeTab: tab
                     ) {
-                        topUpdatePromptBanner(release)
+                        topUpdatePromptBanner(prompt)
                     }
                     SettingsPaneHeader(tab: tab.canonicalTab, subtitle: tab.canonicalTab.paneSubtitle)
                     settingsPage
@@ -330,7 +373,7 @@ public struct SettingsWindowView: View {
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
             .onChange(of: focus.generation) { _, targetGeneration in
                 guard let anchor = focus.highlight else { return }
-                let destination = anchor.tab.canonicalTab
+                let destination = destinationTab(for: anchor)
                 if tab.canonicalTab != destination {
                     guard leavesTabSafely(for: destination) else {
                         focus.endHighlight()
@@ -354,28 +397,42 @@ public struct SettingsWindowView: View {
         }
     }
 
-    private func topUpdatePromptBanner(_ release: AppRelease) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "arrow.down.circle.fill")
+    private func topUpdatePromptBanner(_ prompt: SettingsTopUpdateBanner.Prompt) -> some View {
+        let isFailure: Bool = {
+            if case .failure = prompt { return true }
+            return false
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: isFailure ? "exclamationmark.triangle.fill" : "arrow.down.circle.fill")
                 .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(isFailure ? Color.orange : Color.accentColor)
 
             VStack(alignment: .leading, spacing: 1) {
-                Text(L10n.tr("发现新版本 v\(release.version)", "New version v\(release.version) available"))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                if store.updateState.isReadyToRelaunch {
-                    Text(L10n.tr("更新已就绪，重启后生效。", "Ready to install — relaunch to finish updating."))
+                switch prompt {
+                case .release(let release, let readyToRelaunch):
+                    Text(L10n.tr("发现新版本 v\(release.version)", "New version v\(release.version) available"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    if readyToRelaunch {
+                        Text(L10n.tr("更新已就绪，重启后生效。", "Ready to install — relaunch to finish updating."))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                case .failure(let failure):
+                    Text(SettingsTopUpdateBanner.failureHeadline(for: failure))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    Text(failure.message)
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
+                        .lineLimit(1)
                 }
             }
 
             Spacer(minLength: 8)
 
-            Button(SettingsTopUpdateBanner.actionTitle(for: release, updateState: store.updateState)) {
+            Button(SettingsTopUpdateBanner.actionTitle) {
                 jumpToSoftwareUpdate()
             }
-            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            .buttonStyle(PillActionButtonStyle(isSelected: !isFailure, tintColor: .accentColor))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
@@ -623,11 +680,34 @@ enum GeneralSettingsDisclosure {
     }
 }
 
-private struct ContinueOnboardingSection: View {
+struct ContinueOnboardingSection: View {
     let store: HomeStore
+    var anchor: SettingsAnchor? = nil
+    @Environment(\.settingsUnsavedChanges) private var unsaved
+
+    @MainActor
+    @discardableResult
+    static func reopenIfUnsavedResolved(
+        store: HomeStore,
+        unsaved: SettingsUnsavedChanges?,
+        ask: ((_ titles: [String], _ allowCancel: Bool) -> SettingsUnsavedChanges.Choice)? = nil
+    ) -> Bool {
+        if let unsaved {
+            let resolved = if let ask {
+                unsaved.resolveBeforeLeaving(allowCancel: true, ask: ask)
+            } else {
+                unsaved.resolveBeforeLeaving(allowCancel: true)
+            }
+            if !resolved {
+                return false
+            }
+        }
+        store.reopenOnboarding()
+        return true
+    }
 
     var body: some View {
-        SettingsSection(title: L10n.tr("初始设置", "Initial Setup")) {
+        SettingsSection(title: L10n.tr("初始设置", "Initial Setup"), anchor: anchor) {
             HStack(spacing: 12) {
                 Text(L10n.tr(
                     "初始设置尚未完成，继续完成连接家庭数据源、搜索设备与全关撤销引导。",
@@ -640,7 +720,7 @@ private struct ContinueOnboardingSection: View {
                 Spacer(minLength: 8)
 
                 Button {
-                    store.reopenOnboarding()
+                    guard Self.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else { return }
                     NSApp.keyWindow?.orderOut(nil)
                     HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
                 } label: {
@@ -682,7 +762,7 @@ private struct GeneralSettingsTab: View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 16) {
             if !store.hasCompletedOnboarding {
-                ContinueOnboardingSection(store: store)
+                ContinueOnboardingSection(store: store, anchor: .setupGuide)
             }
 
             SettingsSection(title: L10n.tr("基础显示", "Basic Display")) {
@@ -1910,24 +1990,36 @@ private struct PrivacySettingsTab: View {
                 }
 
                 DisclosureGroup(isExpanded: $disclosure.isDoorbellAdvancedExpanded) {
-                    HStack(spacing: 6) {
-                        Text(L10n.tr("门铃画面自动收起", "Close the doorbell view after"))
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            Text(L10n.tr("门铃画面自动收起", "Close the doorbell view after"))
+                                .font(.system(size: DesignTokens.TypeSize.caption))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                            Spacer()
+                            Stepper(
+                                value: Binding(get: { store.doorbellPopupSeconds }, set: { store.doorbellPopupSeconds = $0 }),
+                                in: HomeStore.doorbellPopupSecondsRange,
+                                step: 15
+                            ) {
+                                Text(L10n.tr("\(store.doorbellPopupSeconds) 秒", "\(store.doorbellPopupSeconds) s"))
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .monospacedDigit()
+                            }
+                            .fixedSize()
+                        }
+                        .disabled(!store.doorbellAutoPopup)
+
+                        if !store.doorbellAutoPopup {
+                            Text(L10n.tr(
+                                "请先开启「门铃响时自动弹出摄像头画面」。",
+                                "Turn on “Show the doorbell camera when it rings” first."
+                            ))
                             .font(.system(size: DesignTokens.TypeSize.caption))
                             .foregroundStyle(DesignTokens.secondaryText)
-                        Spacer()
-                        Stepper(
-                            value: Binding(get: { store.doorbellPopupSeconds }, set: { store.doorbellPopupSeconds = $0 }),
-                            in: HomeStore.doorbellPopupSecondsRange,
-                            step: 15
-                        ) {
-                            Text(L10n.tr("\(store.doorbellPopupSeconds) 秒", "\(store.doorbellPopupSeconds) s"))
-                                .font(.system(size: DesignTokens.TypeSize.caption))
-                                .monospacedDigit()
+                            .fixedSize(horizontal: false, vertical: true)
                         }
-                        .fixedSize()
                     }
                     .padding(.top, 4)
-                    .disabled(!store.doorbellAutoPopup)
                     .settingsRow(anchor: .doorbellAutoCloseSeconds)
                 } label: {
                     Text(L10n.tr("高级门铃选项", "Advanced Doorbell Options"))
@@ -1969,6 +2061,14 @@ private struct PrivacySettingsTab: View {
                     .buttonStyle(PillActionButtonStyle())
                 }
                 .frame(minHeight: DesignTokens.Settings.rowHeight)
+
+                Text(L10n.tr(
+                    "面板执行「全关」时，仅关闭当前房间或筛选范围内已开启的参与设备。",
+                    "Running All Off in the panel only turns off participating devices that are currently on in the active room or filter."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
                 Text(L10n.tr(
                     "插座、扫地机、阀门、摄像机等默认不参与全关，避免断电路由器、冰箱或中断清扫；窗帘始终不参与全关。",
@@ -2185,8 +2285,10 @@ private struct AboutSettingsTab: View {
     let store: HomeStore
     @Binding var disclosure: AboutSettingsDisclosure.State
     @Environment(\.settingsSearchFocus) private var searchFocus
+    @Environment(\.settingsUnsavedChanges) private var unsaved
     @State private var didCopy = false
     @State private var showsDiagnosticsPreview = false
+    @State private var diagnosticsPreviewMarkdown = ""
     @State private var confirmsRevoke = false
 
     private var scanner: UnsupportedDeviceScanner { .shared }
@@ -2250,41 +2352,34 @@ private struct AboutSettingsTab: View {
 
             UpdateSection(store: store)
 
-            SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
-                HStack(spacing: 12) {
-                    Text(
-                        store.hasCompletedOnboarding
-                            ? L10n.tr(
-                                "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
-                                "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
-                            )
-                            : L10n.tr(
-                                "初始设置尚未完成，继续完成连接家庭数据源、搜索设备与全关撤销引导。",
-                                "Initial setup is still in progress. Continue the guide to connect your home, search devices, and practice All Off + Undo."
-                            )
-                    )
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+            if store.hasCompletedOnboarding {
+                SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
+                    HStack(spacing: 12) {
+                        Text(L10n.tr(
+                            "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
+                            "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
 
-                    Spacer(minLength: 8)
+                        Spacer(minLength: 8)
 
-                    Button {
-                        store.reopenOnboarding()
-                        NSApp.keyWindow?.orderOut(nil)
-                        HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "sparkles")
-                            Text(
-                                store.hasCompletedOnboarding
-                                    ? L10n.tr("重新查看初始设置引导", "Reopen Setup Guide")
-                                    : L10n.tr("继续初始设置", "Continue Setup")
-                            )
+                        Button {
+                            guard ContinueOnboardingSection.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else {
+                                return
+                            }
+                            NSApp.keyWindow?.orderOut(nil)
+                            HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "sparkles")
+                                Text(L10n.tr("重新查看初始设置引导", "Reopen Setup Guide"))
+                            }
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         }
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .buttonStyle(PillActionButtonStyle())
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: !store.hasCompletedOnboarding, tintColor: .accentColor))
                 }
             }
 
@@ -2345,8 +2440,7 @@ private struct AboutSettingsTab: View {
                 }
 
                 DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
-                    let reportMarkdown = buildDiagnosticsMarkdown()
-                    Text(reportMarkdown)
+                    Text(diagnosticsPreviewMarkdown)
                         .font(.system(size: DesignTokens.TypeSize.control, design: .monospaced))
                         .foregroundStyle(DesignTokens.secondaryText)
                         .textSelection(.enabled)
@@ -2513,19 +2607,45 @@ private struct AboutSettingsTab: View {
         }
         .onAppear {
             scanner.invalidateIfContextChanged(for: store)
+            refreshDiagnosticsPreviewIfNeeded()
             disclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
         }
         .onChange(of: searchFocus?.highlight) { _, highlight in
             disclosure.expandForHighlightIfNeeded(highlight)
         }
-        .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
-        .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
-        .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
+        .onChange(of: showsDiagnosticsPreview) { _, isExpanded in
+            guard isExpanded else { return }
+            scanner.invalidateIfContextChanged(for: store)
+            diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
+        }
+        .onChange(of: store.homeBackend) { _, _ in
+            scanner.reset()
+            refreshDiagnosticsPreviewIfNeeded()
+        }
+        .onChange(of: store.hasHASource) { _, _ in
+            scanner.invalidateIfContextChanged(for: store)
+            refreshDiagnosticsPreviewIfNeeded()
+        }
+        .onChange(of: store.miAccounts.map(\.id)) { _, _ in
+            scanner.reset()
+            refreshDiagnosticsPreviewIfNeeded()
+        }
+        .onChange(of: store.serverURLString) { _, _ in
+            scanner.reset()
+            refreshDiagnosticsPreviewIfNeeded()
+        }
+        .onChange(of: scanner.devices) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
+        .onChange(of: errorLog.errorTimestamps) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
+        .onChange(of: store.devices.count) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
+        .onChange(of: store.onlineDeviceCount) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
+        .onChange(of: store.hiddenDevices.count) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
+        .onChange(of: store.effectiveLanguage) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
         .alert(L10n.tr("退出并清除所有账号与密钥？", "Sign out and clear all accounts and keys?"), isPresented: $confirmsRevoke) {
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
             Button(L10n.tr("退出并清除", "Sign Out & Clear"), role: .destructive) {
                 scanner.reset()
                 store.signOutAndRevokeAll()
+                refreshDiagnosticsPreviewIfNeeded()
             }
         } message: {
             Text(L10n.tr(
@@ -2548,8 +2668,12 @@ private struct AboutSettingsTab: View {
         }
     }
 
+    private func refreshDiagnosticsPreviewIfNeeded() {
+        guard showsDiagnosticsPreview else { return }
+        diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
+    }
+
     private func buildDiagnosticsMarkdown() -> String {
-        scanner.invalidateIfContextChanged(for: store)
         let info = Bundle.main.infoDictionary
         let models = Dictionary(grouping: store.devices, by: { $0.model })
             .map { DiagnosticsReportBuilder.ModelCount(model: $0.key, count: $0.value.count) }
@@ -2582,7 +2706,11 @@ private struct AboutSettingsTab: View {
     }
 
     private func copyDiagnostics() {
+        scanner.invalidateIfContextChanged(for: store)
         let markdown = buildDiagnosticsMarkdown()
+        if showsDiagnosticsPreview {
+            diagnosticsPreviewMarkdown = markdown
+        }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(markdown, forType: .string)
