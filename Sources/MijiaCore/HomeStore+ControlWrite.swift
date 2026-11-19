@@ -550,6 +550,10 @@ extension HomeStore {
             nextBase = incoming
         }
         session.base = nextBase
+        for (key, var state) in debouncedWrites where state.deviceId == incoming.id {
+            state.origin = nextBase
+            debouncedWrites[key] = state
+        }
         // A pending drag starts from the latest raw report, even when a lock hides it on the row.
         // Home Assistant covers carry their position only in `positionPercent`, so the cache (set
         // from the incoming snapshot) is what keeps the displayed direction current after a re-base.
@@ -649,6 +653,10 @@ extension HomeStore {
             return false
         }
         session.base = incoming
+        for (key, var state) in debouncedWrites where state.deviceId == deviceId {
+            state.origin = incoming
+            debouncedWrites[key] = state
+        }
         session.baseCoverOrigin = nil
         session.baseFieldLocks = session.baseFieldLocks.filter { field, _ in
             field != .coverPosition
@@ -1084,30 +1092,46 @@ extension HomeStore {
         habitIntents: [DeviceIntent] = [],
         mutate: (@Sendable (inout SmartDevice) -> Void)? = nil
     ) {
+        guard let liveDevice = devices.first(where: { $0.id == previous.id }),
+              liveDevice.accountId == previous.accountId,
+              lgClientServes(liveDevice) == lgClientServes(previous),
+              !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(liveDevice)),
+              !rejectControlWhileLocked() else { return }
         let context = controlContextID
+        let modalContext = captureModalDeviceContext(for: liveDevice)
         guard let updated else {
-            let write = beginOptimisticWrite(from: previous, to: nil, lock: nil)
+            let write = beginOptimisticWrite(from: liveDevice, to: nil, lock: nil)
             Task { [weak self] in
                 defer { self?.manualWriteExits &+= 1 }
-                guard let self else { return }
+                guard let self, self.matchesModalDeviceContext(modalContext) else { return }
                 do {
                     try await self.send(command, for: write, context: context)
                     guard self.controlContextID == context else { return }
                     self.confirmManualControl(intents: habitIntents)
                 } catch {
                     guard self.controlContextID == context else { return }
-                    self.showControlFailure(error, device: previous, adjustment: false)
+                    let current = self.devices.first(where: { $0.id == liveDevice.id }) ?? liveDevice
+                    self.showControlFailure(error, device: current, adjustment: false)
                 }
             }
             return
         }
 
-        let deviceId = previous.id
+        let effectiveUpdated: SmartDevice
+        if let mutate, liveDevice != previous {
+            var copy = liveDevice
+            mutate(&copy)
+            effectiveUpdated = copy
+        } else {
+            effectiveUpdated = updated
+        }
+
+        let deviceId = liveDevice.id
         let nowDate = optimisticNow()
         let continuousNow = ContinuousClock.now
         let token = UUID()
         let slotKey = debounceKey ?? token.uuidString
-        let applyPatch: @Sendable (inout SmartDevice) -> Void = mutate ?? { $0 = updated }
+        let applyPatch: @Sendable (inout SmartDevice) -> Void = mutate ?? { $0 = effectiveUpdated }
         var priorFieldLocks: [OptimisticField: OptimisticLockEntry] = [:]
         for (key, entry) in optimisticFieldLocks
         where key.deviceId == deviceId && isOptimisticEntryActive(entry, at: nowDate, continuousNow: continuousNow) {
@@ -1115,7 +1139,7 @@ extension HomeStore {
                 priorFieldLocks[field] = entry
             }
         }
-        let slotOrigin = debounceKey.flatMap { debouncedWrites[$0]?.origin } ?? previous
+        let slotOrigin = debounceKey.flatMap { debouncedWrites[$0]?.origin } ?? liveDevice
 
         var session: ManualWriteSession
         if var existing = manualWriteSessions[deviceId],
@@ -1153,9 +1177,9 @@ extension HomeStore {
         var patchedFromOrigin = slotOrigin
         applyPatch(&patchedFromOrigin)
         var patchFields = OptimisticField.changedFields(from: slotOrigin, to: patchedFromOrigin)
-            .union(OptimisticField.changedFields(from: previous, to: updated))
+            .union(OptimisticField.changedFields(from: liveDevice, to: effectiveUpdated))
         if lock != nil && patchFields.isEmpty {
-            let defaults = OptimisticField.primaryPowerFields(for: updated.kind)
+            let defaults = OptimisticField.primaryPowerFields(for: effectiveUpdated.kind)
             patchFields = defaults.isEmpty ? [.power] : defaults
         }
 
@@ -1180,11 +1204,16 @@ extension HomeStore {
         manualWriteSessions[deviceId] = session
         applyManualWriteSession(for: deviceId, now: nowDate, continuousNow: continuousNow)
 
-        let sessionBase = session.base
         guard let debounceKey else {
             Task { [weak self] in
                 defer { self?.manualWriteExits &+= 1 }
                 guard let self else { return }
+                guard self.matchesModalDeviceContext(modalContext) else {
+                    if self.controlContextID == context {
+                        self.revertManualSessionPatch(deviceId: deviceId, token: token)
+                    }
+                    return
+                }
                 do {
                     try await self.executeDeviceCommand(command)
                     guard self.controlContextID == context else { return }
@@ -1192,8 +1221,11 @@ extension HomeStore {
                     self.confirmManualControl(intents: habitIntents)
                 } catch {
                     guard self.controlContextID == context else { return }
+                    let failureDevice = self.manualWriteSessions[deviceId]?.base
+                        ?? self.devices.first(where: { $0.id == deviceId })
+                        ?? liveDevice
                     self.revertManualSessionPatch(deviceId: deviceId, token: token)
-                    self.showControlFailure(error, device: sessionBase, adjustment: false)
+                    self.showControlFailure(error, device: failureDevice, adjustment: false)
                 }
             }
             return
@@ -1223,6 +1255,19 @@ extension HomeStore {
                   self.controlContextID == context,
                   let state = self.debouncedWrites[debounceKey],
                   state.token == token else { return }
+            guard self.matchesModalDeviceContext(modalContext) else {
+                self.abandonManualSessionPatch(
+                    deviceId: deviceId,
+                    token: token,
+                    revision: state.revision,
+                    fields: state.fields,
+                    fallback: state.origin
+                )
+                return
+            }
+            let failureDevice = self.manualWriteSessions[deviceId]?.base
+                ?? self.devices.first(where: { $0.id == deviceId })
+                ?? state.origin
             let decision = self.updateManualSessionPatchForSend(deviceId: deviceId, token: token, lock: lock)
             guard case .send = decision else {
                 // The drag cannot go out: a newer write took the row over, or a device report moved
@@ -1239,11 +1284,11 @@ extension HomeStore {
                 if case .needsCoverConfirmation = decision {
                     self.showControlFailure(
                         ManualWriteNeedsCoverConfirmation(),
-                        device: sessionBase,
+                        device: failureDevice,
                         adjustment: true
                     )
                 } else {
-                    self.showControlFailure(ManualWriteSuperseded(), device: sessionBase, adjustment: true)
+                    self.showControlFailure(ManualWriteSuperseded(), device: failureDevice, adjustment: true)
                 }
                 return
             }
@@ -1254,8 +1299,11 @@ extension HomeStore {
                 self.confirmManualControl(intents: habitIntents)
             } catch {
                 guard self.controlContextID == context else { return }
+                let latestFailureDevice = self.manualWriteSessions[deviceId]?.base
+                    ?? self.devices.first(where: { $0.id == deviceId })
+                    ?? failureDevice
                 self.revertManualSessionPatch(deviceId: deviceId, token: token)
-                self.showControlFailure(error, device: sessionBase, adjustment: true)
+                self.showControlFailure(error, device: latestFailureDevice, adjustment: true)
             }
         }
     }

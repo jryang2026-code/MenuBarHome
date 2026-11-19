@@ -29,6 +29,7 @@ import {
   isHostMiSessionEnabled,
 } from "./cloudRefresh.js";
 import { waitForCameraFrameGap } from "./dom.js";
+import { writeSettingsForStorage } from "./settings.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 import { tr3 } from "./undoTracker.js";
@@ -56,6 +57,8 @@ interface CameraBridgeBinding {
   readonly did: string;
   readonly channel: number;
   readonly subdid: string | null;
+  /** Set when the stream is a locally registered HLS bridge rather than a Xiaomi P2P session. */
+  readonly localHls?: boolean;
 }
 
 /** One cloud start. Identity is the lease, so a later start for the same device is a different entry. */
@@ -168,9 +171,13 @@ export class CameraLiveController {
     readonly miSession: MiSession | null;
     readonly accountId: string | null;
   } {
-    const route =
-      (isDualSourceEnabled(this.host) ? getHostDualSourceState(this.host)?.routes[dev.id] : undefined) ??
-      this.host.dualSourceCoordinator?.getLastMerged()?.routes[dev.id];
+    // Both lookups stay behind the dual-source gate: a refresh that lands after sign-out can still
+    // publish its routes into the coordinator, and a stale Xiaomi route must never decide how an
+    // HA-native card streams once dual-source mode has ended (#254).
+    const route = isDualSourceEnabled(this.host)
+      ? (getHostDualSourceState(this.host)?.routes[dev.id] ??
+        this.host.dualSourceCoordinator?.getLastMerged()?.routes[dev.id])
+      : undefined;
     const sourceDev = route?.sourceDevice ?? dev;
     const backend: "xiaomiCloud" | "homeAssistant" | "demo" =
       route?.backend ??
@@ -234,6 +241,12 @@ export class CameraLiveController {
     const { sourceDev } = this.resolveCameraSource(dev);
     if (sourceDev.kind.kind === "camera" && sourceDev.kind.gatewayDid) return sourceDev.kind.gatewayDid;
     return sourceDev.id;
+  }
+
+  /** A locally registered HLS bridge is not a Xiaomi stream, even though teardown stops it the same way. */
+  private hasXiaomiCameraBridge(deviceId: string): boolean {
+    const binding = this.cameraBridgeBindings.get(deviceId);
+    return binding !== undefined && binding.localHls !== true;
   }
 
   private hasHigherPriorityOverlayOpen(): boolean {
@@ -425,15 +438,92 @@ export class CameraLiveController {
       this.host.devices.find((d) => d.id === activeId) ??
       (this.activeLiveCameraSnapshot?.id === activeId ? this.activeLiveCameraSnapshot : undefined);
     if (!dev) {
-      return this.host.settings.connectionMode === "xiaomiCloud" || this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+      return this.host.settings.connectionMode === "xiaomiCloud" || this.cloudStreamSessions.has(activeId) || this.hasXiaomiCameraBridge(activeId);
     }
     const resolved = this.resolveCameraSource(dev);
     if (resolved.backend !== "xiaomiCloud") {
-      return this.cloudStreamSessions.has(activeId) || this.cameraBridgeBindings.has(activeId);
+      return this.cloudStreamSessions.has(activeId) || this.hasXiaomiCameraBridge(activeId);
     }
     if (!accountId) return true;
     const owner = dev.accountId ?? resolved.sourceDev.accountId ?? resolved.accountId ?? null;
     return owner === accountId || resolved.sourceDev.id.startsWith(`${accountId}/`);
+  }
+
+  /**
+   * Per-camera live state is keyed by device id, so a card that changes id would otherwise lose its
+   * saved turn, lens, manual IP, custom stream URL and quality (#254). Entries are copied, not moved:
+   * a later dual-source re-enable still finds them under the paired card's canonical id.
+   */
+  private carryOverCameraLiveState(fromId: string, toId: string): void {
+    const copy = <T>(record: Record<string, T>): Record<string, T> | null => {
+      const value = record[fromId];
+      if (value === undefined || record[toId] !== undefined) return null;
+      return { ...record, [toId]: value };
+    };
+    const channels = copy(this.cameraChannels);
+    if (channels) {
+      this.cameraChannels = channels;
+      savePersistedRecord(CameraLiveController.CAMERA_CHANNELS_STORAGE_KEY, channels);
+    }
+    const rotations = copy(this.cameraRotations);
+    if (rotations) {
+      this.cameraRotations = rotations;
+      savePersistedRecord(CameraLiveController.CAMERA_ROTATIONS_STORAGE_KEY, rotations);
+    }
+    const localIps = copy(this.cameraLocalIPs);
+    if (localIps) {
+      this.cameraLocalIPs = localIps;
+      savePersistedRecord(CameraLiveController.CAMERA_LOCAL_IPS_STORAGE_KEY, localIps);
+    }
+    const streamUrls = copy(this.cameraStreamURLs);
+    if (streamUrls) this.cameraStreamURLs = streamUrls;
+    const qualities = copy(this.cameraStreamQualities);
+    if (qualities) this.cameraStreamQualities = qualities;
+    if (streamUrls || qualities) {
+      this.host.settings.cameraStreamURLs = { ...this.cameraStreamURLs };
+      this.host.settings.cameraStreamQualities = { ...this.cameraStreamQualities };
+      writeSettingsForStorage(this.host.settings);
+    }
+  }
+
+  /**
+   * Follows an open live view to the card that replaced it: ending dual-source mode restores raw
+   * Home Assistant ids, so a stream opened under a paired card's canonical id would otherwise keep
+   * an id the device list no longer has (#254). The transport keeps running: it already points at
+   * this camera's frame source.
+   */
+  public retargetActiveLiveCamera(deviceId: string): boolean {
+    const previousId = this.activeLiveCameraId;
+    if (previousId === null) return false;
+    const dev = this.host.devices.find((d) => d.id === deviceId);
+    if (!dev || dev.kind.kind !== "camera") return false;
+    if (previousId === dev.id) return true;
+    this.carryOverCameraLiveState(previousId, dev.id);
+    const pendingStart =
+      this.liveCameraLoading &&
+      !this.liveCameraAbort &&
+      !this.liveCameraImgEl &&
+      !this.liveCameraRawMediaEl;
+    const preservedStreamUrl =
+      this.cameraStreamURLs[dev.id] ?? (pendingStart ? this.liveCameraStreamURL : null);
+    // Teardown reads the bridge binding by the active id, so the binding has to move with the view.
+    const bridge = this.cameraBridgeBindings.get(previousId);
+    if (bridge) {
+      this.cameraBridgeBindings.delete(previousId);
+      this.cameraBridgeBindings.set(dev.id, bridge);
+    }
+    this.activeLiveCameraId = dev.id;
+    this.activeLiveCameraSnapshot = dev;
+    this.syncModalEscapeListener();
+    // Pre-transport negotiation (`liveCameraAbort === null`) compares `activeLiveCameraId` and would
+    // bail out after the rename; once `startMjpegTransport` is pumping (`liveCameraAbort !== null`),
+    // the frame loop checks only `liveCameraToken` and must keep running (#254).
+    if (pendingStart) {
+      this.reconnectCameraLiveView(preservedStreamUrl);
+      return true;
+    }
+    this.host.render();
+    return true;
   }
 
   public closeXiaomiCameraLiveView(accountId?: string): void {
@@ -769,9 +859,11 @@ export class CameraLiveController {
 
   public async playCustomCameraUrl(devId: string, playable: string): Promise<void> {
     const token = this.liveCameraToken;
+    const normalized = this.normalizeWindowsCameraStreamUrl(playable);
+    this.liveCameraStreamURL = normalized;
+    this.liveCameraLoading = true;
     await this.refreshOwnedGo2rtcOrigin();
     if (this.liveCameraToken !== token || this.activeLiveCameraId !== devId) return;
-    const normalized = this.normalizeWindowsCameraStreamUrl(playable);
     const ownedSrc = this.ownedGo2rtcStreamName(normalized);
     if (ownedSrc) {
       this.liveCameraStreamURL = ownedSrc;
@@ -864,6 +956,9 @@ export class CameraLiveController {
         return false;
       }
       if (mjpegName) {
+        // Registration is keyed by this id, so teardown (and a retarget to another card id) has to
+        // send the same one back to the backend (#254).
+        this.cameraBridgeBindings.set(did, { did, channel: 0, subdid: null, localHls: true });
         this.liveCameraStreamURL = mjpegName;
         this.liveCameraError = null;
         this.liveCameraLoading = false;
@@ -947,7 +1042,7 @@ export class CameraLiveController {
     }
   }
 
-  public reconnectCameraLiveView(): void {
+  public reconnectCameraLiveView(streamUrlOverride?: string | null): void {
     const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
     if (this.resolveCameraSource(dev).backend === "xiaomiCloud") {
@@ -955,8 +1050,9 @@ export class CameraLiveController {
     }
     this.stopLiveTransport();
     this.liveCameraQualityApplies = true;
-    this.liveCameraStreamURL = this.cameraStreamURLs[dev.id]
-      ? this.normalizeWindowsCameraStreamUrl(this.cameraStreamURLs[dev.id]!)
+    const rawStreamUrl = this.cameraStreamURLs[dev.id] ?? streamUrlOverride ?? null;
+    this.liveCameraStreamURL = rawStreamUrl
+      ? this.normalizeWindowsCameraStreamUrl(rawStreamUrl)
       : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraError = null;
     this.liveCameraLoading = false;
