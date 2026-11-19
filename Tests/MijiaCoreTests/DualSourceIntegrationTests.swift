@@ -1011,6 +1011,27 @@ struct DualSourceIntegrationTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(store.panelHealth == .ok)
         }
+
+        // Xiaomi LAN blocked while Xiaomi Cloud is still `.connecting` reports only HA available;
+        // once Xiaomi Cloud reaches `.connected`, panelHealth reports cloud fallback; when Xiaomi
+        // Cloud disconnects again, it reverts to reporting only HA available.
+        await miMock.sendLocalNetworkPermission([.xiaomiLAN])
+        await waitUntil { store.effectiveLocalNetworkBlocks.contains(.xiaomiLAN) }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
+        }
+
+        await miMock.sendStatus(.connected)
+        await waitUntil { store.sourceStatuses[.xiaomiCloud] == .connected }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "米家局域网直连权限受阻，已回退云端"))
+        }
+
+        await miMock.sendStatus(.disconnected("HTTP 502"))
+        await waitUntil { store.sourceStatuses[.xiaomiCloud] == .disconnected("HTTP 502") }
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(store.panelHealth == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
+        }
     }
 
     @MainActor
@@ -1055,5 +1076,82 @@ struct DualSourceIntegrationTests {
         }
         #expect(sawLocalNetworkBlockedWhenOnline == true)
         await haProvider.shutdown()
+    }
+
+    @MainActor
+    @Test("Unknown network reachability does not classify Home Assistant LAN or .local -1009 failures as Local Network TCC block until reachability is confirmed")
+    func unknownNetworkReachabilityDoesNotClassifyHAFailureAsLocalNetworkBlock() async throws {
+        let suite = "test.ha.net_unknown.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        defer { store.stop() }
+
+        // Notice: `store.setNetworkSatisfiedForResume(...)` has NEVER been called yet (reachability is unknown).
+        let haProvider = store.makeHAProvider(baseURLString: "http://homeassistant.local:8123", token: "ha-tok")
+        let offlineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
+        await haProvider.setTestSeams(
+            connectOverride: { .failedBeforeAuth(offlineErr) },
+            reconnectSleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+
+        let stream = haProvider.events()
+        var iterator = stream.makeAsyncIterator()
+        var sawBlockedWhileUnknown = false
+        var unknownDisconnectMessage: String?
+        for _ in 0..<4 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawBlockedWhileUnknown = true
+            }
+            if case .statusChanged(.disconnected(let msg)) = event {
+                unknownDisconnectMessage = msg
+                break
+            }
+        }
+        #expect(sawBlockedWhileUnknown == false)
+        if let unknownDisconnectMessage {
+            #expect(!unknownDisconnectMessage.contains("隐私与安全性") && !unknownDisconnectMessage.contains("Privacy & Security"))
+        }
+
+        // Once NWPathMonitor reports satisfied (even though isNetworkSatisfiedForResume defaulted to true),
+        // HomeStore records known reachability = true and subsequent -1009 classifies as Local Network block.
+        store.setNetworkSatisfiedForResume(true)
+        await haProvider.refreshNow()
+        var sawBlockedOnceKnownOnline = false
+        for _ in 0..<4 {
+            guard let event = await iterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                sawBlockedOnceKnownOnline = true
+                break
+            }
+            if case .statusChanged(.disconnected) = event { break }
+        }
+        #expect(sawBlockedOnceKnownOnline == true)
+        await haProvider.shutdown()
+
+        // Direct HAWebSocketProvider without an injected reachability oracle also treats reachability as unknown.
+        let standaloneProvider = HAWebSocketProvider(
+            baseURLString: "http://192.168.1.50:8123",
+            token: "ha-tok",
+            allowsToken: { _ in true }
+        )
+        await standaloneProvider.setTestSeams(
+            connectOverride: { .failedBeforeAuth(offlineErr) },
+            reconnectSleep: { _ in try await Task.sleep(for: .seconds(3600)) }
+        )
+        let standaloneStream = standaloneProvider.events()
+        var standaloneIterator = standaloneStream.makeAsyncIterator()
+        var standaloneSawBlocked = false
+        for _ in 0..<4 {
+            guard let event = await standaloneIterator.next() else { break }
+            if case .localNetworkPermissionChanged(let blocked) = event, blocked.contains(.homeAssistant) {
+                standaloneSawBlocked = true
+            }
+            if case .statusChanged(.disconnected) = event { break }
+        }
+        #expect(standaloneSawBlocked == false)
+        await standaloneProvider.shutdown()
     }
 }
