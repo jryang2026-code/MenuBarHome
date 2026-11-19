@@ -79,6 +79,8 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   host.clearPendingHighRisk();
   host.lastManuallyUsedLightId = null;
   host.pendingSuggestions = [];
+  // The footer dialog lists the previous source's platform states, so it closes with the switch.
+  app.connectionDetailsOpen = false;
 }
 
 /**

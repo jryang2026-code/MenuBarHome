@@ -214,6 +214,34 @@ struct SnapshotTests {
         }
     }
 
+    @Test("The panel marks a timer whose source is unverified instead of running it")
+    func panelUnscopedTimerPendingSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        // A timer saved before scopes existed (ADR-0019 #22): it waits visibly for confirmation,
+        // never arms, and the panel's activity stack must say the source is unverified rather than
+        // "已错过". It is not due yet, so the card offers 确认 (arm at its own time) instead of 立即执行.
+        let legacy = ScheduledCommand(
+            reply: "10 分钟后关闭书房吸顶灯",
+            fireDate: Date().addingTimeInterval(600),
+            plan: IntentPlan(intents: [], reply: "已关闭书房吸顶灯", source: .local)
+        )
+        ScheduledCommand.save([legacy], to: fixture.store.userDefaults)
+        fixture.store.restoreScheduledCommands()
+        #expect(fixture.store.scheduledCommands.isEmpty)
+        #expect(fixture.store.missedScheduledCommands.map(\.id) == [legacy.id])
+
+        for theme in PanelTheme.allCases {
+            assertRendered(
+                snapshotReady(themedPanel(theme, store: fixture.store)),
+                size: CGSize(width: 376, height: 560),
+                named: themedName(theme, "panel-unscoped-timer-pending-zh-light")
+            )
+        }
+    }
+
     @Test("The dashboard checklist shows the next lesson while the lessons are pending")
     func panelOnboardingLessonSnapshot() async throws {
         let fixture = try await SnapshotFixture()
@@ -1604,6 +1632,26 @@ struct SnapshotTests {
                     .environment(\.reduceTransparencyOverride, true),
                 size: CGSize(width: 780, height: 680),
                 named: "settings-connection-configured-ha-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
+    @Test("General settings render Unhide All when multiple devices are manually hidden")
+    func settingsGeneralBulkUnhideSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.hideDevice("demo_living_light")
+        fixture.store.hideDevice("demo_living_plug")
+        #expect(fixture.store.hiddenDevices.count == 2)
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .general)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1180),
+                named: "settings-general-bulk-unhide-\(scheme == .dark ? "dark" : "light")",
                 scheme: scheme
             )
         }

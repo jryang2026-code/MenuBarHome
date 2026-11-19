@@ -1,19 +1,42 @@
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import type { CapabilityDeactivationVerdict } from "../core/capabilityReferenceVerdict.js";
 import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
+import {
+  MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
+  applyPauseItemsFromVerdict,
+  filterEnabledMiAccounts,
+  miAccountScope,
+  previewMiAccountDisable,
+  queueMiAccountReenableFromLogin,
+  removeSignedOutMiAccountFromSelection,
+  resolveDeviceMiAccountOwner,
+  resolveSceneMiAccountOwner,
+  revalidateAfterMiAccountReenable,
+  snapshotDisabledMiDevice,
+  snapshotDisabledMiScene,
+  writeMiAccountSelectionMutation,
+  type HostCapabilityContextInput,
+} from "../core/miAccountControl.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { CredentialVault, credentialsFromSettings, secureStoreDelete, sessionWithoutPassToken } from "../core/secureStore.js";
-import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
-import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
+import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAccountTokenNotice, getAccountTokenStatus, hasCorruptMiAccountIndex, hasSecondaryMiAccountsInIndex, makeMiAccount, mergeMiAccountSnapshots, miAccountId, type MiAccount, type MiAccountTokenStatus } from "../core/miAccountsStore.js";
+import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
+import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
+import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
+import type { MenuMijiaWindowsApp } from "./app.js";
 import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackView.js";
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
-import { adoptRecoveredPrimarySession, canUseDualSource, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, getHostDualSourceState, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
-import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
+import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
+import { switchHome, switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { isPlainHttpRemoteEndpoint, type SettingsTab, type SettingsViewContext } from "./settingsViews.js";
 import { hasPendingMiVaultDeletion, setPendingMiVaultDeletion } from "./speechGuard.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
@@ -25,11 +48,13 @@ type ScannerHAInvoke = NonNullable<ScanUnsupportedOptions["haInvoke"]>;
 
 function activeLanguage(preference?: LanguagePreference): AppLanguage {
   if (preference && preference !== "system") return resolveLanguage(preference, []);
+  const cur = currentLanguage();
+  if (cur !== "zh-Hans") return cur;
   const navLangs =
     typeof window !== "undefined" && Array.isArray(window.navigator?.languages)
       ? window.navigator.languages
       : [];
-  return resolveLanguage(preference ?? currentLanguage(), navLangs);
+  return resolveLanguage(preference ?? cur, navLangs);
 }
 
 export function tr3(
@@ -224,6 +249,12 @@ export interface HostConnDiagSession {
   readonly signingOutAccountIds: Set<string>;
   signOutChain: Promise<boolean>;
   readonly addQr: AddAccountQrState;
+  pendingDisablePreview: {
+    readonly accountId: string;
+    readonly verdict: CapabilityDeactivationVerdict;
+    readonly generation: number;
+  } | null;
+  disableErrorByAccountId: Record<string, string>;
 }
 
 export interface ConnectionsAndDiagHost extends SourceSwitchHost {
@@ -307,6 +338,8 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
       statusText: "",
       generation: 0,
     },
+    pendingDisablePreview: null,
+    disableErrorByAccountId: {},
   };
 }
 
@@ -431,6 +464,25 @@ async function ensureHostMiAccountsHydrated(host: ConnectionsAndDiagHost): Promi
   }
 }
 
+function revalidateHostAfterAccountRemoval(
+  host: ConnectionsAndDiagHost,
+  remainingAccounts: readonly MiAccount[],
+): void {
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore =
+    (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ??
+    new ScheduledCommandStore(fallbackStorage);
+  revalidateAfterMiAccountReenable({
+    context: buildHostCapabilityContext(host, remainingAccounts),
+    scheduledCommandStore,
+    activeTimerIdentity:
+      remainingAccounts.length === 0 && host.settings.connectionMode === "xiaomiCloud"
+        ? null
+        : scheduledCommandIdentity(host.settings),
+    ruleStore: new AutomationRuleStore(),
+  });
+}
+
 export async function addOrUpdateMiAccountOnHost(
   host: ConnectionsAndDiagHost,
   rawSession: MiSession,
@@ -445,6 +497,16 @@ export async function addOrUpdateMiAccountOnHost(
   }
   const result = await store.upsertAccount(cleanSession);
   setHostMiAccounts(host, null);
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore =
+    (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ??
+    new ScheduledCommandStore(fallbackStorage);
+  queueMiAccountReenableFromLogin(miAccountId(cleanSession), {
+    scheduledCommandStore,
+    ruleStore: new AutomationRuleStore(),
+  });
+  getHostConnDiagSession(host).pendingDisablePreview = null;
+  delete getHostConnDiagSession(host).disableErrorByAccountId[miAccountId(cleanSession)];
 
   setPendingMiVaultDeletion(false);
   switchSource(host, "mi-account-added");
@@ -478,6 +540,455 @@ export async function addOrUpdateMiAccountOnHost(
   host.render();
   if (options.triggerRefresh !== false) await host.refreshDevices(false);
   return result.accounts;
+}
+
+export type SetMiAccountEnabledOutcome =
+  | { readonly status: "applied" }
+  | { readonly status: "requiresPauseConfirmation"; readonly verdict: CapabilityDeactivationVerdict }
+  | { readonly status: "blocked"; readonly verdict: CapabilityDeactivationVerdict | null };
+
+function computeDisablePreviewGeneration(
+  context: HostCapabilityContextInput,
+  scheduledCommandStore: ScheduledCommandStore,
+  ruleStore: AutomationRuleStore,
+): number {
+  const parts: string[] = [
+    [...context.state.selection.enabledConnectionScopes].sort().join(","),
+    [...context.state.pausedQuickActionIds].sort().join(","),
+    context.devices.map((d) => `${d.id}:${d.name}:${d.sourceBackend ?? ""}`).join("|"),
+    context.scenes.map((s) => `${s.id}:${s.name}:${s.accountId ?? ""}:${s.sourceBackend ?? ""}`).join("|"),
+  ];
+  for (const [identity, queue] of [...scheduledCommandStore.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    if (
+      queue.scheduledCommands.length === 0 &&
+      queue.missedScheduledCommands.length === 0 &&
+      (queue.pausedScheduledCommands?.length ?? 0) === 0
+    ) {
+      continue;
+    }
+    const ser = (list: readonly { readonly id: string; readonly command: string; readonly intents?: readonly { readonly targetId: string }[]; readonly sourceScopes?: readonly string[] }[]) =>
+      list.map((i) => `${i.id}:${i.command}:${(i.intents ?? []).map((t) => t.targetId).join(",")}:${(i.sourceScopes ?? []).join(",")}`).join(";");
+    const serPaused = (queue.pausedScheduledCommands ?? []).map((p) => `${p.command.id}:${p.originalPartition}:${p.sourceScopes.join(",")}:${p.pausedCapabilities.join(",")}`).join(";");
+    parts.push(`${identity}#${ser(queue.scheduledCommands)}#${ser(queue.missedScheduledCommands)}#${serPaused}`);
+  }
+  for (const r of ruleStore.load()) {
+    parts.push(`rule:${r.id}:${r.isEnabled}:${r.trigger}:${JSON.stringify(r.action)}`);
+  }
+  const raw = parts.join("\n");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function formatDisableBlockedMessage(verdict: CapabilityDeactivationVerdict | null, lang: AppLanguage): string {
+  if (verdict?.blockingReasons.some((r) => r.kind === "unresolvedReferenceOwnership")) {
+    return tr3(
+      "部分定时或自动化功能关联的设备归属尚未确认，暂无法停用此连接。请先刷新同步设备，或取消相关定时与自动化后再试。",
+      "部分定時或自動化功能關聯的裝置歸屬尚未確認，暫無法停用此連線。請先重新整理同步裝置，或取消相關定時與自動化後再試。",
+      "Some timers or automations reference devices whose connection is not yet confirmed. Refresh to sync devices or update those items, then try again.",
+      lang,
+    );
+  }
+  if (verdict?.blockingReasons.some((r) => r.kind === "stalePreviewGeneration")) {
+    return tr3(
+      "待暂停的定时或自动化功能刚刚发生变化，请重新确认下方预览后再停用此连接。",
+      "待暫停的定時或自動化功能剛剛發生變化，請重新確認下方預覽後再停用此連線。",
+      "Affected timers or automations changed; please review the updated preview below and confirm again.",
+      lang,
+    );
+  }
+  return tr3(
+    "本地连接或功能设置暂时无法保存，未停用此连接且未修改定时与自动化。请检查磁盘空间或重启应用后再试。",
+    "本地連線或功能設定暫時無法儲存，未停用此連線且未修改定時與自動化。請檢查磁碟空間或重啟應用後再試。",
+    "Could not save connection or feature settings; nothing was paused or turned off. Check disk space or restart the app and try again.",
+    lang,
+  );
+}
+
+function formatReenablePersistErrorMessage(lang: AppLanguage): string {
+  return tr3(
+    "本地连接或功能设置暂时无法保存，未能重新开启此连接。请检查磁盘空间或重启应用后再试。",
+    "本地連線或功能設定暫時無法儲存，未能重新開啟此連線。請檢查磁碟空間或重啟應用後再試。",
+    "Could not save connection or feature settings; this connection stays turned off. Check disk space or restart the app and try again.",
+    lang,
+  );
+}
+
+export async function setMiAccountEnabledOnHost(
+  host: ConnectionsAndDiagHost,
+  accountId: string,
+  enabled: boolean,
+  options: { readonly confirmPause?: boolean; readonly expectedGeneration?: number; readonly currentGeneration?: number; readonly nowMs?: number } = {},
+): Promise<SetMiAccountEnabledOutcome> {
+  const session = getHostConnDiagSession(host), store = getHostMiAccountsStore(host);
+  let allAccounts = resolveHostMiAccounts(host);
+  if (!allAccounts.some((acc) => acc.id === accountId) && store.getAccounts().length === 0 && !hasPendingMiVaultDeletion()) {
+    await store.load();
+    allAccounts = resolveHostMiAccounts(host);
+  }
+  const fallbackStorage = typeof localStorage !== "undefined" ? localStorage : { getItem: () => null, setItem: () => {} };
+  const scheduledCommandStore = (host as { readonly scheduledCommandStore?: ScheduledCommandStore }).scheduledCommandStore ?? new ScheduledCommandStore(fallbackStorage);
+  const ruleStore = new AutomationRuleStore();
+
+  if (enabled) {
+    session.pendingDisablePreview = null;
+    delete session.disableErrorByAccountId[accountId];
+    const targetScope = miAccountScope(accountId);
+    if (host.settings.connectionMode === "demo") {
+      const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+        ...prev,
+        disabledAccountIds: prev.disabledAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+        pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+        knownDisabledDevices: prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== targetScope),
+        knownDisabledScenes: prev.knownDisabledScenes.filter((s) => miAccountScope(s.accountId) !== targetScope),
+      }) });
+      if (!wrote) {
+        const lang = activeLanguage(host.settings.interfaceLanguage);
+        const msg = formatReenablePersistErrorMessage(lang);
+        session.disableErrorByAccountId[accountId] = msg;
+        host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+        host.render();
+        return { status: "blocked", verdict: null };
+      }
+      resetHostUnsupportedScanner(host);
+      revalidateAfterMiAccountReenable({
+        context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)), scheduledCommandStore,
+        activeTimerIdentity: scheduledCommandIdentity(host.settings), ruleStore,
+        ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      });
+      host.render();
+      return { status: "applied" };
+    }
+    const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+      ...prev,
+      disabledAccountIds: prev.disabledAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+      pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, targetScope])],
+    }) });
+    if (!wrote) {
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      const msg = formatReenablePersistErrorMessage(lang);
+      session.disableErrorByAccountId[accountId] = msg;
+      host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+      host.render();
+      return { status: "blocked", verdict: null };
+    }
+    resetHostUnsupportedScanner(host);
+    if (isDualSourceEnabled(host) || host.settings.connectionMode === "xiaomiCloud") {
+      switchHome(host);
+      host.render();
+      const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
+      if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
+      try {
+        await host.refreshDevices(false);
+      } finally {
+        delete hostWithReenableTs.pendingReenableNowMs;
+      }
+    }
+    host.render();
+    return { status: "applied" };
+  }
+
+  const context = buildHostCapabilityContext(host, allAccounts);
+  if (context.state.disabledAccountIds.has(miAccountScope(accountId))) {
+    session.pendingDisablePreview = null;
+    delete session.disableErrorByAccountId[accountId];
+    host.render();
+    return { status: "applied" };
+  }
+  const currentGen = options.currentGeneration ?? computeDisablePreviewGeneration(context, scheduledCommandStore, ruleStore);
+  const expectedGen = options.expectedGeneration !== undefined
+    ? options.expectedGeneration
+    : options.confirmPause && session.pendingDisablePreview?.accountId === accountId
+      ? session.pendingDisablePreview.generation
+      : null;
+  let verdict = previewMiAccountDisable({
+    accountId, context, scheduledCommandStore, activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore, expectedGeneration: expectedGen, currentGeneration: currentGen,
+    languagePreference: host.settings.interfaceLanguage,
+  });
+  if (
+    options.confirmPause &&
+    options.expectedGeneration === undefined &&
+    verdict.blockingReasons.some((r) => r.kind === "stalePreviewGeneration")
+  ) {
+    const freshVerdict = previewMiAccountDisable({
+      accountId, context, scheduledCommandStore, activeTimerIdentity: scheduledCommandIdentity(host.settings),
+      ruleStore, currentGeneration: currentGen, languagePreference: host.settings.interfaceLanguage,
+    });
+    if (freshVerdict.disposition === "requiresPauseConfirmation") {
+      session.pendingDisablePreview = { accountId, verdict: freshVerdict, generation: currentGen };
+      delete session.disableErrorByAccountId[accountId];
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      host.replyBanner = {
+        text: formatDisableBlockedMessage(verdict, lang),
+        source: tr3("连接管理", "連線管理", "Connections", lang),
+        isError: true,
+      };
+      host.render();
+      return { status: "requiresPauseConfirmation", verdict: freshVerdict };
+    }
+    verdict = freshVerdict;
+  }
+  if (verdict.disposition === "blocked") {
+    session.pendingDisablePreview = null;
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(verdict, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = {
+      text: msg,
+      source: tr3("连接管理", "連線管理", "Connections", lang),
+      isError: true,
+    };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  if (verdict.disposition === "requiresPauseConfirmation" && !options.confirmPause) {
+    session.pendingDisablePreview = { accountId, verdict, generation: currentGen };
+    delete session.disableErrorByAccountId[accountId];
+    host.render();
+    return { status: "requiresPauseConfirmation", verdict };
+  }
+
+  session.pendingDisablePreview = null;
+  const wasDualSource = isDualSourceEnabled(host);
+  const isXiaomiSnapshot = wasDualSource || host.settings.connectionMode === "xiaomiCloud";
+  const dualRoutes = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+  const deviceOwners = getHostMiAccountsState(host)?.merged?.deviceOwners;
+  const ownerOf = (dev: SmartDevice): string | null => resolveDeviceMiAccountOwner({
+    device: dev,
+    accounts: allAccounts,
+    connectionMode: host.settings.connectionMode,
+    dualSourceEnabled: wasDualSource,
+    disabledAccountIds: context.state.disabledAccountIds,
+    disablingAccountId: accountId,
+    ...(deviceOwners ? { deviceOwners } : {}),
+    ...(dualRoutes?.[dev.id] ? { dualRoute: dualRoutes[dev.id]! } : {}),
+  });
+  const cachedOwnerOf = (dev: SmartDevice): string | null => resolveDeviceMiAccountOwner({
+    device: dev,
+    accounts: allAccounts,
+    connectionMode: "xiaomiCloud",
+    dualSourceEnabled: false,
+    disabledAccountIds: context.state.disabledAccountIds,
+    disablingAccountId: accountId,
+    ...(deviceOwners ? { deviceOwners } : {}),
+  });
+  const hasHaAlternate = (dev: SmartDevice): boolean => {
+    const route = dualRoutes?.[dev.id];
+    return route ? route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null) : wasDualSource && dev.sourceBackend === "homeAssistant";
+  };
+
+  const expectedEnabledAfter = allAccounts.filter(
+    (acc) => acc.id !== accountId && !context.state.disabledAccountIds.has(miAccountScope(acc.id)),
+  );
+  const previewNextChildren =
+    expectedEnabledAfter.length > 0 && host.multiAccountState
+      ? (() => {
+          const copy = { ...host.multiAccountState.children };
+          delete copy[accountId];
+          return copy;
+        })()
+      : null;
+  const previewNextMerged =
+    previewNextChildren && expectedEnabledAfter.length > 0
+      ? mergeMiAccountSnapshots(expectedEnabledAfter, previewNextChildren)
+      : null;
+  const survivingSceneIds = previewNextMerged ? new Set(previewNextMerged.home.scenes.map((s) => s.id)) : null;
+  const sceneOwnerOf = (sc: HomeScene): string | null =>
+    resolveSceneMiAccountOwner({
+      scene: sc,
+      accounts: allAccounts,
+      connectionMode: host.settings.connectionMode,
+      dualSourceEnabled: wasDualSource,
+      haBaseURL: host.settings.haBaseURL,
+      haToken: host.settings.haToken,
+    });
+
+  const ownedDevices = isXiaomiSnapshot ? host.devices.filter((d) => ownerOf(d) === accountId) : [];
+  const snapshots = isXiaomiSnapshot
+    ? ownedDevices
+        .filter((d) => !hasHaAlternate(d))
+        .map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []))
+    : host.settings.cachedXiaomiDevices
+        .filter((d) => cachedOwnerOf(d) === accountId)
+        .map((d) => snapshotDisabledMiDevice(d, accountId));
+  const ownedScenes = isXiaomiSnapshot
+    ? collectHostKnownScenes(host).filter((s) => sceneOwnerOf(s) === accountId && !(survivingSceneIds?.has(s.id)))
+    : [];
+  const sceneSnapshots = ownedScenes.map((s) => snapshotDisabledMiScene(s, accountId));
+  const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
+  const prevRawSelection = (() => {
+    try { return typeof localStorage !== "undefined" ? localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) : null; } catch { return null; }
+  })();
+  const timerSnapshot = scheduledCommandStore.snapshotQueues();
+  const prevRules = ruleStore.load();
+  const targetScope = miAccountScope(accountId);
+
+  const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
+    ...prev,
+    disabledAccountIds: [...new Set([...prev.disabledAccountIds, accountId])],
+    pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+    pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...newlyPausedQaIds])],
+    knownDisabledDevices: [...prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== targetScope && !snapshots.some((s) => s.id === d.id)), ...snapshots],
+    knownDisabledScenes: [...prev.knownDisabledScenes.filter((s) => miAccountScope(s.accountId) !== targetScope && !sceneSnapshots.some((snap) => snap.id === s.id)), ...sceneSnapshots],
+  }) });
+  if (!wrote) {
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  const pauseRes = applyPauseItemsFromVerdict({
+    verdict,
+    scheduledCommandStore,
+    ruleStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    activeConnectionScopes: context.state.selection.enabledConnectionScopes,
+  });
+  if (!pauseRes.ok) {
+    scheduledCommandStore.restoreQueues(timerSnapshot);
+    ruleStore.save(prevRules);
+    try {
+      if (typeof localStorage !== "undefined") {
+        if (prevRawSelection === null) localStorage.removeItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+        else localStorage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
+      }
+    } catch {}
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  delete session.disableErrorByAccountId[accountId];
+
+  const removedIds = new Set(ownedDevices.filter((d) => !hasHaAlternate(d)).map((d) => d.id));
+  if (host.cameraLive?.activeLiveCameraId) {
+    host.cameraLive.closeXiaomiCameraLiveView?.(accountId);
+    const camId = host.cameraLive.activeLiveCameraId;
+    if (camId && (removedIds.has(camId) || MiAccountScope.isOwned(camId, accountId))) host.cameraLive.closeCameraLiveView();
+  }
+  for (const dev of ownedDevices) {
+    const rawDid = MiAccountScope.localId(dev.id);
+    for (const id of rawDid !== dev.id ? [dev.id, rawDid] : [dev.id]) {
+      cancelDelayedReadBack(host as unknown as OptimisticLockHost, id);
+      cancelEchoReadBack(host as unknown as MenuMijiaWindowsApp, id);
+    }
+  }
+
+  clearAccountRateLimitBackoff(accountId);
+  const targetAccount = allAccounts.find((acc) => acc.id === accountId);
+  const enabledAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
+  if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId) || (targetAccount && getXiaomiBackoffUntilMs(host, targetAccount.session) !== null)) {
+    clearXiaomiRateLimitBackoff(host);
+    clearCachedXiaomiTopology(host);
+  }
+  if (host.settings.selectedHomeId && MiAccountScope.isOwned(host.settings.selectedHomeId, accountId)) {
+    host.settings.selectedHomeId = null;
+  }
+
+  const nextChildren = previewNextChildren;
+  const nextMerged = previewNextMerged;
+  const survivingById = nextMerged
+    ? new Map(nextMerged.home.devices.map((d) => [d.id, d] as const))
+    : undefined;
+
+  const hadTimerSnapshot = Boolean((host as { readonly timerSnapshot?: { readonly identity: string; readonly sourceRevision: number } | null }).timerSnapshot);
+  if (isXiaomiSnapshot) {
+    switchSource(host, "mi-account-disabled");
+    host.clearPendingHighRisk();
+  }
+  resetHostUnsupportedScanner(host);
+  const nextDual = wasDualSource
+    ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage, {
+        remainingEnabledCount: enabledAfter.length,
+        reason: "disabled",
+        ...(survivingById ? { survivingDevices: survivingById } : {}),
+        ...(nextMerged?.home.deviceFacets ? { survivingDeviceFacets: nextMerged.home.deviceFacets } : {}),
+        ...(nextMerged ? { survivingReadings: nextMerged.home.environmentReadings } : {}),
+      }) ?? null)
+    : null;
+  if (isXiaomiSnapshot && host.waitingDeviceIds) {
+    for (const id of removedIds) host.waitingDeviceIds.delete(id);
+  }
+
+  const removedSceneIds = new Set(ownedScenes.map((s) => s.id));
+  if (nextDual) {
+    host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
+    host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
+    host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
+    host.deviceFacets = nextDual.home.deviceFacets ?? {};
+    host.scenes = nextDual.home.scenes.filter((s) => !removedSceneIds.has(s.id));
+    const prio = new Map(host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]));
+    host.environmentReadings = applyOrder(host.environmentReadings.map((r) => r.id), nextDual.home.environmentReadings).sort((a, b) => (prio.get(a.id) ?? 0) - (prio.get(b.id) ?? 0));
+    reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
+  } else if (!wasDualSource && host.settings.connectionMode === "xiaomiCloud" && enabledAfter.length === 0) {
+    host.devices = []; host.scenes = []; host.environmentReadings = []; host.homes = [];
+    host.groupOwnerByMemberDid = new Map(); host.deviceFacets = {}; host.cloudValuesStale = false; host.selectRoom(null);
+  } else if (isXiaomiSnapshot) {
+    host.devices = host.devices
+      .filter((d) => !removedIds.has(d.id))
+      .map((d) => survivingById?.get(d.id) ?? d);
+    const survivingReadingById = nextMerged
+      ? new Map(nextMerged.home.environmentReadings.map((r) => [r.id, r] as const))
+      : null;
+    host.environmentReadings = host.environmentReadings
+      .filter((r) => !removedIds.has(r.id))
+      .map((r) => survivingReadingById?.get(r.id) ?? r);
+    const nextFacets = { ...host.deviceFacets };
+    for (const id of removedIds) delete nextFacets[id];
+    if (nextMerged?.home.deviceFacets && survivingById) {
+      for (const id of survivingById.keys()) {
+        const updated = nextMerged.home.deviceFacets[id];
+        if (updated && updated.length > 0) nextFacets[id] = updated;
+      }
+    }
+    host.deviceFacets = nextFacets;
+    if (nextMerged) {
+      host.homes = applyOrder(host.homes.map((h) => h.id), nextMerged.homes);
+      host.groupOwnerByMemberDid = new Map(nextMerged.lightGroupOwners);
+    } else {
+      host.homes = host.homes.filter((h) => !MiAccountScope.isOwned(h.id, accountId));
+    }
+    host.scenes = host.scenes.filter(
+      (s) =>
+        !removedSceneIds.has(s.id) &&
+        s.accountId !== accountId &&
+        !MiAccountScope.isOwned(s.id, accountId) &&
+        !MiAccountScope.isOwned(s.entityId, accountId),
+    );
+  }
+
+  if (enabledAfter.length === 0) {
+    host.settings.cachedXiaomiDevices = []; host.multiAccountState = null;
+  } else {
+    host.settings.cachedXiaomiDevices = host.settings.cachedXiaomiDevices
+      .filter((d) => survivingById?.has(d.id) || (d.accountId !== accountId && !MiAccountScope.isOwned(d.id, accountId) && !removedIds.has(d.id)))
+      .map((d) => survivingById?.get(d.id) ?? d);
+    if (nextChildren && nextMerged) {
+      host.multiAccountState = { accounts: allAccounts, children: nextChildren, merged: nextMerged };
+    }
+  }
+  const maybeListCut = (host as { readonly listCut?: { readonly kind: string; readonly roomId?: string } }).listCut;
+  if (isXiaomiSnapshot && maybeListCut?.kind === "room" && maybeListCut.roomId && MiAccountScope.isOwned(maybeListCut.roomId, accountId)) {
+    host.selectRoom(null);
+  }
+  if (isXiaomiSnapshot && host.expandedDeviceId && (removedIds.has(host.expandedDeviceId) || !host.devices.some((d) => d.id === host.expandedDeviceId))) {
+    host.expandedDeviceId = null;
+  }
+  const hasRemainingActiveSource = enabledAfter.length > 0 || wasDualSource || host.settings.connectionMode === "homeAssistant" || host.settings.connectionMode === "demo";
+  if (isXiaomiSnapshot && hadTimerSnapshot && hasRemainingActiveSource && "timerSnapshot" in host) {
+    markTimerSnapshotReady(host as unknown as MenuMijiaWindowsApp);
+  }
+  host.saveSettings();
+  host.render();
+  return { status: "applied" };
 }
 
 function signOutSingleMiAccountOnHost(
@@ -525,10 +1036,18 @@ async function performSignOutSingleMiAccountOnHost(
     if (!beforeIds.has(accountId) || removal.accounts.some((account) => account.id === accountId)) {
       return false;
     }
+    removeSignedOutMiAccountFromSelection(accountId);
+    delete session.disableErrorByAccountId[accountId];
+    if (session.pendingDisablePreview?.accountId === accountId) {
+      session.pendingDisablePreview = null;
+    }
     clearAccountRateLimitBackoff(accountId);
 
-    switchSource(host, "mi-account-removed");
-    host.clearPendingHighRisk();
+    const isXiaomiSnapshot = wasDualSource || host.settings.connectionMode === "xiaomiCloud";
+    if (isXiaomiSnapshot) {
+      switchSource(host, "mi-account-removed");
+      host.clearPendingHighRisk();
+    }
     resetHostUnsupportedScanner(host);
 
     const dualRoutesBeforeRemoval = wasDualSource ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
@@ -560,14 +1079,16 @@ async function performSignOutSingleMiAccountOnHost(
       return wasDualSource && dev.sourceBackend === "homeAssistant";
     };
     const removedIds = new Set(
-      host.devices
-        .filter((d) => {
-          const route = dualRoutesBeforeRemoval?.[d.id];
-          if (!isRouteOwnedByRemovedAccount(route, d)) return false;
-          if (hasHomeAssistantRepresentation(route, d)) return false;
-          return true;
-        })
-        .map((d) => d.id),
+      isXiaomiSnapshot
+        ? host.devices
+            .filter((d) => {
+              const route = dualRoutesBeforeRemoval?.[d.id];
+              if (!isRouteOwnedByRemovedAccount(route, d)) return false;
+              if (hasHomeAssistantRepresentation(route, d)) return false;
+              return true;
+            })
+            .map((d) => d.id)
+        : [],
     );
     const activeCamId = host.cameraLive?.activeLiveCameraId;
     if (activeCamId) {
@@ -585,12 +1106,19 @@ async function performSignOutSingleMiAccountOnHost(
         host.settings.miCloudRegion = normalizeMiCloudRegion(removal.primarySession.region);
       }
     }
+    const enabledRemaining = filterEnabledMiAccounts(
+      removal.accounts,
+      resolveHostMiSelectionState(host, removal.accounts),
+    );
     const nextDual =
       wasDualSource && removal.accounts.length > 0
-        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage) ?? null)
+        ? (host.dualSourceCoordinator?.removeXiaomiAccount(accountId, host.settings.interfaceLanguage, {
+            remainingEnabledCount: enabledRemaining.length,
+            reason: enabledRemaining.length === 0 ? "disabled" : "signedOut",
+          }) ?? null)
         : null;
 
-    if (host.waitingDeviceIds) {
+    if (isXiaomiSnapshot && host.waitingDeviceIds) {
       for (const id of removedIds) host.waitingDeviceIds.delete(id);
       if (nextDual) {
         for (const d of host.devices) {
@@ -619,7 +1147,8 @@ async function performSignOutSingleMiAccountOnHost(
         host.environmentReadings.map((r) => r.id),
         nextDual.home.environmentReadings,
       ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
-    } else {
+      reconcileActiveCameraAfterDeviceRestore(host, dualRoutesBeforeRemoval);
+    } else if (isXiaomiSnapshot) {
       if (removedIds.size > 0) {
         host.devices = host.devices.filter((d) => !removedIds.has(d.id));
         host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));
@@ -627,6 +1156,9 @@ async function performSignOutSingleMiAccountOnHost(
         for (const id of removedIds) delete nextFacets[id];
         host.deviceFacets = nextFacets;
       }
+      host.scenes = host.scenes.filter(
+        (s) => s.accountId !== accountId && !MiAccountScope.isOwned(s.id, accountId) && !MiAccountScope.isOwned(s.entityId, accountId),
+      );
       if (wasDualSource) {
         const stripRemovedAccountMeta = (dev: SmartDevice): SmartDevice => {
           if (dev.accountId !== accountId) return dev;
@@ -655,6 +1187,7 @@ async function performSignOutSingleMiAccountOnHost(
     }
 
     if (
+      isXiaomiSnapshot &&
       host.expandedDeviceId &&
       (removedIds.has(host.expandedDeviceId) ||
         MiAccountScope.isOwned(host.expandedDeviceId, accountId) ||
@@ -682,7 +1215,7 @@ async function performSignOutSingleMiAccountOnHost(
       const { transitionedToHASingleSource } = finishAllMiAccountsSignedOutOnHost(host, {
         wasDualSource,
         wasXiaomiMode: host.settings.connectionMode === "xiaomiCloud",
-        alreadySwitchedSource: true,
+        alreadySwitchedSource: isXiaomiSnapshot,
       });
       host.saveSettings();
       if (transitionedToHASingleSource) {
@@ -707,6 +1240,7 @@ async function performSignOutSingleMiAccountOnHost(
       return true;
     }
 
+    revalidateHostAfterAccountRemoval(host, removal.accounts);
     const rem = removal.accounts.length;
     host.saveSettings();
     host.replyBanner = {
@@ -847,6 +1381,11 @@ export function finishAllMiAccountsSignedOutOnHost(
   clearCachedXiaomiTopology(host);
   clearXiaomiRateLimitBackoff(host);
   clearAccountRateLimitBackoff();
+  removeSignedOutMiAccountFromSelection(null);
+  if (host.connDiagSession) {
+    host.connDiagSession.pendingDisablePreview = null;
+    host.connDiagSession.disableErrorByAccountId = {};
+  }
 
   const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
   const hasHA = currentHAIdentity !== null;
@@ -911,6 +1450,7 @@ export function finishAllMiAccountsSignedOutOnHost(
       }
       reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
     }
+    revalidateHostAfterAccountRemoval(host, []);
     return { transitionedToHASingleSource: wasDualSource };
   }
 
@@ -926,6 +1466,7 @@ export function finishAllMiAccountsSignedOutOnHost(
     if (isFullPanelHost(host)) clearHostActivitiesOnSignOut(host);
     reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
   }
+  revalidateHostAfterAccountRemoval(host, []);
   return { transitionedToHASingleSource: false };
 }
 
@@ -1116,10 +1657,12 @@ function buildUnsupportedScanOptions(
   accountsOverride?: readonly MiAccount[],
 ): ScanUnsupportedOptions {
   const haInvoke = resolveScannerHAInvoke(host);
+  const rawAccounts = accountsOverride ? [...accountsOverride] : resolveHostMiAccounts(host);
+  const miAccounts = filterEnabledMiAccounts(rawAccounts, resolveHostMiSelectionState(host, rawAccounts));
   return {
     connectionMode: host.settings.connectionMode,
     dualSourceEnabled: isDualSourceEnabled(host),
-    miAccounts: accountsOverride ? [...accountsOverride] : resolveHostMiAccounts(host),
+    miAccounts,
     transport: host.transport ?? createTransport(),
     ...(host.specResolver ? { specResolver: host.specResolver } : {}),
     haBaseURL: host.settings.haBaseURL,
@@ -1458,11 +2001,15 @@ export function renderConnectionsAndDiagSection(
     ? `<p class="cc-field-hint" data-mi-accounts-index-warning style="margin:4px 0 8px;color:#e67e22;">${esc(t("部分小米账号暂时无法读取；其他账号仍可正常使用，稍后重启或重新登录可重试。"))}</p>`
     : "";
 
+  const selectionState = host ? resolveHostMiSelectionState(host, accounts) : null;
+  const disabledSet = selectionState?.disabledAccountIds ?? new Set<string>();
+
   const accountCardsHtml =
     accounts.length === 0
       ? `<p class="cc-field-hint" data-mi-accounts-empty style="margin:4px 0 8px;">${esc(tr3("尚未登录米家账号。可点击下方按钮扫码添加首个或多个跨地区账号。", "尚未登入米家帳號。可點擊下方按鈕掃碼新增首個或多個跨地區帳號。", "No Xiaomi account signed in yet. Scan below to add one or multiple regional accounts.", lang))}</p>`
       : accounts
           .map((acc, index) => {
+            const isEnabled = !disabledSet.has(acc.id);
             const rawStatus = getAccountTokenStatus(acc);
             const effectiveStatus: MiAccountTokenStatus =
               index === 0 && Boolean(host?.miSessionExpired) && rawStatus.kind !== "expired"
@@ -1470,29 +2017,61 @@ export function renderConnectionsAndDiagSection(
                 : rawStatus;
             const childSnap = multiState?.children[acc.id];
             const disconnectReason =
-              childSnap?.status.kind === "disconnected" && childSnap.status.reason
-                ? childSnap.status.reason
-                : effectiveStatus.kind === "expired" && miSessionExpiryState(acc.session).kind !== "expired"
-                  ? tr3("米家登录已失效，请重新扫码", "米家登入已失效，請重新掃碼", "Xiaomi session expired; please rescan", lang)
-                  : null;
-            const { badgeHtml, noticeHtml, needsRescan } = renderTokenBadge(
+              !isEnabled
+                ? null
+                : childSnap?.status.kind === "disconnected" && childSnap.status.reason
+                  ? childSnap.status.reason
+                  : effectiveStatus.kind === "expired" && miSessionExpiryState(acc.session).kind !== "expired"
+                    ? tr3("米家登录已失效，请重新扫码", "米家登入已失效，請重新掃碼", "Xiaomi session expired; please rescan", lang)
+                    : null;
+            const { badgeHtml: activeBadgeHtml, noticeHtml, needsRescan } = renderTokenBadge(
               acc,
               effectiveStatus,
               disconnectReason,
               lang,
               esc,
             );
+            const badgeHtml = isEnabled
+              ? activeBadgeHtml
+              : `<span class="cc-inline-pill" data-mi-account-status="disabled" style="font-size:11px;padding:2px 7px;color:#8a8f98;background:rgba(128,128,128,0.16);border:1px solid rgba(128,128,128,0.28);">${esc(tr3("已停用", "已停用", "Turned Off", lang))}</span>`;
+            const preview = session?.pendingDisablePreview?.accountId === acc.id ? session.pendingDisablePreview.verdict : null;
+            const previewSep = lang === "en" ? ", " : "、";
+            const previewShown = preview
+              ? preview.itemsToPause.slice(0, 4).map((item) => item.name).join(previewSep)
+              : "";
+            const previewSummary = preview && preview.itemsToPause.length > 4
+              ? tr3(`${previewShown} 等`, `${previewShown} 等`, `${previewShown}, etc.`, lang)
+              : previewShown;
+            const disableErr = session?.disableErrorByAccountId[acc.id] ?? null;
+            const disableErrHtml = disableErr
+              ? `<p class="cc-field-hint" data-mi-account-disable-error="${esc(acc.id)}" style="margin:6px 0 0;color:#e74c3c;">${esc(disableErr)}</p>`
+              : "";
+            const previewHtml = preview
+              ? `<div data-mi-account-pause-preview="${esc(acc.id)}" style="margin-top:8px;padding:8px;border-radius:8px;background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.28);">
+                  <p class="cc-field-hint" style="margin:0 0 6px;">${esc(tr3(`停用此账号会影响 ${preview.itemsToPause.length} 项定时、自动化或快捷动作（${previewSummary}）。暂停后不会执行，重新启用时恢复重验。`, `停用此帳號會影響 ${preview.itemsToPause.length} 項定時、自動化或捷徑動作（${previewSummary}）。暫停後不會執行，重新啟用時恢復重驗。`, `Turning off this account affects ${preview.itemsToPause.length} timer(s), automation(s), or quick action(s) (${previewSummary}). They stay paused until re-enabled.`, lang))}</p>
+                  <div style="display:flex;gap:6px;justify-content:flex-end;">
+                    <button type="button" class="cc-btn-secondary" data-mi-account-cancel-disable="${esc(acc.id)}" style="padding:3px 9px;font-size:11.5px;">${esc(tr3("保持开启", "保持開啟", "Keep On", lang))}</button>
+                    <button type="button" class="cc-btn-primary" data-mi-account-confirm-disable="${esc(acc.id)}" style="padding:3px 9px;font-size:11.5px;">${esc(tr3("暂停这些项并关闭", "暫停這些項並關閉", "Pause & Turn Off", lang))}</button>
+                  </div>
+                </div>`
+              : "";
             return `<div class="cc-settings-account-card" data-mi-account-card="${esc(acc.id)}" style="padding:8px 10px;margin-bottom:6px;border-radius:10px;background:rgba(128,128,128,0.08);border:1px solid rgba(128,128,128,0.14);">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                 <strong style="font-size:12.5px;">${esc(acc.displayName)}</strong>
                 <span class="cc-inline-pill" style="font-size:11px;padding:1px 6px;">${esc(miCloudRegionLabel(acc.region))} (${esc(acc.region)})</span>
                 ${badgeHtml}
-                <div style="margin-left:auto;display:flex;gap:6px;align-items:center;">
-                  ${needsRescan ? `<button type="button" class="cc-inline-pill" data-mi-account-rescan="${esc(acc.id)}" data-mi-account-region="${esc(acc.region)}">${esc(tr3("重新扫码", "重新掃碼", "Rescan", lang))}</button>` : ""}
+                <div style="margin-left:auto;display:flex;gap:8px;align-items:center;">
+                  <label style="display:inline-flex;align-items:center;gap:4px;margin:0;font-size:11.5px;cursor:pointer;">
+                    <span>${esc(tr3("连接", "連線", "Connected", lang))}</span>
+                    <input type="checkbox" data-mi-account-enabled="${esc(acc.id)}" ${isEnabled && !preview ? "checked" : ""} />
+                  </label>
+                  ${isEnabled && needsRescan ? `<button type="button" class="cc-inline-pill" data-mi-account-rescan="${esc(acc.id)}" data-mi-account-region="${esc(acc.region)}">${esc(tr3("重新扫码", "重新掃碼", "Rescan", lang))}</button>` : ""}
                   <button type="button" class="cc-btn-danger" data-mi-account-signout="${esc(acc.id)}"${session && session.signingOutAccountIds.size > 0 ? " disabled" : ""} style="padding:3px 9px;font-size:11.5px;">${esc(tr3("退出", "登出", "Sign Out", lang))}</button>
                 </div>
               </div>
               ${noticeHtml}
+              ${disableErrHtml}
+              ${previewHtml}
             </div>`;
           })
           .join("");
@@ -1566,7 +2145,7 @@ export function renderConnectionsAndDiagSection(
         <div style="display:flex;flex-direction:column;gap:12px;">
           <div class="cc-field" id="conn-diag-accounts-section" data-settings-anchor="miMultiAccounts">
             <div class="cc-field-row" style="margin-bottom:6px;">
-              <label style="margin:0;font-weight:600;">${esc(tr3("米家多账号管理", "米家多帳號管理", "Xiaomi Multi-Account", lang))}</label>
+              <label style="margin:0;font-weight:600;">${esc(tr3("连接 · 米家多账号管理", "連線 · 米家多帳號管理", "Connections · Xiaomi Multi-Account", lang))}</label>
               <span class="cc-field-hint" style="margin:0;">${esc(tr3(`已登录 ${accounts.length} 个账号`, `已登入 ${accounts.length} 個帳號`, `${accounts.length} signed in`, lang))}</span>
             </div>
             ${accountCardsHtml}
@@ -1676,6 +2255,31 @@ export function bindConnectionsAndDiagEvents(host: ConnectionsAndDiagHost): void
   const onClick = (sel: string, fn: () => void) =>
     bindElementListener(host.root.querySelector<HTMLButtonElement>(sel), "click", () => fn());
 
+  host.root.querySelectorAll<HTMLInputElement>("[data-mi-account-enabled]").forEach((box) => {
+    box.checked = box.hasAttribute("checked");
+    bindElementListener(box, "change", (el) => {
+      const targetAccountId = el.dataset.miAccountEnabled;
+      if (!targetAccountId) return;
+      void setMiAccountEnabledOnHost(host, targetAccountId, el.checked);
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-confirm-disable]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const targetAccountId = el.dataset.miAccountConfirmDisable;
+      if (!targetAccountId) return;
+      void setMiAccountEnabledOnHost(host, targetAccountId, false, { confirmPause: true });
+    });
+  });
+  host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-cancel-disable]").forEach((btn) => {
+    bindElementListener(btn, "click", (el) => {
+      const targetAccountId = el.dataset.miAccountCancelDisable;
+      if (!targetAccountId) return;
+      if (session.pendingDisablePreview?.accountId === targetAccountId) {
+        session.pendingDisablePreview = null;
+      }
+      host.render();
+    });
+  });
   host.root.querySelectorAll<HTMLButtonElement>("[data-mi-account-signout]").forEach((btn) => {
     bindElementListener(btn, "click", (el) => {
       const targetAccountId = el.dataset.miAccountSignout;

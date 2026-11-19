@@ -239,6 +239,8 @@ public enum DeviceDeduplicator {
         var routes: [String: DeviceMergeRoute] = [:]
         var deviceBackends: [String: HomeBackend] = [:]
         var pairedDeviceIDs: Set<String> = []
+        /// Canonical card id → the paired source id whose stored preferences lost the card (#24).
+        var preferenceAdoptions: [String: String] = [:]
         /// Mi source did → the card id it merges into, so group ownership survives pairing with HA.
         var miCanonicalIDs: [String: String] = [:]
         var haCanonicalIDs: [String: String] = [:]
@@ -287,6 +289,22 @@ public enum DeviceDeduplicator {
                 card.winner = pinnedCandidate
             }
             if wasPaired { pairedDeviceIDs.insert(canonicalID) }
+            if let other = card.other {
+                // Both sides of a pair can carry history (an HA-only period and a Mi-only period).
+                // Whichever native id lost the canonical choice keeps its stored preferences
+                // orphaned; report them so the store merges them onto the card (#24). When the
+                // canonical id is neither native id the sides are ambiguous, so nothing is merged.
+                let pairIDs = [card.winner.device.id, other.device.id]
+                if canonicalID == pairIDs[0] {
+                    if knownPreferenceIDs.contains(pairIDs[1]) {
+                        preferenceAdoptions[canonicalID] = pairIDs[1]
+                    }
+                } else if canonicalID == pairIDs[1] {
+                    if knownPreferenceIDs.contains(pairIDs[0]) {
+                        preferenceAdoptions[canonicalID] = pairIDs[0]
+                    }
+                }
+            }
             for candidate in [card.winner, card.other].compactMap({ $0 }) {
                 switch candidate.backend {
                 case .xiaomiCloud: miCanonicalIDs[candidate.device.id] = canonicalID
@@ -363,6 +381,7 @@ public enum DeviceDeduplicator {
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends
         home.pairedDeviceIDs = pairedDeviceIDs
+        home.preferenceAdoptions = preferenceAdoptions
         let mergedIDs = Set(mergedDevices.map(\.id))
         // Facets arrive keyed by each source's own device id. Translate both sides to the merged
         // card id, then keep the winning source's rows. The other source is a fallback because a

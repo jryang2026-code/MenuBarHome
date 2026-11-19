@@ -9,7 +9,7 @@ import {
 import { speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { allOffTargets, hasDetailDrawer, type SmartDevice } from "../core/models.js";
-import { planQuickAction, type QuickActionId } from "../core/quickActions.js";
+import { planQuickAction, quickActionTitle, type QuickActionId } from "../core/quickActions.js";
 import {
   RaycastBridgeTokenManager,
   buildRaycastSnapshot,
@@ -26,7 +26,8 @@ import type {
   UndoStep,
 } from "./appTypes.js";
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
-import { foldGrouped } from "./cloudRefresh.js";
+import { foldGrouped, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
 import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
@@ -637,6 +638,19 @@ export async function executeBuiltInQuickAction(
   host: MenuMijiaWindowsApp,
   actionId: QuickActionId,
 ): Promise<void> {
+  if (resolveHostMiSelectionState(host).pausedQuickActionIds.has(actionId)) {
+    const title = quickActionTitle(actionId);
+    host.replyBanner = {
+      text: tr3(
+        `「${title}」功能已随关联连接停用而暂停，重新开启对应连接后即可恢复`,
+        `「${title}」功能已隨關聯連線停用而暫停，重新開啟對應連線後即可恢復`,
+        `"${title}" is paused because its linked connection is turned off; turn the connection back on to resume`,
+      ),
+      source: tr3("快捷功能", "捷徑功能", "Quick Actions"),
+    };
+    host.render();
+    return;
+  }
   if (await rejectIfControlBlockedWhileLocked(host)) return;
   const sourceRevision = host.sourceRevision;
   const planned = planQuickAction(actionId, quickActionScopeDevices(host), host.lastManuallyUsedLightId);
@@ -866,7 +880,8 @@ export function getLatestRaycastSnapshotForHost(host: MenuMijiaWindowsApp): Rayc
   return buildRaycastSnapshot({
     connectionMode: host.settings.connectionMode,
     selectedHomeId: host.settings.selectedHomeId,
-    connectionSummary: host.panelHealth().label,
+    // The Raycast snapshot speaks the same plain-language status as the footer: one owner, one truth.
+    connectionSummary: resolveConnectionStatus(host).text,
     bridgeToken: token,
     isStale: host.valuesAreStale,
     devices: visibleDevices,

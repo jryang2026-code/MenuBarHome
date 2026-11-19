@@ -628,7 +628,7 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
     assert.equal(document.querySelector('[data-activity-safety-off="longrun:p.heater"]'), null);
   });
 
-  it("enforces single-owner lifecycle: caps at 10 deduped alerts, wakes dismissed alerts on recurrence, cleans orphans, collapses on hide, and clears on home/backend switch", async () => {
+  it("enforces single-owner lifecycle: caps at 10 deduped alerts, keeps urgent long-run cards item-by-item, wakes dismissed alerts on recurrence, cleans orphans, and clears on home/backend switch", async () => {
     const app = createCloudApp();
     const devices = Array.from({ length: 12 }, (_, idx) =>
       makePlug({ id: `p.${idx}`, name: `插座${idx}`, powerWatts: 800 }),
@@ -652,10 +652,12 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
     app.render();
 
     assert.equal(element("[data-activity-stack]").dataset.activityExpanded, "false");
-    assert.equal(element("[data-activity-toggle-expand]").textContent?.trim(), "+9");
-    await click("[data-activity-toggle-expand]");
-    assert.equal(element("[data-activity-stack]").dataset.activityExpanded, "true");
     assert.equal(document.querySelectorAll("[data-activity-card]").length, 10);
+    assert.equal(
+      document.querySelector("[data-activity-toggle-expand]"),
+      null,
+      "urgent long-run alerts never fold behind a stack toggle",
+    );
 
     await click('[data-activity-dismiss="safety:longrun:p.11"]');
     assert.equal(document.querySelector('[data-activity-card="safety:longrun:p.11"]'), null);
@@ -679,12 +681,9 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
     assert.equal(center.recentSafetyAlerts.some((r) => r.alert.deviceId === "p.11"), false);
     assert.equal(center.dismissedActivityIds.has("safety:longrun:p.10"), false);
 
-    assert.equal(center.isExpanded, true);
+    assert.equal(center.isExpanded, false);
     await click("#btn-hide-panel");
     assert.equal(center.isExpanded, false);
-
-    await click("[data-activity-toggle-expand]");
-    assert.equal(center.isExpanded, true);
     app.settings.selectedHomeId = "home_parents_2";
     switchSource(app, "test-source-switch");
     app.render();
