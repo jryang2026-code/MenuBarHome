@@ -1,5 +1,6 @@
+import { normalizeSceneName } from "./assistant.js";
 import { AutomationRuleStore, automationTriggerTitle, summarizeAutomationAction, type AutomationRule } from "./automationEngine.js";
-import { DEVICE_CATEGORY_IDS, FEATURE_IDS, deviceCategoryForDevice, loadSharedCapabilityManifest, type CapabilityID, type DeviceCategoryID } from "./capabilityManifest.js";
+import { DEVICE_CATEGORY_IDS, FEATURE_IDS, deviceCategoryForDevice, loadSharedCapabilityManifest, type CapabilityID, type ConnectionCapabilityID, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
   QUICK_ACTION_TARGET_CATEGORIES, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
   partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
@@ -27,12 +28,14 @@ const ENTITY_FIELDS = [
 
 export interface StorageLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem?(k: string): void; }
 export interface DisabledMiDeviceSnapshot { readonly id: string; readonly rawDid: string; readonly name: string; readonly category: DeviceCategoryID; readonly accountId: string; readonly entityIds: readonly string[]; }
+export interface DisabledMiSceneSnapshot { readonly id: string; readonly entityId?: string; readonly name: string; readonly accountId: string; }
 interface ParsedCapabilityStorageRecord {
   readonly migrationComplete: boolean;
   readonly disabledAccountIds: readonly string[];
   readonly pendingRevalidationAccountIds: readonly string[];
   readonly pausedQuickActionIds: readonly string[];
   readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[];
+  readonly knownDisabledScenes: readonly DisabledMiSceneSnapshot[];
   readonly extraFields: Readonly<Record<string, unknown>>;
 }
 export interface ResolveMiAccountSelectionOptions { readonly storage?: StorageLike | null; readonly accounts: readonly MiAccount[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode?: string; readonly dualSourceEnabled?: boolean; readonly hasExistingPreferences?: boolean; readonly hasPersistedLocalData?: boolean; readonly identityReadFailure?: string | null; }
@@ -43,6 +46,7 @@ export interface MiAccountSelectionState {
   readonly pendingRevalidationAccountIds: ReadonlySet<string>;
   readonly pausedQuickActionIds: ReadonlySet<string>;
   readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[];
+  readonly knownDisabledScenes: readonly DisabledMiSceneSnapshot[];
   persistIfMigrationReady(): boolean;
 }
 export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly disablingAccountId?: string | null; }
@@ -63,6 +67,13 @@ function parseDisabledDevice(raw: unknown): DisabledMiDeviceSnapshot | null {
   return { id: raw["id"], rawDid: raw["rawDid"], name: raw["name"], category: raw["category"] as DeviceCategoryID, accountId: raw["accountId"], entityIds: raw["entityIds"].filter((x): x is string => typeof x === "string" && x.length > 0) };
 }
 
+function parseDisabledScene(raw: unknown): DisabledMiSceneSnapshot | null {
+  if (!isRecord(raw) || typeof raw["id"] !== "string" || !raw["id"] || typeof raw["name"] !== "string" || !raw["name"] ||
+      typeof raw["accountId"] !== "string" || !raw["accountId"]) return null;
+  const entityId = typeof raw["entityId"] === "string" && raw["entityId"].length > 0 ? raw["entityId"] : undefined;
+  return { id: raw["id"], ...(entityId !== undefined ? { entityId } : {}), name: raw["name"], accountId: raw["accountId"] };
+}
+
 function readCapabilityStorage(storage: StorageLike | null): { readonly parsed: ParsedCapabilityStorageRecord | null; readonly corruptRaw: string | null; readonly readError: boolean } {
   if (!storage) return { parsed: null, corruptRaw: null, readError: false };
   let raw: string | null = null;
@@ -74,7 +85,7 @@ function readCapabilityStorage(storage: StorageLike | null): { readonly parsed: 
         !Array.isArray(val["disabledMiAccountIds"]) || !val["disabledMiAccountIds"].every((x) => typeof x === "string")) {
       return { parsed: null, corruptRaw: raw, readError: false };
     }
-    const known = new Set(["schemaVersion", "migrationComplete", "disabledMiAccountIds", "pendingRevalidationAccountIds", "pausedQuickActionIds", "knownDisabledDevices"]);
+    const known = new Set(["schemaVersion", "migrationComplete", "disabledMiAccountIds", "pendingRevalidationAccountIds", "pausedQuickActionIds", "knownDisabledDevices", "knownDisabledScenes"]);
     const extraFields = Object.fromEntries(Object.entries(val).filter(([k]) => !known.has(k)));
     return {
       parsed: {
@@ -85,6 +96,7 @@ function readCapabilityStorage(storage: StorageLike | null): { readonly parsed: 
           : [],
         pausedQuickActionIds: Array.isArray(val["pausedQuickActionIds"]) ? val["pausedQuickActionIds"].filter((x): x is string => typeof x === "string" && x.length > 0) : [],
         knownDisabledDevices: Array.isArray(val["knownDisabledDevices"]) ? val["knownDisabledDevices"].map(parseDisabledDevice).filter((x): x is DisabledMiDeviceSnapshot => x !== null) : [],
+        knownDisabledScenes: Array.isArray(val["knownDisabledScenes"]) ? val["knownDisabledScenes"].map(parseDisabledScene).filter((x): x is DisabledMiSceneSnapshot => x !== null) : [],
         extraFields,
       },
       corruptRaw: null, readError: false,
@@ -107,6 +119,7 @@ function writeCapabilityStorageRecord(storage: StorageLike | null, record: Parse
       ...(record.pendingRevalidationAccountIds.length > 0 ? { pendingRevalidationAccountIds: [...new Set(record.pendingRevalidationAccountIds.map(miAccountScope))] } : {}),
       ...(record.pausedQuickActionIds.length > 0 ? { pausedQuickActionIds: [...new Set(record.pausedQuickActionIds)] } : {}),
       ...(record.knownDisabledDevices.length > 0 ? { knownDisabledDevices: record.knownDisabledDevices } : {}),
+      ...(record.knownDisabledScenes.length > 0 ? { knownDisabledScenes: record.knownDisabledScenes } : {}),
     }));
     return true;
   } catch { return false; }
@@ -122,7 +135,7 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
   const disabledSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.disabledAccountIds.map(miAccountScope) : []);
   const pendingRevalidationSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.pendingRevalidationAccountIds.map(miAccountScope) : []);
   const enabledConns = [
-    ...(miScopes.length > 0 || options.connectionMode === "xiaomiCloud" || (stored.parsed?.knownDisabledDevices.length ?? 0) > 0 ? (["xiaomi-cloud"] as const) : []),
+    ...(miScopes.length > 0 || options.connectionMode === "xiaomiCloud" || (stored.parsed?.knownDisabledDevices.length ?? 0) > 0 || (stored.parsed?.knownDisabledScenes.length ?? 0) > 0 ? (["xiaomi-cloud"] as const) : []),
     ...(includeHA ? (["home-assistant"] as const) : []),
   ];
   const explicitSelection: CapabilitySelection | null = stored.parsed?.migrationComplete
@@ -140,6 +153,7 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
     pendingRevalidationAccountIds: pendingRevalidationSet,
     pausedQuickActionIds: new Set(stored.parsed?.pausedQuickActionIds ?? []),
     knownDisabledDevices: stored.parsed?.knownDisabledDevices ?? [],
+    knownDisabledScenes: stored.parsed?.knownDisabledScenes ?? [],
     persistIfMigrationReady(): boolean {
       if (!resolution.persistMigrationComplete || stored.corruptRaw !== null || stored.readError) return false;
       if (stored.parsed?.migrationComplete) return true;
@@ -147,7 +161,9 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
         migrationComplete: true, disabledAccountIds: stored.parsed?.disabledAccountIds ?? [],
         pendingRevalidationAccountIds: stored.parsed?.pendingRevalidationAccountIds ?? [],
         pausedQuickActionIds: stored.parsed?.pausedQuickActionIds ?? [],
-        knownDisabledDevices: stored.parsed?.knownDisabledDevices ?? [], extraFields: stored.parsed?.extraFields ?? {},
+        knownDisabledDevices: stored.parsed?.knownDisabledDevices ?? [],
+        knownDisabledScenes: stored.parsed?.knownDisabledScenes ?? [],
+        extraFields: stored.parsed?.extraFields ?? {},
       }, null);
     },
   };
@@ -168,6 +184,7 @@ export function writeMiAccountSelectionMutation(options: { readonly storage?: St
     pendingRevalidationAccountIds: [],
     pausedQuickActionIds: [],
     knownDisabledDevices: [],
+    knownDisabledScenes: [],
     extraFields: {},
   };
   return writeCapabilityStorageRecord(storage, options.mutate({ ...base, migrationComplete: true }), current.corruptRaw);
@@ -181,6 +198,7 @@ export function removeSignedOutMiAccountFromSelection(accountId: string | null, 
     pendingRevalidationAccountIds: target === null ? [] : prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== target),
     pausedQuickActionIds: target === null ? [] : prev.pausedQuickActionIds,
     knownDisabledDevices: target === null ? [] : prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== target),
+    knownDisabledScenes: target === null ? [] : prev.knownDisabledScenes.filter((s) => miAccountScope(s.accountId) !== target),
   }) });
 }
 
@@ -207,6 +225,7 @@ export function queueMiAccountReenableFromLogin(
         prev.disabledAccountIds.some((id) => miAccountScope(id) === targetScope) ||
         prev.pendingRevalidationAccountIds.some((id) => miAccountScope(id) === targetScope) ||
         prev.knownDisabledDevices.some((d) => miAccountScope(d.accountId) === targetScope) ||
+        prev.knownDisabledScenes.some((s) => miAccountScope(s.accountId) === targetScope) ||
         prev.pausedQuickActionIds.length > 0 ||
         hasPausedTimers ||
         hasPausedRules;
@@ -232,6 +251,13 @@ export function collectEntityIdsForDevice(device: SmartDevice, facets: readonly 
 export const snapshotDisabledMiDevice = (device: SmartDevice, accountId: string, facets: readonly FacetControl[] = []): DisabledMiDeviceSnapshot => ({
   id: device.id, rawDid: MiAccountScope.localId(device.id), name: device.name,
   category: deviceCategoryForDevice(device), accountId: miAccountScope(accountId), entityIds: collectEntityIdsForDevice(device, facets),
+});
+
+export const snapshotDisabledMiScene = (scene: HomeScene, accountId: string): DisabledMiSceneSnapshot => ({
+  id: scene.id,
+  ...(scene.entityId ? { entityId: scene.entityId } : {}),
+  name: scene.name,
+  accountId: miAccountScope(accountId),
 });
 
 export function resolveDeviceMiAccountOwner(options: {
@@ -332,6 +358,40 @@ const toAutomationReference = (
     : { kind: "quickAction", quickAction: rule.action.quickAction },
 });
 
+export function resolveSceneMiAccountOwner(options: {
+  readonly scene: HomeScene;
+  readonly accounts: readonly MiAccount[];
+  readonly connectionMode: string;
+  readonly dualSourceEnabled: boolean;
+  readonly haBaseURL?: string | null;
+  readonly haToken?: string | null;
+}): string | null {
+  if (options.connectionMode === "demo" && !options.dualSourceEnabled) return null;
+  const haScope = haConnectionScope(options.haBaseURL, options.haToken);
+  const explicitMiOwner =
+    options.scene.accountId ??
+    MiAccountScope.owner(options.scene.id) ??
+    MiAccountScope.owner(options.scene.entityId) ??
+    (options.scene.sourceBackend === "xiaomiCloud" ||
+    (!options.scene.sourceBackend &&
+      !options.scene.id.startsWith("scene.") &&
+      !options.scene.entityId.startsWith("scene.") &&
+      (/^\d+\.\d+\./.test(options.scene.entityId) || options.scene.entityId.startsWith("miot:")))
+      ? (options.accounts[0]?.id ?? null)
+      : null);
+  const useSceneHa =
+    options.connectionMode === "homeAssistant" && !options.dualSourceEnabled
+      ? true
+      : Boolean(
+          options.dualSourceEnabled &&
+            haScope &&
+            options.scene.sourceBackend !== "xiaomiCloud" &&
+            (!explicitMiOwner || options.scene.sourceBackend === "homeAssistant"),
+        );
+  if (useSceneHa) return null;
+  return explicitMiOwner ?? options.accounts[0]?.id ?? null;
+}
+
 export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput): { readonly indexedDevices: CapabilityIndexedDevice[]; readonly sceneRefs: SceneReference[] } {
   const haScope = haConnectionScope(input.haBaseURL, input.haToken);
   const disablingScope = input.disablingAccountId ? miAccountScope(input.disablingAccountId) : null;
@@ -374,40 +434,44 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
       participatesInAllOff: false, safetySignals: [], readKeys: [snap.id], safetyReadKeys: [],
     });
   }
-  const sceneRefs: SceneReference[] = input.scenes.map((sc) => {
+  const seenSceneIds = new Set<string>();
+  const sceneRefs: SceneReference[] = [];
+  for (const sc of input.scenes) {
+    if (seenSceneIds.has(sc.id)) continue;
+    seenSceneIds.add(sc.id);
     if (input.connectionMode === "demo" && !input.dualSourceEnabled) {
-      return { id: sc.id, name: sc.name, connection: null, sourceScope: "demo", isSourceAvailable: true };
+      sceneRefs.push({ id: sc.id, name: sc.name, connection: null, sourceScope: "demo", isSourceAvailable: true });
+      continue;
     }
-    const explicitMiOwner =
-      sc.accountId ??
-      MiAccountScope.owner(sc.id) ??
-      MiAccountScope.owner(sc.entityId) ??
-      (sc.sourceBackend === "xiaomiCloud" ||
-      (!sc.sourceBackend &&
-        !sc.id.startsWith("scene.") &&
-        !sc.entityId.startsWith("scene.") &&
-        (/^\d+\.\d+\./.test(sc.entityId) || sc.entityId.startsWith("miot:")))
-        ? (input.accounts[0]?.id ?? null)
-        : null);
-    const useSceneHa =
-      input.connectionMode === "homeAssistant" && !input.dualSourceEnabled
-        ? true
-        : Boolean(
-            input.dualSourceEnabled &&
-              haScope &&
-              sc.sourceBackend !== "xiaomiCloud" &&
-              (!explicitMiOwner || sc.sourceBackend === "homeAssistant"),
-          );
-    const ownerId = explicitMiOwner ?? input.accounts[0]?.id ?? null;
-    const connection = useSceneHa
-      ? (haScope ? ("home-assistant" as const) : null)
-      : (ownerId ? ("xiaomi-cloud" as const) : null);
+    const miOwner = resolveSceneMiAccountOwner({
+      scene: sc,
+      accounts: input.accounts,
+      connectionMode: input.connectionMode,
+      dualSourceEnabled: input.dualSourceEnabled,
+      haBaseURL: input.haBaseURL ?? null,
+      haToken: input.haToken ?? null,
+    });
+    const connection = miOwner !== null
+      ? ("xiaomi-cloud" as const)
+      : (haScope ? ("home-assistant" as const) : null);
     const sourceScope =
-      connection === null ? "demo" : connection === "home-assistant" ? haScope! : miAccountScope(ownerId!);
+      connection === null ? "demo" : connection === "home-assistant" ? haScope! : miAccountScope(miOwner!);
     const isSourceAvailable =
-      connection === "xiaomi-cloud" && ownerId ? !input.state.disabledAccountIds.has(miAccountScope(ownerId)) : true;
-    return { id: sc.id, name: sc.name, connection, sourceScope, isSourceAvailable };
-  });
+      connection === "xiaomi-cloud" && miOwner ? !input.state.disabledAccountIds.has(miAccountScope(miOwner)) : true;
+    sceneRefs.push({ id: sc.id, name: sc.name, connection, sourceScope, isSourceAvailable });
+  }
+  for (const snap of input.state.knownDisabledScenes) {
+    const scope = miAccountScope(snap.accountId);
+    if (!input.state.disabledAccountIds.has(scope) || seenSceneIds.has(snap.id)) continue;
+    seenSceneIds.add(snap.id);
+    sceneRefs.push({
+      id: snap.id,
+      name: snap.name,
+      connection: "xiaomi-cloud",
+      sourceScope: scope,
+      isSourceAvailable: false,
+    });
+  }
   return { indexedDevices, sceneRefs };
 }
 
@@ -521,6 +585,10 @@ export function revalidateAfterMiAccountReenable(options: {
     completedScopes.size > 0
       ? options.context.state.knownDisabledDevices.filter((d) => !completedScopes.has(miAccountScope(d.accountId)))
       : options.context.state.knownDisabledDevices;
+  const effectiveKnownDisabledScenes =
+    completedScopes.size > 0
+      ? options.context.state.knownDisabledScenes.filter((s) => !completedScopes.has(miAccountScope(s.accountId)))
+      : options.context.state.knownDisabledScenes;
   const effectivePendingScopes =
     completedScopes.size > 0
       ? new Set([...options.context.state.pendingRevalidationAccountIds].filter((s) => !completedScopes.has(miAccountScope(s))))
@@ -530,11 +598,18 @@ export function revalidateAfterMiAccountReenable(options: {
     options.context.dualSourceEnabled ||
     options.context.connectionMode === "demo";
   const configuredMiScopes = options.context.accounts.map((acc) => miAccountScope(acc.id));
+  const configuredMiScopeSet = new Set(configuredMiScopes);
+  const currentHaScope = haConnectionScope(options.context.haBaseURL, options.context.haToken);
   const unverifiedMiScopes = new Set<string>([
     ...options.context.state.disabledAccountIds,
     ...effectivePendingScopes,
     ...(!hasLiveXiaomiSnapshot ? configuredMiScopes : []),
   ]);
+  const isSignedOutMiScope = (s: string): boolean =>
+    s.startsWith("mi:") && !configuredMiScopeSet.has(s) && !unverifiedMiScopes.has(s);
+  const isSignedOutHaScope = (s: string): boolean => s.startsWith("ha:") && s !== currentHaScope;
+  const isSignedOutScope = (s: string): boolean => isSignedOutMiScope(s) || isSignedOutHaScope(s);
+
   const effectiveEnabledScopes = options.context.state.selection.enabledConnectionScopes.filter(
     (s) => !unverifiedMiScopes.has(s),
   );
@@ -553,6 +628,7 @@ export function revalidateAfterMiAccountReenable(options: {
     selection: effectiveSelection,
     disabledAccountIds: unverifiedMiScopes,
     knownDisabledDevices: effectiveKnownDisabled,
+    knownDisabledScenes: effectiveKnownDisabledScenes,
     pendingRevalidationAccountIds: effectivePendingScopes,
   };
   const effectiveContext: HostCapabilityContextInput = {
@@ -583,6 +659,7 @@ export function revalidateAfterMiAccountReenable(options: {
     const pausedList = queue.pausedScheduledCommands ?? [];
     if (pausedList.length === 0) continue;
     const queueScope = parseTimerIdentityScope(identity);
+    const isSignedOutQueue = queueScope !== null && isSignedOutScope(queueScope);
     const activeScopes =
       identity === options.activeTimerIdentity
         ? (identity === "demo"
@@ -594,27 +671,67 @@ export function revalidateAfterMiAccountReenable(options: {
     const stillPaused: PausedScheduledCommand[] = [];
     for (const paused of pausedList) {
       const timerScopes = paused.sourceScopes.length > 0 ? paused.sourceScopes : queueScope ? [queueScope] : [];
+      const pausedCapScopes = (paused.pausedCapabilities ?? []).filter((c) => c.startsWith("mi:") || c.startsWith("ha:"));
+      const candidateScopes = [...new Set([...(queueScope ? [queueScope] : []), ...timerScopes, ...pausedCapScopes])];
+      const candidateMiScopes = candidateScopes.filter((s) => s.startsWith("mi:"));
       const waitsOnPendingMi =
         (queueScope !== null && effectivePendingScopes.has(queueScope)) ||
         timerScopes.some((s) => effectivePendingScopes.has(s)) ||
         (paused.pausedCapabilities ?? []).some(
-          (c) => effectivePendingScopes.has(c) || (c === "xiaomi-cloud" && effectivePendingScopes.size > 0),
+          (c) =>
+            effectivePendingScopes.has(c) ||
+            (c === "xiaomi-cloud" &&
+              effectivePendingScopes.size > 0 &&
+              (candidateMiScopes.length === 0 || candidateMiScopes.some((s) => !isSignedOutMiScope(s)))),
         );
       if (waitsOnPendingMi) {
         stillPaused.push(paused);
         continue;
       }
+      const signedOutForTimer = candidateScopes.filter(isSignedOutScope);
+      const releasingSignedOut = signedOutForTimer.length > 0;
+      const evalTimerScopes = timerScopes.length > 0 ? timerScopes : signedOutForTimer;
+      const evalActiveScopes = releasingSignedOut
+        ? [
+            ...new Set([
+              ...activeScopes.filter((s) => !s.startsWith("ha:") || evalTimerScopes.includes(s)),
+              ...signedOutForTimer,
+              ...evalTimerScopes.filter((s) => selection.enabledConnectionScopes.includes(s)),
+            ]),
+          ]
+        : activeScopes;
+      const evalSelection: CapabilitySelection = releasingSignedOut
+        ? {
+            ...selection,
+            enabledConnections: [
+              ...new Set<ConnectionCapabilityID>([
+                ...selection.enabledConnections,
+                ...(signedOutForTimer.some((s) => s.startsWith("mi:")) ? (["xiaomi-cloud"] as const) : []),
+                ...(signedOutForTimer.some((s) => s.startsWith("ha:")) ? (["home-assistant"] as const) : []),
+              ]),
+            ],
+            enabledConnectionScopes: [...new Set([...selection.enabledConnectionScopes, ...signedOutForTimer])],
+          }
+        : selection;
       const disp = revalidatePausedTimer({
         timer: {
-          id: paused.command.id, name: paused.command.command, partition: identity === options.activeTimerIdentity ? paused.originalPartition : "foreign",
-          targetIds: (paused.command.intents ?? []).map((i) => i.targetId), sourceScopes: timerScopes,
+          id: paused.command.id,
+          name: paused.command.command,
+          partition: identity === options.activeTimerIdentity || isSignedOutQueue || releasingSignedOut ? paused.originalPartition : "foreign",
+          targetIds: (paused.command.intents ?? []).map((i) => i.targetId),
+          sourceScopes: evalTimerScopes,
           pausedCapabilities: paused.pausedCapabilities as readonly CapabilityID[],
         },
-        fireAtEpochSeconds: Math.floor(paused.command.fireTimestampMs / 1000), nowEpochSeconds, activeConnectionScopes: activeScopes, selection, devices: indexedDevices, scenes: sceneRefs,
+        fireAtEpochSeconds: Math.floor(paused.command.fireTimestampMs / 1000),
+        nowEpochSeconds,
+        activeConnectionScopes: evalActiveScopes,
+        selection: evalSelection,
+        devices: indexedDevices,
+        scenes: sceneRefs,
       });
       if (disp === "keepPaused" || disp === "partitionForeign") { stillPaused.push(paused); continue; }
       timersMutated = true;
-      if (disp === "armWaiting" && paused.originalPartition === "waiting") queue.scheduledCommands.push(paused.command);
+      if (disp === "armWaiting" && paused.originalPartition === "waiting" && !isSignedOutQueue) queue.scheduledCommands.push(paused.command);
       else queue.missedScheduledCommands.push(paused.command);
     }
     queue.pausedScheduledCommands = stillPaused;
@@ -624,6 +741,8 @@ export function revalidateAfterMiAccountReenable(options: {
     return false;
   }
 
+  const disabledDevIds = new Set(effectiveKnownDisabled.map((d) => d.id));
+  const disabledSceneIds = new Set(effectiveKnownDisabledScenes.map((s) => s.id));
   let rulesMutated = false;
   const resumedRules = options.ruleStore.load().map((rule) => {
     if (!rule.pausedByCapabilities?.length) return rule;
@@ -635,8 +754,31 @@ export function revalidateAfterMiAccountReenable(options: {
     ) {
       return rule;
     }
-    if (rule.action.kind === "devices" && !rule.action.deviceIds.some((id) => availSet.has(id))) return rule;
-    if (rule.action.kind === "scene" && !enabledSceneIds.has(rule.action.sceneId)) return rule;
+    const allSignedOutReasons =
+      (scopes.length > 0 && scopes.every(isSignedOutScope)) ||
+      (scopes.length === 0 &&
+        rule.pausedByCapabilities.includes("xiaomi-cloud") &&
+        configuredMiScopes.length === 0 &&
+        unverifiedMiScopes.size === 0);
+    if (rule.action.kind === "devices") {
+      const allAvail = rule.action.deviceIds.length > 0 && rule.action.deviceIds.every((id) => availSet.has(id));
+      if (!allAvail) {
+        if (allSignedOutReasons && !rule.action.deviceIds.some((id) => disabledDevIds.has(id))) {
+          rulesMutated = true;
+          const { pausedByCapabilities: _c, ...rest } = rule;
+          return { ...rest, isEnabled: false };
+        }
+        return rule;
+      }
+    }
+    if (rule.action.kind === "scene" && !enabledSceneIds.has(rule.action.sceneId)) {
+      if (allSignedOutReasons && !disabledSceneIds.has(rule.action.sceneId)) {
+        rulesMutated = true;
+        const { pausedByCapabilities: _c, ...rest } = rule;
+        return { ...rest, isEnabled: false };
+      }
+      return rule;
+    }
     if (rule.action.kind === "quickAction") {
       if (effectivePendingScopes.size > 0) return rule;
       const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[rule.action.quickAction] ?? [];
@@ -684,6 +826,10 @@ export function revalidateAfterMiAccountReenable(options: {
           completedScopes.size > 0
             ? prev.knownDisabledDevices.filter((d) => !completedScopes.has(miAccountScope(d.accountId)))
             : prev.knownDisabledDevices,
+        knownDisabledScenes:
+          completedScopes.size > 0
+            ? prev.knownDisabledScenes.filter((s) => !completedScopes.has(miAccountScope(s.accountId)))
+            : prev.knownDisabledScenes,
         pausedQuickActionIds:
           restoredQa.size > 0
             ? prev.pausedQuickActionIds.filter((id) => !restoredQa.has(id))
@@ -703,6 +849,21 @@ export function resolveDisabledDeviceByEntity(entityId: string, knownDisabledDev
   ) ?? null;
 }
 
+export function resolveDisabledSceneByTarget(
+  targetIdOrEntityId: string,
+  knownDisabledScenes: readonly DisabledMiSceneSnapshot[],
+  disabledAccountIds?: ReadonlySet<string>,
+): DisabledMiSceneSnapshot | null {
+  return (
+    knownDisabledScenes.find((rec) => {
+      if (disabledAccountIds && !disabledAccountIds.has(miAccountScope(rec.accountId))) return false;
+      if (rec.id === targetIdOrEntityId || MiAccountScope.localId(rec.id) === targetIdOrEntityId) return true;
+      if (rec.entityId !== undefined && (rec.entityId === targetIdOrEntityId || MiAccountScope.localId(rec.entityId) === targetIdOrEntityId)) return true;
+      return false;
+    }) ?? null
+  );
+}
+
 export function evaluateDeviceEntityWriteGate(options: {
   readonly targetKind: ControlTargetKind; readonly targetIdOrEntityId: string; readonly resolvedActiveDeviceId: string | null;
   readonly context: HostCapabilityContextInput; readonly languagePreference?: LanguagePreference;
@@ -711,8 +872,18 @@ export function evaluateDeviceEntityWriteGate(options: {
   const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
   if (options.targetKind === "scene") {
     const matched = options.context.scenes.find((s) => s.id === options.targetIdOrEntityId || s.entityId === options.targetIdOrEntityId);
-    if (!matched) return null;
-    const v = evaluateControlTargetGate({ targetKind: "scene", targetId: matched.id, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
+    const disabledScene = matched
+      ? null
+      : resolveDisabledSceneByTarget(options.targetIdOrEntityId, options.context.state.knownDisabledScenes, options.context.state.disabledAccountIds);
+    const targetSceneId = matched?.id ?? disabledScene?.id ?? null;
+    if (targetSceneId === null) {
+      const scopedOwner = MiAccountScope.owner(options.targetIdOrEntityId);
+      if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
+        return controlTargetRejectionMessage({ code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(scopedOwner) }, pref);
+      }
+      return null;
+    }
+    const v = evaluateControlTargetGate({ targetKind: "scene", targetId: targetSceneId, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
     return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, pref);
   }
   const disabledMatch = options.resolvedActiveDeviceId === null ? resolveDisabledDeviceByEntity(options.targetIdOrEntityId, options.context.state.knownDisabledDevices) : null;
@@ -725,11 +896,22 @@ export function evaluateDeviceEntityWriteGate(options: {
 export function evaluateIntentsWriteGate(options: { readonly intents: readonly DeviceIntent[]; readonly context: HostCapabilityContextInput; readonly languagePreference?: LanguagePreference }): string | null {
   if (options.intents.length === 0) return null;
   const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
-  const targets = options.intents.map((i) => ({ kind: (i.operation.kind === "activateScene" ? "scene" : "device") as ControlTargetKind, id: i.targetId }));
+  const targets = options.intents.map((i) => {
+    if (i.operation.kind === "activateScene") {
+      const activeMatch = options.context.scenes.find((s) => s.id === i.targetId || s.entityId === i.targetId);
+      const disabledMatch = activeMatch
+        ? null
+        : resolveDisabledSceneByTarget(i.targetId, options.context.state.knownDisabledScenes, options.context.state.disabledAccountIds);
+      return { kind: "scene" as ControlTargetKind, id: activeMatch?.id ?? disabledMatch?.id ?? i.targetId };
+    }
+    const activeDev = options.context.devices.find((d) => d.id === i.targetId);
+    const disabledDev = activeDev ? null : resolveDisabledDeviceByEntity(i.targetId, options.context.state.knownDisabledDevices);
+    return { kind: "device" as ControlTargetKind, id: activeDev?.id ?? disabledDev?.id ?? i.targetId };
+  });
   const v = evaluatePlanTargetsGate({ targets, selection: options.context.state.selection, devices: indexedDevices, scenes: sceneRefs });
   if (v.allowed || !v.rejectionReason) return null;
   if ((v.rejectionReason.code === "deviceNotFound" || v.rejectionReason.code === "sceneNotFound") &&
-      targets.some((t) => (t.kind === "scene" ? sceneRefs.some((s) => s.id === t.id) : options.context.devices.some((d) => d.id === t.id)))) return null;
+      targets.some((t) => (t.kind === "scene" ? options.context.scenes.some((s) => s.id === t.id) : options.context.devices.some((d) => d.id === t.id)))) return null;
   return controlTargetRejectionMessage(v.rejectionReason, effectivePref(options.languagePreference));
 }
 
@@ -746,5 +928,46 @@ export function evaluateDisabledDeviceUrlGate(
   if (!hit || !state.disabledAccountIds.has(hit.accountId)) return null;
   const { indexedDevices } = buildIndexedCapabilityDevices({ state, accounts, devices: [], scenes: [], haBaseURL: settings.haBaseURL ?? null, haToken: settings.haToken ?? null, connectionMode: mode, dualSourceEnabled: Boolean(settings.dualSourceEnabled) });
   const v = evaluateControlTargetGate({ targetKind: "device", targetId: hit.id, selection: state.selection, devices: indexedDevices });
+  return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, effectivePref(settings.interfaceLanguage));
+}
+
+export function evaluateDisabledSceneUrlGate(
+  sceneNameOrId: string,
+  settings: { readonly connectionMode?: string; readonly miSession?: MiSession | null; readonly haBaseURL?: string; readonly haToken?: string; readonly dualSourceEnabled?: boolean; readonly interfaceLanguage?: LanguagePreference },
+  storage?: StorageLike | null,
+): string | null {
+  if (settings.connectionMode === "demo" && !settings.dualSourceEnabled) return null;
+  const accounts = settings.miSession ? [makeMiAccount(settings.miSession)] : [];
+  const mode = settings.connectionMode ?? "xiaomiCloud";
+  const state = resolveMiAccountSelectionState({
+    storage,
+    accounts,
+    haBaseURL: settings.haBaseURL ?? null,
+    haToken: settings.haToken ?? null,
+    connectionMode: mode,
+    dualSourceEnabled: Boolean(settings.dualSourceEnabled),
+    hasExistingPreferences: true,
+  });
+  const normalizedName = normalizeSceneName(sceneNameOrId);
+  const hit = state.knownDisabledScenes.find(
+    (s) =>
+      state.disabledAccountIds.has(miAccountScope(s.accountId)) &&
+      (s.id === sceneNameOrId ||
+        MiAccountScope.localId(s.id) === sceneNameOrId ||
+        (s.entityId !== undefined && (s.entityId === sceneNameOrId || MiAccountScope.localId(s.entityId) === sceneNameOrId)) ||
+        (normalizedName.length > 0 && normalizeSceneName(s.name) === normalizedName)),
+  );
+  if (!hit) return null;
+  const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices({
+    state,
+    accounts,
+    devices: [],
+    scenes: [],
+    haBaseURL: settings.haBaseURL ?? null,
+    haToken: settings.haToken ?? null,
+    connectionMode: mode,
+    dualSourceEnabled: Boolean(settings.dualSourceEnabled),
+  });
+  const v = evaluateControlTargetGate({ targetKind: "scene", targetId: hit.id, selection: state.selection, devices: indexedDevices, scenes: sceneRefs });
   return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, effectivePref(settings.interfaceLanguage));
 }

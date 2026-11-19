@@ -24,6 +24,7 @@ import {
   scheduledCommandIdentity,
 } from "../src/ui/scheduledCommands.js";
 import { executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
+import { signOutAndRevokeAll } from "../src/ui/settingsEvents.js";
 import { filterByListCut, orderAndAliasRooms } from "../src/ui/listCut.js";
 import { onOpenURL } from "../src/core/appUrlCommand.js";
 import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
@@ -1662,7 +1663,7 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     await refreshDevices(app, false);
     markTimerSnapshotReady(app);
 
-    assert.deepEqual(app.multiAccountState?.merged.deviceOwners["101"], [ACC_A, ACC_B]);
+    assert.deepEqual(app.multiAccountState?.merged?.deviceOwners["101"], [ACC_A, ACC_B]);
     const nowMs = Date.now();
     app.scheduledCommands = [
       { id: "t_shared_101", command: "五分钟后关共享灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
@@ -1919,6 +1920,342 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     const stateAfterXiaomiSync = resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true });
     assert.equal(stateAfterXiaomiSync.pendingRevalidationAccountIds.has(ACC_A), false);
     assert.equal(stateAfterXiaomiSync.pausedQuickActionIds.has("lightsOff"), false);
+  });
+
+  it("releases paused timers into missedScheduledCommands and clears paused capabilities when signing out a disabled Xiaomi account across primary-switch, full sign-out, dual-source, and revoke-all flows (4623897070)", async () => {
+    let executedMiWrites = 0;
+    const makeTransport = (): HttpTransport => async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (path === "miotspec/prop/set" || path === "miotspec/action") {
+        executedMiWrites += 1;
+        return okMi([{ did: "101", siid: 2, piid: 1, code: 0 }]);
+      }
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: `Home-${user}`, roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return user === "10001"
+          ? okMi({ list: [{ did: "101", name: "主号吸顶灯", model: LIGHT_MODEL, isOnline: true }] })
+          : okMi({ list: [{ did: "202", name: "副号落地灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        const did = user === "10001" ? "101" : "202";
+        return okMi([{ did, siid: 2, piid: 1, code: 0, value: true }, { did, siid: 2, piid: 2, code: 0, value: 80 }]);
+      }
+      return okMi({});
+    };
+
+    // Sub-flow A: Primary account ACC_A disabled (timers paused in ACC_A's queue), then signed out while ACC_B stays active (activeTimerIdentity switches to ACC_B!)
+    const secureA = makeSecure();
+    const appA = mountApp(makeTransport(), secureA);
+    appA.settings.connectionMode = "xiaomiCloud";
+    appA.settings.miSession = SESS_A;
+    const storeA = getHostMiAccountsStore(appA);
+    await storeA.upsertAccount(SESS_A);
+    await storeA.upsertAccount(SESS_B);
+    await refreshDevices(appA, false);
+    markTimerSnapshotReady(appA);
+
+    const nowMs = Date.now();
+    const identityA = scheduledCommandIdentity(appA.settings)!;
+    const queueA = appA.scheduledCommandStore.queue(identityA);
+    queueA.scheduledCommands = [
+      { id: "t_primary_future", command: "五分钟后关主号灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+      { id: "t_primary_expired", command: "十秒后关主号灯", reply: "好", delaySeconds: 10, fireTimestampMs: nowMs - 5_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+    ];
+    appA.scheduledCommandStore.persist();
+    const ruleStoreA = new AutomationRuleStore(localStorage);
+    ruleStoreA.save([
+      createAutomationRule({ id: "r_only_a", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101"], isOn: false } }),
+      createAutomationRule({ id: "r_mixed_ab", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101", "202"], isOn: false } }),
+    ]);
+
+    const disabledPrimary = await setMiAccountEnabledOnHost(appA, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(disabledPrimary.status, "applied");
+    assert.equal(queueA.pausedScheduledCommands?.length, 2);
+
+    appA.openSettingsSheet("connection");
+    const removeABtn = document.querySelector<HTMLButtonElement>(`[data-mi-account-signout="${ACC_A}"]`);
+    assert.ok(removeABtn, "expected sign-out button for primary account A");
+    removeABtn.click();
+    for (
+      let i = 0;
+      i < 40 && (storeA.getAccounts().some((a) => a.id === ACC_A) || (appA.connDiagSession?.signingOutAccountIds.size ?? 0) > 0);
+      i += 1
+    ) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+
+    assert.notEqual(scheduledCommandIdentity(appA.settings), identityA, "activeTimerIdentity must switch away from signed-out ACC_A");
+    assert.equal(queueA.pausedScheduledCommands?.length ?? 0, 0, "signed-out ACC_A queue must not keep paused timers stuck");
+    assert.deepEqual(
+      new Set(queueA.missedScheduledCommands.map((t) => t.id)),
+      new Set(["t_primary_future", "t_primary_expired"]),
+      "paused timers of signed-out ACC_A must release into missedScheduledCommands",
+    );
+    assert.equal(ruleStoreA.load().find((r) => r.id === "r_only_a")?.isEnabled, false);
+    assert.equal(ruleStoreA.load().find((r) => r.id === "r_only_a")?.pausedByCapabilities, undefined, "signed-out account rule must clear stuck pausedByCapabilities");
+    assert.equal(ruleStoreA.load().find((r) => r.id === "r_mixed_ab")?.isEnabled, false, "partial multi-device automation plan must not auto-resume when one target's account signed out");
+    assert.equal(ruleStoreA.load().find((r) => r.id === "r_mixed_ab")?.pausedByCapabilities, undefined);
+
+    // Sub-flow B: Dual-source & full signOutXiaomiAccount -> releases both active HA queue and inactive Xiaomi queue paused timers
+    localStorage.clear();
+    const secureB = makeSecure();
+    const appB = mountApp(makeTransport(), secureB);
+    appB.settings.connectionMode = "homeAssistant";
+    appB.settings.haBaseURL = "https://ha.example.test:8123";
+    appB.settings.haToken = "ha-tok";
+    appB.settings.miSession = SESS_A;
+    setHostDualSourceEnabled(appB, true, { persist: true });
+    setHostHAInvokeOverride(appB, async <T>(cmd: string): Promise<T> => {
+      if (cmd === "ha_snapshot") {
+        return ({
+          areas: [],
+          devices: [{ id: "ha-dev-1", name: "HA玄关灯" }],
+          entities: [{ entity_id: "light.ha_hall", device_id: "ha-dev-1" }],
+          states: [{ entity_id: "light.ha_hall", state: "on", attributes: { friendly_name: "HA玄关灯", brightness: 200 } }],
+        } as unknown) as T;
+      }
+      return (null as unknown) as T;
+    });
+    await getHostMiAccountsStore(appB).upsertAccount(SESS_A);
+    await refreshDevices(appB, false);
+    markTimerSnapshotReady(appB);
+
+    const haIdB = scheduledCommandIdentity(appB.settings)!;
+    const haQueueB = appB.scheduledCommandStore.queue(haIdB);
+    const miIdB = JSON.stringify(["xiaomiCloud", SESS_A.userId, "cn"]);
+    const miQueueB = appB.scheduledCommandStore.queue(miIdB);
+    const miOnlyDev = appB.devices.find((d) => d.name === "主号吸顶灯")!;
+    assert.ok(miOnlyDev);
+    haQueueB.scheduledCommands = [
+      { id: "t_dual_ha_queue", command: "五分钟后关主号灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: miOnlyDev.id, operation: { kind: "power", isOn: false } }], sourceScopes: ["ha:https://ha.example.test:8123", ACC_A] },
+    ];
+    miQueueB.scheduledCommands = [
+      { id: "t_dual_mi_queue", command: "十分钟后关主号灯", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: miOnlyDev.id, operation: { kind: "power", isOn: false } }], sourceScopes: [ACC_A] },
+    ];
+    appB.scheduledCommandStore.persist();
+
+    await setMiAccountEnabledOnHost(appB, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(haQueueB.pausedScheduledCommands?.length, 1);
+    assert.equal(miQueueB.pausedScheduledCommands?.length, 1);
+
+    signOutXiaomiAccount(appB);
+    await new Promise((r) => setTimeout(r, 0));
+    assert.equal(haQueueB.pausedScheduledCommands?.length ?? 0, 0, "HA queue paused timer for signed-out Mi account must release");
+    assert.equal(haQueueB.missedScheduledCommands.some((t) => t.id === "t_dual_ha_queue"), true);
+    assert.equal(miQueueB.pausedScheduledCommands?.length ?? 0, 0, "Mi queue paused timer for signed-out Mi account must release");
+    assert.equal(miQueueB.missedScheduledCommands.some((t) => t.id === "t_dual_mi_queue"), true);
+
+    // Sub-flow C: Disabled Xiaomi account -> signOutAndRevokeAll releases paused timers into missedScheduledCommands
+    localStorage.clear();
+    const secureC = makeSecure();
+    const appC = mountApp(makeTransport(), secureC);
+    appC.settings.connectionMode = "xiaomiCloud";
+    appC.settings.miSession = SESS_A;
+    await getHostMiAccountsStore(appC).upsertAccount(SESS_A);
+    await refreshDevices(appC, false);
+    markTimerSnapshotReady(appC);
+    const miIdC = scheduledCommandIdentity(appC.settings)!;
+    const miQueueC = appC.scheduledCommandStore.queue(miIdC);
+    miQueueC.scheduledCommands = [
+      { id: "t_revoke_all", command: "五分钟后关主号灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+    ];
+    appC.scheduledCommandStore.persist();
+    await setMiAccountEnabledOnHost(appC, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(miQueueC.pausedScheduledCommands?.length, 1);
+
+    await signOutAndRevokeAll(appC);
+    assert.equal(miQueueC.pausedScheduledCommands?.length ?? 0, 0, "signOutAndRevokeAll must release paused Xiaomi timers");
+    assert.equal(miQueueC.missedScheduledCommands.some((t) => t.id === "t_revoke_all"), true);
+    assert.equal(executedMiWrites, 0, "releasing paused timers on sign-out must never fire hardware writes");
+  });
+
+  it("snapshots disabled Xiaomi scenes so direct activateScene writes, intent gates, and scene URL commands reject as disabled instead of hitting cloud or reporting missing (4623897082)", async () => {
+    const cloudWrites: string[] = [];
+    const secure = makeSecure();
+    const transport: HttpTransport = async (req) => {
+      const path = reqPath(req);
+      if (path === "miotspec/prop/set" || path === "miotspec/action" || path.includes("scene")) {
+        cloudWrites.push(path);
+        return okMi({ code: 0 });
+      }
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: "9101", name: "Home", roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({ list: [{ did: "101", name: "客厅灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        return okMi([{ did: "101", siid: 2, piid: 1, code: 0, value: true }, { did: "101", siid: 2, piid: 2, code: 0, value: 80 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport, secure);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    await getHostMiAccountsStore(app).upsertAccount(SESS_A);
+    await refreshDevices(app, false);
+    const miSceneId = `${ACC_A}/sc_mi_night`;
+    app.scenes = [{ id: miSceneId, name: "米家晚安", entityId: "101.2.a1", accountId: ACC_A, sourceBackend: "xiaomiCloud" }];
+
+    const disOutcome = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
+    assert.equal(disOutcome.status, "applied");
+    assert.equal(app.scenes.length, 0, "disabled Xiaomi scene must be stripped from active host.scenes");
+
+    // 1. Direct applyCommand({ kind: "activateScene" }) by entityId and by scene id must be blocked by disable gate with zero cloud writes!
+    const directByEntity = await app.applyCommand({ kind: "activateScene", entityId: "101.2.a1" });
+    assert.equal(directByEntity, false, "direct activateScene by entityId must be rejected when Xiaomi account is disabled");
+    assert.match(app.replyBanner?.text ?? "", /该米家账号已停用/);
+
+    const directById = await app.applyCommand({ kind: "activateScene", entityId: miSceneId });
+    assert.equal(directById, false, "direct activateScene by sceneId must be rejected when Xiaomi account is disabled");
+    assert.match(app.replyBanner?.text ?? "", /该米家账号已停用/);
+
+    // 2. evaluateIntentsWriteGate without manually re-injecting app.scenes must still reject disabled Xiaomi scene!
+    const gateMsg = evaluateIntentsWriteGate({
+      intents: [{ targetId: miSceneId, operation: { kind: "activateScene" } }],
+      context: buildHostCapabilityContext(app, [makeMiAccount(SESS_A)]),
+    });
+    assert.match(gateMsg ?? "", /该米家账号已停用/);
+
+    // 3. URL scene command by name and by id must report disabled Xiaomi account instead of missing!
+    const urlToasts: string[] = [];
+    const makeUrlHost = () => ({
+      get devices() { return app.devices; },
+      get scenes() { return app.scenes; },
+      get settings() { return app.settings; },
+      get layout() { return app.layout; },
+      get sourceRevision() { return app.sourceRevision; },
+      pendingHighRisk: null,
+      replyBanner: null,
+      pendingConsent: null,
+      expandedDeviceId: null,
+      isControlBlockedByScreenLock: async () => false,
+      getActiveRaycastBridgeToken: () => undefined,
+      revealPanelForExternalUrl: async () => {},
+      requestExternalUrlConfirmation: async () => true,
+      setPendingHighRisk: () => {},
+      clearPendingHighRisk: () => {},
+      showExternalToast: (msg: string) => { urlToasts.push(msg); },
+      recordRaycastCommandFeedback: () => {},
+      executeSingleCommand: (d: never, c: never, s: never, i: never, r: never) => app.executeSingleCommand(d, c, s, i, r),
+      applyCommand: (c: never, r: never) => app.applyCommand(c, r),
+      updateUndoCommandsForDevice: () => {},
+      handleNaturalCommand: (u: string, f?: boolean) => app.handleNaturalCommand(u, f),
+      executeBuiltInSceneFromUrl: async () => ({ message: "", isError: false }),
+      focusDeviceFromUrl: () => "focused" as const,
+    });
+
+    await onOpenURL(`menumijia://scene?name=${encodeURIComponent("米家晚安")}`, makeUrlHost());
+    assert.match(urlToasts.at(-1) ?? "", /该米家账号已停用/);
+
+    setLanguage("en");
+    await onOpenURL(`menumijia://scene?name=${encodeURIComponent(miSceneId)}`, makeUrlHost());
+    assert.match(urlToasts.at(-1) ?? "", /This Xiaomi account is turned off/);
+    setLanguage("zh-Hans");
+
+    await onOpenURL(`menumijia://scene?name=${encodeURIComponent("不存在的虚构场景")}`, makeUrlHost());
+    assert.match(urlToasts.at(-1) ?? "", /不存在|尚未加载/);
+    assert.deepEqual(cloudWrites, []);
+
+    // 4. Re-enabling cleans up knownDisabledScenes after refresh completes
+    const reenabled = await setMiAccountEnabledOnHost(app, ACC_A, true);
+    assert.equal(reenabled.status, "applied");
+    const rawAfterReenable = JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as Record<string, unknown>;
+    assert.equal(rawAfterReenable["knownDisabledScenes"], undefined, "knownDisabledScenes must be cleaned up after re-enable refresh");
+  });
+
+  it("aborts Xiaomi account re-enable when capability selection persistence fails so UI rolls back and paused items still revalidate on retry (4623897095)", async () => {
+    let refreshRequests = 0;
+    const secure = makeSecure();
+    const transport: HttpTransport = async (req) => {
+      const path = reqPath(req);
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        refreshRequests += 1;
+        return okMi({ homelist: [{ id: "9101", name: "Home", roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({ list: [{ did: "101", name: "卧室灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        return okMi([{ did: "101", siid: 2, piid: 1, code: 0, value: true }, { did: "101", siid: 2, piid: 2, code: 0, value: 80 }]);
+      }
+      return okMi({});
+    };
+
+    const app = mountApp(transport, secure);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    await getHostMiAccountsStore(app).upsertAccount(SESS_A);
+    await refreshDevices(app, false);
+    markTimerSnapshotReady(app);
+
+    const nowMs = Date.now();
+    const miQueue = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
+    miQueue.scheduledCommands = [
+      { id: "t_reenable_fail", command: "五分钟后关卧室灯", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
+    ];
+    app.scheduledCommandStore.persist();
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({ id: "r_reenable_fail", isEnabled: true, trigger: "screenLocked", action: { kind: "devices", deviceIds: ["101"], isOn: false } }),
+    ]);
+
+    const disabled = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true, nowMs });
+    assert.equal(disabled.status, "applied");
+    app.openSettingsSheet("connection");
+    const toggleBox = () => document.querySelector<HTMLInputElement>(`[data-mi-account-enabled="${ACC_A}"]`);
+    assert.equal(toggleBox()?.checked, false);
+
+    const origSetItem = localStorage.setItem.bind(localStorage);
+    let failCapabilityWrite = true;
+    Object.defineProperty(localStorage, "setItem", {
+      configurable: true,
+      writable: true,
+      value: (key: string, val: string): void => {
+        if (failCapabilityWrite && key === MI_ACCOUNT_CAPABILITY_STORAGE_KEY) {
+          throw new Error("QuotaExceededError");
+        }
+        origSetItem(key, val);
+      },
+    });
+    const refreshBeforeFail = refreshRequests;
+    try {
+      // 1) Non-demo re-enable failure -> blocked, zero refresh calls, error banner & inline error, checkbox rolled back to unchecked!
+      const box = toggleBox()!;
+      box.checked = true;
+      const failedLive = await setMiAccountEnabledOnHost(app, ACC_A, true, { nowMs: nowMs + 10_000 });
+      assert.equal(failedLive.status, "blocked", "re-enable must not return applied when persistence fails");
+      assert.equal(refreshRequests, refreshBeforeFail, "re-enable must not refresh cloud while account remains disabled on disk");
+      assert.equal(app.replyBanner?.isError, true);
+      assert.ok(document.querySelector(`[data-mi-account-disable-error="${ACC_A}"]`), "expected inline error on re-enable persist failure");
+      assert.equal(toggleBox()?.checked, false, "account toggle must roll back to unchecked when persist fails");
+      assert.equal(miQueue.pausedScheduledCommands?.length, 1);
+
+      // 2) Demo mode re-enable failure -> also blocked without unpausing items while disk still marks account disabled!
+      app.settings.connectionMode = "demo";
+      const failedDemo = await setMiAccountEnabledOnHost(app, ACC_A, true, { nowMs: nowMs + 10_000 });
+      assert.equal(failedDemo.status, "blocked");
+      assert.equal(miQueue.pausedScheduledCommands?.length, 1, "demo re-enable persist failure must not prematurely unpause timers");
+      assert.equal(ruleStore.load()[0]?.isEnabled, false);
+      app.settings.connectionMode = "xiaomiCloud";
+    } finally {
+      failCapabilityWrite = false;
+      Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: origSetItem });
+    }
+
+    // 3) Retry after storage recovers -> succeeds, refreshes, clears error, and revalidates paused timer + rule + quickAction!
+    const retried = await setMiAccountEnabledOnHost(app, ACC_A, true, { nowMs: nowMs + 20_000 });
+    assert.equal(retried.status, "applied");
+    assert.equal(toggleBox()?.checked, true);
+    assert.equal(document.querySelector(`[data-mi-account-disable-error="${ACC_A}"]`), null);
+    assert.equal(miQueue.pausedScheduledCommands?.length ?? 0, 0);
+    assert.deepEqual(miQueue.scheduledCommands.map((t) => t.id), ["t_reenable_fail"]);
+    assert.equal(ruleStore.load()[0]?.isEnabled, true);
+    assert.equal(resolveMiAccountSelectionState({ storage: localStorage, accounts: [makeMiAccount(SESS_A)], hasExistingPreferences: true }).pausedQuickActionIds.has("lightsOff"), false);
   });
 });
 

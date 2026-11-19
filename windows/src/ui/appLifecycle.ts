@@ -269,6 +269,10 @@ export async function clearHostSessionAndDualSourceState(
     }
   }
   removeSignedOutMiAccountFromSelection(null);
+  if (host.connDiagSession) {
+    host.connDiagSession.pendingDisablePreview = null;
+    host.connDiagSession.disableErrorByAccountId = {};
+  }
   const fullSettings = host.settings as MenuMijiaWindowsApp["settings"] | undefined;
   const scheduledCommandStore =
     host.scheduledCommandStore ?? (typeof localStorage !== "undefined" ? new ScheduledCommandStore(localStorage) : null);

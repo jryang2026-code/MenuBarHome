@@ -19,7 +19,7 @@ import {
 } from "./quickActions.js";
 import type { RaycastCommandFeedback } from "./raycastSnapshot.js";
 import { formatTemperature } from "./temperature.js";
-import { evaluateDisabledDeviceUrlGate } from "./miAccountControl.js";
+import { evaluateDisabledDeviceUrlGate, evaluateDisabledSceneUrlGate } from "./miAccountControl.js";
 
 export type AppURLCommand =
   | { readonly kind: "toggle"; readonly deviceId: string }
@@ -1134,6 +1134,12 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
         finish(disabledMsg, true);
         return;
       }
+    } else if (envelope.command.kind === "scene") {
+      const disabledMsg = evaluateDisabledSceneUrlGate(envelope.command.name, host.settings);
+      if (disabledMsg !== null) {
+        finish(disabledMsg, true);
+        return;
+      }
     }
     finish(
       trText( "链接里的设备或场景不存在，或尚未加载", "The device or scene in the link is missing or not loaded yet"),
@@ -1187,6 +1193,19 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
 
   const resolved = resolveTarget(envelope.command, host);
   if (!resolved) {
+    if ("deviceId" in envelope.command) {
+      const disabledMsg = evaluateDisabledDeviceUrlGate(envelope.command.deviceId, host.settings);
+      if (disabledMsg !== null) {
+        finish(disabledMsg, true);
+        return;
+      }
+    } else if (envelope.command.kind === "scene") {
+      const disabledMsg = evaluateDisabledSceneUrlGate(envelope.command.name, host.settings);
+      if (disabledMsg !== null) {
+        finish(disabledMsg, true);
+        return;
+      }
+    }
     finish(
       trText("设备或场景已不在面板中", "The device or scene is no longer available"),
       true,

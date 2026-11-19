@@ -10,8 +10,10 @@ import {
   queueMiAccountReenableFromLogin,
   removeSignedOutMiAccountFromSelection,
   resolveDeviceMiAccountOwner,
+  resolveSceneMiAccountOwner,
   revalidateAfterMiAccountReenable,
   snapshotDisabledMiDevice,
+  snapshotDisabledMiScene,
   writeMiAccountSelectionMutation,
   type HostCapabilityContextInput,
 } from "../core/miAccountControl.js";
@@ -473,7 +475,10 @@ function revalidateHostAfterAccountRemoval(
   revalidateAfterMiAccountReenable({
     context: buildHostCapabilityContext(host, remainingAccounts),
     scheduledCommandStore,
-    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    activeTimerIdentity:
+      remainingAccounts.length === 0 && host.settings.connectionMode === "xiaomiCloud"
+        ? null
+        : scheduledCommandIdentity(host.settings),
     ruleStore: new AutomationRuleStore(),
   });
 }
@@ -501,6 +506,7 @@ export async function addOrUpdateMiAccountOnHost(
     ruleStore: new AutomationRuleStore(),
   });
   getHostConnDiagSession(host).pendingDisablePreview = null;
+  delete getHostConnDiagSession(host).disableErrorByAccountId[miAccountId(cleanSession)];
 
   setPendingMiVaultDeletion(false);
   switchSource(host, "mi-account-added");
@@ -539,7 +545,7 @@ export async function addOrUpdateMiAccountOnHost(
 export type SetMiAccountEnabledOutcome =
   | { readonly status: "applied" }
   | { readonly status: "requiresPauseConfirmation"; readonly verdict: CapabilityDeactivationVerdict }
-  | { readonly status: "blocked"; readonly verdict: CapabilityDeactivationVerdict };
+  | { readonly status: "blocked"; readonly verdict: CapabilityDeactivationVerdict | null };
 
 function computeDisablePreviewGeneration(
   context: HostCapabilityContextInput,
@@ -602,6 +608,15 @@ function formatDisableBlockedMessage(verdict: CapabilityDeactivationVerdict | nu
   );
 }
 
+function formatReenablePersistErrorMessage(lang: AppLanguage): string {
+  return tr3(
+    "本地连接或功能设置暂时无法保存，未能重新开启此连接。请检查磁盘空间或重启应用后再试。",
+    "本地連線或功能設定暫時無法儲存，未能重新開啟此連線。請檢查磁碟空間或重啟應用後再試。",
+    "Could not save connection or feature settings; this connection stays turned off. Check disk space or restart the app and try again.",
+    lang,
+  );
+}
+
 export async function setMiAccountEnabledOnHost(
   host: ConnectionsAndDiagHost,
   accountId: string,
@@ -621,13 +636,23 @@ export async function setMiAccountEnabledOnHost(
   if (enabled) {
     session.pendingDisablePreview = null;
     delete session.disableErrorByAccountId[accountId];
+    const targetScope = miAccountScope(accountId);
     if (host.settings.connectionMode === "demo") {
-      writeMiAccountSelectionMutation({ mutate: (prev) => ({
+      const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
         ...prev,
-        disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
-        pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== miAccountScope(accountId)),
-        knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== accountId),
+        disabledAccountIds: prev.disabledAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+        pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+        knownDisabledDevices: prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== targetScope),
+        knownDisabledScenes: prev.knownDisabledScenes.filter((s) => miAccountScope(s.accountId) !== targetScope),
       }) });
+      if (!wrote) {
+        const lang = activeLanguage(host.settings.interfaceLanguage);
+        const msg = formatReenablePersistErrorMessage(lang);
+        session.disableErrorByAccountId[accountId] = msg;
+        host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+        host.render();
+        return { status: "blocked", verdict: null };
+      }
       resetHostUnsupportedScanner(host);
       revalidateAfterMiAccountReenable({
         context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)), scheduledCommandStore,
@@ -637,11 +662,19 @@ export async function setMiAccountEnabledOnHost(
       host.render();
       return { status: "applied" };
     }
-    writeMiAccountSelectionMutation({ mutate: (prev) => ({
+    const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
       ...prev,
-      disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
-      pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, miAccountScope(accountId)])],
+      disabledAccountIds: prev.disabledAccountIds.filter((id) => miAccountScope(id) !== targetScope),
+      pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, targetScope])],
     }) });
+    if (!wrote) {
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      const msg = formatReenablePersistErrorMessage(lang);
+      session.disableErrorByAccountId[accountId] = msg;
+      host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+      host.render();
+      return { status: "blocked", verdict: null };
+    }
     resetHostUnsupportedScanner(host);
     if (isDualSourceEnabled(host) || host.settings.connectionMode === "xiaomiCloud") {
       switchHome(host);
@@ -659,7 +692,7 @@ export async function setMiAccountEnabledOnHost(
   }
 
   const context = buildHostCapabilityContext(host, allAccounts);
-  if (context.state.disabledAccountIds.has(accountId)) {
+  if (context.state.disabledAccountIds.has(miAccountScope(accountId))) {
     session.pendingDisablePreview = null;
     delete session.disableErrorByAccountId[accountId];
     host.render();
@@ -748,6 +781,32 @@ export async function setMiAccountEnabledOnHost(
     return route ? route.backend === "homeAssistant" || (route.alternateBackend === "homeAssistant" && route.alternateDevice !== null) : wasDualSource && dev.sourceBackend === "homeAssistant";
   };
 
+  const expectedEnabledAfter = allAccounts.filter(
+    (acc) => acc.id !== accountId && !context.state.disabledAccountIds.has(miAccountScope(acc.id)),
+  );
+  const previewNextChildren =
+    expectedEnabledAfter.length > 0 && host.multiAccountState
+      ? (() => {
+          const copy = { ...host.multiAccountState.children };
+          delete copy[accountId];
+          return copy;
+        })()
+      : null;
+  const previewNextMerged =
+    previewNextChildren && expectedEnabledAfter.length > 0
+      ? mergeMiAccountSnapshots(expectedEnabledAfter, previewNextChildren)
+      : null;
+  const survivingSceneIds = previewNextMerged ? new Set(previewNextMerged.home.scenes.map((s) => s.id)) : null;
+  const sceneOwnerOf = (sc: HomeScene): string | null =>
+    resolveSceneMiAccountOwner({
+      scene: sc,
+      accounts: allAccounts,
+      connectionMode: host.settings.connectionMode,
+      dualSourceEnabled: wasDualSource,
+      haBaseURL: host.settings.haBaseURL,
+      haToken: host.settings.haToken,
+    });
+
   const ownedDevices = isXiaomiSnapshot ? host.devices.filter((d) => ownerOf(d) === accountId) : [];
   const snapshots = isXiaomiSnapshot
     ? ownedDevices
@@ -756,19 +815,25 @@ export async function setMiAccountEnabledOnHost(
     : host.settings.cachedXiaomiDevices
         .filter((d) => cachedOwnerOf(d) === accountId)
         .map((d) => snapshotDisabledMiDevice(d, accountId));
+  const ownedScenes = isXiaomiSnapshot
+    ? host.scenes.filter((s) => sceneOwnerOf(s) === accountId && !(survivingSceneIds?.has(s.id)))
+    : [];
+  const sceneSnapshots = ownedScenes.map((s) => snapshotDisabledMiScene(s, accountId));
   const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
   const prevRawSelection = (() => {
     try { return typeof localStorage !== "undefined" ? localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) : null; } catch { return null; }
   })();
   const timerSnapshot = scheduledCommandStore.snapshotQueues();
   const prevRules = ruleStore.load();
+  const targetScope = miAccountScope(accountId);
 
   const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
     ...prev,
     disabledAccountIds: [...new Set([...prev.disabledAccountIds, accountId])],
-    pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== miAccountScope(accountId)),
+    pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== targetScope),
     pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...newlyPausedQaIds])],
-    knownDisabledDevices: [...prev.knownDisabledDevices.filter((d) => d.accountId !== accountId && !snapshots.some((s) => s.id === d.id)), ...snapshots],
+    knownDisabledDevices: [...prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== targetScope && !snapshots.some((s) => s.id === d.id)), ...snapshots],
+    knownDisabledScenes: [...prev.knownDisabledScenes.filter((s) => miAccountScope(s.accountId) !== targetScope && !sceneSnapshots.some((snap) => snap.id === s.id)), ...sceneSnapshots],
   }) });
   if (!wrote) {
     const lang = activeLanguage(host.settings.interfaceLanguage);
@@ -828,18 +893,8 @@ export async function setMiAccountEnabledOnHost(
     host.settings.selectedHomeId = null;
   }
 
-  const nextChildren =
-    enabledAfter.length > 0 && host.multiAccountState
-      ? (() => {
-          const copy = { ...host.multiAccountState.children };
-          delete copy[accountId];
-          return copy;
-        })()
-      : null;
-  const nextMerged =
-    nextChildren && enabledAfter.length > 0
-      ? mergeMiAccountSnapshots(enabledAfter, nextChildren)
-      : null;
+  const nextChildren = previewNextChildren;
+  const nextMerged = previewNextMerged;
   const survivingById = nextMerged
     ? new Map(nextMerged.home.devices.map((d) => [d.id, d] as const))
     : undefined;
@@ -863,12 +918,13 @@ export async function setMiAccountEnabledOnHost(
     for (const id of removedIds) host.waitingDeviceIds.delete(id);
   }
 
+  const removedSceneIds = new Set(ownedScenes.map((s) => s.id));
   if (nextDual) {
     host.homes = applyOrder(host.homes.map((h) => h.id), nextDual.homes);
     host.groupOwnerByMemberDid = new Map(nextDual.lightGroupOwners);
     host.devices = applyOrder(host.devices.map((d) => d.id), nextDual.home.devices);
     host.deviceFacets = nextDual.home.deviceFacets ?? {};
-    host.scenes = [...nextDual.home.scenes];
+    host.scenes = nextDual.home.scenes.filter((s) => !removedSceneIds.has(s.id));
     const prio = new Map(host.devices.map((d) => [d.id, environmentReadingPriority(d.kind)]));
     host.environmentReadings = applyOrder(host.environmentReadings.map((r) => r.id), nextDual.home.environmentReadings).sort((a, b) => (prio.get(a.id) ?? 0) - (prio.get(b.id) ?? 0));
     reconcileActiveCameraAfterDeviceRestore(host, dualRoutes);
@@ -901,7 +957,11 @@ export async function setMiAccountEnabledOnHost(
       host.homes = host.homes.filter((h) => !MiAccountScope.isOwned(h.id, accountId));
     }
     host.scenes = host.scenes.filter(
-      (s) => s.accountId !== accountId && !MiAccountScope.isOwned(s.id, accountId) && !MiAccountScope.isOwned(s.entityId, accountId),
+      (s) =>
+        !removedSceneIds.has(s.id) &&
+        s.accountId !== accountId &&
+        !MiAccountScope.isOwned(s.id, accountId) &&
+        !MiAccountScope.isOwned(s.entityId, accountId),
     );
   }
 
@@ -977,6 +1037,7 @@ async function performSignOutSingleMiAccountOnHost(
       return false;
     }
     removeSignedOutMiAccountFromSelection(accountId);
+    delete session.disableErrorByAccountId[accountId];
     if (session.pendingDisablePreview?.accountId === accountId) {
       session.pendingDisablePreview = null;
     }
@@ -1321,7 +1382,10 @@ export function finishAllMiAccountsSignedOutOnHost(
   clearXiaomiRateLimitBackoff(host);
   clearAccountRateLimitBackoff();
   removeSignedOutMiAccountFromSelection(null);
-  if (host.connDiagSession) host.connDiagSession.pendingDisablePreview = null;
+  if (host.connDiagSession) {
+    host.connDiagSession.pendingDisablePreview = null;
+    host.connDiagSession.disableErrorByAccountId = {};
+  }
 
   const currentHAIdentity = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken);
   const hasHA = currentHAIdentity !== null;
