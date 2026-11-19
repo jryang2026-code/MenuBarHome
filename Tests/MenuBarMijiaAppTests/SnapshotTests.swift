@@ -214,15 +214,15 @@ struct SnapshotTests {
         }
     }
 
-    @Test("The assistant bar marks a timer whose source is unverified instead of running it")
+    @Test("The panel marks a timer whose source is unverified instead of running it")
     func panelUnscopedTimerPendingSnapshot() async throws {
         let fixture = try await SnapshotFixture()
         defer { fixture.restore() }
 
         UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
         // A timer saved before scopes existed (ADR-0019 #22): it waits visibly for confirmation,
-        // never arms, and the row must say the source is unverified rather than "已错过". It is not
-        // due yet, so the row offers 确认 (arm at its own time) instead of 立即执行.
+        // never arms, and the panel's activity stack must say the source is unverified rather than
+        // "已错过". It is not due yet, so the card offers 确认 (arm at its own time) instead of 立即执行.
         let legacy = ScheduledCommand(
             reply: "10 分钟后关闭书房吸顶灯",
             fireDate: Date().addingTimeInterval(600),
@@ -232,7 +232,6 @@ struct SnapshotTests {
         fixture.store.restoreScheduledCommands()
         #expect(fixture.store.scheduledCommands.isEmpty)
         #expect(fixture.store.missedScheduledCommands.map(\.id) == [legacy.id])
-        #expect(fixture.store.isShowingAssistantBar)
 
         for theme in PanelTheme.allCases {
             assertRendered(
@@ -340,6 +339,82 @@ struct SnapshotTests {
                 named: themedName(theme, "activity-single-light")
             )
         }
+    }
+
+    @Test("Classic compact height (460pt) caps 6 pinned alerts + 2 missed timers so device grid stays visible")
+    func classicCompactBoundedActivitySnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+        UserDefaults.standard.set(PanelHeight.compact.rawValue, forKey: PanelHeight.storageKey)
+        let store = fixture.store
+        let device = try #require(store.devices.first)
+        let fixedDate = Date(timeIntervalSince1970: 1_700_000_000)
+        let scope = store.connectionScopeIdentifier
+        store.recentSafetyAlerts = [
+            RecordedSafetyAlert(
+                alert: SafetyAlert(id: "sensor:smoke:s1#smoke", deviceId: device.id, title: "厨房烟雾告警", body: "检测到烟雾浓度异常，请立即排查厨房情况。"),
+                scope: scope, date: fixedDate
+            ),
+            RecordedSafetyAlert(
+                alert: SafetyAlert(id: "sensor:gas:g1#gas", deviceId: device.id, title: "厨房燃气告警", body: "检测到天然气泄漏，请关闭总阀并开窗通风。"),
+                scope: scope, date: fixedDate
+            ),
+            RecordedSafetyAlert(
+                alert: SafetyAlert(id: "sensor:leak:l1#leak", deviceId: device.id, title: "卫生间浸水告警", body: "洗手台下方检测到积水，请检查角阀与软管。"),
+                scope: scope, date: fixedDate
+            ),
+            RecordedSafetyAlert(
+                alert: SafetyAlert(
+                    id: "longrun:plug-1",
+                    deviceId: device.id,
+                    title: "取暖器插座已开启超过 45 分钟",
+                    body: "高功率设备持续运行中，请确认是否需要关闭。",
+                    turnOffCommand: .setSwitch(entityId: "switch.plug1", isOn: false)
+                ),
+                scope: scope, date: fixedDate
+            ),
+            RecordedSafetyAlert(
+                alert: SafetyAlert(
+                    id: "longrun:ac-1",
+                    deviceId: device.id,
+                    title: "卧室空调已连续运行 4 小时",
+                    body: "请确认是否需要关闭空调。",
+                    turnOffCommand: .setClimatePower(entityId: "climate.ac1", isOn: false, fallbackMode: "cool")
+                ),
+                scope: scope, date: fixedDate
+            ),
+            RecordedSafetyAlert(
+                alert: SafetyAlert(
+                    id: "longrun:kettle-1",
+                    deviceId: device.id,
+                    title: "厨房电水壶持续高功率运行",
+                    body: "请确认是否需要立即断电。",
+                    turnOffCommand: .setSwitch(entityId: "switch.kettle1", isOn: false)
+                ),
+                scope: scope, date: fixedDate
+            ),
+        ]
+        store.missedScheduledCommands = [
+            ScheduledCommand(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000101")!,
+                reply: "关闭客厅吸顶灯",
+                fireDate: fixedDate.addingTimeInterval(-180),
+                plan: IntentPlan(intents: [DeviceIntent(targetId: device.id, operation: .power(false))], reply: "关闭客厅吸顶灯", source: .local),
+                sourceScope: scope
+            ),
+            ScheduledCommand(
+                id: UUID(uuidString: "00000000-0000-0000-0000-000000000102")!,
+                reply: "关闭主卧空调",
+                fireDate: fixedDate.addingTimeInterval(-60),
+                plan: IntentPlan(intents: [DeviceIntent(targetId: device.id, operation: .power(false))], reply: "关闭主卧空调", source: .local),
+                sourceScope: scope
+            ),
+        ]
+        assertRendered(
+            snapshotReady(themedPanel(.classic, store: store)),
+            size: CGSize(width: 376, height: 460),
+            named: themedName(.classic, "activity-compact-bounded-6-pinned-2-missed-light")
+        )
     }
 
     @Test("Doorbell activity offers its camera")

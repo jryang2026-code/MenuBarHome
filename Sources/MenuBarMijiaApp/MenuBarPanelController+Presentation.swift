@@ -37,6 +37,7 @@ extension MenuBarPanelController {
         panel.appearance = Self.preferredAppearance(from: userDefaults)
         panelHostingVisibility.setVisible(true)
         refreshPanelContent(theme: theme)
+        syncPanelRootVisibility()
 
         let target = columnFrame(for: theme)
         let wasVisible = panel.isVisible && !isClosing
@@ -159,10 +160,13 @@ extension MenuBarPanelController {
     /// Tears down hidden-panel animations, clocks, and any active text-field caret in one
     /// synchronous layout pass right before `orderOut` disconnects the window from display cycles.
     private func finishOrderingPanelOut(_ panel: NSPanel) {
-        if panel.firstResponder is NSTextView {
+        PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
+        PanelConnectionDetailState.shared.clearStatusControlFocus()
+        if panel.firstResponder !== panel.contentView {
             _ = panel.makeFirstResponder(panel.contentView)
         }
         panelHostingVisibility.setVisible(false)
+        syncPanelRootVisibility()
         panel.contentView?.layoutSubtreeIfNeeded()
         panel.orderOut(nil)
     }

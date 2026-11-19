@@ -117,4 +117,21 @@ struct PanelKeyRouterTests {
         #expect(route(Key(code: kVK_Escape), Context(hasFocusedDevice: true)) == .clearFocus)
         #expect(route(Key(code: kVK_Escape)) == .hidePanel)
     }
+
+    @Test("Connection status and detail popover: Tab reaches status from device focus, Return/Space pass through, Esc dismisses detail")
+    func connectionStatusAndDetailPopover() {
+        #expect(route(Key(code: kVK_Tab), Context(hasFocusedDevice: true)) == .focusConnectionStatus)
+
+        let statusFocused = Context(isConnectionStatusFocused: true)
+        #expect(route(Key(code: kVK_Return), statusFocused) == .passThrough)
+        #expect(route(Key(code: kVK_Space, characters: " "), statusFocused) == .passThrough)
+        #expect(route(Key(code: kVK_Escape), statusFocused) == .clearConnectionStatusFocus)
+        #expect(route(Key(code: kVK_Tab), statusFocused) == .cycleRoom(1))
+
+        let detailOpen = Context(isShowingConnectionDetail: true, hasExpandedDevice: true, hasFocusedDevice: true)
+        #expect(route(Key(code: kVK_Escape), detailOpen) == .dismissConnectionDetail)
+        #expect(route(Key(code: kVK_Return), detailOpen) == .passThrough)
+        #expect(route(Key(code: kVK_Space, characters: " "), detailOpen) == .passThrough)
+        #expect(route(Key(code: kVK_Tab), detailOpen) == .passThrough)
+    }
 }

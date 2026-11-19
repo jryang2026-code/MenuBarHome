@@ -5,10 +5,15 @@ extension ClassicControlCenterPanel {
     var activityStack: some View {
         ClassicActivityStackView(
             activities: store.panelActivities,
+            missedTimers: store.missedScheduledCommands,
+            store: store,
             isExpanded: $activitiesExpanded,
             expandedViewportHeight: activityViewportHeight,
             dismiss: store.dismissActivity,
             clear: store.clearDismissibleActivities,
+            runMissedTimer: { id in Task { await store.runMissedScheduledCommand(id: id) } },
+            confirmMissedTimer: { id in Task { await store.confirmScheduledCommandSource(id: id) } },
+            dismissMissedTimer: { id in store.dismissMissedScheduledCommand(id: id) },
             label: { PanelActivityCard.label($0, devices: store.devices) }
         ) { activity in
             PanelActivityCard.content(activity, store: store, theme: .classic) { kind in

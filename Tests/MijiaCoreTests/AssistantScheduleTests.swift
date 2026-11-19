@@ -155,7 +155,9 @@ struct AssistantScheduleTests {
         #expect(store.scheduledCommands.isEmpty)
         #expect(ScheduledCommand.load(from: defaults).map(\.id) == [expiredEntry.id])
         #expect(store.missedScheduledCommands.map(\.id) == [expiredEntry.id])
-        #expect(store.isShowingAssistantBar == true)
+        // Missed timers live in the activity stack's reminder area; the command bar no longer lists them,
+        // so restoring one must not pop an empty assistant surface over the pinned cards.
+        #expect(store.isShowingAssistantBar == false)
         #expect(notified.map(\.id) == [expiredEntry.id])
         #expect(await mock.executedCommands.isEmpty)
 
@@ -187,7 +189,8 @@ struct AssistantScheduleTests {
         #expect(store.scheduledCommands.isEmpty)
         #expect(store.missedScheduledCommands.map(\.id) == [entry.id])
         #expect(notified.map(\.id) == [entry.id])
-        #expect(store.isShowingAssistantBar)
+        // A late timer is shown in the reminder area only; it must not open the assistant bar.
+        #expect(!store.isShowingAssistantBar)
         #expect(ScheduledCommand.load(from: store.userDefaults).map(\.id) == [entry.id])
         #expect(await mock.executedCommands.isEmpty)
 

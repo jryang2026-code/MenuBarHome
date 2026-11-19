@@ -72,9 +72,14 @@ extension ControlCenterPanel {
     var activityStack: some View {
         ActivityStackView(
             activities: store.panelActivities,
+            missedTimers: store.missedScheduledCommands,
+            store: store,
             isExpanded: $activitiesExpanded,
             dismiss: store.dismissActivity,
             clear: store.clearDismissibleActivities,
+            runMissedTimer: { id in Task { await store.runMissedScheduledCommand(id: id) } },
+            confirmMissedTimer: { id in Task { await store.confirmScheduledCommandSource(id: id) } },
+            dismissMissedTimer: { id in store.dismissMissedScheduledCommand(id: id) },
             label: { PanelActivityCard.label($0, devices: store.devices) }
         ) { activity in
             PanelActivityCard.content(activity, store: store, theme: .liquidGlass) { kind in

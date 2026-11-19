@@ -787,7 +787,8 @@ extension HomeStore {
         if !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
             missedScheduledCommands.append(entry)
         }
-        isShowingAssistantBar = true
+        // Missed timers are listed in the panel's reminder area, not the command bar; opening the bar here
+        // would only pop an empty surface over the pinned cards.
         notifyMissedScheduledCommandsIfNeeded()
         persistAllScheduledCommands()
     }
@@ -866,7 +867,6 @@ extension HomeStore {
         foreignScheduledCommands = foreign.sorted { $0.fireDate < $1.fireDate }
 
         if !missedScheduledCommands.isEmpty {
-            isShowingAssistantBar = true
             notifyMissedScheduledCommandsIfNeeded()
         }
         persistAllScheduledCommands()
@@ -876,7 +876,7 @@ extension HomeStore {
         guard let handler = onMissedScheduledCommand else { return }
         // A legacy entry with no recorded source is not a missed timer of this home: it may not be
         // due yet and nobody has confirmed its owner, so the "missed while closed" banner and its
-        // Run Now action are not offered for it. The assistant bar shows it as 来源待确认 (#22).
+        // Run Now action are not offered for it. The panel activity stack shows it as 来源待确认 (#22).
         for entry in missedScheduledCommands
         where entry.effectiveSourceScopes != nil && !notifiedMissedTimerIds.contains(entry.id) {
             notifiedMissedTimerIds.insert(entry.id)
@@ -1004,7 +1004,7 @@ extension HomeStore {
             persistAllScheduledCommands()
             startScheduledTask(for: confirmed, delay: confirmed.fireDate.timeIntervalSince(now))
         } else {
-            // The user is looking at it in the bar; a "missed while closed" banner would only repeat it.
+            // The user is looking at it in the panel; a "missed while closed" banner would only repeat it.
             notifiedMissedTimerIds.insert(id)
             missedScheduledCommands.append(confirmed)
             missedScheduledCommands.sort { $0.fireDate < $1.fireDate }

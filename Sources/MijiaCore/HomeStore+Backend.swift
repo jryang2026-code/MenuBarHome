@@ -97,6 +97,8 @@ extension HomeStore {
     func applyLGClientKey(_ key: String, fromClientID clientID: UUID? = nil) -> Bool {
         if let clientID {
             guard !isResumeShutdown, homeBackend != .demo, clientID == lgWebOSClientID else { return false }
+            // A key registered by the connection a trust reset is discarding must not restore trust (#262).
+            guard !lgTrustResetInFlight else { return false }
         }
         var updated = lgConfig
         updated.clientKey = key
@@ -1414,24 +1416,26 @@ extension HomeStore {
             showToast(L10n.tr("演示模式下不会连接局域网电视", "Demo Mode does not connect to LAN TVs"), isError: true)
             return nil
         }
-        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient else { return nil }
+        guard lgConfig.hasConfiguredHost, let client = lgWebOSClient, !lgTrustResetInFlight else { return nil }
         let host = lgConfig.host
+        // Closed synchronously with the task below: key callbacks from the pre-reset connection must
+        // not restore trust while the reset is suspended (#262).
+        lgTrustResetInFlight = true
         return Task { @MainActor [weak self] () -> Bool in
             guard let self else { return false }
+            defer { self.lgTrustResetInFlight = false }
             guard !Task.isCancelled, self.lgWebOSClient === client, self.lgConfig.host == host else { return false }
-            let previousConfig = self.lgConfig
-            var cleared = previousConfig
-            cleared.clientKey = ""
             let pairingVault: CredentialVault? = self.credentialVault
                 ?? (self.userDefaults === UserDefaults.standard ? .shared : nil)
 
             // When trust and pairing key share a CredentialVault, clear both in one atomic Keychain
-            // commit before stopping the client. Otherwise persist the cleared config first, then
-            // reset trust (rolling back on error) so no failure leaves a split state.
-            let clearedKeyAtomically: Bool
+            // commit before stopping the client. Otherwise persist the cleared key first, then
+            // reset trust (re-syncing storage to memory on error) so no failure leaves a split state.
+            // Neither branch touches `lgConfig` in memory: every await below can interleave with a
+            // Settings edit, so the final result is derived from the latest config after the last await.
             if let pairingVault, await client.trustStoreSharesVault(pairingVault) {
                 do {
-                    clearedKeyAtomically = try await client.resetTrust(
+                    _ = try await client.resetTrust(
                         expectedHost: host,
                         clearingPairingKeyInVault: pairingVault
                     )
@@ -1442,15 +1446,18 @@ extension HomeStore {
                 }
             } else {
                 guard !Task.isCancelled, self.lgWebOSClient === client, self.lgConfig.host == host else { return false }
-                guard cleared.save(to: self.userDefaults, vault: self.credentialVault) else {
+                var clearedNow = self.lgConfig
+                clearedNow.clientKey = ""
+                guard clearedNow.save(to: self.userDefaults, vault: self.credentialVault) else {
                     self.lgConfigSaveFailed = true
                     self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
                     return false
                 }
                 do {
-                    clearedKeyAtomically = try await client.resetTrust(expectedHost: host)
+                    _ = try await client.resetTrust(expectedHost: host)
                 } catch {
-                    _ = previousConfig.save(to: self.userDefaults, vault: self.credentialVault)
+                    // Memory still holds the live config (including any edit made meanwhile).
+                    _ = self.lgConfig.save(to: self.userDefaults, vault: self.credentialVault)
                     self.lgConfigSaveFailed = true
                     let message: String = (error as? LGCertificateTrust.Failure == .unavailable)
                         ? Self.lgKeychainSaveErrorMessage
@@ -1460,23 +1467,45 @@ extension HomeStore {
                 }
             }
 
-            guard self.lgConfig.host == host, self.lgWebOSClient === client else { return false }
-            if clearedKeyAtomically {
-                // Keep UserDefaults metadata / legacy cleanup in sync; the vault slot is already nil,
-                // so `save` returns immediately without performing a second Keychain write.
-                guard cleared.save(to: self.userDefaults, vault: self.credentialVault) else {
-                    _ = previousConfig.save(to: self.userDefaults, vault: self.credentialVault)
-                    self.lgConfigSaveFailed = true
-                    self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
-                    return false
+            await self.lgTrustResetSuspensionHookForTesting?()
+
+            // Apply only the pairing-key change to the latest config, so a newer Settings edit
+            // (disabled, renamed, moved to another TV) survives and a stale key is never written back.
+            let sameTV = self.lgWebOSClient === client && self.lgConfig.host == host
+            var final = self.lgConfig
+            final.clientKey = ""
+            guard final.save(to: self.userDefaults, vault: self.credentialVault) else {
+                _ = self.lgConfig.save(to: self.userDefaults, vault: self.credentialVault)
+                self.lgConfigSaveFailed = true
+                self.showToast(Self.lgKeychainSaveErrorMessage, isError: true)
+                return false
+            }
+            self.lgConfigSaveFailed = false
+            self.suppressNextLGConfigDidSetSave = true
+            self.lgConfig = final
+            self.suppressNextLGConfigDidSetSave = false
+
+            // The client must follow the store's latest config, never the snapshot taken before the
+            // await: re-push until no edit slipped in during the hop.
+            if let current = self.lgWebOSClient {
+                var pushed = final
+                await current.updateConfig(pushed)
+                while self.lgWebOSClient === current, self.lgConfig != pushed {
+                    pushed = self.lgConfig
+                    await current.updateConfig(pushed)
                 }
             }
 
-            self.lgConfigSaveFailed = false
-            self.suppressNextLGConfigDidSetSave = true
-            self.lgConfig = cleared
-            self.suppressNextLGConfigDidSetSave = false
-            await client.updateConfig(cleared)
+            guard sameTV else {
+                self.showToast(
+                    L10n.tr(
+                        "电视设置在重置期间已更改，旧电视身份已清除；请确认当前电视后重新重置并配对",
+                        "TV settings changed during the reset; the old TV identity was cleared. Check the current TV, then reset and pair again"
+                    ),
+                    isError: true
+                )
+                return false
+            }
             self.showToast(L10n.tr("旧电视身份已清除，请在电视上确认重新配对", "Saved TV identity cleared; confirm the new pairing on your TV"))
             return true
         }
