@@ -7,7 +7,9 @@ import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { canRefreshDevicesInBackground, signOutXiaomiAccount } from "../src/ui/appLifecycle.js";
 import {
+  applyMiotTypePruneSnapshot,
   buildHostCapabilityContext,
+  dropMiotTypePruneSnapshotForAccount,
   getHostMiAccountsStore,
   recomputeHostDualSource,
   refreshDevices,
@@ -33,7 +35,8 @@ import { DualSourceCoordinator } from "../src/core/dualSourceProvider.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { makeMiAccount } from "../src/core/miAccountsStore.js";
 import { evaluateControlTargetGate } from "../src/core/capabilityReferenceVerdict.js";
-import type { HomeScene } from "../src/core/models.js";
+import type { FacetControl, HomeScene, SmartDevice } from "../src/core/models.js";
+import type { CapabilityIndexedDevice } from "../src/core/capabilityReferenceVerdict.js";
 import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   buildIndexedCapabilityDevices,
@@ -2472,5 +2475,123 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
   });
 });
 
+describe("P3a-W retained alert-signal cleanup", () => {
+  const retainedSensor = (id: string, accountId: string, name: string): SmartDevice => ({
+    id,
+    name,
+    roomId: "r1",
+    roomName: "客厅",
+    model: "bkxh.flood.yf02",
+    isOnline: true,
+    accountId,
+    kind: { kind: "sensor", temperature: null, humidity: null, battery: 80, statusText: "normal" },
+  });
+  const hiddenCard = (id: string, accountId: string) => ({
+    id,
+    name: `card-${id}`,
+    category: "cover" as const,
+    connection: "xiaomi-cloud" as const,
+    sourceScope: miAccountScope(accountId),
+    isSourceAvailable: true,
+    upstreamHiddenOrDisabled: false,
+    participatesInAllOff: false,
+    safetySignals: [] as const,
+    readKeys: [],
+    safetyReadKeys: [],
+  });
 
+  it("drops one account's retained signals and hidden index entries, and keeps the sibling's", () => {
+    const host = { safetyRetainedDevices: [], safetyRetainedDeviceFacets: {}, hiddenMiDevices: [] } as unknown as {
+      safetyRetainedDevices: SmartDevice[];
+      safetyRetainedDeviceFacets: Readonly<Record<string, readonly FacetControl[]>>;
+      hiddenMiDevices: readonly CapabilityIndexedDevice[];
+    };
+    applyMiotTypePruneSnapshot(host, {
+      safetyDevices: [retainedSensor("101", ACC_A, "主号漏水"), retainedSensor("202", ACC_B, "副号漏水")],
+      safetyDeviceFacets: { "101": [], "202": [] },
+      hiddenDevices: [hiddenCard("101", ACC_A), hiddenCard("202", ACC_B)],
+    });
 
+    dropMiotTypePruneSnapshotForAccount(host, ACC_A);
+    assert.deepEqual(host.safetyRetainedDevices.map((device) => device.id), ["202"]);
+    assert.deepEqual(Object.keys(host.safetyRetainedDeviceFacets), ["202"]);
+    assert.deepEqual(host.hiddenMiDevices.map((device) => device.id), ["202"]);
+
+    // Clearing is the last-account path: nothing is left to evaluate.
+    applyMiotTypePruneSnapshot(host, null);
+    assert.deepEqual(host.safetyRetainedDevices, []);
+    assert.deepEqual(host.safetyRetainedDeviceFacets, {});
+    assert.deepEqual(host.hiddenMiDevices, []);
+  });
+
+  it("drops only the signed-out account's retained half from the dual-source snapshot", async () => {
+    const coordinator = new DualSourceCoordinator(null);
+    const device = retainedSensor("202", ACC_B, "副号漏水");
+    await coordinator.refreshParallel({
+      fetchHA: async () => null,
+      fetchMi: async () => ({
+        home: {
+          rooms: [], devices: [retainedSensor("101", ACC_A, "主号漏水"), device],
+          environmentReadings: [], scenes: [],
+        },
+        safetyDevices: [retainedSensor("101", ACC_A, "主号漏水"), device],
+        safetyDeviceFacets: { "101": [], "202": [] },
+        hiddenDevices: [hiddenCard("101", ACC_A), hiddenCard("202", ACC_B)],
+        accountStatuses: { [ACC_A]: { kind: "connected" }, [ACC_B]: { kind: "connected" } },
+      }),
+    });
+    coordinator.removeXiaomiAccount(ACC_A, "zh-Hans", { remainingEnabledCount: 1, reason: "signedOut" });
+    const snapshot = coordinator.getLastMiSnapshot();
+    assert.ok(snapshot);
+    assert.deepEqual(snapshot!.safetyDevices?.map((d) => d.id), ["202"]);
+    assert.deepEqual(Object.keys(snapshot!.safetyDeviceFacets ?? {}), ["202"]);
+    assert.deepEqual(snapshot!.hiddenDevices?.map((d) => d.id), ["202"]);
+  });
+
+  it("clears the retained set when the last Mi account is disabled but not when a sibling stays on", async () => {
+    const transport: HttpTransport = async (req) => {
+      const user = reqUser(req), path = reqPath(req);
+      if (path === "v2/homeroom/gethome_merged" || path === "v2/homeroom/gethome") {
+        return okMi({ homelist: [{ id: user === "10001" ? "9101" : "9202", name: "Home", roomlist: [] }] });
+      }
+      if (path === "v2/home/device_list_page" || path === "home/device_list") {
+        return okMi({ list: [{ did: user === "10001" ? "101" : "202", name: "台灯", model: LIGHT_MODEL, isOnline: true }] });
+      }
+      if (path === "miotspec/prop/get") {
+        return okMi([{ did: user === "10001" ? "101" : "202", siid: 2, piid: 1, code: 0, value: true }]);
+      }
+      return okMi({});
+    };
+    const app = mountApp(transport);
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = SESS_A;
+    const store = getHostMiAccountsStore(app);
+    await store.upsertAccount(SESS_A);
+    await store.upsertAccount(SESS_B);
+    await refreshDevices(app, false);
+    assert.equal(app.devices.length, 2);
+
+    applyMiotTypePruneSnapshot(app, {
+      safetyDevices: [retainedSensor("101", ACC_A, "主号漏水"), retainedSensor("202", ACC_B, "副号漏水")],
+      safetyDeviceFacets: { "101": [], "202": [] },
+      hiddenDevices: [hiddenCard("101", ACC_A), hiddenCard("202", ACC_B)],
+    });
+
+    // Disabling the primary must not blind the secondary's retained alerts before its own refresh.
+    const disableA = await setMiAccountEnabledOnHost(app, ACC_A, false, { confirmPause: true });
+    assert.equal(disableA.status, "applied");
+    assert.deepEqual(app.safetyRetainedDevices.map((device) => device.id), ["202"]);
+    assert.deepEqual(app.hiddenMiDevices.map((device) => device.id), ["202"]);
+
+    applyMiotTypePruneSnapshot(app, {
+      safetyDevices: [retainedSensor("202", ACC_B, "副号漏水")],
+      safetyDeviceFacets: { "202": [] },
+      hiddenDevices: [hiddenCard("202", ACC_B)],
+    });
+    const disableB = await setMiAccountEnabledOnHost(app, ACC_B, false, { confirmPause: true });
+    assert.equal(disableB.status, "applied");
+    assert.deepEqual(app.safetyRetainedDevices, []);
+    assert.deepEqual(app.safetyRetainedDeviceFacets, {});
+    assert.deepEqual(app.hiddenMiDevices, []);
+  });
+});

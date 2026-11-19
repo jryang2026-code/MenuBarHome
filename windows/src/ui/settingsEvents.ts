@@ -42,7 +42,7 @@ import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, Re
 import { demoDevices, demoScenes } from "./demo.js";
 import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
-import { applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isHostHaEnabled } from "./cloudRefresh.js";
+import { applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled } from "./cloudRefresh.js";
 import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
@@ -1159,6 +1159,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       host.replyBanner = null;
       host.settings.connectionMode = mode;
       if (mode !== "xiaomiCloud") host.cloudValuesStale = false;
+      // Leaving Mi behind must also drop the alert-only devices and hidden index entries it left in
+      // the panel; the refresh paths only rewrite them while a Mi source is still selected (P3a-W).
+      if (mode !== "xiaomiCloud" && !isDualSourceEnabled(host)) applyMiotTypePruneSnapshot(host, null);
       host.selectRoom(null);
       if (mode === "demo") {
         host.devices = demoDevices();

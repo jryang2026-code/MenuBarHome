@@ -936,6 +936,10 @@ export async function setMiAccountEnabledOnHost(
   clearAccountRateLimitBackoff(accountId);
   const targetAccount = allAccounts.find((acc) => acc.id === accountId);
   const enabledAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
+  // Disabling an account drops the alert-only devices and hidden index entries it owned; with no
+  // enabled account left there is nothing to evaluate, so the whole retained set goes (P3a-W).
+  if (enabledAfter.length === 0) applyMiotTypePruneSnapshot(host, null);
+  else dropMiotTypePruneSnapshotForAccount(host, accountId);
   if (enabledAfter.length === 0 || (host.settings.miSession && miAccountId(host.settings.miSession) === accountId) || (targetAccount && getXiaomiBackoffUntilMs(host, targetAccount.session) !== null)) {
     clearXiaomiRateLimitBackoff(host);
     clearCachedXiaomiTopology(host);
@@ -1623,6 +1627,13 @@ async function performSignOutSingleMiAccountOnHost(
           }) ?? null)
         : null;
 
+    // A signed-out account's retained sensors and hidden cards must go whether or not the dual-source
+    // coordinator rewrites the merged snapshot (P3a-W); the last account takes the whole set with it.
+    if (isXiaomiSnapshot) {
+      if (enabledRemaining.length === 0) applyMiotTypePruneSnapshot(host, null);
+      else dropMiotTypePruneSnapshotForAccount(host, accountId);
+    }
+
     if (isXiaomiSnapshot && host.waitingDeviceIds) {
       for (const id of removedIds) host.waitingDeviceIds.delete(id);
       if (nextDual) {
@@ -1654,7 +1665,6 @@ async function performSignOutSingleMiAccountOnHost(
       ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
       reconcileActiveCameraAfterDeviceRestore(host, dualRoutesBeforeRemoval);
     } else if (isXiaomiSnapshot) {
-      dropMiotTypePruneSnapshotForAccount(host, accountId);
       if (removedIds.size > 0) {
         host.devices = host.devices.filter((d) => !removedIds.has(d.id));
         host.environmentReadings = host.environmentReadings.filter((r) => !removedIds.has(r.id));

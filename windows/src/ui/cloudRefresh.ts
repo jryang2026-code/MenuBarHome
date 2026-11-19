@@ -67,8 +67,9 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
-import { buildMiotTypePrunePlan, miotSafetySignalsForSensorPolicy } from "../core/miotTypePruning.js";
+import { buildMiotTypePrunePlan, miotSafetySignalsForPrefs } from "../core/miotTypePruning.js";
 import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
+import { loadSafetyGuardPrefs } from "./automationSettingsView.js";
 import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
 import {
   getHaScopeLifecyclePhase,
@@ -108,8 +109,8 @@ export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts?
 };
 
 /**
- * Device-type pruning inputs for one Mi refresh round (P3a-W): the host selection plus every sensor
- * alert that is currently on, so a closed category keeps exactly the reads its alerts need.
+ * Device-type pruning inputs for one Mi refresh round (P3a-W): the host selection plus every safety
+ * signal that is currently on, so a closed category keeps exactly the reads its alerts need.
  */
 export interface HostMiotTypePruneOptions {
   readonly selection: CapabilitySelection;
@@ -119,7 +120,9 @@ export interface HostMiotTypePruneOptions {
 export function hostMiotTypePruneOptions(host: MiSelectionHost): HostMiotTypePruneOptions {
   return {
     selection: resolveHostMiSelectionState(host).selection,
-    safetySignals: miotSafetySignalsForSensorPolicy(loadSensorAlertPolicy()),
+    // "安全与提醒" owns these: the master switch drops every retained signal, and each long-run or
+    // battery alert keeps only its own (architecture.md §D, ruling 3).
+    safetySignals: miotSafetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
   };
 }
 
@@ -325,9 +328,11 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     if (isDualSourceEnabled(host)) return refreshDualSourceDevices(host, silent);
     if (host.settings.connectionMode === "homeAssistant") return refreshHADevices(host, silent);
     if (host.settings.connectionMode === "xiaomiCloud") {
-      // A turned-off or signed-out account must not keep evaluating retained Mi alert signals,
-      // whichever refresh path it would take.
-      if (host.settings.miSession && !isHostMiSessionEnabled(host, host.settings.miSession)) {
+      // A host whose every Mi account is turned off or signed out must not keep evaluating the alert
+      // signals it left behind. A multi-account host with any enabled account keeps its snapshot:
+      // its own refresh rewrites the per-account retained set, so clearing here would drop the
+      // sibling accounts' sensors until that refresh returns (P3a-W).
+      if (resolveEnabledMiAccountsForHost(host).length === 0) {
         applyMiotTypePruneSnapshot(host, null);
       }
       // The store's first load of this window enumerates the credential slots; later loads read
@@ -404,12 +409,14 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
     // Device-type pruning inputs for this round (P3a-W). One plan feeds the early paint, the cloud
     // read batch and the final synthesis, so a turned-off type costs no reads anywhere.
     const pruneOptions = hostMiotTypePruneOptions(host);
+    const accountId = miAccountId(session);
+    const scope = miAccountScope(accountId);
     const prunePlanFor = (records: readonly MiDeviceRecord[], planSpecs: Readonly<Record<string, MiotDeviceSpec>>) =>
       buildMiotTypePrunePlan({
         rawDevices: records,
         specs: planSpecs,
         selection: pruneOptions.selection,
-        connectionScope: miAccountScope(miAccountId(session)),
+        connectionScope: scope,
         safetySignals: pruneOptions.safetySignals,
       });
     const stateToken = host.sourceEpoch.capture();
@@ -570,9 +577,11 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         presentationChanged || cloudPresentationFingerprint(host) !== previousPresentation;
 
       applyMiotTypePruneSnapshot(host, {
-        safetyDevices: safetyHome?.devices,
+        // Stamp the owning account like `stampAccountSnapshot` does, so disabling or signing this
+        // account out drops exactly its retained sensors (`dropMiotTypePruneSnapshotForAccount`).
+        safetyDevices: safetyHome?.devices.map((device) => ({ ...device, accountId })),
         safetyDeviceFacets: safetyHome?.deviceFacets,
-        hiddenDevices: prunePlan.hiddenIndexedDevices,
+        hiddenDevices: prunePlan.hiddenIndexedDevices.filter((device) => device.sourceScope === scope),
       });
       markTimerSnapshotReady(host);
       if (completePendingMiRevalidation(host, [miAccountId(session)])) {

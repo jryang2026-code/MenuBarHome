@@ -1,37 +1,39 @@
 import { deviceCategoryForDevice, DEVICE_CATEGORY_IDS, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
-  partitionCapabilityDevices, SENSOR_ALERT_TO_SAFETY_SIGNAL,
+  partitionCapabilityDevices, SAFETY_SIGNAL_KINDS, SENSOR_ALERT_TO_SAFETY_SIGNAL,
   type CapabilityIndexedDevice, type CapabilitySelection, type DeviceSetPartition, type SafetySignalKind,
 } from "./capabilityReferenceVerdict.js";
-import { inferFallbackSpec, miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
+import { miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
 import { MiotSynthesizer } from "./miCloud/synthesis.js";
 import type { MiDeviceRecord, MiotPropKey } from "./miCloud/client.js";
 import {
-  inferSensorAlertKindsFromMetadata, SENSOR_ALERT_KINDS, sensorAlertEnabledByDefault,
+  inferSensorAlertKindsFromMetadata, SENSOR_ALERT_KINDS, sensorAlertEnabledByDefault, stripLockNeutralTokens,
   type SensorAlertKind, type SensorAlertPolicy,
 } from "./safetyAndHealth.js";
 
 /**
- * Only a sensor card or a generic facet card can carry a binary safety alert. Smoke, gas, leak,
- * contact, motion, vibration and lock sensors all synthesize one of those, and the alert engine
- * infers the kind from the same metadata used here.
+ * Alerts a closed type still keeps reading for, from the host's safety switches. `enableSafetyAlerts`
+ * is the master switch, and each long-run / battery alert keeps only its own signal
+ * (architecture.md §D, ruling 3).
  */
-const SAFETY_SIGNAL_CATEGORIES: ReadonlySet<DeviceCategoryID> = new Set<DeviceCategoryID>(["sensor", "generic"]);
+export interface MiotSafetyPrefs {
+  readonly enableSafetyAlerts: boolean;
+  readonly longRunningPlug: boolean;
+  readonly longRunningClimate: boolean;
+  readonly lowBattery: boolean;
+}
 
-/**
- * Which alerts this card could report, from the metadata the alert engine itself reads (model,
- * name, device type, service and property names). A water-leak sensor therefore keeps only its
- * leak reads, and a device that names no safety signal is pruned completely once its type is off.
- * Long-run, high-power, offline and low-battery alerts have no per-kind setting, so closing a
- * category there is the user's only switch and nothing is retained for them.
- */
-function safetySignalsFor(record: MiDeviceRecord, category: DeviceCategoryID, spec: MiotDeviceSpec): SafetySignalKind[] {
-  if (!SAFETY_SIGNAL_CATEGORIES.has(category)) return [];
-  const text = [
-    record.model, record.name, record.specType ?? "", spec.type,
-    ...spec.services.flatMap((service) => [miotShortName(service.type), ...service.properties.map((p) => miotShortName(p.type))]),
-  ].join(" ");
-  return inferSensorAlertKindsFromMetadata(text).map((kind: SensorAlertKind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
+/** Every safety signal the host is currently evaluating, in the shared vocabulary's own order. */
+export function miotSafetySignalsForPrefs(prefs: MiotSafetyPrefs, policy: SensorAlertPolicy): SafetySignalKind[] {
+  if (!prefs.enableSafetyAlerts) return [];
+  const signals = new Set<SafetySignalKind>(miotSafetySignalsForSensorPolicy(policy));
+  if (prefs.longRunningPlug) {
+    signals.add("longRunningPlug");
+    signals.add("highPower");
+  }
+  if (prefs.longRunningClimate) signals.add("longRunningClimate");
+  if (prefs.lowBattery) signals.add("lowBattery");
+  return SAFETY_SIGNAL_KINDS.filter((kind) => signals.has(kind));
 }
 
 /** Every sensor-alert signal the host is currently evaluating, in the shared `SafetySignalKind` vocabulary. */
@@ -39,6 +41,70 @@ export function miotSafetySignalsForSensorPolicy(policy: SensorAlertPolicy): Saf
   return SENSOR_ALERT_KINDS
     .filter((kind: SensorAlertKind) => policy.enabled[kind] ?? sensorAlertEnabledByDefault(kind))
     .map((kind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
+}
+
+/**
+ * The alert engine's own read surface, one field per entry. Splitting instead of concatenating keeps
+ * a property name from suppressing a different field's signal, and brings in the descriptions the
+ * evaluator surfaces as facet labels. `identifiesDevice` marks the fields that name the device
+ * itself: only those may claim the lock signal, because `direction-lock` or "Physical Control
+ * Locked" name a lockout on phones, washers and air purifiers.
+ */
+function alertMetadataFields(
+  record: MiDeviceRecord,
+  spec: MiotDeviceSpec,
+): { readonly text: string; readonly identifiesDevice: boolean }[] {
+  const fields = [record.model, record.name, record.specType ?? "", spec.type, spec.description ?? ""]
+    .map((text) => ({ text: stripLockNeutralTokens(text), identifiesDevice: true }));
+  for (const service of spec.services) {
+    // A service is part of the device's own shape (`lock`, `child-lock`), a property is not.
+    fields.push({ text: stripLockNeutralTokens(service.type), identifiesDevice: true });
+    fields.push({ text: stripLockNeutralTokens(service.description ?? ""), identifiesDevice: false });
+    for (const property of service.properties) {
+      fields.push({ text: stripLockNeutralTokens(property.type), identifiesDevice: false });
+      fields.push({ text: stripLockNeutralTokens(property.description ?? ""), identifiesDevice: false });
+      for (const item of property.valueList ?? []) {
+        fields.push({ text: stripLockNeutralTokens(item.description), identifiesDevice: false });
+      }
+    }
+  }
+  return fields;
+}
+
+/**
+ * Which alerts this card could report, from the metadata the alert engine itself reads (model, name,
+ * device and service names, property names and value labels) plus the alerts its own card kind can
+ * carry. A water-leak sensor therefore keeps only its leak reads, and a device that names no safety
+ * signal is pruned completely once its type is off.
+ */
+function safetySignalsFor(
+  record: MiDeviceRecord,
+  category: DeviceCategoryID,
+  spec: MiotDeviceSpec,
+  heats: boolean,
+): SafetySignalKind[] {
+  const signals = new Set<SafetySignalKind>();
+  // The actuator alerts read a card's own state, so they follow the card kind, not its labels.
+  if (category === "plug") {
+    signals.add("longRunningPlug");
+    signals.add("highPower");
+  } else if (category === "climate" || (category === "appliance" && heats)) {
+    signals.add("longRunningClimate");
+  }
+  if (spec.services.some((service) => miotShortName(service.type) === "battery")) signals.add("lowBattery");
+  // A lock device or a lock service is a lock whatever its own properties are called. Recognising it
+  // here is what keeps a real lock's signal when the device also publishes `child-lock`.
+  if (miotShortName(spec.type) === "lock" || spec.services.some((service) => miotShortName(service.type) === "lock")) {
+    signals.add("lock");
+  }
+  for (const field of alertMetadataFields(record, spec)) {
+    for (const kind of inferSensorAlertKindsFromMetadata(field.text)) {
+      // "lock" outside a device's own name is a lockout, not a lock: `direction-lock`, `DoorNotLock`.
+      if (kind === "lock" && !field.identifiesDevice) continue;
+      signals.add(SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
+    }
+  }
+  return SAFETY_SIGNAL_KINDS.filter((kind) => signals.has(kind));
 }
 
 export interface MiotTypePruneOptions {
@@ -95,11 +161,12 @@ function classifyRecord(record: MiDeviceRecord, spec: MiotDeviceSpec): Classifie
           id: plan.planId, name: plan.name, roomId: "other", roomName: "",
           model: record.model, isOnline: record.isOnline, kind: plan.kind,
         });
+    const heats = plan.kind !== null && plan.kind.kind === "appliance" && plan.kind.heats;
     return {
       deviceId: plan.planId,
       name: plan.name,
       category,
-      safetySignals: safetySignalsFor(record, category, plan.spec),
+      safetySignals: safetySignalsFor(record, category, plan.spec, heats),
       required: plan.required,
       facets: plan.facets,
       // Either layer can raise the alert: a dedicated card reads its state from card properties,
@@ -149,13 +216,27 @@ export function buildMiotTypePrunePlan(options: MiotTypePruneOptions): MiotTypeP
     options.selection.enabledConnections.includes("xiaomi-cloud") &&
     options.selection.enabledConnectionScopes.includes(options.connectionScope);
   const everyCategoryEnabled = DEVICE_CATEGORY_IDS.every((id) => options.selection.enabledCategories.includes(id));
+  // A split parent is drawn only through its tracks (`MiotSynthesizer.synthesize`), so its own
+  // whole-spec plan must not add reads or index entries.
+  const splitParents = new Set(
+    options.rawDevices.map((record) => record.splitParentDid).filter((did): did is string => !!did),
+  );
 
   const keyIndex = new Map<string, MiotPropKey>();
   const categoryByDeviceId = new Map<string, DeviceCategoryID>();
   const plansByRecord = new Map<MiDeviceRecord, ClassifiedPlan[]>();
+  /** No spec yet: the record stays visible and contributes no reads, exactly as before P3a-W. */
+  const unprunedDeviceIds = new Set<string>();
   const indexed: CapabilityIndexedDevice[] = [];
   for (const record of options.rawDevices) {
-    const spec = options.specs[record.model] ?? inferFallbackSpec(record);
+    if (splitParents.has(record.did)) continue;
+    // Never fall back to an inferred spec here: `collectMiotPropKeys` reads nothing for such a
+    // record, so inventing keys would change the read plan whenever a spec is still missing.
+    const spec = options.specs[record.model];
+    if (!spec) {
+      unprunedDeviceIds.add(record.did);
+      continue;
+    }
     const plans = classifyRecord(record, spec);
     plansByRecord.set(record, plans);
     for (const plan of plans) {
@@ -171,12 +252,18 @@ export function buildMiotTypePrunePlan(options: MiotTypePruneOptions): MiotTypeP
     { enabledSignals: options.safetySignals },
   );
 
-  const visibleIds = new Set(partition.availableDeviceIds);
+  const visibleIds = new Set([...partition.availableDeviceIds, ...unprunedDeviceIds]);
   const safetyIds = new Set(partition.hiddenSafetyRetainedDeviceIds);
   const skippedDeviceIds = new Set<string>();
   const visibleRecords: MiDeviceRecord[] = [];
   const safetyRecords: MiDeviceRecord[] = [];
-  for (const [record, plans] of plansByRecord) {
+  for (const record of options.rawDevices) {
+    const plans = plansByRecord.get(record);
+    if (plans === undefined) {
+      // Spec-less record, or a split parent: the former is always drawn, the latter never is.
+      if (unprunedDeviceIds.has(record.did)) visibleRecords.push(record);
+      continue;
+    }
     const ids = plans.map((plan) => plan.deviceId);
     if (ids.some((id) => visibleIds.has(id))) {
       visibleRecords.push(record);

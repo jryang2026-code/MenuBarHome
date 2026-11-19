@@ -11,6 +11,7 @@ import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePrefer
 } from "./i18n.js";
 import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
+import { miAccountScope } from "./miAccountControl.js";
 import { parseMiotActionAddress, parseMiotAddress } from "./miCloud/spec.js";
 import type { MiDeviceRecord } from "./miCloudClient.js";
 import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionStatus, type DeviceCommand,
@@ -1366,6 +1367,24 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
+    // The retained alert signals and hidden index entries follow the same ownership rule as cards:
+    // the removed account's half goes, the sibling accounts keep theirs (P3a-W).
+    const removedScope = miAccountScope(accountId);
+    const nextSafetyDevices = this.lastMi.safetyDevices?.filter(
+      (device) => !isRemovedMiDevice(device.id, device.accountId),
+    );
+    let nextSafetyDeviceFacets: Record<string, readonly FacetControl[]> | undefined;
+    if (this.lastMi.safetyDeviceFacets) {
+      nextSafetyDeviceFacets = {};
+      for (const [id, controls] of Object.entries(this.lastMi.safetyDeviceFacets)) {
+        if (isRemovedMiDevice(id)) continue;
+        nextSafetyDeviceFacets[id] = controls;
+      }
+    }
+    const nextHiddenDevices = this.lastMi.hiddenDevices?.filter(
+      (device) => device.sourceScope !== removedScope,
+    );
+
     const remainingStatuses = Object.values(nextAccountStatuses ?? {});
     const noRemainingAccounts =
       options.remainingEnabledCount !== undefined
@@ -1394,6 +1413,9 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
         ...(nextLightGroupOwners !== undefined ? { lightGroupOwners: nextLightGroupOwners } : {}),
         ...(nextHomes !== undefined ? { homes: nextHomes } : {}),
         ...(nextAccountStatuses !== undefined ? { accountStatuses: nextAccountStatuses } : {}),
+        ...(nextSafetyDevices !== undefined ? { safetyDevices: nextSafetyDevices } : {}),
+        ...(nextSafetyDeviceFacets !== undefined ? { safetyDeviceFacets: nextSafetyDeviceFacets } : {}),
+        ...(nextHiddenDevices !== undefined ? { hiddenDevices: nextHiddenDevices } : {}),
       };
       if (remainingStatuses.length > 0) {
         if (remainingStatuses.some((s) => s.kind === "connected")) {

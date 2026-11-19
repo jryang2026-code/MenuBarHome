@@ -1290,6 +1290,29 @@ export function resolveDisabledDeviceByEntity(entityId: string, knownDisabledDev
   return knownDisabledDevices.find((rec) => disabledDeviceIdentifierMatches(rec, entityId)) ?? null;
 }
 
+function hiddenTypeDeviceIdentifierMatches(rec: CapabilityIndexedDevice, targetIdOrEntityId: string): boolean {
+  const base = targetIdOrEntityId.split("#")[0] ?? targetIdOrEntityId;
+  // A multi-account card is `<accountId>/<raw did>`; the index entry keeps the raw did.
+  const wanted = [base, MiAccountScope.localId(base)];
+  const ids = [rec.id, MiAccountScope.localId(rec.id)];
+  return wanted.some(
+    (target) =>
+      ids.includes(target) ||
+      ids.some((id) => target.startsWith(`${id}.`) || target.startsWith(`miot:${id}:`) || target.startsWith(`miot-action:${id}:`)),
+  );
+}
+
+/**
+ * A device whose type is turned off. It is still in the identity index, so the host must answer
+ * "该设备类型已关闭" rather than "设备不存在" for an old link, timer or AI intent (architecture.md §D).
+ */
+export function resolveHiddenTypeDeviceByEntity(
+  entityId: string,
+  hiddenDevices: readonly CapabilityIndexedDevice[] | undefined,
+): CapabilityIndexedDevice | null {
+  return hiddenDevices?.find((rec) => hiddenTypeDeviceIdentifierMatches(rec, entityId)) ?? null;
+}
+
 export function resolveDisabledHaDeviceByEntity(
   entityId: string,
   knownDisabledHaDevices: readonly DisabledHaDeviceSnapshot[],
@@ -1452,7 +1475,12 @@ export function evaluateDeviceEntityWriteGateVerdict(options: {
           options.context.state.disabledHaScopes,
         )
       : null;
-  const targetId = options.resolvedActiveDeviceId ?? disabledMatch?.id ?? disabledHaMatch?.id ?? null;
+  const hiddenTypeMatch =
+    options.resolvedActiveDeviceId === null && disabledMatch === null && disabledHaMatch === null
+      ? resolveHiddenTypeDeviceByEntity(options.targetIdOrEntityId, options.context.hiddenDevices)
+      : null;
+  const targetId =
+    options.resolvedActiveDeviceId ?? disabledMatch?.id ?? disabledHaMatch?.id ?? hiddenTypeMatch?.id ?? null;
   if (targetId === null) {
     const scopedOwner = MiAccountScope.owner(options.targetIdOrEntityId);
     if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
@@ -1537,7 +1565,11 @@ export function evaluateIntentsWriteGateVerdict(options: {
       activeDev || disabledDev
         ? null
         : resolveDisabledHaDeviceByEntity(i.targetId, options.context.state.knownDisabledHaDevices, options.context.state.disabledHaScopes);
-    const resolvedId = activeDev?.id ?? disabledDev?.id ?? disabledHaDev?.id ?? null;
+    const hiddenTypeDev =
+      activeDev || disabledDev || disabledHaDev
+        ? null
+        : resolveHiddenTypeDeviceByEntity(i.targetId, options.context.hiddenDevices);
+    const resolvedId = activeDev?.id ?? disabledDev?.id ?? disabledHaDev?.id ?? hiddenTypeDev?.id ?? null;
     if (resolvedId === null) {
       const scopedOwner = MiAccountScope.owner(i.targetId);
       if (scopedOwner && options.context.state.disabledAccountIds.has(miAccountScope(scopedOwner))) {
@@ -1695,6 +1727,22 @@ export function evaluateDisabledUtteranceGate(options: {
         kind: stubKindForDisabledCategory(snap.category, snap.entityIds[0] ?? snap.id),
       });
     }
+    // A closed device type stays resolvable by voice so the answer names the type instead of
+    // claiming the device never existed (architecture.md §D).
+    for (const hidden of options.context.hiddenDevices ?? []) {
+      if (seen.has(hidden.id)) continue;
+      seen.add(hidden.id);
+      const displayName = useAliases ? (aliases[hidden.id]?.trim() || hidden.name) : hidden.name;
+      out.push({
+        id: hidden.id,
+        name: displayName,
+        roomId: "disabled",
+        roomName: "",
+        model: "disabled.mi",
+        isOnline: true,
+        kind: stubKindForDisabledCategory(hidden.category, hidden.id),
+      });
+    }
     return out;
   };
   const stubDevices = buildStubDevices(true);
@@ -1841,6 +1889,8 @@ export function evaluateDisabledDeviceUrlGate(
     readonly dualSourceEnabled?: boolean;
     readonly interfaceLanguage?: LanguagePreference;
     readonly deviceAliases?: Readonly<Record<string, string>>;
+    /** The identity index of the cards the type selection withholds (P3a-W). */
+    readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
   },
   storage?: StorageLike | null,
 ): string | null {
@@ -1876,11 +1926,31 @@ export function evaluateDisabledDeviceUrlGate(
               deviceIdOrName,
             )),
       );
+  const hiddenHit = miHit || haHit
+    ? null
+    : (settings.hiddenDevices ?? []).find(
+        (d) =>
+          hiddenTypeDeviceIdentifierMatches(d, deviceIdOrName) ||
+          disabledDeviceNameMatches(
+            { name: d.name, ...(aliases[d.id] ? { aliasName: aliases[d.id] } : {}) },
+            deviceIdOrName,
+          ),
+      );
+  const pref = effectivePref(settings.interfaceLanguage);
+  // A URL arrives without a host context, but the hidden index only ever holds cards the current
+  // device-type selection withholds, so its category is the answer (architecture.md §D).
+  if (hiddenHit) {
+    return controlTargetRejectionMessage({ code: "categoryDisabled", disabledCategory: hiddenHit.category }, pref);
+  }
   const hitId = miHit?.id ?? haHit?.id ?? null;
   if (!hitId) return null;
-  const { indexedDevices } = buildIndexedCapabilityDevices({ state, accounts, devices: [], scenes: [], haBaseURL: settings.haBaseURL ?? null, haToken: settings.haToken ?? null, connectionMode: mode, dualSourceEnabled: Boolean(settings.dualSourceEnabled) });
+  const { indexedDevices } = buildIndexedCapabilityDevices({
+    state, accounts, devices: [], scenes: [],
+    haBaseURL: settings.haBaseURL ?? null, haToken: settings.haToken ?? null,
+    connectionMode: mode, dualSourceEnabled: Boolean(settings.dualSourceEnabled),
+  });
   const v = evaluateControlTargetGate({ targetKind: "device", targetId: hitId, selection: state.selection, devices: indexedDevices });
-  return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, effectivePref(settings.interfaceLanguage));
+  return v.allowed || !v.rejectionReason ? null : controlTargetRejectionMessage(v.rejectionReason, pref);
 }
 
 export function evaluateDisabledSceneUrlGate(

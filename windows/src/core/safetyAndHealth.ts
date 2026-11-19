@@ -189,6 +189,26 @@ const looksLikeLockMetadata = (lower: string): boolean =>
   lower.includes("門鎖");
 
 /**
+ * A lock's own child lock and its physical button carry the word "lock" without making a device a
+ * lock: `miot.lock.ble22` publishes `child-lock`, and aquariums, shower heads, feeders and kettles
+ * all publish `physical-controls-locked`. A read plan strips these before asking for the lock
+ * signal, so one neutral property cannot decide a whole device.
+ */
+const LOCK_NEUTRAL_PROPERTY_TOKENS = [
+  "child-lock", "child lock", "childlock",
+  "physical-controls-locked", "physical-controls-lock",
+  "physical control locked", "physical controls locked", "physical-control-locked",
+  "童锁", "童鎖",
+];
+
+/** Drops the lock-neutral property tokens from one metadata field, lowercased. */
+export function stripLockNeutralTokens(text: string): string {
+  let out = text.toLowerCase();
+  for (const token of LOCK_NEUTRAL_PROPERTY_TOKENS) out = out.split(token).join(" ");
+  return out;
+}
+
+/**
  * Every sensor-alert kind the given metadata can plausibly report, in the order
  * `inferSensorKindFromMetadata` prefers. A read plan asks this to decide which alert signals a
  * hidden device must keep reading (P3a-W); evaluation still asks the single-kind form.
