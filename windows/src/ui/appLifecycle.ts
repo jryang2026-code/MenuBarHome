@@ -60,7 +60,12 @@ import {
 import type { MiSession } from "../core/miCloudClient.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { removeDisconnectedHaFromSelection, removeSignedOutMiAccountFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
-import { clearHaScopeLifecycle, getHaScopeLifecyclePhase, syncHaNativeConnection } from "../core/haTransportGate.js";
+import { clearHaScopeLifecycle, getHaScopeLifecyclePhase, haConnectionScope, syncHaNativeConnection } from "../core/haTransportGate.js";
+import {
+  haConnectionRemovalScope,
+  isConnectionRemovalPending,
+  miConnectionRemovalScope,
+} from "../core/connectionRemoval.js";
 import { clearCachedXiaomiTopology, clearPersistedMiSessionExpired, clearXiaomiRateLimitBackoff } from "../core/pollingPolicy.js";
 import {
   buildHostCapabilityContext,
@@ -190,8 +195,18 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         host.assistantKeysByPreset = { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
       }
       const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
-      if (!current.miSession && effectiveCredentials.miSession) host.settings.miSession = effectiveCredentials.miSession;
-      if (current.haToken === "" && effectiveCredentials.haToken !== "") host.settings.haToken = effectiveCredentials.haToken;
+      // P2c-W: a connection whose removal is still incomplete must never be revived by re-adopting
+      // its credential. The record only clears once the OS credential store confirms the slot is gone.
+      const adoptedMiSession = effectiveCredentials.miSession;
+      const miRemovalPending =
+        adoptedMiSession !== null &&
+        isConnectionRemovalPending(miConnectionRemovalScope(makeMiAccount(adoptedMiSession).id));
+      if (!current.miSession && adoptedMiSession && !miRemovalPending) host.settings.miSession = adoptedMiSession;
+      const adoptedHaScope = effectiveCredentials.haToken.trim() === "" ? null : haConnectionScope(host.settings.haBaseURL, effectiveCredentials.haToken);
+      const haRemovalPending = isConnectionRemovalPending(haConnectionRemovalScope(adoptedHaScope));
+      if (current.haToken === "" && effectiveCredentials.haToken !== "" && !haRemovalPending) {
+        host.settings.haToken = effectiveCredentials.haToken;
+      }
       const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
       const boundCustomEndpoint =
         host.settings.assistantCustomKeyEndpoint ?? host.settings.assistantKeyEndpoint ?? currentEndpoint;
