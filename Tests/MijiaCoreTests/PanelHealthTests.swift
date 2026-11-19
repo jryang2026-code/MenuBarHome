@@ -875,7 +875,7 @@ struct PanelHealthTests {
         L10n.$overrideLanguage.withValue(.zhHans) {
             #expect(health(haOnlyBlocked) == .blocked(
                 reason: "本地网络权限受阻 · 点此检查设置",
-                action: .openConnectionSettings
+                action: .openLocalNetworkSettings
             ))
             #expect(health(dualHABlocked) == .degraded(
                 reason: "Home Assistant 本地网络权限受阻，米家云端仍可用"
@@ -931,8 +931,8 @@ struct PanelHealthTests {
             #expect(health(dualMiLANBlockedCloudDown) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
             #expect(health(dualMiLANBlockedCloudConnecting) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
             #expect(health(dualMiLANBlockedSessionExpired) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
-            #expect(health(dualHABlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openConnectionSettings))
-            #expect(health(dualBothBlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openConnectionSettings))
+            #expect(health(dualHABlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openLocalNetworkSettings))
+            #expect(health(dualBothBlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openLocalNetworkSettings))
         }
 
         L10n.$overrideLanguage.withValue(.en) {

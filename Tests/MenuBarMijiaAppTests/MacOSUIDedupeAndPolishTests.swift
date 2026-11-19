@@ -189,4 +189,496 @@ struct MacOSUIDedupeAndPolishTests {
         #expect(store.toastNotice?.isError == false)
         #expect(store.toastNotice?.message.contains("192.168.1.55") == true)
     }
+
+    @Test("Stale sensor cards keep child actions accessible when collapsed and never announce stale readings")
+    func staleSensorCardAccessibilityExposesActionsAndSuppressesStaleReadings() async throws {
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: false, isStale: false) == true)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: true, isStale: false) == false)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: false, isStale: true) == false)
+        #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: true, isStale: true) == false)
+
+        let spec = SensorSpec(
+            temperature: 26.4,
+            humidity: 58,
+            battery: 87
+        )
+        let staleSensor = SmartDevice(
+            id: "sensor-1",
+            name: "书房温湿度计",
+            roomId: "r1",
+            roomName: "书房",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(spec),
+            telemetryStale: true
+        )
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            let freshSummary = SensorCardView.accessibilitySummary(device: staleSensor, spec: spec, isStale: false)
+            #expect(freshSummary.contains("26.4"))
+            #expect(freshSummary.contains("58%"))
+            #expect(freshSummary.contains("87%"))
+
+            let staleSummary = SensorCardView.accessibilitySummary(device: staleSensor, spec: spec, isStale: true)
+            #expect(staleSummary == "书房温湿度计，可能过期")
+            #expect(!staleSummary.contains("26.4"))
+            #expect(!staleSummary.contains("58%"))
+            #expect(!staleSummary.contains("87%"))
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            let enDevice = SmartDevice(
+                id: "sensor-en",
+                name: "Study Sensor",
+                roomId: "r1",
+                roomName: "Study",
+                model: "miaomiaoce.sensor_ht.t2",
+                isOnline: true,
+                kind: .sensor(spec),
+                telemetryStale: true
+            )
+            let staleSummary = SensorCardView.accessibilitySummary(device: enDevice, spec: spec, isStale: true)
+            #expect(staleSummary == "Study Sensor, possibly stale")
+            #expect(!staleSummary.contains("26.4"))
+        }
+
+        let suite = "test.sensor.stale.a11y.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        var snapshot = SynthesizedHome(devices: [staleSensor], scenes: [])
+        snapshot.deviceTransportDiagnostics = [
+            "sensor-1": DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 2),
+        ]
+        let store = HomeStore(provider: MockHomeProvider(snapshot: snapshot), defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        #expect(SensorCardView.showsStaleTransportReadout(device: staleSensor, store: store) == true)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let liquid = NSHostingView(
+                rootView: SensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            liquid.layoutSubtreeIfNeeded()
+            #expect(liquid.fittingSize.height >= 120)
+
+            let classic = NSHostingView(
+                rootView: ClassicSensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            classic.layoutSubtreeIfNeeded()
+            #expect(classic.fittingSize.height >= 120)
+        }
+        await store.shutdown()
+    }
+
+    @Test("Climate power button accessibility label and help match HomeStore.togglePrimary when telemetry is stale")
+    func climatePowerButtonAccessibilityMatchesTogglePrimaryWhenStale() async throws {
+        let onSpec = ClimateSpec(
+            entityId: "climate.living_ac",
+            isOn: true,
+            hvacMode: "cool",
+            availableModes: ["off", "cool", "heat"],
+            targetTemperature: 24,
+            currentTemperature: 27,
+            minTemp: 16,
+            maxTemp: 30,
+            step: 1
+        )
+        let offSpec = ClimateSpec(
+            entityId: "climate.living_ac",
+            isOn: false,
+            hvacMode: "off",
+            availableModes: ["off", "cool", "heat"],
+            targetTemperature: 24,
+            currentTemperature: 27,
+            minTemp: 16,
+            maxTemp: 30,
+            step: 1
+        )
+
+        #expect(ClimatePanelModule.powerToggleTurnsOff(onSpec) == true)
+        #expect(ClimatePanelModule.powerToggleTurnsOff(offSpec) == false)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "客厅空调", spec: onSpec) == "关闭 客厅空调")
+            #expect(ClimatePanelModule.powerHelpText(onSpec) == "关闭空调")
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "客厅空调", spec: offSpec) == "打开 客厅空调")
+            #expect(ClimatePanelModule.powerHelpText(offSpec) == "打开空调")
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "Living Room AC", spec: onSpec) == "Turn off Living Room AC")
+            #expect(ClimatePanelModule.powerHelpText(onSpec) == "Turn off")
+            #expect(ClimatePanelModule.powerAccessibilityLabel(deviceName: "Living Room AC", spec: offSpec) == "Turn on Living Room AC")
+            #expect(ClimatePanelModule.powerHelpText(offSpec) == "Turn on")
+        }
+
+        let staleOnClimate = SmartDevice(
+            id: "ac-1",
+            name: "客厅空调",
+            roomId: "r1",
+            roomName: "客厅",
+            model: "xiaomi.aircondition.mc5",
+            isOnline: true,
+            kind: .climate(onSpec),
+            telemetryStale: true
+        )
+        let staleOffClimate = SmartDevice(
+            id: "ac-2",
+            name: "卧室空调",
+            roomId: "r2",
+            roomName: "卧室",
+            model: "xiaomi.aircondition.mc5",
+            isOnline: true,
+            kind: .climate(offSpec),
+            telemetryStale: true
+        )
+        let suite = "test.climate.stale.a11y.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [staleOnClimate, staleOffClimate], scenes: []))
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let liquid = NSHostingView(
+                rootView: ClimatePanelModule(device: staleOnClimate, spec: onSpec, store: store, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            liquid.layoutSubtreeIfNeeded()
+            #expect(liquid.fittingSize.height > 0)
+
+            let classic = NSHostingView(
+                rootView: ClassicClimatePanelModule(device: staleOnClimate, spec: onSpec, store: store, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            classic.layoutSubtreeIfNeeded()
+            #expect(classic.fittingSize.height > 0)
+        }
+
+        if let turnOffTask = store.togglePrimary(staleOnClimate) {
+            _ = await turnOffTask.result
+        }
+        if let turnOnTask = store.togglePrimary(staleOffClimate) {
+            _ = await turnOnTask.result
+        }
+        let executed = await provider.executedCommands
+        #expect(executed == [
+            .setClimatePower(entityId: "climate.living_ac", isOn: false, fallbackMode: "off"),
+            .setClimatePower(entityId: "climate.living_ac", isOn: true, fallbackMode: "cool"),
+        ])
+        await store.shutdown()
+    }
+
+    @Test("Plain switch and light without native drawer or facets expand transport drawer and expose context-menu recovery")
+    func plainSwitchWithoutFacetsOpensTransportDrawerAndOffersContextMenuRecovery() async throws {
+        let plainSwitch = SmartDevice(
+            id: "switch-plain",
+            name: "走廊墙壁开关",
+            roomId: "r1",
+            roomName: "走廊",
+            model: "lumi.switch.b1lacn02",
+            isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:switch-plain:2", isOn: true))
+        )
+        let plainLight = SmartDevice(
+            id: "light-plain",
+            name: "玄关吸顶灯",
+            roomId: "r1",
+            roomName: "玄关",
+            model: "yeelink.light.mono1",
+            isOnline: true,
+            kind: .light(LightSpec(
+                entityId: "miot:light-plain:2",
+                isOn: true,
+                brightnessWritable: false,
+                colorWritable: false
+            ))
+        )
+        let sensor = SmartDevice(
+            id: "sensor-chart",
+            name: "客厅温湿度计",
+            roomId: "r1",
+            roomName: "客厅",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 24.2, humidity: 52))
+        )
+        #expect(!plainSwitch.hasDetailDrawer)
+        #expect(!plainLight.hasDetailDrawer)
+
+        let suite = "test.transport.only.drawer.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let spy = LANRetrySpyProvider(snapshot: SynthesizedHome(devices: [plainSwitch, plainLight, sensor], scenes: []))
+        let store = HomeStore(provider: spy, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        #expect(store.deviceFacets[plainSwitch.id] == nil)
+        #expect(store.hasDetailDrawer(for: plainSwitch) == false)
+        #expect(store.hasDetailDrawer(for: plainLight) == false)
+
+        store.deviceTransportDiagnostics = [
+            plainSwitch.id: DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 3),
+            plainLight.id: DeviceTransportDiagnostics(route: .localNetworkBlocked),
+            sensor.id: DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 2),
+        ]
+
+        #expect(store.hasDetailDrawer(for: plainSwitch) == true)
+        #expect(store.hasDetailDrawer(for: plainLight) == true)
+        #expect(store.hasDetailDrawer(for: sensor) == false)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let collapsedLiquid = NSHostingView(
+                rootView: DeviceCardView(device: plainSwitch, store: store)
+                    .frame(width: 340)
+            )
+            collapsedLiquid.layoutSubtreeIfNeeded()
+            let collapsedLiquidHeight = collapsedLiquid.fittingSize.height
+
+            let collapsedClassic = NSHostingView(
+                rootView: ClassicDeviceCardView(device: plainSwitch, store: store)
+                    .frame(width: 340)
+            )
+            collapsedClassic.layoutSubtreeIfNeeded()
+            let collapsedClassicHeight = collapsedClassic.fittingSize.height
+
+            store.toggleExpanded(plainSwitch.id)
+            #expect(store.expandedDeviceId == plainSwitch.id)
+
+            let expandedLiquid = NSHostingView(
+                rootView: DeviceCardView(device: plainSwitch, store: store)
+                    .frame(width: 340)
+            )
+            expandedLiquid.layoutSubtreeIfNeeded()
+            let expandedLiquidHeight = expandedLiquid.fittingSize.height
+
+            let expandedClassic = NSHostingView(
+                rootView: ClassicDeviceCardView(device: plainSwitch, store: store)
+                    .frame(width: 340)
+            )
+            expandedClassic.layoutSubtreeIfNeeded()
+            let expandedClassicHeight = expandedClassic.fittingSize.height
+
+            #expect(expandedLiquidHeight > collapsedLiquidHeight)
+            #expect(expandedClassicHeight > collapsedClassicHeight)
+            // Transport-only drawer for a plain switch must not synthesize a fake 0 W power meter row.
+            #expect(expandedLiquidHeight - collapsedLiquidHeight < 75)
+            #expect(expandedClassicHeight - collapsedClassicHeight < 75)
+
+            if #available(macOS 14.4, *) {
+                let cooldownMenu = NSHostingMenu(
+                    rootView: DeviceCardContextMenuItems(
+                        device: plainSwitch,
+                        store: store,
+                        theme: .liquidGlass,
+                        isExpanded: true
+                    )
+                )
+                cooldownMenu.update()
+                let cooldownTitles = cooldownMenu.items.map(\.title)
+                #expect(cooldownTitles.contains("重试局域网连接"))
+                #expect(!cooldownTitles.contains("打开本地网络设置…"))
+
+                let blockedMenu = NSHostingMenu(
+                    rootView: DeviceCardContextMenuItems(
+                        device: plainLight,
+                        store: store,
+                        theme: .liquidGlass,
+                        isExpanded: false
+                    )
+                )
+                blockedMenu.update()
+                let blockedTitles = blockedMenu.items.map(\.title)
+                #expect(blockedTitles.contains("打开本地网络设置…"))
+                #expect(!blockedTitles.contains("重试局域网连接"))
+
+                store.deviceTransportDiagnostics[plainSwitch.id] = DeviceTransportDiagnostics(route: .lan, rttMs: 9)
+                let lanMenu = NSHostingMenu(
+                    rootView: DeviceCardContextMenuItems(
+                        device: plainSwitch,
+                        store: store,
+                        theme: .liquidGlass,
+                        isExpanded: true
+                    )
+                )
+                lanMenu.update()
+                let lanTitles = lanMenu.items.map(\.title)
+                #expect(!lanTitles.contains("重试局域网连接"))
+                #expect(!lanTitles.contains("打开本地网络设置…"))
+            }
+        }
+
+        await store.retryDeviceLAN(plainSwitch.id).value
+        let retried = await spy.retriedDeviceIds
+        #expect(retried == [plainSwitch.id])
+        await store.shutdown()
+    }
+
+    @Test("Stale sensor expands history chart instead of staying locked behind stale overlay and keeps transport readout reachable")
+    func staleSensorExpandsHistoryChartAndKeepsTransportDiagnosticsReachable() async throws {
+        let spec = SensorSpec(temperature: 25.8, humidity: 56, battery: 91)
+        let staleSensor = SmartDevice(
+            id: "sensor-stale-expand",
+            name: "主卧温湿度计",
+            roomId: "r1",
+            roomName: "主卧",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(spec),
+            telemetryStale: true
+        )
+        let suite = "test.sensor.stale.expand.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+
+        var snapshot = SynthesizedHome(devices: [staleSensor], scenes: [])
+        snapshot.deviceTransportDiagnostics = [
+            staleSensor.id: DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 2),
+        ]
+        let spy = LANRetrySpyProvider(snapshot: snapshot)
+        let store = HomeStore(provider: spy, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+
+        let now = Date()
+        store.sensorHistory.mergeCloudSamples(
+            deviceId: staleSensor.id,
+            window: .last24Hours,
+            samples: [
+                SensorHistorySample(timestamp: now.addingTimeInterval(-3600), temperature: 24.1, humidity: 50),
+                SensorHistorySample(timestamp: now, temperature: 24.8, humidity: 53),
+            ],
+            now: now
+        )
+        let observedPoints = store.sensorHistory
+            .points(forDevice: staleSensor.id, window: .last24Hours)
+            .filter(\.isObserved)
+        #expect(observedPoints.count >= 2)
+        #expect(store.sensorHistory.summary(forDevice: staleSensor.id, window: .last24Hours, metric: .temperature) != nil)
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            _ = NSApplication.shared
+            let collapsedLiquid = NSHostingView(
+                rootView: SensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            collapsedLiquid.layoutSubtreeIfNeeded()
+            let collapsedLiquidHeight = collapsedLiquid.fittingSize.height
+
+            let collapsedClassic = NSHostingView(
+                rootView: ClassicSensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            collapsedClassic.layoutSubtreeIfNeeded()
+            let collapsedClassicHeight = collapsedClassic.fittingSize.height
+
+            store.toggleExpanded(staleSensor.id)
+            #expect(store.expandedDeviceId == staleSensor.id)
+            #expect(SensorCardView.collapsesAccessibilityChildren(isExpanded: true, isStale: true) == false)
+
+            let expandedLiquid = NSHostingView(
+                rootView: SensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            expandedLiquid.layoutSubtreeIfNeeded()
+
+            let expandedClassic = NSHostingView(
+                rootView: ClassicSensorCardView(device: staleSensor, spec: spec, store: store, isCompact: false, showRoomBadge: false)
+                    .frame(width: 340)
+            )
+            expandedClassic.layoutSubtreeIfNeeded()
+
+            #expect(expandedLiquid.fittingSize.height > collapsedLiquidHeight + 60)
+            #expect(expandedClassic.fittingSize.height > collapsedClassicHeight + 60)
+        }
+
+        await store.retryDeviceLAN(staleSensor.id).value
+        let retried = await spy.retriedDeviceIds
+        #expect(retried == [staleSensor.id])
+        await store.shutdown()
+    }
+
+    @Test("AllOffHoldLatch locks press-down rehearsal mode even if notices arrive before confirm and resets cleanly for subsequent live holds")
+    func allOffHoldLatchLocksRehearsalModeAcrossMidHoldNotice() async throws {
+        let suite = "test.alloff.latch.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let light = SmartDevice(
+            id: "l1", name: "客厅吸顶灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.ceiling20", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [light],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.allOffLessonIsActive)
+
+        var latch = AllOffHoldLatch()
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .rehearsal)
+
+        // Inject both a LAN blocked event and a checklist-hiding notice during the 0.6s hold.
+        store.localNetworkBlocks = [.xiaomiLAN]
+        store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
+        #expect(!store.allOffLessonIsActive)
+
+        // SwiftUI's onLongPressGesture may fire onPressingChanged(false) just before perform.
+        latch.pressingChanged(false) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .rehearsal)
+
+        let confirmedMode = latch.consumeOnConfirm { store.beginAllOffHold() }
+        #expect(confirmedMode == .rehearsal)
+        #expect(latch.latchedMode == nil)
+
+        let rehearsalTask = store.confirmAllOffHold(mode: confirmedMode)
+        #expect(rehearsalTask == nil)
+        await Task.yield()
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+
+        // After rehearsal completes, a new hold latches `.live` and executes real writes.
+        store.haPlaintextPrompt = nil
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .live)
+        latch.reset()
+        #expect(latch.latchedMode == nil)
+
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        let liveMode = latch.consumeOnConfirm { store.beginAllOffHold() }
+        #expect(liveMode == .live)
+        let liveTask = try #require(store.confirmAllOffHold(mode: liveMode))
+        _ = await liveTask.value
+        #expect(!(await mock.executedCommands).isEmpty)
+        await store.shutdown()
+    }
+}
+
+private actor LANRetrySpyProvider: HomeProvider {
+    private let snapshot: SynthesizedHome
+    private(set) var retriedDeviceIds: [String?] = []
+
+    init(snapshot: SynthesizedHome) {
+        self.snapshot = snapshot
+    }
+
+    nonisolated func events() -> AsyncStream<HomeProviderEvent> {
+        let initial = snapshot
+        return AsyncStream { continuation in
+            continuation.yield(.statusChanged(.connected))
+            continuation.yield(.snapshotUpdated(initial))
+        }
+    }
+
+    func execute(_ command: DeviceCommand) async throws {}
+    func refreshNow() async {}
+
+    func retryLAN(deviceId: String?) async {
+        retriedDeviceIds.append(deviceId)
+    }
 }

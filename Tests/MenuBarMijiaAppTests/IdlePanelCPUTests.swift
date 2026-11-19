@@ -1,31 +1,10 @@
 import AppKit
 import Observation
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
-
-@MainActor
-private final class IdlePanelThemeScope {
-    private let previousTheme: String?
-
-    init(theme: PanelTheme) {
-        previousTheme = UserDefaults.standard.string(forKey: PanelTheme.storageKey)
-        UserDefaults.standard.set(theme.rawValue, forKey: PanelTheme.storageKey)
-    }
-
-    func set(_ theme: PanelTheme) {
-        UserDefaults.standard.set(theme.rawValue, forKey: PanelTheme.storageKey)
-    }
-
-    func restore() {
-        if let previousTheme {
-            UserDefaults.standard.set(previousTheme, forKey: PanelTheme.storageKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: PanelTheme.storageKey)
-        }
-    }
-}
 
 @Observable
 @MainActor
@@ -100,44 +79,42 @@ struct IdlePanelCPUTests {
         deadline: TimeInterval = 5
     ) -> Bool {
         hosting.resetLayoutPassCount()
-        let start = Date()
+        let start = ContinuousClock.now
         var lastCount = 0
         var quietSince = start
-        while Date().timeIntervalSince(start) < deadline {
+        while ContinuousClock.now - start < .seconds(deadline) {
             pumpRunLoop(0.01)
             let count = hosting.layoutPassCount
             if count != lastCount {
                 lastCount = count
-                quietSince = Date()
-            } else if Date().timeIntervalSince(quietSince) >= quietWindow {
+                quietSince = .now
+            } else if ContinuousClock.now - quietSince >= .seconds(quietWindow) {
                 return true
             }
         }
         return false
     }
 
-    private func makeConnectedDemoStore() async throws -> (HomeStore, String) {
-        let suite = "test.idle.panel.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private func makeConnectedDemoStore(theme: PanelTheme) async throws -> (HomeStore, UserDefaults) {
+        let defaults = InMemoryUserDefaults()
+        defaults.set(theme.rawValue, forKey: PanelTheme.storageKey)
         defaults.set(true, forKey: "has_completed_onboarding")
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.hasCompletedOnboarding = true
         store.connectionStatus = .connected
         #expect(store.panelHealth == .ok)
-        return (store, suite)
+        return (store, defaults)
     }
 
     @Test("PanelHostingVisibility tracks show, animated close completion, and mid-close reopen")
     func panelHostingVisibilityLifecycle() async throws {
-        let themeScope = IdlePanelThemeScope(theme: .liquidGlass)
-        defer { themeScope.restore() }
-        let (store, suite) = try await makeConnectedDemoStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeConnectedDemoStore(theme: .liquidGlass)
+        defer { store.stop() }
 
-        let controller = MenuBarPanelController()
+        let controller = MenuBarPanelController(userDefaults: defaults)
         controller.presentsActively = true
         controller.shouldReduceMotion = { true }
         controller.install(with: store)
@@ -212,12 +189,10 @@ struct IdlePanelCPUTests {
     @Test("Liquid Glass and Classic panels stop all hosting layout passes after hidePanel with panelHealth == .ok")
     func liquidGlassAndClassicStopHostingLayoutsWhenHidden() async throws {
         for theme in [PanelTheme.liquidGlass, PanelTheme.classic] {
-            let themeScope = IdlePanelThemeScope(theme: theme)
-            defer { themeScope.restore() }
-            let (store, suite) = try await makeConnectedDemoStore()
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, defaults) = try await makeConnectedDemoStore(theme: theme)
+            defer { store.stop() }
 
-            let controller = MenuBarPanelController()
+            let controller = MenuBarPanelController(userDefaults: defaults)
             controller.presentsActively = false
             controller.shouldReduceMotion = { false }
             controller.install(with: store)
@@ -251,15 +226,13 @@ struct IdlePanelCPUTests {
 
     @Test("Classic device-layout editing preserves edit mode across hide/show while pausing jiggle TimelineView")
     func classicLayoutEditingPausesJiggleTimelineWhenHidden() async throws {
-        let themeScope = IdlePanelThemeScope(theme: .classic)
+        let (store, defaults) = try await makeConnectedDemoStore(theme: .classic)
         defer {
             LayoutUIState.shared.endDeviceLayoutEditing()
-            themeScope.restore()
+            store.stop()
         }
-        let (store, suite) = try await makeConnectedDemoStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
 
-        let controller = MenuBarPanelController()
+        let controller = MenuBarPanelController(userDefaults: defaults)
         controller.presentsActively = false
         controller.shouldReduceMotion = { false }
         controller.install(with: store)
@@ -293,9 +266,7 @@ struct IdlePanelCPUTests {
 
     @Test("Hidden panel suspends relative activity clocks, scheduled countdown timers, and thinking spinners")
     func hiddenPanelSuspendsClocksSpinnersAndSymbolEffects() async throws {
-        let themeScope = IdlePanelThemeScope(theme: .classic)
-        defer { themeScope.restore() }
-        let (store, suite) = try await makeConnectedDemoStore()
+        let (store, defaults) = try await makeConnectedDemoStore(theme: .classic)
         defer {
             store.assistantState = .idle
             for cmd in store.scheduledCommands {
@@ -303,7 +274,7 @@ struct IdlePanelCPUTests {
             }
             store.clearDismissibleActivities()
             store.dismissAssistantBar()
-            UserDefaults.standard.removePersistentDomain(forName: suite)
+            store.stop()
         }
 
         let deviceId = try #require(store.devices.first?.id)
@@ -329,7 +300,7 @@ struct IdlePanelCPUTests {
         ]
         store.assistantState = .thinking
 
-        let controller = MenuBarPanelController()
+        let controller = MenuBarPanelController(userDefaults: defaults)
         controller.presentsActively = false
         controller.shouldReduceMotion = { false }
         controller.install(with: store)
@@ -346,17 +317,11 @@ struct IdlePanelCPUTests {
         controller.hidePanel(animated: false)
         #expect(!Self.containsProgressIndicator(in: hosting), "hidden panel must unmount indeterminate NSProgressIndicator")
 
-        let settled = Self.waitForHiddenLayoutQuiescence(hosting)
+        // A deferred layout after orderOut restarts the quiet window. A live 1 Hz clock
+        // prevents that window from completing before the deadline.
         #expect(
-            settled,
-            "hidden panel never settled: \(hosting.layoutPassCount) layout passes in 5 s"
-        )
-        hosting.resetLayoutPassCount()
-        // Span > 1.0 s so any 1 Hz relative/timer clock would tick at least once if still active.
-        Self.pumpRunLoop(1.2)
-        #expect(
-            hosting.layoutPassCount == 0,
-            "hidden panel must not wake ViewGraph for relative/timer clocks or spinners; got \(hosting.layoutPassCount)"
+            Self.waitForHiddenLayoutQuiescence(hosting, quietWindow: 1.2),
+            "hidden panel did not sustain a clock-free layout interval within 5 s"
         )
 
         // Reopening restores live spinner while assistantState is still .thinking.

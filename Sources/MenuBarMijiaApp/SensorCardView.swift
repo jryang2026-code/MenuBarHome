@@ -22,19 +22,63 @@ struct SensorCardView: View {
     @State private var selectedMetric: SensorMetricKind = .temperature
     @State private var hoveredSlotIndex: Int? = nil
 
+    static func showsStaleTransportReadout(device: SmartDevice, store: HomeStore?) -> Bool {
+        guard let store, store.deviceValuesAreStale || device.telemetryStale else { return false }
+        return store.deviceTransportDiagnostics[device.id] != nil
+    }
+
+    static func collapsesAccessibilityChildren(isExpanded: Bool, isStale: Bool) -> Bool {
+        !isExpanded && !isStale
+    }
+
+    static func accessibilitySummary(device: SmartDevice, spec: SensorSpec, isStale: Bool) -> String {
+        if isStale {
+            return L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")
+        }
+        guard device.isOnline else {
+            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
+        }
+        var parts: [String] = [device.name]
+        if let t = spec.temperature {
+            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
+        }
+        if let h = spec.humidity {
+            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
+        }
+        if let b = spec.battery {
+            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
+        }
+        return parts.joined(separator: L10n.tr("，", ", "))
+    }
+
+    private var isStale: Bool {
+        store?.deviceValuesAreStale == true || device.telemetryStale
+    }
+
     private var staleSensor: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(device.name)
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                .lineLimit(1)
-            Text(L10n.tr("可能过期", "Possibly stale"))
-                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(device.name)
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .lineLimit(1)
+                Text(L10n.tr("可能过期", "Possibly stale"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
+            if let store, Self.showsStaleTransportReadout(device: device, store: store) {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .liquidGlass
+                )
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: isCompact ? 72 : 120, alignment: .leading)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(Text(L10n.tr("\(device.name)，可能过期", "\(device.name), possibly stale")))
+        // Kept separate so VoiceOver can read the channel state and reach its actions.
+        .accessibilityElement(children: .contain)
     }
 
     private var isExpanded: Bool {
@@ -52,10 +96,10 @@ struct SensorCardView: View {
 
     var body: some View {
         Group {
-            if store?.deviceValuesAreStale == true {
-                staleSensor
-            } else if isExpanded {
+            if isExpanded {
                 expandedContainer
+            } else if isStale {
+                staleSensor
             } else if isCompact {
                 compact
             } else {
@@ -89,30 +133,16 @@ struct SensorCardView: View {
             }
         }
         .opacity(device.isOnline ? 1 : 0.58)
-        // Display-only card when collapsed: VoiceOver reads one sentence instead of five loose labels (#41).
-        .accessibilityElement(children: isExpanded ? .contain : .ignore)
-        .accessibilityLabel(Text(accessibilitySummary))
-        .accessibilityAddTraits(.isButton)
+        // Display-only card when collapsed and fresh: VoiceOver reads one sentence instead of five
+        // loose labels (#41); expanded and stale states keep child controls reachable.
+        .sensorCardAccessibility(isExpanded: isExpanded, isStale: isStale, summary: accessibilitySummary)
         .panelHelp(isExpanded
             ? L10n.tr("点击卡片顶部收起折线图", "Click header to collapse chart")
             : L10n.tr("点击展开温湿度分时段折线", "Click to expand temperature & humidity chart"))
     }
 
     private var accessibilitySummary: String {
-        guard device.isOnline else {
-            return L10n.tr("\(device.name)，离线", "\(device.name), offline")
-        }
-        var parts: [String] = [device.name]
-        if let t = spec.temperature {
-            parts.append(L10n.format("温度 %@", "temperature %@", L10n.temperature(t, fractionDigits: 1)))
-        }
-        if let h = spec.humidity {
-            parts.append(String(format: L10n.tr("湿度 %.0f%%", "humidity %.0f%%"), h))
-        }
-        if let b = spec.battery {
-            parts.append(L10n.tr("电量 \(b)%", "battery \(b)%"))
-        }
-        return parts.joined(separator: L10n.tr("，", ", "))
+        Self.accessibilitySummary(device: device, spec: spec, isStale: isStale)
     }
 
     // MARK: Layouts
@@ -194,19 +224,25 @@ struct SensorCardView: View {
                             .padding(.leading, 1)
                     }
                 }
-                temperatureText(size: DesignTokens.TypeSize.reading)
-                HStack(spacing: 6) {
-                    comfortChip
-                    if let b = spec.battery {
-                        Label("\(b)%", systemImage: batterySymbol(b))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(b <= 20 ? Color.red : muted)
+                if isStale {
+                    Text(L10n.tr("可能过期", "Possibly stale"))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                        .foregroundStyle(muted)
+                } else {
+                    temperatureText(size: DesignTokens.TypeSize.reading)
+                    HStack(spacing: 6) {
+                        comfortChip
+                        if let b = spec.battery {
+                            Label("\(b)%", systemImage: batterySymbol(b))
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(b <= 20 ? Color.red : muted)
+                        }
                     }
                 }
             }
             Spacer(minLength: 0)
-            if let h = spec.humidity { humidityRing(h) }
+            if !isStale, let h = spec.humidity { humidityRing(h) }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -283,6 +319,14 @@ struct SensorCardView: View {
                 .frame(height: 96)
 
             axisFooter(points: points)
+
+            if let store, store.deviceTransportDiagnostics[device.id] != nil {
+                DeviceTransportReadoutRow(
+                    deviceId: device.id,
+                    store: store,
+                    theme: .liquidGlass
+                )
+            }
         }
     }
 
@@ -827,6 +871,21 @@ struct SensorCardView: View {
         case ..<65: return "battery.50percent"
         case ..<90: return "battery.75percent"
         default: return "battery.100percent"
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func sensorCardAccessibility(isExpanded: Bool, isStale: Bool, summary: @autoclosure () -> String) -> some View {
+        if SensorCardView.collapsesAccessibilityChildren(isExpanded: isExpanded, isStale: isStale) {
+            self
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(Text(summary()))
+                .accessibilityAddTraits(.isButton)
+        } else {
+            self
+                .accessibilityElement(children: .contain)
         }
     }
 }

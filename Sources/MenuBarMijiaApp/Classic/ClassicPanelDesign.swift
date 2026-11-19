@@ -47,10 +47,16 @@ struct ClassicHoldToConfirmButton: View {
     let title: String
     let count: Int
     let helpText: String
-    let onConfirm: () -> Void
+    let onBeginHold: () -> HomeStore.AllOffHoldMode
+    let onConfirm: (HomeStore.AllOffHoldMode) -> Void
     let onTap: () -> Void
 
     @State private var holding = false
+    /// Rehearsal-or-live decision, latched at press-down: SwiftUI can deliver
+    /// `onPressingChanged(false)` immediately before `perform`.
+    @State private var holdLatch = AllOffHoldLatch()
+    /// The panel-wide hold session: Esc, focus loss and hiding invalidate it so a cancelled press
+    /// cannot confirm, and `shouldSuppressTap` keeps the mouse-up from becoming a tap.
     @State private var holdSessionId: UInt64?
 
     var body: some View {
@@ -82,33 +88,38 @@ struct ClassicHoldToConfirmButton: View {
             onTap()
         }
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
-            // SwiftUI fires `onPressingChanged(false)` before this closure, and the release kept the
-            // session consumable, so a completed hold is recognised exactly once.
+            holding = false
             let session = holdSessionId
             holdSessionId = nil
-            holding = false
-            guard PanelTransientUIState.shared.consumeConfirmedHold(session: session) else { return }
+            // A release kept the session consumable; only Esc, focus loss or hiding void it.
+            guard PanelTransientUIState.shared.consumeConfirmedHold(session: session) else {
+                holdLatch.reset()
+                return
+            }
+            let mode = holdLatch.consumeOnConfirm(fallback: onBeginHold)
             // #54: a confirm that turns off the whole room deserves a level-change tap.
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(mode)
         } onPressingChanged: { pressing in
+            holdLatch.pressingChanged(pressing, beginHold: onBeginHold)
             if pressing {
                 holdSessionId = PanelTransientUIState.shared.beginAllOffHold {
                     holdSessionId = nil
+                    holdLatch.reset()
                     withAnimation(.easeOut(duration: 0.15)) { holding = false }
                 }
-                withAnimation(.linear(duration: 0.6)) { holding = true }
             } else {
-                // A release is not a cancel: dismissing either would converge.
+                // A release is not a cancel: `perform` still needs the session.
                 PanelTransientUIState.shared.releaseAllOffHold(session: holdSessionId)
-                withAnimation(.easeOut(duration: 0.2)) { holding = false }
             }
+            withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
         }
         .onDisappear {
             // Leaving the tree is an explicit cancel: a late `perform` must not fire.
             PanelTransientUIState.shared.cancelAllOffHold()
             holdSessionId = nil
             holding = false
+            holdLatch.reset()
         }
         .panelHelp(helpText)
         // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.
@@ -117,8 +128,9 @@ struct ClassicHoldToConfirmButton: View {
         .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices"))) {
+            holdLatch.reset()
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(onBeginHold())
         }
     }
 }

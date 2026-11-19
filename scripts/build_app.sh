@@ -245,7 +245,7 @@ cat > "$APP_DIR/Contents/Info.plist" <<PLIST
     <key>NSHumanReadableCopyright</key>
     <string>Not affiliated with Xiaomi. MenuBarHome is an independent open-source project, not an official Xiaomi or Mijia product. "Xiaomi", "Mijia", "Mi Home", and "米家" are trademarks of Xiaomi Corporation and its affiliates, used only to describe compatibility. No endorsement is implied. Copyright © 2026 jryang1997. MIT License.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>用于局域网自动发现并实时连接 Home Assistant 及电视等智能家居设备。</string>
+    <string>用于局域网自动发现并直连控制米家设备、实时摄像机、Home Assistant 及智能电视。</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_home-assistant._tcp</string>
@@ -277,7 +277,7 @@ PLIST
 
 mkdir -p "$APP_DIR/Contents/Resources/zh-Hans.lproj"
 cat > "$APP_DIR/Contents/Resources/zh-Hans.lproj/InfoPlist.strings" <<'STRINGS_ZH'
-"NSLocalNetworkUsageDescription" = "用于局域网自动发现并实时连接 Home Assistant 及电视等智能家居设备。";
+"NSLocalNetworkUsageDescription" = "用于局域网自动发现并直连控制米家设备、实时摄像机、Home Assistant 及智能电视。";
 "NSMicrophoneUsageDescription" = "用于通过语音指令直接控制米家智能家居设备。";
 "NSLocationUsageDescription" = "用于读取当前 Wi-Fi 名称，以便按网络自动执行规则。";
 "NSLocationWhenInUseUsageDescription" = "用于读取当前 Wi-Fi 名称，以便按网络自动执行规则。";
@@ -289,7 +289,7 @@ STRINGS_ZH
 
 mkdir -p "$APP_DIR/Contents/Resources/en.lproj"
 cat > "$APP_DIR/Contents/Resources/en.lproj/InfoPlist.strings" <<'STRINGS_EN'
-"NSLocalNetworkUsageDescription" = "Used to automatically discover and connect to Home Assistant and smart TVs on your local network.";
+"NSLocalNetworkUsageDescription" = "Used to discover and control Xiaomi Home devices, live cameras, Home Assistant, and smart TVs directly on your local network.";
 "NSMicrophoneUsageDescription" = "Used to control your Xiaomi Home smart devices with voice commands.";
 "NSLocationUsageDescription" = "Used to read the current Wi-Fi network name so rules can run by network.";
 "NSLocationWhenInUseUsageDescription" = "Used to read the current Wi-Fi network name so rules can run by network.";
