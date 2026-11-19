@@ -27,82 +27,151 @@ struct DualSourceFallbackGraceTests {
 
     /// Deterministic gate for `graceSleep`: parks scheduled fallback sleepers without wall-clock
     /// waits, throws `CancellationError` when cancelled, and lets tests release sleepers on cue.
-    private actor GraceSleepGate {
-        private var sleepers: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
-        private var cancelledBeforeParking: Set<UUID> = []
+    ///
+    /// Deliberately a lock-guarded `AsyncStream` gate rather than an `actor` parking a raw
+    /// continuation: nested cancellation-handler plus continuation frames inside an actor method
+    /// tripped the Swift 6 `x86_64` runtime abort (`freed pointer was not the last allocation`)
+    /// whenever parallel CI cancelled the sleepers across threads.
+    private final class GraceSleepGate: @unchecked Sendable {
+        private struct Sleeper {
+            let id: UUID
+            let continuation: AsyncStream<Bool>.Continuation
+            let ignoreCancel: Bool
+        }
+
+        private let lock = NSLock()
+        private var sleepers: [Sleeper] = []
         private var ignoreCancelOnNextPark = false
-        private var ignoreCancelIds: Set<UUID> = []
         private var isShutDown = false
-        private(set) var parkCount = 0
-        private(set) var cancelledWakeCount = 0
-        private(set) var recordedDelays: [Duration] = []
+        private var storedParkCount = 0
+        private var storedCancelledWakeCount = 0
+        private var storedRecordedDelays: [Duration] = []
 
-        var waiting: Int { sleepers.count }
+        /// `NSLock.lock()` is `noasync`: every locked section goes through this synchronous
+        /// wrapper so `sleep(_:)` never touches the lock directly from an async context.
+        private func withLocked<T>(_ body: () throws -> T) rethrows -> T {
+            lock.lock()
+            defer { lock.unlock() }
+            return try body()
+        }
 
-        /// Resumes every parked sleeper and refuses new ones, so no `CheckedContinuation`
-        /// outlives the test that parked it. A sleeper whose cancellation was deliberately
-        /// ignored is resumed here too: its continuation is exactly the one a plain cancel
-        /// leaves behind, and leaving it parked aborts the parallel run at teardown.
+        var waiting: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return sleepers.count
+        }
+
+        var parkCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedParkCount
+        }
+
+        var cancelledWakeCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedCancelledWakeCount
+        }
+
+        var recordedDelays: [Duration] {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedRecordedDelays
+        }
+
+        /// Resumes every parked sleeper and refuses new ones, so no continuation outlives the
+        /// test that parked it. A sleeper whose cancellation was deliberately ignored is resumed
+        /// here too: its continuation is exactly the one a plain cancel leaves behind, and leaving
+        /// it parked aborts the parallel run at teardown.
         func shutdown() {
-            isShutDown = true
-            let parked = sleepers
-            sleepers.removeAll()
-            cancelledBeforeParking.removeAll()
-            ignoreCancelIds.removeAll()
+            let parked = withLocked {
+                isShutDown = true
+                let parked = sleepers
+                sleepers.removeAll()
+                return parked
+            }
             for sleeper in parked.reversed() {
-                sleeper.continuation.resume(throwing: CancellationError())
+                sleeper.continuation.yield(false)
+                sleeper.continuation.finish()
             }
         }
 
         func ignoreCancellationOnNextSleep() {
-            ignoreCancelOnNextPark = true
+            withLocked { ignoreCancelOnNextPark = true }
         }
 
-        func sleep(_ duration: Duration) async throws {
-            let id = UUID()
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                    if isShutDown {
-                        continuation.resume(throwing: CancellationError())
-                        return
-                    }
-                    if ignoreCancelOnNextPark {
-                        ignoreCancelOnNextPark = false
-                        ignoreCancelIds.insert(id)
-                    }
-                    if !ignoreCancelIds.contains(id), cancelledBeforeParking.remove(id) != nil {
-                        cancelledWakeCount += 1
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        recordedDelays.append(duration)
-                        parkCount += 1
-                        sleepers.append((id, continuation))
-                    }
+        /// Parks a sleeper and returns its stream, or throws once the gate is shut down or the
+        /// caller is already cancelled. All state changes happen under the lock; nothing is left
+        /// half-registered when it throws.
+        private func park(_ duration: Duration) throws -> (
+            id: UUID,
+            stream: AsyncStream<Bool>,
+            continuation: AsyncStream<Bool>.Continuation,
+            ignoreCancel: Bool
+        ) {
+            try withLocked {
+                if isShutDown { throw CancellationError() }
+                let ignoreCancel = ignoreCancelOnNextPark
+                ignoreCancelOnNextPark = false
+                if !ignoreCancel, Task.isCancelled {
+                    storedCancelledWakeCount += 1
+                    throw CancellationError()
                 }
-            } onCancel: {
-                Task { await self.cancel(id) }
+                let id = UUID()
+                let (stream, continuation) = AsyncStream<Bool>.makeStream()
+                storedRecordedDelays.append(duration)
+                storedParkCount += 1
+                sleepers.append(Sleeper(id: id, continuation: continuation, ignoreCancel: ignoreCancel))
+                return (id, stream, continuation, ignoreCancel)
             }
         }
 
+        func sleep(_ duration: Duration) async throws {
+            let parked = try park(duration)
+
+            if parked.ignoreCancel {
+                // Detached on purpose: a plain cancel must not resume this sleeper, so the test can
+                // verify the provider discards a stale wake through its own generation token.
+                let resumedNormally = await Task.detached {
+                    var iterator = parked.stream.makeAsyncIterator()
+                    return await iterator.next() ?? false
+                }.value
+                if !resumedNormally { throw CancellationError() }
+                return
+            }
+
+            // Cancelling the awaiting task terminates the stream with `.cancelled`, which wakes
+            // `iterator.next()` with `nil` and unregisters the sleeper — no manual Task, no nested
+            // continuation frames.
+            parked.continuation.onTermination = { [weak self] termination in
+                if case .cancelled = termination { self?.handleStreamCancelled(parked.id) }
+            }
+            var iterator = parked.stream.makeAsyncIterator()
+            let resumedNormally = await iterator.next() ?? false
+            if !resumedNormally { throw CancellationError() }
+        }
+
         func releaseLatest() {
-            guard !sleepers.isEmpty else { return }
-            sleepers.removeLast().continuation.resume()
+            let sleeper = withLocked { sleepers.popLast() }
+            guard let sleeper else { return }
+            sleeper.continuation.yield(true)
+            sleeper.continuation.finish()
         }
 
         /// Simulates an older sleeper returning right as a newer recompute has already replaced it
         /// (without throwing `CancellationError`), verifying actor-side token ownership.
         func releaseOldestNormally() {
-            guard !sleepers.isEmpty else { return }
-            sleepers.removeFirst().continuation.resume()
+            let sleeper = withLocked { sleepers.isEmpty ? nil : sleepers.removeFirst() }
+            guard let sleeper else { return }
+            sleeper.continuation.yield(true)
+            sleeper.continuation.finish()
         }
 
-        private func cancel(_ id: UUID) {
-            guard !ignoreCancelIds.contains(id) else { return }
-            if let index = sleepers.firstIndex(where: { $0.id == id }) {
-                cancelledWakeCount += 1
-                sleepers.remove(at: index).continuation.resume(throwing: CancellationError())
-            } else {
-                cancelledBeforeParking.insert(id)
+        private func handleStreamCancelled(_ id: UUID) {
+            withLocked {
+                guard let index = sleepers.firstIndex(where: { $0.id == id }) else { return }
+                sleepers.remove(at: index)
+                storedCancelledWakeCount += 1
             }
         }
     }
@@ -251,10 +320,10 @@ struct DualSourceFallbackGraceTests {
 
     /// The providers, gates and event pumps one test builds, drained before the test returns.
     ///
-    /// A test that returns while a `CheckedContinuation` is still parked in `GraceSleepGate`
-    /// aborts the whole parallel run (`signal code 6: freed pointer was not the last
-    /// allocation`), and an `async` test has no `defer` that can `await`. Bodies therefore run
-    /// inside `withTeardown`, which drains on the throwing path too (#274).
+    /// A test that returns while a sleeper is still parked in `GraceSleepGate` aborts the whole
+    /// parallel run (`signal code 6: freed pointer was not the last allocation`), and an `async`
+    /// test has no `defer` that can `await`. Bodies therefore run inside `withTeardown`, which
+    /// drains on the throwing path too (#274).
     private final class Teardown {
         private var steps: [() async -> Void] = []
         private var finishes: [() -> Void] = []
@@ -291,12 +360,12 @@ struct DualSourceFallbackGraceTests {
         await teardown.drain()
     }
 
-    /// Shuts a rig down without leaving a parked `CheckedContinuation` behind: the provider
-    /// cancels its fallback sleepers first, the gate then force-resumes whatever is still
-    /// parked (even a sleeper that ignores cancellation), and the pump is drained last.
+    /// Shuts a rig down without leaving a parked sleeper behind: the provider cancels its
+    /// fallback sleepers first, the gate then force-resumes whatever is still parked (even a
+    /// sleeper that ignores cancellation), and the pump is drained last.
     private func shutdownRig(_ rig: Rig) async {
         await rig.provider.shutdown()
-        await rig.gate.shutdown()
+        rig.gate.shutdown()
         rig.pump.cancel()
         await rig.pump.value
     }
@@ -314,7 +383,7 @@ struct DualSourceFallbackGraceTests {
     ) {
         teardown.add {
             await provider.shutdown()
-            await gate.shutdown()
+            gate.shutdown()
             pump.cancel()
             await pump.value
         }
@@ -512,11 +581,11 @@ struct DualSourceFallbackGraceTests {
         await miAccounts.refreshNow()
         await waitUntil {
             let disconnected = await collector.accountIsDisconnected(account.id)
-            let waiting = await gate.waiting
+            let waiting = gate.waiting
             return disconnected && waiting == 1
         }
         clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
-        await gate.releaseLatest()
+        gate.releaseLatest()
         await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
         await waitUntil { await bridge.stopCalls == [Self.did] }
 
@@ -551,8 +620,8 @@ struct DualSourceFallbackGraceTests {
         await rig.haMock.sendStatus(.disconnected("blip"))
         await waitUntil {
             let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
-            let parks = await rig.gate.parkCount
-            let waiting = await rig.gate.waiting
+            let parks = rig.gate.parkCount
+            let waiting = rig.gate.waiting
             return disconnected && parks == 1 && waiting == 1
         }
 
@@ -560,43 +629,43 @@ struct DualSourceFallbackGraceTests {
         // The first sleeper must wake via cancellation and exit without recomputing or rescheduling;
         // only the single replacement sleeper (11s remaining) stays parked.
         rig.clock.advance(4)
-        await rig.gate.ignoreCancellationOnNextSleep()
+        rig.gate.ignoreCancellationOnNextSleep()
         let updatedMiHome = home(
             [camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")],
             identityID: Self.did
         )
         await rig.miMock.updateSnapshot(updatedMiHome)
         await waitUntil {
-            let cancelled = await rig.gate.cancelledWakeCount
-            let parks = await rig.gate.parkCount
-            let waiting = await rig.gate.waiting
+            let cancelled = rig.gate.cancelledWakeCount
+            let parks = rig.gate.parkCount
+            let waiting = rig.gate.waiting
             return cancelled == 1 && parks == 2 && waiting == 1
         }
-        #expect(await rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
+        #expect(rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
 
         // Simulate a second recompute at +6s where sleeper #2 finishes its sleep just as #3
         // supersedes it (without throwing CancellationError): token check must still make #2 a no-op.
         rig.clock.advance(2)
         await rig.miMock.updateSnapshot(updatedMiHome)
         await waitUntil {
-            let parks = await rig.gate.parkCount
-            let waiting = await rig.gate.waiting
+            let parks = rig.gate.parkCount
+            let waiting = rig.gate.waiting
             return parks == 3 && waiting == 2
         }
         let snapshotsBeforeStaleWake = await rig.collector.snapshotCount
-        await rig.gate.releaseOldestNormally()
+        rig.gate.releaseOldestNormally()
         await waitUntil { await rig.provider.discardedFallbackWakeCountForTesting == 1 }
         let markerAfterStaleWake = await rig.collector.snapshotCount
         #expect(markerAfterStaleWake == snapshotsBeforeStaleWake)
-        #expect(await rig.gate.parkCount == 3)
-        #expect(await rig.gate.waiting == 1)
+        #expect(rig.gate.parkCount == 3)
+        #expect(rig.gate.waiting == 1)
         #expect(await rig.collector.backend(forCard: Self.haID) == .homeAssistant)
         #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
 
         // Silent line from here on: once the remaining 9s expire and sleeper #3 fires, the card
         // flips to Mi Cloud and closes the dead HA stream without `requestRecompute()`.
         rig.clock.advance(10)
-        await rig.gate.releaseLatest()
+        rig.gate.releaseLatest()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
         await waitUntil { await rig.haMock.stoppedCameraIDs == [Self.haID] }
         #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
@@ -620,17 +689,17 @@ struct DualSourceFallbackGraceTests {
         await rig.haMock.sendStatus(.disconnected("lid closing"))
         await waitUntil {
             let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
-            let waiting = await rig.gate.waiting
+            let waiting = rig.gate.waiting
             return disconnected && waiting == 1
         }
         rig.clock.advance(3)
         await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
-        await waitUntil { await rig.gate.waiting == 0 }
+        await waitUntil { rig.gate.waiting == 0 }
 
         // Sixty seconds pass while asleep — far longer than the 15-second grace.
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace * 4)
         await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
-        await waitUntil { await rig.gate.waiting == 1 }
+        await waitUntil { rig.gate.waiting == 1 }
         let beforeWakeRecompute = await rig.collector.snapshotCount
         rig.provider.requestRecompute()
         await waitUntil { await rig.collector.snapshotCount > beforeWakeRecompute }
@@ -649,7 +718,7 @@ struct DualSourceFallbackGraceTests {
 
         // Two more active seconds (16s total awake > 15s grace) let the post-wake sleeper flip to Mi.
         rig.clock.advance(2)
-        await rig.gate.releaseLatest()
+        rig.gate.releaseLatest()
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
         await waitUntil { await rig.haMock.stoppedCameraIDs == [Self.haID] }
         #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
@@ -684,20 +753,20 @@ struct DualSourceFallbackGraceTests {
         await rig.haMock.sendStatus(.disconnected("connection lost"))
         await waitUntil {
             let disconnected = await rig.collector.sourceIsDisconnected(.homeAssistant)
-            let waiting = await rig.gate.waiting
+            let waiting = rig.gate.waiting
             return disconnected && waiting == 1
         }
 
         rig.clock.advance(DualSourceHomeProvider.sourceFallbackGrace)
         await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
-        await waitUntil { await rig.gate.waiting == 0 }
+        await waitUntil { rig.gate.waiting == 0 }
 
         rig.clock.advance(30)
         await rig.provider.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
 
         await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud, timeout: .seconds(2))
         await waitUntil(timeout: .seconds(2)) { await rig.haMock.stoppedCameraIDs == [Self.haID] }
-        #expect(await rig.gate.waiting == 0)
+        #expect(rig.gate.waiting == 0)
 
         // 2. Per-account boundary while aggregate Xiaomi stays connected: one of two accounts
         // drops, passes the grace window before sleep cancels its sleeper, and wakes onto a silent line.
@@ -750,14 +819,14 @@ struct DualSourceFallbackGraceTests {
         await miMock2.updateSnapshot(miAcc1Dropped)
         await waitUntil {
             let accDisconnected = await collector2.accountIsDisconnected(acc1ID)
-            let waiting = await gate2.waiting
+            let waiting = gate2.waiting
             return accDisconnected && waiting == 1
         }
         #expect(await collector2.sourceIsConnected(.xiaomiCloud))
 
         clock2.advance(DualSourceHomeProvider.sourceFallbackGrace + 2)
         await provider2.setPollingContext(PollingContext(panelVisible: false, systemActive: false))
-        await waitUntil { await gate2.waiting == 0 }
+        await waitUntil { gate2.waiting == 0 }
 
         clock2.advance(20)
         await provider2.setPollingContext(PollingContext(panelVisible: false, systemActive: true))
@@ -1455,7 +1524,7 @@ struct DualSourceFallbackGraceTests {
         let stoppedAfterExpiry = await bridge.stopCalls
         #expect(!stoppedAfterExpiry.contains(Self.did))
         #expect(stoppedAfterExpiry == [exclusiveCamDID])
-        #expect(await gate.parkCount == 0)
+        #expect(gate.parkCount == 0)
 
         let promotedHome = try #require(await collector.latestHome)
         #expect(promotedHome.expiredAccountIDs == [account1.id])
@@ -1573,7 +1642,7 @@ struct DualSourceFallbackGraceTests {
             #expect(plugInFrame?.telemetryStale == false)
         }
         #expect(await followUpBridge.stopCalls.isEmpty)
-        #expect(await followUpGate.parkCount == 0)
+        #expect(followUpGate.parkCount == 0)
 
         // 3. Direct DualSourceHomeProvider defense: even if `.sessionExpired(session1)` arrives on a
         // multi-account snapshot before a re-synthesized snapshot is published, `deviceAccountIDs`
@@ -1669,7 +1738,7 @@ struct DualSourceFallbackGraceTests {
             #expect(!frame.rooms.contains { $0.id == MiAccountScope.id("balcony", account: account1.id) })
         }
         #expect(await directMiMock.stoppedCameraIDs.isEmpty)
-        #expect(await directGate.parkCount == 0)
+        #expect(directGate.parkCount == 0)
 
         await directMiMock.sendSessionExpired(session2)
         await waitUntil { await directCollector.expiredSessions.count == 2 }
@@ -2022,7 +2091,7 @@ struct DualSourceFallbackGraceTests {
         }
         #expect(await directCollector.latestHome?.expiredAccountIDs.isEmpty == true)
         #expect(await directCollector.backend(forCard: Self.haID) == .homeAssistant)
-        #expect(await directGate.parkCount == 0)
+        #expect(directGate.parkCount == 0)
 
         // 2. Real `MiAccountsProvider.updateAccounts` flow: while `refreshedAccount1`'s first poll
         // is parked in `.connecting`, `accountStatuses[account1.id]` immediately surfaces `.connecting`
@@ -2125,7 +2194,7 @@ struct DualSourceFallbackGraceTests {
         #expect(await e2eCollector.latestHome?.expiredAccountIDs.isEmpty == true)
         #expect(await e2eCollector.accountIsConnected(account2.id))
         #expect(await e2eCollector.backend(forCard: "de-plug-1") == .xiaomiCloud)
-        #expect(await e2eGate.parkCount == 0)
+        #expect(e2eGate.parkCount == 0)
 
         await api1Refreshed.setGetPropsHook(nil)
         reloginGateCont.yield(())
