@@ -131,6 +131,37 @@ struct MiotTypePruneStoreTests {
         })
     }
 
+    @Test("A shared hidden device is evaluated from its freshest account, not the first one")
+    @MainActor
+    func sharedHiddenDeviceUsesTheFreshestReading() async throws {
+        let (store, _) = try await makeStore()
+        var stale = Self.leakSensor
+        stale.telemetryStale = true
+        var offline = Self.leakSensor
+        offline.isOnline = false
+        store.applyMiotTypePruneReport(report([], scope: "mi:a", safety: [stale]))
+        store.applyMiotTypePruneReport(report([], scope: "mi:b", safety: [offline]))
+        #expect(store.typeHiddenSafetyDevices.first?.isOnline == false, "the offline copy is fresher than stale telemetry")
+        store.applyMiotTypePruneReport(report([], scope: "mi:c", safety: [Self.leakSensor]))
+        #expect(store.typeHiddenSafetyDevices.map(\.id) == [Self.leakSensor.id])
+        #expect(store.typeHiddenSafetyDevices.first?.isOnline == true)
+        #expect(store.typeHiddenSafetyDevices.first?.telemetryStale == false)
+    }
+
+    @Test("Contact and motion ship off, so the published policy keeps neither")
+    @MainActor
+    func publishedPolicyFollowsAlertDefaults() async throws {
+        let (store, _) = try await makeStore()
+        store.syncMiotTypePrunePolicy()
+        let signals = store.miotTypePruneBox.get().safetyPolicy.enabledSignals
+        #expect(signals.isSuperset(of: [.leak, .smoke, .gas]))
+        #expect(!signals.contains(.contact))
+        #expect(!signals.contains(.motion))
+
+        store.setSensorAlertEnabled(.motion, true)
+        #expect(store.miotTypePruneBox.get().safetyPolicy.enabledSignals.contains(.motion))
+    }
+
     @Test("Retention is per account, and a provider swap or a sign-out clears every account")
     @MainActor
     func retentionIsPerAccountAndClearedOnSwap() async throws {

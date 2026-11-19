@@ -181,16 +181,30 @@ extension HomeStore {
     public var typeHiddenSafetyDevices: [SmartDevice] {
         guard !miotTypePruneReports.isEmpty else { return [] }
         let visible = Set(devices.map(\.id))
-        var seen: Set<String> = []
-        var hidden: [SmartDevice] = []
+        var order: [String] = []
+        var freshest: [String: SmartDevice] = [:]
         for scope in miotTypePruneReports.keys.sorted() {
             guard let report = miotTypePruneReports[scope] else { continue }
-            for device in report.safetyDevices
-            where !visible.contains(device.id) && seen.insert(device.id).inserted {
-                hidden.append(device)
+            for device in report.safetyDevices where !visible.contains(device.id) {
+                guard let kept = freshest[device.id] else {
+                    freshest[device.id] = device
+                    order.append(device.id)
+                    continue
+                }
+                // One shared home can hand the same device to two accounts; the stale account must not
+                // shadow a fresh reading, or a live alarm is never evaluated (same rule as
+                // `MiAccountsProvider.deviceFreshnessRank` for visible cards).
+                if Self.hiddenSafetyFreshnessRank(device) < Self.hiddenSafetyFreshnessRank(kept) {
+                    freshest[device.id] = device
+                }
             }
         }
-        return hidden
+        return order.compactMap { freshest[$0] }
+    }
+
+    /// Lower is fresher: unverified telemetry first, then an offline card.
+    private static func hiddenSafetyFreshnessRank(_ device: SmartDevice) -> Int {
+        (device.telemetryStale ? 2 : 0) + (device.isOnline ? 0 : 1)
     }
 
     @discardableResult
@@ -1441,7 +1455,9 @@ extension HomeStore {
     private func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
         guard enableSafetyAlerts else { return SafetyRetentionPolicy() }
         var enabled: Set<SafetySignalKind> = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
-        for kind in SensorAlertKind.allCases where sensorAlertPreferences[kind] ?? true {
+        // `isSensorAlertEnabled` applies each alert's own default: contact and motion ship off, so a
+        // closed type must not keep reading them just because the user never touched the switch.
+        for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
             enabled.insert(SafetySignalKind(sensorAlertKind: kind))
         }
         if doorbellAutoPopup || doorbellChime { enabled.insert(.doorbell) }

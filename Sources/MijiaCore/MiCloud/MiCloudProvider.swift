@@ -1627,6 +1627,17 @@ public actor MiCloudProvider: HomeProvider {
                 logger.notice("Doorbell event query failed for \(record.miotDid, privacy: .public): \(error.localizedDescription, privacy: .public)")
             }
         }
+        // A doorbell a closed type stopped polling keeps no baseline: otherwise a press that happened
+        // while it was off replays as a fresh ring on the first poll after it comes back. The next
+        // query after pruning establishes a new baseline instead.
+        let polledDids = Set(scopedDevices.map(\.miotDid))
+        let departed = doorbellBaselineTime.keys.filter {
+            !polledDids.contains($0.split(separator: "#").first.map(String.init) ?? "")
+        }
+        for key in departed {
+            doorbellBaselineTime.removeValue(forKey: key)
+            lastDoorbellTimestamp.removeValue(forKey: key)
+        }
     }
 
     private static func iso8601String(from date: Date) -> String {
