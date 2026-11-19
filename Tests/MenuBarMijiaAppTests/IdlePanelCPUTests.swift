@@ -80,6 +80,42 @@ struct IdlePanelCPUTests {
         return view.subviews.contains { containsProgressIndicator(in: $0) }
     }
 
+    /// Waits until the hidden hosting view stops receiving `layout()` passes, so hidden-panel
+    /// assertions count steady state instead of the tail of the hide itself.
+    ///
+    /// Ordering the window out does not end SwiftUI's work at the same instant: `orderOut` leaves
+    /// deferred `NSHostingView` root-value updates queued (the off-screen test panel runs no display
+    /// cycle, so `requestUpdate(after:)` retries them), and each retry still drives one hosting
+    /// layout pass. That burst is bounded — measured at ≤ 1 s after `hidePanel` with the host's
+    /// cores fully saturated, then silent — but it straddles any fixed "sleep, then reset the
+    /// counter" instant, which made the result depend on machine load rather than on the product.
+    ///
+    /// Returns `true` once the tree has been pass-free for `quietWindow`, or `false` when passes were
+    /// still arriving at `deadline`. A surviving hidden clock (a re-mounted `TimelineView(.animation)`
+    /// still ticking against an ordered-out window measured 13 Hz) never leaves a quiet gap that long,
+    /// so it keeps returning `false`: callers must fail on it instead of measuring around it.
+    private static func waitForHiddenLayoutQuiescence(
+        _ hosting: PanelHostingView<AnyView>,
+        quietWindow: TimeInterval = 0.25,
+        deadline: TimeInterval = 5
+    ) -> Bool {
+        hosting.resetLayoutPassCount()
+        let start = Date()
+        var lastCount = 0
+        var quietSince = start
+        while Date().timeIntervalSince(start) < deadline {
+            pumpRunLoop(0.01)
+            let count = hosting.layoutPassCount
+            if count != lastCount {
+                lastCount = count
+                quietSince = Date()
+            } else if Date().timeIntervalSince(quietSince) >= quietWindow {
+                return true
+            }
+        }
+        return false
+    }
+
     private func makeConnectedDemoStore() async throws -> (HomeStore, String) {
         let suite = "test.idle.panel.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -199,7 +235,11 @@ struct IdlePanelCPUTests {
             #expect(store.pollingContext.panelVisible == false)
             #expect(controller.panelHostingVisibility.isVisible == false)
 
-            Self.pumpRunLoop(0.15)
+            let settled = Self.waitForHiddenLayoutQuiescence(hosting)
+            #expect(
+                settled,
+                "hidden \(theme.rawValue) panel never settled: \(hosting.layoutPassCount) layout passes in 5 s"
+            )
             hosting.resetLayoutPassCount()
             Self.pumpRunLoop(0.35)
             #expect(
@@ -237,7 +277,11 @@ struct IdlePanelCPUTests {
 
         controller.hidePanel(animated: false)
         #expect(LayoutUIState.shared.editMode == .deviceLayout, "edit session survives close/reopen")
-        Self.pumpRunLoop(0.2)
+        let settled = Self.waitForHiddenLayoutQuiescence(hosting)
+        #expect(
+            settled,
+            "hidden classic edit mode never settled: \(hosting.layoutPassCount) layout passes in 5 s"
+        )
         hosting.resetLayoutPassCount()
         Self.pumpRunLoop(0.5)
         #expect(hosting.layoutPassCount == 0, "hidden classic edit mode must pause jiggle TimelineView")
@@ -302,7 +346,11 @@ struct IdlePanelCPUTests {
         controller.hidePanel(animated: false)
         #expect(!Self.containsProgressIndicator(in: hosting), "hidden panel must unmount indeterminate NSProgressIndicator")
 
-        Self.pumpRunLoop(0.2)
+        let settled = Self.waitForHiddenLayoutQuiescence(hosting)
+        #expect(
+            settled,
+            "hidden panel never settled: \(hosting.layoutPassCount) layout passes in 5 s"
+        )
         hosting.resetLayoutPassCount()
         // Span > 1.0 s so any 1 Hz relative/timer clock would tick at least once if still active.
         Self.pumpRunLoop(1.2)

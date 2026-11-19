@@ -1749,6 +1749,26 @@ struct SnapshotTests {
         }
     }
 
+    @Test("General settings render Unhide All when multiple devices are manually hidden")
+    func settingsGeneralBulkUnhideSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        fixture.store.hideDevice("demo_living_light")
+        fixture.store.hideDevice("demo_living_plug")
+        #expect(fixture.store.hiddenDevices.count == 2)
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .general)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 1180),
+                named: "settings-general-bulk-unhide-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Settings search suggestions remain readable in both appearances")
     func settingsSearchSuggestions() async throws {
         for scheme in [ColorScheme.light, .dark] {
