@@ -456,6 +456,128 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(!MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: false, forHighlight: nil))
     }
 
+    @Test("Traditional Chinese translations match MiAccountSection region title and Advanced Display labels")
+    func traditionalChineseSettingsLabelsUseShippedTranslations() {
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(L10n.tr(
+                "面板主题、高度、紧凑网格与卡片显示细节",
+                "Panel theme, height, compact grid and card layout options"
+            ) == "面板主題、高度、緊湊網格與卡片顯示細節")
+            #expect(L10n.tr(
+                "专属连接钥匙 (Access Token)",
+                "Dedicated Connection Key (Access Token)"
+            ) == "專屬連線鑰匙 (Access Token)")
+            #expect(L10n.tr("全部恢复显示", "Unhide All") == "全部恢復顯示")
+            #expect(MiAccountSection.regionDisclosureTitle(for: .cn) == "進階：雲端伺服器地區（目前：中國大陸 (cn)）")
+            #expect(MiAccountSection.regionDisclosureTitle(for: .sg) == "進階：雲端伺服器地區（目前：新加坡 / 國際 (sg)）")
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(MiAccountSection.regionDisclosureTitle(for: .cn) == "Advanced: Cloud Region (Current: China Mainland (cn))")
+        }
+    }
+
+    @Test("Appearance deep link opens Advanced Display and lets the user collapse it afterwards")
+    func appearanceDeepLinkAllowsUserCollapse() {
+        var state = GeneralSettingsDisclosure.State()
+        state.expandIfNeeded(forRequestedTab: .appearance)
+        #expect(state.isExpanded)
+
+        // Initial default settings apply once without re-expanding after the user collapses.
+        state.applyInitialNonDefaultIfNeeded(
+            panelTheme: .classic,
+            panelHeight: .standard,
+            isCompactGridMode: true,
+            climatePanelModule: true,
+            hideGroupedLights: true
+        )
+        #expect(state.isExpanded)
+
+        state.isExpanded = false
+        #expect(!state.isExpanded)
+
+        // Switching back to General must preserve the user's collapsed choice.
+        state.applyInitialNonDefaultIfNeeded(
+            panelTheme: .classic,
+            panelHeight: .standard,
+            isCompactGridMode: true,
+            climatePanelModule: true,
+            hideGroupedLights: true
+        )
+        #expect(!state.isExpanded)
+    }
+
+    @Test("Non-default display setting opens Advanced Display initially and stays collapsible")
+    func nonDefaultDisplaySettingExpandsAdvancedDisplayInitially() {
+        // Baseline: all five settings at their shipped defaults leave Advanced Display collapsed.
+        #expect(!GeneralSettingsDisclosure.hasNonDefaultDisplaySettings(
+            panelTheme: .classic,
+            panelHeight: .standard,
+            isCompactGridMode: true,
+            climatePanelModule: true,
+            hideGroupedLights: true
+        ))
+
+        var defaultState = GeneralSettingsDisclosure.State()
+        defaultState.applyInitialNonDefaultIfNeeded(
+            panelTheme: .classic,
+            panelHeight: .standard,
+            isCompactGridMode: true,
+            climatePanelModule: true,
+            hideGroupedLights: true
+        )
+        #expect(!defaultState.isExpanded)
+
+        // Each non-default setting (compactGrid / climatePanelModule / hideGroupedLights default to true) expands initially.
+        let nonDefaults: [(PanelTheme, PanelHeight, Bool, Bool, Bool)] = [
+            (.liquidGlass, .standard, true, true, true),
+            (.classic, .tall, true, true, true),
+            (.classic, .standard, false, true, true),
+            (.classic, .standard, true, false, true),
+            (.classic, .standard, true, true, false)
+        ]
+        for (theme, height, compactGrid, climateModule, hideGroupedLights) in nonDefaults {
+            var state = GeneralSettingsDisclosure.State()
+            state.applyInitialNonDefaultIfNeeded(
+                panelTheme: theme,
+                panelHeight: height,
+                isCompactGridMode: compactGrid,
+                climatePanelModule: climateModule,
+                hideGroupedLights: hideGroupedLights
+            )
+            #expect(state.isExpanded)
+
+            // User collapse must stick on subsequent appearances.
+            state.isExpanded = false
+            state.applyInitialNonDefaultIfNeeded(
+                panelTheme: theme,
+                panelHeight: height,
+                isCompactGridMode: compactGrid,
+                climatePanelModule: climateModule,
+                hideGroupedLights: hideGroupedLights
+            )
+            #expect(!state.isExpanded)
+        }
+    }
+
+    @Test("Search highlight latches Advanced Display beyond highlight expiry and keeps user collapse")
+    func searchHighlightLatchesAdvancedDisplayBeyondExpiry() {
+        var state = GeneralSettingsDisclosure.State()
+        state.expandIfNeeded(forHighlight: .language)
+        #expect(!state.isExpanded)
+
+        state.expandIfNeeded(forHighlight: .panelHeight)
+        #expect(state.isExpanded)
+
+        // Simulates the 1.6s highlight timer clearing `focus.highlight`.
+        state.expandIfNeeded(forHighlight: nil)
+        #expect(state.isExpanded)
+
+        state.isExpanded = false
+        #expect(!state.isExpanded)
+    }
+
+
     // MARK: - #148: unsaved edits are resolved, never dropped silently
 
     private func unsavedForm(

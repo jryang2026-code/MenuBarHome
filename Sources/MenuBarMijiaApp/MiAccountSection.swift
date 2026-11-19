@@ -82,8 +82,10 @@ public struct MiAccountSection: View {
         self.addAccountTrigger = addAccountTrigger
         if let previewTicket {
             self._phase = State(initialValue: .waitingForScan(ticket: previewTicket, expiresAt: Date().addingTimeInterval(previewTicket.timeout)))
+            self._showsRegionDisclosure = State(initialValue: true)
         } else {
             self._phase = State(initialValue: .idle)
+            self._showsRegionDisclosure = State(initialValue: store.miCloudRegion != .cn)
         }
     }
 
@@ -101,23 +103,27 @@ public struct MiAccountSection: View {
         isScanning || region != .cn || anchor == .miAccount
     }
 
+    static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
+        L10n.format(
+            "高级：云端服务器地区（当前：%@）",
+            "Advanced: Cloud Region (Current: %@)",
+            region.label
+        )
+    }
+
     private var isScanningPhase: Bool {
         if case .idle = phase { return false }
         return true
     }
 
-    private var isRegionPickerExpanded: Binding<Bool> {
-        Binding(
-            get: {
-                showsRegionDisclosure
-                    || Self.shouldExpandRegionPicker(
-                        region: store.miCloudRegion,
-                        isScanning: isScanningPhase,
-                        forHighlight: searchFocus?.highlight
-                    )
-            },
-            set: { showsRegionDisclosure = $0 }
-        )
+    private func latchRegionDisclosureIfNeeded(highlight: SettingsAnchor?) {
+        if Self.shouldExpandRegionPicker(
+            region: store.miCloudRegion,
+            isScanning: isScanningPhase,
+            forHighlight: highlight
+        ) {
+            showsRegionDisclosure = true
+        }
     }
 
     public var body: some View {
@@ -183,7 +189,7 @@ public struct MiAccountSection: View {
             unofficialRiskNotice
 
             if showsRegionPicker {
-                DisclosureGroup(isExpanded: isRegionPickerExpanded) {
+                DisclosureGroup(isExpanded: $showsRegionDisclosure) {
                     HStack {
                         Text(L10n.tr("云端服务器地区", "Cloud Region"))
                             .font(.system(size: DesignTokens.TypeSize.body))
@@ -205,12 +211,9 @@ public struct MiAccountSection: View {
                     }
                     .padding(.top, 4)
                 } label: {
-                    Text(L10n.tr(
-                        "高级：云端服务器地区（当前：\(store.miCloudRegion.label)）",
-                        "Advanced: Cloud Region (Current: \(store.miCloudRegion.label))"
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                    .foregroundStyle(DesignTokens.secondaryText)
+                    Text(Self.regionDisclosureTitle(for: store.miCloudRegion))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(DesignTokens.secondaryText)
                 }
             }
         }
@@ -222,14 +225,14 @@ public struct MiAccountSection: View {
             ), case .idle = phase else { return }
             startQRLogin()
         }
+        .onAppear {
+            latchRegionDisclosureIfNeeded(highlight: searchFocus?.highlight)
+        }
         .onChange(of: searchFocus?.highlight) { _, highlight in
-            if Self.shouldExpandRegionPicker(
-                region: store.miCloudRegion,
-                isScanning: isScanningPhase,
-                forHighlight: highlight
-            ) {
-                showsRegionDisclosure = true
-            }
+            latchRegionDisclosureIfNeeded(highlight: highlight)
+        }
+        .onChange(of: isScanningPhase) { _, _ in
+            latchRegionDisclosureIfNeeded(highlight: searchFocus?.highlight)
         }
         .onChange(of: addAccountTrigger) { oldValue, newValue in
             guard newValue != oldValue else { return }

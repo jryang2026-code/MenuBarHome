@@ -41,7 +41,7 @@ private enum SettingsSearchMemoCache {
 public struct SettingsWindowView: View {
     public let store: HomeStore
     @State private var tab: SettingsTab = .general
-    @State private var expandAdvancedDisplayOnGeneral = false
+    @State private var advancedDisplay = GeneralSettingsDisclosure.State()
     @State private var focus = SettingsSearchFocus()
     @State private var unsaved = SettingsUnsavedChanges()
     @State private var highlightedResult: Int?
@@ -59,9 +59,9 @@ public struct SettingsWindowView: View {
     init(store: HomeStore, selectedTab: SettingsTab) {
         self.store = store
         _tab = State(initialValue: selectedTab.canonicalTab)
-        _expandAdvancedDisplayOnGeneral = State(
-            initialValue: GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: selectedTab)
-        )
+        var initialDisclosure = GeneralSettingsDisclosure.State()
+        initialDisclosure.expandIfNeeded(forRequestedTab: selectedTab)
+        _advancedDisplay = State(initialValue: initialDisclosure)
     }
 
     /// Which rows this window is actually drawing, so search never offers a row that is not there.
@@ -153,9 +153,7 @@ public struct SettingsWindowView: View {
         }
         .onAppear {
             if let requested = opener.requestedTab {
-                if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: requested) {
-                    expandAdvancedDisplayOnGeneral = true
-                }
+                advancedDisplay.expandIfNeeded(forRequestedTab: requested)
                 tab = requested.canonicalTab
                 opener.requestedTab = nil
             }
@@ -221,9 +219,7 @@ public struct SettingsWindowView: View {
         highlightedResult = nil
         let destination = category.canonicalTab
         guard leavesTabSafely(for: destination) else { return }
-        if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: category) {
-            expandAdvancedDisplayOnGeneral = true
-        }
+        advancedDisplay.expandIfNeeded(forRequestedTab: category)
         tab = destination
     }
 
@@ -248,11 +244,24 @@ public struct SettingsWindowView: View {
         highlightedResult = nil
         let destination = hit.anchor.tab.canonicalTab
         guard leavesTabSafely(for: destination) else { return }
+        advancedDisplay.expandIfNeeded(forHighlight: hit.anchor)
         tab = destination
         focus.jump(to: hit.anchor)
     }
 
     // MARK: Detail
+
+    private func scrollToAnchor(_ anchor: SettingsAnchor, using proxy: ScrollViewProxy) {
+        // No animation under Reduce Motion, and none at all would make a long page jump
+        // feel like the window lost its place.
+        if reduceMotion {
+            proxy.scrollTo(anchor, anchor: .center)
+        } else {
+            withAnimation(AppleMotion.reveal) {
+                proxy.scrollTo(anchor, anchor: .center)
+            }
+        }
+    }
 
     private var detailPane: some View {
         ScrollViewReader { proxy in
@@ -271,16 +280,18 @@ public struct SettingsWindowView: View {
                 .coordinateSpace(name: SettingsScrollSpace.name)
             }
             .background(Color(nsColor: .controlBackgroundColor).opacity(0.34))
-            .onChange(of: focus.generation) { _, _ in
+            .onChange(of: focus.generation) { _, targetGeneration in
                 guard let anchor = focus.highlight else { return }
-                // No animation under Reduce Motion, and none at all would make a long page jump
-                // feel like the window lost its place.
-                if reduceMotion {
-                    proxy.scrollTo(anchor, anchor: .center)
-                } else {
-                    withAnimation(AppleMotion.reveal) {
-                        proxy.scrollTo(anchor, anchor: .center)
-                    }
+                scrollToAnchor(anchor, using: proxy)
+                // Cross-tab jumps and newly expanded disclosures mount their `.id(anchor)` row
+                // asynchronously after state changes, so re-scroll once the layout settles.
+                Task { @MainActor in
+                    await Task.yield()
+                    guard focus.generation == targetGeneration, focus.highlight == anchor else { return }
+                    scrollToAnchor(anchor, using: proxy)
+                    try? await Task.sleep(for: .milliseconds(40))
+                    guard focus.generation == targetGeneration, focus.highlight == anchor else { return }
+                    scrollToAnchor(anchor, using: proxy)
                 }
             }
         }
@@ -290,7 +301,7 @@ public struct SettingsWindowView: View {
     private var settingsPage: some View {
         switch tab.canonicalTab {
         case .general, .appearance:
-            GeneralSettingsTab(store: store, initialExpandAdvancedDisplay: expandAdvancedDisplayOnGeneral)
+            GeneralSettingsTab(store: store, advancedDisplay: $advancedDisplay)
         case .connection:
             ConnectionSettingsTab(store: store)
         case .assistant:
@@ -458,6 +469,47 @@ enum GeneralSettingsDisclosure {
         .panelTheme, .panelHeight, .compactGrid, .climatePanelModule, .hideGroupedLights
     ]
 
+    struct State: Equatable, Sendable {
+        var isExpanded: Bool = false
+        private(set) var hasAppliedInitialDefaults = false
+
+        init(isExpanded: Bool = false) {
+            self.isExpanded = isExpanded
+        }
+
+        mutating func applyInitialNonDefaultIfNeeded(
+            panelTheme: PanelTheme,
+            panelHeight: PanelHeight,
+            isCompactGridMode: Bool,
+            climatePanelModule: Bool,
+            hideGroupedLights: Bool
+        ) {
+            guard !hasAppliedInitialDefaults else { return }
+            hasAppliedInitialDefaults = true
+            if GeneralSettingsDisclosure.hasNonDefaultDisplaySettings(
+                panelTheme: panelTheme,
+                panelHeight: panelHeight,
+                isCompactGridMode: isCompactGridMode,
+                climatePanelModule: climatePanelModule,
+                hideGroupedLights: hideGroupedLights
+            ) {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forRequestedTab tab: SettingsTab?) {
+            if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: tab) {
+                isExpanded = true
+            }
+        }
+
+        mutating func expandIfNeeded(forHighlight anchor: SettingsAnchor?) {
+            if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: anchor) {
+                isExpanded = true
+            }
+        }
+    }
+
     static func shouldExpandAdvancedDisplay(forHighlight anchor: SettingsAnchor?) -> Bool {
         anchor.map(advancedDisplayAnchors.contains) ?? false
     }
@@ -465,15 +517,29 @@ enum GeneralSettingsDisclosure {
     static func shouldExpandAdvancedDisplay(forRequestedTab tab: SettingsTab?) -> Bool {
         tab == .appearance
     }
+
+    static func hasNonDefaultDisplaySettings(
+        panelTheme: PanelTheme,
+        panelHeight: PanelHeight,
+        isCompactGridMode: Bool,
+        climatePanelModule: Bool,
+        hideGroupedLights: Bool
+    ) -> Bool {
+        if panelTheme != .classic { return true }
+        if panelHeight != .standard { return true }
+        if !isCompactGridMode { return true }
+        if !climatePanelModule { return true }
+        if !hideGroupedLights { return true }
+        return false
+    }
 }
 
 private struct GeneralSettingsTab: View {
     let store: HomeStore
-    var initialExpandAdvancedDisplay: Bool = false
+    @Binding var advancedDisplay: GeneralSettingsDisclosure.State
     @Environment(\.settingsSearchFocus) private var searchFocus
     @State private var showNotificationRationale = false
     @State private var confirmsAdvancedFacetWrites = false
-    @State private var showsAdvancedDisplay = false
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
     @AppStorage(PanelHeight.storageKey) private var panelHeightRaw: String = PanelHeight.standard.rawValue
@@ -489,17 +555,6 @@ private struct GeneralSettingsTab: View {
     /// shows the classic controls.
     private var panelTheme: PanelTheme {
         PanelTheme.resolved(from: panelThemeRaw)
-    }
-
-    private var isAdvancedDisplayExpanded: Binding<Bool> {
-        Binding(
-            get: {
-                showsAdvancedDisplay
-                    || initialExpandAdvancedDisplay
-                    || GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: searchFocus?.highlight)
-            },
-            set: { showsAdvancedDisplay = $0 }
-        )
     }
 
     var body: some View {
@@ -775,7 +830,7 @@ private struct GeneralSettingsTab: View {
             }
 
             SettingsSection(title: L10n.tr("高级显示", "Advanced Display")) {
-                DisclosureGroup(isExpanded: isAdvancedDisplayExpanded) {
+                DisclosureGroup(isExpanded: $advancedDisplay.isExpanded) {
                     VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
                         if #available(macOS 26.0, *) {
                             HStack {
@@ -1042,16 +1097,18 @@ private struct GeneralSettingsTab: View {
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
         .onAppear {
-            if initialExpandAdvancedDisplay { showsAdvancedDisplay = true }
+            advancedDisplay.applyInitialNonDefaultIfNeeded(
+                panelTheme: panelTheme,
+                panelHeight: PanelHeight(rawValue: panelHeightRaw) ?? .standard,
+                isCompactGridMode: store.isCompactGridMode,
+                climatePanelModule: climatePanelModule,
+                hideGroupedLights: store.hideGroupedLights
+            )
+            advancedDisplay.expandIfNeeded(forHighlight: searchFocus?.highlight)
             launchAtLogin.refresh()
         }
-        .onChange(of: initialExpandAdvancedDisplay) { _, newValue in
-            if newValue { showsAdvancedDisplay = true }
-        }
         .onChange(of: searchFocus?.highlight) { _, highlight in
-            if GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: highlight) {
-                showsAdvancedDisplay = true
-            }
+            advancedDisplay.expandIfNeeded(forHighlight: highlight)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             launchAtLogin.refresh()
@@ -1454,6 +1511,9 @@ private struct ConnectionSettingsTab: View {
             }
         }
         .onAppear {
+            if HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: searchFocus?.highlight) {
+                haExpanded = true
+            }
             if ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: searchFocus?.highlight, accountCount: store.miAccounts.count) {
                 showsAdvancedConnections = true
             }
