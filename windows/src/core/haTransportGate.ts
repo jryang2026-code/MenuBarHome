@@ -344,8 +344,24 @@ function armDrainTimer(scope: string, entry: ScopeLifecycleEntry): void {
     cancelPendingEnableCallbacks(entry, { timedOut: true });
     notifyPhaseListeners(scope, "stop_timeout");
   }, getHaStopDrainTimeoutMs());
-  (timer as unknown as { unref?: () => void }).unref?.();
+  // An awaited enable-after-drain settles only when this timer fires, so it must keep the runtime
+  // alive; only an unawaited disable drain may unref and let a Node process exit first.
+  if (entry.pendingEnableCallbacks.length === 0) {
+    (timer as unknown as { unref?: () => void }).unref?.();
+  }
   entry.drainTimer = timer;
+}
+
+/**
+ * Test hook: whether the armed drain timer still holds the runtime open. A drain that settles an
+ * awaited enable must report `true`, otherwise that await can never resolve.
+ */
+export function isHaDrainTimerRefedForTests(scope: string | null | undefined): boolean | null {
+  const normalized = haConnectionScope(scope);
+  const timer = normalized ? getScopeEntries().get(normalized)?.drainTimer : null;
+  if (!timer) return null;
+  const handle = timer as unknown as { hasRef?: () => boolean };
+  return typeof handle.hasRef === "function" ? handle.hasRef() : true;
 }
 
 export function getHaScopeGeneration(scope: string | null | undefined): number {

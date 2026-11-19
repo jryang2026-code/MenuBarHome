@@ -49,7 +49,12 @@ import { runUnsupportedDevicesScanOnHost } from "../src/ui/connectionsAndDiagVie
 import { controlFailureUserMessage } from "../src/core/controlFailure.js";
 import {
   HaBlockedRequestError,
+  acquireHaTransportLease,
+  beginHaScopeDisable,
+  getHaScopeLifecyclePhase,
+  isHaDrainTimerRefedForTests,
   isHaNativeCancelReady,
+  requestHaScopeEnableAfterDrain,
   resetHaTransportGateForTests,
   setHaNativeCancelReadyForTests,
   setHaStopDrainTimeoutMsForTests,
@@ -1388,6 +1393,34 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.equal(demoRegistration?.args["baseUrl"], nextURL);
     assert.ok(Number(demoRegistration?.args["generation"]) > Number(last?.args["generation"]));
     assert.equal(h.countCmd("ha_snapshot"), 2);
+  });
+
+  it("keeps the drain timer ref'd while an enable-after-drain awaits it, so stop_timeout cannot strand that await", async () => {
+    setHaStopDrainTimeoutMsForTests(20);
+    const lease = acquireHaTransportLease(HA_URL);
+    assert.ok(lease, "gate must issue a lease while HA is enabled");
+
+    assert.equal(beginHaScopeDisable(HA_SCOPE), "stopping");
+    assert.equal(
+      isHaDrainTimerRefedForTests(HA_SCOPE),
+      false,
+      "an unawaited disable drain may unref so a Node process can still exit",
+    );
+
+    let refedWhileAwaited: boolean | null = null;
+    const drained = await new Promise<{ ready: boolean; timedOut: boolean }>((resolve) => {
+      requestHaScopeEnableAfterDrain(HA_SCOPE, (ready, meta) => resolve({ ready, timedOut: Boolean(meta?.timedOut) }));
+      refedWhileAwaited = isHaDrainTimerRefedForTests(HA_SCOPE);
+    });
+
+    assert.equal(
+      refedWhileAwaited,
+      true,
+      "the drain timer that settles an awaited enable must keep the event loop alive",
+    );
+    assert.deepEqual(drained, { ready: false, timedOut: true }, "hung in-flight request must report a timed-out drain");
+    assert.equal(getHaScopeLifecyclePhase(HA_SCOPE), "stop_timeout");
+    lease.release();
   });
 
   it("bounds hung HA in-flight stop with stop_timeout, surfaces Still stopping · Retry without hanging setHaConnectionEnabledOnHost(true), and abandons stale leases cleanly", async () => {
