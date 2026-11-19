@@ -1,4 +1,4 @@
-import { markTimerSnapshotReady } from "./scheduledCommands.js";
+import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec, type MiotPropKey } from "../core/miCloudClient.js";
@@ -24,6 +24,7 @@ import {
   hasCorruptMiAccountIndex,
   hasSecondaryMiAccountsInIndex,
   makeMiAccount,
+  miAccountId,
   refreshMiAccountsConcurrently,
   type AccountChildSnapshot,
   type MergedMiAccountsSnapshot,
@@ -33,7 +34,7 @@ import { isHostAttachedToActiveWindow, mergeHomeSnapshotRespectingLocks } from "
 import { STALE, type EpochToken, type SyncRunToken } from "./sourceEpoch.js";
 import { getUnsupportedLightEffects } from "./commandDispatch.js";
 import { switchLightMarkIds } from "../core/switchLightMarks.js";
-import type { HASnapshotLike } from "../core/automationEngine.js";
+import { AutomationRuleStore, type HASnapshotLike } from "../core/automationEngine.js";
 import { ingestHostHASnapshotForDoorbell, structuralActivityStackKey } from "./activityStackView.js";
 import { energyScopeForHost, plugTodaySummaryForDrawer, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHistoryView.js";
@@ -52,12 +53,30 @@ import {
   storeCachedXiaomiTopology,
   takeCachedXiaomiTopologyForPoll,
 } from "../core/pollingPolicy.js";
-import { filterEnabledMiAccounts, isMiSessionEnabledInState, resolveMiAccountSelectionState, type HostCapabilityContextInput, type MiAccountSelectionState } from "../core/miAccountControl.js";
+import {
+  filterEnabledMiAccounts,
+  isMiSessionEnabledInState,
+  miAccountScope,
+  resolveMiAccountSelectionState,
+  revalidateAfterMiAccountReenable,
+  writeMiAccountSelectionMutation,
+  type HostCapabilityContextInput,
+  type MiAccountSelectionState,
+} from "../core/miAccountControl.js";
 
 type MiSelectionHost = DualSourceInspectableHost & { readonly miAccountsStore?: MiAccountsStore | null };
 
+function hostKnownMiAccounts(host: MiSelectionHost, accounts?: readonly MiAccount[]): readonly MiAccount[] {
+  if (accounts) return accounts;
+  if (host.miAccountsOverride) return host.miAccountsOverride;
+  if (host.multiAccountState?.accounts?.length) return host.multiAccountState.accounts;
+  const storeAccounts = host.miAccountsStore?.getAccounts();
+  if (storeAccounts && storeAccounts.length > 0) return storeAccounts;
+  return host.settings.miSession ? [makeMiAccount(host.settings.miSession as MiSession)] : [];
+}
+
 export function resolveHostMiSelectionState(host: MiSelectionHost, accounts?: readonly MiAccount[]): MiAccountSelectionState {
-  const list = accounts ?? host.miAccountsOverride ?? host.multiAccountState?.accounts ?? (host.settings.miSession ? [makeMiAccount(host.settings.miSession as MiSession)] : []);
+  const list = hostKnownMiAccounts(host, accounts);
   const partial = host.miAccountsStore?.getAccountsReadState() === "partial";
   const state = resolveMiAccountSelectionState({
     accounts: list, haBaseURL: host.settings.haBaseURL ?? null, haToken: host.settings.haToken ?? null,
@@ -79,7 +98,7 @@ export function buildHostCapabilityContext(
   host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly scenes?: readonly HomeScene[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } },
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
-  const accounts = accountsOverride ?? host.miAccountsOverride ?? host.multiAccountState?.accounts ?? (host.settings.miSession ? [makeMiAccount(host.settings.miSession as MiSession)] : []);
+  const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
   return {
@@ -90,6 +109,35 @@ export function buildHostCapabilityContext(
     connectionMode: (host.settings.connectionMode as HomeBackend | undefined) ?? "demo",
     dualSourceEnabled: dualEnabled, ...(host.settings.allOffOverrides ? { allOffOverrides: host.settings.allOffOverrides } : {}),
   };
+}
+
+function completePendingMiRevalidation(
+  host: MenuMijiaWindowsApp,
+  syncedAccountIds: readonly string[],
+  accountsOverride?: readonly MiAccount[],
+): boolean {
+  if (syncedAccountIds.length === 0) return false;
+  const state = resolveHostMiSelectionState(host, accountsOverride);
+  const matchedScopes = new Set(
+    syncedAccountIds.map(miAccountScope).filter((s) => state.pendingRevalidationAccountIds.has(s)),
+  );
+  if (matchedScopes.size === 0) return false;
+  writeMiAccountSelectionMutation({
+    mutate: (prev) => ({
+      ...prev,
+      pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => !matchedScopes.has(miAccountScope(id))),
+      knownDisabledDevices: prev.knownDisabledDevices.filter((d) => !matchedScopes.has(miAccountScope(d.accountId))),
+    }),
+  });
+  const nowMs = (host as { pendingReenableNowMs?: number }).pendingReenableNowMs;
+  revalidateAfterMiAccountReenable({
+    context: buildHostCapabilityContext(host, accountsOverride),
+    scheduledCommandStore: host.scheduledCommandStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore: new AutomationRuleStore(),
+    ...(nowMs !== undefined ? { nowMs } : {}),
+  });
+  return true;
 }
 
 export function foldGrouped(host: MenuMijiaWindowsApp, devices: readonly SmartDevice[]): SmartDevice[] {
@@ -349,6 +397,9 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         presentationChanged || cloudPresentationFingerprint(host) !== previousPresentation;
 
       markTimerSnapshotReady(host);
+      if (completePendingMiRevalidation(host, [miAccountId(session)])) {
+        presentationChanged = true;
+      }
       host.settings.cachedXiaomiDevices = host.devices;
       const knownModelTypes = host.specResolver.exportKnownModelTypes(
         rawDevices.map((d) => d.model),
@@ -1020,6 +1071,12 @@ export async function refreshMultiAccountXiaomiDevices(
       applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners);
       presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
       markTimerSnapshotReady(host);
+      const freshAccountIds = enabledAccounts
+        .filter((acc) => children[acc.id]?.status.kind === "connected")
+        .map((acc) => acc.id);
+      if (completePendingMiRevalidation(host, freshAccountIds, accounts)) {
+        presentationChanged = true;
+      }
       host.settings.cachedXiaomiDevices = host.devices;
       if (presentationChanged || merged.resetSelectedHome) {
         host.saveSettings();
@@ -1228,6 +1285,17 @@ export async function refreshDualSourceDevices(
     const outcome = await coordinator.refreshParallel({
       knownPreferenceIds: knownPreferenceIdsForHost(host),
       languagePreference: host.settings.interfaceLanguage,
+      shouldCommit: () => {
+        const latestIds = new Set(resolveEnabledMiAccountsForHost(host, accounts).map((a) => a.id));
+        return (
+          isHostAttachedToActiveWindow(host) &&
+          isDualSourceEnabled(host) &&
+          stateToken.isCurrent() &&
+          syncRun.isCurrent() &&
+          enabledAccounts.length === latestIds.size &&
+          enabledAccounts.every((a) => latestIds.has(a.id))
+        );
+      },
       fetchHA: async (): Promise<DualSourceInputSnapshot> => {
         const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
         haRawSnapshot = res.rawSnapshot;
@@ -1237,15 +1305,9 @@ export async function refreshDualSourceDevices(
           identities: res.identities,
         };
       },
-      fetchMi: async (): Promise<DualSourceInputSnapshot> => {
+      fetchMi: async (): Promise<DualSourceInputSnapshot | null> => {
         if (enabledAccounts.length === 0) {
-          return {
-            home: { devices: [], rooms: [], environmentReadings: [], scenes: [] },
-            identities: {},
-            lightGroupOwners: new Map(),
-            homes: [],
-            accountStatuses: {},
-          };
+          return null;
         }
         const { merged, children } = await refreshMiAccountsConcurrently({
           accounts: enabledAccounts,
@@ -1281,10 +1343,12 @@ export async function refreshDualSourceDevices(
 
     const latestEnabledIds = new Set(resolveEnabledMiAccountsForHost(host, accounts).map((a) => a.id));
     if (
+      outcome.aborted ||
       !isHostAttachedToActiveWindow(host) ||
       !isDualSourceEnabled(host) ||
       !stateToken.isCurrent() ||
       !syncRun.isCurrent() ||
+      enabledAccounts.length !== latestEnabledIds.size ||
       !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
     ) {
       return;
@@ -1315,6 +1379,12 @@ export async function refreshDualSourceDevices(
       void ingestHostHASnapshotForDoorbell(host, haRawSnapshot as HASnapshotLike);
     }
     markTimerSnapshotReady(host);
+    if (nextMultiAccountState) {
+      const freshAccountIds = enabledAccounts
+        .filter((acc) => nextMultiAccountState?.children[acc.id]?.status.kind === "connected")
+        .map((acc) => acc.id);
+      completePendingMiRevalidation(host, freshAccountIds, accounts);
+    }
     presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
     if (presentationChanged) host.saveSettings();
     if (!silent) {

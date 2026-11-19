@@ -81,9 +81,13 @@ function parseTimer(value: unknown): ScheduledCommand | null {
     if (!operation) return null;
     intents.push({ targetId: intent.targetId, operation });
   }
+  const sourceScopes = Array.isArray(value.sourceScopes)
+    ? value.sourceScopes.filter((s): s is string => typeof s === "string" && s.length > 0)
+    : [];
   return {
     id: value.id, command: value.command, reply: value.reply,
     delaySeconds: value.delaySeconds, fireTimestampMs: value.fireTimestampMs, intents,
+    ...(sourceScopes.length > 0 ? { sourceScopes } : {}),
   };
 }
 
@@ -191,6 +195,28 @@ export class ScheduledCommandStore {
 
   entries(): ReadonlyArray<readonly [string, TimerQueue]> {
     return [...this.sources.entries()];
+  }
+
+  snapshotQueues(): Map<string, TimerQueue> {
+    return structuredClone(this.sources);
+  }
+
+  restoreQueues(snapshot: ReadonlyMap<string, TimerQueue>): boolean {
+    for (const key of [...this.sources.keys()]) {
+      if (!snapshot.has(key)) this.sources.delete(key);
+    }
+    for (const [key, val] of snapshot.entries()) {
+      const cloned = structuredClone(val);
+      const existing = this.sources.get(key);
+      if (existing) {
+        existing.scheduledCommands = cloned.scheduledCommands;
+        existing.missedScheduledCommands = cloned.missedScheduledCommands;
+        existing.pausedScheduledCommands = cloned.pausedScheduledCommands ?? [];
+      } else {
+        this.sources.set(key, cloned);
+      }
+    }
+    return this.persist();
   }
 
   queue(identity: string | null): TimerQueue {

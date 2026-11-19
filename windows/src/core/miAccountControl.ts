@@ -1,11 +1,11 @@
-import { AutomationRuleStore, type AutomationRule } from "./automationEngine.js";
+import { AutomationRuleStore, automationTriggerTitle, summarizeAutomationAction, type AutomationRule } from "./automationEngine.js";
 import { DEVICE_CATEGORY_IDS, FEATURE_IDS, deviceCategoryForDevice, loadSharedCapabilityManifest, type CapabilityID, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
-  controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
+  QUICK_ACTION_TARGET_CATEGORIES, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
   partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
   type CapabilityDeactivationVerdict, type CapabilityIndexedDevice, type CapabilityInstallResolutionMode,
   type CapabilityReferenceGraph, type CapabilitySelection, type ControlTargetKind, type QuickActionReference,
-  type SafetyRetentionPolicy, type SceneReference, type TimerReference,
+  type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
 } from "./capabilityReferenceVerdict.js";
 import type { DeviceMergeRoute } from "./dualSourceProvider.js";
 import { homeAssistantIdentity } from "./homeAssistant.js";
@@ -13,10 +13,11 @@ import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
 import { joinsAllOff, type DeviceIntent, type FacetControl, type HomeScene, type SmartDevice, type ScheduledCommand } from "./models.js";
+import { quickActionTitle, type QuickActionId } from "./quickActions.js";
 import type { PausedScheduledCommand, ScheduledCommandStore } from "./scheduledCommands.js";
 
 export const MI_ACCOUNT_CAPABILITY_STORAGE_KEY = "menumijia.windows.capabilitySelection.v1";
-const BUILTIN_QUICK_ACTIONS = ["lightsOff", "softNightLight", "climateSleepOff"] as const;
+const BUILTIN_QUICK_ACTIONS: readonly QuickActionId[] = ["lightsOff", "softNightLight", "climateSleepOff"];
 const EMPTY_SAFETY_POLICY: SafetyRetentionPolicy = { enabledSignals: [] };
 const ENTITY_FIELDS = [
   "entityId", "switchEntityId", "childLockEntityId", "motionDetectionEntityId", "modeEntityId", "fridgeTargetEntityId",
@@ -26,9 +27,24 @@ const ENTITY_FIELDS = [
 
 export interface StorageLike { getItem(k: string): string | null; setItem(k: string, v: string): void; removeItem?(k: string): void; }
 export interface DisabledMiDeviceSnapshot { readonly id: string; readonly rawDid: string; readonly name: string; readonly category: DeviceCategoryID; readonly accountId: string; readonly entityIds: readonly string[]; }
-interface ParsedCapabilityStorageRecord { readonly migrationComplete: boolean; readonly disabledAccountIds: readonly string[]; readonly pausedQuickActionIds: readonly string[]; readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[]; readonly extraFields: Readonly<Record<string, unknown>>; }
+interface ParsedCapabilityStorageRecord {
+  readonly migrationComplete: boolean;
+  readonly disabledAccountIds: readonly string[];
+  readonly pendingRevalidationAccountIds: readonly string[];
+  readonly pausedQuickActionIds: readonly string[];
+  readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[];
+  readonly extraFields: Readonly<Record<string, unknown>>;
+}
 export interface ResolveMiAccountSelectionOptions { readonly storage?: StorageLike | null; readonly accounts: readonly MiAccount[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode?: string; readonly dualSourceEnabled?: boolean; readonly hasExistingPreferences?: boolean; readonly hasPersistedLocalData?: boolean; readonly identityReadFailure?: string | null; }
-export interface MiAccountSelectionState { readonly mode: CapabilityInstallResolutionMode; readonly selection: CapabilitySelection; readonly disabledAccountIds: ReadonlySet<string>; readonly pausedQuickActionIds: ReadonlySet<string>; readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[]; persistIfMigrationReady(): boolean; }
+export interface MiAccountSelectionState {
+  readonly mode: CapabilityInstallResolutionMode;
+  readonly selection: CapabilitySelection;
+  readonly disabledAccountIds: ReadonlySet<string>;
+  readonly pendingRevalidationAccountIds: ReadonlySet<string>;
+  readonly pausedQuickActionIds: ReadonlySet<string>;
+  readonly knownDisabledDevices: readonly DisabledMiDeviceSnapshot[];
+  persistIfMigrationReady(): boolean;
+}
 export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly disablingAccountId?: string | null; }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -58,11 +74,15 @@ function readCapabilityStorage(storage: StorageLike | null): { readonly parsed: 
         !Array.isArray(val["disabledMiAccountIds"]) || !val["disabledMiAccountIds"].every((x) => typeof x === "string")) {
       return { parsed: null, corruptRaw: raw, readError: false };
     }
-    const known = new Set(["schemaVersion", "migrationComplete", "disabledMiAccountIds", "pausedQuickActionIds", "knownDisabledDevices"]);
+    const known = new Set(["schemaVersion", "migrationComplete", "disabledMiAccountIds", "pendingRevalidationAccountIds", "pausedQuickActionIds", "knownDisabledDevices"]);
     const extraFields = Object.fromEntries(Object.entries(val).filter(([k]) => !known.has(k)));
     return {
       parsed: {
-        migrationComplete: val["migrationComplete"], disabledAccountIds: val["disabledMiAccountIds"] as string[],
+        migrationComplete: val["migrationComplete"],
+        disabledAccountIds: val["disabledMiAccountIds"] as string[],
+        pendingRevalidationAccountIds: Array.isArray(val["pendingRevalidationAccountIds"])
+          ? val["pendingRevalidationAccountIds"].filter((x): x is string => typeof x === "string" && x.length > 0)
+          : [],
         pausedQuickActionIds: Array.isArray(val["pausedQuickActionIds"]) ? val["pausedQuickActionIds"].filter((x): x is string => typeof x === "string" && x.length > 0) : [],
         knownDisabledDevices: Array.isArray(val["knownDisabledDevices"]) ? val["knownDisabledDevices"].map(parseDisabledDevice).filter((x): x is DisabledMiDeviceSnapshot => x !== null) : [],
         extraFields,
@@ -84,6 +104,7 @@ function writeCapabilityStorageRecord(storage: StorageLike | null, record: Parse
     storage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, JSON.stringify({
       ...record.extraFields, schemaVersion: 1, migrationComplete: record.migrationComplete,
       disabledMiAccountIds: [...new Set(record.disabledAccountIds)],
+      ...(record.pendingRevalidationAccountIds.length > 0 ? { pendingRevalidationAccountIds: [...new Set(record.pendingRevalidationAccountIds.map(miAccountScope))] } : {}),
       ...(record.pausedQuickActionIds.length > 0 ? { pausedQuickActionIds: [...new Set(record.pausedQuickActionIds)] } : {}),
       ...(record.knownDisabledDevices.length > 0 ? { knownDisabledDevices: record.knownDisabledDevices } : {}),
     }));
@@ -99,6 +120,7 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
   const includeHA = Boolean(haScope && (options.dualSourceEnabled || options.connectionMode === "homeAssistant" || options.connectionMode === undefined));
   const configuredScopes = [...miScopes, ...(includeHA && haScope ? [haScope] : [])];
   const disabledSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.disabledAccountIds.map(miAccountScope) : []);
+  const pendingRevalidationSet = new Set<string>(stored.parsed?.migrationComplete ? stored.parsed.pendingRevalidationAccountIds.map(miAccountScope) : []);
   const enabledConns = [
     ...(miScopes.length > 0 || options.connectionMode === "xiaomiCloud" || (stored.parsed?.knownDisabledDevices.length ?? 0) > 0 ? (["xiaomi-cloud"] as const) : []),
     ...(includeHA ? (["home-assistant"] as const) : []),
@@ -115,6 +137,7 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
   }, loadSharedCapabilityManifest());
   return {
     mode: resolution.mode, selection: resolution.selection, disabledAccountIds: disabledSet,
+    pendingRevalidationAccountIds: pendingRevalidationSet,
     pausedQuickActionIds: new Set(stored.parsed?.pausedQuickActionIds ?? []),
     knownDisabledDevices: stored.parsed?.knownDisabledDevices ?? [],
     persistIfMigrationReady(): boolean {
@@ -122,6 +145,7 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
       if (stored.parsed?.migrationComplete) return true;
       return writeCapabilityStorageRecord(storage, {
         migrationComplete: true, disabledAccountIds: stored.parsed?.disabledAccountIds ?? [],
+        pendingRevalidationAccountIds: stored.parsed?.pendingRevalidationAccountIds ?? [],
         pausedQuickActionIds: stored.parsed?.pausedQuickActionIds ?? [],
         knownDisabledDevices: stored.parsed?.knownDisabledDevices ?? [], extraFields: stored.parsed?.extraFields ?? {},
       }, null);
@@ -138,7 +162,14 @@ export function writeMiAccountSelectionMutation(options: { readonly storage?: St
   const storage = options.storage === undefined ? defaultStorage() : options.storage;
   const current = readCapabilityStorage(storage);
   if (current.readError) return false;
-  const base: ParsedCapabilityStorageRecord = current.parsed ?? { migrationComplete: true, disabledAccountIds: [], pausedQuickActionIds: [], knownDisabledDevices: [], extraFields: {} };
+  const base: ParsedCapabilityStorageRecord = current.parsed ?? {
+    migrationComplete: true,
+    disabledAccountIds: [],
+    pendingRevalidationAccountIds: [],
+    pausedQuickActionIds: [],
+    knownDisabledDevices: [],
+    extraFields: {},
+  };
   return writeCapabilityStorageRecord(storage, options.mutate({ ...base, migrationComplete: true }), current.corruptRaw);
 }
 
@@ -147,6 +178,7 @@ export function removeSignedOutMiAccountFromSelection(accountId: string | null, 
   writeMiAccountSelectionMutation({ storage, mutate: (prev) => ({
     ...prev,
     disabledAccountIds: target === null ? [] : prev.disabledAccountIds.filter((id) => miAccountScope(id) !== target),
+    pendingRevalidationAccountIds: target === null ? [] : prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== target),
     knownDisabledDevices: target === null ? [] : prev.knownDisabledDevices.filter((d) => miAccountScope(d.accountId) !== target),
   }) });
 }
@@ -190,8 +222,15 @@ export function parseTimerIdentityScope(identity: string): string | null {
   return null;
 }
 
-const toAutomationReference = (rule: AutomationRule): AutomationReference => ({
-  id: rule.id, name: rule.id, isEnabled: rule.isEnabled,
+const toAutomationReference = (
+  rule: AutomationRule,
+  devices: readonly SmartDevice[],
+  scenes: readonly HomeScene[],
+  preference?: LanguagePreference,
+): AutomationReference => ({
+  id: rule.id,
+  name: `${automationTriggerTitle(rule.trigger, preference)} → ${summarizeAutomationAction(rule.action, devices, scenes, preference)}`,
+  isEnabled: rule.isEnabled,
   action: rule.action.kind === "devices" ? { kind: "devices", targetIds: rule.action.deviceIds }
     : rule.action.kind === "scene" ? { kind: "scene", sceneId: rule.action.sceneId }
     : { kind: "quickAction", quickAction: rule.action.quickAction },
@@ -213,7 +252,7 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
     seenIds.add(dev.id);
     indexedDevices.push({
       id: dev.id, name: dev.name, category: deviceCategoryForDevice(dev), connection, sourceScope,
-      isSourceAvailable: connection === "xiaomi-cloud" && ownerId ? !input.state.disabledAccountIds.has(ownerId) : true,
+      isSourceAvailable: connection === "xiaomi-cloud" && ownerId ? !input.state.disabledAccountIds.has(miAccountScope(ownerId)) : true,
       upstreamHiddenOrDisabled: false, participatesInAllOff: joinsAllOff(dev, input.allOffOverrides ?? {}),
       safetySignals: [], readKeys: [dev.id], safetyReadKeys: [],
     });
@@ -235,10 +274,12 @@ export function buildIndexedCapabilityDevices(input: HostCapabilityContextInput)
 export function previewMiAccountDisable(options: {
   readonly accountId: string; readonly context: HostCapabilityContextInput; readonly scheduledCommandStore: ScheduledCommandStore;
   readonly activeTimerIdentity: string | null; readonly ruleStore: AutomationRuleStore; readonly preferences?: CapabilityReferenceGraph["preferences"];
-  readonly expectedGeneration?: number | null; readonly currentGeneration?: number | null;
+  readonly expectedGeneration?: number | null; readonly currentGeneration?: number | null; readonly languagePreference?: LanguagePreference;
 }): CapabilityDeactivationVerdict {
+  const pref = effectivePref(options.languagePreference);
   const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices({ ...options.context, disablingAccountId: options.accountId });
   const devById = new Map(indexedDevices.map((d) => [d.id, d] as const));
+  const activeSessionScopes = options.context.state.selection.enabledConnectionScopes;
   const timers: TimerReference[] = [];
   for (const [identity, queue] of options.scheduledCommandStore.entries()) {
     const queueScope = parseTimerIdentityScope(identity), isActive = identity === options.activeTimerIdentity;
@@ -246,7 +287,16 @@ export function previewMiAccountDisable(options: {
       for (const item of list) {
         const targetIds = (item.intents ?? []).map((i) => i.targetId);
         const derived = targetIds.map((tid) => devById.get(tid)?.sourceScope).filter((s): s is string => Boolean(s && s !== "demo"));
-        timers.push({ id: item.id, name: item.command, partition, targetIds, sourceScopes: derived.length > 0 ? [...new Set(derived)] : queueScope ? [queueScope] : [] });
+        const sourceScopes = item.sourceScopes?.length
+          ? [...new Set(item.sourceScopes)]
+          : isActive
+            ? [...new Set([...activeSessionScopes, ...derived])]
+            : derived.length > 0
+              ? [...new Set(derived)]
+              : queueScope
+                ? [queueScope]
+                : [];
+        timers.push({ id: item.id, name: item.command, partition, targetIds, sourceScopes });
       }
     };
     pushList(queue.scheduledCommands, isActive ? "waiting" : "foreign");
@@ -257,8 +307,9 @@ export function previewMiAccountDisable(options: {
   return evaluateCapabilityDeactivation(
     options.context.state.selection, proposed, loadSharedCapabilityManifest(), indexedDevices, EMPTY_SAFETY_POLICY,
     {
-      timers, automations: options.ruleStore.load().map(toAutomationReference),
-      quickActions: BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({ id, name: id, kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id) })),
+      timers,
+      automations: options.ruleStore.load().map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
+      quickActions: BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({ id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id) })),
       scenes: sceneRefs, ...(options.preferences ? { preferences: options.preferences } : {}),
       ...(options.scheduledCommandStore.hasStorageError() ? { corruptedStoreReasons: ["scheduledCommands"] } : {}),
       expectedGeneration: options.expectedGeneration ?? null, currentGeneration: options.currentGeneration ?? null,
@@ -266,30 +317,53 @@ export function previewMiAccountDisable(options: {
   );
 }
 
-export function applyPauseItemsFromVerdict(options: { readonly verdict: CapabilityDeactivationVerdict; readonly scheduledCommandStore: ScheduledCommandStore; readonly ruleStore: AutomationRuleStore }): readonly string[] {
+export function applyPauseItemsFromVerdict(options: {
+  readonly verdict: CapabilityDeactivationVerdict;
+  readonly scheduledCommandStore: ScheduledCommandStore;
+  readonly ruleStore: AutomationRuleStore;
+  readonly activeTimerIdentity?: string | null;
+  readonly activeConnectionScopes?: readonly string[];
+}): { readonly ok: boolean; readonly pausedQuickActionIds: readonly string[] } {
   const timerItems = new Map(options.verdict.itemsToPause.filter((i) => i.kind === "waitingTimer" || i.kind === "missedTimer" || i.kind === "foreignTimer").map((i) => [i.id, i] as const));
   if (timerItems.size > 0) {
-    for (const [, queue] of options.scheduledCommandStore.entries()) {
+    const activeScopes = options.activeConnectionScopes ?? [];
+    for (const [identity, queue] of options.scheduledCommandStore.entries()) {
+      const queueScope = parseTimerIdentityScope(identity);
+      const isActive = options.activeTimerIdentity !== undefined ? identity === options.activeTimerIdentity : true;
       const paused = (queue.pausedScheduledCommands ??= []);
       const moveFrom = (list: readonly ScheduledCommand[], orig: "waiting" | "missed") => list.filter((cmd) => {
         const hit = timerItems.get(cmd.id);
         if (!hit) return true;
-        paused.push({ command: cmd, originalPartition: orig, sourceScopes: hit.connectionScopes, pausedCapabilities: hit.affectedCapabilities });
+        const fullScopes = cmd.sourceScopes?.length
+          ? [...new Set([...cmd.sourceScopes, ...hit.connectionScopes])]
+          : isActive
+            ? [...new Set([...activeScopes, ...hit.connectionScopes])]
+            : [...new Set([...(queueScope ? [queueScope] : []), ...hit.connectionScopes])];
+        const stampedCmd: ScheduledCommand = cmd.sourceScopes?.length ? cmd : { ...cmd, sourceScopes: fullScopes };
+        paused.push({ command: stampedCmd, originalPartition: orig, sourceScopes: fullScopes, pausedCapabilities: hit.affectedCapabilities });
         return false;
       });
       queue.scheduledCommands = moveFrom(queue.scheduledCommands, "waiting");
       queue.missedScheduledCommands = moveFrom(queue.missedScheduledCommands, "missed");
     }
-    options.scheduledCommandStore.persist();
+    if (!options.scheduledCommandStore.persist()) {
+      return { ok: false, pausedQuickActionIds: [] };
+    }
   }
   const rulePauseMap = new Map(options.verdict.itemsToPause.filter((i) => i.kind === "automationRule").map((i) => [i.id, [...new Set([...i.affectedCapabilities, ...i.connectionScopes])]] as const));
   if (rulePauseMap.size > 0) {
-    options.ruleStore.save(options.ruleStore.load().map((rule) => {
+    const saved = options.ruleStore.save(options.ruleStore.load().map((rule) => {
       const reasons = rulePauseMap.get(rule.id);
       return reasons && rule.isEnabled ? { ...rule, isEnabled: false, pausedByCapabilities: [...new Set([...(rule.pausedByCapabilities ?? []), ...reasons])] } : rule;
     }));
+    if (!saved) {
+      return { ok: false, pausedQuickActionIds: [] };
+    }
   }
-  return options.verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
+  return {
+    ok: true,
+    pausedQuickActionIds: options.verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id),
+  };
 }
 
 export function revalidateAfterMiAccountReenable(options: {
@@ -318,7 +392,7 @@ export function revalidateAfterMiAccountReenable(options: {
         },
         fireAtEpochSeconds: Math.floor(paused.command.fireTimestampMs / 1000), nowEpochSeconds, activeConnectionScopes: activeScopes, selection, devices: indexedDevices, scenes: sceneRefs,
       });
-      if (disp === "keepPaused" || (disp === "partitionForeign" && activeScopes.length === 0)) { stillPaused.push(paused); continue; }
+      if (disp === "keepPaused" || disp === "partitionForeign") { stillPaused.push(paused); continue; }
       timersMutated = true;
       if (disp === "armWaiting" && paused.originalPartition === "waiting") queue.scheduledCommands.push(paused.command);
       else queue.missedScheduledCommands.push(paused.command);
@@ -341,8 +415,12 @@ export function revalidateAfterMiAccountReenable(options: {
 
   const restoredQa = new Set<string>();
   for (const qaId of options.context.state.pausedQuickActionIds) {
-    const cats = qaId === "climateSleepOff" ? ["climate", "fan"] : ["light"];
-    if ([...availSet].some((id) => cats.includes(devById.get(id)?.category ?? ""))) restoredQa.add(qaId);
+    const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[qaId as QuickActionReferenceKind] ?? [];
+    const availHasCategory = [...availSet].some((id) => {
+      const cat = devById.get(id)?.category;
+      return cat !== undefined && cats.includes(cat);
+    });
+    if (availHasCategory) restoredQa.add(qaId);
   }
   if (restoredQa.size > 0) writeMiAccountSelectionMutation({ storage: options.storage, mutate: (prev) => ({ ...prev, pausedQuickActionIds: prev.pausedQuickActionIds.filter((id) => !restoredQa.has(id)) }) });
 }

@@ -999,6 +999,7 @@ export interface DualSourceRefreshOutcome { readonly merged: DeviceMergeResult;
   readonly sourceStatuses: Readonly<Record<HomeBackend, ConnectionStatus>>;
   readonly haError: string | null;
   readonly miError: string | null;
+  readonly aborted?: boolean;
 }
 
 export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
@@ -1008,6 +1009,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   private lastMi: DualSourceInputSnapshot | null = null;
   private lastKnownPrefIds: ReadonlySet<string> = new Set();
   private lastMerged: DeviceMergeResult | null = null;
+  private mutationEpoch = 0;
   private sourceStatuses: Record<HomeBackend, ConnectionStatus> = {
     homeAssistant: { kind: "connecting" },
     xiaomiCloud: { kind: "connecting" },
@@ -1030,6 +1032,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   }
 
   reset(): void {
+    this.mutationEpoch += 1;
     this.lastHA = null;
     this.lastMi = null;
     this.lastMerged = null;
@@ -1042,20 +1045,33 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getSourceStatuses(): Readonly<Record<HomeBackend, ConnectionStatus>> { return { ...this.sourceStatuses };
   }
 
-    async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot>;
-    readonly fetchMi: () => Promise<DualSourceInputSnapshot>;
+  async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot>;
+    readonly fetchMi: () => Promise<DualSourceInputSnapshot | null>;
     readonly knownPreferenceIds?: ReadonlySet<string>;
     readonly languagePreference?: LanguagePreference;
-  }): Promise<DualSourceRefreshOutcome> { if (options.knownPreferenceIds) {
-      this.lastKnownPrefIds = options.knownPreferenceIds;
-    }
-
+    readonly shouldCommit?: () => boolean;
+  }): Promise<DualSourceRefreshOutcome> {
+    const epochAtStart = this.mutationEpoch;
     const [haSettled, miSettled] = await Promise.allSettled([
       options.fetchHA(),
       options.fetchMi(),
     ]);
 
-    let haError: string | null = null; let miError: string | null = null; 
+    if (this.mutationEpoch !== epochAtStart || (options.shouldCommit && !options.shouldCommit())) {
+      return {
+        merged: this.lastMerged ?? DeviceDeduplicator.merge({}),
+        sourceStatuses: { ...this.sourceStatuses },
+        haError: null,
+        miError: null,
+        aborted: true,
+      };
+    }
+
+    if (options.knownPreferenceIds) {
+      this.lastKnownPrefIds = options.knownPreferenceIds;
+    }
+
+    let haError: string | null = null; let miError: string | null = null;
     if (haSettled.status === "fulfilled") { this.lastHA = haSettled.value;
       this.sourceStatuses.homeAssistant = { kind: "connected" };
     } else { haError =
@@ -1070,21 +1086,29 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     if (miSettled.status === "fulfilled") {
-      const statuses = Object.values(miSettled.value.accountStatuses ?? {});
-      const allDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
-      if (allDisconnected) {
-        const firstDisc = statuses.find(
-          (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
-        );
-        miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
+      if (miSettled.value === null) {
         this.lastMi = null;
         this.sourceStatuses.xiaomiCloud = {
           kind: "disconnected",
-          reason: miError,
+          reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, options.languagePreference),
         };
       } else {
-        this.lastMi = miSettled.value;
-        this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        const statuses = Object.values(miSettled.value.accountStatuses ?? {});
+        const allDisconnected = statuses.length > 0 && statuses.every((s) => s.kind === "disconnected");
+        if (allDisconnected) {
+          const firstDisc = statuses.find(
+            (s): s is Extract<ConnectionStatus, { readonly kind: "disconnected" }> => s.kind === "disconnected",
+          );
+          miError = firstDisc?.reason ?? "Xiaomi Cloud disconnected";
+          this.lastMi = null;
+          this.sourceStatuses.xiaomiCloud = {
+            kind: "disconnected",
+            reason: miError,
+          };
+        } else {
+          this.lastMi = miSettled.value;
+          this.sourceStatuses.xiaomiCloud = { kind: "connected" };
+        }
       }
     } else { miError =
         miSettled.reason instanceof Error
@@ -1118,7 +1142,17 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     accountId: string,
     languagePreference?: LanguagePreference,
   ): DeviceMergeResult | null {
-    if (!accountId || !this.lastMi) return null;
+    if (!accountId) return null;
+    this.mutationEpoch += 1;
+    if (!this.lastMi) {
+      if (this.sourceStatuses.xiaomiCloud.kind === "connecting") {
+        this.sourceStatuses.xiaomiCloud = {
+          kind: "disconnected",
+          reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference),
+        };
+      }
+      return null;
+    }
 
     const removedDeviceIds = new Set<string>();
     const isRemovedMiDevice = (id: string, devAccountId?: string): boolean =>
@@ -1195,16 +1229,19 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       }
     }
 
+    const remainingStatuses = Object.values(nextAccountStatuses ?? {});
+    const allRemainingDisconnected =
+      remainingStatuses.length > 0 && remainingStatuses.every((s) => s.kind === "disconnected");
     const noRemainingAccounts =
-      (!hadAccountStatuses || Object.keys(nextAccountStatuses ?? {}).length === 0) &&
+      (!hadAccountStatuses || remainingStatuses.length === 0) &&
       nextDevices.length === 0 &&
       (nextHomes?.length ?? 0) === 0;
 
-    if (noRemainingAccounts) {
+    if (noRemainingAccounts || allRemainingDisconnected) {
       this.lastMi = null;
       this.sourceStatuses.xiaomiCloud = {
         kind: "disconnected",
-        reason: "Signed out of Xiaomi account",
+        reason: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, languagePreference),
       };
     } else {
       this.lastMi = {

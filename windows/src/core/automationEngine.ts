@@ -684,7 +684,7 @@ export class AutomationRuleStore {
     }
   }
 
-  public save(rules: readonly AutomationRule[]): void {
+  public save(rules: readonly AutomationRule[]): boolean {
     try {
       const serializable = rules.map((r) => ({
         id: r.id,
@@ -706,7 +706,9 @@ export class AutomationRuleStore {
         ...(r.pausedByCapabilities?.length ? { pausedByCapabilities: r.pausedByCapabilities } : {}),
       }));
       this.storage.setItem(AutomationRuleStore.storageKey, JSON.stringify(serializable));
+      return true;
     } catch {
+      return false;
     }
   }
 }

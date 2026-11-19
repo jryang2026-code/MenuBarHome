@@ -124,8 +124,8 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { foldGrouped, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
-import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
+import { foldGrouped, isDualSourceEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveEnabledMiAccountsForHost } from "./cloudRefresh.js";
+import { hasSecondaryMiAccountsInIndex, makeMiAccount, miAccountId } from "../core/miAccountsStore.js";
 import { writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId } from "../core/automationEngine.js";
@@ -1173,14 +1173,28 @@ export class MenuMijiaWindowsApp {
     if (mode === "demo") {
       return { kind: "demo", dot: "is-demo", label: t("演示模式") };
     }
+    const dualActive = isDualSourceEnabled(this);
+    const knownMi = this.multiAccountState?.accounts ?? (this.settings.miSession ? [makeMiAccount(this.settings.miSession)] : []);
+    const enabledMi = mode === "xiaomiCloud" || dualActive ? resolveEnabledMiAccountsForHost(this, knownMi) : [];
+    const allMiDisabled = (mode === "xiaomiCloud" || dualActive) && knownMi.length > 0 && enabledMi.length === 0;
+    if (mode === "xiaomiCloud" && !dualActive && allMiDisabled) {
+      return {
+        kind: "offline",
+        dot: "is-offline",
+        label: tr3("米家已停用", "米家已停用", "Xiaomi Home is turned off", undefined, this.settings.interfaceLanguage),
+        recovery: "none",
+      };
+    }
     if (
       mode === "xiaomiCloud" &&
+      !allMiDisabled &&
       this.settings.miSession &&
-      (this.miSessionExpired || miSessionExpiryState(this.settings.miSession).kind === "expired")
+      (this.miSessionExpired || miSessionExpiryState(this.settings.miSession).kind === "expired") &&
+      enabledMi.some((acc) => acc.id === miAccountId(this.settings.miSession!))
     ) {
       return { kind: "offline", dot: "is-offline", label: t("米家登录已过期 · 点此扫码"), recovery: "qr" };
     }
-    if (mode === "homeAssistant") {
+    if (mode === "homeAssistant" || (dualActive && allMiDisabled)) {
       const block = haConnectionBlock(this.settings.haBaseURL, this.haConnectionError ?? "");
       if (block === "plaintext") {
         return { kind: "offline", dot: "is-offline", label: t("Home Assistant 未连接（已拒绝明文）"), recovery: "none" };
@@ -1197,8 +1211,8 @@ export class MenuMijiaWindowsApp {
     if (this.isSyncingCloud) {
       return { kind: "syncing", dot: "is-syncing", label };
     }
-    const cloudFailed = mode === "xiaomiCloud" && this.cloudValuesStale;
-    const haFailed = mode === "homeAssistant" && this.haConnectionError !== null;
+    const cloudFailed = mode === "xiaomiCloud" && !allMiDisabled && this.cloudValuesStale;
+    const haFailed = (mode === "homeAssistant" || dualActive) && this.haConnectionError !== null;
     if (cloudFailed || haFailed || this.valuesAreStale) {
       const stale = this.valuesAreStale ? `${label} · ${t("可能过期")}` : label;
       return { kind: "degraded", dot: "is-degraded", label: stale };
@@ -1207,11 +1221,20 @@ export class MenuMijiaWindowsApp {
   }
 
   private connectionFooterLabel(): string {
-    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
-      return t("米家账号 {user} · {count} 台设备", {
-        user: maskedMiUserId(this.settings.miSession.userId),
-        count: this.devices.length,
-      });
+    const dualActive = isDualSourceEnabled(this);
+    if (this.settings.connectionMode === "xiaomiCloud") {
+      const knownMi = this.multiAccountState?.accounts ?? (this.settings.miSession ? [makeMiAccount(this.settings.miSession)] : []);
+      const enabledMi = resolveEnabledMiAccountsForHost(this, knownMi);
+      if (dualActive && enabledMi.length === 0) {
+        return `Home Assistant · ${this.devices.length}`;
+      }
+      const activeUser = enabledMi[0]?.session.userId ?? this.settings.miSession?.userId;
+      if (activeUser) {
+        return t("米家账号 {user} · {count} 台设备", {
+          user: maskedMiUserId(activeUser),
+          count: this.devices.length,
+        });
+      }
     }
     if (this.settings.connectionMode === "homeAssistant") {
       return `Home Assistant · ${this.devices.length}`;

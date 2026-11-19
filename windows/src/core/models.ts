@@ -482,6 +482,8 @@ export interface ScheduledCommand {
   readonly reply: string;
   /** Resolved when the timer was set, so 「10 分钟后关灯」 keeps the devices chosen then (#273). */
   readonly intents?: readonly DeviceIntent[];
+  /** Active connection scopes stamped at creation time (ADR-0019 / ADR-0023). */
+  readonly sourceScopes?: readonly string[];
 }
 
 export function devicePrimaryEntityId(device: SmartDevice): string | null {

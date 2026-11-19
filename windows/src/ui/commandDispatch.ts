@@ -1191,7 +1191,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeProvider {
         : undefined;
     throw new Error(
       controlTargetRejectionMessage(
-        { code: "connectionScopeDisabled", scope: miAccountScope(miAccountId(session)) },
+        { code: "connectionScopeDisabled", connection: "xiaomi-cloud", scope: miAccountScope(miAccountId(session)) },
         pref,
       ),
     );
@@ -1218,8 +1218,14 @@ function buildHomeAssistantProvider(host: MenuMijiaWindowsApp): HomeProvider {
 export function homeProviderFor(host: MenuMijiaWindowsApp): HomeProvider {
   if (host.settings.connectionMode === "demo") return new DemoHomeProvider();
   if (isDualSourceEnabled(host)) {
+    let cachedMiProvider: HomeProvider | null = null;
     return new DualSourceHomeProvider({
-      miProvider: buildXiaomiHomeProvider(host),
+      miProvider: {
+        execute: (command, options) => {
+          cachedMiProvider ??= buildXiaomiHomeProvider(host);
+          return cachedMiProvider.execute(command, options);
+        },
+      },
       haProvider: buildHomeAssistantProvider(host),
       routes: getHostDualSourceState(host)?.routes,
       deviceIdForEntity: (entityId) => deviceOwningEntityId(host.devices, host.deviceFacets, entityId),

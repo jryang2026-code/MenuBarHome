@@ -2,14 +2,17 @@ import { AutomationRuleStore } from "../core/automationEngine.js";
 import type { CapabilityDeactivationVerdict } from "../core/capabilityReferenceVerdict.js";
 import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
 import {
+  MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   applyPauseItemsFromVerdict,
   filterEnabledMiAccounts,
+  miAccountScope,
   previewMiAccountDisable,
   removeSignedOutMiAccountFromSelection,
   resolveDeviceMiAccountOwner,
   revalidateAfterMiAccountReenable,
   snapshotDisabledMiDevice,
   writeMiAccountSelectionMutation,
+  type HostCapabilityContextInput,
 } from "../core/miAccountControl.js";
 import { MI_CLOUD_REGIONS, MiAccountLogin, maskedMiUserId, miCloudRegionLabel, normalizeMiCloudRegion, type HttpTransport, type MiSession, type MiotSpecResolver, type QRLoginTicket } from "../core/miCloudClient.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
@@ -42,11 +45,13 @@ type ScannerHAInvoke = NonNullable<ScanUnsupportedOptions["haInvoke"]>;
 
 function activeLanguage(preference?: LanguagePreference): AppLanguage {
   if (preference && preference !== "system") return resolveLanguage(preference, []);
+  const cur = currentLanguage();
+  if (cur !== "zh-Hans") return cur;
   const navLangs =
     typeof window !== "undefined" && Array.isArray(window.navigator?.languages)
       ? window.navigator.languages
       : [];
-  return resolveLanguage(preference ?? currentLanguage(), navLangs);
+  return resolveLanguage(preference ?? cur, navLangs);
 }
 
 export function tr3(
@@ -244,7 +249,9 @@ export interface HostConnDiagSession {
   pendingDisablePreview: {
     readonly accountId: string;
     readonly verdict: CapabilityDeactivationVerdict;
+    readonly generation: number;
   } | null;
+  disableErrorByAccountId: Record<string, string>;
 }
 
 export interface ConnectionsAndDiagHost extends SourceSwitchHost {
@@ -328,6 +335,7 @@ export function createDefaultHostConnDiagSession(region?: string): HostConnDiagS
       generation: 0,
     },
     pendingDisablePreview: null,
+    disableErrorByAccountId: {},
   };
 }
 
@@ -508,6 +516,60 @@ export type SetMiAccountEnabledOutcome =
   | { readonly status: "requiresPauseConfirmation"; readonly verdict: CapabilityDeactivationVerdict }
   | { readonly status: "blocked"; readonly verdict: CapabilityDeactivationVerdict };
 
+function computeDisablePreviewGeneration(
+  context: HostCapabilityContextInput,
+  scheduledCommandStore: ScheduledCommandStore,
+  ruleStore: AutomationRuleStore,
+): number {
+  const parts: string[] = [
+    [...context.state.selection.enabledConnectionScopes].sort().join(","),
+    [...context.state.pausedQuickActionIds].sort().join(","),
+    context.devices.map((d) => `${d.id}:${d.name}:${d.sourceBackend ?? ""}`).join("|"),
+    context.scenes.map((s) => `${s.id}:${s.name}`).join("|"),
+  ];
+  for (const [identity, queue] of [...scheduledCommandStore.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const ser = (list: readonly { readonly id: string; readonly command: string; readonly intents?: readonly { readonly targetId: string }[]; readonly sourceScopes?: readonly string[] }[]) =>
+      list.map((i) => `${i.id}:${i.command}:${(i.intents ?? []).map((t) => t.targetId).join(",")}:${(i.sourceScopes ?? []).join(",")}`).join(";");
+    const serPaused = (queue.pausedScheduledCommands ?? []).map((p) => `${p.command.id}:${p.originalPartition}:${p.sourceScopes.join(",")}:${p.pausedCapabilities.join(",")}`).join(";");
+    parts.push(`${identity}#${ser(queue.scheduledCommands)}#${ser(queue.missedScheduledCommands)}#${serPaused}`);
+  }
+  for (const r of ruleStore.load()) {
+    parts.push(`rule:${r.id}:${r.isEnabled}:${r.trigger}:${JSON.stringify(r.action)}`);
+  }
+  const raw = parts.join("\n");
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < raw.length; i += 1) {
+    hash ^= raw.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function formatDisableBlockedMessage(verdict: CapabilityDeactivationVerdict | null, lang: AppLanguage): string {
+  if (verdict?.blockingReasons.some((r) => r.kind === "unresolvedReferenceOwnership")) {
+    return tr3(
+      "部分定时或自动化功能关联的设备归属尚未确认，暂无法停用此连接。请先刷新同步设备，或取消相关定时与自动化后再试。",
+      "部分定時或自動化功能關聯的裝置歸屬尚未確認，暫無法停用此連線。請先重新整理同步裝置，或取消相關定時與自動化後再試。",
+      "Some timers or automations reference devices whose connection is not yet confirmed. Refresh to sync devices or update those items, then try again.",
+      lang,
+    );
+  }
+  if (verdict?.blockingReasons.some((r) => r.kind === "stalePreviewGeneration")) {
+    return tr3(
+      "待暂停的定时或自动化功能刚刚发生变化，请重新确认下方预览后再停用此连接。",
+      "待暫停的定時或自動化功能剛剛發生變化，請重新確認下方預覽後再停用此連線。",
+      "Affected timers or automations changed; please review the updated preview below and confirm again.",
+      lang,
+    );
+  }
+  return tr3(
+    "本地连接或功能设置暂时无法保存，未停用此连接且未修改定时与自动化。请检查磁盘空间或重启应用后再试。",
+    "本地連線或功能設定暫時無法儲存，未停用此連線且未修改定時與自動化。請檢查磁碟空間或重啟應用後再試。",
+    "Could not save connection or feature settings; nothing was paused or turned off. Check disk space or restart the app and try again.",
+    lang,
+  );
+}
+
 export async function setMiAccountEnabledOnHost(
   host: ConnectionsAndDiagHost,
   accountId: string,
@@ -526,31 +588,99 @@ export async function setMiAccountEnabledOnHost(
 
   if (enabled) {
     session.pendingDisablePreview = null;
+    delete session.disableErrorByAccountId[accountId];
+    if (host.settings.connectionMode === "demo") {
+      writeMiAccountSelectionMutation({ mutate: (prev) => ({
+        ...prev,
+        disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
+        pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== miAccountScope(accountId)),
+        knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== accountId),
+      }) });
+      resetHostUnsupportedScanner(host);
+      revalidateAfterMiAccountReenable({
+        context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)), scheduledCommandStore,
+        activeTimerIdentity: scheduledCommandIdentity(host.settings), ruleStore,
+        ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+      });
+      host.render();
+      return { status: "applied" };
+    }
     writeMiAccountSelectionMutation({ mutate: (prev) => ({
-      ...prev, disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
-      knownDisabledDevices: prev.knownDisabledDevices.filter((d) => d.accountId !== accountId),
+      ...prev,
+      disabledAccountIds: prev.disabledAccountIds.filter((id) => id !== accountId),
+      pendingRevalidationAccountIds: [...new Set([...prev.pendingRevalidationAccountIds, miAccountScope(accountId)])],
     }) });
     resetHostUnsupportedScanner(host);
     host.render();
-    if (host.settings.connectionMode !== "demo") await host.refreshDevices(false);
-    revalidateAfterMiAccountReenable({
-      context: buildHostCapabilityContext(host, resolveHostMiAccounts(host)), scheduledCommandStore,
-      activeTimerIdentity: scheduledCommandIdentity(host.settings), ruleStore,
-      ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
-    });
+    const hostWithReenableTs = host as ConnectionsAndDiagHost & { pendingReenableNowMs?: number };
+    if (options.nowMs !== undefined) hostWithReenableTs.pendingReenableNowMs = options.nowMs;
+    try {
+      await host.refreshDevices(false);
+    } finally {
+      delete hostWithReenableTs.pendingReenableNowMs;
+    }
     host.render();
     return { status: "applied" };
   }
 
   const context = buildHostCapabilityContext(host, allAccounts);
-  if (context.state.disabledAccountIds.has(accountId)) { session.pendingDisablePreview = null; host.render(); return { status: "applied" }; }
-  const verdict = previewMiAccountDisable({
+  if (context.state.disabledAccountIds.has(accountId)) {
+    session.pendingDisablePreview = null;
+    delete session.disableErrorByAccountId[accountId];
+    host.render();
+    return { status: "applied" };
+  }
+  const currentGen = options.currentGeneration ?? computeDisablePreviewGeneration(context, scheduledCommandStore, ruleStore);
+  const expectedGen = options.expectedGeneration !== undefined
+    ? options.expectedGeneration
+    : options.confirmPause && session.pendingDisablePreview?.accountId === accountId
+      ? session.pendingDisablePreview.generation
+      : null;
+  let verdict = previewMiAccountDisable({
     accountId, context, scheduledCommandStore, activeTimerIdentity: scheduledCommandIdentity(host.settings),
-    ruleStore, expectedGeneration: options.expectedGeneration ?? null, currentGeneration: options.currentGeneration ?? null,
+    ruleStore, expectedGeneration: expectedGen, currentGeneration: currentGen,
+    languagePreference: host.settings.interfaceLanguage,
   });
-  if (verdict.disposition === "blocked") { session.pendingDisablePreview = null; host.render(); return { status: "blocked", verdict }; }
+  if (
+    options.confirmPause &&
+    options.expectedGeneration === undefined &&
+    verdict.blockingReasons.some((r) => r.kind === "stalePreviewGeneration")
+  ) {
+    const freshVerdict = previewMiAccountDisable({
+      accountId, context, scheduledCommandStore, activeTimerIdentity: scheduledCommandIdentity(host.settings),
+      ruleStore, currentGeneration: currentGen, languagePreference: host.settings.interfaceLanguage,
+    });
+    if (freshVerdict.disposition === "requiresPauseConfirmation") {
+      session.pendingDisablePreview = { accountId, verdict: freshVerdict, generation: currentGen };
+      delete session.disableErrorByAccountId[accountId];
+      const lang = activeLanguage(host.settings.interfaceLanguage);
+      host.replyBanner = {
+        text: formatDisableBlockedMessage(verdict, lang),
+        source: tr3("连接管理", "連線管理", "Connections", lang),
+        isError: true,
+      };
+      host.render();
+      return { status: "requiresPauseConfirmation", verdict: freshVerdict };
+    }
+    verdict = freshVerdict;
+  }
+  if (verdict.disposition === "blocked") {
+    session.pendingDisablePreview = null;
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(verdict, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = {
+      text: msg,
+      source: tr3("连接管理", "連線管理", "Connections", lang),
+      isError: true,
+    };
+    host.render();
+    return { status: "blocked", verdict };
+  }
   if (verdict.disposition === "requiresPauseConfirmation" && !options.confirmPause) {
-    session.pendingDisablePreview = { accountId, verdict }; host.render();
+    session.pendingDisablePreview = { accountId, verdict, generation: currentGen };
+    delete session.disableErrorByAccountId[accountId];
+    host.render();
     return { status: "requiresPauseConfirmation", verdict };
   }
 
@@ -567,15 +697,55 @@ export async function setMiAccountEnabledOnHost(
   };
 
   const ownedDevices = host.devices.filter((d) => ownerOf(d) === accountId);
-  const snapshots = ownedDevices.map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []));
-  const newlyPausedQaIds = applyPauseItemsFromVerdict({ verdict, scheduledCommandStore, ruleStore });
+  const snapshots = ownedDevices
+    .filter((d) => !hasHaAlternate(d))
+    .map((d) => snapshotDisabledMiDevice(d, accountId, host.deviceFacets[d.id] ?? []));
+  const newlyPausedQaIds = verdict.itemsToPause.filter((i) => i.kind === "quickAction").map((i) => i.id);
+  const prevRawSelection = (() => {
+    try { return typeof localStorage !== "undefined" ? localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) : null; } catch { return null; }
+  })();
+  const timerSnapshot = scheduledCommandStore.snapshotQueues();
+  const prevRules = ruleStore.load();
+
   const wrote = writeMiAccountSelectionMutation({ mutate: (prev) => ({
     ...prev,
     disabledAccountIds: [...new Set([...prev.disabledAccountIds, accountId])],
+    pendingRevalidationAccountIds: prev.pendingRevalidationAccountIds.filter((id) => miAccountScope(id) !== miAccountScope(accountId)),
     pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...newlyPausedQaIds])],
     knownDisabledDevices: [...prev.knownDisabledDevices.filter((d) => d.accountId !== accountId && !snapshots.some((s) => s.id === d.id)), ...snapshots],
   }) });
-  if (!wrote) { host.render(); return { status: "blocked", verdict }; }
+  if (!wrote) {
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  const pauseRes = applyPauseItemsFromVerdict({
+    verdict,
+    scheduledCommandStore,
+    ruleStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    activeConnectionScopes: context.state.selection.enabledConnectionScopes,
+  });
+  if (!pauseRes.ok) {
+    scheduledCommandStore.restoreQueues(timerSnapshot);
+    ruleStore.save(prevRules);
+    try {
+      if (typeof localStorage !== "undefined") {
+        if (prevRawSelection === null) localStorage.removeItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+        else localStorage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, prevRawSelection);
+      }
+    } catch {}
+    const lang = activeLanguage(host.settings.interfaceLanguage);
+    const msg = formatDisableBlockedMessage(null, lang);
+    session.disableErrorByAccountId[accountId] = msg;
+    host.replyBanner = { text: msg, source: tr3("连接管理", "連線管理", "Connections", lang), isError: true };
+    host.render();
+    return { status: "blocked", verdict };
+  }
+  delete session.disableErrorByAccountId[accountId];
 
   const removedIds = new Set(ownedDevices.filter((d) => !hasHaAlternate(d)).map((d) => d.id));
   if (host.cameraLive?.activeLiveCameraId) {
@@ -1636,8 +1806,16 @@ export function renderConnectionsAndDiagSection(
               ? activeBadgeHtml
               : `<span class="cc-inline-pill" data-mi-account-status="disabled" style="font-size:11px;padding:2px 7px;color:#8a8f98;background:rgba(128,128,128,0.16);border:1px solid rgba(128,128,128,0.28);">${esc(tr3("已停用", "已停用", "Turned Off", lang))}</span>`;
             const preview = session?.pendingDisablePreview?.accountId === acc.id ? session.pendingDisablePreview.verdict : null;
-            const previewSummary = preview
-              ? preview.itemsToPause.map((item) => item.name).slice(0, 4).join("、")
+            const previewSep = lang === "en" ? ", " : "、";
+            const previewShown = preview
+              ? preview.itemsToPause.slice(0, 4).map((item) => item.name).join(previewSep)
+              : "";
+            const previewSummary = preview && preview.itemsToPause.length > 4
+              ? tr3(`${previewShown} 等`, `${previewShown} 等`, `${previewShown}, etc.`, lang)
+              : previewShown;
+            const disableErr = session?.disableErrorByAccountId[acc.id] ?? null;
+            const disableErrHtml = disableErr
+              ? `<p class="cc-field-hint" data-mi-account-disable-error="${esc(acc.id)}" style="margin:6px 0 0;color:#e74c3c;">${esc(disableErr)}</p>`
               : "";
             const previewHtml = preview
               ? `<div data-mi-account-pause-preview="${esc(acc.id)}" style="margin-top:8px;padding:8px;border-radius:8px;background:rgba(230,126,34,0.12);border:1px solid rgba(230,126,34,0.28);">
@@ -1663,6 +1841,7 @@ export function renderConnectionsAndDiagSection(
                 </div>
               </div>
               ${noticeHtml}
+              ${disableErrHtml}
               ${previewHtml}
             </div>`;
           })
