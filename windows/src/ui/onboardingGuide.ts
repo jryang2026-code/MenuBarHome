@@ -8,9 +8,11 @@ import {
   type AssistantConfig,
   type AssistantProviderPresetInfo,
 } from "../core/assistant.js";
+import { DUAL_SOURCE_ENABLED_STORAGE_KEY } from "../core/dualSourceProvider.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
-import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../core/miCloudClient.js";
+import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
+import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion, type HttpTransport } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
 import type { ConnectionMode } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
@@ -205,22 +207,75 @@ function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = cur
   return zhHans;
 }
 
+export const DEFAULT_HA_DISCOVERY_CANDIDATES: readonly string[] = [
+  "http://homeassistant.local:8123",
+  "http://localhost:8123",
+];
+
+/** On-demand local HA probe triggered solely by explicit user click; aborts immediately on signal. */
+export async function discoverLocalHomeAssistant(
+  transport: HttpTransport,
+  signal: AbortSignal,
+  candidates: readonly string[] = DEFAULT_HA_DISCOVERY_CANDIDATES,
+): Promise<string | null> {
+  for (const base of candidates) {
+    if (signal.aborted) return null;
+    try {
+      const response = await transport({
+        url: `${base}/api/`,
+        method: "GET",
+        timeoutMs: 2_000,
+      });
+      if (signal.aborted) return null;
+      if (response.status === 200 || response.status === 401) {
+        return base;
+      }
+    } catch {
+      if (signal.aborted) return null;
+    }
+  }
+  return null;
+}
+
 interface OnboardingSessionState {
-  selectedMode: ConnectionMode;
+  selectedMode: ConnectionMode | null;
   haURLDraft: string;
   haTokenDraft: string;
+  haDiscoveryState: "idle" | "scanning" | "found" | "empty";
+  haDiscoveryMessage: string | null;
+  haDiscoverAbort: AbortController | null;
+  haDiscoverGeneration: number;
+  haConnectError: string | null;
+  haConnecting: boolean;
+  haConnectedCount: number | null;
+  addingSecondPlatform: boolean;
   assistantDraft: AssistantDraftState;
   statusNote: { text: string; isError: boolean } | null;
 }
 
 const onboardingSessionByHost = new WeakMap<object, OnboardingSessionState>();
 
+function cancelHaDiscovery(session: OnboardingSessionState): void {
+  session.haDiscoverGeneration += 1;
+  if (session.haDiscoverAbort) {
+    session.haDiscoverAbort.abort();
+    session.haDiscoverAbort = null;
+  }
+  if (session.haDiscoveryState === "scanning") {
+    session.haDiscoveryState = "idle";
+    session.haDiscoveryMessage = null;
+  }
+}
+
 export function clearOnboardingSession(host: object): void {
+  const existing = onboardingSessionByHost.get(host);
+  if (existing) cancelHaDiscovery(existing);
   onboardingSessionByHost.delete(host);
 }
 
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
   readonly qrStatusText?: string;
+  readonly transport?: HttpTransport;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
 }
@@ -249,19 +304,37 @@ function storedKeyForHost(host: OnboardingRenderViewHost, url: string): string {
   return "";
 }
 
+function hasConnectedMi(host: OnboardingRenderViewHost): boolean {
+  return host.settings.miSession !== null || hasSecondaryMiAccountsInIndex();
+}
+
+function hasConnectedHA(host: OnboardingRenderViewHost): boolean {
+  return homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
+}
+
 function ensureSession(host: OnboardingRenderViewHost): OnboardingSessionState {
   const existing = onboardingSessionByHost.get(host);
   if (existing) return existing;
-  const initialMode: ConnectionMode =
-    host.settings.connectionMode === "homeAssistant" ||
-    host.settings.connectionMode === "xiaomiCloud" ||
-    host.settings.connectionMode === "demo"
-      ? host.settings.connectionMode
-      : "xiaomiCloud";
+  let initialMode: ConnectionMode | null = null;
+  if (host.settings.connectionMode === "demo") {
+    initialMode = "demo";
+  } else if (host.settings.connectionMode === "homeAssistant" && hasConnectedHA(host)) {
+    initialMode = "homeAssistant";
+  } else if (host.settings.connectionMode === "xiaomiCloud" && hasConnectedMi(host)) {
+    initialMode = "xiaomiCloud";
+  }
   const created: OnboardingSessionState = {
     selectedMode: initialMode,
     haURLDraft: host.settings.haBaseURL,
     haTokenDraft: host.settings.haToken,
+    haDiscoveryState: "idle",
+    haDiscoveryMessage: null,
+    haDiscoverAbort: null,
+    haDiscoverGeneration: 0,
+    haConnectError: null,
+    haConnecting: false,
+    haConnectedCount: null,
+    addingSecondPlatform: false,
     assistantDraft: createInitialAssistantDraftState(
       host.settings.assistantBaseURL,
       host.settings.assistantModel,
@@ -282,9 +355,31 @@ function isPlainHttpRemoteURL(rawURL: string): boolean {
   return !endpointAllowsSendingSecrets(withScheme);
 }
 
-function switchConnectionModeInOnboarding(host: OnboardingRenderViewHost, mode: ConnectionMode): void {
+function mapHaErrorToPlainLanguage(rawError: string): string {
+  if (/authentication rejected|401|unauthorized/i.test(rawError)) {
+    return t("专属连接钥匙无效或已过期。设备还未同步。请检查令牌并重新连接。");
+  }
+  if (rawError.includes("not been approved") || rawError.includes("未授权的网络来源")) {
+    return t("明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。");
+  }
+  return t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
+}
+
+function switchConnectionModeInOnboarding(
+  host: OnboardingRenderViewHost,
+  mode: ConnectionMode,
+  options: { readonly allowNetworkRefresh?: boolean } = {},
+): void {
   if (host.cameraLive.activeLiveCameraId !== null || host.cameraLive.liveCameraKeepAliveTimer !== null) {
     host.cameraLive.closeCameraLiveView();
+  }
+  if (mode === "demo" && host.settings.connectionMode !== "demo") {
+    const prev = host.settings.connectionMode;
+    if ((prev === "xiaomiCloud" && hasConnectedMi(host)) || (prev === "homeAssistant" && hasConnectedHA(host))) {
+      host.settings.preDemoConnectionMode = prev;
+    }
+  } else if (mode !== "demo") {
+    host.settings.preDemoConnectionMode = null;
   }
   switchSource(host, "onboarding-connection-mode");
   host.environmentReadings = [];
@@ -302,7 +397,7 @@ function switchConnectionModeInOnboarding(host: OnboardingRenderViewHost, mode: 
   } else if (mode === "xiaomiCloud") {
     host.devices = structuredClone(host.settings.cachedXiaomiDevices);
     host.scenes = [];
-    if (host.settings.miSession) {
+    if (options.allowNetworkRefresh && host.settings.miSession) {
       void host.refreshDevices(false);
     }
   } else if (mode === "homeAssistant") {
@@ -312,11 +407,41 @@ function switchConnectionModeInOnboarding(host: OnboardingRenderViewHost, mode: 
     host.scenes = cache ? structuredClone(cache.home.scenes) : [];
     host.environmentReadings = cache ? structuredClone(cache.home.environmentReadings) : [];
     host.deviceFacets = cache ? structuredClone(cache.home.deviceFacets ?? {}) : {};
-    if (isHostHaEnabled(inspectable) && host.settings.haBaseURL && host.settings.haToken) {
+    if (options.allowNetworkRefresh && isHostHaEnabled(inspectable) && hasConnectedHA(host)) {
       void host.refreshHADevices(false);
     }
   }
   host.saveSettings();
+}
+
+/** Leaves demo mode: restores prior real platform if one was connected, else opens onboarding platform picker. */
+export function leaveDemoHome(host: OnboardingRenderViewHost): void {
+  const prior = host.settings.preDemoConnectionMode;
+  if (prior === "xiaomiCloud" && hasConnectedMi(host)) {
+    switchConnectionModeInOnboarding(host, "xiaomiCloud", { allowNetworkRefresh: true });
+    host.render();
+    return;
+  }
+  if (prior === "homeAssistant" && hasConnectedHA(host)) {
+    switchConnectionModeInOnboarding(host, "homeAssistant", { allowNetworkRefresh: true });
+    host.render();
+    return;
+  }
+  switchConnectionModeInOnboarding(host, "xiaomiCloud", { allowNetworkRefresh: false });
+  clearOnboardingSession(host);
+  host.activeSheet = "onboarding";
+  invokeTauriVoid("set_pin_popover", { pin: true });
+  host.render();
+}
+
+function enableDualSourceOnHost(host: OnboardingRenderViewHost): void {
+  host.settings.dualSourceEnabled = true;
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(DUAL_SOURCE_ENABLED_STORAGE_KEY, "true");
+    }
+  } catch {
+  }
 }
 
 function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: OnboardingSessionState): boolean {
@@ -352,54 +477,86 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   const session = ensureSession(host);
   const draft = session.assistantDraft;
   const activePreset = findPreset(draft.selectedPreset);
-  const hasConnectedHome =
-    Boolean(host.settings.miSession) ||
-    Boolean(host.settings.haBaseURL.trim() && host.settings.haToken.trim());
+  const miConnected = hasConnectedMi(host);
+  const haConnected = hasConnectedHA(host);
   const hotkeyText = host.settings.globalHotkey || "Alt+M";
   const isPollingQR = Boolean(host.isPollingQR);
   const qrStatus = host.qrStatusText ?? "";
   const qrTicket = host.qrTicket ?? null;
+  const qrExpired = !isPollingQR && /超时|过期|expired|timed out/i.test(qrStatus);
   const supportsEnvImport = presetSupportsEnvKeyImport(draft.selectedPreset) && draft.apiKey.trim() === "";
+  const secondPlatformTarget: Exclude<ConnectionMode, "demo"> | null =
+    miConnected && !haConnected
+      ? "homeAssistant"
+      : haConnected && !miConnected
+        ? "xiaomiCloud"
+        : null;
 
-  const renderSourceBody = (): string => {
+  const renderConnectStep = (): string => {
+    if (session.selectedMode === null) return "";
     if (session.selectedMode === "xiaomiCloud") {
+      const qrLabel = isPollingQR
+        ? t("正在等待手机米家扫码确认...")
+        : qrExpired
+          ? t("刷新二维码")
+          : host.settings.miSession
+            ? t("切换/重新扫码 (已登录 {user})", { user: maskedMiUserId(host.settings.miSession.userId) })
+            : t("获取米家登录二维码");
       return `
-        <div class="cc-field" style="margin-top: 8px;">
-          <label>${t("云端服务器地区")}</label>
-          <select class="cc-input" data-mi-region>
-            ${MI_CLOUD_REGIONS.map(
-              (region) =>
-                `<option value="${region.code}" ${
-                  normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""
-                }>${esc(t(region.label))}</option>`,
-            ).join("")}
-          </select>
-          <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
-        </div>
-        <div class="cc-qr-box">
-          <button type="button" class="cc-btn-primary is-full" id="btn-start-qr" ${isPollingQR ? "disabled" : ""}>
-            ${SF_ICONS.qrcode}
-            <span>${
-              isPollingQR
-                ? t("正在等待手机米家扫码确认...")
-                : host.settings.miSession
-                  ? t("切换/重新扫码 (已登录 {user})", { user: maskedMiUserId(host.settings.miSession.userId) })
-                  : t("获取米家登录二维码")
-            }</span>
-          </button>
-          <div class="cc-qr-status">${esc(qrStatus)}</div>
-          ${
-            qrTicket
-              ? `<div class="cc-qr-frame"><img src="${esc(qrTicket.qrImageURL)}" alt="Xiaomi QR" /></div>`
-              : ""
-          }
+        <div class="cc-field" data-onboarding-step="2">
+          <p class="cc-onboarding-warning" data-onboarding-mi-warning role="note">
+            ${esc(t("使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。"))}
+          </p>
+          <details data-onboarding-mi-region-details style="margin-top: 8px;">
+            <summary class="cc-field-hint" style="cursor: pointer; margin: 0;">${t("云端服务器地区")}</summary>
+            <div style="margin-top: 6px;">
+              <select class="cc-input" data-mi-region>
+                ${MI_CLOUD_REGIONS.map(
+                  (region) =>
+                    `<option value="${region.code}" ${
+                      normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""
+                    }>${esc(t(region.label))}</option>`,
+                ).join("")}
+              </select>
+              <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
+            </div>
+          </details>
+          <div class="cc-qr-box" style="margin-top: 8px;">
+            <button type="button" class="cc-btn-primary is-full" id="btn-start-qr" ${isPollingQR ? "disabled" : ""}>
+              ${SF_ICONS.qrcode}
+              <span>${esc(qrLabel)}</span>
+            </button>
+            <div class="cc-qr-status">${esc(qrStatus)}</div>
+            ${
+              qrTicket
+                ? `<div class="cc-qr-frame"><img src="${esc(qrTicket.qrImageURL)}" alt="Xiaomi QR" /></div>`
+                : ""
+            }
+          </div>
+          <div class="cc-onboarding-inline-actions">
+            <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+            <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
+          </div>
         </div>
       `;
     }
     if (session.selectedMode === "homeAssistant") {
       const warnPlainHttp = isPlainHttpRemoteURL(session.haURLDraft);
       return `
-        <div class="cc-field" style="margin-top: 8px;">
+        <div class="cc-field" data-onboarding-step="2">
+          <div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 6px;">
+            <button type="button" class="cc-btn-secondary" id="btn-onboarding-discover-ha" ${session.haDiscoveryState === "scanning" ? "disabled" : ""}>
+              ${esc(session.haDiscoveryState === "scanning" ? t("正在局域网查找 Home Assistant…") : t("查找家中的 Home Assistant"))}
+            </button>
+          </div>
+          <p class="cc-field-hint" data-onboarding-ha-hint style="margin: 0 0 6px 0;">
+            ${esc(t("没找到？在 Home Assistant 网页设置里查看地址"))}
+          </p>
+          ${
+            session.haDiscoveryMessage
+              ? `<p class="cc-field-hint" data-onboarding-ha-discovery-status style="margin: 0 0 6px 0;">${esc(session.haDiscoveryMessage)}</p>`
+              : ""
+          }
           <label for="onboarding-ha-url">Home Assistant URL</label>
           <input
             id="onboarding-ha-url"
@@ -408,18 +565,13 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
             placeholder="http://homeassistant.local:8123"
             value="${esc(session.haURLDraft)}"
           />
-          ${
-            warnPlainHttp
-              ? `<p class="cc-field-hint" data-onboarding-ha-http-warning style="color: #e67e22;">${esc(
-                  tr3(
-                    "令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。",
-                    "權杖將以明文在網路上傳輸，遠端存取建議使用 HTTPS 或 Nabu Casa 位址。",
-                    "Your token will travel unencrypted. Prefer HTTPS or a Nabu Casa URL for remote access.",
-                  ),
-                )}</p>`
-              : ""
-          }
-          <label for="onboarding-ha-token">Home Assistant access token</label>
+          <p class="cc-onboarding-warning" data-onboarding-ha-http-warning role="note" style="margin-top: 6px;" ${warnPlainHttp ? "" : "hidden"}>
+            ${esc(t("令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。"))}
+          </p>
+          <label for="onboarding-ha-token" style="margin-top: 8px;">${t("专属连接钥匙（长期访问令牌）")}</label>
+          <p class="cc-field-hint" data-onboarding-ha-token-guide style="margin: 2px 0 4px 0;">
+            ${esc(t("打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。"))}
+          </p>
           <div style="display: flex; gap: 6px; align-items: center;">
             <input
               id="onboarding-ha-token"
@@ -430,80 +582,113 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
               value="${esc(session.haTokenDraft)}"
               style="flex: 1;"
             />
-            <button type="button" class="cc-btn-primary" id="btn-onboarding-connect-ha">
-              ${esc(tr3("连接", "連線", "Connect"))}
+            <button type="button" class="cc-btn-primary" id="btn-onboarding-connect-ha" ${session.haConnecting ? "disabled" : ""}>
+              ${esc(t("连接并验证"))}
             </button>
+          </div>
+          ${
+            session.haConnectError
+              ? `<p class="cc-onboarding-warning" data-onboarding-ha-error role="alert" style="margin-top: 8px;">${esc(session.haConnectError)}</p>`
+              : session.haConnectedCount !== null
+                ? `<p class="cc-field-hint" data-onboarding-ha-verified style="margin-top: 6px;">${esc(t("已连接 Home Assistant · {count} 台设备", { count: session.haConnectedCount }))}</p>`
+                : ""
+          }
+          <div class="cc-onboarding-inline-actions">
+            <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+            <button type="button" class="cc-inline-pill" id="btn-onboarding-skip">${t("稍后设置")}</button>
+            ${
+              session.haConnectError
+                ? `<button type="button" class="cc-inline-pill" id="btn-onboarding-use-demo">${t("先逛逛（不连接设备）")}</button>`
+                : ""
+            }
           </div>
         </div>
       `;
     }
     return `
-      <div class="cc-field" data-onboarding-demo-banner style="margin-top: 8px;">
-        <p class="cc-field-hint" style="margin: 0;">
-          ${esc(
-            tr3(
-              "演示模式已开启：内置虚拟全屋设备，完全离线、零网络请求。随时可切回「米家扫码直连」或「Home Assistant」。",
-              "示範模式已開啟：內建虛擬全屋裝置，完全離線、零網路請求。隨時可切回「米家掃碼直連」或「Home Assistant」。",
-              "Demo mode is active: built-in virtual home devices, completely offline with zero network requests. Switch to Xiaomi QR or Home Assistant anytime.",
-            ),
-          )}
-        </p>
+      <div class="cc-field" data-onboarding-step="2" data-onboarding-demo-banner>
+        <p class="cc-sheet-note" style="margin: 0 0 4px 0; font-weight: 600;">${esc(t("示例家庭，不会控制真实设备"))}</p>
+        <p class="cc-field-hint" style="margin: 0;">${esc(t("内置虚拟全屋设备，完全离线、零网络请求。随时可返回连接米家或 Home Assistant。"))}</p>
+        <div class="cc-onboarding-inline-actions">
+          <button type="button" class="cc-inline-pill" id="btn-onboarding-back">${t("返回选平台")}</button>
+        </div>
       </div>
     `;
   };
 
   sheet.innerHTML = `
     <div class="cc-sheet-header">
-      <div class="cc-sheet-badge">${esc(tr3("三步上手 · MenuBarHome", "三步上手 · MenuBarHome", "Three Steps to Start · MenuBarHome"))}</div>
+      <div class="cc-sheet-badge">${esc(t("首次设置 · MenuBarHome"))}</div>
       <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="${t("关闭引导")}" aria-label="${t("关闭引导")}">
         ${SF_ICONS.xmark}
       </button>
     </div>
 
     <div class="cc-onboarding-scroll" style="overflow-y: auto; max-height: calc(100vh - 150px); padding-right: 2px;">
-      <h2 class="cc-sheet-title">${esc(tr3("连接家庭 · 快捷键控全屋", "連接家庭 · 快速鍵控全屋", "Connect Your Home · Control Anywhere"))}</h2>
-      <p class="cc-sheet-desc">
-        ${esc(
-          tr3(
-            `选择数据源连接设备 · 按 ${hotkeyText} 秒开搜索与语音 · 一键全关后还能随时撤销。`,
-            `選擇資料來源連接裝置 · 按 ${hotkeyText} 秒開搜尋與語音 · 一鍵全關後還能隨時復原。`,
-            `Connect your home source · Press ${hotkeyText} to search or speak · Turn all off with one-click Undo.`,
-          ),
-        )}
-      </p>
+      <h2 class="cc-sheet-title">${esc(t("你家用哪个平台管理智能设备？"))}</h2>
+      <p class="cc-sheet-desc">${esc(t("先选择家庭平台，未连接前不会自动扫描局域网或发起网络请求。"))}</p>
 
       <div class="cc-field" data-onboarding-step="1">
-        <div class="cc-field-row" style="margin-bottom: 6px;">
-          <label style="font-weight: 600;">1. ${esc(tr3("选择设备连接方式", "選擇裝置連接方式", "Choose How to Connect"))}</label>
-          <span class="cc-field-hint" style="margin: 0;">${esc(
-            hasConnectedHome
-              ? tr3("已连接", "已連接", "Connected")
-              : tr3("支持随时切换", "支援隨時切換", "Switch anytime"),
-          )}</span>
-        </div>
-        <div class="cc-segmented-pills" role="tablist" aria-label="${esc(tr3("新手引导数据源", "新手引導資料來源", "Onboarding Data Source"))}">
+        <div class="cc-onboarding-cards" role="radiogroup" aria-label="${esc(t("你家用哪个平台管理智能设备？"))}">
           <button
             type="button"
-            class="cc-seg-pill ${session.selectedMode === "xiaomiCloud" ? "is-active" : ""}"
+            class="cc-onboarding-card ${session.selectedMode === "xiaomiCloud" ? "is-active" : ""}"
+            data-onboarding-card="xiaomiCloud"
             data-onboarding-mode="xiaomiCloud"
-            aria-selected="${session.selectedMode === "xiaomiCloud"}"
-          >${esc(tr3("米家扫码直连", "米家掃碼直連", "Xiaomi QR"))}</button>
+            aria-pressed="${session.selectedMode === "xiaomiCloud"}"
+          >
+            <span class="cc-onboarding-card-title">
+              <span>${esc(t("米家"))}</span>
+              ${miConnected ? `<span class="cc-inline-pill">${esc(t("已连接"))}</span>` : ""}
+            </span>
+            <span class="cc-onboarding-card-desc">${esc(t("手机米家 App 扫码直连，支持多账号与局域网优先"))}</span>
+          </button>
           <button
             type="button"
-            class="cc-seg-pill ${session.selectedMode === "homeAssistant" ? "is-active" : ""}"
+            class="cc-onboarding-card ${session.selectedMode === "homeAssistant" ? "is-active" : ""}"
+            data-onboarding-card="homeAssistant"
             data-onboarding-mode="homeAssistant"
-            aria-selected="${session.selectedMode === "homeAssistant"}"
-          >Home Assistant</button>
+            aria-pressed="${session.selectedMode === "homeAssistant"}"
+          >
+            <span class="cc-onboarding-card-title">
+              <span>Home Assistant</span>
+              ${haConnected ? `<span class="cc-inline-pill">${esc(t("已连接"))}</span>` : ""}
+            </span>
+            <span class="cc-onboarding-card-desc">${esc(t("局域网本地连接，适合自建家庭服务器"))}</span>
+          </button>
           <button
             type="button"
-            class="cc-seg-pill ${session.selectedMode === "demo" ? "is-active" : ""}"
+            class="cc-onboarding-card ${session.selectedMode === "demo" ? "is-active" : ""}"
+            data-onboarding-card="demo"
             data-onboarding-mode="demo"
-            aria-selected="${session.selectedMode === "demo"}"
-          >${esc(tr3("先体验演示模式", "先體驗示範模式", "Try Demo Mode"))}</button>
+            aria-pressed="${session.selectedMode === "demo"}"
+          >
+            <span class="cc-onboarding-card-title">
+              <span>${esc(t("先逛逛（不连接设备）"))}</span>
+            </span>
+            <span class="cc-onboarding-card-desc">${esc(t("离线示例家庭，零网络请求，随时可连接真实平台"))}</span>
+          </button>
         </div>
-        ${renderSourceBody()}
+        ${
+          secondPlatformTarget
+            ? `<div style="margin-top: 8px;">
+                <button type="button" class="cc-inline-pill" id="btn-onboarding-add-second-platform" data-second-platform="${secondPlatformTarget}">
+                  ${esc(t("继续添加 {platform}（启用双源）", { platform: secondPlatformTarget === "homeAssistant" ? "Home Assistant" : t("米家") }))}
+                </button>
+              </div>`
+            : ""
+        }
+      </div>
 
-        <div class="cc-field-row" style="margin-top: 10px;">
+      ${renderConnectStep()}
+
+      <div class="cc-field" data-onboarding-step="3">
+        <label style="font-weight: 600;">${esc(t("快捷操作与托盘提示"))}</label>
+        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。", { hotkey: hotkeyText }))}</p>
+        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("磁贴左侧一键开关，右侧展开精细调节。"))}</p>
+        <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。"))}</p>
+
+        <div class="cc-field-row" style="margin-top: 8px;">
           <div>
             <label for="onboarding-launch-at-login">${t("开机自动启动")}</label>
             <p class="cc-field-hint" style="margin: 2px 0 0 0;">${esc(
@@ -518,22 +703,12 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         </div>
       </div>
 
-      <div class="cc-field" data-onboarding-step="2">
-        <label style="font-weight: 600;">2. ${esc(tr3("AI 助手服务商预设（可选）", "AI 助手服務商預設（選填）", "AI Assistant Provider (Optional)"))}</label>
-        <p class="cc-field-hint" style="margin-bottom: 6px;">${esc(
-          tr3(
-            "日常开关调温本机 0ms 直达；需要跨房间复杂口语指令时再配置 AI 服务。",
-            "日常開關調溫本機 0ms 直達；需要跨房間複雜口語指令時再設定 AI 服務。",
-            "Everyday commands run locally in 0ms; add an AI provider for complex multi-room phrasing.",
-          ),
-        )}</p>
-        <div class="cc-segmented-pills" style="flex-wrap: wrap; gap: 4px; margin-bottom: 8px;">
+      <div class="cc-field" data-onboarding-ai-section>
+        <label style="font-weight: 600;">${esc(t("开机自启与可选 AI 助手"))}</label>
+        <div class="cc-segmented-pills" style="flex-wrap: wrap; gap: 4px; margin: 6px 0 8px 0;">
           ${ASSISTANT_PROVIDER_PRESETS.map((preset) => {
             const isSelected = draft.selectedPreset === preset.id;
-            const label =
-              preset.id === "custom"
-                ? tr3("自定义", "自訂", "Custom")
-                : preset.shortTitle;
+            const label = preset.id === "custom" ? tr3("自定义", "自訂", "Custom") : preset.shortTitle;
             return `<button
               type="button"
               class="cc-seg-pill ${isSelected ? "is-active" : ""}"
@@ -542,89 +717,33 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
             >${esc(label)}</button>`;
           }).join("")}
         </div>
-
         ${
           draft.showsCustomEndpointFields
             ? `<div id="onboarding-custom-endpoint-fields" style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px;">
-                <input
-                  id="onboarding-base-url"
-                  class="cc-input"
-                  type="text"
-                  placeholder="${esc(tr3("输入自定义接口地址，如 https://api.example.com/v1", "輸入自訂介面位址，如 https://api.example.com/v1", "Custom endpoint URL, e.g. https://api.example.com/v1"))}"
-                  aria-label="${esc(tr3("AI 服务地址", "AI 服務位址", "AI Endpoint URL"))}"
-                  value="${esc(draft.baseURL)}"
-                />
-                <input
-                  id="onboarding-model"
-                  class="cc-input"
-                  type="text"
-                  placeholder="gpt-4o-mini"
-                  aria-label="${esc(tr3("决策模型", "決策模型", "Decision Model"))}"
-                  value="${esc(draft.model)}"
-                />
+                <input id="onboarding-base-url" class="cc-input" type="text" placeholder="${esc(tr3("输入自定义接口地址，如 https://api.example.com/v1", "輸入自訂介面位址，如 https://api.example.com/v1", "Custom endpoint URL, e.g. https://api.example.com/v1"))}" aria-label="${esc(tr3("AI 服务地址", "AI 服務位址", "AI Endpoint URL"))}" value="${esc(draft.baseURL)}" />
+                <input id="onboarding-model" class="cc-input" type="text" placeholder="gpt-4o-mini" aria-label="${esc(tr3("决策模型", "決策模型", "Decision Model"))}" value="${esc(draft.model)}" />
               </div>`
             : ""
         }
-
         <div style="display: flex; gap: 6px; align-items: center;">
-          <input
-            id="onboarding-api-key"
-            class="cc-input"
-            type="password"
-            autocomplete="off"
-            placeholder="${esc(activePreset.keyPlaceholder)}"
-            value="${esc(draft.apiKey)}"
-            style="flex: 1;"
-          />
-          <button type="button" class="cc-btn-secondary" id="btn-onboarding-save-ai">
-            ${esc(tr3("保存 AI", "儲存 AI", "Save AI"))}
-          </button>
+          <input id="onboarding-api-key" class="cc-input" type="password" autocomplete="off" placeholder="${esc(activePreset.keyPlaceholder)}" value="${esc(draft.apiKey)}" style="flex: 1;" />
+          <button type="button" class="cc-btn-secondary" id="btn-onboarding-save-ai">${esc(tr3("保存 AI", "儲存 AI", "Save AI"))}</button>
         </div>
-
         ${
           supportsEnvImport
-            ? `<div style="margin-top: 6px;">
-                <button type="button" class="cc-inline-pill" id="btn-onboarding-import-env">
-                  ${esc(tr3("从环境变量导入 Key", "從環境變數匯入 Key", "Import Key from Env"))}
-                </button>
-              </div>`
+            ? `<div style="margin-top: 6px;"><button type="button" class="cc-inline-pill" id="btn-onboarding-import-env">${esc(tr3("从环境变量导入 Key", "從環境變數匯入 Key", "Import Key from Env"))}</button></div>`
             : ""
         }
-
         ${
           session.statusNote
-            ? `<p class="cc-field-hint" id="onboarding-status-note" style="margin-top: 6px; color: ${
-                session.statusNote.isError ? "#e67e22" : "inherit"
-              };">${esc(session.statusNote.text)}</p>`
+            ? `<p class="cc-field-hint" id="onboarding-status-note" style="margin-top: 6px; color: ${session.statusNote.isError ? "var(--win-caution, #c87400)" : "inherit"};">${esc(session.statusNote.text)}</p>`
             : ""
         }
-      </div>
-
-      <div class="cc-field" data-onboarding-step="3">
-        <label style="font-weight: 600;">3. ${esc(tr3("快捷搜索与安全全关", "快速搜尋與安全全關", "Quick Search & Safe All Off"))}</label>
-        <p class="cc-field-hint" style="margin: 2px 0;">
-          • ${esc(
-            tr3(
-              `按 ${hotkeyText} 呼出面板，直接打字或输入拼音首字母筛选设备，回车立即开关。`,
-              `按 ${hotkeyText} 呼出面板，直接打字或輸入拼音首字母篩選裝置，按 Enter 立即開關。`,
-              `Press ${hotkeyText} to open the panel, type device names or pinyin initials, and press Enter to toggle.`,
-            ),
-          )}
-        </p>
-        <p class="cc-field-hint" style="margin: 2px 0;">
-          • ${esc(
-            tr3(
-              "顶部「全关」默认跳过插座与扫地机，执行后底部弹出一次性「撤销」横幅；随时可在设置里重新打开本引导。",
-              "頂部「全關」預設略過插座與掃地機，執行後底部彈出一次性「復原」橫幅；隨時可在設定裡重新打開本引導。",
-              "Top All Off skips plugs and vacuums by default and offers one-shot Undo; reopen this guide anytime in Settings.",
-            ),
-          )}
-        </p>
       </div>
     </div>
 
     <div class="cc-sheet-footer">
-      <button type="button" class="cc-btn-secondary" id="btn-close-onboarding-alt">${t("先看演示预览")}</button>
+      <button type="button" class="cc-btn-secondary" id="btn-skip-onboarding">${t("稍后设置")}</button>
       <button type="button" class="cc-btn-primary" id="btn-finish-onboarding">${t("进入控制中心")}</button>
     </div>
   `;
@@ -633,11 +752,42 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     btn.addEventListener("click", () => {
       const mode = btn.dataset.onboardingMode as ConnectionMode | undefined;
       if (!mode) return;
+      if (mode !== "homeAssistant") cancelHaDiscovery(session);
       session.selectedMode = mode;
+      session.addingSecondPlatform = false;
       session.statusNote = null;
-      switchConnectionModeInOnboarding(host, mode);
+      session.haConnectError = null;
+      if (mode === "demo") {
+        switchConnectionModeInOnboarding(host, "demo");
+      }
       host.render();
     });
+  });
+
+  sheet.querySelector<HTMLElement>("#btn-onboarding-add-second-platform")?.addEventListener("click", (event) => {
+    const target = (event.currentTarget as HTMLElement).dataset.secondPlatform as Exclude<ConnectionMode, "demo"> | undefined;
+    if (!target) return;
+    cancelHaDiscovery(session);
+    session.selectedMode = target;
+    session.addingSecondPlatform = true;
+    session.haConnectError = null;
+    host.render();
+  });
+
+  sheet.querySelector("#btn-onboarding-back")?.addEventListener("click", () => {
+    cancelHaDiscovery(session);
+    session.selectedMode = null;
+    session.addingSecondPlatform = false;
+    session.haConnectError = null;
+    host.render();
+  });
+
+  sheet.querySelector("#btn-onboarding-use-demo")?.addEventListener("click", () => {
+    cancelHaDiscovery(session);
+    session.selectedMode = "demo";
+    session.haConnectError = null;
+    switchConnectionModeInOnboarding(host, "demo");
+    host.render();
   });
 
   sheet.querySelectorAll<HTMLSelectElement>("[data-mi-region]").forEach((select) => {
@@ -649,11 +799,42 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-start-qr")?.addEventListener("click", () => {
+    if (session.addingSecondPlatform || hasConnectedHA(host)) {
+      enableDualSourceOnHost(host);
+    }
     void host.startXiaomiQRLogin();
+  });
+
+  sheet.querySelector("#btn-onboarding-discover-ha")?.addEventListener("click", () => {
+    if (!host.transport) return;
+    cancelHaDiscovery(session);
+    const controller = new AbortController();
+    const generation = session.haDiscoverGeneration;
+    session.haDiscoverAbort = controller;
+    session.haDiscoveryState = "scanning";
+    session.haDiscoveryMessage = t("正在局域网查找 Home Assistant…");
+    host.render();
+    void discoverLocalHomeAssistant(host.transport, controller.signal).then((found) => {
+      if (onboardingSessionByHost.get(host) !== session || session.haDiscoverGeneration !== generation || controller.signal.aborted) {
+        return;
+      }
+      session.haDiscoverAbort = null;
+      if (found) {
+        session.haDiscoveryState = "found";
+        if (session.haURLDraft.trim() === "") session.haURLDraft = found;
+        session.haDiscoveryMessage = t("已找到本地 Home Assistant：{url}", { url: found });
+      } else {
+        session.haDiscoveryState = "empty";
+        session.haDiscoveryMessage = t("未在局域网自动找到 Home Assistant。请手动输入地址，或在 Home Assistant 网页设置里查看地址。");
+      }
+      host.render();
+    });
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-ha-url")?.addEventListener("input", (event) => {
     session.haURLDraft = (event.target as HTMLInputElement).value;
+    const warnEl = sheet.querySelector<HTMLElement>("[data-onboarding-ha-http-warning]");
+    if (warnEl) warnEl.hidden = !isPlainHttpRemoteURL(session.haURLDraft);
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-ha-token")?.addEventListener("input", (event) => {
@@ -661,6 +842,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   });
 
   sheet.querySelector("#btn-onboarding-connect-ha")?.addEventListener("click", () => {
+    cancelHaDiscovery(session);
     let endpoint = session.haURLDraft.trim();
     if (endpoint && !/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(endpoint)) {
       endpoint = `http://${endpoint}`;
@@ -668,14 +850,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     endpoint = endpoint.replace(/\/api\/websocket\/?$/i, "").replace(/\/+$/, "");
     const token = session.haTokenDraft.trim();
     if (!endpoint || !token) {
-      session.statusNote = {
-        text: tr3(
-          "请填写完整的 Home Assistant 地址与长期访问令牌",
-          "請填寫完整的 Home Assistant 位址與長期存取權杖",
-          "Please enter both the Home Assistant URL and Long-Lived Access Token",
-        ),
-        isError: true,
-      };
+      session.haConnectError = t("请填写完整的 Home Assistant 地址与专属连接钥匙。");
       host.render();
       return;
     }
@@ -686,10 +861,14 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       endpoint !== host.settings.haBaseURL ||
       token !== host.settings.haToken ||
       prevIdentity !== nextIdentity;
+    const shouldEnableDual = session.addingSecondPlatform || hasConnectedMi(host);
     session.haURLDraft = endpoint;
+    session.haConnectError = null;
+    session.haConnecting = true;
+    session.haConnectedCount = null;
     switchSource(host, "onboarding-ha-endpoint");
     host.settings.cachedHAHome = null;
-    if (identityChanged) {
+    if (identityChanged && !shouldEnableDual) {
       host.devices = [];
       host.scenes = [];
       host.environmentReadings = [];
@@ -702,15 +881,39 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     }
     host.settings.haBaseURL = endpoint;
     host.settings.haToken = token;
-    host.settings.connectionMode = "homeAssistant";
+    host.settings.preDemoConnectionMode = null;
+    if (shouldEnableDual) {
+      enableDualSourceOnHost(host);
+    } else {
+      host.settings.connectionMode = "homeAssistant";
+    }
     session.selectedMode = "homeAssistant";
-    session.statusNote = {
-      text: tr3("已保存 Home Assistant 连接配置，正在同步…", "已儲存 Home Assistant 連線設定，正在同步…", "Home Assistant saved; syncing devices…"),
-      isError: false,
-    };
+    session.statusNote = { text: t("正在连接并验证 Home Assistant…"), isError: false };
     host.saveSettings(true);
-    void host.refreshHADevices(false);
+    const capturedToken = host.sourceEpoch.capture();
     host.render();
+    void Promise.resolve(host.refreshHADevices(false))
+      .then(() => {
+        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) return;
+        session.haConnecting = false;
+        const err = typeof host.haConnectionError === "string" ? host.haConnectionError.trim() : "";
+        if (err) {
+          session.haConnectError = mapHaErrorToPlainLanguage(err);
+          session.statusNote = null;
+        } else {
+          session.haConnectError = null;
+          session.haConnectedCount = host.devices.length;
+          session.statusNote = null;
+        }
+        host.render();
+      })
+      .catch(() => {
+        if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) return;
+        session.haConnecting = false;
+        session.haConnectError = t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
+        session.statusNote = null;
+        host.render();
+      });
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-launch-at-login")?.addEventListener("change", (event) => {
@@ -723,9 +926,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       return;
     }
     void invoke("set_launch_at_login", { enabled })
-      .then(() => {
-        host.render();
-      })
+      .then(() => host.render())
       .catch(() => {
         host.settings.launchAtLogin = !enabled;
         host.saveSettings();
@@ -767,30 +968,20 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       pill.setAttribute("aria-pressed", String(active));
     });
     const modelEl = sheet.querySelector<HTMLInputElement>("#onboarding-model");
-    if (modelEl && modelEl.value !== updated.model) {
-      modelEl.value = updated.model;
-    }
+    if (modelEl && modelEl.value !== updated.model) modelEl.value = updated.model;
     const keyEl = sheet.querySelector<HTMLInputElement>("#onboarding-api-key");
     if (keyEl) {
       keyEl.placeholder = preset.keyPlaceholder;
-      if (keyEl.value !== updated.apiKey) {
-        keyEl.value = updated.apiKey;
-      }
+      if (keyEl.value !== updated.apiKey) keyEl.value = updated.apiKey;
     }
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-model")?.addEventListener("input", (event) => {
-    session.assistantDraft = {
-      ...session.assistantDraft,
-      model: (event.target as HTMLInputElement).value,
-    };
+    session.assistantDraft = { ...session.assistantDraft, model: (event.target as HTMLInputElement).value };
   });
 
   sheet.querySelector<HTMLInputElement>("#onboarding-api-key")?.addEventListener("input", (event) => {
-    session.assistantDraft = {
-      ...session.assistantDraft,
-      apiKey: (event.target as HTMLInputElement).value,
-    };
+    session.assistantDraft = { ...session.assistantDraft, apiKey: (event.target as HTMLInputElement).value };
   });
 
   sheet.querySelector("#btn-onboarding-save-ai")?.addEventListener("click", () => {
@@ -829,25 +1020,14 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         return;
       }
       if (hit) {
-        session.assistantDraft = {
-          ...session.assistantDraft,
-          apiKey: hit.apiKey,
-        };
+        session.assistantDraft = { ...session.assistantDraft, apiKey: hit.apiKey };
         session.statusNote = {
-          text: tr3(
-            `已从环境变量 ${hit.envName} 导入密钥`,
-            `已從環境變數 ${hit.envName} 匯入金鑰`,
-            `Imported API key from ${hit.envName}`,
-          ),
+          text: tr3(`已从环境变量 ${hit.envName} 导入密钥`, `已從環境變數 ${hit.envName} 匯入金鑰`, `Imported API key from ${hit.envName}`),
           isError: false,
         };
       } else {
         session.statusNote = {
-          text: tr3(
-            "未在环境变量中检测到对应服务商的 API Key",
-            "未在環境變數中偵測到對應服務商的 API Key",
-            "No matching API key found in environment variables",
-          ),
+          text: tr3("未在环境变量中检测到对应服务商的 API Key", "未在環境變數中偵測到對應服務商的 API Key", "No matching API key found in environment variables"),
           isError: true,
         };
       }
@@ -855,28 +1035,14 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     })();
   });
 
-  const completeAndClose = (forceDemo: boolean) => {
+  const completeAndClose = (markCompleted: boolean) => {
+    cancelHaDiscovery(session);
     const keyInput = sheet.querySelector<HTMLInputElement>("#onboarding-api-key");
-    if (keyInput) {
-      session.assistantDraft = {
-        ...session.assistantDraft,
-        apiKey: keyInput.value,
-      };
-    }
+    if (keyInput) session.assistantDraft = { ...session.assistantDraft, apiKey: keyInput.value };
     const baseInput = sheet.querySelector<HTMLInputElement>("#onboarding-base-url");
-    if (baseInput) {
-      session.assistantDraft = {
-        ...session.assistantDraft,
-        baseURL: baseInput.value,
-      };
-    }
+    if (baseInput) session.assistantDraft = { ...session.assistantDraft, baseURL: baseInput.value };
     const modelInput = sheet.querySelector<HTMLInputElement>("#onboarding-model");
-    if (modelInput) {
-      session.assistantDraft = {
-        ...session.assistantDraft,
-        model: modelInput.value,
-      };
-    }
+    if (modelInput) session.assistantDraft = { ...session.assistantDraft, model: modelInput.value };
 
     const currentInferred = inferAssistantPreset(host.settings.assistantBaseURL).id;
     const hasAssistantChanges =
@@ -890,19 +1056,18 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       applyAssistantDraftToHost(host, session);
     }
 
-    if (forceDemo) {
-      switchConnectionModeInOnboarding(host, "demo");
+    if (markCompleted) {
+      host.settings.hasCompletedOnboarding = true;
     }
-
-    host.settings.hasCompletedOnboarding = true;
-    host.saveSettings(true);
+    host.saveSettings(hasConnectedMi(host) || hasConnectedHA(host));
     clearOnboardingSession(host);
     host.activeSheet = "none";
     invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
     host.render();
   };
 
-  sheet.querySelector("#btn-close-onboarding")?.addEventListener("click", () => completeAndClose(false));
-  sheet.querySelector("#btn-finish-onboarding")?.addEventListener("click", () => completeAndClose(false));
-  sheet.querySelector("#btn-close-onboarding-alt")?.addEventListener("click", () => completeAndClose(true));
+  sheet.querySelector("#btn-close-onboarding")?.addEventListener("click", () => completeAndClose(true));
+  sheet.querySelector("#btn-finish-onboarding")?.addEventListener("click", () => completeAndClose(true));
+  sheet.querySelector("#btn-skip-onboarding")?.addEventListener("click", () => completeAndClose(true));
+  sheet.querySelector("#btn-onboarding-skip")?.addEventListener("click", () => completeAndClose(true));
 }

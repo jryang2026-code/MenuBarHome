@@ -26,7 +26,8 @@ import { cloudRefreshDue } from "../core/models.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
-import { stripCredentialFieldsFromStoredCopies, writeSettingsForStorage } from "./settings.js";
+import { homeAssistantIdentity } from "../core/homeAssistant.js";
+import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
 import type { SettingsTab } from "./settingsViews.js";
 import {
   clearHostActivitiesOnSignOut,
@@ -67,6 +68,7 @@ import {
   isHostHaEnabled,
   isHostMiSessionEnabled,
   resolveEnabledMiAccountsForHost,
+  resolveHostMiSelectionState,
   type DualSourceInspectableHost,
 } from "./cloudRefresh.js";
 import { finishAllMiAccountsSignedOutOnHost } from "./connectionsAndDiagView.js";
@@ -114,15 +116,54 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
 const hydratingHosts = new WeakSet<MenuMijiaWindowsApp>();
 const pendingPersistDuringHydration = new WeakSet<MenuMijiaWindowsApp>();
 
+export function hasAnyConnectedOrSelectedDataSource(host: Pick<MenuMijiaWindowsApp, "settings"> & Partial<DualSourceInspectableHost>): boolean {
+  const s = host.settings;
+  return (
+    s.miSession !== null ||
+    (host.miAccountsOverride?.length ?? 0) > 0 ||
+    (host.multiAccountState?.accounts?.length ?? 0) > 0 ||
+    hasSecondaryMiAccountsInIndex() ||
+    homeAssistantIdentity(s.haBaseURL, s.haToken) !== null ||
+    s.cachedHAHome !== null ||
+    s.cachedXiaomiDevices.length > 0 ||
+    isDualSourceEnabled(host as DualSourceInspectableHost)
+  );
+}
+
+export async function retryIdentityMigration(host: MenuMijiaWindowsApp): Promise<void> {
+  const prevSettingsError = host.loadedSettings.settingsReadError;
+  if (prevSettingsError) {
+    const reloaded = loadSettings();
+    host.loadedSettings = reloaded;
+    if (!reloaded.settingsReadError) {
+      host.settings = reloaded.settings;
+      if (host.identityMigrationDiagnostic === prevSettingsError) {
+        host.identityMigrationDiagnostic = null;
+      }
+    }
+  }
+  if (host.identityMigrationDiagnostic === "credential_vault_read_failed") {
+    host.identityMigrationDiagnostic = null;
+  }
+  await hydrateCredentials(host);
+  resolveHostMiSelectionState(host);
+}
+
 export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
     hydratingHosts.add(host);
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
       const legacyOwnerEndpoint = host.settings.assistantLegacyKeyEndpoint ?? host.settings.assistantKeyEndpoint;
       const credentials = await host.credentialVault.load(activePreset, legacyOwnerEndpoint);
+      if (host.credentialVault.didLastCredentialLoadFail()) {
+        throw new Error("credential_vault_read_failed");
+      }
+      if (host.identityMigrationDiagnostic === "credential_vault_read_failed") {
+        host.identityMigrationDiagnostic = null;
+      }
       if (!host.credentialVault.hasLegacyAssistantKey() && host.settings.assistantLegacyKeyEndpoint !== null) {
         host.settings.assistantLegacyKeyEndpoint = null;
-        writeSettingsForStorage(host.settings);
+        if (!host.loadedSettings.settingsReadError) writeSettingsForStorage(host.settings);
       }
       const pendingSignOut = !host.settings.miSession && hasPendingMiVaultDeletion();
       if (pendingSignOut) {
@@ -164,13 +205,22 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
           host.settings.assistantKeyEndpoint ??= host.settings.assistantCustomKeyEndpoint;
         }
       }
+      const hasConfiguredHA = homeAssistantIdentity(host.settings.haBaseURL, host.settings.haToken) !== null;
+      const migration = evaluateLegacyOnboardingMigration(host.loadedSettings, {
+        hasVaultMiSession: Boolean(host.settings.miSession),
+        hasVaultHaToken: Boolean(host.settings.haToken.trim()),
+      });
       if (host.settings.miSession) {
-        host.settings.hasCompletedOnboarding = true;
         host.settings.miCloudRegion = normalizeMiCloudRegion(host.settings.miSession.region);
+      }
+      if (host.settings.miSession || hasConfiguredHA || !migration.shouldShowOnboarding) {
+        host.settings.hasCompletedOnboarding = true;
         if (host.activeSheet === "onboarding") host.activeSheet = "none";
       }
       submitServiceEndpoints(host);
-      writeSettingsForStorage(host.settings);
+      if (!host.loadedSettings.settingsReadError) {
+        writeSettingsForStorage(host.settings);
+      }
       if (host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) {
         if (!isHostMiSessionEnabled(host, host.settings.miSession) && !hasSecondaryMiAccountsInIndex()) {
           host.devices = [];
@@ -193,17 +243,29 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         }
       }
       host.render();
-      if (host.settings.connectionMode === "homeAssistant" && isHostHaEnabled(host)) {
+      if (host.settings.connectionMode === "homeAssistant" && hasConfiguredHA && isHostHaEnabled(host)) {
         void host.refreshHADevices();
       }
     } catch {
+      host.identityMigrationDiagnostic = "credential_vault_read_failed";
+      appDiagnosticsLog.record({
+        category: "auth",
+        summary: "Identity migration fell back to legacy mode: credential vault read failed (retryable).",
+      });
+      // Uncertain identity read: fall back to legacy startup without popping onboarding or sealing migration.
+      if (host.activeSheet === "onboarding") {
+        host.activeSheet = "none";
+      }
       if (host.settings.connectionMode === "homeAssistant") {
         host.haConnectionError = "Home Assistant credentials could not be loaded. Check Windows Credential Manager.";
-        host.render();
       }
+      host.render();
     } finally {
       hydratingHosts.delete(host);
       host.timerCredentialsReady = true;
+      if (!host.identityMigrationDiagnostic && !host.loadedSettings.settingsReadError) {
+        resolveHostMiSelectionState(host);
+      }
       if (pendingPersistDuringHydration.has(host)) {
         pendingPersistDuringHydration.delete(host);
         void persistCredentials(host);
@@ -481,6 +543,7 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
       return;
     }
     if (!manual && !window.__TAURI_INTERNALS__?.invoke) return;
+    if (!manual && !hasAnyConnectedOrSelectedDataSource(host) && !host.settings.hasCompletedOnboarding) return;
     if (host.isCheckingUpdate || host.isInstallingUpdate) return;
     if (manual) {
       host.isCheckingUpdate = true;
@@ -713,9 +776,16 @@ export function canRefreshDevicesInBackground(host: ResumeRecoveryHost): boolean
     }
     return hasSecondaryMiAccountsInIndex();
   };
+  const hasConfiguredHa = (): boolean => {
+    const s = dualInspectable.settings;
+    if (typeof s.haBaseURL === "string" || typeof s.haToken === "string") {
+      return homeAssistantIdentity(s.haBaseURL ?? "", s.haToken ?? "") !== null;
+    }
+    return true;
+  };
   const hasActiveSource =
-    (isDualSourceEnabled(dualInspectable) && (isHostHaEnabled(dualInspectable) || hasEnabledMi())) ||
-    (host.settings.connectionMode === "homeAssistant" && isHostHaEnabled(dualInspectable)) ||
+    (isDualSourceEnabled(dualInspectable) && ((hasConfiguredHa() && isHostHaEnabled(dualInspectable)) || hasEnabledMi())) ||
+    (host.settings.connectionMode === "homeAssistant" && hasConfiguredHa() && isHostHaEnabled(dualInspectable)) ||
     (host.settings.connectionMode === "xiaomiCloud" && hasEnabledMi());
   return (
     hasActiveSource &&

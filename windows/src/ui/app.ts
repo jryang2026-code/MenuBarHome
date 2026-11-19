@@ -82,7 +82,8 @@ import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSe
 import { SF_ICONS } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
-import { loadSettings } from "./settings.js";
+import { evaluateLegacyOnboardingMigration, loadSettings } from "./settings.js";
+import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import { CameraLiveController } from "./cameraLive.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
@@ -114,7 +115,7 @@ import {
   syncSensorHistoryHost,
   type SensorHistoryUiState,
 } from "./sensorHistoryView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
@@ -187,7 +188,7 @@ export function haConnectionBlock(url: string, message: string): HaConnectionBlo
 }
 
 export class MenuMijiaWindowsApp {
-  public readonly loadedSettings: LoadedSettings = loadSettings();
+  public loadedSettings: LoadedSettings = loadSettings();
   public settings: PersistedSettings = this.loadedSettings.settings;
   public readonly credentialVault = new CredentialVault();
   /** Per-provider saved API keys in memory (`CODING_STANDARDS.md` §6); never written to localStorage. */
@@ -426,6 +427,8 @@ export class MenuMijiaWindowsApp {
   public isRecordingHotkey = false;
   public hotkeyNeedsHint = false;
   public hotkeyRegistrationError: string | null = null;
+  /** Retryable diagnostic when settings or credential vault reads failed during legacy migration. */
+  public identityMigrationDiagnostic: string | null = null;
 
   constructor(public readonly root: HTMLElement) {
     this.specResolver = new MiotSpecResolver(
@@ -454,11 +457,20 @@ export class MenuMijiaWindowsApp {
     this.deviceFacets = this.settings.connectionMode === "homeAssistant"
       ? structuredClone(haCache?.deviceFacets ?? {})
       : {};
-    this.initializeCredentials();
-    this.submitServiceEndpoints();
-
-    if (!this.settings.hasCompletedOnboarding && !this.settings.miSession) {
+    const migration = evaluateLegacyOnboardingMigration(this.loadedSettings);
+    if (migration.identityReadFailure) {
+      this.identityMigrationDiagnostic = migration.identityReadFailure;
+      appDiagnosticsLog.record({
+        category: "auth",
+        summary: "Settings read failed during legacy identity migration; falling back without sealing.",
+      });
+    }
+    if (migration.shouldShowOnboarding) {
       this.activeSheet = "onboarding";
+    }
+    this.initializeCredentials();
+    if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
+      this.submitServiceEndpoints();
     }
 
     this.bindGlobalKeys();
@@ -505,12 +517,18 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession && !primaryDisabledOnly) {
       void this.refreshDevices();
     }
-    // At most one GitHub request per local day, and only inside the packaged app (#39).
-    void this.checkForAppUpdate(false);
+    // At most one GitHub request per local day, and never before first-run onboarding finishes (#39).
+    if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
+      void this.checkForAppUpdate(false);
+    }
   }
 
   private initializeCredentials(): void {
     initializeCredentials(this);
+  }
+
+  public retryIdentityMigration(): Promise<void> {
+    return retryIdentityMigration(this);
   }
 
 

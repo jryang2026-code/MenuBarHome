@@ -54,6 +54,8 @@ import {
   resetPanelSplitTransientState,
   resolveDeviceTileActionLayout,
 } from "./panelSplitTiles.js";
+import { hasAnyConnectedOrSelectedDataSource } from "./appLifecycle.js";
+import { leaveDemoHome } from "./onboardingGuide.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -780,7 +782,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       setConnectionDetails(false);
       if (kind === "qr") startQrLogin();
       else if (kind === "retry") void host.refreshDevices(false);
-      else host.openSettingsSheet("connection");
+      else if (kind === "leaveDemo") leaveDemoHome(host);
+      else if (!hasAnyConnectedOrSelectedDataSource(host) && host.settings.connectionMode !== "demo" && !host.settings.hasCompletedOnboarding) {
+        host.activeSheet = "onboarding";
+        invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
+        host.render();
+      } else host.openSettingsSheet("connection");
     };
     const statusTrigger = host.root.querySelector<HTMLButtonElement>("#btn-connection-status");
     const toggleConnectionDetails = (): void => setConnectionDetails(!host.connectionDetailsOpen);

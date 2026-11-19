@@ -1,8 +1,21 @@
 import { assistantEndpointIdentity, inferAssistantPreset, resolveHabitSharing, type HabitEntry } from "../core/assistant.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
 import { normalizeCameraStreamQualityMap } from "../core/cameraQuality.js";
-import { parseCachedHAHome } from "../core/homeAssistant.js";
+import {
+  CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
+  DUAL_SOURCE_ENABLED_STORAGE_KEY,
+  PINNED_DEVICE_SOURCES_STORAGE_KEY,
+  ROOM_IDENTITY_REGISTRY_STORAGE_KEY,
+} from "../core/dualSourceProvider.js";
+import { homeAssistantIdentity, parseCachedHAHome } from "../core/homeAssistant.js";
+import {
+  hasCorruptMiAccountIndex,
+  hasSecondaryMiAccountsInIndex,
+  MI_ACCOUNTS_INDEX_STORAGE_KEY,
+} from "../core/miAccountsStore.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../core/scheduledCommands.js";
 import {
   DEFAULT_GLOBAL_SHORTCUT,
   PANEL_HEIGHTS,
@@ -56,11 +69,141 @@ export function upgradeCachedDevices(devices: SmartDevice[], migrateLegacyFridge
   });
 }
 
-export function loadSettings(): LoadedSettings {
+const AUXILIARY_LOCAL_DATA_KEYS = [
+  MI_ACCOUNTS_INDEX_STORAGE_KEY,
+  DUAL_SOURCE_ENABLED_STORAGE_KEY,
+  PINNED_DEVICE_SOURCES_STORAGE_KEY,
+  CANONICAL_DEVICE_REGISTRY_STORAGE_KEY,
+  ROOM_IDENTITY_REGISTRY_STORAGE_KEY,
+  SCHEDULED_COMMANDS_STORAGE_KEY,
+  AutomationRuleStore.storageKey,
+] as const;
+
+function hasCustomLayoutData(layout: unknown): boolean {
+  if (!layout || typeof layout !== "object") return false;
+  const obj = layout as Record<string, unknown>;
+  for (const key of ["aliases", "roomAliases", "sizes", "groupMap"]) {
+    const val = obj[key];
+    if (val && typeof val === "object" && Object.keys(val as Record<string, unknown>).length > 0) return true;
+  }
+  for (const key of ["hiddenIds", "pinnedIds", "groups", "roomOrder", "kindOrder"]) {
+    if (Array.isArray(obj[key]) && (obj[key] as unknown[]).length > 0) return true;
+  }
+  return false;
+}
+
+export function detectPersistedLocalData(parsed?: Partial<PersistedSettings> & Record<string, unknown>): boolean {
+  if (parsed) {
+    if (
+      parseMiSession(parsed.miSession) !== null ||
+      (typeof parsed.haBaseURL === "string" && parsed.haBaseURL.trim() !== "") ||
+      (typeof parsed.haToken === "string" && parsed.haToken.trim() !== "") ||
+      parseCachedHAHome(parsed.cachedHAHome) !== null ||
+      (Array.isArray(parsed.cachedXiaomiDevices) && parsed.cachedXiaomiDevices.length > 0) ||
+      parsed.dualSourceEnabled === true ||
+      (Array.isArray(parsed.learnedShortcuts) && parsed.learnedShortcuts.length > 0) ||
+      (Array.isArray(parsed.habitEntries) && parsed.habitEntries.length > 0) ||
+      (typeof parsed.openRouterApiKey === "string" && parsed.openRouterApiKey.trim() !== "") ||
+      (typeof parsed.assistantKeyEndpoint === "string" && parsed.assistantKeyEndpoint.trim() !== "") ||
+      (parsed.allOffOverrides && typeof parsed.allOffOverrides === "object" && Object.keys(parsed.allOffOverrides).length > 0) ||
+      (parsed.cameraStreamURLs && typeof parsed.cameraStreamURLs === "object" && Object.keys(parsed.cameraStreamURLs as Record<string, unknown>).length > 0) ||
+      hasCustomLayoutData(parsed.layout)
+    ) {
+      return true;
+    }
+  }
   try {
-    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (typeof localStorage === "undefined") return false;
+    for (const key of AUXILIARY_LOCAL_DATA_KEYS) {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const trimmed = raw.trim();
+      if (trimmed === "" || trimmed === "false" || trimmed === "[]" || trimmed === "{}") continue;
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+export interface LegacyMigrationDecision {
+  readonly shouldShowOnboarding: boolean;
+  readonly isLegacyStraightThrough: boolean;
+  readonly identityReadFailure: string | null;
+}
+
+export function evaluateLegacyOnboardingMigration(
+  loaded: LoadedSettings,
+  options: {
+    readonly hasVaultMiSession?: boolean;
+    readonly hasVaultHaToken?: boolean;
+    readonly hasSecondaryMiAccounts?: boolean;
+    readonly identityReadFailure?: string | null;
+  } = {},
+): LegacyMigrationDecision {
+  const readFailure =
+    loaded.settingsReadError ??
+    options.identityReadFailure ??
+    (hasCorruptMiAccountIndex() ? "corrupt_mi_accounts_index" : null);
+  if (readFailure) {
+    return {
+      shouldShowOnboarding: false,
+      isLegacyStraightThrough: true,
+      identityReadFailure: readFailure,
+    };
+  }
+  const s = loaded.settings;
+  const hasRealSource =
+    s.miSession !== null ||
+    Boolean(options.hasVaultMiSession) ||
+    Boolean(options.hasSecondaryMiAccounts ?? hasSecondaryMiAccountsInIndex()) ||
+    homeAssistantIdentity(s.haBaseURL, s.haToken) !== null ||
+    Boolean(s.haBaseURL.trim() && options.hasVaultHaToken) ||
+    s.cachedHAHome !== null ||
+    s.cachedXiaomiDevices.length > 0 ||
+    s.dualSourceEnabled === true;
+
+  if (loaded.hasExplicitOnboardingFlag) {
+    if (s.hasCompletedOnboarding || hasRealSource) {
+      return { shouldShowOnboarding: false, isLegacyStraightThrough: hasRealSource && !s.hasCompletedOnboarding, identityReadFailure: null };
+    }
+    return { shouldShowOnboarding: true, isLegacyStraightThrough: false, identityReadFailure: null };
+  }
+  if (hasRealSource || loaded.hasPersistedLocalData || (loaded.hasPersistedSettings && s.hasCompletedOnboarding)) {
+    return { shouldShowOnboarding: false, isLegacyStraightThrough: true, identityReadFailure: null };
+  }
+  return { shouldShowOnboarding: true, isLegacyStraightThrough: false, identityReadFailure: null };
+}
+
+export function loadSettings(): LoadedSettings {
+  let raw: string | null = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+  } catch {
+    return {
+      settings: buildDefaultSettings(),
+      hasLegacyCredentials: false,
+      hasPersistedSettings: false,
+      hasExplicitOnboardingFlag: false,
+      hasPersistedLocalData: false,
+      settingsReadError: "settings_storage_read_error",
+    };
+  }
+  try {
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<PersistedSettings> & Record<string, unknown>;
+      const parsedRaw: unknown = JSON.parse(raw);
+      if (!parsedRaw || typeof parsedRaw !== "object" || Array.isArray(parsedRaw)) {
+        return {
+          settings: buildDefaultSettings(),
+          hasLegacyCredentials: false,
+          hasPersistedSettings: true,
+          hasExplicitOnboardingFlag: false,
+          hasPersistedLocalData: true,
+          settingsReadError: "corrupt_settings_storage",
+        };
+      }
+      const parsed = parsedRaw as Partial<PersistedSettings> & Record<string, unknown>;
       const cachedDevicesVersion =
         typeof parsed.cachedDevicesVersion === "number" ? parsed.cachedDevicesVersion : 0;
       const rawHaToken = typeof parsed.haToken === "string" ? parsed.haToken : "";
@@ -68,9 +211,29 @@ export function loadSettings(): LoadedSettings {
       const hasLegacyCredentials =
         (parsed.miSession !== undefined && parsed.miSession !== null) || rawHaToken !== "" || rawApiKey !== "";
       const miSession = parseMiSession(parsed.miSession);
+      const cachedHAHome = parseCachedHAHome(parsed.cachedHAHome);
+      const hasHaHints =
+        (typeof parsed.haBaseURL === "string" && parsed.haBaseURL.trim() !== "") ||
+        rawHaToken !== "" ||
+        cachedHAHome !== null;
+      const hasExplicitOnboardingFlag = typeof parsed.hasCompletedOnboarding === "boolean";
+      const hasPersistedLocalData = detectPersistedLocalData(parsed);
+      const hasPersistedSettings = Object.keys(parsed).length > 0;
+      const hasLegacyDataSource =
+        miSession !== null ||
+        hasHaHints ||
+        (Array.isArray(parsed.cachedXiaomiDevices) && parsed.cachedXiaomiDevices.length > 0) ||
+        parsed.dualSourceEnabled === true ||
+        hasSecondaryMiAccountsInIndex();
       const mode: ConnectionMode = parsed.connectionMode === "demo" || parsed.connectionMode === "xiaomiCloud" || parsed.connectionMode === "homeAssistant"
         ? parsed.connectionMode
-        : miSession ? "xiaomiCloud" : "demo";
+        : miSession
+          ? "xiaomiCloud"
+          : hasHaHints
+            ? "homeAssistant"
+            : hasExplicitOnboardingFlag && parsed.hasCompletedOnboarding === true
+              ? "demo"
+              : "xiaomiCloud";
       const habitShare = resolveHabitSharing(parsed.habitShareEnabled);
       if (habitShare.persistOff) {
         writeSettingsForStorage({ ...parsed, habitShareEnabled: false });
@@ -92,8 +255,18 @@ export function loadSettings(): LoadedSettings {
           ? parsed.assistantLegacyKeyEndpoint
           : resolvedKeyEndpoint;
       const askWhenUnsure = typeof parsed.askWhenUnsure === "boolean" ? parsed.askWhenUnsure : true;
+      const hasCompletedOnboarding = hasExplicitOnboardingFlag
+        ? (parsed.hasCompletedOnboarding as boolean)
+        : hasLegacyDataSource ||
+          hasPersistedLocalData ||
+          (hasPersistedSettings && (parsed.connectionMode === "xiaomiCloud" || parsed.connectionMode === "homeAssistant"));
+      const preDemoConnectionMode =
+        parsed.preDemoConnectionMode === "xiaomiCloud" || parsed.preDemoConnectionMode === "homeAssistant"
+          ? parsed.preDemoConnectionMode
+          : null;
       const settings: PersistedSettings = {
         connectionMode: mode,
+        ...(preDemoConnectionMode ? { preDemoConnectionMode } : {}),
         ...(typeof parsed.dualSourceEnabled === "boolean"
           ? { dualSourceEnabled: parsed.dualSourceEnabled }
           : {}),
@@ -130,7 +303,7 @@ export function loadSettings(): LoadedSettings {
                 typeof e?.count === "number",
             )
           : [],
-        hasCompletedOnboarding: parsed.hasCompletedOnboarding ?? Boolean(miSession),
+        hasCompletedOnboarding,
         isCompactGridMode: parsed.isCompactGridMode ?? true,
         hideOfflineDevices: typeof parsed.hideOfflineDevices === "boolean" ? parsed.hideOfflineDevices : false,
         hideGroupedLights: typeof parsed.hideGroupedLights === "boolean" ? parsed.hideGroupedLights : true,
@@ -143,7 +316,7 @@ export function loadSettings(): LoadedSettings {
             )
           : [],
         cachedDevicesVersion: Math.max(cachedDevicesVersion, CACHED_DEVICES_VERSION),
-        cachedHAHome: parseCachedHAHome(parsed.cachedHAHome),
+        cachedHAHome,
         cachedModelTypes:
           parsed.cachedModelTypes && typeof parsed.cachedModelTypes === "object"
             ? parsed.cachedModelTypes
@@ -198,23 +371,40 @@ export function loadSettings(): LoadedSettings {
       return {
         settings,
         hasLegacyCredentials,
+        hasPersistedSettings,
+        hasExplicitOnboardingFlag,
+        hasPersistedLocalData,
+        settingsReadError: null,
       };
     }
   } catch {
     return {
       settings: buildDefaultSettings(),
       hasLegacyCredentials: false,
+      hasPersistedSettings: true,
+      hasExplicitOnboardingFlag: false,
+      hasPersistedLocalData: true,
+      settingsReadError: "corrupt_settings_storage",
     };
   }
+  const hasAuxiliaryLocalData = detectPersistedLocalData();
+  const defaults = buildDefaultSettings();
+  if (hasAuxiliaryLocalData) {
+    defaults.hasCompletedOnboarding = true;
+  }
   return {
-    settings: buildDefaultSettings(),
+    settings: defaults,
     hasLegacyCredentials: false,
+    hasPersistedSettings: false,
+    hasExplicitOnboardingFlag: false,
+    hasPersistedLocalData: hasAuxiliaryLocalData,
+    settingsReadError: null,
   };
 }
 
 function buildDefaultSettings(): PersistedSettings {
   return {
-    connectionMode: "demo",
+    connectionMode: "xiaomiCloud",
     miSession: null,
     miCloudRegion: "cn",
     autoCheckUpdates: true,
