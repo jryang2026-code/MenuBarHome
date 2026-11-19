@@ -66,10 +66,10 @@ struct ClassicSensorCardView: View {
 
     var body: some View {
         Group {
-            if isStale {
-                staleSensor
-            } else if isExpanded {
+            if isExpanded {
                 expandedContainer
+            } else if isStale {
+                staleSensor
             } else if isCompact {
                 compact
             } else {
@@ -79,7 +79,7 @@ struct ClassicSensorCardView: View {
         .frame(minHeight: (isCompact && !isExpanded) ? 50 : nil, maxHeight: isExpanded ? nil : .infinity)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard !isEditingLayout, let store else { return }
+            guard !isEditingLayout, !forceExpanded, let store else { return }
             withAnimation(AppleMotion.snappySpring) {
                 store.toggleExpanded(device.id)
             }
@@ -161,19 +161,25 @@ struct ClassicSensorCardView: View {
                             .padding(.leading, 1)
                     }
                 }
-                temperatureText(size: DesignTokens.TypeSize.reading)
-                HStack(spacing: 6) {
-                    comfortChip
-                    if let b = spec.battery {
-                        Label("\(b)%", systemImage: batterySymbol(b))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(b <= 20 ? Color.red : muted)
+                if isStale {
+                    Text(L10n.tr("可能过期", "Possibly stale"))
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                        .foregroundStyle(muted)
+                } else {
+                    temperatureText(size: DesignTokens.TypeSize.reading)
+                    HStack(spacing: 6) {
+                        comfortChip
+                        if let b = spec.battery {
+                            Label("\(b)%", systemImage: batterySymbol(b))
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                .monospacedDigit()
+                                .foregroundStyle(b <= 20 ? Color.red : muted)
+                        }
                     }
                 }
             }
             Spacer(minLength: 0)
-            if let h = spec.humidity { humidityRing(h) }
+            if !isStale, let h = spec.humidity { humidityRing(h) }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)

@@ -163,6 +163,28 @@ struct DeviceCardContextMenuItems: View {
 
         if let diagnostics {
             Text(Self.transportRouteTitle(diagnostics))
+            switch diagnostics.route {
+            case .cooldown:
+                Button {
+                    store.retryDeviceLAN(device.id)
+                } label: {
+                    Label(
+                        L10n.tr("重试局域网连接", "Retry LAN Connection"),
+                        systemImage: "arrow.clockwise"
+                    )
+                }
+            case .localNetworkBlocked:
+                Button {
+                    LocalNetworkSystemSettings.open()
+                } label: {
+                    Label(
+                        L10n.tr("打开本地网络设置…", "Open Local Network Settings…"),
+                        systemImage: "gearshape"
+                    )
+                }
+            case .lan, .cloud:
+                EmptyView()
+            }
         }
 
         if isPaired {

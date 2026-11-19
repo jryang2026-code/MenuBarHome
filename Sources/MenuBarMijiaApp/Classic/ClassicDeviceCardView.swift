@@ -489,7 +489,16 @@ public struct ClassicDeviceCardView: View {
     @ViewBuilder
     private var detailDrawer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            detailControls
+            if device.hasDetailDrawer {
+                detailControls
+            } else if case .generic(let spec) = device.kind, !spec.alerts.isEmpty {
+                ClassicGenericDetailDrawer(
+                    device: device,
+                    store: store,
+                    spec: spec,
+                    statusColor: statusColor
+                )
+            }
             ClassicDeviceFacetSection(
                 device: device,
                 store: store,
