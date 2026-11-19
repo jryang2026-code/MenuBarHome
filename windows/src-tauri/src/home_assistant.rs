@@ -131,14 +131,23 @@ impl HaTask {
             .trim_start_matches('[')
             .trim_end_matches(']');
         let port = parsed.port_or_known_default().ok_or("Invalid Home Assistant port")?;
-        let connect = tokio::net::TcpStream::connect((host, port));
+        let connect = async {
+            let addresses = tokio::net::lookup_host((host, port))
+                .await
+                .map_err(|_| "Home Assistant address lookup failed")?;
+            for address in addresses {
+                let socket = tokio::net::TcpStream::connect(address);
+                if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(5), socket).await {
+                    return Ok(stream);
+                }
+            }
+            Err("Home Assistant connection failed")
+        };
         let stream = self
             .cancel
-            .run_until_cancelled(tokio::time::timeout(Duration::from_secs(5), connect))
+            .run_until_cancelled(connect)
             .await
-            .ok_or(CANCELLED)?
-            .map_err(|_| "Home Assistant connection timed out")?
-            .map_err(|_| "Home Assistant connection failed")?
+            .ok_or(CANCELLED)??
             .into_std()
             .map_err(|_| "Home Assistant socket setup failed")?;
         stream
