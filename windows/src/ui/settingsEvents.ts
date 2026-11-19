@@ -19,7 +19,7 @@ import {
   type HabitLastAction,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
-import { normalizeMiCloudRegion, type HttpTransport } from "../core/miCloudClient.js";
+import { normalizeMiCloudRegion, type HttpRequest, type HttpResponse, type HttpTransport } from "../core/miCloudClient.js";
 import {
   joinsAllOffByDefault,
   type AssistantSuggestion,
@@ -132,6 +132,8 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   escapeHtml?(value: string): string;
   /** Invalidates in-flight AI requests after an enable/disable or provider change (P5a-W). */
   advanceAssistantEpoch?(): void;
+  /** Current feature-level AI generation; request helpers capture and compare it (P5a-W). */
+  readonly assistantEpoch?: number;
 }
 
 interface SettingsUiSessionState {
@@ -274,6 +276,8 @@ export async function probeAssistantConnection(
     };
   },
   transport?: HttpTransport,
+  /** Wraps every HTTP attempt (initial call and in-resolver retries); see P5a-W #1/#3. */
+  gate?: (request: HttpRequest) => Promise<HttpResponse>,
 ): Promise<{ readonly ok: boolean; readonly latencyMs: number | null; readonly message: string }> {
   const trimmedBase = config.baseURL.trim();
   if (!trimmedBase) {
@@ -344,7 +348,8 @@ export async function probeAssistantConnection(
 
   const preset = inferAssistantPreset(trimmedBase);
   const model = config.model.trim() || preset.defaultModel || "gpt-4o-mini";
-  const effectiveTransport = transport ?? createTransport();
+  const baseTransport = transport ?? createTransport();
+  const effectiveTransport: HttpTransport = gate ? (request) => gate(request) : baseTransport;
   const resolver = new ModelIntentResolver(
     {
       baseURL: trimmedBase,
@@ -430,10 +435,23 @@ function clearRevokedCredentialInputs(root: HTMLElement): void {
 export async function removeActiveAssistantProvider(host: SettingsEventsHost): Promise<void> {
   const baseEl = host.root.querySelector<HTMLInputElement>("#settings-base-url");
   const draftBase = (baseEl?.value ?? host.settings.assistantBaseURL).trim();
+  const presetId = inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id;
+  // Snapshot for the vault-failure rollback: after a failed persist the retry must target
+  // the same provider, not whatever the default-preset fallback re-activation shows.
+  const rollback = {
+    assistantBaseURL: host.settings.assistantBaseURL,
+    assistantModel: host.settings.assistantModel,
+    openRouterApiKey: host.settings.openRouterApiKey,
+    assistantKeyEndpoint: host.settings.assistantKeyEndpoint,
+    assistantCustomKeyEndpoint: host.settings.assistantCustomKeyEndpoint,
+    assistantLegacyKeyEndpoint: host.settings.assistantLegacyKeyEndpoint,
+    cloudConsentEndpoints: [...host.settings.cloudConsentEndpoints],
+    removedKey: host.assistantKeysByPreset[presetId],
+  };
   // Mutates the saved settings and the in-memory key map in place; the vault persist below
   // turns the dropped preset entry into a credential-store delete.
   removeAssistantProviderState({
-    presetId: inferAssistantPreset(draftBase !== "" ? draftBase : host.settings.assistantBaseURL).id,
+    presetId,
     settings: host.settings,
     keysByPreset: host.assistantKeysByPreset,
   });
@@ -447,6 +465,16 @@ export async function removeActiveAssistantProvider(host: SettingsEventsHost): P
     try {
       await vault.persist(credentialsFromSettings(host.settings, host.assistantKeysByPreset));
     } catch {
+      host.settings.assistantBaseURL = rollback.assistantBaseURL;
+      host.settings.assistantModel = rollback.assistantModel;
+      host.settings.openRouterApiKey = rollback.openRouterApiKey;
+      host.settings.assistantKeyEndpoint = rollback.assistantKeyEndpoint;
+      host.settings.assistantCustomKeyEndpoint = rollback.assistantCustomKeyEndpoint;
+      host.settings.assistantLegacyKeyEndpoint = rollback.assistantLegacyKeyEndpoint;
+      host.settings.cloudConsentEndpoints = rollback.cloudConsentEndpoints;
+      if (rollback.removedKey !== undefined) {
+        host.assistantKeysByPreset[presetId] = rollback.removedKey;
+      }
       host.replyBanner = {
         text: t("无法从系统凭据库移除该服务商的密钥，请重试"),
         source: t("出错提示"),
@@ -1550,6 +1578,17 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       liveStatusEl.dataset.testState = "testing";
       liveStatusEl.style.color = "";
     }
+    // Gate every probe attempt: a disable (or provider change) while the probe runs must
+    // stop the initial POST and any in-resolver retry (P5a-W #1/#3). The gate wraps each
+    // attempt while the probe keeps its draft-endpoint authorization flow.
+    const probeEpoch = host.assistantEpoch;
+    const liveProbeTransport = createTransport();
+    const probeGate = (request: HttpRequest): Promise<HttpResponse> => {
+      if (host.assistantEpoch !== probeEpoch || !isAiAssistantEnabled(host.settings)) {
+        return Promise.reject(new Error("assistant request superseded"));
+      }
+      return liveProbeTransport(request);
+    };
 
     void (async () => {
       const result = await probeAssistantConnection({
@@ -1563,14 +1602,21 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
           assistantUrl: host.settings.assistantBaseURL,
           haUrl: host.settings.haBaseURL,
         }),
-      });
+      }, undefined, probeGate);
       const state = result.ok ? "ok" : "error";
-      session.aiTestStatus = { text: result.message, state };
+      const message = result.ok || result.message !== "assistant request superseded"
+        ? result.message
+        : tr3(
+            "AI 已关闭或服务商已切换，测试中止",
+            "AI 已關閉或服務商已切換，測試中止",
+            "AI was disabled or the provider changed; the check was aborted",
+          );
+      session.aiTestStatus = { text: message, state };
       const btnNow = host.root.querySelector<HTMLButtonElement>("#btn-test-ai-connection");
       if (btnNow) btnNow.disabled = false;
       const statusNow = host.root.querySelector<HTMLElement>("#settings-ai-test-status");
       if (statusNow) {
-        statusNow.textContent = result.message;
+        statusNow.textContent = message;
         statusNow.dataset.testState = state;
         statusNow.style.color = result.ok ? "" : "#e67e22";
       }

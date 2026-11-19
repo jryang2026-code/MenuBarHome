@@ -394,6 +394,74 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.equal(app.isResolvingIntent, false);
   });
 
+  it("stops the connection probe once AI is switched off mid-probe", async () => {
+    const app = mountDemoApp();
+    enableAiForRequest(app);
+    app.activeSheet = "settings";
+    // Route the probe's native HTTP through a deferred we control.
+    const probeUrls: string[] = [];
+    const resolvers: Array<(response: HttpResponse) => void> = [];
+    const invoke = (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+      if (cmd === "native_http") {
+        probeUrls.push(String(args["url"] ?? ""));
+        return new Promise((resolve) => resolvers.push(resolve));
+      }
+      return Promise.resolve(null);
+    };
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
+    app.render();
+
+    element("#btn-test-ai-connection").click();
+    await setImmediate();
+    assert.equal(probeUrls.length, 1, "the probe sent while AI was on");
+
+    app.settings.aiAssistantEnabled = false;
+    app.advanceAssistantEpoch();
+    resolvers[0]?.({ status: 400, headers: {}, body: '{"error":{"message":"temperature is not supported"}}' });
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(probeUrls.length, 1, "a disabled probe must not retry");
+    const status = element("#settings-ai-test-status");
+    assert.match(status.textContent ?? "", /测试中止/, "the probe reports the abort in the status line");
+  });
+
+  it("rolls the removal back when the vault persist fails so a retry keeps the same target", async () => {
+    const app = mountDemoApp();
+    app.settings.assistantBaseURL = "https://api.deepseek.com/v1";
+    app.settings.assistantModel = "deepseek-chat";
+    app.settings.openRouterApiKey = "sk-deepseek-test";
+    app.settings.assistantKeyEndpoint = "api.deepseek.com";
+    app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
+    app.assistantKeysByPreset["deepseek"] = "sk-deepseek-test";
+    app.settings.cloudConsentEndpoints.push("api.deepseek.com", "openrouter.ai");
+
+    let failPersist = true;
+    const vaultStub = {
+      persist: async (): Promise<void> => {
+        if (failPersist) throw new Error("credential manager refused");
+      },
+    };
+    Object.defineProperty(app, "credentialVault", { value: vaultStub, configurable: true });
+
+    app.activeSheet = "settings";
+    app.render();
+    await removeActiveAssistantProvider(app);
+    // Vault failed: the deepseek config must be back so a retry removes deepseek, not
+    // the re-activated default provider.
+    assert.equal(app.settings.assistantBaseURL, "https://api.deepseek.com/v1");
+    assert.equal(app.settings.openRouterApiKey, "sk-deepseek-test");
+    assert.equal(app.assistantKeysByPreset["deepseek"], "sk-deepseek-test");
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test");
+    assert.match(app.replyBanner?.text ?? "", /无法从系统凭据库移除/);
+
+    failPersist = false;
+    await removeActiveAssistantProvider(app);
+    assert.equal(app.assistantKeysByPreset["deepseek"], undefined, "retry removes the same provider");
+    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "default key survives the retry");
+    assert.equal(app.settings.openRouterApiKey, "sk-or-test");
+  });
+
   it("discards a proactive refresh result that lands after a provider change", async () => {
     const app = mountDemoApp();
     app.settings.connectionMode = "xiaomiCloud";
