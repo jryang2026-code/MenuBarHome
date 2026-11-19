@@ -33,6 +33,19 @@ struct FirstRunOnboardingTests {
         return (suite, defaults)
     }
 
+    private static let stubMiFactory: @MainActor ([MiAccount]) -> MiAccountsProvider = { _ in
+        MiAccountsProvider(
+            accounts: [],
+            localClientFactory: { nil },
+            pollInterval: .seconds(3600),
+            followUpDelay: .seconds(3600)
+        )
+    }
+
+    private static let stubHAFactory: @MainActor (String, String) -> any HomeProvider = { _, _ in
+        MockHomeProvider()
+    }
+
     @Test("Fresh install does zero background/LAN/update work and keeps onboarding open across relaunch")
     @MainActor
     func freshInstallZeroBackgroundWorkAndRelaunch() async throws {
@@ -42,7 +55,12 @@ struct FirstRunOnboardingTests {
         let vault = CredentialVault(storage: mem.storage)
         let counter = RequestCounter()
 
-        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
         var driver = UpdateSystemDriver.live
         driver.fetchData = { _ in
             counter.requests += 1
@@ -67,7 +85,12 @@ struct FirstRunOnboardingTests {
         #expect(counter.requests == 0, "unconnected fresh install must not auto-check for updates")
 
         // Second launch before connecting or skipping still opens first-run onboarding.
-        let relaunched = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+        let relaunched = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
         #expect(relaunched.showsFullOnboardingGuide)
         #expect(!relaunched.shouldAutoDiscoverHomeAssistantOnLAN)
         #expect(relaunched.shouldSuppressBackgroundNetworkWork)
@@ -89,7 +112,12 @@ struct FirstRunOnboardingTests {
             defer { defaults.removePersistentDomain(forName: suite) }
             defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
             let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-            let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(
+                defaultsSuiteName: suite,
+                credentialVault: vault,
+                miAccountsProviderFactory: Self.stubMiFactory,
+                haProviderFactory: Self.stubHAFactory
+            )
             #expect(store.capabilityResolutionMode == .legacyPreserved)
             #expect(store.homeBackend == .demo)
             #expect(store.hasCompletedOnboarding)
@@ -111,7 +139,12 @@ struct FirstRunOnboardingTests {
                 defaults: defaults
             ))
             let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-            let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(
+                defaultsSuiteName: suite,
+                credentialVault: vault,
+                miAccountsProviderFactory: Self.stubMiFactory,
+                haProviderFactory: Self.stubHAFactory
+            )
             #expect(store.capabilityResolutionMode == .explicit)
             #expect(store.hasCompletedOnboarding)
             #expect(!store.showsFullOnboardingGuide)
@@ -128,7 +161,12 @@ struct FirstRunOnboardingTests {
                 expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
             )
             #expect(MiSessionStore.save(session, defaults: defaults, vault: vault))
-            let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(
+                defaultsSuiteName: suite,
+                credentialVault: vault,
+                miAccountsProviderFactory: Self.stubMiFactory,
+                haProviderFactory: Self.stubHAFactory
+            )
             #expect(store.capabilityResolutionMode == .legacyPreserved)
             #expect(store.hasCompletedOnboarding)
             #expect(!store.showsFullOnboardingGuide)
@@ -153,7 +191,12 @@ struct FirstRunOnboardingTests {
         // Lock the vault before a cold launch (fresh CredentialVault) to simulate Keychain read failure.
         box.failReads = true
         let launchVault = CredentialVault(storage: box.storage)
-        let store = HomeStore(defaultsSuiteName: suite, credentialVault: launchVault)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: launchVault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
         #expect(store.capabilityResolutionMode == .uncertainFallback)
         #expect(store.identityMigrationDiagnostic != nil)
         #expect(store.onboardingPresentation == .hidden)
@@ -189,7 +232,12 @@ struct FirstRunOnboardingTests {
         defaults.set(corrupt, forKey: CapabilitySelectionStore.storageKey)
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
 
-        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
         #expect(store.capabilityResolutionMode == .uncertainFallback)
         #expect(store.identityMigrationDiagnostic != nil)
         #expect(store.onboardingPresentation == .hidden)
@@ -273,7 +321,13 @@ struct FirstRunOnboardingTests {
         defaults.set("https://old.example.local:8123", forKey: "ha_server_url")
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(
+            provider: MockHomeProvider(),
+            defaultsSuiteName: suite,
+            credentialVault: vault,
+            miAccountsProviderFactory: Self.stubMiFactory,
+            haProviderFactory: Self.stubHAFactory
+        )
         _ = store.setHAConnectionEnabled(false, pauseConfirmed: true)
         #expect(!store.isHAConnectionEnabled)
 
@@ -343,7 +397,12 @@ struct FirstRunOnboardingTests {
             let (suite, defaults) = try Self.makeFreshSuite("demo-fresh")
             defer { defaults.removePersistentDomain(forName: suite) }
             let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-            let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(
+                defaultsSuiteName: suite,
+                credentialVault: vault,
+                miAccountsProviderFactory: Self.stubMiFactory,
+                haProviderFactory: Self.stubHAFactory
+            )
             store.switchBackend(.demo)
             #expect(store.homeBackend == .demo)
             #expect(!store.leaveDemo())
@@ -357,7 +416,13 @@ struct FirstRunOnboardingTests {
             let vault = CredentialVault(storage: MemoryVaultStorage().storage)
             #expect(KeychainHelper.saveToken("ha-tok", defaults: defaults, vault: vault))
             defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
-            let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(
+                provider: MockHomeProvider(),
+                defaultsSuiteName: suite,
+                credentialVault: vault,
+                miAccountsProviderFactory: Self.stubMiFactory,
+                haProviderFactory: Self.stubHAFactory
+            )
             store.hasHASource = true
             store.switchBackend(.demo)
             #expect(store.homeBackend == .demo)
