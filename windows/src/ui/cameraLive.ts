@@ -454,7 +454,15 @@ export class CameraLiveController {
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev || dev.kind.kind !== "camera") return false;
     if (previousId === dev.id) return true;
-    const pendingStart = this.liveCameraLoading && !this.liveCameraImgEl && !this.liveCameraRawMediaEl;
+    const pendingStart =
+      this.liveCameraLoading &&
+      !this.liveCameraAbort &&
+      !this.liveCameraImgEl &&
+      !this.liveCameraRawMediaEl;
+    const preservedStreamUrl =
+      this.cameraStreamURLs[dev.id] ??
+      this.cameraStreamURLs[previousId] ??
+      (pendingStart ? this.liveCameraStreamURL : null);
     // Teardown reads the bridge binding by the active id, so the binding has to move with the view.
     const bridge = this.cameraBridgeBindings.get(previousId);
     if (bridge) {
@@ -464,10 +472,11 @@ export class CameraLiveController {
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.syncModalEscapeListener();
-    // A start that is still negotiating also compares the active id, so it would bail and leave the
-    // modal spinning; restart it under the new id (the moved binding stops the old registration).
+    // Pre-transport negotiation (`liveCameraAbort === null`) compares `activeLiveCameraId` and would
+    // bail out after the rename; once `startMjpegTransport` is pumping (`liveCameraAbort !== null`),
+    // the frame loop checks only `liveCameraToken` and must keep running (#254).
     if (pendingStart) {
-      this.reconnectCameraLiveView();
+      this.reconnectCameraLiveView(preservedStreamUrl);
       return true;
     }
     this.host.render();
@@ -807,9 +816,11 @@ export class CameraLiveController {
 
   public async playCustomCameraUrl(devId: string, playable: string): Promise<void> {
     const token = this.liveCameraToken;
+    const normalized = this.normalizeWindowsCameraStreamUrl(playable);
+    this.liveCameraStreamURL = normalized;
+    this.liveCameraLoading = true;
     await this.refreshOwnedGo2rtcOrigin();
     if (this.liveCameraToken !== token || this.activeLiveCameraId !== devId) return;
-    const normalized = this.normalizeWindowsCameraStreamUrl(playable);
     const ownedSrc = this.ownedGo2rtcStreamName(normalized);
     if (ownedSrc) {
       this.liveCameraStreamURL = ownedSrc;
@@ -988,7 +999,7 @@ export class CameraLiveController {
     }
   }
 
-  public reconnectCameraLiveView(): void {
+  public reconnectCameraLiveView(streamUrlOverride?: string | null): void {
     const dev = this.host.devices.find((d) => d.id === this.activeLiveCameraId);
     if (!dev || dev.kind.kind !== "camera") return;
     if (this.resolveCameraSource(dev).backend === "xiaomiCloud") {
@@ -996,8 +1007,9 @@ export class CameraLiveController {
     }
     this.stopLiveTransport();
     this.liveCameraQualityApplies = true;
-    this.liveCameraStreamURL = this.cameraStreamURLs[dev.id]
-      ? this.normalizeWindowsCameraStreamUrl(this.cameraStreamURLs[dev.id]!)
+    const rawStreamUrl = this.cameraStreamURLs[dev.id] ?? streamUrlOverride ?? null;
+    this.liveCameraStreamURL = rawStreamUrl
+      ? this.normalizeWindowsCameraStreamUrl(rawStreamUrl)
       : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraError = null;
     this.liveCameraLoading = false;

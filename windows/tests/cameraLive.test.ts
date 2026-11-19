@@ -890,11 +890,54 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
     assert.equal(reconnects, 1, "a start that was still negotiating must be restarted under the new id");
 
+    // A stream whose MJPEG pump is already running (even before the first JPEG attaches img) keeps playing.
+    const pumpingAbort = new AbortController();
+    ctrl.activeLiveCameraId = "cam-a";
+    ctrl.liveCameraLoading = true;
+    ctrl.liveCameraImgEl = null;
+    ctrl.liveCameraAbort = pumpingAbort;
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+    assert.equal(reconnects, 1, "an already-pumping MJPEG stream must not be restarted before its first frame");
+    assert.equal(pumpingAbort.signal.aborted, false);
+    ctrl.liveCameraAbort = null;
+
     // A stream that is already attached keeps playing; retargeting only renames its card.
     ctrl.activeLiveCameraId = "cam-a";
     ctrl.liveCameraLoading = true;
     ctrl.liveCameraImgEl = document.createElement("img");
     assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
     assert.equal(reconnects, 1);
+  });
+
+  it("preserves an in-flight custom stream URL when a sign-out retarget restarts pre-transport negotiation (#254)", async () => {
+    const ctx = await mountCloudCameraApp({
+      devices: [{ did: "cam-a", name: "客厅摄像机", model: "isa.camera.hlc7", roomName: "客厅" }],
+    });
+    await waitFor(() => document.querySelector('[data-body-device="cam-a"]') !== null);
+    const ctrl = ctx.app.cameraLive;
+    const source = ctx.app.devices.find((d) => d.id === "cam-a")!;
+    ctx.app.devices = [...ctx.app.devices, { ...source, id: "ha-cam-a" }];
+
+    let releaseEndpointGate: (() => void) | null = null;
+    ctx.app.endpointSubmission = new Promise<void>((resolve) => {
+      releaseEndpointGate = resolve;
+    });
+    ctx.app.settings.connectionMode = "homeAssistant";
+
+    const customHls = "http://192.168.50.10:8080/live/custom-cam.m3u8";
+    ctrl.activeLiveCameraId = "cam-a";
+    void ctrl.playCustomCameraUrl("cam-a", customHls);
+    await waitFor(() => ctrl.liveCameraLoading && ctrl.liveCameraStreamURL === customHls);
+
+    // Retarget while HLS negotiation is still waiting pre-transport: the restart under the restored HA
+    // card id must keep the in-flight custom URL instead of dropping it (#254).
+    assert.equal(ctrl.retargetActiveLiveCamera("ha-cam-a"), true);
+    assert.equal(ctrl.activeLiveCameraId, "ha-cam-a");
+    assert.equal(ctrl.liveCameraStreamURL, customHls);
+
+    releaseEndpointGate!();
+    await waitFor(() => ctx.hlsBridgeCalls.some((call) => call["did"] === "ha-cam-a"));
+    const restartedCall = ctx.hlsBridgeCalls.find((call) => call["did"] === "ha-cam-a");
+    assert.equal(restartedCall?.["hlsUrl"], customHls);
   });
 });
