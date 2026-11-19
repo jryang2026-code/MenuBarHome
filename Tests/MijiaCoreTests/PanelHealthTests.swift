@@ -894,6 +894,53 @@ struct PanelHealthTests {
         }
     }
 
+    @Test("Dual-source Local Network block only claims Xiaomi Cloud fallback when Xiaomi Cloud is available, otherwise reports only Home Assistant available or blocked")
+    func dualSourceLocalNetworkBlockReflectsActualXiaomiCloudAvailability() async throws {
+        let dualMiLANAndCloudOK = try await makeStore(backend: .homeAssistant, session: validSession(), haSource: true)
+        dualMiLANAndCloudOK.connectionStatus = .connected
+        dualMiLANAndCloudOK.sourceStatuses = [.homeAssistant: .connected, .xiaomiCloud: .connected]
+        dualMiLANAndCloudOK.localNetworkBlocks = [.xiaomiLAN]
+
+        let dualMiLANBlockedCloudDown = try await makeStore(backend: .homeAssistant, session: validSession(), haSource: true)
+        dualMiLANBlockedCloudDown.connectionStatus = .connected
+        dualMiLANBlockedCloudDown.sourceStatuses = [.homeAssistant: .connected, .xiaomiCloud: .disconnected("HTTP 502")]
+        dualMiLANBlockedCloudDown.localNetworkBlocks = [.xiaomiLAN]
+
+        let dualMiLANBlockedCloudConnecting = try await makeStore(backend: .homeAssistant, session: validSession(), haSource: true)
+        dualMiLANBlockedCloudConnecting.connectionStatus = .connected
+        dualMiLANBlockedCloudConnecting.sourceStatuses = [.homeAssistant: .connected, .xiaomiCloud: .connecting]
+        dualMiLANBlockedCloudConnecting.localNetworkBlocks = [.xiaomiLAN]
+
+        let dualMiLANBlockedSessionExpired = try await makeStore(backend: .homeAssistant, session: expiredSession(), haSource: true)
+        dualMiLANBlockedSessionExpired.connectionStatus = .connected
+        dualMiLANBlockedSessionExpired.sourceStatuses = [.homeAssistant: .connected, .xiaomiCloud: .disconnected("expired")]
+        dualMiLANBlockedSessionExpired.localNetworkBlocks = [.xiaomiLAN]
+
+        let dualHABlockedCloudDown = try await makeStore(backend: .homeAssistant, session: validSession(), haSource: true)
+        dualHABlockedCloudDown.connectionStatus = .connected
+        dualHABlockedCloudDown.sourceStatuses = [.homeAssistant: .disconnected("blocked"), .xiaomiCloud: .disconnected("HTTP 502")]
+        dualHABlockedCloudDown.localNetworkBlocks = [.homeAssistant]
+
+        let dualBothBlockedCloudDown = try await makeStore(backend: .homeAssistant, session: validSession(), haSource: true)
+        dualBothBlockedCloudDown.connectionStatus = .connected
+        dualBothBlockedCloudDown.sourceStatuses = [.homeAssistant: .disconnected("blocked"), .xiaomiCloud: .disconnected("HTTP 502")]
+        dualBothBlockedCloudDown.localNetworkBlocks = [.homeAssistant, .xiaomiLAN]
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(health(dualMiLANAndCloudOK) == .degraded(reason: "米家局域网直连权限受阻，已回退云端"))
+            #expect(health(dualMiLANBlockedCloudDown) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
+            #expect(health(dualMiLANBlockedCloudConnecting) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
+            #expect(health(dualMiLANBlockedSessionExpired) == .degraded(reason: "米家局域网直连权限受阻，当前仅 Home Assistant 可用"))
+            #expect(health(dualHABlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openConnectionSettings))
+            #expect(health(dualBothBlockedCloudDown) == .blocked(reason: "本地网络权限受阻 · 点此检查设置", action: .openConnectionSettings))
+        }
+
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(health(dualMiLANAndCloudOK) == .degraded(reason: "Xiaomi LAN access is blocked. Using cloud fallback"))
+            #expect(health(dualMiLANBlockedCloudDown) == .degraded(reason: "Xiaomi LAN access is blocked. Only Home Assistant is available"))
+        }
+    }
+
     @Test("HomeStore panelHealth never flashes ok during refreshNow while Xiaomi LAN stays blocked and recovers when permission is granted")
     func refreshNowNeverFlashesOKDuringLocalNetworkBlock() async throws {
         enum UDPMode: Sendable {

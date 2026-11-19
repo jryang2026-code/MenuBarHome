@@ -34,7 +34,7 @@ import { controlTargetRejectionMessage } from "../core/capabilityReferenceVerdic
 import { haConnectionScope, resolveDisabledHaDeviceByEntity } from "../core/miAccountControl.js";
 import { waitForCameraFrameGap } from "./dom.js";
 import { writeSettingsForStorage } from "./settings.js";
-import { hasPendingUrlConfirmation } from "./speechGuard.js";
+import { hasPendingUrlConfirmation, rejectIfControlBlockedWhileLocked } from "./speechGuard.js";
 import { invokeTauriVoid } from "./transport.js";
 import { tr3 } from "./undoTracker.js";
 
@@ -290,7 +290,10 @@ export class CameraLiveController {
     };
   }
 
-  public openCameraLiveView(deviceId: string): void {
+  public openCameraLiveView(
+    deviceId: string,
+    options?: { readonly alreadyCountedLockBlock?: boolean },
+  ): void {
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev) {
       const state = resolveHostMiSelectionState(this.host);
@@ -324,8 +327,17 @@ export class CameraLiveController {
       this.clearCameraKeepAlive();
       this.syncModalEscapeListener();
       invokeTauriVoid("set_pin_popover", { pin: true });
-      // A power-on while hidden skips the reconnect, so this is the first chance to start it.
-      if (dev.kind.isOn && !this.liveCameraImgEl && !this.liveCameraRawMediaEl && !this.liveCameraLoading && !this.liveCameraError) {
+      if (options?.alreadyCountedLockBlock) {
+        this.liveCameraLoading = false;
+        this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+      } else if (
+        dev.kind.isOn &&
+        !this.liveCameraImgEl &&
+        !this.liveCameraRawMediaEl &&
+        !this.liveCameraLoading &&
+        !this.liveCameraError
+      ) {
+        // A power-on while hidden skips the reconnect, so this is the first chance to start it.
         this.reconnectCameraLiveView();
       }
       this.host.render();
@@ -353,11 +365,25 @@ export class CameraLiveController {
       : this.resolveHaCameraStreamUrl(dev);
     this.liveCameraLoading = false;
     invokeTauriVoid("set_pin_popover", { pin: true });
-    if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
+    if (options?.alreadyCountedLockBlock) {
+      this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+    } else if (dev.kind.isOn && this.liveCameraStreamURL && window.__TAURI_INTERNALS__?.invoke) {
       this.liveCameraLoading = true;
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
+    } else if (!dev.kind.isOn && this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
+      void (async () => {
+        if (this.activeLiveCameraId !== dev.id) return;
+        await rejectIfControlBlockedWhileLocked(this.host, {
+          beforeRender: () => {
+            if (this.activeLiveCameraId === dev.id) {
+              this.liveCameraLoading = false;
+              this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+            }
+          },
+        });
+      })();
     }
     this.host.render();
   }
@@ -1170,6 +1196,21 @@ export class CameraLiveController {
       return true;
     };
     try {
+      if (this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
+        if (
+          await rejectIfControlBlockedWhileLocked(this.host, {
+            beforeRender: () => {
+              if (!stale()) {
+                this.liveCameraLoading = false;
+                this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+              }
+            },
+          })
+        ) {
+          return;
+        }
+        if (stale()) return;
+      }
       const pendingRelease = this.pendingCameraReleases.get(dev.id);
       if (pendingRelease) {
         await pendingRelease;

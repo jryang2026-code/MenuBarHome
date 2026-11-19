@@ -142,11 +142,20 @@ public final class HomeStore {
         return total > 0 ? total : nil
     }
     public internal(set) var devices: [SmartDevice] = [] {
-        didSet { scheduleRaycastSnapshotExport() }
+        didSet {
+            syncIndexedDevices(from: devices)
+            scheduleRaycastSnapshotExport()
+        }
     }
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
     /// while an optimistic write is locked.
-    public internal(set) var deviceFacets: [String: [FacetControl]] = [:]
+    public internal(set) var deviceFacets: [String: [FacetControl]] = [:] {
+        didSet {
+            if !isApplyingProviderSnapshot, deviceFacets != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
     public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
@@ -559,6 +568,7 @@ public final class HomeStore {
 
     public var serverURLString: String {
         didSet {
+            migrateHomeAssistantScope(from: oldValue)
             userDefaults.set(serverURLString, forKey: "ha_server_url")
             syncHistoryConnectionScopes()
         }
@@ -572,10 +582,20 @@ public final class HomeStore {
         }
     }
 
-    public internal(set) var miSessionMaskedUserId: String?
+    public internal(set) var miSessionMaskedUserId: String? {
+        didSet { syncInMemoryConfiguredCapabilities() }
+    }
     /// Every signed-in Mi account, primary (first) first. The panel groups by account when there is
     /// more than one, and adding an account never replaces the ones already signed in.
-    public internal(set) var miAccounts: [MiAccount] = []
+    public internal(set) var miAccounts: [MiAccount] = [] {
+        didSet {
+            syncInMemoryConfiguredCapabilities()
+            if !miAccounts.isEmpty {
+                miSessionExpiresAt = enabledMiAccounts.compactMap(\.session.expiresAt).min()
+            }
+            miAccountStatuses = miAccountStatuses.filter { id, _ in isMiAccountEnabled(id) }
+        }
+    }
     /// Per-account connection state reported by `MiAccountsProvider` so Settings can flag an
     /// expired/disconnected account even while another account keeps `connectionStatus == .connected`.
     public internal(set) var miAccountStatuses: [String: ConnectionStatus] = [:]
@@ -590,11 +610,16 @@ public final class HomeStore {
     var miSessionExpiryRevision: UInt64 = 0
     var miSessionExpiryTimerTask: Task<Void, Never>?
     var miSessionScopeIdentifier: String? {
-        didSet { syncHistoryConnectionScopes() }
+        didSet {
+            syncInMemoryConfiguredCapabilities()
+            syncHistoryConnectionScopes()
+        }
     }
 
     /// Whether an HA token is saved. The chosen `homeBackend` no longer implies the only live source.
-    public internal(set) var hasHASource: Bool = false
+    public internal(set) var hasHASource: Bool = false {
+        didSet { syncInMemoryConfiguredCapabilities() }
+    }
     public var hasMiSource: Bool { miSessionMaskedUserId != nil }
     public var isDualSourceActive: Bool {
         homeBackend != .demo && hasHASource && hasMiSource
@@ -605,9 +630,21 @@ public final class HomeStore {
         return .homeAssistant
     }
     /// Which provider currently drives each merged card.
-    public internal(set) var deviceBackends: [String: HomeBackend] = [:]
+    public internal(set) var deviceBackends: [String: HomeBackend] = [:] {
+        didSet {
+            if !isApplyingProviderSnapshot, deviceBackends != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     /// Cards that exist in both sources; only these offer a source pin (#111).
-    public internal(set) var pairedDeviceIDs: Set<String> = []
+    public internal(set) var pairedDeviceIDs: Set<String> = [] {
+        didSet {
+            if !isApplyingProviderSnapshot, pairedDeviceIDs != oldValue {
+                syncIndexedDevices(from: devices)
+            }
+        }
+    }
     /// Per-source state from the latest merged snapshot; drives the dual-source footer summary (#111).
     public internal(set) var sourceStatuses: [HomeBackend: ConnectionStatus] = [:]
     /// Explicit per-card source choices, keyed by canonical card id (#111).
@@ -850,6 +887,7 @@ public final class HomeStore {
         }
     }
     var activeMiProviderAccounts: [MiAccount] = []
+    @ObservationIgnored var miAccountsConfigEpoch: Int = 0
     static let autoHADiscoveryCooldown: Duration = .seconds(300)
     var lastAutoHADiscoveryAt: ContinuousClock.Instant?
     var isPerformingResumeRefresh = false
@@ -1022,6 +1060,29 @@ public final class HomeStore {
     var lastManuallyUsedLightId: String?
     /// A legacy 主卧/阳台 menu-bar mode was migrated; pick the first temperature sensor when readings arrive.
     var pendingLegacyMenuBarTargetMigration = false
+    public internal(set) var capabilitySelection = CapabilitySelection(
+        enabledConnections: [],
+        enabledConnectionScopes: [],
+        enabledFeatures: Set(FeatureID.allCases),
+        enabledCategories: Set(DeviceCategoryID.allCases)
+    )
+    public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
+    public internal(set) var capabilityGeneration: Int = 0
+    public var onMiAccountDisabled: (@MainActor (String, Set<String>) -> Void)?
+    public var onAutomationRulesChanged: (@MainActor () -> Void)?
+    @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
+    @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
+    @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
+    @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
+    @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]
+    /// Timers paused by an account/connection disable. Observed so the assistant bar can list them;
+    /// they stay cancellable while paused.
+    public internal(set) var pausedScheduledCommands: [PausedScheduledCommand] = []
+    @ObservationIgnored var pausedQuickActionIDs: Set<String> = []
+    /// Scopes each paused quick action lost, so its resume decision can be per-item instead of
+    /// waiting for every account.
+    @ObservationIgnored var pausedQuickActionScopes: [String: [String]] = [:]
+    @ObservationIgnored var pendingRevalidationScopes: Set<String> = []
 
     public init(
         provider: (any HomeProvider)? = nil,
@@ -1029,11 +1090,13 @@ public final class HomeStore {
         defaultsSuiteName: String? = nil,
         updater: AppUpdater? = nil,
         credentialVault: CredentialVault? = nil,
-        topologyCache: MiTopologyCache? = nil
+        topologyCache: MiTopologyCache? = nil,
+        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
+        self.miAccountsProviderFactory = miAccountsProviderFactory
         self.topologyCache = topologyCache ?? (ud === UserDefaults.standard ? .shared : nil)
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
@@ -1173,6 +1236,45 @@ public final class HomeStore {
         self.hiddenDeviceIds = HomePreferences.hiddenDeviceIds.load(from: ud)
         self.allOffOverrides = HomePreferences.allOffOverrides.load(from: ud)
 
+        let initialHasHASource = !initialHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var initialScopes = initialAccounts.map(\.id)
+        if initialHasHASource {
+            initialScopes.append("ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(savedURL))")
+        }
+        let hasLegacySettings = ud.bool(forKey: "has_completed_onboarding")
+            || ud.object(forKey: "home_backend") != nil
+            || ud.object(forKey: "ha_server_url") != nil
+            || ud.object(forKey: "mi_cloud_region") != nil
+        let hasLocalData = !DevicePreferenceIndex.referencedIDs(defaults: ud).isEmpty
+            || ud.object(forKey: ScheduledCommand.storageKey) != nil
+            || ud.object(forKey: AutomationRuleStore.storageKey) != nil
+        let checkMiVault = credentialVault != nil || (!isTestEnvironment && ud === UserDefaults.standard)
+        let initialVoiceInput = HomePreferences.enableVoiceInput.load(from: ud)
+        let initialGrokBall = HomePreferences.enableGrokBall.load(from: ud)
+        let capResolution = CapabilitySelectionStore.resolveAtLaunch(
+            defaults: ud,
+            vault: credentialVault,
+            configuredScopes: initialScopes,
+            checkMiVault: checkMiVault,
+            checkHATokenVault: needsInitialHAToken,
+            hasLegacySettingsOrOnboarding: hasLegacySettings,
+            hasPersistedLocalData: hasLocalData,
+            legacyFeatureFlags: [.voiceInput: initialVoiceInput, .grokball: initialGrokBall]
+        )
+        self.capabilitySelection = capResolution.selection
+        self.capabilityResolutionMode = capResolution.mode
+        // Bookkeeping is loaded whenever the envelope is readable, including `uncertainFallback`
+        // caused by an unavailable credential slot: dropping the explicit disables there would
+        // re-enable an account the user turned off as soon as `miAccounts` loads (H4).
+        self.explicitlyDisabledConnections = CapabilitySelectionStore.explicitlyDisabledConnections(defaults: ud)
+        self.explicitlyDisabledScopes = CapabilitySelectionStore.explicitlyDisabledScopes(defaults: ud)
+        let initialEnabledAccounts = initialAccounts.filter {
+            capResolution.selection.enabledConnections.contains(.xiaomiCloud)
+                && capResolution.selection.enabledConnectionScopes.contains($0.id)
+        }
+        self.miSessionExpiresAt = initialEnabledAccounts.compactMap(\.session.expiresAt).min()
+        self.miSessionScopeIdentifier = initialEnabledAccounts.first?.session.historyScopeIdentifier
+
         let initialProvider: any HomeProvider
         if let provider {
             initialProvider = provider
@@ -1187,6 +1289,7 @@ public final class HomeStore {
             initialProvider = DemoHomeProvider()
         }
         self.provider = initialProvider
+        loadPersistedCapabilityState()
         if provider == nil, dualSource == nil, initialBackend != .demo {
             self.provider = makeLiveProvider()
         }
@@ -1222,12 +1325,16 @@ public final class HomeStore {
     }
 
     /// Re-reads the stored accounts (a login, a removal or a sign-out changed them) and rebuilds the
-    /// provider around the current list.
+    /// provider around the enabled list.
     func makeMiAccountsProvider() -> MiAccountsProvider {
         miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
-        activeMiProviderAccounts = miAccounts
+        let enabled = enabledMiAccounts
+        activeMiProviderAccounts = enabled
+        if let factory = miAccountsProviderFactory {
+            return factory(enabled)
+        }
         return Self.makeMiAccountsProvider(
-            accounts: miAccounts,
+            accounts: enabled,
             defaults: userDefaults,
             topologyCache: topologyCache
         )
@@ -1442,6 +1549,7 @@ public final class HomeStore {
     @ObservationIgnored var debouncedResumeCoordinator: DebouncedResumeCoordinator?
     @ObservationIgnored var resumeSyncTask: Task<Void, Never>?
     @ObservationIgnored var isNetworkSatisfiedForResume: Bool = true
+    @ObservationIgnored var knownNetworkSatisfied: Bool?
     @ObservationIgnored var isResumeShutdown: Bool = false
     @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
     @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)

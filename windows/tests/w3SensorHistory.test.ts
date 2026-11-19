@@ -615,6 +615,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
       statusText: "已上锁",
     });
     app.devices = [...app.devices, luxDev, lockDev];
+    app.isLongTailExpanded = true;
     seedDemoSensorHistory(app.devices, { store: sharedSensorHistoryStore(), force: true });
     app.render();
 

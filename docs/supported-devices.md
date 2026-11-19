@@ -38,5 +38,5 @@ This page covers devices that reach the app through **Mi Home** (QR sign-in) or 
 
 ## My device is missing or looks wrong
 
-1. Open **Settings → Privacy & Diagnostics → Devices Not Shown in the Panel** and scan. It lists what was skipped and why (macOS).
+1. Open **Settings → About & Diagnostics → Devices Not Shown in the Panel** and scan. It lists what was skipped and why (macOS).
 2. If it is skipped or wrong, [file a "device not supported" issue](https://github.com/jryang2026-code/MenuBarHome/issues/new?template=unsupported_device.yml). Give the model name; never post your device id or token.

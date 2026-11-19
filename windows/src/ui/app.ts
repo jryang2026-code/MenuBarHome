@@ -53,11 +53,9 @@ import {
   type PanelPlacement,
   type TileSize,
   PANEL_HEIGHTS,
-  applyOrder,
   chosenSize,
   isDevicePinned,
   moveInOrder,
-  pageSections,
   parsePanelPlacement,
   resolveAppearance,
   resolvedSize,
@@ -147,6 +145,15 @@ import {
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { focusPanelOnActivate } from "./panelKeyboard.js";
 import { PanelRenderPipeline, prefersReducedMotion, syncDocumentLanguage } from "./reconciler.js";
+import {
+  buildPanelDeviceGridModel,
+  markPanelSessionInteraction,
+  renderLongTailBarHtml,
+  renderOfflineDrawerHtml,
+  renderRoomBrowseMenuHtml,
+  resetPanelSplitTransientState,
+  type PanelPrioritySnapshot,
+} from "./panelSplitTiles.js";
 
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -246,6 +253,8 @@ export class MenuMijiaWindowsApp {
 
   public selectRoom(roomId: string | null, roomName?: string): void {
     this.savedGridScrollTop = 0;
+    this.isRoomBrowseMenuOpen = false;
+    this.isOfflineDrawerExpanded = false;
     this.listCut = roomId === null
       ? { kind: "all" }
       : { kind: "room", roomId, roomName: roomName ?? roomId };
@@ -253,6 +262,8 @@ export class MenuMijiaWindowsApp {
 
   public selectDeviceKind(tag: DeviceKindTag): void {
     this.savedGridScrollTop = 0;
+    this.isRoomBrowseMenuOpen = false;
+    this.isOfflineDrawerExpanded = false;
     this.listCut = { kind: "deviceKind", tag };
   }
 
@@ -264,6 +275,11 @@ export class MenuMijiaWindowsApp {
   private readonly panelSearchIndex = new PanelSearchIndex();
   public readonly pipeline = new PanelRenderPipeline();
   public expandedDeviceId: string | null = null;
+  public isLongTailExpanded = false;
+  public isOfflineDrawerExpanded = false;
+  public isRoomBrowseMenuOpen = false;
+  public hasInteractedInPanelSession = false;
+  public prioritySnapshot: PanelPrioritySnapshot | null = null;
   public savedGridScrollTop = 0;
   public lastAppliedPanelHeightKey: string | null = null;
   /**
@@ -690,6 +706,7 @@ export class MenuMijiaWindowsApp {
   public selectHome(id: string | null): void {
     this.settings.selectedHomeId = id;
     this.isHomeMenuOpen = false;
+    resetPanelSplitTransientState(this);
     this.selectRoom(null);
     this.lastUndoAction = null;
     clearUndoHoverPause(this);
@@ -874,6 +891,9 @@ export class MenuMijiaWindowsApp {
       }
     }
     if (!isInsideScheduledTimerTick() && (await rejectIfControlBlockedWhileLocked(this))) return false;
+    if (!isInsideScheduledTimerTick()) {
+      markPanelSessionInteraction(this);
+    }
     return executeIntents(this, intents, replyText, sourceLabel, options);
   }
 
@@ -902,6 +922,7 @@ export class MenuMijiaWindowsApp {
       }
     }
     if (await rejectIfControlBlockedWhileLocked(this)) return;
+    markPanelSessionInteraction(this);
     return executeSingleCommand(this, device, command, summary, intent, readBackPower);
   }
 
@@ -1377,6 +1398,12 @@ export class MenuMijiaWindowsApp {
     ) {
       this.connectionDetailsOpen = false;
     }
+    if (
+      this.isRoomBrowseMenuOpen &&
+      (this.activeSheet !== "none" || this.isHomeMenuOpen || this.ctxMenu !== null || this.prompt !== null || this.isEditingLayout)
+    ) {
+      this.isRoomBrowseMenuOpen = false;
+    }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
   }
@@ -1454,11 +1481,9 @@ export class MenuMijiaWindowsApp {
       `;
     }
 
-    const isAll = this.selectedRoom === "全部";
-    const ordered = withAliases(this.layout, applyOrder(this.layout.order, this.presentationDevices));
-    const sections = pageSections(this.layout, ordered, isAll);
+    const gridModel = buildPanelDeviceGridModel(this);
     let index = 0;
-    return sections
+    const onlineHtml = gridModel.onlineSections
       .map((section) => {
         const collapsed = this.layout.collapsed.includes(scopedKey(this.pageKey, section.id));
         const hasActiveSubpage =
@@ -1481,6 +1506,31 @@ export class MenuMijiaWindowsApp {
         return `<section class="cc-group">${header}${body}</section>`;
       })
       .join("");
+
+    const longTailHtml = renderLongTailBarHtml(gridModel, this.isRoomBrowseMenuOpen, (v) => this.escapeHtml(v));
+    const offlineSpanMap = spans(gridModel.offlineDevices, (d) => this.tileSize(d));
+    const offlineHtml = renderOfflineDrawerHtml({
+      model: gridModel,
+      startIndex: index,
+      escapeHtml: (v) => this.escapeHtml(v),
+      renderTile: (dev, tileIndex) => this.renderDeviceTile(dev, offlineSpanMap.get(dev.id) ?? 6, tileIndex),
+    });
+
+    return `${onlineHtml}${longTailHtml}${offlineHtml}`;
+  }
+
+  public renderRoomBrowseMenu(): string {
+    if (
+      !this.isRoomBrowseMenuOpen ||
+      this.isEditingLayout ||
+      Boolean(normalizeSearch(this.panelSearch.query)) ||
+      this.devices.length === 0 ||
+      this.presentationDevices.length === 0
+    ) {
+      return "";
+    }
+    const gridModel = buildPanelDeviceGridModel(this);
+    return renderRoomBrowseMenuHtml(gridModel, this.isRoomBrowseMenuOpen, (v) => this.escapeHtml(v));
   }
 
   public renderDeviceTile(dev: SmartDevice, span: number, index: number): string {
@@ -1751,6 +1801,19 @@ export class MenuMijiaWindowsApp {
       clearOpenTimer();
       clearDismissTimer();
       this.pipeline.clearTransientState();
+      const hadPendingHighRisk = this.pendingHighRisk !== null;
+      const hadTransientSplit =
+        hadPendingHighRisk ||
+        this.isLongTailExpanded ||
+        this.isOfflineDrawerExpanded ||
+        this.isRoomBrowseMenuOpen ||
+        this.expandedDeviceId !== null;
+      this.clearPendingHighRisk({ syncPin: false });
+      resetPanelSplitTransientState(this);
+      if (hadTransientSplit) {
+        this.expandedDeviceId = null;
+        this.render();
+      }
       this.root.dataset.flyoutEdge = normalizeEdge(edge ?? this.root.dataset.flyoutEdge);
       this.root.classList.remove("is-parked", "is-opening");
       activeDismissSeq = seq;

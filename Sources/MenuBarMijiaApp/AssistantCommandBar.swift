@@ -640,6 +640,10 @@ struct AssistantResponseArea: View {
                 scheduledRow
             }
 
+            if !store.pausedScheduledCommands.isEmpty {
+                pausedScheduledRow
+            }
+
             if asksForTimerNotifications {
                 timerNotificationPromptRow
             }
@@ -649,6 +653,7 @@ struct AssistantResponseArea: View {
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
         .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
+        .animation(AppleMotion.snappySpring, value: store.pausedScheduledCommands)
         .animation(AppleMotion.snappySpring, value: asksForTimerNotifications)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         // The receipt is a glance, not a log: it folds away unless something still needs the user.
@@ -659,6 +664,7 @@ struct AssistantResponseArea: View {
                   case .done = store.assistantState,
                   store.pendingCloudConsent == nil,
                   store.scheduledCommands.isEmpty,
+                  store.pausedScheduledCommands.isEmpty,
                   !asksForTimerNotifications else { return }
             withAnimation(AppleMotion.snappySpring) { store.dismissAssistantBar() }
         }
@@ -772,6 +778,35 @@ struct AssistantResponseArea: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(Text(L10n.tr("取消这个定时", "Cancel this timer")))
                     .help(L10n.tr("取消这个定时", "Cancel this timer"))
+                }
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                .padding(.horizontal, 4)
+            }
+        }
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// Timers a disabled connection paused. They cannot fire while paused, so they are listed without
+    /// a countdown and stay cancellable instead of disappearing (M1).
+    private var pausedScheduledRow: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            ForEach(store.pausedScheduledCommands, id: \.command.id) { paused in
+                HStack(spacing: 5) {
+                    Image(systemName: "pause.circle")
+                        .foregroundStyle(DesignTokens.secondaryText)
+                    Text(L10n.format("已暂停 · %@", "Paused · %@", paused.command.reply))
+                        .foregroundStyle(.primary.opacity(0.85))
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button {
+                        store.cancelScheduledCommands(id: paused.command.id)
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("取消这个已暂停的定时", "Cancel this paused timer")))
+                    .help(L10n.tr("取消这个已暂停的定时", "Cancel this paused timer"))
                 }
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .padding(.horizontal, 4)

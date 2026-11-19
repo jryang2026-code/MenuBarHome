@@ -1,6 +1,7 @@
 import Foundation
+import KeychainTestSupport
 import Testing
-import MijiaCore
+@testable import MijiaCore
 @testable import MenuBarMijiaApp
 
 @MainActor
@@ -298,6 +299,108 @@ struct AppIntentExecutionTests {
             #expect(lowRiskReply == store.screenLockBlockedMessage)
             #expect(await provider.commandCount == 0)
         }
+    }
+
+    @Test("ToggleDeviceIntent returns capability-disabled reason instead of not-found when Xiaomi account is turned off")
+    func toggleDeviceIntentReportsDisabledXiaomiAccountInsteadOfNotFound() async throws {
+        let suite = "test.intent.mi.disabled.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        let cn = MiAccount(session: MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
+        ))
+        let de = MiAccount(session: MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
+        ))
+        MiSessionStore.saveAccounts([cn, de], defaults: defaults, vault: vault)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+
+        let provider = ControlledIntentProvider(autoComplete: true)
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite, credentialVault: vault)
+        let cnLamp = SmartDevice(
+            id: "cn-lamp", name: "客厅台灯", roomId: "\(cn.id)/living", roomName: "客厅",
+            model: "yeelink.light.lamp4", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:cn-lamp:2", isOn: true)),
+            accountId: cn.id, accountLabel: cn.maskedUserId
+        )
+        let dePlug = SmartDevice(
+            id: "de-plug", name: "书房插座", roomId: "\(de.id)/study", roomName: "书房",
+            model: "cuco.plug.v3", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "miot:de-plug:2", isOn: false)),
+            accountId: de.id, accountLabel: de.maskedUserId
+        )
+        await provider.sendSnapshot(SynthesizedHome(devices: [cnLamp, dePlug]))
+        try await store.waitForTestSnapshot()
+
+        let entityBeforeDisable = DeviceEntity(device: cnLamp)
+        _ = store.setMiAccountEnabled(
+            false, id: cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
+        )
+
+        let intent = ToggleDeviceIntent()
+        intent.device = entityBeforeDisable
+
+        let zhReply = try await L10n.$overrideLanguage.withValue(.zhHans) {
+            try await intent.execute(in: store)
+        }
+        #expect(zhReply == "该米家账号已停用")
+
+        let enReply = try await L10n.$overrideLanguage.withValue(.en) {
+            try await intent.execute(in: store)
+        }
+        #expect(enReply == "This Xiaomi account is turned off")
+        #expect(await provider.commandCount == 0)
+
+        // Genuinely nonexistent device still reports not-found.
+        let missingIntent = ToggleDeviceIntent()
+        missingIntent.device = DeviceEntity(device: SmartDevice(
+            id: "never-existed", name: "幽灵灯", roomId: "r", roomName: "客厅",
+            model: "test.light", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.ghost", isOn: false))
+        ))
+        let missingReply = try await L10n.$overrideLanguage.withValue(.zhHans) {
+            try await missingIntent.execute(in: store)
+        }
+        #expect(missingReply == "找不到可控设备「幽灵灯」")
+    }
+
+    @Test("UnsupportedDeviceScanner scopes ScanContext and scan sessions strictly to enabledMiAccounts")
+    func unsupportedDeviceScannerUsesOnlyEnabledMiAccounts() async throws {
+        let suite = "test.scanner.enabled.mi.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        let cn = MiAccount(session: MiSession(
+            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
+        ))
+        let de = MiAccount(session: MiSession(
+            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
+        ))
+        MiSessionStore.saveAccounts([cn, de], defaults: defaults, vault: vault)
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let bothEnabledContext = UnsupportedDeviceScanner.ScanContext(store: store)
+        #expect(bothEnabledContext.miAccountIds == [cn.id, de.id])
+
+        _ = store.setMiAccountEnabled(false, id: cn.id)
+        let oneDisabledContext = UnsupportedDeviceScanner.ScanContext(store: store)
+        #expect(oneDisabledContext.miAccountIds == [de.id])
+        #expect(oneDisabledContext != bothEnabledContext)
+
+        _ = store.setMiAccountEnabled(false, id: de.id)
+        let allDisabledContext = UnsupportedDeviceScanner.ScanContext(store: store)
+        #expect(allDisabledContext.miAccountIds.isEmpty)
+
+        // With all accounts disabled, `scan(store:)` performs zero cloud requests and completes cleanly with no error.
+        let scanner = UnsupportedDeviceScanner.shared
+        scanner.reset()
+        defer { scanner.reset() }
+        await scanner.scan(store: store)
+        #expect(scanner.devices.isEmpty)
+        #expect(scanner.errorMessage == nil)
+        #expect(scanner.lastScannedAt != nil)
     }
 }
 

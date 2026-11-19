@@ -195,6 +195,9 @@ struct ToggleDeviceIntent: AppIntent {
     func execute(in store: HomeStore) async throws -> String {
         try await store.waitForInitialSnapshot()
         if store.isControlBlockedByScreenLock { return store.screenLockBlockedMessage }
+        if let rejection = store.capabilityControlRejectionMessage(forDeviceId: device.id) {
+            return rejection
+        }
         guard let current = store.controllableDevices.first(where: { $0.id == device.id }) else {
             return L10n.format(
                 "找不到可控设备「%@」",

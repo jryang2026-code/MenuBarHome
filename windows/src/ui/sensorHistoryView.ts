@@ -964,11 +964,11 @@ export function bindSensorHistoryEvents(host: MenuMijiaWindowsApp): void {
     .querySelectorAll<HTMLElement>("[data-sensor-card]:not([data-exit-ghost])")
     .forEach((card) => {
       if (card.closest("[data-exit-ghost]")) return;
-      card.addEventListener("click", (e) => {
+      const toggleSensorExpand = (target: EventTarget | null, restoreFocus: boolean): void => {
         if (host.isEditingLayout || host.suppressNextClick || host.valuesAreStale) return;
         if (
           closestHtmlTarget(
-            e.target,
+            target,
             ".cc-resize-handle, .cc-pin-star, [data-sensor-history-drawer], [data-toggle-device], [data-expand-device]",
           )
         ) {
@@ -978,12 +978,28 @@ export function bindSensorHistoryEvents(host: MenuMijiaWindowsApp): void {
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
         const facets = host.deviceFacets[id] ?? [];
-        if (!dev || !hasPlottableSensorMetrics(dev, facets)) return;
-        if (closestHtmlTarget(e.target, "[data-body-device]") && hasDetailDrawer(dev, facets)) return;
+        if (!dev || !dev.isOnline || !hasPlottableSensorMetrics(dev, facets)) return;
+        if (closestHtmlTarget(target, "[data-body-device]") && hasDetailDrawer(dev, facets)) return;
         host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
         ui.hoveredSlotByDevice.delete(id);
         syncSensorHistoryHost(host);
         host.render();
+        if (restoreFocus) {
+          const updated = Array.from(
+            host.root.querySelectorAll<HTMLElement>("[data-sensor-card]:not([data-exit-ghost])"),
+          ).find((node) => node.dataset.sensorCard === id);
+          updated?.focus({ preventScroll: true });
+        }
+      };
+      card.addEventListener("click", (e) => {
+        toggleSensorExpand(e.target, false);
+      });
+      card.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        if (e.target !== card) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSensorExpand(card, true);
       });
     });
 

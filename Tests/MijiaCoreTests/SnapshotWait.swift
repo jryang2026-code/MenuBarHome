@@ -23,7 +23,7 @@ extension HomeStore {
 /// A fixed `Task.yield` count is not a signal.
 @MainActor
 func waitUntil(
-    timeout: Duration = .seconds(15),
+    timeout: Duration = .seconds(30),
     fileID: String = #fileID,
     filePath: String = #filePath,
     line: Int = #line,

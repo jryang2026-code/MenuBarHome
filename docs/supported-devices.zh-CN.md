@@ -38,5 +38,5 @@
 
 ## 我的设备没出现，或者显示不对
 
-1. 打开 **设置 → 隐私与诊断 → 未能显示在面板的设备** 扫描一次，它会列出被跳过的设备和原因（macOS）。
+1. 打开 **设置 → 关于与诊断 → 未能显示在面板的设备** 扫描一次，它会列出被跳过的设备和原因（macOS）。
 2. 如果被跳过或显示不对，请[提一个「设备不支持」issue](https://github.com/jryang2026-code/MenuBarHome/issues/new?template=unsupported_device.yml)。请提供型号，不要贴设备 id 或令牌。

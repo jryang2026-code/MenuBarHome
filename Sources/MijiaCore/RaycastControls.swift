@@ -155,6 +155,14 @@ extension HomeStore {
     }
 
     private func raycastControllable(_ device: SmartDevice) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
+        if device.accountId != nil || indexedDevicesById[device.id]?.connection != nil {
+            let gate = evaluateDeviceControlGate(deviceId: device.id)
+            if !gate.allowed {
+                let msg = gate.rejectionReason?.userMessage ?? L10n.tr("该连接已停用", "This connection is turned off")
+                showToast(msg, isError: true)
+                return (nil, (true, msg, true))
+            }
+        }
         let previousToastId = toastNotice?.id
         guard !rejectControlWhileLocked() else {
             let msg = (toastNotice?.id != previousToastId ? toastNotice?.message : nil)
@@ -171,7 +179,10 @@ extension HomeStore {
     /// online checks as a natural-language preset.
     private func raycastControllable(deviceId: String) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
         guard let device = devices.first(where: { $0.id == deviceId }) else {
-            return (nil, (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true))
+            let gate = evaluateDeviceControlGate(deviceId: deviceId)
+            let msg = gate.rejectionReason?.userMessage ?? ControlTargetRejectionReason.deviceNotFound.userMessage
+            showToast(msg, isError: true)
+            return (nil, (true, msg, true))
         }
         return raycastControllable(device)
     }

@@ -80,7 +80,7 @@ public enum HomePreferences {
     /// Off by default: privacy and interruption (#308).
     public static let doorbellAutoPopup = HomePreference.flag("doorbell_auto_popup", default: false)
     public static let doorbellChime = HomePreference.flag("doorbell_chime", default: false)
-    public static let doorbellPopupSeconds = HomePreference.integer("doorbell_popup_seconds", default: 60)
+    public static let doorbellPopupSeconds = HomePreference.integer("doorbell_popup_seconds", default: HomeStore.defaultDoorbellPopupSeconds)
     /// On by default (#143): only external paths can still fire while the screen is locked.
     public static let blockControlWhileLocked = HomePreference.flag("block_control_while_locked", default: true)
     public static let sensorAlertsOnlyWhenAway = HomePreference.flag("safety_alert_only_when_away_v1", default: false)

@@ -84,7 +84,13 @@ interface HostRuntimeGuardState {
   bridgeTokenWarningShown: boolean;
 }
 
-const runtimeStateByHost = new WeakMap<MenuMijiaWindowsApp, HostRuntimeGuardState>();
+export interface LockGuardHost {
+  readonly settings: { readonly blockControlWhileLocked?: boolean };
+  replyBanner: { text: string; source: string; isError?: boolean } | null;
+  render(): void;
+}
+
+const runtimeStateByHost = new WeakMap<object, HostRuntimeGuardState>();
 const undoKindSnapshots = new WeakMap<UndoAction, ReadonlyMap<string, SmartDevice["kind"]>>();
 const updateProgressBySettings = new WeakMap<PersistedSettings, UpdateDownloadProgress>();
 
@@ -113,7 +119,7 @@ export function clearUpdateProgress(host: MenuMijiaWindowsApp): void {
   updateProgressBySettings.delete(host.settings);
 }
 
-function hostState(host: MenuMijiaWindowsApp): HostRuntimeGuardState {
+function hostState(host: object): HostRuntimeGuardState {
   let state = runtimeStateByHost.get(host);
   if (!state) {
     state = {
@@ -763,12 +769,19 @@ export async function executeBuiltInQuickAction(
   host.render();
 }
 
-export function isControlBlockedWhileLocked(host: MenuMijiaWindowsApp): Promise<boolean> {
+export function isControlBlockedWhileLocked(
+  host: Pick<LockGuardHost, "settings">,
+): Promise<boolean> {
   return isWorkstationLockBlockingControl(host);
 }
 
+export function getLockBlockCount(host: object): number {
+  return hostState(host).lockBlockCount;
+}
+
 export async function rejectIfControlBlockedWhileLocked(
-  host: MenuMijiaWindowsApp,
+  host: LockGuardHost,
+  options?: { readonly beforeRender?: () => void },
 ): Promise<boolean> {
   if (!(await isControlBlockedWhileLocked(host))) return false;
   hostState(host).lockBlockCount += 1;
@@ -777,6 +790,7 @@ export async function rejectIfControlBlockedWhileLocked(
     source: t("锁屏保护"),
     isError: true,
   };
+  options?.beforeRender?.();
   host.render();
   return true;
 }

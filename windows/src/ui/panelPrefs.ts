@@ -541,7 +541,7 @@ export function spans(
   return out;
 }
 
-interface PageSection {
+export interface PageSection {
   readonly id: string;
   readonly title: string | null;
   readonly devices: SmartDevice[];

@@ -55,6 +55,7 @@ import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsSt
 import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
+import { resetPanelSplitTransientState } from "./panelSplitTiles.js";
 import {
   isUndoHoverPaused,
   recordUndoKindSnapshots,
@@ -334,6 +335,7 @@ export function syncSingleOwnerLifecycle(
   clearCenterActivities(center);
   // A source/home switch invalidates the footer dialog's platform list, so it closes with the rest.
   host.connectionDetailsOpen = false;
+  resetPanelSplitTransientState(host);
   return true;
 }
 
@@ -372,6 +374,7 @@ export function clearHostActivitiesOnSignOut(host: unknown): void {
   clearCenterActivities(center);
   // The footer connection dialog is panel state too: a sign-out must not leave it mounted.
   host.connectionDetailsOpen = false;
+  resetPanelSplitTransientState(host);
 }
 
 /**
@@ -393,8 +396,13 @@ export function releaseActivityWindowLifecycle(host: unknown): void {
 export function collapseActivityStackOnHide(host: unknown): boolean {
   if (!isFullPanelHost(host)) return false;
   const center = (host as HostWithActivity).activityCenter;
-  if (!center) return false;
-  const wasOpen = center.isExpanded || center.ordinaryExpanded || host.connectionDetailsOpen;
+  const splitWasOpen = Boolean(
+    host.isLongTailExpanded || host.isOfflineDrawerExpanded || host.isRoomBrowseMenuOpen,
+  );
+  resetPanelSplitTransientState(host);
+  if (!center) return splitWasOpen;
+  const wasOpen =
+    center.isExpanded || center.ordinaryExpanded || host.connectionDetailsOpen || splitWasOpen;
   center.pendingHighRiskUndoRunId = null;
   center.isExpanded = false;
   center.ordinaryExpanded = false;

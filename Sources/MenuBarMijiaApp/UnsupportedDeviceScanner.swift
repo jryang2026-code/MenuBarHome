@@ -49,9 +49,9 @@ final class UnsupportedDeviceScanner {
         @MainActor
         init(store: HomeStore) {
             self.backend = store.homeBackend
-            self.hasHASource = store.hasHASource
+            self.hasHASource = store.hasEnabledHASource
             self.normalizedServerURL = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
-            self.miAccountIds = store.miAccounts.map(\.id)
+            self.miAccountIds = store.enabledMiAccounts.map(\.id)
         }
     }
 
@@ -76,13 +76,31 @@ final class UnsupportedDeviceScanner {
     }
 
     /// Drops cached results when the active account, backend, or Home Assistant URL changed while
-    /// the Privacy tab was not mounted.
+    /// the About & Diagnostics tab was not mounted.
     func invalidateIfContextChanged(for store: HomeStore) {
         guard let recorded = lastScanContext else { return }
         if recorded != ScanContext(store: store) {
             reset()
         }
     }
+
+    #if DEBUG
+    /// Seeds scan findings for snapshot and unit tests while recording `store`'s context so
+    /// `AboutSettingsTab.onAppear` keeps the seeded list until the context actually changes.
+    func seedForTesting(
+        devices: [UnsupportedDevice],
+        scannedAt: Date? = nil,
+        errorMessage: String? = nil,
+        for store: HomeStore
+    ) {
+        scanGeneration &+= 1
+        self.devices = devices
+        self.errorMessage = errorMessage
+        self.lastScannedAt = scannedAt
+        self.lastScanContext = ScanContext(store: store)
+        self.isScanning = false
+    }
+    #endif
 
     func scan(store: HomeStore) async {
         invalidateIfContextChanged(for: store)
@@ -110,10 +128,9 @@ final class UnsupportedDeviceScanner {
         var errors: [String] = []
 
         if active.contains(.xiaomiCloud) {
-            // Every signed-in account, not just the first: a second account's devices are merged into
-            // the panel too, so its skipped devices belong in this list. A device shared between two
-            // accounts appears once.
-            let sessions: [MiSession?] = store.miAccounts.isEmpty ? [nil] : store.miAccounts.map(\.session)
+            // Every enabled signed-in account, not disabled ones: disabled accounts must not send
+            // Xiaomi cloud scan requests or pollute cached scan results.
+            let sessions: [MiSession?] = store.miAccounts.isEmpty ? [nil] : store.enabledMiAccounts.map(\.session)
             var seen = Set<String>()
             for session in sessions {
                 do {

@@ -1,5 +1,5 @@
 import Testing
-import MijiaCore
+@testable import MijiaCore
 @testable import MenuBarMijiaApp
 
 @MainActor
@@ -52,6 +52,37 @@ struct MiAccountAutoLoginTests {
             let allMany = MiAccountSection.LogoutConfirmation.all
             #expect(allMany.title(accountCount: 2) == "Sign out of all Xiaomi Home accounts?")
             #expect(allMany.confirmButtonTitle(accountCount: 2) == "Sign Out of All")
+        }
+    }
+
+    @Test("Disable connection confirmation previews affected items using 连接 copy without technical jargon")
+    func disableConnectionConfirmationCopy() {
+        let account = MiAccount(session: MiSession(
+            userId: "123456789", cUserId: "c1", ssecurity: "s1", serviceToken: "t1", region: "cn"
+        ))
+        let items = [
+            AffectedReferenceItem(
+                kind: .waitingTimer, id: "t1", name: "23:00 关客厅灯",
+                connectionScopes: [account.id], affectedTargetIds: ["d1"], affectedCapabilities: [.connection(.xiaomiCloud)]
+            ),
+            AffectedReferenceItem(
+                kind: .automationRule, id: "r1", name: "锁屏 · 关灯",
+                connectionScopes: [account.id], affectedTargetIds: ["d1"], affectedCapabilities: [.connection(.xiaomiCloud)]
+            ),
+        ]
+        let confirmation = MiAccountSection.DisableConnectionConfirmation(
+            account: account, itemsToPause: items, generation: 1
+        )
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(confirmation.title == "停用米家账号连接？")
+            #expect(confirmation.confirmButtonTitle == "暂停并停用连接")
+            #expect(confirmation.messageText.contains("连接"))
+            #expect(confirmation.messageText.contains("23:00 关客厅灯"))
+            #expect(confirmation.messageText.contains("锁屏 · 关灯"))
+            for technicalWord in ["backend", "provider", "scope", "slot", "后端", "作用域", "槽位"] {
+                #expect(!confirmation.messageText.localizedCaseInsensitiveContains(technicalWord))
+                #expect(!confirmation.title.localizedCaseInsensitiveContains(technicalWord))
+            }
         }
     }
 }
