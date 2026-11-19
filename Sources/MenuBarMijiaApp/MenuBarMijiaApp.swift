@@ -53,10 +53,10 @@ enum ManualControlConfirmationPresenter {
         in store: HomeStore
     ) -> Bool {
         // #104: the third button both marks the wall switch as an ordinary light (persisted) and
-        // executes the action in the same tap, so answering the dialog never costs the toggle.
+        // executes the action in the same tap, provided the live post-modal device still matches
+        // its modal context and remains an eligible wall switch.
         if answer == .alertThirdButtonReturn, let mark = prompt.markAsLight {
-            store.markSwitchAsLight(mark.deviceId)
-            return true
+            return store.confirmSwitchAsLightFromModal(mark.deviceId)
         }
         return answer == .alertSecondButtonReturn
     }

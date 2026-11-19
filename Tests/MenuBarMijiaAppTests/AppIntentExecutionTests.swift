@@ -265,6 +265,40 @@ struct AppIntentExecutionTests {
         #expect(store.lastRaycastCommandFeedback?.requestId == "ws-scene-1")
         #expect(store.lastRaycastCommandFeedback?.isError == false)
     }
+
+    @Test("Shortcuts AskAssistantIntent reports screen lock message instead of unexecuted plan reply")
+    func askAssistantIntentReportsScreenLockInsteadOfOriginalPlan() async throws {
+        try await L10n.$overrideLanguage.withValue(.zhHans) {
+            let suite = "test.intent.screenlock.\(UUID().uuidString)"
+            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let heater = SmartDevice(
+                id: "bath_heater", name: "浴室取暖器插座", roomId: "bath", roomName: "卫生间",
+                model: "chuangmi.plug.212a01", isOnline: true,
+                kind: .plug(PlugSpec(switchEntityId: "switch.bath_heater", isOn: false))
+            )
+            let provider = ControlledIntentProvider(autoComplete: true)
+            let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+            await provider.sendSnapshot(SynthesizedHome(devices: [heater, Self.lamp]))
+            try await store.waitForTestSnapshot()
+
+            store.manualControlConfirmationHandler = { _ in
+                store.setScreenLocked(true)
+                return true
+            }
+
+            let hazardIntent = AskAssistantIntent()
+            hazardIntent.text = "打开浴室取暖器插座"
+            let hazardReply = try await hazardIntent.execute(in: store)
+            #expect(hazardReply == store.screenLockBlockedMessage)
+            #expect(await provider.commandCount == 0)
+
+            let lowRiskIntent = AskAssistantIntent()
+            lowRiskIntent.text = "打开Test lamp"
+            let lowRiskReply = try await lowRiskIntent.execute(in: store)
+            #expect(lowRiskReply == store.screenLockBlockedMessage)
+            #expect(await provider.commandCount == 0)
+        }
+    }
 }
 
 private actor ControlledIntentProvider: HomeProvider {
