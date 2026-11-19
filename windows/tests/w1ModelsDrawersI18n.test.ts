@@ -460,6 +460,7 @@ describe("devicePresentsAsActive extinguishes stale and offline highlights", () 
     const { app } = await mountHADevices(devices);
     assert.equal(element('[data-tile-id="light-live"]').classList.contains("is-active"), true);
     assert.equal(element('[data-tile-id="ac-live"]').classList.contains("is-active"), true);
+    element<HTMLButtonElement>("[data-offline-drawer-toggle]").click();
     assert.equal(
       element('[data-tile-id="plug-offline-cached-on"]').classList.contains("is-active"),
       false,

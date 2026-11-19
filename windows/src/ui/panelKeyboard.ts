@@ -288,12 +288,17 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       closeConnectionsAndDiagModal(host);
       return true;
     }
-    if (host.ctxMenu !== null || host.isHomeMenuOpen) {
+    if (host.ctxMenu !== null || host.isHomeMenuOpen || host.isRoomBrowseMenuOpen) {
+      const wasRoomBrowseOpen = host.isRoomBrowseMenuOpen && host.ctxMenu === null && !host.isHomeMenuOpen;
       event.preventDefault();
       host.ctxMenu = null;
       host.isHomeMenuOpen = false;
+      host.isRoomBrowseMenuOpen = false;
       invokeTauriVoid("set_pin_popover", { pin: shouldKeepPopoverPinned(host) });
       host.render();
+      if (wasRoomBrowseOpen) {
+        host.root.querySelector<HTMLButtonElement>("[data-browse-room-toggle]")?.focus();
+      }
       return true;
     }
     if (host.cameraLive.activeLiveCameraId !== null && !host.cameraLive.liveCameraHidden) {
@@ -370,6 +375,30 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       host.expandedDeviceId = null;
       host.render();
       return true;
+    }
+    if (!inInput && !host.panelSearch.query) {
+      if (host.isLongTailExpanded) {
+        const toggle = host.root.querySelector<HTMLButtonElement>("[data-long-tail-toggle]");
+        if (toggle) {
+          event.preventDefault();
+          host.isLongTailExpanded = false;
+          host.render();
+          host.root.querySelector<HTMLButtonElement>("[data-long-tail-toggle]")?.focus();
+          return true;
+        }
+        host.isLongTailExpanded = false;
+      }
+      if (host.isOfflineDrawerExpanded) {
+        const toggle = host.root.querySelector<HTMLButtonElement>("[data-offline-drawer-toggle]");
+        if (toggle) {
+          event.preventDefault();
+          host.isOfflineDrawerExpanded = false;
+          host.render();
+          host.root.querySelector<HTMLButtonElement>("[data-offline-drawer-toggle]")?.focus();
+          return true;
+        }
+        host.isOfflineDrawerExpanded = false;
+      }
     }
     if (host.panelSearch.query || inInput) {
       event.preventDefault();

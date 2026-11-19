@@ -31,7 +31,7 @@ import {
 import { waitForCameraFrameGap } from "./dom.js";
 import { writeSettingsForStorage } from "./settings.js";
 import { hasPendingUrlConfirmation } from "./speechGuard.js";
-import { invokeTauriVoid } from "./transport.js";
+import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
 import { tr3 } from "./undoTracker.js";
 
 export type CameraRotationDeg = 0 | 90 | 180 | 270;
@@ -331,6 +331,21 @@ export class CameraLiveController {
       void this.playCustomCameraUrl(dev.id, this.liveCameraStreamURL);
     } else if (dev.kind.isOn && !this.liveCameraStreamURL && this.resolveCameraSource(dev).backend === "xiaomiCloud") {
       void this.resolveCloudCameraStream(dev);
+    } else if (!dev.kind.isOn && this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
+      void (async () => {
+        if (await isWorkstationLockBlockingControl(this.host)) {
+          if (this.activeLiveCameraId === dev.id) {
+            this.liveCameraLoading = false;
+            this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+            (this.host as unknown as MenuMijiaWindowsApp).replyBanner = {
+              text: t("屏幕已锁定，已拦截设备控制指令"),
+              source: t("锁屏保护"),
+              isError: true,
+            };
+            this.host.render();
+          }
+        }
+      })();
     }
     this.host.render();
   }
@@ -1117,6 +1132,22 @@ export class CameraLiveController {
       return true;
     };
     try {
+      if (this.host.settings.blockControlWhileLocked && window.__TAURI_INTERNALS__?.invoke) {
+        if (await isWorkstationLockBlockingControl(this.host)) {
+          if (!stale()) {
+            this.liveCameraLoading = false;
+            this.liveCameraError = t("屏幕已锁定，已拦截设备控制指令");
+            (this.host as unknown as MenuMijiaWindowsApp).replyBanner = {
+              text: t("屏幕已锁定，已拦截设备控制指令"),
+              source: t("锁屏保护"),
+              isError: true,
+            };
+            this.host.render();
+          }
+          return;
+        }
+        if (stale()) return;
+      }
       const pendingRelease = this.pendingCameraReleases.get(dev.id);
       if (pendingRelease) {
         await pendingRelease;

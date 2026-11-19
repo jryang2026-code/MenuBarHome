@@ -429,7 +429,7 @@ describe("Wave 2 A4: Speaker dual-mode drawer UI & Xiaomi Cloud action dispatch"
     };
 
     const { app, actionCalls } = await mountSpeakerApp(
-      [{ ...ttsOnlySpeaker, isOnline: false }],
+      [{ ...ttsOnlySpeaker, isOnline: true }],
       {
         "xiaomi.wifispeaker.l17a": spec,
       },

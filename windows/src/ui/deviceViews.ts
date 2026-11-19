@@ -17,6 +17,20 @@ import type { PendingHighRiskConfirmation } from "./appTypes.js";
 import { resolveTilePresentation, type PanelTheme } from "./panelTheme.js";
 import { renderLiquidGlassSlider } from "./liquidGlassSlider.js";
 import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHistoryUiState } from "./sensorHistoryView.js";
+import {
+  deviceAdjustAriaLabel,
+  deviceAdjustTooltip,
+  resolveDeviceTileActionLayout,
+  type DeviceTileActionLayout,
+  type DeviceTilePrimaryAction,
+} from "./panelSplitTiles.js";
+
+export {
+  deviceAdjustAriaLabel,
+  resolveDeviceTileActionLayout,
+  type DeviceTileActionLayout,
+  type DeviceTilePrimaryAction,
+};
 
   export function renderSensorCard(
     dev: SmartDevice,
@@ -49,12 +63,13 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
     const room = selectedRoom === "全部" ? `<span class="cc-sensor-room">${escapeHtml(dev.roomName)}</span>` : "";
     const batteryLabel = k.battery !== null ? t("电量 {percent}%", { percent: k.battery }) : "";
     const sensorAria = `${t("{name}，温度 {temp}", { name, temp: k.temperature !== null ? formatTemperature(k.temperature, undefined, 1) : "--" })}${hum !== null ? t("，湿度 {humidity}%", { humidity: hum }) : ""}${k.battery !== null ? t("，电量 {percent}%", { percent: k.battery }) : ""}${dev.isOnline ? "" : t("，离线")}`;
-    const canExpand = hasPlottableSensorMetrics(dev, facets);
-    const sensorAttr = canExpand ? `data-sensor-card="${escapeHtml(dev.id)}" aria-expanded="${isExpanded}"` : "";
-    const caret = canExpand ? `<i class="cc-mini-caret ${isExpanded ? "is-open" : ""}" aria-hidden="true">${SF_ICONS.chevronDown}</i>` : "";
-    if (compact && !isExpanded) {
+    const canExpand = dev.isOnline && hasPlottableSensorMetrics(dev, facets);
+    const effectiveExpanded = canExpand && isExpanded;
+    const sensorAttr = canExpand ? `data-sensor-card="${escapeHtml(dev.id)}" aria-expanded="${effectiveExpanded}"` : "";
+    const caret = canExpand ? `<i class="cc-mini-caret ${effectiveExpanded ? "is-open" : ""}" aria-hidden="true">${SF_ICONS.chevronDown}</i>` : "";
+    if (compact && !effectiveExpanded) {
       return `
-        <div class="cc-tile cc-sensor is-compact ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+        <div class="cc-tile cc-sensor is-compact is-action-${canExpand ? "adjustOnly" : "readOnly"} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
           ${badge}
           <div class="cc-sensor-top">
             <span class="cc-sensor-name">${escapeHtml(name)}</span>
@@ -75,7 +90,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
         </div>`
       : "";
     return `
-      <div class="cc-tile cc-sensor ${spansFullRow ? "is-span-row" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
+      <div class="cc-tile cc-sensor is-action-${canExpand ? "adjustOnly" : "readOnly"} ${spansFullRow ? "is-span-row" : ""} ${effectiveExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${motion}" data-action-layout="${canExpand ? "adjustOnly" : "readOnly"}" ${sensorAttr} ${attrs} role="group" aria-label="${escapeHtml(sensorAria)}">
         ${badge}
         <div class="cc-sensor-wide">
           <div class="cc-sensor-info">
@@ -89,7 +104,7 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
           </div>
           ${ring}
         </div>
-        ${isExpanded && canExpand ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi)}</div></div>` : ""}
+        ${effectiveExpanded && canExpand ? `<div class="cc-expander-grid"><div class="cc-expander-clip">${renderSensorHistorySection(dev, facets, escapeHtml, sensorHistoryUi)}</div></div>` : ""}
       </div>`;
   }
 
@@ -136,9 +151,9 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
     const isWaiting = waitingDeviceIds.has(dev.id);
     const readout = deviceReadout(isWaiting, valuesAreStale);
     const running = devicePresentsAsActive(dev, readout === "possiblyStale") && k.hvacMode !== "off";
-    const powerWritable = k.powerWritable !== false;
-    const temperatureWritable = k.temperatureWritable !== false;
-    const canExpand = hasDetailDrawer(dev, facets);
+    const powerWritable = dev.isOnline && k.powerWritable !== false;
+    const temperatureWritable = dev.isOnline && k.temperatureWritable !== false;
+    const canExpand = dev.isOnline && hasDetailDrawer(dev, facets);
     const open = canExpand && (forceOpen || expandedDeviceId === dev.id);
     const id = escapeHtml(dev.id);
     const hasActiveHighRisk =
@@ -147,18 +162,20 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
       pendingHighRisk.expiresAtMs > Date.now();
     const isTwoTapArmed = hasActiveHighRisk && pendingHighRisk?.confirm === undefined;
     const modeLabel: Record<string, string> = { cool: t("制冷"), heat: t("制热"), dry: t("除湿"), fan_only: t("送风"), auto: t("自动") };
-    const status = readout === "waiting"
-      ? t("等待中")
-      : readout === "possiblyStale"
-        ? t("可能过期")
-        : running
-          ? [
-              modeLabel[k.hvacMode] ?? k.hvacMode,
-              k.currentTemperature !== null
-                ? t("室温 {temp}", { temp: formatTemperature(k.currentTemperature, undefined, 1) })
-                : "",
-            ].filter(Boolean).join(" · ")
-          : t("已关闭");
+    const status = !dev.isOnline
+      ? deviceStatusSummary(dev)
+      : readout === "waiting"
+        ? t("等待中")
+        : readout === "possiblyStale"
+          ? t("可能过期")
+          : running
+            ? [
+                modeLabel[k.hvacMode] ?? k.hvacMode,
+                k.currentTemperature !== null
+                  ? t("室温 {temp}", { temp: formatTemperature(k.currentTemperature, undefined, 1) })
+                  : "",
+              ].filter(Boolean).join(" · ")
+            : t("已关闭");
     const baseSubtitle = selectedRoom === "全部" ? `${dev.roomName} · ${status}` : status;
     const subtitle = isTwoTapArmed && !open ? trText("再点一次确认", "Tap again to confirm") : baseSubtitle;
     const span = Math.max(k.maxTemp - k.minTemp, 1);
@@ -186,15 +203,21 @@ import { hasPlottableSensorMetrics, renderSensorHistorySection, type SensorHisto
           <span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>
           <button class="cc-climate-step" data-acstep="${id}:1" title="${t("升高温度")}" aria-label="${t("升高目标温度")}">＋</button>`
       : `<span class="cc-climate-temp" aria-label="${t("目标温度 {temp}", { temp: formatTemperature(k.targetTemperature) })}">${temp}<small>${temperatureSymbol(unit)}</small></span>`;
+    const nameArea = canExpand
+      ? `<button class="cc-climate-name" data-expand-device="${id}" aria-label="${escapeHtml(dev.name)}，${escapeHtml(subtitle)}" aria-expanded="${open}">
+            <span class="cc-tile-name">${escapeHtml(dev.name)}</span>
+            <span class="cc-tile-status">${escapeHtml(subtitle)} ${forceOpen ? "" : `<i class="cc-mini-caret ${open ? "is-open" : ""}">${SF_ICONS.chevronDown}</i>`}</span>
+          </button>`
+      : `<div class="cc-climate-name" role="group" aria-label="${escapeHtml(dev.name)}，${escapeHtml(subtitle)}">
+            <span class="cc-tile-name">${escapeHtml(dev.name)}</span>
+            <span class="cc-tile-status">${escapeHtml(subtitle)}</span>
+          </div>`;
     return `
       <div class="cc-tile cc-climate is-span-row ${running ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${readout === "possiblyStale" ? "is-stale" : ""} ${motion}" ${attrs}>
         ${badge}
         <div class="cc-climate-strip">
           ${power}
-          <button class="cc-climate-name" ${canExpand ? `data-expand-device="${id}"` : ""} aria-label="${escapeHtml(dev.name)}，${escapeHtml(subtitle)}" aria-expanded="${open}">
-            <span class="cc-tile-name">${escapeHtml(dev.name)}</span>
-            <span class="cc-tile-status">${escapeHtml(subtitle)} ${!canExpand || forceOpen ? "" : `<i class="cc-mini-caret ${open ? "is-open" : ""}">${SF_ICONS.chevronDown}</i>`}</span>
-          </button>
+          ${nameArea}
           ${steps}
         </div>
         ${readout === "possiblyStale" ? "" : `<div class="cc-climate-gauge" role="progressbar" aria-label="${t("目标温度进度")}" aria-valuemin="${k.minTemp}" aria-valuemax="${k.maxTemp}" aria-valuenow="${k.targetTemperature}"><span style="width:${progress}%;--fill-scale:${(progress / 100).toFixed(3)}"></span></div>`}
@@ -1208,33 +1231,34 @@ function renderSmallDeviceTile(options: {
   readonly isOn: boolean;
   readonly palette: string;
   readonly svg: string;
-  readonly writable: boolean;
-  readonly hasDrawer: boolean;
+  readonly actionLayout: DeviceTileActionLayout;
   readonly shownSubtitle: string;
 }): string {
-  const { dev, state, attrs, motion, badge, pinned, readout, isOn, palette, svg, writable, hasDrawer, shownSubtitle } = options;
+  const { dev, state, attrs, motion, badge, pinned, readout, isOn, palette, svg, actionLayout, shownSubtitle } = options;
   const escape = state.escapeHtml;
   const id = escape(dev.id);
   const kind = dev.kind.kind;
   const actionHint =
-    kind === "camera"
-      ? t("点击放大打开摄像机实时画面")
-      : writable && kind !== "fridge"
-        ? t("点击直接切换开关")
-        : hasDrawer
-          ? t("点击展开精细调节")
-          : t("只读");
+    actionLayout.kind === "split" || actionLayout.kind === "primaryOnly"
+      ? actionLayout.primary === "openCamera"
+        ? t("点击放大打开摄像机实时画面")
+        : t("点击直接切换开关")
+      : actionLayout.kind === "adjustOnly"
+        ? t("点击展开精细调节")
+        : dev.isOnline
+          ? t("只读")
+          : t("离线");
   const tooltip = `${dev.name} · ${shownSubtitle}（${actionHint}）`;
   const ariaLabel = `${dev.name}，${shownSubtitle}`;
   const staleClass = readout === "possiblyStale" ? "is-stale" : "";
   const actionAttr =
-    kind === "camera"
-      ? `data-body-device="${id}"`
-      : writable && kind !== "fridge"
-        ? `data-toggle-device="${id}"`
-        : hasDrawer
-          ? `data-expand-device="${id}"`
-          : "";
+    actionLayout.kind === "split" || actionLayout.kind === "primaryOnly"
+      ? actionLayout.primary === "openCamera"
+        ? `data-open-camera="${id}"`
+        : `data-toggle-device="${id}"`
+      : actionLayout.kind === "adjustOnly" && kind !== "sensor"
+        ? `data-expand-device="${id}"`
+        : "";
 
   const inner = actionAttr
     ? `<button type="button" class="cc-small-tile-btn" ${actionAttr} title="${escape(tooltip)}" aria-label="${escape(ariaLabel)}" aria-pressed="${isOn}"><span class="cc-tile-orb">${svg}</span><span class="cc-small-tile-dot" aria-hidden="true"></span></button>`
@@ -1245,14 +1269,19 @@ function renderSmallDeviceTile(options: {
     state.pendingHighRisk !== null &&
     state.pendingHighRisk.deviceId === dev.id &&
     state.pendingHighRisk.expiresAtMs > Date.now();
-  const canExpandSmallSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, state.deviceFacets[dev.id] ?? []);
-  return `<div class="cc-tile is-size-small ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
+  const canExpandSmallSensor =
+    dev.isOnline &&
+    kind === "sensor" &&
+    readout !== "possiblyStale" &&
+    hasPlottableSensorMetrics(dev, state.deviceFacets[dev.id] ?? []);
+  return `<div class="cc-tile is-size-small is-action-${actionLayout.kind} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="small" data-action-layout="${actionLayout.kind}" ${canExpandSmallSensor ? `data-sensor-card="${id}"` : ""} ${attrs}>${renderPinStarBadge(pinned, escape)}${badge}${inner}</div>`;
 }
 
 export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): string {
   const size = state.size;
   const escape = state.escapeHtml;
-  const isExpanded = state.expandedDeviceId === dev.id || size === "panel";
+  const id = escape(dev.id);
+  const isExpanded = dev.isOnline && (state.expandedDeviceId === dev.id || size === "panel");
   const pinned = state.isPinned ?? false;
   const isWaiting = state.waitingDeviceIds.has(dev.id);
   const readout = deviceReadout(isWaiting, state.valuesAreStale);
@@ -1260,7 +1289,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
   const kind = dev.kind.kind;
   const palette = devicePaletteClass(dev);
   const svg = deviceSvgIcon(dev);
-  const writable = deviceCanTogglePower(dev);
+  const writable = dev.isOnline && deviceCanTogglePower(dev);
   const facets = state.deviceFacets[dev.id] ?? [];
   const effectiveDevForDrawer =
     dev.kind.kind === "light" && state.unsupportedLightEffects && state.unsupportedLightEffects.size > 0
@@ -1272,24 +1301,38 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
           },
         }
       : dev;
-  const hasDrawer = hasDetailDrawer(effectiveDevForDrawer, facets);
-  const canPlotSensor = kind === "sensor" && readout !== "possiblyStale" && hasPlottableSensorMetrics(dev, facets);
-  const isClassic = state.panelTheme === "classic";
+  const hasDrawer = dev.isOnline && hasDetailDrawer(effectiveDevForDrawer, facets);
+  const canPlotSensor =
+    dev.isOnline &&
+    kind === "sensor" &&
+    readout !== "possiblyStale" &&
+    hasPlottableSensorMetrics(dev, facets);
+  const actionLayout = resolveDeviceTileActionLayout(
+    dev,
+    facets,
+    false,
+    state.unsupportedLightEffects,
+  );
   const presentation = resolveTilePresentation({
     theme: state.panelTheme ?? "fluent",
     size,
     isExpanded,
     hasDrawer,
-    isCompactGridMode: state.isCompactGridMode ?? state.span < 6,
+    isCompactGridMode: state.isCompactGridMode ?? true,
   });
-  const effectiveSpan = isClassic ? presentation.cssColumnSpan : (size === "small" && !isExpanded ? 3 : state.span);
+  const isClassic = state.panelTheme === "classic";
+  const effectiveSpan = isClassic
+    ? presentation.cssColumnSpan
+    : presentation.mode === "fluentCapsule"
+      ? 6
+      : (size === "small" && !isExpanded ? 3 : state.span);
   const rowSpanStyle = presentation.cssRowSpan === 2 ? " grid-row: span 2;" : "";
-  const attrs = `data-tile-id="${escape(dev.id)}" style="grid-column: span ${effectiveSpan};${rowSpanStyle} --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
+  const attrs = `data-tile-id="${id}" style="grid-column: span ${effectiveSpan};${rowSpanStyle} --i: ${Math.min(state.index, 12)}; --jd: -${Math.round((performance.now() + (state.index * 137) % 560) % 560)}ms"`;
   const sizeClass = `is-size-${size}`;
   const motion = `${sizeClass} ${state.animateEntrance ? "is-entering" : ""} ${state.poppedDeviceId === dev.id ? "is-popped" : ""} ${state.draggingId === dev.id ? "is-dragging" : ""}`;
   const sizeTitle = TILE_SIZES.find((item) => item.id === size)?.title ?? "";
   const badge = state.isEditingLayout
-    ? `<button class="cc-resize-handle" data-resize-handle="${escape(dev.id)}" data-cycle-size="${escape(dev.id)}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
+    ? `<button class="cc-resize-handle" data-resize-handle="${id}" data-cycle-size="${id}" data-tile-size="${size}" title="${t("切换卡片大小")}：${sizeTitle}" aria-label="${t("切换卡片大小")}，${sizeTitle}"><svg class="cc-resize-arc" viewBox="0 0 28 28" aria-hidden="true"><path d="M 22 10 A 12 12 0 0 1 10 22" /></svg></button>`
     : "";
   const hasActiveHighRisk =
     state.pendingHighRisk !== null &&
@@ -1328,8 +1371,7 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       isOn,
       palette,
       svg,
-      writable,
-      hasDrawer,
+      actionLayout,
       shownSubtitle,
     });
   }
@@ -1348,57 +1390,115 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
     size === "hero" && dev.roomName
       ? `<span class="cc-hero-room-pill">${escape(dev.roomName)}</span>`
       : "";
+  const readOnlyBadge =
+    dev.kind.kind === "generic" && dev.kind.isReadOnly
+      ? `<span class="cc-readonly-badge">${t("只读")}</span>`
+      : "";
 
-  if (isCapsule) {
-    return `
-      <div class="cc-tile is-capsule ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="false"` : ""} ${attrs}>
-        ${renderPinStarBadge(pinned, escape)}
-        ${badge}
-        <div class="cc-tile-header win-capsule-stack">
-          <div class="win-split-pill ${hasDrawer ? "has-expand" : ""}">
-            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%;--fill-scale:${(capsuleFill / 100).toFixed(3)}"></span>` : ""}
-            ${
-              dev.kind.kind === "generic" && dev.kind.isReadOnly
-                ? `<span class="cc-readonly-badge">${t("只读")}</span>`
-                : ""
-            }
-            ${
-              writable
-                ? `<button
-              class="cc-tile-orb win-pill-toggle"
-              data-toggle-device="${escape(dev.id)}"
-              title="${kind === "sensor" ? escape(dev.name) : t("点击直接切换开关")}"
+  const renderPrimaryOrbButton = (primary: DeviceTilePrimaryAction, cls: string): string => {
+    if (primary === "openCamera") {
+      const openLabel = tr3(
+        `打开 ${dev.name} 实时画面`,
+        `打開 ${dev.name} 即時畫面`,
+        `Open ${dev.name} live view`,
+      );
+      return `<button
+              type="button"
+              class="${cls}"
+              data-open-camera="${id}"
+              title="${t("点击放大打开摄像机实时画面")}"
+              aria-label="${escape(openLabel)}"
+            >
+              ${svg}
+            </button>`;
+    }
+    return `<button
+              type="button"
+              class="${cls}"
+              data-toggle-device="${id}"
+              title="${t("点击直接切换开关")}"
               aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
               aria-pressed="${isOn}"
             >
               ${svg}
-            </button>`
-                : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
-            }
-            ${
-              hasDrawer
-                ? `<button
-                    class="cc-tile-chevron win-pill-expand"
-                    data-expand-device="${escape(dev.id)}"
-                    title="${t("展开详细控制")}"
-                    aria-label="${t("展开")} ${escape(t("{name} 详细控制", { name: dev.name }))}"
-                    aria-expanded="false"
-                  >
-                    ${SF_ICONS.chevronRight}
-                  </button>`
-                : ""
-            }
+            </button>`;
+  };
+
+  if (isCapsule) {
+    const pillClass =
+      actionLayout.kind === "split"
+        ? "has-expand"
+        : actionLayout.kind === "adjustOnly"
+          ? "is-adjust-only"
+          : actionLayout.kind === "readOnly"
+            ? "is-readonly"
+            : "is-primary-only";
+
+    const pillInner =
+      actionLayout.kind === "split"
+        ? `${renderPrimaryOrbButton(actionLayout.primary, "cc-tile-orb win-pill-toggle")}
+           <button
+             type="button"
+             class="cc-tile-chevron win-pill-expand"
+             data-expand-device="${id}"
+             title="${escape(deviceAdjustTooltip(false))}"
+             aria-label="${escape(deviceAdjustAriaLabel(dev.name, false))}"
+             aria-expanded="false"
+           >
+             ${SF_ICONS.chevronRight}
+           </button>`
+        : actionLayout.kind === "primaryOnly"
+          ? renderPrimaryOrbButton(actionLayout.primary, "cc-tile-orb win-pill-toggle")
+          : actionLayout.kind === "adjustOnly"
+            ? hasDrawer
+              ? `<button
+                   type="button"
+                   class="cc-tile-chevron win-pill-expand is-full-pill"
+                   data-expand-device="${id}"
+                   title="${escape(deviceAdjustTooltip(false))}"
+                   aria-label="${escape(deviceAdjustAriaLabel(dev.name, false))}"
+                   aria-expanded="false"
+                 >
+                   <span class="cc-tile-orb win-pill-toggle" aria-hidden="true">${svg}</span>
+                   <span class="cc-pill-adjust-arrow" aria-hidden="true">${SF_ICONS.chevronRight}</span>
+                 </button>`
+              : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
+            : `<span class="cc-tile-orb win-pill-toggle" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`;
+
+    const captionHtml =
+      actionLayout.kind === "readOnly"
+        ? `<div
+             class="cc-tile-body win-pill-caption is-readonly"
+             role="group"
+             data-body-device="${id}"
+             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+           >
+             <div class="cc-tile-name">${escape(dev.name)}</div>
+             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+           </div>`
+        : `<button
+             type="button"
+             class="cc-tile-body win-pill-caption"
+             data-body-device="${id}"
+             title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(false)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+             ${actionLayout.kind === "adjustOnly" ? 'aria-expanded="false"' : `aria-pressed="${isOn}"`}
+           >
+             <div class="cc-tile-name">${escape(dev.name)}</div>
+             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+           </button>`;
+
+    return `
+      <div class="cc-tile is-capsule is-action-${actionLayout.kind} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" data-action-layout="${actionLayout.kind}" ${canPlotSensor ? `data-sensor-card="${id}" aria-expanded="false"` : ""} ${attrs}>
+        ${renderPinStarBadge(pinned, escape)}
+        ${badge}
+        <div class="cc-tile-header win-capsule-stack">
+          <div class="win-split-pill ${pillClass}">
+            ${capsuleFill > 0 ? `<span class="cc-tile-fill" style="width:${capsuleFill}%;--fill-scale:${(capsuleFill / 100).toFixed(3)}"></span>` : ""}
+            ${readOnlyBadge}
+            ${pillInner}
           </div>
-          <button
-            class="cc-tile-body win-pill-caption"
-            data-body-device="${escape(dev.id)}"
-            title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
-            aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-            aria-pressed="${isOn}"
-          >
-            <div class="cc-tile-name">${escape(dev.name)}</div>
-            <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
-          </button>
+          ${captionHtml}
         </div>
         ${!hasDrawer ? renderPendingHighRiskRow(dev.id, state.pendingHighRisk, escape) : ""}
       </div>
@@ -1407,22 +1507,24 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
 
   if (isSubpage) {
     return `
-      <div class="cc-tile is-expanded is-subpage is-span-row ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" ${attrs}>
+      <div class="cc-tile is-expanded is-subpage is-span-row is-action-${actionLayout.kind} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${motion}" data-tile-size="${size}" data-action-layout="${actionLayout.kind}" ${attrs}>
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header win-subpage-header">
           <button
+            type="button"
             class="cc-tile-chevron win-subpage-back is-open"
-            data-expand-device="${escape(dev.id)}"
-            title="${t("收起详细控制")}"
-            aria-label="${t("收起")} ${escape(t("{name} 详细控制", { name: dev.name }))}"
+            data-expand-device="${id}"
+            title="${escape(deviceAdjustTooltip(true))}"
+            aria-label="${escape(deviceAdjustAriaLabel(dev.name, true))}"
             aria-expanded="true"
           >
             ${SF_ICONS.chevronLeft}
           </button>
           <button
+            type="button"
             class="cc-tile-body win-subpage-title"
-            data-body-device="${escape(dev.id)}"
+            data-body-device="${id}"
             title="${t("点击收起精细调节")}"
             aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
             aria-pressed="${isOn}"
@@ -1433,16 +1535,13 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
             </div>
             <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
           </button>
-          ${
-            dev.kind.kind === "generic" && dev.kind.isReadOnly
-              ? `<span class="cc-readonly-badge">${t("只读")}</span>`
-              : ""
-          }
+          ${readOnlyBadge}
           ${
             writable
               ? `<button
+            type="button"
             class="cc-tile-orb win-subpage-power"
-            data-toggle-device="${escape(dev.id)}"
+            data-toggle-device="${id}"
             title="${t("点击直接切换开关")}"
             aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
             aria-pressed="${isOn}"
@@ -1473,58 +1572,64 @@ export function renderDeviceTile(dev: SmartDevice, state: DeviceTileViewState): 
       ? `<div class="cc-hero-primary-bar">${rawInlineSlider}</div>`
       : rawInlineSlider;
 
+  const classicOrbHtml =
+    actionLayout.kind === "split" || actionLayout.kind === "primaryOnly"
+      ? renderPrimaryOrbButton(actionLayout.primary, "cc-tile-orb")
+      : `<span class="cc-tile-orb" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`;
+
+  const classicBodyHtml =
+    actionLayout.kind === "readOnly"
+      ? `<div
+          class="cc-tile-body is-readonly"
+          role="group"
+          data-body-device="${id}"
+          aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+        >
+          <div class="cc-tile-title-row">
+            <div class="cc-tile-name">${escape(dev.name)}</div>
+            ${roomHeroPill}
+          </div>
+          <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+        </div>`
+      : `<button
+          type="button"
+          class="cc-tile-body"
+          data-body-device="${id}"
+          title="${actionLayout.kind === "adjustOnly" ? escape(deviceAdjustTooltip(isExpanded)) : kind === "camera" ? t("点击放大打开摄像机实时画面") : actionLayout.kind === "split" && !isExpanded ? t("点击切换开关") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
+          aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
+          ${actionLayout.kind === "adjustOnly" ? `aria-expanded="${isExpanded}"` : `aria-pressed="${isOn}"`}
+        >
+          <div class="cc-tile-title-row">
+            <div class="cc-tile-name">${escape(dev.name)}</div>
+            ${roomHeroPill}
+          </div>
+          <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
+        </button>`;
+
+  const classicChevronHtml =
+    (actionLayout.kind === "split" || actionLayout.kind === "adjustOnly") && hasDrawer && size !== "panel"
+      ? `<button
+          type="button"
+          class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
+          data-expand-device="${id}"
+          title="${escape(deviceAdjustTooltip(isExpanded))}"
+          aria-label="${escape(deviceAdjustAriaLabel(dev.name, isExpanded))}"
+          aria-expanded="${isExpanded}"
+        >
+          ${SF_ICONS.chevronRight}
+        </button>`
+      : "";
+
   return `
-      <div class="cc-tile ${presentation.spansFullRow ? "is-span-row" : ""} ${presentation.mode === "bentoCard" ? "is-bento-card" : ""} ${presentation.mode === "bentoHero" ? "is-bento-hero" : ""} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" ${canPlotSensor ? `data-sensor-card="${escape(dev.id)}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
+      <div class="cc-tile is-action-${actionLayout.kind} ${presentation.spansFullRow ? "is-span-row" : ""} ${presentation.mode === "bentoCard" ? "is-bento-card" : ""} ${presentation.mode === "bentoHero" ? "is-bento-hero" : ""} ${palette} ${isOn ? "is-active" : ""} ${isWaiting ? "is-waiting" : ""} ${hasActiveHighRisk ? "is-caution-armed" : ""} ${dim !== null ? "is-dimming" : ""} ${isExpanded ? "is-expanded" : ""} ${dev.isOnline ? "" : "is-offline"} ${staleClass} ${kind === "light" ? "is-light" : ""} ${inlineSlider ? "has-inline-slider" : ""} ${motion}" data-tile-size="${size}" data-action-layout="${actionLayout.kind}" ${canPlotSensor ? `data-sensor-card="${id}" aria-expanded="${isExpanded}"` : ""} ${attrs}>
         ${fill > 0 ? `<span class="cc-tile-fill" style="width:${fill}%;--fill-scale:${(fill / 100).toFixed(3)}"></span>` : ""}
         ${renderPinStarBadge(pinned, escape)}
         ${badge}
         <div class="cc-tile-header">
-          ${
-            dev.kind.kind === "generic" && dev.kind.isReadOnly
-              ? `<span class="cc-readonly-badge">${t("只读")}</span>`
-              : ""
-          }
-          ${
-            writable
-              ? `<button
-            class="cc-tile-orb"
-            data-toggle-device="${escape(dev.id)}"
-            title="${kind === "sensor" ? escape(dev.name) : t("点击直接切换开关")}"
-            aria-label="${escape(t("{name} 开关", { name: dev.name }))}"
-            aria-pressed="${isOn}"
-          >
-            ${svg}
-          </button>`
-              : `<span class="cc-tile-orb" title="${escape(dev.name)}" aria-hidden="true">${svg}</span>`
-          }
-
-          <button
-            class="cc-tile-body"
-            data-body-device="${escape(dev.id)}"
-            title="${kind === "camera" ? t("点击放大打开摄像机实时画面") : hasDrawer ? t("点击展开精细调节") : t("点击切换开关")}"
-            aria-label="${escape(dev.name)}，${escape(shownSubtitle)}"
-            aria-pressed="${isOn}"
-          >
-            <div class="cc-tile-title-row">
-              <div class="cc-tile-name">${escape(dev.name)}</div>
-              ${roomHeroPill}
-            </div>
-            <div class="cc-tile-status" title="${escape(shownSubtitle)}">${escape(shownSubtitle)}</div>
-          </button>
-
-          ${
-            hasDrawer && size !== "panel"
-              ? `<button
-                  class="cc-tile-chevron ${isExpanded ? "is-open" : ""}"
-                  data-expand-device="${escape(dev.id)}"
-                  title="${isExpanded ? t("收起详细控制") : t("展开详细控制")}"
-                  aria-label="${isExpanded ? t("收起") : t("展开")} ${escape(t("{name} 详细控制", { name: dev.name }))}"
-                  aria-expanded="${isExpanded}"
-                >
-                  ${SF_ICONS.chevronRight}
-                </button>`
-              : ""
-          }
+          ${readOnlyBadge}
+          ${classicOrbHtml}
+          ${classicBodyHtml}
+          ${classicChevronHtml}
         </div>
         ${inlineSlider}
         ${

@@ -22,7 +22,7 @@ import {
 import { nextSizeForTheme } from "./panelTheme.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
-import { invokeTauriVoid } from "./transport.js";
+import { invokeTauriVoid, isWorkstationLockBlockingControl } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
 import { bindLiquidGlassSliders } from "./liquidGlassSlider.js";
@@ -40,6 +40,8 @@ import { syncSettingsSaveHint } from "./settingsEvents.js";
 import { setVoiceInputEnabled, shouldKeepPopoverPinned } from "./speechGuard.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
+import { getUnsupportedLightEffects } from "./commandDispatch.js";
+import { resetPanelSplitTransientState, resolveDeviceTileActionLayout } from "./panelSplitTiles.js";
 
 function confirmHighRiskForHost(
   host: MenuMijiaWindowsApp,
@@ -591,6 +593,12 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         host.render();
       });
     });
+    host.root.querySelector<HTMLInputElement>("#settings-compact-grid")?.addEventListener("change", (e) => {
+      host.settings.isCompactGridMode = (e.target as HTMLInputElement).checked;
+      syncSettingsSaveHint(host, "auto-saved");
+      host.saveSettings();
+      host.render();
+    });
     host.root.querySelector<HTMLInputElement>("#settings-climate-panel")?.addEventListener("change", (e) => {
       host.settings.climatePanel = (e.target as HTMLInputElement).checked;
       syncSettingsSaveHint(host, "auto-saved");
@@ -659,6 +667,8 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     host.root.querySelector("#btn-hide-panel")?.addEventListener("click", () => {
       host.isHomeMenuOpen = false;
       host.ctxMenu = null;
+      host.expandedDeviceId = null;
+      resetPanelSplitTransientState(host);
       host.clearPendingHighRisk({ syncPin: false });
       void (async () => {
         try {
@@ -865,17 +875,131 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       });
     });
 
-    host.root.querySelectorAll<HTMLElement>("[data-open-camera]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        host.pipeline.recordTriggerOrigin(btn);
-        const id = btn.dataset.openCamera;
-        if (!id) return;
-        const dev = host.devices.find((d) => d.id === id);
-        if (dev && dev.kind.kind === "camera" && deviceCanTogglePower(dev) && dev.isOnline && !dev.kind.isOn) {
+    const openCameraPrimaryForHost = (id: string): void => {
+      const dev = host.devices.find((d) => d.id === id);
+      if (!dev || dev.kind.kind !== "camera" || !dev.isOnline) return;
+      if (!host.settings.blockControlWhileLocked || !window.__TAURI_INTERNALS__?.invoke) {
+        if (deviceCanTogglePower(dev) && !dev.kind.isOn) {
           toggleDeviceForHost(host, id);
         }
         host.cameraLive.openCameraLiveView(id);
+        return;
+      }
+      void (async () => {
+        const locked = await isWorkstationLockBlockingControl(host);
+        const latest = host.devices.find((d) => d.id === id);
+        if (!latest || latest.kind.kind !== "camera" || !latest.isOnline) return;
+        if (locked) {
+          host.cameraLive.openCameraLiveView(id);
+          host.replyBanner = {
+            text: t("屏幕已锁定，已拦截设备控制指令"),
+            source: t("锁屏保护"),
+            isError: true,
+          };
+          host.render();
+          return;
+        }
+        if (deviceCanTogglePower(latest) && !latest.kind.isOn) {
+          toggleDeviceForHost(host, id);
+        }
+        host.cameraLive.openCameraLiveView(id);
+      })();
+    };
+
+    host.root.querySelectorAll<HTMLElement>("[data-open-camera]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        host.pipeline.recordTriggerOrigin(btn);
+        const id = btn.dataset.openCamera;
+        if (!id) return;
+        openCameraPrimaryForHost(id);
       });
+    });
+
+    host.root.querySelector(".cc-popover")?.addEventListener("click", (event) => {
+      if (!host.isRoomBrowseMenuOpen) return;
+      const target = event.target as Element | null;
+      if (target?.closest?.(".cc-room-browse-wrap")) return;
+      host.isRoomBrowseMenuOpen = false;
+      host.render();
+    });
+
+    host.root.querySelector<HTMLElement>("[data-long-tail-toggle]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      host.isLongTailExpanded = !host.isLongTailExpanded;
+      host.isRoomBrowseMenuOpen = false;
+      host.render();
+      host.root.querySelector<HTMLElement>("[data-long-tail-toggle]")?.focus({ preventScroll: true });
+    });
+
+    const browseRoomTrigger = host.root.querySelector<HTMLElement>("[data-browse-room-toggle]");
+    const toggleRoomBrowseMenu = (focusFirstItem: boolean): void => {
+      const nextOpen = !host.isRoomBrowseMenuOpen;
+      host.isRoomBrowseMenuOpen = nextOpen;
+      host.render();
+      if (nextOpen && focusFirstItem) {
+        host.root.querySelector<HTMLElement>("[data-browse-room-menu] [data-browse-room-id]")?.focus({ preventScroll: true });
+      } else {
+        host.root.querySelector<HTMLElement>("[data-browse-room-toggle]")?.focus({ preventScroll: true });
+      }
+    };
+    browseRoomTrigger?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleRoomBrowseMenu(true);
+    });
+    browseRoomTrigger?.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowDown" && !host.isRoomBrowseMenuOpen) {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleRoomBrowseMenu(true);
+      }
+    });
+
+    const browseRoomMenu = host.root.querySelector<HTMLElement>("[data-browse-room-menu]");
+    browseRoomMenu?.addEventListener("keydown", (e) => {
+      const items = Array.from(browseRoomMenu.querySelectorAll<HTMLElement>("[data-browse-room-id]"));
+      if (items.length === 0) return;
+      const activeIdx = items.indexOf(browseRoomMenu.ownerDocument.activeElement as HTMLElement);
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        e.stopPropagation();
+        items[(activeIdx + 1) % items.length]?.focus({ preventScroll: true });
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        e.stopPropagation();
+        items[(activeIdx - 1 + items.length) % items.length]?.focus({ preventScroll: true });
+      } else if (e.key === "Home") {
+        e.preventDefault();
+        e.stopPropagation();
+        items[0]?.focus({ preventScroll: true });
+      } else if (e.key === "End") {
+        e.preventDefault();
+        e.stopPropagation();
+        items[items.length - 1]?.focus({ preventScroll: true });
+      }
+    });
+
+    host.root.querySelectorAll<HTMLElement>("[data-browse-room-id]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const roomId = btn.dataset.browseRoomId ?? null;
+        const roomName = btn.dataset.browseRoomName ?? roomId ?? undefined;
+        host.isRoomBrowseMenuOpen = false;
+        host.selectRoom(roomId, roomName);
+        host.animateEntrance = true;
+        host.expandedDeviceId = null;
+        host.render();
+        const activePill = host.root.querySelector<HTMLElement>(".cc-room-pill.is-active");
+        activePill?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+        activePill?.focus({ preventScroll: true });
+      });
+    });
+
+    host.root.querySelector<HTMLElement>("[data-offline-drawer-toggle]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      host.isOfflineDrawerExpanded = !host.isOfflineDrawerExpanded;
+      host.render();
+      host.root.querySelector<HTMLElement>("[data-offline-drawer-toggle]")?.focus({ preventScroll: true });
     });
 
     host.root.querySelectorAll<HTMLElement>(".cc-room-scroll").forEach((strip) => {
@@ -967,20 +1091,47 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         const id = btn.dataset.bodyDevice;
         if (!id) return;
         const dev = host.devices.find((d) => d.id === id);
-        if (!dev) return;
-        const k = dev.kind.kind;
-        const writable = deviceCanTogglePower(dev);
-        if (k === "camera") {
-          if (writable && dev.isOnline && !dev.kind.isOn) {
-            toggleDeviceById(id);
+        if (!dev || !dev.isOnline) return;
+        const facets = host.deviceFacets[id] ?? [];
+        const actionLayout = resolveDeviceTileActionLayout(
+          dev,
+          facets,
+          false,
+          getUnsupportedLightEffects(host, id),
+        );
+        if (actionLayout.kind === "readOnly") return;
+        const tile = btn.closest<HTMLElement>(".cc-tile");
+        if (tile?.classList.contains("is-subpage")) {
+          host.expandedDeviceId = null;
+          host.render();
+          return;
+        }
+        if (dev.kind.kind === "camera") {
+          openCameraPrimaryForHost(id);
+          return;
+        }
+        if (actionLayout.kind === "primaryOnly") {
+          toggleDeviceById(id);
+          return;
+        }
+        if (actionLayout.kind === "adjustOnly") {
+          if (hasDetailDrawer(dev, facets)) {
+            host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
+            host.render();
           }
-          host.cameraLive.openCameraLiveView(id);
-        } else if (hasDetailDrawer(dev, host.deviceFacets[id] ?? [])) {
-          // macOS card body: after the camera special case the drawer wins, so a vacuum, plug or
-          // cover with 更多设置 rows expands instead of running its switch.
+          return;
+        }
+        // `split`: in Classic collapsed compact tiles (`is-bento-card`), the left zone (orb + body)
+        // runs the primary toggle while the right chevron opens the drawer; in Fluent capsules,
+        // `.win-split-pill` separates left toggle vs right chevron and the caption expands the drawer.
+        if (tile?.classList.contains("is-bento-card") && !tile.classList.contains("is-expanded")) {
+          toggleDeviceById(id);
+          return;
+        }
+        if (hasDetailDrawer(dev, facets)) {
           host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
           host.render();
-        } else if (writable) {
+        } else if (deviceCanTogglePower(dev)) {
           toggleDeviceById(id);
         }
       });
@@ -991,6 +1142,9 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
         e.stopPropagation();
         host.pipeline.recordTriggerOrigin(btn);
         const id = btn.dataset.expandDevice ?? null;
+        if (!id) return;
+        const dev = host.devices.find((d) => d.id === id);
+        if (!dev || !dev.isOnline) return;
         host.expandedDeviceId = host.expandedDeviceId === id ? null : id;
         host.render();
       });

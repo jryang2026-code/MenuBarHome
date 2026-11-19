@@ -4,6 +4,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import { cancelRunningBatch } from "./intentExecution.js";
 import type { SourceEpoch } from "./sourceEpoch.js";
+import { resetPanelSplitTransientState } from "./panelSplitTiles.js";
 import { abortVoiceInput, clearUndoHoverPause } from "./speechGuard.js";
 
 /**
@@ -81,6 +82,9 @@ export function switchSource(host: SourceSwitchHost, reason: string): void {
   host.pendingSuggestions = [];
   // The footer dialog lists the previous source's platform states, so it closes with the switch.
   app.connectionDetailsOpen = false;
+  if ("isLongTailExpanded" in app) {
+    resetPanelSplitTransientState(app);
+  }
 }
 
 /**
