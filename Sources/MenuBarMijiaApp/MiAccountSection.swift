@@ -57,6 +57,29 @@ public struct MiAccountSection: View {
         }
     }
 
+    struct DisableConnectionConfirmation: Equatable {
+        let account: MiAccount
+        let itemsToPause: [AffectedReferenceItem]
+        let generation: Int
+
+        /// The exact list shown in the alert. A confirmation applies only while the live preview still
+        /// matches it; otherwise the sheet re-previews (M3).
+        var pauseItemKeys: Set<String> { Set(itemsToPause.map(\.pauseKey)) }
+
+        var title: String { L10n.tr("停用米家账号连接？", "Turn off Xiaomi Home connection?") }
+        var confirmButtonTitle: String { L10n.tr("暂停并停用连接", "Pause & Turn Off Connection") }
+        var messageText: String {
+            let sep = L10n.isEnglish ? ", " : "、"
+            let names = itemsToPause.prefix(4).map(\.name).joined(separator: sep)
+            let suffix = itemsToPause.count > 4 ? "…" : ""
+            return L10n.format(
+                "停用「%@」的连接后，以下定时、自动化或快捷动作将暂停保留，重新启用连接后自动恢复：%@%@",
+                "Turning off the connection for \"%@\" will pause and keep the following timers, automations, or quick actions until you turn it back on: %@%@",
+                account.displayName, names, suffix
+            )
+        }
+    }
+
     struct RegionDisclosureState: Equatable, Sendable {
         var isExpanded: Bool = false
         private(set) var hasAppliedInitialDefaults = false
@@ -91,6 +114,7 @@ public struct MiAccountSection: View {
     @State private var phase: ScanPhase
     @State private var loginTask: Task<Void, Never>?
     @State private var pendingLogoutConfirmation: LogoutConfirmation?
+    @State private var pendingDisableConfirmation: DisableConnectionConfirmation?
     @State private var regionDisclosure: RegionDisclosureState
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
@@ -127,6 +151,67 @@ public struct MiAccountSection: View {
         autoStartsQRLogin && (homeBackend == .xiaomiCloud || miSessionShowsExpired)
     }
 
+    private func requestDisableConnection(for account: MiAccount) {
+        let generation = store.capabilityGeneration
+        let verdict = store.previewSetMiAccountEnabled(false, id: account.id)
+        switch verdict.disposition {
+        case .allowed:
+            let applied = store.setMiAccountEnabled(false, id: account.id, expectedGeneration: generation)
+            if applied.disposition == .blocked {
+                reportBlockedDisable(applied)
+            } else {
+                presentConfirmationIfStillNeeded(applied, account: account)
+            }
+        case .requiresPauseConfirmation:
+            pendingDisableConfirmation = DisableConnectionConfirmation(
+                account: account,
+                itemsToPause: verdict.itemsToPause,
+                generation: generation
+            )
+        case .blocked:
+            reportBlockedDisable(verdict)
+        }
+    }
+
+    /// Re-present the alert only when the disable did not apply. A successful apply returns the pause
+    /// verdict it just used, so presenting that again would offer Cancel for an account that is
+    /// already off (review #275). A real change of the list leaves the account enabled.
+    private func presentConfirmationIfStillNeeded(_ verdict: CapabilityDeactivationVerdict, account: MiAccount) {
+        guard verdict.disposition == .requiresPauseConfirmation,
+              store.isMiAccountEnabled(account.id) else { return }
+        let fresh = DisableConnectionConfirmation(
+            account: account, itemsToPause: verdict.itemsToPause, generation: store.capabilityGeneration
+        )
+        // Present on the next tick so SwiftUI does not drop an alert raised while the old one is
+        // still dismissing.
+        Task { @MainActor in pendingDisableConfirmation = fresh }
+    }
+
+    /// A blocked preview is never silent: name the reason and what to do about it (L2).
+    private func reportBlockedDisable(_ verdict: CapabilityDeactivationVerdict) {
+        let kinds = Set(verdict.blockingReasons.map(\.kind))
+        let message: String
+        if kinds.contains(.corruptedReferenceStore) {
+            message = L10n.tr(
+                "无法停用该连接：本地保存的定时、自动化或布局数据已损坏。请先在对应页面修复或删除这些数据后重试",
+                "Could not turn off this connection: saved timers, automations or layout data are damaged. Fix or delete them in their pages and try again"
+            )
+        } else if kinds.contains(.unresolvedReferenceOwnership) {
+            message = L10n.tr(
+                "无法停用该连接：有定时或自动化无法确认目标属于哪个连接。请先在这些项目里重新选择目标",
+                "Could not turn off this connection: a timer or automation has targets that cannot be attributed to a connection. Reselect their targets first"
+            )
+        } else if kinds.contains(.stalePreviewGeneration) {
+            message = L10n.tr(
+                "连接状态刚刚发生变化，请再试一次",
+                "The connection state just changed; try again"
+            )
+        } else {
+            message = L10n.tr("无法停用该连接", "Could not turn off this connection")
+        }
+        store.showToast(message, isError: true)
+    }
+
     static func regionDisclosureTitle(for region: MiCloudRegion) -> String {
         L10n.format(
             "高级：云端服务器地区（当前：%@）",
@@ -142,6 +227,7 @@ public struct MiAccountSection: View {
 
     public var body: some View {
         let _ = store.effectiveLanguage
+        let _ = store.capabilityGeneration
         VStack(alignment: .leading, spacing: 9) {
             switch phase {
             case .idle:
@@ -262,6 +348,7 @@ public struct MiAccountSection: View {
         }
         .onDisappear {
             pendingLogoutConfirmation = nil
+            pendingDisableConfirmation = nil
             cancelLogin()
         }
         .alert(
@@ -291,61 +378,91 @@ public struct MiAccountSection: View {
         } message: { confirmation in
             Text(confirmation.messageText)
         }
+        .alert(
+            pendingDisableConfirmation?.title ?? "",
+            isPresented: Binding(
+                get: { pendingDisableConfirmation != nil },
+                set: { if !$0 { pendingDisableConfirmation = nil } }
+            ),
+            presenting: pendingDisableConfirmation
+        ) { confirmation in
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) { pendingDisableConfirmation = nil }
+            Button(confirmation.confirmButtonTitle) {
+                pendingDisableConfirmation = nil
+                let verdict = store.setMiAccountEnabled(
+                    false, id: confirmation.account.id, pauseConfirmed: true,
+                    expectedGeneration: confirmation.generation,
+                    expectedPauseItemKeys: confirmation.pauseItemKeys
+                )
+                if verdict.disposition == .blocked { reportBlockedDisable(verdict) }
+                presentConfirmationIfStillNeeded(verdict, account: confirmation.account)
+            }
+        } message: { confirmation in
+            Text(confirmation.messageText)
+        }
+    }
+
+    private func connectionToggleButton(for account: MiAccount, isEnabled: Bool) -> some View {
+        Button(isEnabled ? L10n.tr("停用连接", "Turn Off Connection") : L10n.tr("启用连接", "Turn On Connection")) {
+            if isEnabled { requestDisableConnection(for: account) } else { store.setMiAccountEnabled(true, id: account.id) }
+        }
+        .buttonStyle(PillActionButtonStyle(isSelected: !isEnabled, tintColor: .accentColor))
+    }
+
+    @ViewBuilder
+    private func accountStatusLine(isEnabled: Bool, disconnectReason: String?, expiryState: MiSessionExpiryState) -> some View {
+        if !isEnabled {
+            Text(L10n.tr("连接已停用", "Connection turned off"))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+        } else if let reason = disconnectReason {
+            Text(reason)
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+        } else if case .expiringSoon(let date) = expiryState {
+            let dateText = date.formatted(date: .abbreviated, time: .omitted)
+            Text(L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.orange)
+        }
     }
 
     private func loggedInView(maskedUserId: String) -> some View {
         let account = store.miAccounts.first
-        let expiryState = account?.session.expiryState() ?? .valid
+        let isEnabled = account.map { store.isMiAccountEnabled($0.id) } ?? store.hasEnabledMiSource
+        let expiryState = isEnabled ? (account?.session.expiryState() ?? .valid) : .valid
         let disconnectReason: String? = {
-            if let account,
-               case .disconnected(let reason) = store.miAccountStatuses[account.id],
-               !reason.isEmpty {
-                return reason
-            }
-            if case .disconnected(let reason) = store.connectionStatus, !reason.isEmpty {
-                return reason
-            }
-            if expiryState == .expired {
-                return MiCloudError.sessionExpired.localizedDescription
-            }
-            return nil
+            guard isEnabled else { return nil }
+            if let account, case .disconnected(let reason) = store.miAccountStatuses[account.id], !reason.isEmpty { return reason }
+            if case .disconnected(let reason) = store.connectionStatus, !reason.isEmpty { return reason }
+            return expiryState == .expired ? MiCloudError.sessionExpired.localizedDescription : nil
         }()
-        let needsRescan = disconnectReason != nil || expiryState != .valid
+        let needsRescan = isEnabled && (disconnectReason != nil || expiryState != .valid)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                Image(systemName: needsRescan
-                    ? "exclamationmark.triangle.fill"
-                    : "person.crop.circle.badge.checkmark")
+                Image(systemName: !isEnabled ? "pause.circle.fill" : (needsRescan ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.checkmark"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                    .foregroundStyle(needsRescan ? .orange : .green)
+                    .foregroundStyle(!isEnabled ? DesignTokens.secondaryText : (needsRescan ? .orange : .green))
                 Text(L10n.tr("已登录米家账号：\(maskedUserId)", "Signed in to Xiaomi Home: \(maskedUserId)"))
                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 Spacer()
+                if let account { connectionToggleButton(for: account, isEnabled: isEnabled) }
             }
 
-            if let reason = disconnectReason {
-                Text(reason)
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.orange)
-            } else if case .expiringSoon(let date) = expiryState {
-                let dateText = date.formatted(date: .abbreviated, time: .omitted)
-                Text(L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.orange)
-            }
+            accountStatusLine(isEnabled: isEnabled, disconnectReason: disconnectReason, expiryState: expiryState)
 
             HStack(spacing: 6) {
-                Button(L10n.tr("同步设备", "Sync Devices")) {
-                    store.refreshNow()
-                    store.showToast(L10n.tr("正在同步米家云端设备…", "Syncing Xiaomi Cloud devices…"))
+                if isEnabled {
+                    Button(L10n.tr("同步设备", "Sync Devices")) {
+                        store.refreshNow()
+                        store.showToast(L10n.tr("正在同步米家云端设备…", "Syncing Xiaomi Cloud devices…"))
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
                 Button(L10n.tr("重新扫码", "Rescan QR")) {
-                    if let account {
-                        store.miCloudRegion = account.region
-                    }
+                    if let account { store.miCloudRegion = account.region }
                     startQRLogin()
                 }
                 .buttonStyle(PillActionButtonStyle(isSelected: needsRescan, tintColor: .accentColor))
@@ -354,15 +471,13 @@ public struct MiAccountSection: View {
                     Button(L10n.tr("添加更多米家账号", "Add More Xiaomi Accounts")) {
                         startQRLogin()
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: !needsRescan, tintColor: .accentColor))
+                    .buttonStyle(PillActionButtonStyle(isSelected: isEnabled && !needsRescan, tintColor: .accentColor))
                 }
 
                 Spacer()
 
-                Button(L10n.tr("退出登录", "Sign Out")) {
-                    pendingLogoutConfirmation = .all
-                }
-                .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("退出登录", "Sign Out")) { pendingLogoutConfirmation = .all }
+                    .buttonStyle(PillActionButtonStyle())
             }
         }
     }
@@ -372,24 +487,19 @@ public struct MiAccountSection: View {
     private var multiAccountView: some View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(store.miAccounts) { account in
-                let expiryState = account.session.expiryState()
+                let isEnabled = store.isMiAccountEnabled(account.id)
+                let expiryState = isEnabled ? account.session.expiryState() : .valid
                 let disconnectReason: String? = {
-                    if case .disconnected(let reason) = store.miAccountStatuses[account.id], !reason.isEmpty {
-                        return reason
-                    }
-                    if expiryState == .expired {
-                        return MiCloudError.sessionExpired.localizedDescription
-                    }
-                    return nil
+                    guard isEnabled else { return nil }
+                    if case .disconnected(let reason) = store.miAccountStatuses[account.id], !reason.isEmpty { return reason }
+                    return expiryState == .expired ? MiCloudError.sessionExpired.localizedDescription : nil
                 }()
-                let needsRescan = disconnectReason != nil || expiryState != .valid
+                let needsRescan = isEnabled && (disconnectReason != nil || expiryState != .valid)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
-                        Image(systemName: needsRescan
-                            ? "exclamationmark.triangle.fill"
-                            : "person.crop.circle.badge.checkmark")
+                        Image(systemName: !isEnabled ? "pause.circle.fill" : (needsRescan ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.checkmark"))
                             .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
-                            .foregroundStyle(needsRescan ? .orange : .green)
+                            .foregroundStyle(!isEnabled ? DesignTokens.secondaryText : (needsRescan ? .orange : .green))
                         Text(account.displayName)
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         Spacer()
@@ -400,30 +510,22 @@ public struct MiAccountSection: View {
                             }
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
-                        Button(L10n.tr("移除", "Remove")) {
-                            pendingLogoutConfirmation = .account(account)
-                        }
-                        .buttonStyle(PillActionButtonStyle())
+                        connectionToggleButton(for: account, isEnabled: isEnabled)
+                        Button(L10n.tr("移除", "Remove")) { pendingLogoutConfirmation = .account(account) }
+                            .buttonStyle(PillActionButtonStyle())
                     }
-                    if let reason = disconnectReason {
-                        Text(reason)
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.orange)
-                    } else if case .expiringSoon(let date) = expiryState {
-                        let dateText = date.formatted(date: .abbreviated, time: .omitted)
-                        Text(L10n.tr("米家登录将在 \(dateText) 到期", "Xiaomi Home sign-in expires \(dateText)"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(.orange)
-                    }
+                    accountStatusLine(isEnabled: isEnabled, disconnectReason: disconnectReason, expiryState: expiryState)
                 }
             }
 
             HStack(spacing: 6) {
-                Button(L10n.tr("同步设备", "Sync Devices")) {
-                    store.refreshNow()
-                    store.showToast(L10n.tr("正在同步米家云端设备…", "Syncing Xiaomi Cloud devices…"))
+                if store.hasEnabledMiSource {
+                    Button(L10n.tr("同步设备", "Sync Devices")) {
+                        store.refreshNow()
+                        store.showToast(L10n.tr("正在同步米家云端设备…", "Syncing Xiaomi Cloud devices…"))
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                 }
-                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
                 if showsInlineAddAccountButton {
                     Button(L10n.tr("添加更多米家账号", "Add More Xiaomi Accounts")) {

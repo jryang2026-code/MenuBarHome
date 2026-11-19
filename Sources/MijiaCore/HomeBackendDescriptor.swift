@@ -29,16 +29,20 @@ public struct HomeBackendDescriptor: Sendable {
     public static func activeBackends(
         homeBackend: HomeBackend,
         hasHASource: Bool,
-        hasMiSource: Bool
+        hasMiSource: Bool,
+        isHAEnabled: Bool = true,
+        isMiEnabled: Bool = true
     ) -> Set<HomeBackend> {
         if homeBackend == .demo {
             return [.demo]
         }
+        let effectiveHA = hasHASource && isHAEnabled
+        let effectiveMi = hasMiSource && isMiEnabled
         var active: Set<HomeBackend> = []
-        if hasHASource || (!hasMiSource && homeBackend == .homeAssistant) {
+        if isHAEnabled && (effectiveHA || (!hasMiSource && homeBackend == .homeAssistant)) {
             active.insert(.homeAssistant)
         }
-        if hasMiSource || (!hasHASource && homeBackend == .xiaomiCloud) {
+        if isMiEnabled && (effectiveMi || (!hasHASource && !hasMiSource && homeBackend == .xiaomiCloud)) {
             active.insert(.xiaomiCloud)
         }
         return active
@@ -52,9 +56,9 @@ extension HomeBackend {
             return HomeBackendDescriptor(
                 backend: .homeAssistant,
                 titleProvider: { "Home Assistant" },
-                isConfigured: { $0.hasHASource },
-                primaryScopeIdentifier: { $0.homeAssistantScopeIdentifier },
-                activeScopeIdentifiers: { $0.hasHASource ? [$0.homeAssistantScopeIdentifier] : [] },
+                isConfigured: { $0.hasHASource && $0.isHAConnectionEnabled },
+                primaryScopeIdentifier: { $0.isHAConnectionEnabled ? $0.homeAssistantScopeIdentifier : nil },
+                activeScopeIdentifiers: { ($0.hasHASource && $0.isHAConnectionEnabled) ? [$0.homeAssistantScopeIdentifier] : [] },
                 makeProvider: { $0.makeHAProvider(baseURLString: $0.serverURLString, token: $0.loadHAToken()) }
             )
         case .xiaomiCloud:
@@ -62,8 +66,20 @@ extension HomeBackend {
                 backend: .xiaomiCloud,
                 titleProvider: { L10n.tr("米家云端直连", "Xiaomi Cloud Direct") },
                 isConfigured: { $0.hasMiSource },
-                primaryScopeIdentifier: { $0.miSessionScopeIdentifier },
-                activeScopeIdentifiers: { $0.hasMiSource ? Set($0.miAccounts.map(\.id)) : [] },
+                primaryScopeIdentifier: {
+                    if $0.miAccounts.isEmpty {
+                        return $0.hasEnabledMiSource ? $0.miSessionScopeIdentifier : nil
+                    }
+                    return $0.enabledMiAccounts.first?.session.historyScopeIdentifier
+                },
+                activeScopeIdentifiers: {
+                    if $0.miAccounts.isEmpty {
+                        return ($0.hasMiSource && $0.hasEnabledMiSource)
+                            ? Set([$0.miSessionScopeIdentifier].compactMap { $0 })
+                            : []
+                    }
+                    return Set($0.enabledMiAccounts.map(\.id))
+                },
                 makeProvider: { $0.makeMiAccountsProvider() }
             )
         case .demo:
@@ -84,7 +100,9 @@ extension HomeStore {
         HomeBackendDescriptor.activeBackends(
             homeBackend: homeBackend,
             hasHASource: hasHASource,
-            hasMiSource: hasMiSource
+            hasMiSource: hasMiSource,
+            isHAEnabled: isHAConnectionEnabled,
+            isMiEnabled: hasMiSource ? hasEnabledMiSource : isMiOnboardingBackendEnabled
         )
     }
 }

@@ -1929,7 +1929,8 @@ private struct PrivacySettingsTab: View {
         }
         .onAppear { scanner.invalidateIfContextChanged(for: store) }
         .onChange(of: store.homeBackend) { _, _ in scanner.reset() }
-        .onChange(of: store.miAccounts.map(\.id)) { _, _ in scanner.reset() }
+        .onChange(of: store.enabledMiAccounts.map(\.id)) { _, _ in scanner.reset() }
+        .onChange(of: store.hasEnabledHASource) { _, _ in scanner.reset() }
         .onChange(of: store.serverURLString) { _, _ in scanner.reset() }
         .alert(L10n.tr("退出并吊销所有令牌？", "Sign out and revoke all tokens?"), isPresented: $confirmsRevoke) {
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
