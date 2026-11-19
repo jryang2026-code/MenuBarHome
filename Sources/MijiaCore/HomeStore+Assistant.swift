@@ -346,20 +346,123 @@ extension HomeStore {
 
     /// The manual hazard rule for a command the user issued. A local plan has no confirmation chips
     /// of its own, so a high-risk device asks here before it changes (#143, #274 review). Low-risk
-    /// devices pass through untouched.
+    /// devices pass through untouched, and any modal run re-checks sibling intents against the
+    /// latest marks, device categories, and source contexts.
     private func hazardApprovedIntents(_ intents: [DeviceIntent]) -> [DeviceIntent] {
-        let markedLightIds = SwitchLightMarks.load(defaults: userDefaults)
-        return intents.filter { intent in
-            !ManualControlPolicy.requiresConfirmation(intent, devices: devices, markedLightIds: markedLightIds)
-                || allowManualControl(intent)
+        let contextBeforeModal = controlContextID
+        var capturedContexts: [String: ModalDeviceContext] = [:]
+        var capturedSceneEntities: [String: String] = [:]
+        var promptedProfiles: [Int: ManualControlHazardProfile] = [:]
+        var approvedIndices: Set<Int> = []
+        var rejectedIndices: Set<Int> = []
+        var didPresentAnyModal = false
+
+        var didPresentModalInPass = false
+        repeat {
+            didPresentModalInPass = false
+            guard controlContextID == contextBeforeModal else { return [] }
+            if didPresentAnyModal, rejectControlWhileLocked() { return [] }
+            for idx in intents.indices where !rejectedIndices.contains(idx) {
+                let intent = intents[idx]
+                if case .activateScene = intent.operation {
+                    guard let liveScene = scenes.first(where: { $0.id == intent.targetId }) else {
+                        approvedIndices.remove(idx)
+                        rejectedIndices.insert(idx)
+                        continue
+                    }
+                    if capturedSceneEntities[liveScene.id] == nil {
+                        capturedSceneEntities[liveScene.id] = liveScene.entityId
+                    }
+                    if capturedSceneEntities[liveScene.id] == liveScene.entityId {
+                        approvedIndices.insert(idx)
+                    } else {
+                        approvedIndices.remove(idx)
+                        rejectedIndices.insert(idx)
+                    }
+                    continue
+                }
+                guard let liveDevice = devices.first(where: { $0.id == intent.targetId }) else {
+                    approvedIndices.remove(idx)
+                    rejectedIndices.insert(idx)
+                    continue
+                }
+                if capturedContexts[liveDevice.id] == nil {
+                    capturedContexts[liveDevice.id] = captureModalDeviceContext(for: liveDevice)
+                }
+                guard let captured = capturedContexts[liveDevice.id],
+                      matchesModalDeviceContext(captured) else {
+                    approvedIndices.remove(idx)
+                    rejectedIndices.insert(idx)
+                    continue
+                }
+                let marks = SwitchLightMarks.load(defaults: userDefaults)
+                let needsConfirm = ManualControlPolicy.requiresConfirmation(
+                    intent.operation,
+                    for: liveDevice,
+                    markedLightIds: marks
+                )
+                if !needsConfirm {
+                    approvedIndices.insert(idx)
+                } else if let promptedProfile = promptedProfiles[idx] {
+                    if ManualControlHazardProfile(liveDevice) != promptedProfile {
+                        approvedIndices.remove(idx)
+                        rejectedIndices.insert(idx)
+                    }
+                } else {
+                    approvedIndices.remove(idx)
+                    if rejectControlWhileLocked() { return [] }
+                    let prePromptContext = captureModalDeviceContext(for: liveDevice)
+                    promptedProfiles[idx] = prePromptContext.hazardProfile
+                    didPresentModalInPass = true
+                    didPresentAnyModal = true
+                    if allowManualControl(intent.operation, for: liveDevice),
+                       let postDevice = resolvePostModalDevice(prePromptContext),
+                       !rejectChangedPostModalHazard(
+                           intent.operation,
+                           on: postDevice,
+                           captured: prePromptContext,
+                           didPresentModal: true
+                       ) {
+                        approvedIndices.insert(idx)
+                    } else {
+                        rejectedIndices.insert(idx)
+                    }
+                }
+            }
+        } while didPresentModalInPass
+
+        guard controlContextID == contextBeforeModal else { return [] }
+        if didPresentAnyModal, rejectControlWhileLocked() { return [] }
+        return intents.enumerated().compactMap { idx, intent in
+            guard approvedIndices.contains(idx), !rejectedIndices.contains(idx) else {
+                return nil
+            }
+            if case .activateScene = intent.operation {
+                guard let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                      capturedSceneEntities[liveScene.id] == liveScene.entityId else {
+                    return nil
+                }
+                return intent
+            }
+            guard let captured = capturedContexts[intent.targetId],
+                  matchesModalDeviceContext(captured) else {
+                return nil
+            }
+            return intent
         }
     }
 
     /// Runs a tapped suggestion. `offersUndoBanner` shows the 撤销 banner even for one device (GrokBall pills, #114).
     public func applyAssistantSuggestion(_ suggestion: AssistantSuggestion, offersUndoBanner: Bool = false) async {
+        let contextBeforeModal = controlContextID
         assistantSuggestions.removeAll { $0.id == suggestion.id }
         let intents = hazardApprovedIntents(suggestion.intents)
-        guard !intents.isEmpty else { return }
+        guard controlContextID == contextBeforeModal, !intents.isEmpty else {
+            if isControlBlockedByScreenLock {
+                setAssistantState(.failed(screenLockBlockedMessage))
+            }
+            return
+        }
         let reply = IntentReply.describe(intents, devices: devices, scenes: scenes)
         let plan = IntentPlan(intents: intents, reply: reply, source: .model)
         if let delaySpec = suggestion.delaySpec {
@@ -446,7 +549,17 @@ extension HomeStore {
         guard controlContext == controlContextID else { return nil }
         if !plan.intents.isEmpty {
             let approved = hazardApprovedIntents(plan.intents)
+            guard controlContext == controlContextID else { return nil }
             guard !approved.isEmpty else {
+                if isControlBlockedByScreenLock {
+                    let blocked = IntentPlan(
+                        intents: [],
+                        reply: screenLockBlockedMessage,
+                        source: plan.source
+                    )
+                    setAssistantState(.failed(blocked.reply))
+                    return blocked
+                }
                 let cancelled = IntentPlan(
                     intents: [],
                     reply: L10n.tr("已取消", "Cancelled"),
@@ -540,9 +653,28 @@ extension HomeStore {
             setAssistantState(.failed(screenLockBlockedMessage))
             return
         }
+        let hasLGRestore = last.restore.contains { lgClientServes($0) }
+        let hasMiRestore = last.restore.contains { !lgClientServes($0) }
+        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
+            setAssistantState(.failed(Self.miSessionBlockedMessage))
+            return
+        }
+        let contextBeforeModal = controlContextID
         let confirmation = confirmUndoTargets(last.restore, previousDevices: last.previous)
         if confirmation.abortUndo {
             setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
+            return
+        }
+        guard controlContextID == contextBeforeModal,
+              lastAssistantUndo?.actionId == last.actionId else {
+            return
+        }
+        if rejectControlWhileLocked() {
+            setAssistantState(.failed(screenLockBlockedMessage))
+            return
+        }
+        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
+            setAssistantState(.failed(Self.miSessionBlockedMessage))
             return
         }
         let savedBanner = undoBanner?.actionId == last.actionId ? undoBanner : nil
@@ -983,7 +1115,11 @@ extension HomeStore {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
             setAssistantState(.failed(screenLockBlockedMessage))
-            return plan
+            return IntentPlan(
+                intents: [],
+                reply: screenLockBlockedMessage,
+                source: plan.source
+            )
         }
         let context = controlContextID
         let previousSnapshot = devices
