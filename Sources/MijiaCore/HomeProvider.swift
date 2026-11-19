@@ -77,6 +77,8 @@ public protocol HomeProvider: Sendable {
     func events() -> AsyncStream<HomeProviderEvent>
     func execute(_ command: DeviceCommand) async throws
     func refreshNow() async
+    /// Clears LAN failure cooldowns (for `deviceId`, or all devices when `nil`) and polls right away.
+    func retryLAN(deviceId: String?) async
     /// Tells a polling provider whether the panel is open and the Mac is awake, so it can slow down or pause (#26).
     func setPollingContext(_ context: PollingContext) async
     /// Fetches historical temperature and humidity readings for `deviceId` over `window`.
@@ -99,6 +101,10 @@ public protocol HomeProvider: Sendable {
 }
 
 extension HomeProvider {
+    public func retryLAN(deviceId: String?) async {
+        await refreshNow()
+    }
+
     /// Push-based providers (Home Assistant) have nothing to slow down.
     public func setPollingContext(_ context: PollingContext) async {}
 
@@ -358,11 +364,16 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func attachContinuation(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        guard !isShutDown else {
+            cont.finish()
+            return
+        }
         self.continuation = cont
         restartLoop()
     }
 
     public func refreshNow() async {
+        guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
             pendingRefreshStateIds.insert(id)
@@ -789,6 +800,9 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     public func resolveCameraStream(for device: SmartDevice) async throws -> CameraStreamSource {
+        guard !isShutDown else {
+            throw HomeProviderError.networkError(L10n.tr("连接已关闭", "Connection is closed"))
+        }
         guard case .camera(let spec) = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("非摄像头设备", "Not a camera device"))
         }

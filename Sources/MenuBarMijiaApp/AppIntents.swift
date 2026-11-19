@@ -88,7 +88,7 @@ struct SceneEntityQuery: EntityStringQuery {
         try await HomeStore.shared.waitForInitialSnapshot()
         let wanted = Set(identifiers)
         return await MainActor.run {
-            HomeStore.shared.scenes
+            HomeStore.shared.visibleScenes
                 .filter { wanted.contains($0.id) }
                 .map { SceneEntity(scene: $0) }
         }
@@ -97,7 +97,7 @@ struct SceneEntityQuery: EntityStringQuery {
     func suggestedEntities() async throws -> [SceneEntity] {
         try await HomeStore.shared.waitForInitialSnapshot()
         return await MainActor.run {
-            HomeStore.shared.scenes.map { SceneEntity(scene: $0) }
+            HomeStore.shared.visibleScenes.map { SceneEntity(scene: $0) }
         }
     }
 
@@ -106,7 +106,7 @@ struct SceneEntityQuery: EntityStringQuery {
         let needle = IntentValidator.normalizedSceneName(string).lowercased()
         guard !needle.isEmpty else { return try await suggestedEntities() }
         return await MainActor.run {
-            HomeStore.shared.scenes
+            HomeStore.shared.visibleScenes
                 .filter { IntentValidator.normalizedSceneName($0.name).lowercased().contains(needle) }
                 .map { SceneEntity(scene: $0) }
         }
@@ -241,7 +241,11 @@ struct RunSceneIntent: AppIntent {
     func execute(in store: HomeStore) async throws -> String {
         try await store.waitForInitialSnapshot()
         if store.isControlBlockedByScreenLock { return store.screenLockBlockedMessage }
-        guard let current = store.scenes.first(where: { $0.id == scene.id }) else {
+        if let rejection = store.capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.id)
+            ?? store.capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.name) {
+            return rejection
+        }
+        guard let current = store.visibleScenes.first(where: { $0.id == scene.id }) else {
             return L10n.format(
                 "找不到场景「%@」",
                 "Scene \"%@\" was not found",

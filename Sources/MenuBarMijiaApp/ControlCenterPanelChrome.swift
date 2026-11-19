@@ -118,8 +118,9 @@ extension ControlCenterPanel {
                                 title: copy.title,
                                 count: store.allOffTargets.count,
                                 helpText: [copy.tooltip, copy.helper].compactMap { $0 }.joined(separator: "\n"),
-                                onConfirm: {
-                                    withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
+                                onBeginHold: { store.beginAllOffHold() },
+                                onConfirm: { mode in
+                                    withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: mode) }
                                     SoundFeedback.playSuccess()
                                 },
                                 onTap: {
@@ -831,7 +832,7 @@ enum PanelConnectionBadgeKind: Equatable, Sendable {
 }
 
 enum PanelConnectionInlineAction: Equatable, Sendable {
-    case leaveDemo, openConnectionSettings, presentMiReauth, openDetail
+    case leaveDemo, openConnectionSettings, presentMiReauth, openDetail, openLocalNetworkSettings
 }
 
 struct PanelConnectionStatusPresentation: Equatable, Sendable {
@@ -849,6 +850,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
         switch action {
         case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
         case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
+        case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
         }
     }
 
@@ -859,6 +861,7 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
         case .openConnectionSettings: SettingsWindowOpener.shared.show(tab: .connection)
         case .presentMiReauth: withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
         case .openDetail: PanelConnectionDetailState.shared.toggle()
+        case .openLocalNetworkSettings: LocalNetworkSystemSettings.open()
         }
     }
 
@@ -927,6 +930,18 @@ struct PanelConnectionStatusPresentation: Equatable, Sendable {
                 text: L10n.tr("米家登录已过期", "Xiaomi Home session expired"),
                 inlineActionTitle: L10n.tr("重新扫码", "Re-scan"),
                 inlineAction: .presentMiReauth,
+                sources: sources
+            )
+        }
+
+        // #268: a blocked Local Network permission owns the footer, so the recovery action is the
+        // one the user actually needs instead of a source-level retry.
+        if case .blocked(_, .openLocalNetworkSettings) = store.panelHealth {
+            return PanelConnectionStatusPresentation(
+                badge: .disconnected,
+                text: L10n.tr("本地网络权限受阻", "Local network access blocked"),
+                inlineActionTitle: L10n.tr("打开系统设置", "Open System Settings"),
+                inlineAction: .openLocalNetworkSettings,
                 sources: sources
             )
         }

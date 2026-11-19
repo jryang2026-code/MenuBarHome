@@ -19,6 +19,7 @@ private extension CapabilityDeactivationVerdict {
 
 extension HomeStore {
     static let capabilityDeviceIndexKey = "capability_device_index_v1"
+    static let capabilitySceneIndexKey = "capability_scene_index_v1"
     static let capabilityMiotDidScopesKey = "capability_miot_did_scopes_v1"
     static let pausedQuickActionsKey = "paused_quick_actions_v1"
     static let pausedQuickActionScopesKey = "paused_quick_action_scopes_v1"
@@ -50,7 +51,11 @@ extension HomeStore {
     }
 
     public var isHAConnectionEnabled: Bool {
-        !hasHASource || capabilitySelection.isSourceEnabled(connection: .homeAssistant, scope: homeAssistantScopeIdentifier)
+        if explicitlyDisabledConnections.contains(.homeAssistant) { return false }
+        guard hasHASource else {
+            return !explicitlyDisabledScopes.contains(homeAssistantScopeIdentifier)
+        }
+        return capabilitySelection.isSourceEnabled(connection: .homeAssistant, scope: homeAssistantScopeIdentifier)
     }
 
     public var hasEnabledHASource: Bool {
@@ -66,11 +71,27 @@ extension HomeStore {
     }
 
     public var allConfiguredSourcesTurnedOff: Bool {
-        (hasHASource || hasMiSource || !miAccounts.isEmpty) && !hasEnabledConfiguredSource
+        homeBackend != .demo
+            && (hasHASource || hasMiSource || !miAccounts.isEmpty)
+            && !hasEnabledConfiguredSource
     }
 
     func isPairedCardServedByEnabledHA(_ deviceId: String) -> Bool {
-        hasEnabledHASource && pairedDeviceIDs.contains(deviceId)
+        hasEnabledHASource
+            && pairedDeviceIDs.contains(deviceId)
+            && pinnedSource(for: deviceId) != .xiaomiCloud
+    }
+
+    func enabledMiFailoverScope(for deviceId: String, accountHint: String?) -> String? {
+        guard hasEnabledMiSource,
+              pairedDeviceIDs.contains(deviceId),
+              pinnedSource(for: deviceId) != .homeAssistant else {
+            return nil
+        }
+        if let accountHint, !accountHint.isEmpty, isMiAccountEnabled(accountHint) {
+            return accountHint
+        }
+        return enabledMiAccounts.first?.id ?? miSessionScopeIdentifier
     }
 
     var isMiOnboardingBackendEnabled: Bool {
@@ -108,7 +129,7 @@ extension HomeStore {
     }
 
     @discardableResult
-    private func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
+    func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
         CapabilitySelectionStore.save(
             selection: capabilitySelection,
             configuredScopes: configuredConnectionScopes(),
@@ -180,13 +201,107 @@ extension HomeStore {
         } else if verdict.disposition == .requiresPauseConfirmation {
             return verdict
         }
-        if !verdict.itemsToPause.isEmpty { pauseAffectedReferences(verdict.itemsToPause) }
+        if !verdict.itemsToPause.isEmpty {
+            pauseAffectedReferences(verdict.itemsToPause, fallbackCapabilities: [.connection(.xiaomiCloud)])
+        }
         pendingRevalidationScopes.remove(id)
         explicitlyDisabledScopes.insert(id)
         capabilitySelection = proposed.normalized(with: .shared)
         capabilityGeneration &+= 1
         persistCapabilitySelection()
         applyMiAccountDisabledRuntimeState(id: id)
+        return verdict
+    }
+
+    // MARK: - Preview & Apply Home Assistant Connection Enablement
+
+    public func previewSetHAConnectionEnabled(_ enabled: Bool) -> CapabilityDeactivationVerdict {
+        guard !enabled, isHAConnectionEnabled else {
+            return allowedDeactivationVerdict(for: proposedSelectionForHAConnection(enabled: enabled))
+        }
+        return evaluateCapabilityDeactivation(
+            proposed: proposedSelectionForHAConnection(enabled: false),
+            expectedGeneration: nil
+        )
+    }
+
+    var hasManagedHAProvider: Bool {
+        activeDualProvider != nil
+            || provider is HAWebSocketProvider
+            || haProviderFactory != nil
+            || provider is DualSourceHomeProvider
+    }
+
+    @discardableResult
+    public func setHAConnectionEnabled(
+        _ enabled: Bool,
+        pauseConfirmed: Bool = false,
+        expectedGeneration: Int? = nil,
+        expectedPauseItemKeys: Set<String>? = nil
+    ) -> CapabilityDeactivationVerdict {
+        let haScope = homeAssistantScopeIdentifier
+        if enabled {
+            let next = proposedSelectionForHAConnection(enabled: true).normalized(with: .shared)
+            let wasDisabled = explicitlyDisabledConnections.contains(.homeAssistant)
+                || explicitlyDisabledScopes.contains(haScope)
+            guard next != capabilitySelection || wasDisabled else {
+                return allowedDeactivationVerdict(for: capabilitySelection)
+            }
+            clearHATeardownState()
+            explicitlyDisabledConnections.remove(.homeAssistant)
+            explicitlyDisabledScopes.remove(haScope)
+            capabilitySelection = next
+            capabilityGeneration &+= 1
+            persistCapabilitySelection(removingScopes: [haScope])
+            if homeBackend != .demo, hasManagedHAProvider {
+                pendingRevalidationScopes.insert(haScope)
+                if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
+                    rebuildLiveProvider()
+                } else {
+                    // `provider is DualSourceHomeProvider` is the only remaining way into
+                    // `hasManagedHAProvider`, so this branch mirrors it: nothing to rebuild here, but
+                    // the paused references must still get the same revalidation as the neighbours.
+                    syncHistoryConnectionScopes()
+                    syncScheduledCommandScopeIfNeeded()
+                    revalidatePausedItems()
+                }
+            } else {
+                syncHistoryConnectionScopes()
+                syncScheduledCommandScopeIfNeeded()
+                revalidatePausedItems()
+            }
+            return allowedDeactivationVerdict(for: capabilitySelection)
+        }
+
+        guard isHAConnectionEnabled else { return allowedDeactivationVerdict(for: capabilitySelection) }
+        let proposed = proposedSelectionForHAConnection(enabled: false)
+        let verdict = evaluateCapabilityDeactivation(proposed: proposed, expectedGeneration: expectedGeneration)
+        if verdict.disposition == .blocked { return verdict }
+        if !canPersistCapabilitySelection() {
+            return blockedSelectionVerdict(proposed: proposed, storeKey: CapabilitySelectionStore.storageKey)
+        }
+        let freshPauseKeys = Set(verdict.itemsToPause.map(\.pauseKey))
+        if pauseConfirmed {
+            if let expectedPauseItemKeys, !freshPauseKeys.isEmpty, expectedPauseItemKeys != freshPauseKeys {
+                return verdict
+            }
+        } else if verdict.disposition == .requiresPauseConfirmation {
+            return verdict
+        }
+        // Snapshot live device and scene indexes before mutating selection or clearing rows so post-disable
+        // control gates recognize every HA device and scene ID immediately.
+        if !devices.isEmpty { syncIndexedDevices(from: devices) }
+        if !scenes.isEmpty { syncIndexedScenes(from: scenes) }
+        if !verdict.itemsToPause.isEmpty {
+            pauseAffectedReferences(verdict.itemsToPause, fallbackCapabilities: [.connection(.homeAssistant)])
+        }
+        pendingRevalidationScopes.remove(haScope)
+        explicitlyDisabledConnections.insert(.homeAssistant)
+        explicitlyDisabledScopes.remove(haScope)
+        capabilitySelection = proposed.normalized(with: .shared)
+        capabilityGeneration &+= 1
+        persistCapabilitySelection(removingScopes: [haScope])
+        applyHADisabledRuntimeState()
         return verdict
     }
 
@@ -244,6 +359,9 @@ extension HomeStore {
         let beforeCount = indexedDevicesById.count
         indexedDevicesById = indexedDevicesById.filter { !scopes.contains($0.value.sourceScope) }
         if indexedDevicesById.count != beforeCount { persistIndexedDevices() }
+        let beforeSceneCount = indexedScenesById.count
+        indexedScenesById = indexedScenesById.filter { !scopes.contains($0.value.sourceScope) }
+        if indexedScenesById.count != beforeSceneCount { persistIndexedScenes() }
         var didScopesChanged = false
         var updatedDidScopes: [String: Set<String>] = [:]
         for (did, ownerScopes) in miotDidToAccountScopes {
@@ -280,6 +398,21 @@ extension HomeStore {
         return next
     }
 
+    private func proposedSelectionForHAConnection(enabled: Bool) -> CapabilitySelection {
+        var next = capabilitySelection
+        let haScope = homeAssistantScopeIdentifier
+        if enabled {
+            next.enabledConnections.insert(.homeAssistant)
+            next.enabledConnectionScopes.insert(haScope)
+        } else {
+            next.enabledConnections.remove(.homeAssistant)
+            next.enabledConnectionScopes = next.enabledConnectionScopes.filter {
+                CapabilityReferenceEngine.connectionCapability(forScope: $0) != .homeAssistant
+            }
+        }
+        return next
+    }
+
     /// A paired card copies the Xiaomi `accountId` even when Home Assistant drives it or can take over
     /// seamlessly (ADR-0008). Only rows exclusively controlled by the disabled Mi account are torn down.
     private func isMiOwnedRow(_ device: SmartDevice, accountId: String) -> Bool {
@@ -290,7 +423,221 @@ extension HomeStore {
         return device.accountId == accountId
     }
 
+    private func isHAExclusivelyOwnedRow(_ device: SmartDevice) -> Bool {
+        if homeBackend == .demo { return false }
+        if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return false }
+        if hasEnabledMiSource && pairedDeviceIDs.contains(device.id) { return false }
+        if deviceBackends[device.id] == .homeAssistant { return true }
+        if deviceBackends[device.id] == .xiaomiCloud { return false }
+        if device.accountId != nil { return false }
+        return homeBackend == .homeAssistant || indexedDevicesById[device.id]?.connection == .homeAssistant
+    }
+
+    func clearHATeardownState() {
+        haTeardownToken &+= 1
+        isDisablingHAConnection = false
+        capabilityTeardownTask = nil
+    }
+
+    func collectHADisabledDeviceIds() -> (disabledDeviceIds: Set<String>, cameraTeardownIds: Set<String>) {
+        let haCameraIds = Set(devices.compactMap { device -> String? in
+            guard case .camera = device.kind else { return nil }
+            if deviceBackends[device.id] == .homeAssistant
+                || pinnedSource(for: device.id) == .homeAssistant
+                || isHAExclusivelyOwnedRow(device) {
+                return device.id
+            }
+            return nil
+        })
+
+        var disabledDeviceIds = Set(devices.filter { isHAExclusivelyOwnedRow($0) }.map(\.id))
+        for (devId, indexed) in indexedDevicesById where indexed.connection == .homeAssistant {
+            if !(hasEnabledMiSource && pairedDeviceIDs.contains(devId)) {
+                disabledDeviceIds.insert(devId)
+            }
+        }
+        return (disabledDeviceIds, disabledDeviceIds.union(haCameraIds))
+    }
+
+    func tearDownHACameras(_ cameraTeardownIds: Set<String>) {
+        if let activeCam = activeLiveCameraDeviceId, cameraTeardownIds.contains(activeCam) {
+            activeLiveCameraDeviceId = nil
+        }
+        onHAConnectionDisabled?(cameraTeardownIds)
+    }
+
+    private func trackHATeardownIfNeeded(before previousShutdownTask: Task<Void, Never>?) {
+        guard let shutdownTask = providerShutdownTask, shutdownTask != previousShutdownTask else {
+            clearHATeardownState()
+            return
+        }
+        haTeardownToken &+= 1
+        let token = haTeardownToken
+        isDisablingHAConnection = true
+        capabilityTeardownTask = Task { @MainActor [weak self] in
+            await shutdownTask.value
+            guard let self, self.haTeardownToken == token else { return }
+            self.isDisablingHAConnection = false
+            self.capabilityTeardownTask = nil
+        }
+    }
+
+    private func applyHADisabledRuntimeState() {
+        // Synchronously seal off reads, writes, and events on the active dual provider before any
+        // async shutdown task runs so no refresh or history fetch can slip through the window.
+        (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.homeAssistant)
+
+        guard homeBackend != .demo else {
+            clearHATeardownState()
+            scheduleRaycastSnapshotExport()
+            return
+        }
+
+        _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
+        let survivingBanner: UndoBanner? = if hasEnabledMiSource, let banner = undoBanner,
+            !partitionUndoCommandsByCapability(
+                banner.restoreCommands,
+                previousDevices: banner.previousDevices
+            ).eligibleCommands.isEmpty {
+            banner
+        } else {
+            nil
+        }
+        let survivingAssistantUndo: AssistantUndoEntry? = if hasEnabledMiSource, let entry = lastAssistantUndo,
+            !partitionUndoCommandsByCapability(
+                entry.restore,
+                previousDevices: entry.previous
+            ).eligibleCommands.isEmpty {
+            entry
+        } else {
+            nil
+        }
+        invalidateUndoContext()
+        if let survivingBanner {
+            scheduleUndoBanner(
+                actionId: survivingBanner.actionId,
+                title: survivingBanner.title,
+                restoreCommands: survivingBanner.restoreCommands,
+                previousDevices: survivingBanner.previousDevices,
+                deviceCount: survivingBanner.deviceCount,
+                habitReceipt: survivingBanner.habitReceipt,
+                duration: survivingBanner.duration,
+                isAllOff: survivingBanner.isAllOff,
+                attemptedDeviceIds: survivingBanner.attemptedDeviceIds
+            )
+        }
+        if let survivingAssistantUndo {
+            lastAssistantUndo = survivingAssistantUndo
+        }
+
+        let (disabledDeviceIds, cameraTeardownIds) = collectHADisabledDeviceIds()
+
+        pendingHAAddressSuggestion = nil
+        haPlaintextPrompt = nil
+        localNetworkBlocks.remove(.homeAssistant)
+        sourceStatuses.removeValue(forKey: .homeAssistant)
+        connectedBackends.remove(.homeAssistant)
+        scenes = []
+
+        for removedId in disabledDeviceIds {
+            releaseReadBackEcho(for: removedId)
+            cancelFacetWrites(for: removedId)
+            cancelDebouncedWrites(for: removedId, recomputeRow: false)
+            clearOptimisticLockEntries(for: removedId)
+            clearOptimisticRevisions(for: removedId)
+            manualWriteSessions.removeValue(forKey: removedId)
+            deviceFacets.removeValue(forKey: removedId)
+            deviceTransportDiagnostics.removeValue(forKey: removedId)
+            deviceBackends.removeValue(forKey: removedId)
+            lastReportedDevices.removeValue(forKey: removedId)
+            lastReportedFacets.removeValue(forKey: removedId)
+        }
+
+        let retainedPairedIds = pairedDeviceIDs.subtracting(disabledDeviceIds)
+        for pairedId in retainedPairedIds {
+            let canFailOverToMi = hasEnabledMiSource && pinnedSource(for: pairedId) != .homeAssistant
+            if deviceBackends[pairedId] == .homeAssistant || pinnedSource(for: pairedId) == .homeAssistant {
+                releaseReadBackEcho(for: pairedId)
+                cancelFacetWrites(for: pairedId)
+                cancelDebouncedWrites(for: pairedId, recomputeRow: false)
+                clearOptimisticLockEntries(for: pairedId)
+                clearOptimisticRevisions(for: pairedId)
+                manualWriteSessions.removeValue(forKey: pairedId)
+                if canFailOverToMi {
+                    deviceBackends[pairedId] = .xiaomiCloud
+                }
+            }
+            if let existingFacets = deviceFacets[pairedId] {
+                let keptFacets = existingFacets.filter { !shouldSuppressHAFacet($0) }
+                if keptFacets.count != existingFacets.count {
+                    cancelFacetWrites(for: pairedId)
+                    if keptFacets.isEmpty {
+                        deviceFacets.removeValue(forKey: pairedId)
+                    } else {
+                        deviceFacets[pairedId] = keptFacets
+                    }
+                }
+            }
+        }
+
+        devices.removeAll { disabledDeviceIds.contains($0.id) || isHAExclusivelyOwnedRow($0) }
+        if !devices.isEmpty { syncIndexedDevices(from: devices) }
+        environmentReadings.removeAll { disabledDeviceIds.contains($0.id) }
+        if !hasEnabledMiSource {
+            rooms = []
+            selectRoom(nil)
+        } else if let selectedRoomId,
+                  !rooms.contains(where: { $0.id == selectedRoomId })
+                      || (!devices.contains(where: { $0.roomId == selectedRoomId }) && MiAccountScope.owner(of: selectedRoomId) == nil) {
+            if MiAccountScope.owner(of: selectedRoomId) == nil,
+               !devices.contains(where: { $0.roomId == selectedRoomId }) {
+                rooms.removeAll { $0.id == selectedRoomId }
+                selectRoom(nil)
+            }
+        }
+
+        tearDownHACameras(cameraTeardownIds)
+
+        let shutdownBefore = providerShutdownTask
+        if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
+            rebuildLiveProvider()
+            if activeBackends.isEmpty {
+                connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                connectedBackends = []
+                sourceStatuses = [:]
+            }
+        } else if let dual = provider as? DualSourceHomeProvider {
+            syncHistoryConnectionScopes()
+            syncScheduledCommandScopeIfNeeded()
+            let previousShutdown = providerShutdownTask
+            providerShutdownTask = Task {
+                await previousShutdown?.value
+                await dual.setSourceProvider(nil, for: .homeAssistant)
+            }
+            if activeBackends.isEmpty {
+                connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                connectedBackends = []
+                sourceStatuses = [:]
+            }
+        } else {
+            syncHistoryConnectionScopes()
+            syncScheduledCommandScopeIfNeeded()
+            if activeBackends.isEmpty {
+                eventTask?.cancel()
+                shutdownCurrentProvider()
+                connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                connectedBackends = []
+                sourceStatuses = [:]
+            }
+        }
+        trackHATeardownIfNeeded(before: shutdownBefore)
+        scheduleRaycastSnapshotExport()
+    }
+
     private func applyMiAccountDisabledRuntimeState(id: String) {
+        if !hasEnabledMiSource {
+            (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.xiaomiCloud)
+        }
         // Record any live MIoT DIDs before tearing down rows or facets so late writes stay fail-closed.
         _ = recordMiotDidAccountScopes(from: devices, facetsByDeviceId: deviceFacets)
         invalidateUndoContext()
@@ -363,8 +710,23 @@ extension HomeStore {
 
         onMiAccountDisabled?(id, disabledDeviceIds)
 
-        if provider is DualSourceHomeProvider || provider is MiAccountsProvider {
+        if activeDualProvider != nil || provider is MiAccountsProvider {
             rebuildLiveProvider()
+            if activeBackends.isEmpty {
+                connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                connectedBackends = []
+                sourceStatuses = [:]
+            }
+        } else if let dual = provider as? DualSourceHomeProvider {
+            syncHistoryConnectionScopes()
+            syncScheduledCommandScopeIfNeeded()
+            if !hasEnabledMiSource {
+                let previousShutdown = providerShutdownTask
+                providerShutdownTask = Task {
+                    await previousShutdown?.value
+                    await dual.setSourceProvider(nil, for: .xiaomiCloud)
+                }
+            }
             if activeBackends.isEmpty {
                 connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
                 connectedBackends = []
@@ -373,40 +735,142 @@ extension HomeStore {
         } else {
             syncHistoryConnectionScopes()
             syncScheduledCommandScopeIfNeeded()
+            if activeBackends.isEmpty {
+                connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                connectedBackends = []
+                sourceStatuses = [:]
+            }
         }
+        scheduleRaycastSnapshotExport()
     }
 
     // MARK: - Host Control Write Gate
 
     public func evaluateDeviceControlGate(deviceId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        CapabilityReferenceEngine.evaluateControlTargetGate(
+        let indexed = resolvedIndexedDevice(for: deviceId)
+        return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .device, targetId: deviceId, expectedGeneration: expectedGeneration,
             currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: currentIndexedDevicesList(), scenes: currentSceneReferences()
+            devices: indexed.map { [$0] } ?? [], scenes: []
         )
     }
 
     public func evaluateSceneControlGate(sceneId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        CapabilityReferenceEngine.evaluateControlTargetGate(
+        let scene = resolvedSceneReference(for: sceneId)
+        return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .scene, targetId: sceneId, expectedGeneration: expectedGeneration,
             currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: currentIndexedDevicesList(), scenes: currentSceneReferences()
+            devices: [], scenes: scene.map { [$0] } ?? []
         )
     }
 
-    public func capabilityControlRejectionMessage(forDeviceId deviceId: String) -> String? {
+    public func capabilityControlRejectionMessage(forDeviceId deviceId: String, allowNameMatch: Bool = false) -> String? {
         let gate = evaluateDeviceControlGate(deviceId: deviceId)
-        guard !gate.allowed, let reason = gate.rejectionReason, reason != .deviceNotFound else { return nil }
+        if !gate.allowed, let reason = gate.rejectionReason, reason != .deviceNotFound {
+            return reason.userMessage
+        }
+        guard allowNameMatch else { return nil }
+        let trimmed = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let matched = currentIndexedDevicesList().filter { $0.name == trimmed }
+        guard matched.count == 1, let single = matched.first else { return nil }
+        let byNameGate = evaluateDeviceControlGate(deviceId: single.id)
+        guard !byNameGate.allowed, let reason = byNameGate.rejectionReason, reason != .deviceNotFound else { return nil }
         return reason.userMessage
+    }
+
+    public func capabilitySceneControlRejectionMessage(forSceneIdOrName sceneIdOrName: String) -> String? {
+        guard homeBackend != .demo else { return nil }
+        let needle = sceneIdOrName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nil }
+        let normalizedNeedle = IntentValidator.normalizedSceneName(needle)
+        let refs = currentSceneReferences()
+        if let matched = refs.first(where: {
+            $0.id.caseInsensitiveCompare(needle) == .orderedSame
+                || IntentValidator.normalizedSceneName($0.name).caseInsensitiveCompare(normalizedNeedle) == .orderedSame
+                || "scene.\($0.name)".caseInsensitiveCompare(needle) == .orderedSame
+        }) {
+            let gate = evaluateSceneControlGate(sceneId: matched.id)
+            guard !gate.allowed, let reason = gate.rejectionReason, reason != .sceneNotFound else { return nil }
+            return reason.userMessage
+        }
+        return nil
+    }
+
+    func firstPlanCapabilityRejectionMessage(for intents: [DeviceIntent]) -> String? {
+        for intent in intents {
+            if intent.operation == .activateScene {
+                if let msg = capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) {
+                    return msg
+                }
+            } else if let reason = capabilityWriteRejection(forDeviceId: intent.targetId) {
+                return reason.userMessage
+            }
+        }
+        return nil
+    }
+
+    /// O(1) single-device write gate for hot list loops (`allOffTargets`, `controllableDevices`,
+    /// `buildRaycastSnapshot`) without scanning `devices` or sorting the full device index.
+    func capabilityWriteRejection(for device: SmartDevice) -> ControlTargetRejectionReason? {
+        let indexed = makeIndexedDevice(from: device)
+        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
+            targetKind: .device, targetId: device.id, expectedGeneration: nil,
+            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            devices: [indexed], scenes: []
+        )
+        return verdict.allowed ? nil : verdict.rejectionReason
     }
 
     /// Capability rejection for a command target, resolved from the live rows as well as the persisted
     /// index. A stale index entry must not let a command slip past the gate that the panel applies
     /// (Bugbot #275: write gate skipped without index entry).
     func capabilityWriteRejection(forDeviceId deviceId: String) -> ControlTargetRejectionReason? {
-        guard resolvedIndexedDevice(for: deviceId) != nil else { return nil }
-        let verdict = evaluateDeviceControlGate(deviceId: deviceId)
+        guard let indexed = resolvedIndexedDevice(for: deviceId) else { return nil }
+        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
+            targetKind: .device, targetId: deviceId, expectedGeneration: nil,
+            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            devices: [indexed], scenes: []
+        )
         return verdict.allowed ? nil : verdict.rejectionReason
+    }
+
+    /// Fail-closed write gate for Home Assistant domain entities (`light.*`, `switch.*`, `scene.*`,
+    /// `script.*`, `button.*`, etc.) when Home Assistant is disabled.
+    func haCommandWriteRejection(for entityId: String) -> ControlTargetRejectionReason? {
+        guard homeBackend != .demo,
+              (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)),
+              !isHAConnectionEnabled else {
+            return nil
+        }
+        if MiotAddress.parse(entityId) != nil || LGWebOSProtocol.isLGEntity(entityId) {
+            return nil
+        }
+        guard let dot = entityId.firstIndex(of: ".") else { return nil }
+        let domain = entityId[..<dot]
+        guard !domain.isEmpty, domain.allSatisfy({ $0.isLetter || $0 == "_" }) else { return nil }
+        return .connectionDisabled(.homeAssistant, scope: homeAssistantScopeIdentifier)
+    }
+
+    func shouldSuppressHAFacet(_ control: FacetControl) -> Bool {
+        guard homeBackend != .demo,
+              (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)),
+              !isHAConnectionEnabled else {
+            return false
+        }
+        switch control.target {
+        case .haProperty, .haAction:
+            return true
+        case .property, .action:
+            return false
+        case nil:
+            if LGWebOSProtocol.isLGEntity(control.id) || MiotAddress.parse(control.id) != nil {
+                return false
+            }
+            guard let dot = control.id.firstIndex(of: ".") else { return false }
+            let prefix = control.id[..<dot]
+            return !prefix.isEmpty && prefix.allSatisfy { $0.isLetter || $0 == "_" }
+        }
     }
 
     /// Fail-closed write gate for any MIoT property or action entity (`miot:<did>:...` / `miot-action:<did>:...`),
@@ -535,6 +999,7 @@ extension HomeStore {
             }
             return parsed.did
         }
+        if indexedDevicesById[entityId] != nil { return entityId }
         return nil
     }
 
@@ -544,6 +1009,10 @@ extension HomeStore {
         if let data = userDefaults.data(forKey: Self.capabilityDeviceIndexKey),
            let decoded = try? JSONDecoder().decode([String: CapabilityIndexedDevice].self, from: data) {
             indexedDevicesById = decoded
+        }
+        if let data = userDefaults.data(forKey: Self.capabilitySceneIndexKey),
+           let decoded = try? JSONDecoder().decode([String: SceneReference].self, from: data) {
+            indexedScenesById = decoded
         }
         if let data = userDefaults.data(forKey: Self.capabilityMiotDidScopesKey),
            let decoded = try? JSONDecoder().decode([String: [String]].self, from: data) {
@@ -577,6 +1046,19 @@ extension HomeStore {
         }
         if changed { persistIndexedDevices() }
         _ = recordMiotDidAccountScopes(from: currentDevices, facetsByDeviceId: deviceFacets)
+    }
+
+    func syncIndexedScenes(from currentScenes: [HomeScene]) {
+        guard !currentScenes.isEmpty else { return }
+        var changed = false
+        for scene in currentScenes {
+            let entry = makeSceneReference(from: scene)
+            if indexedScenesById[scene.id] != entry {
+                indexedScenesById[scene.id] = entry
+                changed = true
+            }
+        }
+        if changed { persistIndexedScenes() }
     }
 
     @discardableResult
@@ -649,27 +1131,27 @@ extension HomeStore {
     func reconcileReenabledScopesAfterSnapshot(_ snapshot: SynthesizedHome) {
         guard !pendingRevalidationScopes.isEmpty else { return }
         let presentIds = Set(snapshot.devices.map(\.id))
+        let presentSceneIds = Set(snapshot.scenes.map(\.id))
         var completedScopes: Set<String> = []
         for scope in pendingRevalidationScopes {
-            // Covers every connection kind: a Mi account the user turned off again, or a Home
-            // Assistant address that is no longer enabled, needs no revalidation anymore.
             if !capabilitySelection.isSourceEnabled(connection: nil, scope: scope) {
                 completedScopes.insert(scope)
                 continue
             }
             let accountReady: Bool
             if CapabilityReferenceEngine.connectionCapability(forScope: scope) != .xiaomiCloud {
-                // No Mi account owns this scope (a Home Assistant address, or a LAN source): the
-                // Mi-only freshness signals below can never name it, so its first complete snapshot is
-                // the authority instead.
-                accountReady = snapshot.isInitialLoadComplete
+                let haConnected: Bool
+                if let status = snapshot.sourceStatuses[.homeAssistant] ?? sourceStatuses[.homeAssistant] {
+                    haConnected = status.isConnected
+                } else if case .disconnected = connectionStatus {
+                    haConnected = false
+                } else {
+                    haConnected = true
+                }
+                accountReady = snapshot.isInitialLoadComplete && snapshot.closesAwayGap && haConnected
             } else if selectedHomeHidesScope(scope) {
-                // Another account's home is selected, so this child intentionally hides its devices.
-                // A connected, fresh snapshot is not an inventory of the account in that state.
                 accountReady = false
             } else if activeMiAccountsProvider != nil || snapshot.miAccountsEpoch != nil {
-                // A buffered pre-rebuild snapshot, or one whose account never connected (expired
-                // session, failed refresh), proves nothing about that account's targets (H3).
                 accountReady = snapshot.miAccountsEpoch == miAccountsConfigEpoch
                     && snapshot.freshAccountIds.contains(scope)
                     && (snapshot.accountStatuses[scope]?.isConnected ?? true)
@@ -680,6 +1162,11 @@ extension HomeStore {
             let beforeCount = indexedDevicesById.count
             indexedDevicesById = indexedDevicesById.filter { $0.value.sourceScope != scope || presentIds.contains($0.key) }
             if indexedDevicesById.count != beforeCount { persistIndexedDevices() }
+            if CapabilityReferenceEngine.connectionCapability(forScope: scope) == .homeAssistant {
+                let beforeSceneCount = indexedScenesById.count
+                indexedScenesById = indexedScenesById.filter { $0.value.sourceScope != scope || presentSceneIds.contains($0.key) }
+                if indexedScenesById.count != beforeSceneCount { persistIndexedScenes() }
+            }
             completedScopes.insert(scope)
         }
         guard !completedScopes.isEmpty else { return }
@@ -701,15 +1188,13 @@ extension HomeStore {
         case .xiaomiCloud:
             return miAccounts.isEmpty ? miSessionScopeIdentifier == scope : miAccounts.contains { $0.id == scope }
         case .homeAssistant:
-            return hasHASource && homeAssistantScopeIdentifier == scope
+            return (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant))
+                && homeAssistantScopeIdentifier == scope
         }
     }
 
     /// One rule for every paused reference (timer, automation, quick action): only the scopes it
-    /// actually lost decide when it may resume. A scope that is still enabled but waiting for its
-    /// first fresh snapshot keeps the item paused, and so does a scope the user turned off. A scope
-    /// that is no longer configured needs no snapshot at all: the item moves on through the normal
-    /// missing/foreign flow. Nothing here looks at *other* accounts.
+    /// actually lost decide when it may resume.
     private func pausedItemScopesAreSettled(_ scopes: [String]) -> Bool {
         scopes.allSatisfy { scope in
             guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
@@ -737,6 +1222,16 @@ extension HomeStore {
     private func persistIndexedDevices() {
         if let data = try? JSONEncoder().encode(indexedDevicesById) {
             userDefaults.set(data, forKey: Self.capabilityDeviceIndexKey)
+        }
+    }
+
+    func persistIndexedScenes() {
+        if indexedScenesById.isEmpty {
+            userDefaults.removeObject(forKey: Self.capabilitySceneIndexKey)
+            return
+        }
+        if let data = try? JSONEncoder().encode(indexedScenesById) {
+            userDefaults.set(data, forKey: Self.capabilitySceneIndexKey)
         }
     }
 
@@ -786,15 +1281,33 @@ extension HomeStore {
 
     func inferSource(for device: SmartDevice) -> (ConnectionCapabilityID?, String) {
         if lgClientServes(device) || device.id == LGWebOSProtocol.deviceId { return (nil, "lan:lg-webos") }
-        // A paired card copies the Xiaomi `accountId` from either side, while `deviceBackends` records
-        // which backend actually drives it (ADR-0008). Reading `accountId` first would classify an
-        // HA-controlled card as a Mi target and pause its references when that account is disabled.
-        // Only a source the host manages carries a capability scope; a provider injected by a test or
-        // older launch has none and keeps the pre-P2a write path.
+        let haManaged = hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)
+        let miManaged = !miAccounts.isEmpty || hasMiSource || explicitlyDisabledConnections.contains(.xiaomiCloud)
+        if homeBackend != .demo {
+            // Preserve explicit user source pins across child provider teardown: when HA or Xiaomi
+            // is turned off, DualSourceHomeProvider merges only the surviving child, which would
+            // otherwise re-attribute a pinned paired card to the unpinned side.
+            if pinnedSource(for: device.id) == .homeAssistant, haManaged, !isHAConnectionEnabled {
+                return (.homeAssistant, homeAssistantScopeIdentifier)
+            }
+            if pinnedSource(for: device.id) == .xiaomiCloud, miManaged, !hasEnabledMiSource {
+                if let accountId = device.accountId, !accountId.isEmpty,
+                   isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
+                    return (.xiaomiCloud, accountId)
+                }
+                if let scope = miAccounts.first?.id ?? miSessionScopeIdentifier {
+                    return (.xiaomiCloud, scope)
+                }
+            }
+        }
         switch deviceBackends[device.id] {
-        case .homeAssistant where hasHASource:
+        case .homeAssistant where haManaged:
+            if !isHAConnectionEnabled,
+               let miScope = enabledMiFailoverScope(for: device.id, accountHint: device.accountId) {
+                return (.xiaomiCloud, miScope)
+            }
             return (.homeAssistant, homeAssistantScopeIdentifier)
-        case .xiaomiCloud where !miAccounts.isEmpty || hasMiSource:
+        case .xiaomiCloud where miManaged:
             if let accountId = device.accountId, !accountId.isEmpty,
                isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
                 if !isMiAccountEnabled(accountId), isPairedCardServedByEnabledHA(device.id) {
@@ -805,16 +1318,15 @@ extension HomeStore {
             if !hasEnabledMiSource, isPairedCardServedByEnabledHA(device.id) {
                 return (.homeAssistant, homeAssistantScopeIdentifier)
             }
-            if let scope = enabledMiAccounts.first?.id ?? miSessionScopeIdentifier { return (.xiaomiCloud, scope) }
+            if let scope = enabledMiAccounts.first?.id ?? miAccounts.first?.id ?? miSessionScopeIdentifier {
+                return (.xiaomiCloud, scope)
+            }
         case .demo:
             return (nil, "demo")
         default:
             break
         }
         if homeBackend == .demo { return (nil, "demo") }
-        // A row naming an account this Mac does not have (a stale row, a shared home, a provider
-        // injected by tests) is not capability-managed: blocking it would break devices that worked
-        // before P2a and that the user never turned off.
         if let accountId = device.accountId, !accountId.isEmpty,
            isCapabilityScopeConfigured(.xiaomiCloud, scope: accountId) {
             if !isMiAccountEnabled(accountId), isPairedCardServedByEnabledHA(device.id) {
@@ -822,7 +1334,12 @@ extension HomeStore {
             }
             return (.xiaomiCloud, accountId)
         }
-        if hasHASource && (homeBackend == .homeAssistant || activeHAProvider != nil || isPairedCardServedByEnabledHA(device.id)) {
+        if haManaged && (
+            homeBackend == .homeAssistant
+                || activeHAProvider != nil
+                || isPairedCardServedByEnabledHA(device.id)
+                || indexedDevicesById[device.id]?.connection == .homeAssistant
+        ) {
             return (.homeAssistant, homeAssistantScopeIdentifier)
         }
         return (nil, "local")
@@ -833,7 +1350,8 @@ extension HomeStore {
         case .xiaomiCloud:
             return !miAccounts.isEmpty ? miAccounts.contains { $0.id == scope } : (miSessionScopeIdentifier == scope)
         case .homeAssistant:
-            return hasHASource && homeAssistantScopeIdentifier == scope
+            return (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant))
+                && homeAssistantScopeIdentifier == scope
         case nil:
             return true
         }
@@ -861,15 +1379,34 @@ extension HomeStore {
         return SafetyRetentionPolicy(enabledSignals: enabled, starredDeviceIds: favoriteDeviceIds)
     }
 
+    private func makeSceneReference(from scene: HomeScene) -> SceneReference {
+        let haManaged = hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)
+        let conn: ConnectionCapabilityID? = (homeBackend != .demo && haManaged) ? .homeAssistant : nil
+        let scope = (homeBackend != .demo && haManaged)
+            ? homeAssistantScopeIdentifier
+            : (homeBackend == .demo ? "demo" : "local")
+        return SceneReference(
+            id: scene.id, name: scene.name, connection: conn, sourceScope: scope,
+            isSourceAvailable: isScopeConfiguredAndAvailable(connection: conn, scope: scope)
+        )
+    }
+
+    private func materializeSceneReference(_ stored: SceneReference) -> SceneReference {
+        SceneReference(
+            id: stored.id, name: stored.name, connection: stored.connection, sourceScope: stored.sourceScope,
+            isSourceAvailable: isScopeConfiguredAndAvailable(connection: stored.connection, scope: stored.sourceScope)
+        )
+    }
+
+    private func resolvedSceneReference(for sceneId: String) -> SceneReference? {
+        if let live = scenes.first(where: { $0.id == sceneId }) { return makeSceneReference(from: live) }
+        return indexedScenesById[sceneId].map(materializeSceneReference)
+    }
+
     private func currentSceneReferences() -> [SceneReference] {
-        scenes.map { scene in
-            let conn: ConnectionCapabilityID? = hasHASource ? .homeAssistant : nil
-            let scope = hasHASource ? homeAssistantScopeIdentifier : (homeBackend == .demo ? "demo" : "local")
-            return SceneReference(
-                id: scene.id, name: scene.name, connection: conn, sourceScope: scope,
-                isSourceAvailable: isScopeConfiguredAndAvailable(connection: conn, scope: scope)
-            )
-        }
+        var map = indexedScenesById.mapValues(materializeSceneReference)
+        for scene in scenes { map[scene.id] = makeSceneReference(from: scene) }
+        return map.values.sorted { $0.id < $1.id }
     }
 
     private func loadDeviceGroupReferences() -> (groups: [DeviceGroupReference], corrupted: [String]) {
@@ -928,6 +1465,28 @@ extension HomeStore {
         )
     }
 
+    private func proposedMiFailoverScope(for deviceId: String, proposed: CapabilitySelection) -> String? {
+        guard pairedDeviceIDs.contains(deviceId),
+              pinnedSource(for: deviceId) != .homeAssistant else {
+            return nil
+        }
+        if let hint = devices.first(where: { $0.id == deviceId })?.accountId,
+           !hint.isEmpty,
+           isCapabilityScopeConfigured(.xiaomiCloud, scope: hint),
+           proposed.isSourceEnabled(connection: .xiaomiCloud, scope: hint) {
+            return hint
+        }
+        if let enabledAcc = miAccounts.first(where: { proposed.isSourceEnabled(connection: .xiaomiCloud, scope: $0.id) }) {
+            return enabledAcc.id
+        }
+        if miAccounts.isEmpty,
+           let singleScope = miSessionScopeIdentifier,
+           proposed.isSourceEnabled(connection: .xiaomiCloud, scope: singleScope) {
+            return singleScope
+        }
+        return nil
+    }
+
     private func evaluateCapabilityDeactivation(
         proposed: CapabilitySelection,
         expectedGeneration: Int?
@@ -936,25 +1495,43 @@ extension HomeStore {
         let haServesFailover = hasEnabledHASource
             && proposed.isSourceEnabled(connection: .homeAssistant, scope: haScope)
         let indexed = currentIndexedDevicesList().map { dev -> CapabilityIndexedDevice in
-            guard haServesFailover,
-                  pairedDeviceIDs.contains(dev.id),
-                  dev.connection == .xiaomiCloud,
-                  !proposed.isSourceEnabled(connection: dev.connection, scope: dev.sourceScope) else {
-                return dev
+            if haServesFailover,
+               pairedDeviceIDs.contains(dev.id),
+               pinnedSource(for: dev.id) != .xiaomiCloud,
+               dev.connection == .xiaomiCloud,
+               !proposed.isSourceEnabled(connection: dev.connection, scope: dev.sourceScope) {
+                return CapabilityIndexedDevice(
+                    id: dev.id,
+                    name: dev.name,
+                    category: dev.category,
+                    connection: .homeAssistant,
+                    sourceScope: haScope,
+                    isSourceAvailable: true,
+                    upstreamHiddenOrDisabled: dev.upstreamHiddenOrDisabled,
+                    participatesInAllOff: dev.participatesInAllOff,
+                    safetySignals: dev.safetySignals,
+                    readKeys: dev.readKeys,
+                    safetyReadKeys: dev.safetyReadKeys
+                )
             }
-            return CapabilityIndexedDevice(
-                id: dev.id,
-                name: dev.name,
-                category: dev.category,
-                connection: .homeAssistant,
-                sourceScope: haScope,
-                isSourceAvailable: true,
-                upstreamHiddenOrDisabled: dev.upstreamHiddenOrDisabled,
-                participatesInAllOff: dev.participatesInAllOff,
-                safetySignals: dev.safetySignals,
-                readKeys: dev.readKeys,
-                safetyReadKeys: dev.safetyReadKeys
-            )
+            if dev.connection == .homeAssistant,
+               !proposed.isSourceEnabled(connection: .homeAssistant, scope: dev.sourceScope),
+               let miScope = proposedMiFailoverScope(for: dev.id, proposed: proposed) {
+                return CapabilityIndexedDevice(
+                    id: dev.id,
+                    name: dev.name,
+                    category: dev.category,
+                    connection: .xiaomiCloud,
+                    sourceScope: miScope,
+                    isSourceAvailable: true,
+                    upstreamHiddenOrDisabled: dev.upstreamHiddenOrDisabled,
+                    participatesInAllOff: dev.participatesInAllOff,
+                    safetySignals: dev.safetySignals,
+                    readKeys: dev.readKeys,
+                    safetyReadKeys: dev.safetyReadKeys
+                )
+            }
+            return dev
         }
         let graph = buildCapabilityReferenceGraph(indexedDevices: indexed, expectedGeneration: expectedGeneration)
         return CapabilityReferenceEngine.evaluateDeactivation(
@@ -969,11 +1546,11 @@ extension HomeStore {
     ) -> CapabilityReferenceGraph {
         var corrupted: [String] = []
         let indexedById = Dictionary(uniqueKeysWithValues: indexedDevices.map { ($0.id, $0) })
+        let sceneRefs = currentSceneReferences()
+        let sceneById = Dictionary(uniqueKeysWithValues: sceneRefs.map { ($0.id, $0) })
         let timers = scheduledCommands.map { makeTimerReference(for: $0, partition: .waiting, indexedById: indexedById) }
             + missedScheduledCommands.map { makeTimerReference(for: $0, partition: .missed, indexedById: indexedById) }
             + foreignScheduledCommands.map { makeTimerReference(for: $0, partition: .foreign, indexedById: indexedById) }
-            // Already-paused timers participate as well: a second disable can take away more of their
-            // targets and has to extend their pause markers (review #275).
             + pausedScheduledCommands.map {
                 makeTimerReference(
                     for: $0.command, partition: $0.originalPartition,
@@ -985,6 +1562,11 @@ extension HomeStore {
            (try? JSONSerialization.jsonObject(with: rawRulesData) as? [Any]) == nil {
             corrupted.append(AutomationRuleStore.storageKey)
         }
+        let liveScenesForSummary: [HomeScene] = if !scenes.isEmpty {
+            scenes
+        } else {
+            sceneRefs.map { HomeScene(id: $0.id, name: $0.name, entityId: $0.id, iconName: "sparkles") }
+        }
         let automations = AutomationRuleStore(defaults: userDefaults).load().map { rule -> AutomationReference in
             let refAction: AutomationReferenceAction
             var scopes: Set<String> = []
@@ -994,24 +1576,23 @@ extension HomeStore {
                 for id in ids { if let scope = indexedById[id]?.sourceScope { scopes.insert(scope) } }
             case .scene(let sceneId):
                 refAction = .scene(sceneId)
-                if hasHASource { scopes.insert(homeAssistantScopeIdentifier) }
+                if let scope = sceneById[sceneId]?.sourceScope {
+                    scopes.insert(scope)
+                } else if hasHASource || explicitlyDisabledConnections.contains(.homeAssistant) {
+                    scopes.insert(homeAssistantScopeIdentifier)
+                }
             case .quickAction(let qa):
                 refAction = .quickAction(QuickActionReferenceKind(rawValue: qa.rawValue) ?? .lightsOff)
             }
             if scopes.isEmpty { scopes = configuredConnectionScopes() }
-            let summary = "\(rule.trigger.title) · \(rule.action.summary(devices: devices, scenes: scenes))"
+            let summary = "\(rule.trigger.title) · \(rule.action.summary(devices: devices, scenes: liveScenesForSummary))"
             return AutomationReference(
-                // A paused rule is inspected too: another disable can take away more of its targets,
-                // and its pause markers have to grow instead of being resumed by the first account
-                // that comes back (review #275).
                 id: rule.id.uuidString, name: summary,
                 isEnabled: rule.isEnabled || !rule.pausedCapabilities.isEmpty,
                 action: refAction, sourceScopes: scopes.sorted()
             )
         }
 
-        // Custom layout groups only expand timer and rule targets; they are not quick actions of their
-        // own, and a damaged group preference must not block turning a connection off (M4).
         let (groups, _) = loadDeviceGroupReferences()
         let quickActions = QuickAction.allCases.map { qa in
             QuickActionReference(
@@ -1023,7 +1604,7 @@ extension HomeStore {
 
         return CapabilityReferenceGraph(
             timers: timers, automations: automations, quickActions: quickActions,
-            scenes: currentSceneReferences(), deviceGroups: groups,
+            scenes: sceneRefs, deviceGroups: groups,
             preferences: .fromUserDefaults(userDefaults), corruptedStoreReasons: corrupted,
             expectedGeneration: expectedGeneration, currentGeneration: capabilityGeneration
         )
@@ -1031,7 +1612,10 @@ extension HomeStore {
 
     // MARK: - Pause & Re-Enable Revalidation
 
-    private func pauseAffectedReferences(_ items: [AffectedReferenceItem]) {
+    private func pauseAffectedReferences(
+        _ items: [AffectedReferenceItem],
+        fallbackCapabilities: [CapabilityID] = [.connection(.xiaomiCloud)]
+    ) {
         var timerPauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
         var rulePauseById: [UUID: (caps: [CapabilityID], scopes: [String])] = [:]
         var quickActionScopes: [String: [String]] = [:]
@@ -1061,7 +1645,8 @@ extension HomeStore {
                         pausedScheduledCommands.append(
                             PausedScheduledCommand(
                                 command: entry, originalPartition: partition,
-                                pausedCapabilities: pause.caps, pausedScopes: pause.scopes
+                                pausedCapabilities: pause.caps.isEmpty ? fallbackCapabilities : pause.caps,
+                                pausedScopes: pause.scopes
                             )
                         )
                     } else {
@@ -1076,13 +1661,12 @@ extension HomeStore {
             for idx in pausedScheduledCommands.indices {
                 guard let pause = timerPauseById[pausedScheduledCommands[idx].command.id] else { continue }
                 let caps = Set(pausedScheduledCommands[idx].pausedCapabilities).union(
-                    pause.caps.isEmpty ? [.connection(.xiaomiCloud)] : pause.caps
+                    pause.caps.isEmpty ? fallbackCapabilities : pause.caps
                 ).sorted { $0.rawValue < $1.rawValue }
                 let scopes = Set(pausedScheduledCommands[idx].pausedScopes).union(pause.scopes).sorted()
                 pausedScheduledCommands[idx].pausedCapabilities = caps
                 pausedScheduledCommands[idx].pausedScopes = scopes
             }
-            // Freshly paused entries and extended markers both go to disk in one write.
             PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
             persistScheduledCommandsFromCapabilities()
         }
@@ -1092,15 +1676,11 @@ extension HomeStore {
             var rules = store.load()
             var changed = false
             for idx in rules.indices {
-                // Already-paused rules merge the newly lost scopes instead of being skipped.
                 guard let pause = rulePauseById[rules[idx].id] else { continue }
                 rules[idx].isEnabled = false
                 rules[idx].pausedCapabilities = Array(
-                    Set(rules[idx].pausedCapabilities + (pause.caps.isEmpty ? [.connection(.xiaomiCloud)] : pause.caps))
+                    Set(rules[idx].pausedCapabilities + (pause.caps.isEmpty ? fallbackCapabilities : pause.caps))
                 ).sorted { $0.rawValue < $1.rawValue }
-                // Which scopes were lost, not just which connection: with lights on two accounts,
-                // turning the surviving one off and on again must not resume this rule while the
-                // account that owned the missing targets stays disabled.
                 rules[idx].pausedScopes = Array(Set(rules[idx].pausedScopes + pause.scopes)).sorted()
                 changed = true
             }
@@ -1120,13 +1700,16 @@ extension HomeStore {
         }
     }
 
-    /// Whether the state on screen can prove a target no longer exists. A disconnected or expired
-    /// account, a buffered pre-rebuild snapshot, a still-pending fresh snapshot, or another account's
-    /// selected home (which hides the other accounts' devices) all look like "target gone" without
-    /// being one, so they must never clear a pause marker (H3).
     private func revalidationIsAuthoritative(_ snapshot: SynthesizedHome?) -> Bool {
         if let snapshot {
             guard snapshot.isInitialLoadComplete, snapshot.closesAwayGap else { return false }
+            if hasEnabledHASource {
+                if let haStatus = snapshot.sourceStatuses[.homeAssistant] ?? sourceStatuses[.homeAssistant] {
+                    if !haStatus.isConnected { return false }
+                } else if case .disconnected = connectionStatus {
+                    return false
+                }
+            }
             for account in enabledMiAccounts {
                 if snapshot.miAccountsEpoch != nil, snapshot.miAccountsEpoch != miAccountsConfigEpoch { return false }
                 if let status = snapshot.accountStatuses[account.id], !status.isConnected { return false }
@@ -1135,6 +1718,13 @@ extension HomeStore {
             return true
         }
         guard hasReceivedInitialSnapshot, pendingRevalidationScopes.isEmpty else { return false }
+        if hasEnabledHASource {
+            if let haStatus = sourceStatuses[.homeAssistant] {
+                if !haStatus.isConnected { return false }
+            } else if case .disconnected = connectionStatus {
+                return false
+            }
+        }
         for account in enabledMiAccounts {
             guard miAccountStatuses[account.id]?.isConnected == true else { return false }
             if let home = selectedMiHomeId, !MiAccountScope.isOwned(home, by: account.id) { return false }
@@ -1153,6 +1743,10 @@ extension HomeStore {
         let nowEpoch = Int(now.timeIntervalSince1970.rounded(.down))
 
         if !pausedScheduledCommands.isEmpty {
+            let activeScopesForRevalidation = activeConnectionScopes.filter { scope in
+                guard let conn = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
+                return isCapabilityScopeConfigured(conn, scope: scope)
+            }
             var stillPaused: [PausedScheduledCommand] = []
             var timersChanged = false
             for paused in pausedScheduledCommands {
@@ -1167,7 +1761,7 @@ extension HomeStore {
                 )
                 let disposition = CapabilityReferenceEngine.revalidatePausedTimer(
                     timer: ref, fireAtEpochSeconds: Int(cmd.fireDate.timeIntervalSince1970.rounded(.down)),
-                    nowEpochSeconds: nowEpoch, activeConnectionScopes: activeConnectionScopes,
+                    nowEpochSeconds: nowEpoch, activeConnectionScopes: activeScopesForRevalidation,
                     selection: capabilitySelection, devices: indexed, scenes: sceneRefs, deviceGroups: groups
                 )
                 switch disposition {
@@ -1216,8 +1810,6 @@ extension HomeStore {
 
         for idx in rules.indices where !rules[idx].isEnabled
             && (!rules[idx].pausedCapabilities.isEmpty || !rules[idx].pausedScopes.isEmpty) {
-            // The scopes the rule lost have to be back and settled before it may run again; a
-            // different surviving account supplying one target is not the same thing.
             guard pausedItemScopesAreSettled(rules[idx].pausedScopes) else { continue }
             let capsSatisfied = rules[idx].pausedCapabilities.allSatisfy { cap in
                 switch cap {
@@ -1235,8 +1827,6 @@ extension HomeStore {
                         targetKind: .device, targetId: $0, selection: capabilitySelection, devices: indexed, scenes: sceneRefs
                     ).allowed
                 }
-                // Only an authoritative snapshot may turn "targets are missing" into "this rule is no
-                // longer paused". A failed refresh must leave the markers so a reconnect retries.
                 if authoritative, expanded.contains(where: { indexedById[$0] == nil }) {
                     rules[idx].pausedCapabilities = []
                     rules[idx].pausedScopes = []
@@ -1246,6 +1836,11 @@ extension HomeStore {
                 canResume = CapabilityReferenceEngine.evaluateControlTargetGate(
                     targetKind: .scene, targetId: sceneId, selection: capabilitySelection, devices: indexed, scenes: sceneRefs
                 ).allowed
+                if authoritative, !sceneRefs.contains(where: { $0.id == sceneId }) {
+                    rules[idx].pausedCapabilities = []
+                    rules[idx].pausedScopes = []
+                    rulesChanged = true
+                }
             case .quickAction(let qa):
                 let cats = (QuickActionReferenceKind(rawValue: qa.rawValue) ?? .lightsOff).targetCategories
                 canResume = cats.allSatisfy(capabilitySelection.enabledCategories.contains)
@@ -1266,7 +1861,6 @@ extension HomeStore {
         if !pausedQuickActionIDs.isEmpty {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
-                // Same per-item rule: a quick action resumes only once the scopes it lost are settled.
                 guard pausedItemScopesAreSettled(pausedQuickActionScopes[qaId] ?? []) else {
                     remainingQA.insert(qaId)
                     continue

@@ -911,6 +911,87 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   ],
   "重新启用": ["重新启用", "Re-enable"],
   "连接设置": ["连接设置", "Connection Settings"],
+  "首次设置 · MenuBarHome": ["首次设置 · MenuBarHome", "First-Time Setup · MenuBarHome"],
+  "你家用哪个平台管理智能设备？": ["你家用哪个平台管理智能设备？", "Which platform manages your smart home?"],
+  "先选择家庭平台，未连接前不会自动扫描局域网或发起网络请求。": [
+    "先选择家庭平台，未连接前不会自动扫描局域网或发起网络请求。",
+    "Pick your smart home platform first. Nothing scans your LAN or sends network requests until you connect.",
+  ],
+  "米家": ["米家", "Xiaomi Home"],
+  "手机米家 App 扫码直连，支持多账号与局域网优先": [
+    "手机米家 App 扫码直连，支持多账号与局域网优先",
+    "Scan with the Xiaomi Home app; supports multiple accounts and LAN-first control",
+  ],
+  "局域网本地连接，适合自建家庭服务器": [
+    "局域网本地连接，适合自建家庭服务器",
+    "Local network connection for self-hosted Home Assistant servers",
+  ],
+  "先逛逛（不连接设备）": ["先逛逛（不连接设备）", "Explore Demo Home (No Devices)"],
+  "离线示例家庭，零网络请求，随时可连接真实平台": [
+    "离线示例家庭，零网络请求，随时可连接真实平台",
+    "Offline virtual home with zero network requests; connect a real platform anytime",
+  ],
+  "稍后设置": ["稍后设置", "Set Up Later"],
+  "继续初始设置": ["继续初始设置", "Continue Setup"],
+  "返回选平台": ["返回选平台", "Back to Platforms"],
+  "继续添加 {platform}（启用双源）": ["继续添加 {platform}（启用双源）", "Add {platform} (Enable Dual-Source)"],
+  "使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。": [
+    "使用非官方连接方式。小米可能限制请求或风控账号，登录会过期，到期需重新扫码。凭据安全保存在本机。",
+    "Uses an unofficial connection. Xiaomi may throttle or flag accounts, and logins expire and require re-scanning. Credentials stay encrypted on this device.",
+  ],
+  "刷新二维码": ["刷新二维码", "Refresh QR Code"],
+  "在 Home Assistant 网页设置里查看地址": [
+    "在 Home Assistant 网页设置里查看地址",
+    "Check your server URL in Home Assistant web settings",
+  ],
+  "专属连接钥匙（长期访问令牌）": ["专属连接钥匙（长期访问令牌）", "Access Key (Long-Lived Access Token)"],
+  "打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。": [
+    "打开 Home Assistant 网页 → 个人资料 → 安全设置 → 创建长期访问令牌。",
+    "Open Home Assistant web → Profile → Security → Create Long-Lived Access Token.",
+  ],
+  "连接并验证": ["连接并验证", "Connect & Verify"],
+  "正在连接并验证 Home Assistant…": ["正在连接并验证 Home Assistant…", "Connecting and verifying Home Assistant…"],
+  "无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。": [
+    "无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。",
+    "Cannot reach this address. Devices have not synced yet. Confirm this PC and your server are on the same network, or edit the address.",
+  ],
+  "专属连接钥匙无效或已过期。设备还未同步。请检查令牌并重新连接。": [
+    "专属连接钥匙无效或已过期。设备还未同步。请检查令牌并重新连接。",
+    "Access key is invalid or expired. Devices have not synced yet. Check the token and reconnect.",
+  ],
+  "明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。": [
+    "明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。",
+    "Plaintext HTTP connection was declined. Devices have not synced yet. Switch to HTTPS or approve this address.",
+  ],
+  "已连接 Home Assistant · {count} 台设备": ["已连接 Home Assistant · {count} 台设备", "Connected to Home Assistant · {count} devices"],
+  "示例家庭，不会控制真实设备": ["示例家庭，不会控制真实设备", "Demo home; won't control real devices"],
+  "内置虚拟全屋设备，完全离线、零网络请求。随时可返回连接米家或 Home Assistant。": [
+    "内置虚拟全屋设备，完全离线、零网络请求。随时可返回连接米家或 Home Assistant。",
+    "Built-in virtual devices, completely offline with zero network requests. Switch to Xiaomi Home or Home Assistant anytime.",
+  ],
+  "快捷操作与托盘提示": ["快捷操作与托盘提示", "Quick Tips & Tray Access"],
+  "点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。": [
+    "点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。",
+    "Click the system tray icon or press {hotkey} anytime to open the panel.",
+  ],
+  "磁贴左侧一键开关，右侧展开精细调节。": [
+    "磁贴左侧一键开关，右侧展开精细调节。",
+    "Click the left side of a tile to toggle, or the right side to open detailed controls.",
+  ],
+  "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。": [
+    "按住「全关」0.6 秒确认，可在 10 秒内撤销，3 台起为 15 秒。",
+    "Hold All Off for 0.6s to confirm; Undo stays available for 10s (15s for 3+ devices).",
+  ],
+  "请填写完整的 Home Assistant 地址与专属连接钥匙。": [
+    "请填写完整的 Home Assistant 地址与专属连接钥匙。",
+    "Please enter both the Home Assistant address and access key.",
+  ],
+  "已连接": ["已连接", "Connected"],
+  "令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。": [
+    "令牌将以明文在网络上传输，远程访问建议使用 HTTPS 或 Nabu Casa 地址。",
+    "Your token will travel unencrypted. Prefer HTTPS or a Nabu Casa URL for remote access.",
+  ],
+  "开机自启与可选 AI 助手": ["开机自启与可选 AI 助手", "Launch at Login & Optional AI Assistant"],
 };
 
 /** Every catalog key, for tests and tooling. */

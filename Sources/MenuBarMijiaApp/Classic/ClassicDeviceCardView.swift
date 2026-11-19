@@ -5,7 +5,6 @@ public struct ClassicDeviceCardView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEditingLayout) private var isEditingLayout
     @AppStorage(PanelPrefs.climatePanelKey) private var climatePanelModule: Bool = true
-    @AppStorage(GroupPrefs.groupsKey) private var groupsRaw: String = "[]"
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
     @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
 
@@ -51,14 +50,6 @@ public struct ClassicDeviceCardView: View {
 
     private var resolvedSize: TileSize {
         classicTileSize(DeviceLayoutPrefs.resolved(chosenSize, device: device, compactGrid: store.isCompactGridMode, climatePanel: climatePanelModule))
-    }
-
-    private func setSize(_ size: TileSize) {
-        withAnimation(AppleMotion.snappySpring) { panelLayout.setSize(size, of: device.id, scope: layoutScope) }
-    }
-
-    private func assignGroup(_ groupId: String?) {
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) { panelLayout.assign(device.id, toGroup: groupId) }
     }
 
     private var isExpanded: Bool {
@@ -188,183 +179,12 @@ public struct ClassicDeviceCardView: View {
 
     @ViewBuilder
     private var contextMenuItems: some View {
-            if store.isPairedDualSourceDevice(device.id) {
-                Text(store.currentSourceMenuTitle(for: device.id))
-                Menu {
-                    Button {
-                        store.pinDeviceSource(device.id, to: nil)
-                    } label: {
-                        if store.pinnedSource(for: device.id) == nil {
-                            Label(L10n.tr("自动择优（默认）", "Automatic (Default)"), systemImage: "checkmark")
-                        } else {
-                            Text(L10n.tr("自动择优（默认）", "Automatic (Default)"))
-                        }
-                    }
-                    Button {
-                        store.pinDeviceSource(device.id, to: .homeAssistant)
-                    } label: {
-                        if store.pinnedSource(for: device.id) == .homeAssistant {
-                            Label("Home Assistant", systemImage: "checkmark")
-                        } else {
-                            Text("Home Assistant")
-                        }
-                    }
-                    Button {
-                        store.pinDeviceSource(device.id, to: .xiaomiCloud)
-                    } label: {
-                        if store.pinnedSource(for: device.id) == .xiaomiCloud {
-                            Label(L10n.tr("米家云端", "Xiaomi Cloud"), systemImage: "checkmark")
-                        } else {
-                            Text(L10n.tr("米家云端", "Xiaomi Cloud"))
-                        }
-                    }
-                } label: {
-                    Label(L10n.tr("数据来源", "Data Source"), systemImage: "arrow.triangle.branch")
-                }
-                Divider()
-            }
-
-            Menu {
-                ForEach(classicTileSizes) { size in
-                    Button {
-                        setSize(size)
-                    } label: {
-                        Label(size.title, systemImage: chosenSize == size ? "checkmark" : size.symbol)
-                    }
-                }
-            } label: {
-                Label(L10n.tr("卡片大小（本页）", "Card Size (this page)"), systemImage: "square.resize")
-            }
-
-            Button {
-                LayoutUIState.shared.renamingDeviceId = device.id
-            } label: {
-                Label(L10n.tr("重命名…", "Rename…"), systemImage: "pencil")
-            }
-
-            if ManualControlPolicy.wallSwitchMayControlLight(device),
-               store.isSwitchMarkedAsLight(device.id) {
-                Button {
-                    store.unmarkSwitchAsLight(device.id)
-                } label: {
-                    Label(
-                        L10n.tr("撤销『这是灯』标记", "Undo “this is a light”"),
-                        systemImage: "lightbulb.slash"
-                    )
-                }
-            }
-
-            Button {
-                LayoutUIState.shared.isEditingLayoutRequested = true
-            } label: {
-                Label(L10n.tr("编辑布局…", "Edit Layout…"), systemImage: "rectangle.3.group")
-            }
-
-            Menu {
-                let groups = GroupPrefs.groups(groupsRaw)
-                let current = panelLayout.groupMap[device.id]
-                ForEach(groups) { group in
-                    Button {
-                        assignGroup(group.id)
-                    } label: {
-                        Label(group.name, systemImage: current == group.id ? "checkmark" : "folder")
-                    }
-                }
-                if current != nil {
-                    Button {
-                        assignGroup(nil)
-                    } label: {
-                        Label(L10n.tr("不分组", "No Group"), systemImage: "tray")
-                    }
-                }
-                if !groups.isEmpty { Divider() }
-                Button {
-                    LayoutUIState.shared.newGroupForDevice = device.id
-                } label: {
-                    Label(L10n.tr("新建分组…", "New Group…"), systemImage: "folder.badge.plus")
-                }
-            } label: {
-                Label(L10n.tr("移到分组", "Move to Group"), systemImage: "folder")
-            }
-
-            Divider()
-
-            Button {
-                store.toggleFavorite(device.id)
-            } label: {
-                Label(
-                    isFavorite ? L10n.tr("取消常用星标", "Remove from Favorites") : L10n.tr("设为常用星标", "Add to Favorites"),
-                    systemImage: isFavorite ? "star.slash" : "star.fill"
-                )
-            }
-
-            if isFavorite {
-                Button {
-                    store.moveFavorite(deviceId: device.id, direction: -1)
-                } label: {
-                    Label(L10n.tr("常用排序上移", "Move Up in Favorites"), systemImage: "arrow.up")
-                }
-
-                Button {
-                    store.moveFavorite(deviceId: device.id, direction: 1)
-                } label: {
-                    Label(L10n.tr("常用排序下移", "Move Down in Favorites"), systemImage: "arrow.down")
-                }
-            }
-
-            if case .camera = device.kind {
-                Button {
-                    store.openCameraLiveView(device.id)
-                } label: {
-                    Label(L10n.tr("打开实时画面小窗", "Open Floating Live View"), systemImage: "pip.enter")
-                }
-            }
-
-            if store.hasDetailDrawer(for: device) {
-                Button {
-                    withAnimation(AppleMotion.snappySpring) {
-                        store.toggleExpanded(device.id)
-                    }
-                } label: {
-                    Label(
-                        isExpanded ? L10n.tr("收起详细控制", "Collapse Controls") : L10n.tr("展开详细控制", "Expand Controls"),
-                        systemImage: "slider.horizontal.3"
-                    )
-                }
-            } else if case .sensor(let spec) = device.kind, (spec.temperature != nil || spec.humidity != nil) {
-                Button {
-                    withAnimation(AppleMotion.snappySpring) {
-                        store.toggleExpanded(device.id)
-                    }
-                } label: {
-                    Label(
-                        isExpanded ? L10n.tr("收起温湿度折线", "Collapse Chart") : L10n.tr("展开温湿度折线", "Expand Chart"),
-                        systemImage: "chart.xyaxis.line"
-                    )
-                }
-            }
-
-            if Self.showsAllOffMenuOption(for: device) {
-                Button {
-                    store.setJoinsAllOff(!store.joinsAllOff(device), deviceId: device.id)
-                } label: {
-                    if store.joinsAllOff(device) {
-                        Label(L10n.tr("不参与「全关」", "Leave Out of All Off"), systemImage: "power.circle")
-                    } else {
-                        Label(L10n.tr("参与「全关」", "Include in All Off"), systemImage: "power.circle.fill")
-                    }
-                }
-            }
-
-            Divider()
-
-            Button(role: .destructive) {
-                withAnimation(AppleMotion.snappySpring) {
-                    store.hideDevice(device.id)
-                }
-            } label: {
-                Label(L10n.tr("隐藏此设备", "Hide Device"), systemImage: "eye.slash")
-            }
+        DeviceCardContextMenuItems(
+            device: device,
+            store: store,
+            theme: .classic,
+            isExpanded: isExpanded
+        )
     }
 
     // MARK: - Compact 2-Column Header (Left Icon Toggles, Right Area Expands)
@@ -596,7 +416,16 @@ public struct ClassicDeviceCardView: View {
     @ViewBuilder
     private var detailDrawer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            detailControls
+            if device.hasDetailDrawer {
+                detailControls
+            } else if case .generic(let spec) = device.kind, !spec.alerts.isEmpty {
+                ClassicGenericDetailDrawer(
+                    device: device,
+                    store: store,
+                    spec: spec,
+                    statusColor: statusColor
+                )
+            }
             ClassicDeviceFacetSection(
                 device: device,
                 store: store,

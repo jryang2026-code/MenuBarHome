@@ -35,6 +35,8 @@ extension HomeStore {
         }
         if case .notice(.haPlaintext(let prompt)) = activity.kind,
            haPlaintextPrompt != prompt { return }
+        if case .notice(.localNetworkBlocked(let blocked)) = activity.kind,
+           effectiveLocalNetworkBlocks != blocked { return }
         if case .safety(let recorded) = activity.kind {
             // An exit animation owns this occurrence, not a later alert reusing its id.
             guard recentSafetyAlerts.contains(where: { $0.id == recorded.id && $0.date == recorded.date }) else { return }

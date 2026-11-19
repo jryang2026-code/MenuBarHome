@@ -20,6 +20,12 @@ extension ClassicControlCenterPanel {
                 switch kind {
                 case .miBlocked, .miExpiringSoon: miSessionExpiryBanner
                 case .haPlaintext(let prompt): haPlaintextConsentBanner(prompt)
+                case .localNetworkBlocked(let blocked):
+                    LocalNetworkPermissionBannerView(
+                        blockedFeatures: blocked,
+                        store: store,
+                        theme: .classic
+                    )
                 case .haAddress(let instance): haAddressSuggestionBanner(instance)
                 }
             }

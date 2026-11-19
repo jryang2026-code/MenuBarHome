@@ -130,8 +130,9 @@ extension ClassicControlCenterPanel {
                             title: copy.title,
                             count: store.allOffTargets.count,
                             helpText: copy.tooltip,
-                            onConfirm: {
-                                withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
+                            onBeginHold: { store.beginAllOffHold() },
+                            onConfirm: { mode in
+                                withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: mode) }
                                 SoundFeedback.playSuccess()
                             },
                             onTap: {

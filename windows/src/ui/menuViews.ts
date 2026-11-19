@@ -1,6 +1,5 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
-import { MI_CLOUD_REGIONS, normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import {
   TILE_SIZES,
   chosenSize,
@@ -290,62 +289,18 @@ export function renderPrompt(host: MenuMijiaWindowsApp): string {
       </div>`;
   }
 
-export function renderOnboardingModal(host: MenuMijiaWindowsApp): string {
+export function renderOnboardingModal(_host: MenuMijiaWindowsApp): string {
     return `
       <div class="cc-sheet-backdrop">
-        <div class="cc-sheet" role="dialog" aria-modal="true" aria-label="${t("首次设置")}">
+        <div class="cc-sheet cc-onboarding-sheet" role="dialog" aria-modal="true" aria-label="${t("首次设置")}">
           <div class="cc-sheet-header">
-            <h2 class="cc-sheet-title">${t("扫码直连你的真实米家设备")}</h2>
+            <h2 class="cc-sheet-title">${t("你家用哪个平台管理智能设备？")}</h2>
             <button class="cc-circle-btn is-small" id="btn-close-onboarding" title="${t("关闭引导")}" aria-label="${t("关闭引导")}">
               ${SF_ICONS.xmark}
             </button>
           </div>
-
-          <p class="cc-sheet-desc">
-            ${t("手机打开「米家 App → 扫一扫」即可直接同步全屋真实设备；常驻 Windows 右下角系统托盘，点击图标或按 Alt+M 随时弹出，点击外部自动收起。")}
-          </p>
-          <p class="cc-sheet-desc cc-sheet-note">
-            ${t("直连使用非官方接口，小米可能限制请求或风控账号；介意的话请改用官方的 Home Assistant (xiaomi_home)。登录会过期，到期需重新扫码。")}
-          </p>
-
-          <div class="cc-field">
-            <label>${t("云端服务器地区")}</label>
-            <select class="cc-input" data-mi-region>
-              ${MI_CLOUD_REGIONS.map(
-                (region) => `<option value="${region.code}" ${normalizeMiCloudRegion(host.settings.miCloudRegion) === region.code ? "selected" : ""}>${host.escapeHtml(t(region.label))}</option>`,
-              ).join("")}
-            </select>
-            <p class="cc-field-hint">${t("欧洲、印度、俄罗斯、新加坡、美区的米家账号请先选择对应地区，再扫码登录。")}</p>
-          </div>
-
-          <div class="cc-qr-box">
-            <button class="cc-btn-primary is-full" id="btn-start-qr" ${host.isPollingQR ? "disabled" : ""}>
-              ${SF_ICONS.qrcode}
-              <span>${host.isPollingQR ? t("正在等待手机米家扫码确认...") : t("获取米家登录二维码")}</span>
-            </button>
-            <div class="cc-qr-status">${host.escapeHtml(host.qrStatusText)}</div>
-            ${
-              host.qrTicket
-                ? `<div class="cc-qr-frame">
-                    <img src="${host.escapeHtml(host.qrTicket.qrImageURL)}" alt="Xiaomi QR" />
-                  </div>`
-                : ""
-            }
-          </div>
-
-          <div class="cc-field">
-            <label>${t("OpenRouter API Key（可选，用于 Jev SystemOne 模糊意图决策）")}</label>
-            <input
-              id="onboarding-api-key"
-              class="cc-input"
-              type="password"
-              placeholder="sk-or-v1-..."
-              value="${host.escapeHtml(host.apiKeyFor(host.settings.assistantBaseURL))}"
-            />
-          </div>
-
           <div class="cc-sheet-footer">
-            <button class="cc-btn-secondary" id="btn-close-onboarding-alt">${t("先看演示预览")}</button>
+            <button class="cc-btn-secondary" id="btn-skip-onboarding">${t("稍后设置")}</button>
             <button class="cc-btn-primary" id="btn-finish-onboarding">${t("进入控制中心")}</button>
           </div>
         </div>

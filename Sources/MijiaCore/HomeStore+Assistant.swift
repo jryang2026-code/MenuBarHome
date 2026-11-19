@@ -350,6 +350,7 @@ extension HomeStore {
     /// latest marks, device categories, and source contexts.
     private func hazardApprovedIntents(_ intents: [DeviceIntent]) -> [DeviceIntent] {
         let contextBeforeModal = controlContextID
+        let generationBeforeModal = capabilityGeneration
         var capturedContexts: [String: ModalDeviceContext] = [:]
         var capturedSceneEntities: [String: String] = [:]
         var promptedProfiles: [Int: ManualControlHazardProfile] = [:]
@@ -360,12 +361,15 @@ extension HomeStore {
         var didPresentModalInPass = false
         repeat {
             didPresentModalInPass = false
-            guard controlContextID == contextBeforeModal else { return [] }
+            guard controlContextID == contextBeforeModal,
+                  capabilityGeneration == generationBeforeModal else { return [] }
             if didPresentAnyModal, rejectControlWhileLocked() { return [] }
             for idx in intents.indices where !rejectedIndices.contains(idx) {
                 let intent = intents[idx]
                 if case .activateScene = intent.operation {
-                    guard let liveScene = scenes.first(where: { $0.id == intent.targetId }) else {
+                    guard capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) == nil,
+                          let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                          haCommandWriteRejection(for: liveScene.entityId) == nil else {
                         approvedIndices.remove(idx)
                         rejectedIndices.insert(idx)
                         continue
@@ -381,7 +385,8 @@ extension HomeStore {
                     }
                     continue
                 }
-                guard let liveDevice = devices.first(where: { $0.id == intent.targetId }) else {
+                guard capabilityWriteRejection(forDeviceId: intent.targetId) == nil,
+                      let liveDevice = devices.first(where: { $0.id == intent.targetId }) else {
                     approvedIndices.remove(idx)
                     rejectedIndices.insert(idx)
                     continue
@@ -431,14 +436,17 @@ extension HomeStore {
             }
         } while didPresentModalInPass
 
-        guard controlContextID == contextBeforeModal else { return [] }
+        guard controlContextID == contextBeforeModal,
+              capabilityGeneration == generationBeforeModal else { return [] }
         if didPresentAnyModal, rejectControlWhileLocked() { return [] }
         return intents.enumerated().compactMap { idx, intent in
             guard approvedIndices.contains(idx), !rejectedIndices.contains(idx) else {
                 return nil
             }
             if case .activateScene = intent.operation {
-                guard let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                guard capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) == nil,
+                      let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                      haCommandWriteRejection(for: liveScene.entityId) == nil,
                       capturedSceneEntities[liveScene.id] == liveScene.entityId else {
                     return nil
                 }
@@ -456,7 +464,17 @@ extension HomeStore {
     public func applyAssistantSuggestion(_ suggestion: AssistantSuggestion, offersUndoBanner: Bool = false) async {
         let contextBeforeModal = controlContextID
         assistantSuggestions.removeAll { $0.id == suggestion.id }
+        if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: suggestion.intents) {
+            showToast(capabilityMsg, isError: true)
+            setAssistantState(.failed(capabilityMsg))
+            return
+        }
         let intents = hazardApprovedIntents(suggestion.intents)
+        if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: suggestion.intents) {
+            showToast(capabilityMsg, isError: true)
+            setAssistantState(.failed(capabilityMsg))
+            return
+        }
         guard controlContextID == contextBeforeModal, !intents.isEmpty else {
             if isControlBlockedByScreenLock {
                 setAssistantState(.failed(screenLockBlockedMessage))
@@ -548,8 +566,29 @@ extension HomeStore {
         }
         guard controlContext == controlContextID else { return nil }
         if !plan.intents.isEmpty {
-            let approved = hazardApprovedIntents(plan.intents)
+            let originalIntents = plan.intents
+            if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: originalIntents) {
+                let blocked = IntentPlan(
+                    intents: [],
+                    reply: capabilityMsg,
+                    source: plan.source
+                )
+                showToast(capabilityMsg, isError: true)
+                setAssistantState(.failed(capabilityMsg))
+                return blocked
+            }
+            let approved = hazardApprovedIntents(originalIntents)
             guard controlContext == controlContextID else { return nil }
+            if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: originalIntents) {
+                let blocked = IntentPlan(
+                    intents: [],
+                    reply: capabilityMsg,
+                    source: plan.source
+                )
+                showToast(capabilityMsg, isError: true)
+                setAssistantState(.failed(capabilityMsg))
+                return blocked
+            }
             guard !approved.isEmpty else {
                 if isControlBlockedByScreenLock {
                     let blocked = IntentPlan(
@@ -653,14 +692,26 @@ extension HomeStore {
             setAssistantState(.failed(screenLockBlockedMessage))
             return
         }
-        let hasLGRestore = last.restore.contains { lgClientServes($0) }
-        let hasMiRestore = last.restore.contains { !lgClientServes($0) }
+        let prePartition = partitionUndoCommandsByCapability(
+            last.restore,
+            previousDevices: last.previous
+        )
+        if !last.restore.isEmpty,
+           prePartition.eligibleCommands.isEmpty,
+           let firstBlocked = prePartition.firstBlockedReason {
+            let msg = firstBlocked.userMessage
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
+            return
+        }
+        let hasLGRestore = prePartition.eligibleCommands.contains { lgClientServes($0) }
+        let hasMiRestore = prePartition.eligibleCommands.contains { !lgClientServes($0) }
         if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             setAssistantState(.failed(Self.miSessionBlockedMessage))
             return
         }
         let contextBeforeModal = controlContextID
-        let confirmation = confirmUndoTargets(last.restore, previousDevices: last.previous)
+        let confirmation = confirmUndoTargets(prePartition.eligibleCommands, previousDevices: last.previous)
         if confirmation.abortUndo {
             setAssistantState(.failed(L10n.tr("已取消高风险操作", "High-risk action cancelled.")))
             return
@@ -669,11 +720,26 @@ extension HomeStore {
               lastAssistantUndo?.actionId == last.actionId else {
             return
         }
+        let postPartition = partitionUndoCommandsByCapability(
+            last.restore,
+            previousDevices: last.previous,
+            excludingDeviceIds: confirmation.excludedDeviceIds
+        )
+        if !last.restore.isEmpty,
+           postPartition.eligibleCommands.isEmpty,
+           let firstBlocked = postPartition.firstBlockedReason {
+            let msg = firstBlocked.userMessage
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
+            return
+        }
         if rejectControlWhileLocked() {
             setAssistantState(.failed(screenLockBlockedMessage))
             return
         }
-        if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
+        let postHasLG = postPartition.eligibleCommands.contains { lgClientServes($0) }
+        let postHasMi = postPartition.eligibleCommands.contains { !lgClientServes($0) }
+        if postHasMi, !postHasLG, rejectWritesBlockedByMiSession() {
             setAssistantState(.failed(Self.miSessionBlockedMessage))
             return
         }
@@ -688,11 +754,41 @@ extension HomeStore {
         let preUndoById = Dictionary(devices.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let preUndoFacetsById = deviceFacets
         let applicable = applyUndoCommands(
-            last.restore,
+            postPartition.eligibleCommands,
             previousDevices: last.previous,
             excludingDeviceIds: confirmation.excludedDeviceIds
         )
         if applicable.isEmpty, !last.restore.isEmpty {
+            if !postPartition.blockedCommands.isEmpty, let firstReason = postPartition.firstBlockedReason {
+                let blockedCount = max(postPartition.blockedDeviceIds.count, postPartition.blockedCommands.count)
+                let remainingReceipt = last.habitReceipt.flatMap {
+                    Self.partitionHabitReceipt($0, failedDeviceIds: postPartition.blockedDeviceIds).remaining
+                }
+                lastAssistantUndo = AssistantUndoEntry(
+                    actionId: last.actionId,
+                    reply: last.reply,
+                    restore: postPartition.blockedCommands,
+                    previous: last.previous.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                    at: assistantNow(),
+                    habitReceipt: remainingReceipt
+                )
+                if let savedBanner {
+                    scheduleUndoBanner(
+                        actionId: savedBanner.actionId,
+                        title: savedBanner.title,
+                        restoreCommands: postPartition.blockedCommands,
+                        previousDevices: savedBanner.previousDevices.filter { postPartition.blockedDeviceIds.contains($0.id) },
+                        deviceCount: blockedCount,
+                        habitReceipt: remainingReceipt,
+                        duration: savedBanner.duration,
+                        isAllOff: savedBanner.isAllOff
+                    )
+                }
+                let msg = partialCapabilityUndoMessage(blockedCount: blockedCount, reason: firstReason)
+                showToast(msg, isError: true)
+                setAssistantState(.failed(msg))
+                return
+            }
             setAssistantState(.failed(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo")))
             return
         }
@@ -702,13 +798,17 @@ extension HomeStore {
             context: context,
             preUndoById: preUndoById,
             preUndoFacetsById: preUndoFacetsById,
-            habitReceipt: last.habitReceipt
+            habitReceipt: last.habitReceipt,
+            preBlockedDeviceIds: postPartition.blockedDeviceIds
         ) else { return }
-        if outcome.succeeded {
+        let remainingCommands = outcome.failedCommands + postPartition.blockedCommands
+        let remainingDeviceIds = outcome.failedDeviceIds.union(postPartition.blockedDeviceIds)
+        if remainingCommands.isEmpty {
             let what = last.reply.hasPrefix("已") ? String(last.reply.dropFirst()) : last.reply
             setAssistantState(.done(L10n.tr("已撤销：\(what)", "Undone: \(what)")))
             return
         }
+        let remainingCount = max(remainingDeviceIds.count, remainingCommands.count)
         let lockedBeforeAnySend = outcome.blockedByScreenLock && !outcome.didSendAnyCommand
         if assistantUndoRevision == capturedAssistantRevision {
             if lockedBeforeAnySend {
@@ -717,8 +817,8 @@ extension HomeStore {
                 lastAssistantUndo = AssistantUndoEntry(
                     actionId: last.actionId,
                     reply: last.reply,
-                    restore: outcome.failedCommands,
-                    previous: last.previous.filter { outcome.failedDeviceIds.contains($0.id) },
+                    restore: remainingCommands,
+                    previous: last.previous.filter { remainingDeviceIds.contains($0.id) },
                     at: assistantNow(),
                     habitReceipt: outcome.habitReceipt
                 )
@@ -741,9 +841,9 @@ extension HomeStore {
                 scheduleUndoBanner(
                     actionId: savedBanner.actionId,
                     title: savedBanner.title,
-                    restoreCommands: outcome.failedCommands,
-                    previousDevices: savedBanner.previousDevices.filter { outcome.failedDeviceIds.contains($0.id) },
-                    deviceCount: outcome.failedDeviceIds.count,
+                    restoreCommands: remainingCommands,
+                    previousDevices: savedBanner.previousDevices.filter { remainingDeviceIds.contains($0.id) },
+                    deviceCount: remainingCount,
                     habitReceipt: outcome.habitReceipt,
                     duration: savedBanner.duration,
                     isAllOff: savedBanner.isAllOff
@@ -752,6 +852,19 @@ extension HomeStore {
         }
         if outcome.blockedByScreenLock {
             setAssistantState(.failed(screenLockBlockedMessage))
+            return
+        }
+        let capabilityBlockedReason = postPartition.firstBlockedReason ?? outcome.capabilityBlockedReason
+        if outcome.failedCommands.isEmpty, let reason = capabilityBlockedReason {
+            let msg = partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason)
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
+            return
+        }
+        if let reason = outcome.capabilityBlockedReason, outcome.nonCapabilityFailedNames.isEmpty {
+            let msg = partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason)
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
             return
         }
         let sep = L10n.isEnglish ? ", " : "、"
@@ -1241,6 +1354,15 @@ extension HomeStore {
                 source: plan.source
             )
         }
+        if let capabilityMessage = firstPlanCapabilityRejectionMessage(for: plan.intents) {
+            showToast(capabilityMessage, isError: true)
+            setAssistantState(.failed(capabilityMessage))
+            return IntentPlan(
+                intents: [],
+                reply: capabilityMessage,
+                source: plan.source
+            )
+        }
         let context = controlContextID
         let previousSnapshot = devices
         var groupOrder: [String] = []
@@ -1394,6 +1516,9 @@ extension HomeStore {
     private func apply(_ intent: DeviceIntent, context: UUID) async -> AssistantApplyOutcome {
         guard context == controlContextID else { return .skipped }
         if intent.operation == .activateScene {
+            if let capabilityMessage = capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) {
+                return .failed(capabilityMessage)
+            }
             let gate = evaluateSceneControlGate(sceneId: intent.targetId)
             if !gate.allowed {
                 return .failed(gate.rejectionReason?.userMessage ?? intent.targetId)

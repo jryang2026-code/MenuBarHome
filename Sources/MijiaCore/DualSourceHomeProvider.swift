@@ -1,5 +1,49 @@
 import Foundation
 
+private final class DisabledBackendsGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var disabled: Set<HomeBackend> = []
+    private var generations: [HomeBackend: UInt64] = [:]
+
+    @discardableResult
+    func markDisabled(_ backend: HomeBackend) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        disabled.insert(backend)
+        let next = (generations[backend] ?? 0) &+ 1
+        generations[backend] = next
+        return next
+    }
+
+    func currentGeneration(for backend: HomeBackend) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return generations[backend] ?? 0
+    }
+
+    func enableIfGenerationMatches(_ backend: HomeBackend, expectedGeneration: UInt64?) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if let expectedGeneration, (generations[backend] ?? 0) != expectedGeneration {
+            return false
+        }
+        disabled.remove(backend)
+        return true
+    }
+
+    func contains(_ backend: HomeBackend) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return disabled.contains(backend)
+    }
+
+    func snapshot() -> Set<HomeBackend> {
+        lock.lock()
+        defer { lock.unlock() }
+        return disabled
+    }
+}
+
 /// Keeps both providers connected and publishes one merged home. Commands are routed by their
 /// target address, so an entity id decides the source without a second lookup table.
 public actor DualSourceHomeProvider: HomeProvider {
@@ -10,6 +54,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     private let knownPreferenceIDs: @Sendable () -> Set<String>
     private let pinnedBackends: @Sendable () -> [String: HomeBackend]
     private let persistCanonicalIDs: CanonicalIDPersistence
+    private let disabledBackendsGate = DisabledBackendsGate()
 
     private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
     private var haTask: Task<Void, Never>?
@@ -155,17 +200,39 @@ public actor DualSourceHomeProvider: HomeProvider {
         recompute()
     }
 
-    public func setSourceProvider(_ next: (any HomeProvider)?, for backend: HomeBackend) async {
+    /// Synchronously seals off reads, writes, and events for `backend` before async provider
+    /// teardown reaches the actor, closing the disable-to-shutdown request window.
+    @discardableResult
+    public nonisolated func markBackendDisabled(_ backend: HomeBackend) -> UInt64 {
+        disabledBackendsGate.markDisabled(backend)
+    }
+
+    public nonisolated func disableGeneration(for backend: HomeBackend) -> UInt64 {
+        disabledBackendsGate.currentGeneration(for: backend)
+    }
+
+    public func setSourceProvider(
+        _ next: (any HomeProvider)?,
+        for backend: HomeBackend,
+        expectedDisableGeneration: UInt64? = nil
+    ) async {
         guard !isShutDown else {
             await next?.shutdown()
             return
         }
         let previous: (any HomeProvider)?
+        var tornDownCameraRoutes: [DeviceMergeRoute] = []
+        if next == nil {
+            for (deviceId, route) in activeCameraRoutes where route.backend == backend {
+                activeCameraRoutes.removeValue(forKey: deviceId)
+                tornDownCameraRoutes.append(route)
+            }
+        }
         if backend == .homeAssistant {
             haTask?.cancel()
             haTask = nil
             previous = homeAssistant
-            homeAssistant = next
+            homeAssistant = nil
             haSnapshot = nil
             haStatus = .connecting
             haLocalNetworkBlocks = []
@@ -173,17 +240,35 @@ public actor DualSourceHomeProvider: HomeProvider {
             miTask?.cancel()
             miTask = nil
             previous = xiaomiCloud
-            xiaomiCloud = next
+            xiaomiCloud = nil
             miSnapshot = nil
             miStatus = .connecting
             miLocalNetworkBlocks = []
         }
-        await previous?.shutdown()
-        guard !isShutDown, started else { return }
-        if let next {
-            startForwarding(next, for: backend)
-            await next.setPollingContext(pollingContext)
+        for route in tornDownCameraRoutes {
+            await previous?.stopCameraStream(for: route.sourceDevice)
         }
+        await previous?.shutdown()
+        guard !isShutDown else {
+            await next?.shutdown()
+            return
+        }
+        if let next {
+            guard disabledBackendsGate.enableIfGenerationMatches(backend, expectedGeneration: expectedDisableGeneration) else {
+                await next.shutdown()
+                return
+            }
+            if backend == .homeAssistant {
+                homeAssistant = next
+            } else {
+                xiaomiCloud = next
+            }
+            if started {
+                startForwarding(next, for: backend)
+                await next.setPollingContext(pollingContext)
+            }
+        }
+        guard started else { return }
         emitStatus(force: true)
         emitSourceStatuses()
         emitLocalNetworkPermission()
@@ -193,7 +278,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func handle(_ event: HomeProviderEvent, from backend: HomeBackend) {
-        guard !isShutDown else { return }
+        guard !isShutDown, !disabledBackendsGate.contains(backend) else { return }
         if backend == .homeAssistant, homeAssistant == nil { return }
         if backend == .xiaomiCloud, xiaomiCloud == nil { return }
         switch event {
@@ -256,7 +341,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     private func sourceStreamFinished(_ backend: HomeBackend) {
-        guard !isShutDown else { return }
+        guard !isShutDown, !disabledBackendsGate.contains(backend) else { return }
         if backend == .homeAssistant {
             guard homeAssistant != nil else { return }
             haStatus = .disconnected("")
@@ -472,12 +557,12 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     public func execute(_ command: DeviceCommand) async throws {
         if MiotAddress.parse(command.targetEntityId) != nil {
-            guard let xiaomiCloud else {
+            guard !disabledBackendsGate.contains(.xiaomiCloud), let xiaomiCloud else {
                 throw HomeProviderError.backendNotConfigured(.xiaomiCloud)
             }
             try await xiaomiCloud.execute(command)
         } else {
-            guard let homeAssistant else {
+            guard !disabledBackendsGate.contains(.homeAssistant), let homeAssistant else {
                 throw HomeProviderError.backendNotConfigured(.homeAssistant)
             }
             try await homeAssistant.execute(command)
@@ -485,7 +570,7 @@ public actor DualSourceHomeProvider: HomeProvider {
     }
 
     public func readBack(deviceId: String) async -> ControlReadBack {
-        guard let route = routes[deviceId] else { return .failed }
+        guard let route = routes[deviceId], !disabledBackendsGate.contains(route.backend) else { return .failed }
         switch route.backend {
         case .homeAssistant:
             guard let homeAssistant else { return .failed }
@@ -502,19 +587,70 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     public func refreshNow() async {
         guard !isShutDown else { return }
-        let ha = homeAssistant
-        let mi = xiaomiCloud
+        let disabled = disabledBackendsGate.snapshot()
+        let ha = disabled.contains(.homeAssistant) ? nil : homeAssistant
+        let mi = disabled.contains(.xiaomiCloud) ? nil : xiaomiCloud
         await withTaskGroup(of: Void.self) { group in
             if let ha { group.addTask { await ha.refreshNow() } }
             if let mi { group.addTask { await mi.refreshNow() } }
         }
     }
 
+    public func retryLAN(deviceId: String?) async {
+        guard !isShutDown else { return }
+        guard let deviceId else {
+            let ha = homeAssistant
+            let mi = xiaomiCloud
+            await withTaskGroup(of: Void.self) { group in
+                if let ha { group.addTask { await ha.retryLAN(deviceId: nil) } }
+                if let mi { group.addTask { await mi.retryLAN(deviceId: nil) } }
+            }
+            return
+        }
+        if let route = routes[deviceId] {
+            switch route.backend {
+            case .xiaomiCloud:
+                await xiaomiCloud?.retryLAN(deviceId: route.sourceDeviceID)
+            case .homeAssistant:
+                let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+                let ha = homeAssistant
+                let mi = xiaomiCloud
+                await withTaskGroup(of: Void.self) { group in
+                    if let ha { group.addTask { await ha.retryLAN(deviceId: route.sourceDeviceID) } }
+                    if let mi {
+                        for miID in miSourceIDs {
+                            group.addTask { await mi.retryLAN(deviceId: miID) }
+                        }
+                    }
+                }
+            case .demo:
+                break
+            }
+            return
+        }
+        let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+        let ha = homeAssistant
+        let mi = xiaomiCloud
+        await withTaskGroup(of: Void.self) { group in
+            if let ha { group.addTask { await ha.retryLAN(deviceId: deviceId) } }
+            if let mi {
+                if miSourceIDs.isEmpty {
+                    group.addTask { await mi.retryLAN(deviceId: deviceId) }
+                } else {
+                    for miID in miSourceIDs {
+                        group.addTask { await mi.retryLAN(deviceId: miID) }
+                    }
+                }
+            }
+        }
+    }
+
     public func setPollingContext(_ context: PollingContext) async {
         guard !isShutDown else { return }
         pollingContext = context
-        let ha = homeAssistant
-        let mi = xiaomiCloud
+        let disabled = disabledBackendsGate.snapshot()
+        let ha = disabled.contains(.homeAssistant) ? nil : homeAssistant
+        let mi = disabled.contains(.xiaomiCloud) ? nil : xiaomiCloud
         await withTaskGroup(of: Void.self) { group in
             if let ha { group.addTask { await ha.setPollingContext(context) } }
             if let mi { group.addTask { await mi.setPollingContext(context) } }
@@ -528,7 +664,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         window: SensorHistoryWindow,
         now: Date
     ) async -> [SensorHistorySample] {
-        guard let route = routes[deviceId] else { return [] }
+        guard let route = routes[deviceId], !disabledBackendsGate.contains(route.backend) else { return [] }
         switch route.backend {
         case .homeAssistant:
             guard let homeAssistant else { return [] }
@@ -565,6 +701,9 @@ public actor DualSourceHomeProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
+        let disabled = disabledBackendsGate.snapshot()
+        let activeHA = disabled.contains(.homeAssistant) ? nil : homeAssistant
+        let activeMi = disabled.contains(.xiaomiCloud) ? nil : xiaomiCloud
         if let route = routes[device.id] {
             if let previous = activeCameraRoutes[device.id],
                (previous.backend != route.backend || previous.sourceDeviceID != route.sourceDeviceID) {
@@ -572,8 +711,8 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
             switch route.backend {
             case .homeAssistant:
-                if let homeAssistant {
-                    let source = try await homeAssistant.resolveCameraStream(
+                if let activeHA {
+                    let source = try await activeHA.resolveCameraStream(
                         for: route.sourceDevice,
                         quality: quality,
                         channel: channel
@@ -582,8 +721,8 @@ public actor DualSourceHomeProvider: HomeProvider {
                     return source
                 }
             case .xiaomiCloud:
-                if let xiaomiCloud {
-                    let source = try await xiaomiCloud.resolveCameraStream(
+                if let activeMi {
+                    let source = try await activeMi.resolveCameraStream(
                         for: route.sourceDevice,
                         quality: quality,
                         channel: channel
@@ -595,23 +734,33 @@ public actor DualSourceHomeProvider: HomeProvider {
                 break
             }
         }
-        if case .camera(let spec) = device.kind,
-           MiotAddress.parse(spec.entityId) != nil,
-           let xiaomiCloud {
-            let source = try await xiaomiCloud.resolveCameraStream(
-                for: device,
-                quality: quality,
-                channel: channel
-            )
-            activeCameraRoutes[device.id] = DeviceMergeRoute(
-                backend: .xiaomiCloud,
-                sourceDeviceID: device.id,
-                sourceDevice: device
-            )
-            return source
-        }
-        if let homeAssistant {
-            let source = try await homeAssistant.resolveCameraStream(
+        if case .camera(let spec) = device.kind {
+            if MiotAddress.parse(spec.entityId) != nil {
+                guard let activeMi else {
+                    throw HomeProviderError.serviceCallFailed(
+                        501,
+                        L10n.tr("未配置数据源", "No data source is configured")
+                    )
+                }
+                let source = try await activeMi.resolveCameraStream(
+                    for: device,
+                    quality: quality,
+                    channel: channel
+                )
+                activeCameraRoutes[device.id] = DeviceMergeRoute(
+                    backend: .xiaomiCloud,
+                    sourceDeviceID: device.id,
+                    sourceDevice: device
+                )
+                return source
+            }
+            guard let activeHA else {
+                throw HomeProviderError.serviceCallFailed(
+                    501,
+                    L10n.tr("未配置数据源", "No data source is configured")
+                )
+            }
+            let source = try await activeHA.resolveCameraStream(
                 for: device,
                 quality: quality,
                 channel: channel
@@ -623,8 +772,21 @@ public actor DualSourceHomeProvider: HomeProvider {
             )
             return source
         }
-        if let xiaomiCloud {
-            let source = try await xiaomiCloud.resolveCameraStream(
+        if let activeHA {
+            let source = try await activeHA.resolveCameraStream(
+                for: device,
+                quality: quality,
+                channel: channel
+            )
+            activeCameraRoutes[device.id] = DeviceMergeRoute(
+                backend: .homeAssistant,
+                sourceDeviceID: device.id,
+                sourceDevice: device
+            )
+            return source
+        }
+        if let activeMi {
+            let source = try await activeMi.resolveCameraStream(
                 for: device,
                 quality: quality,
                 channel: channel

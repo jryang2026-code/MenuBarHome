@@ -239,7 +239,11 @@ struct SettingsSearchTests {
         #expect(focus.highlight == .privacyNotes)
 
         // The window dims the row for ~1.6 s; waiting for it to end proves it does not persist.
-        try await Task.sleep(for: .milliseconds(1900))
+        // Poll instead of a fixed sleep so a busy CI runner cannot report a spurious failure.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        while focus.highlight != nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(focus.highlight == nil)
     }
 
@@ -368,7 +372,7 @@ struct SettingsSearchTests {
         for anchor in [SettingsAnchor.appearanceMode, .panelTheme, .panelHeight, .climatePanelModule] {
             #expect(anchor.tab == .general, "\(anchor.rawValue) should route to .general")
         }
-        for anchor in [SettingsAnchor.miMultiAccounts, .dualSourceFusion] {
+        for anchor in [SettingsAnchor.miMultiAccounts, .dualSourceFusion, .localNetwork] {
             #expect(anchor.tab == .connection, "\(anchor.rawValue) should route to .connection")
         }
 
@@ -405,10 +409,107 @@ struct SettingsSearchTests {
             backend: .demo,
             hiddenDeviceCount: 0,
             storedPanelTheme: PanelTheme.classic.rawValue,
-            liquidGlassAvailable: true
+            liquidGlassAvailable: true,
+            hasLocalNetworkBlock: false
         )
         #expect(demo.blockReason(for: .miMultiAccounts) == .demoMode)
         #expect(demo.blockReason(for: .dualSourceFusion) == .demoMode)
+    }
+
+    @Test("Local Network permission banner is searchable when blocked and explained accurately when no block is detected")
+    func localNetworkPermissionReachability() {
+        let noBlock = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true,
+            hasLocalNetworkBlock: false
+        )
+        let noBlockOutcome = SettingsSearch.search("本地网络权限", availability: noBlock)
+        #expect(noBlockOutcome.hits.isEmpty)
+        #expect(noBlockOutcome.blocked?.reason == .noLocalNetworkBlock)
+
+        let tables = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MijiaCore/Resources/Localizations")
+        L10n.$overrideTranslationDirectory.withValue(tables) {
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "当前没有检测到本地网络受阻")
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "目前沒有偵測到本機網路受阻")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "No local network block detected right now")
+            }
+        }
+
+        let blocked = SettingsSearchAvailability(
+            backend: .homeAssistant,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true,
+            hasLocalNetworkBlock: true
+        )
+        let blockedOutcome = SettingsSearch.search("本地网络权限", availability: blocked)
+        #expect(blockedOutcome.hits.contains { $0.anchor == .localNetwork })
+        #expect(blockedOutcome.blocked == nil)
+    }
+
+    @Test("Xiaomi LAN transport summary line includes blocked device count in zh-Hans, zh-Hant, and English")
+    func xiaomiLANTransportSummaryLineIncludesBlockedDevices() {
+        let fullyBlocked = DiagnosticsReportBuilder.TransportSummary(
+            lanDeviceCount: 0,
+            cloudDeviceCount: 0,
+            cooldownDeviceCount: 0,
+            blockedDeviceCount: 3,
+            broadcastRecoveredCount: 0,
+            medianLANRTTMs: nil,
+            isLocalNetworkBlocked: true
+        )
+        let tables = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MijiaCore/Resources/Localizations")
+        L10n.$overrideTranslationDirectory.withValue(tables) {
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                #expect(XiaomiLANTransportSummaryRow.summaryLine(fullyBlocked) == "直连 0 台 · 云端 0 台 · 权限受阻 3 台")
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(XiaomiLANTransportSummaryRow.summaryLine(fullyBlocked) == "直連 0 台 · 雲端 0 台 · 權限受阻 3 台")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                #expect(XiaomiLANTransportSummaryRow.summaryLine(fullyBlocked) == "LAN 0 · Cloud 0 · Blocked 3")
+            }
+        }
+    }
+
+    @Test("Stale sensor cards surface transport readout when diagnostics exist in both themes")
+    @MainActor
+    func staleSensorShowsTransportReadout() {
+        let suite = "test.stale.sensor.transport.\(UUID().uuidString)"
+        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let sensor = SmartDevice(
+            id: "sensor-blocked",
+            name: "卧室传感器",
+            roomId: "bedroom",
+            roomName: "卧室",
+            model: "miaomiaoce.sensor_ht.t2",
+            isOnline: true,
+            kind: .sensor(SensorSpec(temperature: 24.5, humidity: 50)),
+            telemetryStale: true
+        )
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [sensor], scenes: [])),
+            defaultsSuiteName: suite
+        )
+        #expect(SensorCardView.showsStaleTransportReadout(device: sensor, store: store) == false)
+
+        store.deviceTransportDiagnostics[sensor.id] = DeviceTransportDiagnostics(route: .localNetworkBlocked)
+        #expect(SensorCardView.showsStaleTransportReadout(device: sensor, store: store) == true)
     }
 }
 

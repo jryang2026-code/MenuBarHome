@@ -26,6 +26,9 @@ enum ControlFailure: Sendable {
     /// evidence and wins; otherwise the device's last known online state wins over a device or
     /// transport error, because a write cannot land while the device is offline.
     static func userMessage(for error: Error, deviceName: String, isDeviceOnline: Bool, adjustment: Bool) -> String {
+        if let blocked = error as? CapabilityControlBlockedError {
+            return blocked.reason.userMessage
+        }
         guard let failure = classify(error, isDeviceOnline: isDeviceOnline) else {
             return verb(deviceName: deviceName, adjustment: adjustment)
         }
@@ -53,7 +56,9 @@ enum ControlFailure: Sendable {
     /// The command was refused locally: no backend for it, a malformed address, an action the spec lacks,
     /// or a drag that a newer write superseded before anything was sent.
     private static func neverLeftThisMac(_ error: Error) -> Bool {
-        if error is MiotCommandError || error is ManualWriteSuperseded { return true }
+        if error is MiotCommandError || error is ManualWriteSuperseded || error is CapabilityControlBlockedError {
+            return true
+        }
         switch error as? HomeProviderError {
         case .invalidURL?, .backendNotConfigured?: return true
         default: return false

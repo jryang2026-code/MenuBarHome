@@ -13,12 +13,12 @@ import { isVerboseConnectionFooter } from "./panelView.js";
 /** Plain-language connection state for the footer and its keyboard-reachable detail card. */
 export type ConnectionBadge = "online" | "connecting" | "degraded" | "reauth" | "offline" | "demo" | "unconfigured";
 export interface ConnectionSourceItem {
-  readonly id: "mi" | "ha" | "demo";
+  readonly id: "mi" | "ha" | "demo" | "identity";
   readonly name: string;
   readonly statusText: string;
   readonly badge: ConnectionBadge;
 }
-export type ConnectionStatusActionKind = "retry" | "settings" | "qr" | "leaveDemo";
+export type ConnectionStatusActionKind = "retry" | "retryIdentity" | "settings" | "qr" | "leaveDemo";
 export interface ConnectionStatusAction { readonly kind: ConnectionStatusActionKind; readonly label: string; }
 export type ConnectionTone = "online" | "syncing" | "degraded" | "offline" | "demo" | "unconfigured";
 export interface ConnectionStatusPresentation {
@@ -247,6 +247,25 @@ export function resolveConnectionStatus(host: MenuMijiaWindowsApp): ConnectionSt
       sources: [{ id: "demo", name: tr(host, "示例家庭", "範例家庭", "Demo home"), statusText: tr(host, "本地演示数据", "本機示範資料", "Local demo data"), badge: "demo" }],
     };
   }
+  if (host.identityMigrationDiagnostic) {
+    const isVaultFailure = host.identityMigrationDiagnostic === "credential_vault_read_failed";
+    const text = isVaultFailure
+      ? tr(host, "凭据读取失败，可重试", "憑據讀取失敗，可重試", "Could not read credentials; retry")
+      : tr(host, "本机配置读取失败，可重试", "本機設定讀取失敗，可重試", "Could not read local settings; retry");
+    const sourceName = isVaultFailure
+      ? tr(host, "本机凭据库", "本機憑據庫", "Credential store")
+      : tr(host, "本机配置", "本機設定", "Local settings");
+    const sourceStatus = isVaultFailure
+      ? tr(host, "无法读取已保存凭据 · 请重试", "無法讀取已儲存憑據 · 請重試", "Could not read saved credentials · retry")
+      : tr(host, "无法读取已保存配置 · 请重试", "無法讀取已儲存設定 · 請重試", "Could not read saved settings · retry");
+    return {
+      tone: "offline",
+      icon: SF_ICONS.exclamationTriangleFill,
+      text,
+      action: { kind: "retryIdentity", label: tr(host, "重试读取", "重試讀取", "Retry") },
+      sources: [{ id: "identity", name: sourceName, statusText: sourceStatus, badge: "offline" }],
+    };
+  }
   if (!hasMi(host) && !hasHA(host)) {
     return {
       tone: "unconfigured",
@@ -393,11 +412,14 @@ export function renderConnectionStatus(host: MenuMijiaWindowsApp, resolved?: Con
   const sources = status.sources.length
     ? status.sources.map((source) => `<li class="cc-conn-source" data-connection-source="${source.id}"><span class="cc-conn-badge" data-connection-badge="${source.badge}" aria-label="${host.escapeHtml(tr3(...BADGE_LABEL[source.badge], undefined, prefOf(host)))}">${BADGE_ICON[source.badge]}</span><span class="cc-conn-name">${host.escapeHtml(source.name)}</span><span class="cc-conn-state">${host.escapeHtml(source.statusText)}</span></li>`).join("")
     : `<li class="cc-conn-source is-empty">${host.escapeHtml(tr(host, "还没连接家居平台", "還沒連線家居平台", "No smart home platform connected"))}</li>`;
+  const retryLabel = host.identityMigrationDiagnostic
+    ? tr(host, "重试读取", "重試讀取", "Retry")
+    : tr(host, "重试连接", "重試連線", "Retry connection");
   const details = open
     ? `<div class="cc-conn-popover" id="cc-connection-details" data-connection-details role="dialog" aria-label="${title}">
         <div class="cc-conn-popover-header"><strong>${title}</strong><button type="button" class="cc-conn-close" data-close-connection-details aria-label="${host.escapeHtml(tr(host, "关闭连接详情", "關閉連線詳情", "Close connection details"))}" title="${host.escapeHtml(tr(host, "关闭连接详情", "關閉連線詳情", "Close connection details"))}">${SF_ICONS.xmark}</button></div>
         <ul class="cc-conn-sources">${sources}</ul>
-        <div class="cc-conn-actions"><button type="button" class="cc-inline-pill" data-connection-retry>${host.escapeHtml(tr(host, "重试连接", "重試連線", "Retry connection"))}</button><button type="button" class="cc-inline-pill" data-connection-settings>${host.escapeHtml(tr(host, "连接设置…", "連線設定…", "Connection settings…"))}</button></div>
+        <div class="cc-conn-actions"><button type="button" class="cc-inline-pill" data-connection-retry>${host.escapeHtml(retryLabel)}</button><button type="button" class="cc-inline-pill" data-connection-settings>${host.escapeHtml(tr(host, "连接设置…", "連線設定…", "Connection settings…"))}</button></div>
       </div>`
     : "";
   return `<button type="button" class="cc-status-trigger" id="btn-connection-status" data-connection-status-trigger aria-expanded="${open}" aria-controls="cc-connection-details" aria-label="${accessibleName}" title="${label}"><span class="cc-status-dot ${dotClass(status.tone)}" aria-hidden="true"></span><span class="cc-status-icon" aria-hidden="true">${status.icon}</span><span class="cc-footer-label">${label}</span></button>${action}${details}`;

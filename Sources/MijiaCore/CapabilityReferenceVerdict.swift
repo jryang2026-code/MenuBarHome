@@ -233,7 +233,10 @@ public struct PreferenceReferenceSet: Codable, Equatable, Sendable {
         self.menuBarTargetDeviceIds = menuBarTargetDeviceIds; self.pinnedSourceDeviceIds = pinnedSourceDeviceIds; self.cameraPreferenceDeviceIds = cameraPreferenceDeviceIds
     }
     public static func fromUserDefaults(_ defaults: UserDefaults) -> PreferenceReferenceSet {
-        PreferenceReferenceSet(favoriteDeviceIds: DevicePreferenceIndex.referencedIDs(defaults: defaults).sorted())
+        PreferenceReferenceSet(
+            favoriteDeviceIds: DevicePreferenceIndex.referencedIDs(defaults: defaults).sorted(),
+            pinnedSourceDeviceIds: DeviceSourcePinStorage.load(defaults: defaults).keys.sorted()
+        )
     }
     public var allDeviceIds: Set<String> {
         Set(favoriteDeviceIds + aliasDeviceIds + customOrderDeviceIds + menuBarTargetDeviceIds + pinnedSourceDeviceIds + cameraPreferenceDeviceIds)
