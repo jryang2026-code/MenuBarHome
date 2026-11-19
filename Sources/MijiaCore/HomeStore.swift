@@ -164,7 +164,12 @@ public final class HomeStore {
         didSet { scheduleRaycastSnapshotExport() }
     }
     public internal(set) var scenes: [HomeScene] = [] {
-        didSet { scheduleRaycastSnapshotExport() }
+        didSet {
+            if !scenes.isEmpty {
+                syncIndexedScenes(from: scenes)
+            }
+            scheduleRaycastSnapshotExport()
+        }
     }
     public internal(set) var hasReceivedInitialSnapshot = false
     /// Read-back tickets for primary toggles; see `ReadBackTickets`.
@@ -652,6 +657,10 @@ public final class HomeStore {
         didSet {
             pinnedDeviceSourcesBox.set(pinnedDeviceSources)
             DeviceSourcePinStorage.save(pinnedDeviceSources, defaults: userDefaults)
+            if !devices.isEmpty {
+                syncIndexedDevices(from: devices)
+            }
+            scheduleRaycastSnapshotExport()
         }
     }
     @ObservationIgnored let pinnedDeviceSourcesBox: DeviceSourcePinBox
@@ -663,8 +672,27 @@ public final class HomeStore {
     }
 
     /// Header shown in the card context menu for dual-source cards; explains temporary fallback when
-    /// the user's pinned source is offline and the other source is serving the card instead.
+    /// the user's pinned source is offline and the other source is serving the card instead, or when
+    /// the pinned source was turned off and control is paused.
     public func currentSourceMenuTitle(for deviceId: String) -> String {
+        if let pinned = pinnedSource(for: deviceId) {
+            if pinned == .homeAssistant,
+               (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)),
+               !isHAConnectionEnabled {
+                return L10n.tr(
+                    "当前来源：HA 已停用（已固定来源，暂停控制）",
+                    "Current source: HA turned off (pinned source; control paused)"
+                )
+            }
+            if pinned == .xiaomiCloud,
+               (hasMiSource || !miAccounts.isEmpty || explicitlyDisabledConnections.contains(.xiaomiCloud)),
+               !hasEnabledMiSource {
+                return L10n.tr(
+                    "当前来源：米家云已停用（已固定来源，暂停控制）",
+                    "Current source: Xiaomi Cloud turned off (pinned source; control paused)"
+                )
+            }
+        }
         let active = deviceBackend(for: deviceId)
         if let pinned = pinnedSource(for: deviceId), pinned != active {
             return L10n.format(
@@ -677,9 +705,16 @@ public final class HomeStore {
         return L10n.format("当前来源：%@", "Current source: %@", active.shortTitle)
     }
 
-    /// A card is pinnable only when both sources supplied the same physical device.
+    /// A card is pinnable when both sources supplied the same physical device, or when a dual-source
+    /// card already carries an explicit pin while one configured source is temporarily turned off.
     public func isPairedDualSourceDevice(_ deviceId: String) -> Bool {
-        isDualSourceActive && pairedDeviceIDs.contains(deviceId)
+        if isDualSourceActive && pairedDeviceIDs.contains(deviceId) {
+            return true
+        }
+        return homeBackend != .demo
+            && hasHASource
+            && (hasMiSource || !miAccounts.isEmpty)
+            && pinnedSource(for: deviceId) != nil
     }
 
     public func pinnedSource(for deviceId: String) -> HomeBackend? {
@@ -718,6 +753,29 @@ public final class HomeStore {
     /// existing footer already names it.
     public var dualSourceStatusSummary: String? {
         guard isDualSourceActive else { return nil }
+        if allConfiguredSourcesTurnedOff {
+            return L10n.tr("HA 与米家云均已停用", "Home Assistant and Xiaomi Cloud are turned off")
+        }
+        if !isHAConnectionEnabled {
+            switch sourceState(.xiaomiCloud) {
+            case .connected:
+                return L10n.tr("米家云已连接（HA 已停用）", "Xiaomi Cloud connected (HA turned off)")
+            case .connecting:
+                return L10n.tr("米家云连接中（HA 已停用）", "Xiaomi Cloud connecting (HA turned off)")
+            case .offline:
+                return L10n.tr("米家云未连接（HA 已停用）", "Xiaomi Cloud offline (HA turned off)")
+            }
+        }
+        if !hasEnabledMiSource {
+            switch sourceState(.homeAssistant) {
+            case .connected:
+                return L10n.tr("HA 已连接（米家云已停用）", "HA connected (Xiaomi Cloud turned off)")
+            case .connecting:
+                return L10n.tr("HA 连接中（米家云已停用）", "HA connecting (Xiaomi Cloud turned off)")
+            case .offline:
+                return L10n.tr("HA 未连接（米家云已停用）", "HA offline (Xiaomi Cloud turned off)")
+            }
+        }
         if case .disconnected = connectionStatus {
             return L10n.tr("HA 与 米家云均未连接", "Home Assistant and Xiaomi Cloud are both offline")
         }
@@ -879,7 +937,7 @@ public final class HomeStore {
     var eventTask: Task<Void, Never>?
     var providerShutdownTask: Task<Void, Never>?
     var activeDualProvider: DualSourceHomeProvider?
-    var activeHAProvider: HAWebSocketProvider?
+    var activeHAProvider: (any HomeProvider)?
     var activeHAConfig: (url: String, token: String)?
     var activeMiAccountsProvider: MiAccountsProvider? {
         didSet {
@@ -1069,11 +1127,14 @@ public final class HomeStore {
     public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
     public internal(set) var capabilityGeneration: Int = 0
     public var onMiAccountDisabled: (@MainActor (String, Set<String>) -> Void)?
+    public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
+    @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
     @ObservationIgnored var explicitlyDisabledScopes: Set<String> = []
     @ObservationIgnored var indexedDevicesById: [String: CapabilityIndexedDevice] = [:]
+    @ObservationIgnored var indexedScenesById: [String: SceneReference] = [:]
     @ObservationIgnored var miotDidToAccountScopes: [String: Set<String>] = [:]
     /// Timers paused by an account/connection disable. Observed so the assistant bar can list them;
     /// they stay cancellable while paused.
@@ -1091,12 +1152,14 @@ public final class HomeStore {
         updater: AppUpdater? = nil,
         credentialVault: CredentialVault? = nil,
         topologyCache: MiTopologyCache? = nil,
-        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil
+        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil,
+        haProviderFactory: (@MainActor (String, String) -> any HomeProvider)? = nil
     ) {
         let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
+        self.haProviderFactory = haProviderFactory
         self.topologyCache = topologyCache ?? (ud === UserDefaults.standard ? .shared : nil)
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
@@ -1138,8 +1201,8 @@ public final class HomeStore {
         self.serverURLString = savedURL
         let initialBackend = ud.string(forKey: "home_backend").flatMap(HomeBackend.init(rawValue:)) ?? .homeAssistant
         self.homeBackend = initialBackend
-        // Demo mode and injected providers must not touch the Keychain until live mode needs it.
-        let needsInitialHAToken = provider == nil && dualSource == nil && initialBackend != .demo
+        // Demo mode and injected providers without a dedicated test vault must not touch the system Keychain.
+        let needsInitialHAToken = initialBackend != .demo && ((provider == nil && dualSource == nil) || credentialVault != nil)
         let initialHAToken = needsInitialHAToken
             ? KeychainHelper.loadToken(defaults: ud, vault: credentialVault)
             : ""

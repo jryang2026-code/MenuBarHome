@@ -358,11 +358,16 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func attachContinuation(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+        guard !isShutDown else {
+            cont.finish()
+            return
+        }
         self.continuation = cont
         restartLoop()
     }
 
     public func refreshNow() async {
+        guard !isShutDown else { return }
         if let ws = activeWebSocket {
             let id = allocateWebSocketMessageId()
             pendingRefreshStateIds.insert(id)
@@ -789,6 +794,9 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     public func resolveCameraStream(for device: SmartDevice) async throws -> CameraStreamSource {
+        guard !isShutDown else {
+            throw HomeProviderError.networkError(L10n.tr("连接已关闭", "Connection is closed"))
+        }
         guard case .camera(let spec) = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("非摄像头设备", "Not a camera device"))
         }

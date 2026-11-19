@@ -102,12 +102,21 @@ extension HomeStore {
 
     @discardableResult
     public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
-        if scenes.contains(where: { $0.id == scene.id }) {
+        if let msg = capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.id) {
+            showToast(msg, isError: true)
+            return Task { false }
+        }
+        if homeBackend != .demo,
+           (!scenes.isEmpty || !indexedScenesById.isEmpty || hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)) {
             let gate = evaluateSceneControlGate(sceneId: scene.id)
             if !gate.allowed {
                 if let msg = gate.rejectionReason?.userMessage { showToast(msg, isError: true) }
                 return Task { false }
             }
+        }
+        if let reason = haCommandWriteRejection(for: scene.entityId) {
+            showToast(reason.userMessage, isError: true)
+            return Task { false }
         }
         guard !rejectWritesBlockedByMiSession() else { return Task { false } }
         guard !rejectControlWhileLocked() else { return Task { false } }
@@ -117,6 +126,9 @@ extension HomeStore {
                 confirmManualControl(intents: [.init(targetId: scene.id, operation: .activateScene)])
                 showToast(L10n.tr("已触发场景：\(scene.name)", "Activated scene: \(scene.name)"))
                 return true
+            } catch let blocked as CapabilityControlBlockedError {
+                showToast(blocked.reason.userMessage, isError: true)
+                return false
             } catch {
                 showToast(L10n.tr("场景「\(scene.name)」执行失败", "Scene \"\(scene.name)\" failed"), isError: true)
                 return false
@@ -152,7 +164,7 @@ extension HomeStore {
 
         switch action {
         case .lightsOff:
-            for idx in devices.indices where devices[idx].isOnline {
+            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(forDeviceId: devices[idx].id) == nil {
                 let previous = devices[idx]
                 guard case .light(var s) = previous.kind, s.isOn, s.powerWritable else { continue }
                 let deviceId = previous.id
@@ -168,12 +180,15 @@ extension HomeStore {
 
         case .softNightLight:
             var targetIndices = devices.indices.filter { idx in
-                guard devices[idx].isOnline, case .light(let s) = devices[idx].kind else { return false }
+                guard devices[idx].isOnline,
+                      capabilityWriteRejection(forDeviceId: devices[idx].id) == nil,
+                      case .light(let s) = devices[idx].kind else { return false }
                 return s.isOn && s.brightnessWritable && s.colorWritable
             }
             if targetIndices.isEmpty {
                 let isOnlineLight = { (dev: SmartDevice) -> Bool in
-                    if dev.isOnline, case .light(let spec) = dev.kind {
+                    guard dev.isOnline, self.capabilityWriteRejection(forDeviceId: dev.id) == nil else { return false }
+                    if case .light(let spec) = dev.kind {
                         return spec.brightnessWritable && spec.colorWritable
                     }
                     return false
@@ -218,7 +233,7 @@ extension HomeStore {
             }
 
         case .climateSleepOff:
-            for idx in devices.indices where devices[idx].isOnline {
+            for idx in devices.indices where devices[idx].isOnline && capabilityWriteRejection(forDeviceId: devices[idx].id) == nil {
                 let previous = devices[idx]
                 let deviceId = previous.id
                 switch previous.kind {
@@ -350,7 +365,12 @@ extension HomeStore {
     /// What 全关 turns off: devices on screen right now (current room, not hidden) that are on,
     /// take part in 全关, and can actually be switched off from here.
     public var allOffTargets: [SmartDevice] {
-        filteredDevices.filter { $0.isActiveOn && joinsAllOff($0) && Self.allOffChange(for: $0) != nil }
+        filteredDevices.filter {
+            $0.isActiveOn
+                && joinsAllOff($0)
+                && Self.allOffChange(for: $0) != nil
+                && capabilityWriteRejection(forDeviceId: $0.id) == nil
+        }
     }
 
     /// Header copy for 全关. The excluded count is the active devices in the current room or filter,
@@ -746,6 +766,17 @@ extension HomeStore {
         return (refused, partlyApplied)
     }
 
+    func capabilityUndoRejectionReason(for command: DeviceCommand) -> ControlTargetRejectionReason? {
+        if let ownerId = owningDeviceIdForCommand(command),
+           let reason = capabilityWriteRejection(forDeviceId: ownerId) {
+            return reason
+        }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+            return reason
+        }
+        return haCommandWriteRejection(for: command.targetEntityId)
+    }
+
     @discardableResult
     public func undoTurnAllOff() -> Task<Void, Never>? {
         // Nothing to undo stays silent. A blocked Mi session is checked before any UI state or a
@@ -758,6 +789,13 @@ extension HomeStore {
         // `turnAllOff` refuses it before the banner, the rows or a batch state move, and a
         // refused undo stays retryable after unlocking (#143).
         guard !rejectControlWhileLocked() else { return nil }
+        if !banner.restoreCommands.isEmpty {
+            let blockedReasons = banner.restoreCommands.compactMap { capabilityUndoRejectionReason(for: $0) }
+            if blockedReasons.count == banner.restoreCommands.count, let firstReason = blockedReasons.first {
+                showToast(firstReason.userMessage, isError: true)
+                return nil
+            }
+        }
         // Only an undo whose restores are all Mi-dependent is refused outright. A mixed undo sends
         // its LAN restores, keeps the refused Mi ones in the banner and leaves the expiry toast up.
         let hasLGRestore = banner.restoreCommands.contains { lgClientServes($0) }
@@ -790,6 +828,13 @@ extension HomeStore {
               undoBanner?.id == banner.id,
               !rejectControlWhileLocked() else {
             return nil
+        }
+        if !banner.restoreCommands.isEmpty {
+            let blockedReasons = banner.restoreCommands.compactMap { capabilityUndoRejectionReason(for: $0) }
+            if blockedReasons.count == banner.restoreCommands.count, let firstReason = blockedReasons.first {
+                showToast(firstReason.userMessage, isError: true)
+                return nil
+            }
         }
         if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
             return nil
@@ -1023,6 +1068,13 @@ extension HomeStore {
         repeat {
             didPresentModalInPass = false
             for command in commands {
+                if capabilityUndoRejectionReason(for: command) != nil {
+                    if let ownerId = owningDeviceIdForCommand(command) {
+                        approvedDeviceIds.remove(ownerId)
+                        contextInvalidatedDeviceIds.insert(ownerId)
+                    }
+                    continue
+                }
                 if let target = Self.facetTarget(for: command),
                    let device = devices.first(where: {
                        deviceFacets[$0.id]?.contains { $0.target == target } == true && !excludingDeviceIds.contains($0.id)
@@ -1252,6 +1304,7 @@ extension HomeStore {
     ) -> [UndoApplicableCommand] {
         var applicable: [UndoApplicableCommand] = []
         for command in commands {
+            guard capabilityUndoRejectionReason(for: command) == nil else { continue }
             // A 更多设置 write has no card-state effect; undo restores the facet value it carries.
             if let target = Self.facetTarget(for: command),
                let device = devices.first(where: { device in

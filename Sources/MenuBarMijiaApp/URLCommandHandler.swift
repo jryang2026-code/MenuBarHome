@@ -98,6 +98,17 @@ final class URLCommandHandler {
             return
         }
 
+        if let rejection = resolvedCapabilityRejectionMessage(for: resolved, store: store) {
+            store.showToast(rejection, isError: true)
+            store.recordRaycastCommandFeedback(
+                requestId: envelope.requestId,
+                command: commandLabel(for: envelope.command),
+                message: rejection,
+                isError: true
+            )
+            return
+        }
+
         if store.isControlBlockedByScreenLock {
             finish(store.screenLockBlockedMessage, isError: true, envelope: envelope, store: store)
             return
@@ -115,6 +126,7 @@ final class URLCommandHandler {
                providedToken: envelope.token,
                expectedToken: store.raycastBridgeToken
            ) {
+            let preConfirmGeneration = store.capabilityGeneration
             let prompt = description(for: resolved)
             let approved = confirmationHandler?(prompt) ?? confirm(prompt)
             guard approved else {
@@ -123,6 +135,24 @@ final class URLCommandHandler {
                     command: commandLabel(for: envelope.command),
                     message: L10n.tr("已取消外部链接执行", "Cancelled external link execution"),
                     isError: true
+                )
+                return
+            }
+            if store.isControlBlockedByScreenLock {
+                finish(store.screenLockBlockedMessage, isError: true, envelope: envelope, store: store)
+                return
+            }
+            if let rejection = resolvedCapabilityRejectionMessage(for: resolved, store: store)
+                ?? disabledAccountRejectionMessage(for: envelope.command, store: store) {
+                finish(rejection, isError: true, envelope: envelope, store: store)
+                return
+            }
+            if store.capabilityGeneration != preConfirmGeneration {
+                finish(
+                    L10n.tr("功能或连接状态已变化，请重新操作", "Feature or connection state changed; please try again"),
+                    isError: true,
+                    envelope: envelope,
+                    store: store
                 )
                 return
             }
@@ -170,7 +200,7 @@ final class URLCommandHandler {
                 return .builtInScene(builtIn)
             }
             let normalizedName = IntentValidator.normalizedSceneName(name)
-            if let scene = store.scenes.first(where: {
+            if let scene = store.visibleScenes.first(where: {
                 IntentValidator.normalizedSceneName($0.name) == normalizedName || $0.id == name
             }) {
                 return .scene(scene)
@@ -208,16 +238,33 @@ final class URLCommandHandler {
         store.devices.first(where: { $0.id == deviceId })
     }
 
-    private func disabledAccountRejectionMessage(for command: AppURLCommand, store: HomeStore) -> String? {
-        let targetId: String
-        switch command {
-        case .toggle(let id), .power(let id, _), .brightness(let id, _),
-             .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _), .focus(let id):
-            targetId = id
-        case .scene, .ask:
+    private func resolvedCapabilityRejectionMessage(for resolved: Resolved, store: HomeStore) -> String? {
+        switch resolved {
+        case .toggle(let device), .power(let device, _), .brightness(let device, _),
+             .colorTemp(let device, _), .temperature(let device, _), .fan(let device, _, _), .focus(let device):
+            return store.capabilityControlRejectionMessage(forDeviceId: device.id)
+        case .scene(let scene):
+            return store.capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.id)
+        case .builtInScene, .ask:
             return nil
         }
-        return store.capabilityControlRejectionMessage(forDeviceId: targetId)
+    }
+
+    private func disabledAccountRejectionMessage(for command: AppURLCommand, store: HomeStore) -> String? {
+        switch command {
+        case .toggle(let id):
+            return store.capabilityControlRejectionMessage(forDeviceId: id, allowNameMatch: true)
+        case .power(let id, _), .brightness(let id, _),
+             .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _), .focus(let id):
+            return store.capabilityControlRejectionMessage(forDeviceId: id)
+        case .scene(let name):
+            if name.lowercased().hasPrefix("quick:") || BuiltInURLScene.resolve(name) != nil {
+                return nil
+            }
+            return store.capabilitySceneControlRejectionMessage(forSceneIdOrName: name)
+        case .ask:
+            return nil
+        }
     }
 
     private func description(for resolved: Resolved) -> String {
@@ -312,7 +359,8 @@ final class URLCommandHandler {
         switch resolved {
         case .toggle(let snapshot):
             guard let device = store.devices.first(where: { $0.id == snapshot.id }) else {
-                let message = L10n.tr("设备已不在面板中", "The device is no longer available")
+                let message = store.capabilityControlRejectionMessage(forDeviceId: snapshot.id)
+                    ?? L10n.tr("设备已不在面板中", "The device is no longer available")
                 finish(message, isError: true, envelope: envelope, store: store)
                 return
             }
@@ -390,7 +438,11 @@ final class URLCommandHandler {
                 store: store
             )
         case .scene(let snapshot):
-            guard let scene = store.scenes.first(where: { $0.id == snapshot.id }) else {
+            if let rejection = store.capabilitySceneControlRejectionMessage(forSceneIdOrName: snapshot.id) {
+                finish(rejection, isError: true, envelope: envelope, store: store)
+                return
+            }
+            guard let scene = store.visibleScenes.first(where: { $0.id == snapshot.id }) else {
                 let message = L10n.tr("场景已不在列表中", "The scene is no longer available")
                 finish(message, isError: true, envelope: envelope, store: store)
                 return

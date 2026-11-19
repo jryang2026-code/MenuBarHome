@@ -43,6 +43,7 @@ final class UnsupportedDeviceScanner {
     struct ScanContext: Equatable {
         let backend: HomeBackend
         let hasHASource: Bool
+        let isHAConnectionEnabled: Bool
         let normalizedServerURL: String
         let miAccountIds: [String]
 
@@ -50,6 +51,7 @@ final class UnsupportedDeviceScanner {
         init(store: HomeStore) {
             self.backend = store.homeBackend
             self.hasHASource = store.hasEnabledHASource
+            self.isHAConnectionEnabled = store.isHAConnectionEnabled
             self.normalizedServerURL = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
             self.miAccountIds = store.enabledMiAccounts.map(\.id)
         }
@@ -61,6 +63,8 @@ final class UnsupportedDeviceScanner {
     private(set) var lastScannedAt: Date?
     private var lastScanContext: ScanContext?
     private var scanGeneration = 0
+    /// Test seam replacing live WebSocket registry reads in unit tests.
+    var homeAssistantScanOverride: (@Sendable (String, String, Bool) async throws -> [UnsupportedDevice])?
 
     private init() {}
 
@@ -123,12 +127,37 @@ final class UnsupportedDeviceScanner {
                 }
             }
         }
-        if active.contains(.homeAssistant) {
+        if active.contains(.homeAssistant), store.isHAConnectionEnabled {
+            let capturedCapabilityGeneration = store.capabilityGeneration
+            let capturedHAScope = store.activeConnectionScopes.first(where: { $0.hasPrefix("ha:") })
+            let baseURL = store.serverURLString
+            let token = store.loadHAToken()
+            let plaintextApproved = HAPlaintextConsent.allowsToken(to: baseURL, defaults: store.userDefaults)
+            let haScanOverride = homeAssistantScanOverride
             do {
-                let scanned = try await Self.scanHomeAssistant(baseURL: store.serverURLString, token: store.loadHAToken(), plaintextApproved: HAPlaintextConsent.allowsToken(to: store.serverURLString, defaults: store.userDefaults))
-                results.append(contentsOf: scanned)
+                let scanned: [UnsupportedDevice]
+                if let haScanOverride {
+                    scanned = try await haScanOverride(baseURL, token, plaintextApproved)
+                } else {
+                    scanned = try await Self.scanHomeAssistant(
+                        baseURL: baseURL,
+                        token: token,
+                        plaintextApproved: plaintextApproved
+                    )
+                }
+                if store.isHAConnectionEnabled,
+                   store.activeBackends.contains(.homeAssistant),
+                   store.capabilityGeneration == capturedCapabilityGeneration,
+                   store.activeConnectionScopes.first(where: { $0.hasPrefix("ha:") }) == capturedHAScope {
+                    results.append(contentsOf: scanned)
+                }
             } catch {
-                errors.append((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                if store.isHAConnectionEnabled,
+                   store.activeBackends.contains(.homeAssistant),
+                   store.capabilityGeneration == capturedCapabilityGeneration,
+                   store.activeConnectionScopes.first(where: { $0.hasPrefix("ha:") }) == capturedHAScope {
+                    errors.append((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                }
             }
         }
 

@@ -23,14 +23,17 @@ extension HomeStore {
         } else {
             L10n.tr("米家云端 (未登录)", "Xiaomi Cloud (Signed Out)")
         }
-        if hasHASource && hasMiSource {
+        if hasEnabledHASource && hasEnabledMiSource {
             return "Home Assistant (\(haHost)) + \(miSummary)"
         }
-        if hasMiSource {
+        if hasEnabledMiSource {
             return miSummary
         }
-        if hasHASource {
+        if hasEnabledHASource {
             return haHost
+        }
+        if allConfiguredSourcesTurnedOff {
+            return L10n.tr("连接已停用", "Connections turned off")
         }
         if homeBackend == .xiaomiCloud {
             return miSummary
@@ -317,25 +320,57 @@ extension HomeStore {
     func handleProviderEvent(_ event: HomeProviderEvent) {
         switch event {
         case .statusChanged(let status):
+            if allConfiguredSourcesTurnedOff {
+                let disabledStatus = ConnectionStatus.disconnected(L10n.tr("连接已停用", "Connection turned off"))
+                if connectionStatus != disabledStatus { connectionStatus = disabledStatus }
+                connectedBackends = []
+                break
+            }
             if connectionStatus != status { connectionStatus = status }
             if case .disconnected = status {
                 connectedBackends = []
             } else if case .connected = status {
-                if connectedBackends.isEmpty { connectedBackends = homeBackend == .demo ? [.demo] : [homeBackend] }
+                if connectedBackends.isEmpty {
+                    if homeBackend == .demo {
+                        connectedBackends = [.demo]
+                    } else if homeBackend == .homeAssistant {
+                        if isHAConnectionEnabled { connectedBackends = [.homeAssistant] }
+                    } else if hasEnabledMiSource {
+                        connectedBackends = [.xiaomiCloud]
+                    }
+                }
                 if !hasMiSource { localNetworkBlocks.remove(.homeAssistant) }
             }
 
         case .sourceStatusesChanged(let statuses):
-            if sourceStatuses != statuses { sourceStatuses = statuses }
-            if case .connected = statuses[.homeAssistant],
+            var effective = statuses
+            if !isHAConnectionEnabled { effective.removeValue(forKey: .homeAssistant) }
+            if !hasEnabledMiSource { effective.removeValue(forKey: .xiaomiCloud) }
+            if sourceStatuses != effective { sourceStatuses = effective }
+            if case .connected = effective[.homeAssistant],
                connectedBackends.contains(.homeAssistant) || (!hasMiSource && connectionStatus.isConnected) {
                 localNetworkBlocks.remove(.homeAssistant)
             }
 
         case .localNetworkPermissionChanged(let blocked):
-            if localNetworkBlocks != blocked { localNetworkBlocks = blocked }
+            var effective = blocked
+            if !isHAConnectionEnabled { effective.remove(.homeAssistant) }
+            if !hasEnabledMiSource { effective.remove(.xiaomiLAN) }
+            if localNetworkBlocks != effective { localNetworkBlocks = effective }
 
         case .doorbellRang(let ring):
+            if !isHAConnectionEnabled,
+               (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant)) {
+                let isBackedByHA = deviceBackends[ring.deviceId] == .homeAssistant
+                    || (deviceBackends[ring.deviceId] != .xiaomiCloud && indexedDevicesById[ring.deviceId]?.connection == .homeAssistant)
+                if isBackedByHA,
+                   enabledMiFailoverScope(
+                       for: ring.deviceId,
+                       accountHint: devices.first(where: { $0.id == ring.deviceId })?.accountId
+                   ) == nil {
+                    return
+                }
+            }
             if deviceBackends[ring.deviceId] != .homeAssistant,
                !isPairedCardServedByEnabledHA(ring.deviceId),
                let indexed = indexedDevicesById[ring.deviceId],
@@ -353,6 +388,57 @@ extension HomeStore {
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
             _ = recordMiotDidAccountScopes(from: rawSnapshot.devices, facetsByDeviceId: rawSnapshot.deviceFacets)
+            let suppressHA = !isHAConnectionEnabled
+                && (hasHASource || explicitlyDisabledConnections.contains(.homeAssistant))
+            if suppressHA {
+                let disabledHADeviceIds = Set(snapshot.devices.compactMap { device -> String? in
+                    let effectiveBackend = snapshot.deviceBackends[device.id] ?? deviceBackends[device.id]
+                    let isPairedWithEnabledMi = hasEnabledMiSource
+                        && (snapshot.pairedDeviceIDs.contains(device.id) || pairedDeviceIDs.contains(device.id))
+                    if isPairedWithEnabledMi {
+                        return nil
+                    }
+                    if effectiveBackend == .homeAssistant {
+                        return device.id
+                    }
+                    if effectiveBackend == nil,
+                       device.accountId == nil,
+                       !lgClientServes(device),
+                       device.id != LGWebOSProtocol.deviceId,
+                       (homeBackend == .homeAssistant || indexedDevicesById[device.id]?.connection == .homeAssistant) {
+                        return device.id
+                    }
+                    return nil
+                })
+                snapshot.devices.removeAll { disabledHADeviceIds.contains($0.id) }
+                snapshot.scenes = []
+                snapshot.sourceStatuses.removeValue(forKey: .homeAssistant)
+                snapshot.localNetworkBlockedFeatures.remove(.homeAssistant)
+                snapshot.activeBackends.remove(.homeAssistant)
+                snapshot.environmentReadings.removeAll { disabledHADeviceIds.contains($0.id) }
+                for id in disabledHADeviceIds {
+                    snapshot.deviceFacets.removeValue(forKey: id)
+                    snapshot.deviceBackends.removeValue(forKey: id)
+                    snapshot.deviceTransportDiagnostics.removeValue(forKey: id)
+                }
+                for surviving in snapshot.devices {
+                    let isPaired = snapshot.pairedDeviceIDs.contains(surviving.id) || pairedDeviceIDs.contains(surviving.id)
+                    if snapshot.deviceBackends[surviving.id] == .homeAssistant,
+                       hasEnabledMiSource,
+                       isPaired,
+                       pinnedSource(for: surviving.id) != .homeAssistant {
+                        snapshot.deviceBackends[surviving.id] = .xiaomiCloud
+                    }
+                    if let existingFacets = snapshot.deviceFacets[surviving.id] {
+                        let kept = existingFacets.filter { !shouldSuppressHAFacet($0) }
+                        if kept.isEmpty {
+                            snapshot.deviceFacets.removeValue(forKey: surviving.id)
+                        } else if kept.count != existingFacets.count {
+                            snapshot.deviceFacets[surviving.id] = kept
+                        }
+                    }
+                }
+            }
             let hasSuppressedMiScope = miAccounts.contains {
                 shouldSuppressMiAccountInSnapshot($0.id, snapshotEpoch: snapshotEpoch)
             } || (!hasEnabledMiSource && (hasMiSource || !miAccounts.isEmpty))
@@ -405,7 +491,8 @@ extension HomeStore {
                        let acc = surviving.accountId,
                        shouldSuppressMiAccountInSnapshot(acc, snapshotEpoch: snapshotEpoch),
                        hasEnabledHASource,
-                       snapshot.pairedDeviceIDs.contains(surviving.id) || pairedDeviceIDs.contains(surviving.id) {
+                       (snapshot.pairedDeviceIDs.contains(surviving.id) || pairedDeviceIDs.contains(surviving.id)),
+                       pinnedSource(for: surviving.id) != .xiaomiCloud {
                         snapshot.deviceBackends[surviving.id] = .homeAssistant
                     }
                     if let existingFacets = snapshot.deviceFacets[surviving.id] {
@@ -853,10 +940,18 @@ extension HomeStore {
         )
     }
 
+    private func makeConfiguredHAProvider(baseURLString: String, token: String) -> any HomeProvider {
+        if let factory = haProviderFactory {
+            return factory(baseURLString, token)
+        }
+        return makeHAProvider(baseURLString: baseURLString, token: token)
+    }
+
     /// Ignores a late callback from a provider that was already replaced, and keeps a declined
     /// answer so a refresh does not ask again until the address or the provider changes.
     func askHAPlaintext(_ url: String) {
         guard homeBackend != .demo,
+              isHAConnectionEnabled,
               HAWebSocketProvider.normalizeBaseURL(url) == HAWebSocketProvider.normalizeBaseURL(serverURLString),
               haPlaintextPrompt != .declined(url) else { return }
         haPlaintextPrompt = .asking(url)
@@ -881,8 +976,8 @@ extension HomeStore {
         let active = activeBackends
         let wantsHA = active.contains(.homeAssistant)
         let wantsMi = active.contains(.xiaomiCloud)
-        let ha: HAWebSocketProvider? = if wantsHA {
-            makeHAProvider(baseURLString: serverURLString, token: token)
+        let ha: (any HomeProvider)? = if wantsHA {
+            makeConfiguredHAProvider(baseURLString: serverURLString, token: token)
         } else {
             nil
         }
@@ -948,17 +1043,23 @@ extension HomeStore {
         let active = activeBackends
         let wantsHA = active.contains(.homeAssistant)
         let wantsMi = active.contains(.xiaomiCloud)
-        var nextHAReplacement: (shouldReplace: Bool, provider: HAWebSocketProvider?) = (false, nil)
+        var nextHAReplacement: (shouldReplace: Bool, provider: (any HomeProvider)?) = (false, nil)
         var haCredentialUpdate: (provider: HAWebSocketProvider, url: String, token: String)?
         if wantsHA {
             let normalizedURL = HAWebSocketProvider.normalizeBaseURL(serverURLString)
             if let existingHA = activeHAProvider {
                 if forceHAReconnect || activeHAConfig?.url != normalizedURL || activeHAConfig?.token != token {
                     activeHAConfig = (url: normalizedURL, token: token)
-                    haCredentialUpdate = (existingHA, serverURLString, token)
+                    if let wsProvider = existingHA as? HAWebSocketProvider {
+                        haCredentialUpdate = (wsProvider, serverURLString, token)
+                    } else {
+                        let createdHA = makeConfiguredHAProvider(baseURLString: serverURLString, token: token)
+                        activeHAProvider = createdHA
+                        nextHAReplacement = (true, createdHA)
+                    }
                 }
             } else {
-                let createdHA = makeHAProvider(baseURLString: serverURLString, token: token)
+                let createdHA = makeConfiguredHAProvider(baseURLString: serverURLString, token: token)
                 activeHAProvider = createdHA
                 activeHAConfig = (url: normalizedURL, token: token)
                 nextHAReplacement = (true, createdHA)
@@ -1035,7 +1136,7 @@ extension HomeStore {
     /// Shows a found address as a question instead of switching to it (#18). An address whose instance id
     /// differs from the Home Assistant the user chose before is ignored.
     public func offerHAAddress(_ instance: HADiscoveredInstance) {
-        guard homeBackend != .demo else { return }
+        guard homeBackend != .demo, isHAConnectionEnabled else { return }
         guard HAAddressPolicy.canOffer(
             instance,
             currentURL: serverURLString,
@@ -1253,25 +1354,36 @@ extension HomeStore {
         guard KeychainHelper.saveToken("", defaults: userDefaults, vault: credentialVault) else {
             return false
         }
+        let removedScope = homeAssistantScopeIdentifier
         hasHASource = false
+        explicitlyDisabledConnections.remove(.homeAssistant)
+        capabilitySelection.enabledConnections.insert(.homeAssistant)
+        purgeRemovedAccountCapabilities(scopes: [removedScope])
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
         localNetworkBlocks.remove(.homeAssistant)
-        guard homeBackend != .demo,
-              (provider is DualSourceHomeProvider || provider is HAWebSocketProvider) else { return true }
-        invalidateUndoContext()
-        if hasMiSource {
-            homeBackend = .xiaomiCloud
-        } else {
-            devices = []
-            deviceFacets = [:]
-            deviceTransportDiagnostics = [:]
-            rooms = []
-            environmentReadings = []
-            scenes = []
-            selectRoom(nil)
+        sourceStatuses.removeValue(forKey: .homeAssistant)
+        connectedBackends.remove(.homeAssistant)
+        scenes = []
+        if homeBackend != .demo,
+           (provider is DualSourceHomeProvider || provider is HAWebSocketProvider || activeDualProvider != nil || haProviderFactory != nil) {
+            invalidateUndoContext()
+            if hasMiSource {
+                homeBackend = .xiaomiCloud
+            } else {
+                devices = []
+                deviceFacets = [:]
+                deviceTransportDiagnostics = [:]
+                rooms = []
+                environmentReadings = []
+                scenes = []
+                selectRoom(nil)
+            }
+            rebuildLiveProvider()
+        } else if homeBackend != .demo, !hasMiSource {
+            connectionStatus = .disconnected(L10n.tr("未配置", "Not configured"))
         }
-        rebuildLiveProvider()
+        revalidatePausedItems()
         return true
     }
 
@@ -1335,7 +1447,7 @@ extension HomeStore {
             : L10n.tr("已移除米家账号", "Removed Xiaomi account"))
     }
 
-    private func shutdownCurrentProvider() {
+    func shutdownCurrentProvider() {
         eventTask?.cancel()
         eventTask = nil
         pollingContextSync?.cancel()
@@ -1399,7 +1511,7 @@ extension HomeStore {
         guard normalizedCurrent != instance.baseURL else { return }
         invalidateUndoContext()
         self.serverURLString = instance.baseURL
-        if reconnectProvider {
+        if reconnectProvider, isHAConnectionEnabled {
             if let haProvider = provider as? HAWebSocketProvider {
                 let token = loadHAToken()
                 Task {
@@ -1412,7 +1524,7 @@ extension HomeStore {
     }
 
     public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
-        guard homeBackend != .demo, homeBackend != .xiaomiCloud else { return false }
+        guard homeBackend != .demo, homeBackend != .xiaomiCloud, isHAConnectionEnabled else { return false }
         guard !hasHASource, !hasMiSource else { return false }
         if let lastAutoHADiscoveryAt,
            ContinuousClock.now - lastAutoHADiscoveryAt < Self.autoHADiscoveryCooldown {
@@ -1423,8 +1535,8 @@ extension HomeStore {
 
     @discardableResult
     public func discoverHomeAssistantOnLAN(autoApplyIfDefault: Bool = false) async -> [HADiscoveredInstance] {
-        // Demo mode is strictly offline: no LAN discovery, no network probe (#47).
-        guard homeBackend != .demo else { return [] }
+        // Demo mode and explicitly disabled HA connections do not run LAN discovery probes.
+        guard homeBackend != .demo, isHAConnectionEnabled else { return [] }
         if autoApplyIfDefault {
             guard shouldAutoDiscoverHomeAssistantOnLAN else { return discoveredHAInstances }
             lastAutoHADiscoveryAt = ContinuousClock.now
@@ -1434,6 +1546,7 @@ extension HomeStore {
         defer { isDiscoveringHA = false }
         let discoverer = haLANDiscoverer
         let found = await discoverer(serverURLString)
+        guard homeBackend != .demo, isHAConnectionEnabled else { return [] }
         self.discoveredHAInstances = found
         // A user who typed the address by hand never went through a suggestion; the moment LAN
         // discovery identifies the instance the app is connected to, pin its id so look-alikes
@@ -1800,6 +1913,7 @@ extension HomeStore {
             miSessionBlocksControl: miSessionBlocksControl,
             miSessionShowsExpired: miSessionShowsExpired,
             haPlaintextDeclined: {
+                guard isHAConnectionEnabled else { return false }
                 if case .declined = haPlaintextPrompt { return true }
                 return false
             }(),

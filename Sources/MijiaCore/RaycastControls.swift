@@ -155,13 +155,10 @@ extension HomeStore {
     }
 
     private func raycastControllable(_ device: SmartDevice) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
-        if device.accountId != nil || indexedDevicesById[device.id]?.connection != nil {
-            let gate = evaluateDeviceControlGate(deviceId: device.id)
-            if !gate.allowed {
-                let msg = gate.rejectionReason?.userMessage ?? L10n.tr("该连接已停用", "This connection is turned off")
-                showToast(msg, isError: true)
-                return (nil, (true, msg, true))
-            }
+        if let reason = capabilityWriteRejection(forDeviceId: device.id) {
+            let msg = reason.userMessage
+            showToast(msg, isError: true)
+            return (nil, (true, msg, true))
         }
         let previousToastId = toastNotice?.id
         guard !rejectControlWhileLocked() else {
@@ -220,6 +217,9 @@ extension HomeStore {
     ) async -> RaycastDirectResult {
         let expectedContext = modalContext ?? captureModalDeviceContext(for: device)
         let context = expectedContext.controlContextID
+        if let reason = rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) {
+            return (true, reason.userMessage, true)
+        }
         guard matchesModalDeviceContext(expectedContext) else {
             let msg = L10n.tr("设备已不在面板中", "The device is no longer available")
             return (true, msg, true)
@@ -227,6 +227,12 @@ extension HomeStore {
         let write = beginOptimisticWrite(from: device, to: updated, lock: lock)
         do {
             for command in commands {
+                if let reason = rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) {
+                    if controlContextID == context {
+                        revert(write, restoring: reportedDevice(for: device.id))
+                    }
+                    return (true, reason.userMessage, true)
+                }
                 guard matchesModalDeviceContext(expectedContext) else {
                     if controlContextID == context {
                         revert(write, restoring: reportedDevice(for: device.id))
@@ -246,6 +252,16 @@ extension HomeStore {
             if !habitIntents.isEmpty { confirmManualControl(intents: habitIntents) }
             showToast(success, isError: false)
             return (true, success, false)
+        } catch let blocked as CapabilityControlBlockedError {
+            if controlContextID == context {
+                revert(
+                    write,
+                    restoring: matchesModalDeviceContext(expectedContext) ? nil : reportedDevice(for: device.id)
+                )
+            }
+            let msg = blocked.reason.userMessage
+            showToast(msg, isError: true)
+            return (true, msg, true)
         } catch {
             if controlContextID == context {
                 revert(

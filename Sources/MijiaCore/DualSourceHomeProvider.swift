@@ -161,6 +161,13 @@ public actor DualSourceHomeProvider: HomeProvider {
             return
         }
         let previous: (any HomeProvider)?
+        var tornDownCameraRoutes: [DeviceMergeRoute] = []
+        if next == nil {
+            for (deviceId, route) in activeCameraRoutes where route.backend == backend {
+                activeCameraRoutes.removeValue(forKey: deviceId)
+                tornDownCameraRoutes.append(route)
+            }
+        }
         if backend == .homeAssistant {
             haTask?.cancel()
             haTask = nil
@@ -177,6 +184,9 @@ public actor DualSourceHomeProvider: HomeProvider {
             miSnapshot = nil
             miStatus = .connecting
             miLocalNetworkBlocks = []
+        }
+        for route in tornDownCameraRoutes {
+            await previous?.stopCameraStream(for: route.sourceDevice)
         }
         await previous?.shutdown()
         guard !isShutDown, started else { return }

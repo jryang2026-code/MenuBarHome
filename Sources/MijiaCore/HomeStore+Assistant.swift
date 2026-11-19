@@ -350,6 +350,7 @@ extension HomeStore {
     /// latest marks, device categories, and source contexts.
     private func hazardApprovedIntents(_ intents: [DeviceIntent]) -> [DeviceIntent] {
         let contextBeforeModal = controlContextID
+        let generationBeforeModal = capabilityGeneration
         var capturedContexts: [String: ModalDeviceContext] = [:]
         var capturedSceneEntities: [String: String] = [:]
         var promptedProfiles: [Int: ManualControlHazardProfile] = [:]
@@ -360,12 +361,15 @@ extension HomeStore {
         var didPresentModalInPass = false
         repeat {
             didPresentModalInPass = false
-            guard controlContextID == contextBeforeModal else { return [] }
+            guard controlContextID == contextBeforeModal,
+                  capabilityGeneration == generationBeforeModal else { return [] }
             if didPresentAnyModal, rejectControlWhileLocked() { return [] }
             for idx in intents.indices where !rejectedIndices.contains(idx) {
                 let intent = intents[idx]
                 if case .activateScene = intent.operation {
-                    guard let liveScene = scenes.first(where: { $0.id == intent.targetId }) else {
+                    guard capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) == nil,
+                          let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                          haCommandWriteRejection(for: liveScene.entityId) == nil else {
                         approvedIndices.remove(idx)
                         rejectedIndices.insert(idx)
                         continue
@@ -381,7 +385,8 @@ extension HomeStore {
                     }
                     continue
                 }
-                guard let liveDevice = devices.first(where: { $0.id == intent.targetId }) else {
+                guard capabilityWriteRejection(forDeviceId: intent.targetId) == nil,
+                      let liveDevice = devices.first(where: { $0.id == intent.targetId }) else {
                     approvedIndices.remove(idx)
                     rejectedIndices.insert(idx)
                     continue
@@ -431,14 +436,17 @@ extension HomeStore {
             }
         } while didPresentModalInPass
 
-        guard controlContextID == contextBeforeModal else { return [] }
+        guard controlContextID == contextBeforeModal,
+              capabilityGeneration == generationBeforeModal else { return [] }
         if didPresentAnyModal, rejectControlWhileLocked() { return [] }
         return intents.enumerated().compactMap { idx, intent in
             guard approvedIndices.contains(idx), !rejectedIndices.contains(idx) else {
                 return nil
             }
             if case .activateScene = intent.operation {
-                guard let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                guard capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) == nil,
+                      let liveScene = scenes.first(where: { $0.id == intent.targetId }),
+                      haCommandWriteRejection(for: liveScene.entityId) == nil,
                       capturedSceneEntities[liveScene.id] == liveScene.entityId else {
                     return nil
                 }
@@ -456,7 +464,17 @@ extension HomeStore {
     public func applyAssistantSuggestion(_ suggestion: AssistantSuggestion, offersUndoBanner: Bool = false) async {
         let contextBeforeModal = controlContextID
         assistantSuggestions.removeAll { $0.id == suggestion.id }
+        if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: suggestion.intents) {
+            showToast(capabilityMsg, isError: true)
+            setAssistantState(.failed(capabilityMsg))
+            return
+        }
         let intents = hazardApprovedIntents(suggestion.intents)
+        if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: suggestion.intents) {
+            showToast(capabilityMsg, isError: true)
+            setAssistantState(.failed(capabilityMsg))
+            return
+        }
         guard controlContextID == contextBeforeModal, !intents.isEmpty else {
             if isControlBlockedByScreenLock {
                 setAssistantState(.failed(screenLockBlockedMessage))
@@ -548,8 +566,29 @@ extension HomeStore {
         }
         guard controlContext == controlContextID else { return nil }
         if !plan.intents.isEmpty {
-            let approved = hazardApprovedIntents(plan.intents)
+            let originalIntents = plan.intents
+            if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: originalIntents) {
+                let blocked = IntentPlan(
+                    intents: [],
+                    reply: capabilityMsg,
+                    source: plan.source
+                )
+                showToast(capabilityMsg, isError: true)
+                setAssistantState(.failed(capabilityMsg))
+                return blocked
+            }
+            let approved = hazardApprovedIntents(originalIntents)
             guard controlContext == controlContextID else { return nil }
+            if let capabilityMsg = firstPlanCapabilityRejectionMessage(for: originalIntents) {
+                let blocked = IntentPlan(
+                    intents: [],
+                    reply: capabilityMsg,
+                    source: plan.source
+                )
+                showToast(capabilityMsg, isError: true)
+                setAssistantState(.failed(capabilityMsg))
+                return blocked
+            }
             guard !approved.isEmpty else {
                 if isControlBlockedByScreenLock {
                     let blocked = IntentPlan(
@@ -653,6 +692,14 @@ extension HomeStore {
             setAssistantState(.failed(screenLockBlockedMessage))
             return
         }
+        if !last.restore.isEmpty,
+           let firstBlocked = last.restore.compactMap({ capabilityUndoRejectionReason(for: $0) }).first,
+           last.restore.allSatisfy({ capabilityUndoRejectionReason(for: $0) != nil }) {
+            let msg = firstBlocked.userMessage
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
+            return
+        }
         let hasLGRestore = last.restore.contains { lgClientServes($0) }
         let hasMiRestore = last.restore.contains { !lgClientServes($0) }
         if hasMiRestore, !hasLGRestore, rejectWritesBlockedByMiSession() {
@@ -667,6 +714,14 @@ extension HomeStore {
         }
         guard controlContextID == contextBeforeModal,
               lastAssistantUndo?.actionId == last.actionId else {
+            return
+        }
+        if !last.restore.isEmpty,
+           let firstBlocked = last.restore.compactMap({ capabilityUndoRejectionReason(for: $0) }).first,
+           last.restore.allSatisfy({ capabilityUndoRejectionReason(for: $0) != nil }) {
+            let msg = firstBlocked.userMessage
+            showToast(msg, isError: true)
+            setAssistantState(.failed(msg))
             return
         }
         if rejectControlWhileLocked() {
@@ -1241,6 +1296,15 @@ extension HomeStore {
                 source: plan.source
             )
         }
+        if let capabilityMessage = firstPlanCapabilityRejectionMessage(for: plan.intents) {
+            showToast(capabilityMessage, isError: true)
+            setAssistantState(.failed(capabilityMessage))
+            return IntentPlan(
+                intents: [],
+                reply: capabilityMessage,
+                source: plan.source
+            )
+        }
         let context = controlContextID
         let previousSnapshot = devices
         var groupOrder: [String] = []
@@ -1394,6 +1458,9 @@ extension HomeStore {
     private func apply(_ intent: DeviceIntent, context: UUID) async -> AssistantApplyOutcome {
         guard context == controlContextID else { return .skipped }
         if intent.operation == .activateScene {
+            if let capabilityMessage = capabilitySceneControlRejectionMessage(forSceneIdOrName: intent.targetId) {
+                return .failed(capabilityMessage)
+            }
             let gate = evaluateSceneControlGate(sceneId: intent.targetId)
             if !gate.allowed {
                 return .failed(gate.rejectionReason?.userMessage ?? intent.targetId)
