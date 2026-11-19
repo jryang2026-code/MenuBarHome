@@ -555,6 +555,12 @@ public actor MiAccountsProvider: HomeProvider {
             closesAwayGap = closesAwayGap && home.closesAwayGap
             for rawDevice in home.devices {
                 var device = rawDevice
+                if device.accountId == nil || device.accountId?.isEmpty == true {
+                    device.accountId = account.id
+                }
+                if device.accountLabel == nil {
+                    device.accountLabel = account.maskedUserId
+                }
                 if accountDisconnected {
                     device.isOnline = false
                     device.telemetryStale = true
