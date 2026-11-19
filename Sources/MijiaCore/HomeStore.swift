@@ -1118,9 +1118,10 @@ public final class HomeStore {
         updater: AppUpdater? = nil,
         credentialVault: CredentialVault? = nil,
         topologyCache: MiTopologyCache? = nil,
-        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil
+        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil,
+        defaults: UserDefaults? = nil
     ) {
-        let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
@@ -1128,7 +1129,7 @@ public final class HomeStore {
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
-        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil)
+        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
         self.energyHistory = EnergyHistory(defaults: ud)

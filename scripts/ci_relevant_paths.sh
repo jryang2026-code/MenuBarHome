@@ -162,7 +162,7 @@ while IFS= read -r path || [ -n "$path" ]; do
             windows=true
             core=true
             ;;
-        Tests/MijiaCoreTests/*)
+        Tests/MijiaCoreTests/*|Tests/PreferencesTestSupport/*)
             code=true
             macos=true
             core=true
