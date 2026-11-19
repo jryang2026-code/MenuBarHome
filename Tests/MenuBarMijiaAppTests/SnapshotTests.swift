@@ -2612,6 +2612,59 @@ struct SnapshotTests {
         .frame(width: 320, height: 180, alignment: .topLeading)
     }
 
+    // MARK: - GrokBall adaptive sidecar recalibration (WP2d follow-up)
+
+    @Test("GrokBall expanded sidecar flips left of the 380 pt adaptive column without overlapping it")
+    func grokBallAdaptiveSidecarSnapshot() async throws {
+        let fixture = try await SnapshotFixture()
+        defer { fixture.restore() }
+
+        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
+        fixture.store.hasCompletedOnboarding = true
+        fixture.store.dismissLaunchAtLoginSuggestion()
+
+        fixture.store.assistantSuggestions = [
+            AssistantSuggestion(
+                id: "wp2d_living_light_off",
+                title: "关闭客厅吸顶灯",
+                confidencePercent: 94,
+                intents: [DeviceIntent(targetId: "demo_living_light", operation: .power(false))]
+            ),
+            AssistantSuggestion(
+                id: "wp2d_living_ac_26",
+                title: "客厅空调调到 26°",
+                confidencePercent: 88,
+                intents: [DeviceIntent(targetId: "demo_living_ac", operation: .targetTemperature(26))]
+            ),
+            AssistantSuggestion(
+                id: "wp2d_study_light_on",
+                title: "打开书房台灯",
+                confidencePercent: 82,
+                intents: [DeviceIntent(targetId: "demo_study_light", operation: .power(true))]
+            ),
+            AssistantSuggestion(
+                id: "wp2d_living_light_dim",
+                title: "客厅吸顶灯调到 50%",
+                confidencePercent: 76,
+                intents: [DeviceIntent(targetId: "demo_living_light", operation: .brightness(50))]
+            ),
+        ]
+        fixture.store.presentGrokBallStage()
+        let adaptiveParent = NSRect(x: 1_044, y: 310, width: 380, height: 560)
+        let visible = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let placement = GrokBallSidecarPlacement.resolve(parent: adaptiveParent, visible: visible, expanded: true)
+        #expect(placement.side == .left)
+        let sidecarState = GrokBallSidecarState()
+        sidecarState.placement = placement
+        sidecarState.isVisible = true
+        assertRendered(
+            snapshotReady(GrokBallSidecarView(store: fixture.store, state: sidecarState)),
+            size: placement.frame.size,
+            named: "grokball-sidecar-adaptive-left-expanded-zh-light"
+        )
+        fixture.store.dismissGrokBallStage()
+    }
+
     // MARK: - Rendering switches
 
     private func snapshotReady<V: View>(_ view: V, scheme: ColorScheme = .light, reduceMotion: Bool = true) -> some View {

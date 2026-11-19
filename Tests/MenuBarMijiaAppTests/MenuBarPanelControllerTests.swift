@@ -2930,6 +2930,36 @@ struct MenuBarPanelControllerTests {
         #expect(speech.isAudioEngineRunning == false)
     }
 
+    @Test("WP2d: GrokBall stays top-anchored across 280->560 pt adaptive growth and flips without overlapping the 380 pt column")
+    func grokBallTopAnchorAndAdaptiveEdgeRecalibration() {
+        let visible = NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        // Right-aligned 380 pt adaptive column growing downward from 280 pt to 560 pt (fixed maxY = 870).
+        let compactParent = NSRect(x: 1_044, y: 590, width: 380, height: 280)
+        let tallParent = NSRect(x: 1_044, y: 310, width: 380, height: 560)
+
+        #expect(GrokBallSidecarPlacement.anchorOrigin(for: compactParent) == GrokBallSidecarPlacement.anchorOrigin(for: tallParent))
+
+        for expanded in [false, true] {
+            let compactPlacement = GrokBallSidecarPlacement.resolve(parent: compactParent, visible: visible, expanded: expanded)
+            let tallPlacement = GrokBallSidecarPlacement.resolve(parent: tallParent, visible: visible, expanded: expanded)
+            #expect(compactPlacement.side == .left)
+            #expect(tallPlacement.side == .left)
+            #expect(compactPlacement.ballCenter == tallPlacement.ballCenter, "bottom-edge growth never shifts a top-anchored ball")
+            #expect(compactPlacement.frame.intersects(compactParent) == false || compactPlacement.suggestionsFrame?.intersects(compactParent) != true)
+            if let suggestions = tallPlacement.suggestionsFrame {
+                let ballRect = NSRect(
+                    x: tallPlacement.ballCenter.x - GrokBallSidecarPlacement.ballDiameter / 2,
+                    y: tallPlacement.ballCenter.y - GrokBallSidecarPlacement.ballDiameter / 2,
+                    width: GrokBallSidecarPlacement.ballDiameter,
+                    height: GrokBallSidecarPlacement.ballDiameter
+                )
+                #expect(suggestions.intersects(tallParent) == false)
+                #expect(suggestions.intersects(ballRect) == false)
+                #expect(visible.contains(suggestions))
+            }
+        }
+    }
+
     private static func waitUntilCondition(_ predicate: () -> Bool) async -> Bool {
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while !predicate() {
