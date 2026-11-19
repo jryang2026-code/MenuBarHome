@@ -602,7 +602,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     await restartedApp.refreshDevices(true);
     assert.equal(restartedApp.miSessionExpired, true, "restores expired flag across restart");
     assert.equal(cloudHttpCalls, 0, "does not hammer dead Xiaomi endpoints on startup or silent poll");
-    assert.match(document.querySelector("#btn-footer-health")?.textContent ?? "", /登录已过期/);
+    assert.match(document.querySelector("#btn-connection-status")?.textContent ?? "", /登录已过期/);
 
     assert.equal(isPersistedMiSessionExpired(SESSION_B), false);
 
@@ -666,7 +666,7 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     assert.equal(app.miSessionExpired, true, "a 401 means the login is dead, not a transient hiccup");
     assert.equal(isPersistedMiSessionExpired(SESSION_A), true);
     assert.equal(app.devices.length, 0);
-    assert.match(document.querySelector("#btn-footer-health")?.textContent ?? "", /登录已过期/);
+    assert.match(document.querySelector("#btn-connection-status")?.textContent ?? "", /登录已过期/);
 
     const firstHabits = app.habitSequences();
     const secondHabits = app.habitSequences();
