@@ -597,6 +597,66 @@ struct MacOSUIDedupeAndPolishTests {
         #expect(retried == [staleSensor.id])
         await store.shutdown()
     }
+
+    @Test("AllOffHoldLatch locks press-down rehearsal mode even if notices arrive before confirm and resets cleanly for subsequent live holds")
+    func allOffHoldLatchLocksRehearsalModeAcrossMidHoldNotice() async throws {
+        let suite = "test.alloff.latch.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let light = SmartDevice(
+            id: "l1", name: "客厅吸顶灯", roomId: "living", roomName: "客厅",
+            model: "yeelink.light.ceiling20", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        let mock = MockHomeProvider(snapshot: SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [light],
+            scenes: []
+        ))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.allOffLessonIsActive)
+
+        var latch = AllOffHoldLatch()
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .rehearsal)
+
+        // Inject both a LAN blocked event and a checklist-hiding notice during the 0.6s hold.
+        store.localNetworkBlocks = [.xiaomiLAN]
+        store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
+        #expect(!store.allOffLessonIsActive)
+
+        // SwiftUI's onLongPressGesture may fire onPressingChanged(false) just before perform.
+        latch.pressingChanged(false) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .rehearsal)
+
+        let confirmedMode = latch.consumeOnConfirm { store.beginAllOffHold() }
+        #expect(confirmedMode == .rehearsal)
+        #expect(latch.latchedMode == nil)
+
+        let rehearsalTask = store.confirmAllOffHold(mode: confirmedMode)
+        #expect(rehearsalTask == nil)
+        await Task.yield()
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+
+        // After rehearsal completes, a new hold latches `.live` and executes real writes.
+        store.haPlaintextPrompt = nil
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        #expect(latch.latchedMode == .live)
+        latch.reset()
+        #expect(latch.latchedMode == nil)
+
+        latch.pressingChanged(true) { store.beginAllOffHold() }
+        let liveMode = latch.consumeOnConfirm { store.beginAllOffHold() }
+        #expect(liveMode == .live)
+        let liveTask = try #require(store.confirmAllOffHold(mode: liveMode))
+        _ = await liveTask.value
+        #expect(!(await mock.executedCommands).isEmpty)
+        await store.shutdown()
+    }
 }
 
 private actor LANRetrySpyProvider: HomeProvider {

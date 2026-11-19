@@ -107,12 +107,35 @@ extension HomeStore {
         )
     }
 
+    /// Whether a header All Off hold is a dry-run onboarding rehearsal or a real shutdown.
+    public enum AllOffHoldMode: Equatable, Sendable {
+        case rehearsal
+        case live
+    }
+
+    /// Captures the All Off mode at press-down so asynchronous notices arriving during the 0.6s
+    /// hold cannot turn a promised rehearsal into real device writes.
+    public func beginAllOffHold() -> AllOffHoldMode {
+        allOffLessonIsActive ? .rehearsal : .live
+    }
+
+    /// Completes a header All Off hold using the mode captured when the hold started.
+    @discardableResult
+    public func confirmAllOffHold(mode: AllOffHoldMode) -> Task<BulkWriteOutcome, Never>? {
+        switch mode {
+        case .rehearsal:
+            _ = performAllOffRehearsal()
+            return nil
+        case .live:
+            return turnAllOff()
+        }
+    }
+
     /// Header hold during the All Off lesson. Every other caller, including URL, Raycast, and
     /// App Intent scenes, uses `turnAllOff()` and really switches devices off.
     @discardableResult
     public func rehearseAllOff() -> Task<BulkWriteOutcome, Never>? {
-        if rehearseAllOffLessonIfNeeded() { return nil }
-        return turnAllOff()
+        confirmAllOffHold(mode: beginAllOffHold())
     }
 
     /// Whether a currently visible activity-stack notice hides the getting-started checklist.
@@ -138,10 +161,11 @@ extension HomeStore {
         return onboardingChecklist.nextStep == .allOffAndUndo
     }
 
-    /// Shows the rehearsal banner and marks the lesson done. Returns false when this hold should
-    /// really turn devices off.
-    func rehearseAllOffLessonIfNeeded() -> Bool {
-        guard allOffLessonIsActive else { return false }
+    /// Runs the dry-run All Off rehearsal without re-checking `allOffLessonIsActive`, so a hold
+    /// that started during the lesson never falls through to `turnAllOff()` if a notice arrives
+    /// mid-hold.
+    @discardableResult
+    func performAllOffRehearsal() -> Bool {
         let targets = allOffTargets
         guard !targets.isEmpty else { return false }
         scheduleUndoBanner(
@@ -153,6 +177,13 @@ extension HomeStore {
         )
         recordOnboardingMilestone(.rehearsedAllOff)
         return true
+    }
+
+    /// Shows the rehearsal banner and marks the lesson done. Returns false when this hold should
+    /// really turn devices off.
+    func rehearseAllOffLessonIfNeeded() -> Bool {
+        guard allOffLessonIsActive else { return false }
+        return performAllOffRehearsal()
     }
 
     static func rehearsalBannerTitle(names: [String]) -> String {
@@ -179,10 +210,12 @@ public enum PanelNoticeSlot {
         case miExpiringSoon(Date)
 
         /// A blocked session or a plaintext-token decision hides the getting-started row.
+        /// Advisory notices — including local-network permission refusals — coexist with onboarding
+        /// so background probes never yank away an active lesson.
         public var hidesChecklist: Bool {
             switch self {
-            case .miBlocked, .haPlaintext, .localNetworkBlocked: true
-            case .haAddress, .miExpiringSoon: false
+            case .miBlocked, .haPlaintext: true
+            case .localNetworkBlocked, .haAddress, .miExpiringSoon: false
             }
         }
 

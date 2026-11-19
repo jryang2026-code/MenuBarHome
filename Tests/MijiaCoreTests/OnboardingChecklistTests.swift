@@ -501,6 +501,63 @@ struct PanelNoticeTests {
         #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
     }
 
+    @Test("LAN blocked notice coexists with onboarding checklist and mid-hold notices never turn a rehearsed All Off into a live write")
+    @MainActor
+    func midHoldLocalNetworkBlockNeverCausesLiveAllOffWrite() async throws {
+        let suite = "test.onboarding.midhold.lntcc.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        #expect(MiSessionStore.save(
+            MiSession(
+                userId: "42",
+                cUserId: "c",
+                ssecurity: "s",
+                serviceToken: "tok",
+                expiresAt: Date(timeIntervalSince1970: 4_000_000_000)
+            ),
+            defaults: defaults
+        ))
+        let snapshot = SynthesizedHome(
+            rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 1)],
+            devices: [OnboardingChecklistTests.livingLight, OnboardingChecklistTests.studyLight],
+            scenes: []
+        )
+        let mock = MockHomeProvider(snapshot: snapshot)
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        store.recordOnboardingMilestone(.searchedDevice)
+        #expect(store.showsLessonRow)
+        #expect(store.allOffLessonIsActive)
+
+        // Press-down latches rehearsal mode.
+        let latchedMode = store.beginAllOffHold()
+        #expect(latchedMode == .rehearsal)
+
+        // Inject a LAN blocked event mid-hold: the banner coexists with the onboarding checklist
+        // instead of hiding it mid-gesture.
+        store.localNetworkBlocks = [.xiaomiLAN]
+        #expect(store.panelNoticeKinds.contains(.localNetworkBlocked([.xiaomiLAN])))
+        #expect(store.panelActivities.contains { $0.id == "notice.localNetworkBlocked" })
+        #expect(store.showsLessonRow)
+        #expect(store.allOffLessonIsActive)
+
+        // Even if a checklist-hiding notice (e.g. HA plaintext prompt) arrives before the 0.6s
+        // hold completes, confirming the latched mode still runs the rehearsal with zero writes.
+        store.haPlaintextPrompt = .asking("http://203.0.113.5:8123")
+        #expect(!store.showsLessonRow)
+        #expect(!store.allOffLessonIsActive)
+
+        let task = store.confirmAllOffHold(mode: latchedMode)
+        #expect(task == nil)
+        #expect(store.onboardingMilestones.contains(.rehearsedAllOff))
+        #expect(!store.onboardingMilestones.contains(.turnedAllOff))
+        #expect(store.devices.allSatisfy { $0.isActiveOn })
+        await Task.yield()
+        let executed = await mock.executedCommands
+        #expect(executed.isEmpty)
+    }
+
     // MARK: - #144: the demo is a doorway
 
     @Test("Leaving the demo with nothing configured reopens the connect guide on the Xiaomi path")

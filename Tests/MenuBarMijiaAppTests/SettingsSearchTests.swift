@@ -416,18 +416,35 @@ struct SettingsSearchTests {
         #expect(demo.blockReason(for: .dualSourceFusion) == .demoMode)
     }
 
-    @Test("Local Network permission banner is searchable when blocked and explained when allowed")
+    @Test("Local Network permission banner is searchable when blocked and explained accurately when no block is detected")
     func localNetworkPermissionReachability() {
-        let allowed = SettingsSearchAvailability(
+        let noBlock = SettingsSearchAvailability(
             backend: .homeAssistant,
             hiddenDeviceCount: 0,
             storedPanelTheme: PanelTheme.classic.rawValue,
             liquidGlassAvailable: true,
             hasLocalNetworkBlock: false
         )
-        let allowedOutcome = SettingsSearch.search("本地网络权限", availability: allowed)
-        #expect(allowedOutcome.hits.isEmpty)
-        #expect(allowedOutcome.blocked?.reason == .localNetworkAllowed)
+        let noBlockOutcome = SettingsSearch.search("本地网络权限", availability: noBlock)
+        #expect(noBlockOutcome.hits.isEmpty)
+        #expect(noBlockOutcome.blocked?.reason == .noLocalNetworkBlock)
+
+        let tables = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/MijiaCore/Resources/Localizations")
+        L10n.$overrideTranslationDirectory.withValue(tables) {
+            L10n.$overrideLanguage.withValue(.zhHans) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "当前没有检测到本地网络受阻")
+            }
+            L10n.$overrideLanguage.withValue(.zhHant) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "目前沒有偵測到本機網路受阻")
+            }
+            L10n.$overrideLanguage.withValue(.en) {
+                #expect(SettingsSearchBlockReason.noLocalNetworkBlock.explanation == "No local network block detected right now")
+            }
+        }
 
         let blocked = SettingsSearchAvailability(
             backend: .homeAssistant,

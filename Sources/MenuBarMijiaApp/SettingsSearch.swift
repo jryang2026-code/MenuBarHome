@@ -120,7 +120,7 @@ enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
     case needsMacOS26
     /// The panel-height control only exists for the classic panel.
     case liquidGlassPanel
-    case localNetworkAllowed
+    case noLocalNetworkBlock
 
     var explanation: String {
         switch self {
@@ -132,8 +132,8 @@ enum SettingsSearchBlockReason: String, CaseIterable, Hashable, Sendable {
             return L10n.tr("需要 macOS 26 或更新版本", "Needs macOS 26 or later")
         case .liquidGlassPanel:
             return L10n.tr("切回「常规」面板主题后可用", "Available with the Classic panel theme")
-        case .localNetworkAllowed:
-            return L10n.tr("当前本地网络权限正常", "Local network access is working normally")
+        case .noLocalNetworkBlock:
+            return L10n.tr("当前没有检测到本地网络受阻", "No local network block detected right now")
         }
     }
 }
@@ -181,7 +181,7 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         // (`LGWebOSSettingsSection`, whose call site is inside the same branch).
         case .localNetwork:
             if backend == .demo { return .demoMode }
-            return hasLocalNetworkBlock ? nil : .localNetworkAllowed
+            return hasLocalNetworkBlock ? nil : .noLocalNetworkBlock
         case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
              .miMultiAccounts, .dualSourceFusion:
             return backend == .demo ? .demoMode : nil

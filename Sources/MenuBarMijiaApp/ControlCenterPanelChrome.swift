@@ -118,8 +118,9 @@ extension ControlCenterPanel {
                                 title: copy.title,
                                 count: store.allOffTargets.count,
                                 helpText: [copy.tooltip, copy.helper].compactMap { $0 }.joined(separator: "\n"),
-                                onConfirm: {
-                                    withAnimation(AppleMotion.snappySpring) { _ = store.rehearseAllOff() }
+                                onBeginHold: { store.beginAllOffHold() },
+                                onConfirm: { mode in
+                                    withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: mode) }
                                     SoundFeedback.playSuccess()
                                 },
                                 onTap: {

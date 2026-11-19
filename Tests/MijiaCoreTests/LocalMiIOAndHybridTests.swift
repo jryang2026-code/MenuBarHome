@@ -118,6 +118,7 @@ actor HybridMockCloudAPI: MiCloudAPI {
     var doorbellLatest: [String: Date] = [:]
     var getPropsError: (any Error)?
     var discoveryError: (any Error)?
+    private var getPropsHook: (@Sendable ([MiotPropKey]) async throws -> Void)?
 
     private(set) var deviceListCalls = 0
     private(set) var homeRoomsCalls = 0
@@ -152,6 +153,10 @@ actor HybridMockCloudAPI: MiCloudAPI {
         getPropsError = error
     }
 
+    func setGetPropsHook(_ hook: (@Sendable ([MiotPropKey]) async throws -> Void)?) {
+        getPropsHook = hook
+    }
+
     func setDiscoveryError(_ error: (any Error)?) {
         discoveryError = error
     }
@@ -178,6 +183,9 @@ actor HybridMockCloudAPI: MiCloudAPI {
 
     func getProps(_ keys: [MiotPropKey]) async throws -> [MiotPropKey: JSONValue] {
         getPropsCalls.append(keys)
+        if let getPropsHook {
+            try await getPropsHook(keys)
+        }
         if let getPropsError {
             throw getPropsError
         }
@@ -4229,6 +4237,249 @@ struct HybridProviderAndDoorbellTests {
         #expect(await MainActor.run { store.deviceTransportDiagnostics["ha-desk-lamp"]?.route == DeviceTransportRoute.lan })
 
         await store.shutdown()
+    }
+
+    @Test("In-flight poll finishing late or throwing never flickers device route to cloud or drops manual retryLAN")
+    func retryLANDuringInFlightPollAvoidsFlickerAndSurvivesOldPollFailure() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case timeout
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpMode = LockedBox(UDPMode.healthy)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            guard udpMode.withValue({ $0 }) == .healthy else { throw MiIOError.timeout }
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 101, stamp: 10)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":88,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let light = MiDeviceRecord(
+            did: "101",
+            name: "Desk Lamp",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.50",
+            mac: "AA:BB:CC:DD:EE:01",
+            token: tokenHex,
+            isShared: false
+        )
+        let api = HybridMockCloudAPI(
+            devices: [light],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(40),
+            ]
+        )
+        let specSource = HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()])
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: specSource,
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan })
+
+        // Part A: Put "101" into `.cooldown`, then pause an in-flight cloud refresh in `getProps`.
+        udpMode.withValue { $0 = .timeout }
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown })
+
+        udpMode.withValue { $0 = .healthy }
+        let latePollGate = ProbeConcurrencyGate(expectedParkedProbes: 1)
+        await api.setGetPropsHook { _ in
+            await latePollGate.park()
+        }
+        let inFlightRefresh = Task { await provider.refreshNow() }
+        await latePollGate.waitUntilAllParked()
+
+        // Tap manual retry while the old poll is still parked in cloud `getProps`.
+        let snapCountBeforeRetry = await collector.snapshots.count
+        await provider.retryLAN(deviceId: "101")
+        // Cooldown must stay intact until the in-flight poll finishes so it cannot emit `.cloud`.
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+
+        await api.setGetPropsHook(nil)
+        await latePollGate.release()
+        await inFlightRefresh.value
+
+        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan })
+        let allSnapsAfterLate = await collector.snapshots
+        let routesAfterRetry = allSnapsAfterLate.dropFirst(snapCountBeforeRetry).compactMap {
+            $0.deviceTransportDiagnostics["101"]?.route
+        }
+        #expect(!routesAfterRetry.contains(.cloud), "late in-flight poll must not flicker 101 to .cloud before queued LAN retry runs")
+        #expect(routesAfterRetry.last == .lan)
+
+        // Part B: Put "101" back into `.cooldown`, pause an in-flight refresh that will THROW,
+        // queue manual `retryLAN("101")`, and verify the error path still executes the queued retry.
+        udpMode.withValue { $0 = .timeout }
+        await provider.refreshNow()
+        #expect(await collector.wait { $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .cooldown })
+
+        udpMode.withValue { $0 = .healthy }
+        let failingPollGate = ProbeConcurrencyGate(expectedParkedProbes: 1)
+        await api.setGetPropsHook { _ in
+            await failingPollGate.park()
+            throw MiCloudError.http(503)
+        }
+        let failingRefresh = Task { await provider.refreshNow() }
+        await failingPollGate.waitUntilAllParked()
+
+        await provider.retryLAN(deviceId: "101")
+        await api.setGetPropsHook(nil)
+        await failingPollGate.release()
+        await failingRefresh.value
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.statuses.last == .connected
+        })
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == false)
+
+        await provider.shutdown()
+    }
+
+    @Test("retryLAN uses existing LAN bindings when LAN recovers while WAN cloud discovery is still down")
+    func retryLANRecoversWhenLANReturnsWhileWANIsDown() async throws {
+        enum UDPMode: Sendable {
+            case healthy
+            case timeout
+        }
+        let tokenData = try #require(MiIOPacket.validateToken(tokenHex))
+        let udpMode = LockedBox(UDPMode.healthy)
+        let udpTransport = MockUDPTransport { packet, _, _ in
+            guard udpMode.withValue({ $0 }) == .healthy else { throw MiIOError.timeout }
+            if packet == MiIOPacket.helloPacket {
+                return makeHelloResponse(deviceId: 101, stamp: 10)
+            }
+            let (header, plaintext) = try MiIOPacket.decode(packet, token: tokenData)
+            let reqId = (try JSONDecoder().decode(JSONValue.self, from: plaintext))["id"]?.intValue ?? 0
+            let reply = #"{"id":\#(reqId),"result":[{"did":"101","siid":2,"piid":1,"value":true,"code":0},{"did":"101","siid":2,"piid":2,"value":77,"code":0}]}"#
+            return try MiIOPacket.encode(deviceId: header.deviceId, stamp: header.stamp, token: tokenData, payload: Data(reply.utf8))
+        }
+
+        let clock = MutableClock(Date(timeIntervalSince1970: 1_700_000_000))
+        let lanLight = MiDeviceRecord(
+            did: "101",
+            name: "Desk Lamp",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: "192.168.1.50",
+            mac: "AA:BB:CC:DD:EE:01",
+            token: tokenHex,
+            isShared: false
+        )
+        let cloudOnlyLight = MiDeviceRecord(
+            did: "202",
+            name: "Hallway Lamp",
+            model: "yeelink.light.color4",
+            isOnline: true,
+            localIp: nil,
+            token: nil,
+            isShared: false
+        )
+        let api = HybridMockCloudAPI(
+            devices: [lanLight, cloudOnlyLight],
+            rooms: [MiRoom(id: "r1", name: "Study", dids: ["101", "202"])],
+            props: [
+                MiotPropKey(did: "101", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "101", siid: 2, piid: 2): .number(50),
+                MiotPropKey(did: "202", siid: 2, piid: 1): .bool(true),
+                MiotPropKey(did: "202", siid: 2, piid: 2): .number(30),
+            ]
+        )
+        let specSource = HybridMockSpecSource(specs: ["yeelink.light.color4": lightSpec()])
+        let provider = MiCloudProvider(
+            sessionLoader: { self.stubSession },
+            apiFactory: { _ in api },
+            specSource: specSource,
+            localClient: LocalMiIOClient(transport: udpTransport, maxRetries: 0, now: { clock.now() }),
+            lanFailureThreshold: 1,
+            lanCooldownDuration: 30,
+            broadcastSweepMinInterval: 60,
+            now: { clock.now() },
+            pollInterval: .seconds(3600),
+            closedPollInterval: .seconds(3600),
+            selectedHomeLoader: { nil }
+        )
+
+        let collector = EventCollector()
+        let task = Task { for await event in provider.events() { await collector.append(event) }; await collector.finish() }
+        defer { task.cancel() }
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.snapshots.last?.deviceTransportDiagnostics["202"]?.route == .cloud
+        })
+
+        // Both LAN and WAN go down: "101" enters `.cooldown`, `lanSucceededDids` empties, and cloud backs off.
+        udpMode.withValue { $0 = .timeout }
+        await api.setDiscoveryError(URLError(.notConnectedToInternet))
+        await api.setGetPropsError(URLError(.notConnectedToInternet))
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            if case .disconnected = $0.statuses.last { return true }
+            return false
+        })
+        #expect(await provider.lanTransportState(for: "101").isCoolingDown == true)
+
+        // LAN recovers while WAN is STILL completely down. Per-device `retryLAN("101")` must use
+        // the existing IP/token binding directly without calling cloud discovery.
+        udpMode.withValue { $0 = .healthy }
+        let discoveryCallsBefore = await api.deviceListCalls
+        await provider.retryLAN(deviceId: "101")
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.statuses.last == .connected
+        })
+        #expect(await api.deviceListCalls == discoveryCallsBefore)
+        let afterDeviceRetry = try #require(await collector.snapshots.last)
+        #expect(afterDeviceRetry.devices.first { $0.id == "101" }?.telemetryStale == false)
+        #expect(lightBrightness(afterDeviceRetry.devices.first { $0.id == "101" }) == 77)
+        #expect(afterDeviceRetry.devices.first { $0.id == "202" }?.telemetryStale == true)
+
+        // Repeat with global `retryLAN(deviceId: nil)` while WAN is still down.
+        udpMode.withValue { $0 = .timeout }
+        await provider.refreshNow()
+        #expect(await collector.wait {
+            if case .disconnected = $0.statuses.last { return true }
+            return false
+        })
+
+        udpMode.withValue { $0 = .healthy }
+        let discoveryCallsBeforeAllRetry = await api.deviceListCalls
+        await provider.retryLAN(deviceId: nil)
+
+        #expect(await collector.wait {
+            $0.snapshots.last?.deviceTransportDiagnostics["101"]?.route == .lan
+                && $0.statuses.last == .connected
+        })
+        #expect(await api.deviceListCalls == discoveryCallsBeforeAllRetry)
+        let afterAllRetry = try #require(await collector.snapshots.last)
+        #expect(afterAllRetry.devices.first { $0.id == "101" }?.telemetryStale == false)
+        #expect(afterAllRetry.devices.first { $0.id == "202" }?.telemetryStale == true)
+
+        await provider.shutdown()
     }
 }
 

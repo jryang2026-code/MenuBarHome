@@ -128,6 +128,38 @@ struct LocalizationTests {
         }
     }
 
+    @Test("Transport readouts, stale sensor labels, and local network status localize across zh-Hans, zh-Hant, and en")
+    func transportAndStaleSensorLabelsShipInAllBuiltInLanguages() {
+        let tables = Self.shippedTablesDirectory
+        L10n.$overrideTranslationDirectory.withValue(tables) {
+            let cases: [(zhHans: String, zhHant: String, en: String)] = [
+                ("米家云端", "米家雲端", "Xiaomi Cloud"),
+                ("可能过期", "可能過期", "Possibly stale"),
+                ("卧室传感器，可能过期", "卧室传感器，可能過期", "Bedroom Sensor, possibly stale"),
+                ("卧室传感器，离线", "卧室传感器，離線", "Bedroom Sensor, offline"),
+                ("自动择优（默认）", "自動擇優（預設）", "Automatic (Default)"),
+                ("数据来源", "資料來源", "Data Source"),
+                ("当前没有检测到本地网络受阻", "目前沒有偵測到本機網路受阻", "No local network block detected right now"),
+                ("局域网直连", "區域網路直連", "LAN Direct"),
+                ("通信通道：局域网直连（12 ms）", "通訊通道：區域網路直連（12 ms）", "Transport: LAN Direct (12 ms)"),
+                ("通信通道：米家云端", "通訊通道：米家雲端", "Transport: Xiaomi Cloud"),
+                ("通信通道：云端回退（局域网重连中）", "通訊通道：雲端回退（區域網路重連中）", "Transport: Cloud Fallback (reconnecting LAN)"),
+                ("通信通道：本地网络权限受阻", "通訊通道：本機網路權限受阻", "Transport: Local network blocked"),
+            ]
+            for item in cases {
+                L10n.$overrideLanguage.withValue(.zhHans) {
+                    #expect(L10n.tr(item.zhHans, item.en) == item.zhHans)
+                }
+                L10n.$overrideLanguage.withValue(.zhHant) {
+                    #expect(L10n.tr(item.zhHans, item.en) == item.zhHant)
+                }
+                L10n.$overrideLanguage.withValue(.en) {
+                    #expect(L10n.tr(item.zhHans, item.en) == item.en)
+                }
+            }
+        }
+    }
+
     @Test("Shipped tables are found and listed without Swift cases")
     func shippedTablesAreDiscovered() throws {
         let dir = Self.shippedTablesDirectory
