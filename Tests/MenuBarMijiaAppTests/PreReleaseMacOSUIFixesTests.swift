@@ -427,6 +427,35 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(!HAConnectionSaveGuard.shouldLatchExpansion(forHighlight: nil))
     }
 
+    @Test("Collapsed disclosures in General and Connections auto-expand for search hits and deep links")
+    func settingsDisclosuresAutoExpandForSearchAndDeepLinks() {
+        for anchor in [
+            SettingsAnchor.panelTheme, .panelHeight, .compactGrid, .climatePanelModule, .hideGroupedLights
+        ] {
+            #expect(GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: anchor))
+        }
+        #expect(!GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: .language))
+        #expect(!GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: .appearanceMode))
+        #expect(!GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forHighlight: nil))
+        #expect(GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: .appearance))
+        #expect(!GeneralSettingsDisclosure.shouldExpandAdvancedDisplay(forRequestedTab: .general))
+
+        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .miMultiAccounts))
+        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .dualSourceFusion))
+        #expect(ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: nil, accountCount: 2))
+        #expect(!ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: .miAccount, accountCount: 1))
+        #expect(!ConnectionSettingsDisclosure.shouldExpandAdvancedConnections(forHighlight: nil, accountCount: 0))
+
+        #expect(LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: .lgTV, macAddress: ""))
+        #expect(LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: nil, macAddress: "AA:BB:CC:DD:EE:FF"))
+        #expect(!LGWebOSSettingsSaveGuard.shouldExpandAdvancedWake(forHighlight: nil, macAddress: "   "))
+
+        #expect(MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: true, forHighlight: nil))
+        #expect(MiAccountSection.shouldExpandRegionPicker(region: .sg, isScanning: false, forHighlight: nil))
+        #expect(MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: false, forHighlight: .miAccount))
+        #expect(!MiAccountSection.shouldExpandRegionPicker(region: .cn, isScanning: false, forHighlight: nil))
+    }
+
     // MARK: - #148: unsaved edits are resolved, never dropped silently
 
     private func unsavedForm(

@@ -358,4 +358,57 @@ struct SettingsSearchTests {
         #expect(SettingsSearch.search("hidden", availability: someHidden)
             .hits.contains { $0.anchor == .hiddenDevices })
     }
+
+    @Test("General and Connections tabs use everyday naming and consolidate appearance rows into General")
+    func generalAndConnectionsConsolidateAppearanceAndEverydayTerms() {
+        #expect(SettingsTab.allCases == [.general, .connection, .assistant, .privacy, .about])
+        #expect(SettingsTab.appearance.canonicalTab == .general)
+        #expect(SettingsTab.general.canonicalTab == .general)
+
+        for anchor in [SettingsAnchor.appearanceMode, .panelTheme, .panelHeight, .climatePanelModule] {
+            #expect(anchor.tab == .general, "\(anchor.rawValue) should route to .general")
+        }
+        for anchor in [SettingsAnchor.miMultiAccounts, .dualSourceFusion] {
+            #expect(anchor.tab == .connection, "\(anchor.rawValue) should route to .connection")
+        }
+
+        L10n.$overrideLanguage.withValue(.zhHans) {
+            #expect(SettingsTab.general.title == "常规")
+            #expect(SettingsTab.connection.title == "家居连接")
+        }
+        L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(SettingsTab.general.title == "常規")
+            #expect(SettingsTab.connection.title == "家居連線")
+        }
+        L10n.$overrideLanguage.withValue(.en) {
+            #expect(SettingsTab.general.title == "General")
+            #expect(SettingsTab.connection.title == "Connections")
+        }
+
+        let everydayQueries: [(String, SettingsAnchor)] = [
+            ("专属连接钥匙", .haToken),
+            ("查找家中的 Home Assistant", .haDiscovery),
+            ("先逛逛示例家庭", .demoMode),
+            ("添加更多米家账号", .miMultiAccounts),
+            ("同时连接多个家居平台", .dualSourceFusion),
+            ("网络硬件地址", .lgTV),
+        ]
+        for (query, expectedAnchor) in everydayQueries {
+            let hits = SettingsSearch.search(query)
+            #expect(
+                hits.first?.anchor == expectedAnchor,
+                "「\(query)」should rank \(expectedAnchor.rawValue) first, got \(hits.map(\.anchor.rawValue))"
+            )
+        }
+
+        let demo = SettingsSearchAvailability(
+            backend: .demo,
+            hiddenDeviceCount: 0,
+            storedPanelTheme: PanelTheme.classic.rawValue,
+            liquidGlassAvailable: true
+        )
+        #expect(demo.blockReason(for: .miMultiAccounts) == .demoMode)
+        #expect(demo.blockReason(for: .dualSourceFusion) == .demoMode)
+    }
 }
+
