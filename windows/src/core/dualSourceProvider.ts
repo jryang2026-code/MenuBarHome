@@ -1,3 +1,10 @@
+import {
+  HaBlockedRequestError,
+  acquireHaTransportLease,
+  invokeHaWithLease,
+  haConnectionScope,
+  isHaBlockedRequestError,
+} from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import type { ExecuteOptions, HomeProvider } from "./homeProvider.js";
 import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference,
@@ -999,7 +1006,10 @@ export function commandTargetBackend(command: DeviceCommand): HomeBackend { cons
     parseMiotActionAddress(entityId) !== null
   ) { return "xiaomiCloud";
   }
-  return "homeAssistant"; } export async function fetchHASnapshotWithIdentities(baseURL: string, token: string,
+  return "homeAssistant";
+}
+
+export async function fetchHASnapshotWithIdentities(baseURL: string, token: string,
   invoke: HAInvoke = async (command, args) => {
     if (typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) {
       throw new Error("Home Assistant requires the Windows app");
@@ -1007,12 +1017,26 @@ export function commandTargetBackend(command: DeviceCommand): HomeBackend { cons
     return window.__TAURI_INTERNALS__.invoke(command, args); }): Promise<{ readonly rawSnapshot: unknown;
   readonly home: SynthesizedHome;
   readonly identities: Record<string, DeviceSourceIdentity>;
-}> { const rawSnapshot = await invoke<unknown>("ha_snapshot", {
-    baseUrl: baseURL,
-    token,
-  });
-  const home = HomeAssistantSynthesizer.synthesize(rawSnapshot);
-  const identities = extractHADeviceIdentities(rawSnapshot, home); return { rawSnapshot, home, identities }; } 
+}> {
+  const lease = acquireHaTransportLease(baseURL, { token: token });
+  if (!lease) {
+    throw new HaBlockedRequestError(haConnectionScope(baseURL) ?? "ha:");
+  }
+  try {
+    const rawSnapshot = await invokeHaWithLease<unknown>(lease, invoke, "ha_snapshot", {
+      baseUrl: baseURL,
+      token,
+    });
+    if (!lease.isCurrent()) {
+      throw new HaBlockedRequestError(lease.scope ?? "ha:");
+    }
+    const home = HomeAssistantSynthesizer.synthesize(rawSnapshot);
+    const identities = extractHADeviceIdentities(rawSnapshot, home);
+    return { rawSnapshot, home, identities };
+  } finally {
+    lease.release();
+  }
+}
 export interface DualSourceRefreshOutcome { readonly merged: DeviceMergeResult;
   readonly sourceStatuses: Readonly<Record<HomeBackend, ConnectionStatus>>;
   readonly haError: string | null;
@@ -1068,7 +1092,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   getSourceStatuses(): Readonly<Record<HomeBackend, ConnectionStatus>> { return { ...this.sourceStatuses };
   }
 
-  async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot>;
+  async refreshParallel(options: { readonly fetchHA: () => Promise<DualSourceInputSnapshot | null>;
     readonly fetchMi: () => Promise<DualSourceInputSnapshot | null>;
     readonly knownPreferenceIds?: ReadonlySet<string>;
     readonly languagePreference?: LanguagePreference;
@@ -1095,9 +1119,21 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     let haError: string | null = null; let miError: string | null = null;
-    if (haSettled.status === "fulfilled") { this.lastHA = haSettled.value;
+    const haDisabledReason = tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, options.languagePreference);
+    const haWasTurnedOff =
+      (haSettled.status === "fulfilled" && haSettled.value === null) ||
+      (haSettled.status === "rejected" && isHaBlockedRequestError(haSettled.reason));
+    if (haWasTurnedOff) {
+      this.lastHA = null;
+      this.sourceStatuses.homeAssistant = {
+        kind: "disconnected",
+        reason: haDisabledReason,
+      };
+    } else if (haSettled.status === "fulfilled") {
+      this.lastHA = haSettled.value;
       this.sourceStatuses.homeAssistant = { kind: "connected" };
-    } else { haError =
+    } else {
+      haError =
         haSettled.reason instanceof Error
           ? haSettled.reason.message
           : String(haSettled.reason);
@@ -1108,6 +1144,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
       };
     }
 
+    const miWasTurnedOff = miSettled.status === "fulfilled" && miSettled.value === null;
     if (miSettled.status === "fulfilled") {
       if (miSettled.value === null) {
         this.lastMi = null;
@@ -1145,6 +1182,22 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
     }
 
     if (!this.lastHA && !this.lastMi) {
+      if (haWasTurnedOff && miWasTurnedOff) {
+        const emptyMerged = DeviceDeduplicator.merge({
+          canonical: this.canonical,
+          rooms: this.rooms,
+          knownPreferenceIds: this.lastKnownPrefIds,
+          pinnedBackends: this.pinStorage.getAll(),
+          languagePreference: options.languagePreference,
+        });
+        this.lastMerged = emptyMerged;
+        return {
+          merged: emptyMerged,
+          sourceStatuses: { ...this.sourceStatuses },
+          haError: null,
+          miError: null,
+        };
+      }
       throw new Error(haError ?? miError ?? "Both Home Assistant and Xiaomi Cloud failed");
     }
 
@@ -1158,6 +1211,26 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
 
   recompute(languagePreference?: LanguagePreference): DeviceMergeResult | null {
     if (!this.lastHA && !this.lastMi) return null;
+    return this.mergeCurrent(languagePreference);
+  }
+
+  removeHomeAssistant(
+    languagePreference?: LanguagePreference,
+    options: { readonly reason?: "disabled" | "disconnected" } = {},
+  ): DeviceMergeResult | null {
+    this.mutationEpoch += 1;
+    this.lastHA = null;
+    this.sourceStatuses.homeAssistant = {
+      kind: "disconnected",
+      reason:
+        options.reason === "disconnected"
+          ? tr3("Home Assistant 连接已断开", "Home Assistant 連線已中斷", "Home Assistant is disconnected", undefined, languagePreference)
+          : tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, languagePreference),
+    };
+    if (!this.lastMi) {
+      this.lastMerged = null;
+      return null;
+    }
     return this.mergeCurrent(languagePreference);
   }
 

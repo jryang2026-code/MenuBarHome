@@ -58,6 +58,8 @@ import {
 } from "../core/pollingPolicy.js";
 import {
   filterEnabledMiAccounts,
+  haConnectionScope,
+  isHaScopeEnabledInState,
   isMiSessionEnabledInState,
   miAccountScope,
   resolveMiAccountSelectionState,
@@ -65,6 +67,13 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
+import {
+  getHaScopeLifecyclePhase,
+  isHaBlockedRequestError,
+  isHaScopeDisabledInStorage,
+  type HaConnectionLifecyclePhase,
+} from "../core/haTransportGate.js";
+import type { PersistedSettings } from "./appTypes.js";
 
 type MiSelectionHost = DualSourceInspectableHost & { readonly miAccountsStore?: MiAccountsStore | null };
 
@@ -90,11 +99,61 @@ export function resolveHostMiSelectionState(host: MiSelectionHost, accounts?: re
   return state;
 }
 
-export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts: readonly MiAccount[]): MiAccount[] =>
-  filterEnabledMiAccounts(accounts, resolveHostMiSelectionState(host, accounts));
+export const resolveEnabledMiAccountsForHost = (host: MiSelectionHost, accounts?: readonly MiAccount[]): MiAccount[] => {
+  const resolved = hostKnownMiAccounts(host, accounts);
+  return filterEnabledMiAccounts(resolved, resolveHostMiSelectionState(host, resolved));
+};
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
   Boolean(session && isMiSessionEnabledInState(session, resolveHostMiSelectionState(host, [makeMiAccount(session)])));
+
+export function isHostHaEnabled(host: MiSelectionHost): boolean {
+  const scope = haConnectionScope(host.settings.haBaseURL ?? null, host.settings.haToken ?? null);
+  if (!scope) return true;
+  return isHaScopeEnabledInState(scope, resolveHostMiSelectionState(host));
+}
+
+export function getHostHaLifecyclePhase(host: MiSelectionHost): HaConnectionLifecyclePhase {
+  const phase = getHaScopeLifecyclePhase(host.settings.haBaseURL ?? null);
+  if (phase === "stopping" || phase === "stop_timeout") return phase;
+  return isHostHaEnabled(host) ? "enabled" : "disabled";
+}
+
+export interface HaCacheReadSettings<
+  TCache extends { readonly identity: string } | null | undefined = PersistedSettings["cachedHAHome"],
+> {
+  readonly haBaseURL?: string | null;
+  readonly haToken?: string | null;
+  readonly cachedHAHome?: TCache;
+}
+
+export function settingsHaCacheIfEnabled<
+  TCache extends { readonly identity: string } | null | undefined = PersistedSettings["cachedHAHome"],
+>(
+  settings: HaCacheReadSettings<TCache>,
+  options?: { readonly requireIdentityMatch?: boolean },
+): NonNullable<TCache> | null {
+  const cache = settings.cachedHAHome ?? null;
+  const identityBaseUrl = cache?.identity ? (cache.identity.split("|", 1)[0] ?? null) : null;
+  const scope =
+    haConnectionScope(settings.haBaseURL ?? null, settings.haToken ?? null) ??
+    haConnectionScope(identityBaseUrl);
+  if (scope && isHaScopeDisabledInStorage(scope)) return null;
+  if (!cache) return null;
+  if (options?.requireIdentityMatch) {
+    const expected = homeAssistantIdentity(settings.haBaseURL ?? "", settings.haToken ?? "");
+    return expected !== null && cache.identity === expected ? (cache as NonNullable<TCache>) : null;
+  }
+  return cache as NonNullable<TCache>;
+}
+
+export function haCacheIfEnabled(
+  host: MiSelectionHost & { readonly settings: DualSourceInspectableHost["settings"] & Pick<HaCacheReadSettings, "cachedHAHome"> },
+  options?: { readonly requireIdentityMatch?: boolean },
+): NonNullable<PersistedSettings["cachedHAHome"]> | null {
+  if (!isHostHaEnabled(host)) return null;
+  return settingsHaCacheIfEnabled(host.settings, options);
+}
 
 export interface HostSceneSource {
   readonly scenes?: readonly HomeScene[] | null;
@@ -121,9 +180,9 @@ export function collectHostKnownScenes(
     }
   };
   push(host.scenes);
-  push(host.multiAccountState?.merged?.home.scenes);
-  for (const child of Object.values(host.multiAccountState?.children ?? {})) push(child?.home.scenes);
-  if (isDualSourceEnabled(host)) push(host.dualSourceCoordinator?.getLastMiSnapshot()?.home.scenes);
+  push(host.multiAccountState?.merged?.home?.scenes);
+  for (const child of Object.values(host.multiAccountState?.children ?? {})) push(child?.home?.scenes);
+  if (isDualSourceEnabled(host)) push(host.dualSourceCoordinator?.getLastMiSnapshot?.()?.home?.scenes);
   return out;
 }
 
@@ -133,7 +192,7 @@ export function buildHostCapabilityContext(
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
-  const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged()?.routes : undefined;
+  const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   return {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
@@ -162,6 +221,28 @@ function completePendingMiRevalidation(
     activeTimerIdentity: scheduledCommandIdentity(host.settings),
     ruleStore: new AutomationRuleStore(),
     completedScopes: matchedScopes,
+    ...(nowMs !== undefined ? { nowMs } : {}),
+  });
+}
+
+function completePendingHaRevalidation(
+  host: MenuMijiaWindowsApp,
+  endpoint: string,
+  token: string,
+  accountsOverride?: readonly MiAccount[],
+): boolean {
+  const scope = haConnectionScope(endpoint, token);
+  if (!scope) return false;
+  const state = resolveHostMiSelectionState(host, accountsOverride);
+  if (!state.pendingRevalidationHaScopes.has(scope)) return false;
+  const nowMs = (host as { pendingReenableNowMs?: number }).pendingReenableNowMs;
+  return revalidateAfterMiAccountReenable({
+    context: buildHostCapabilityContext(host, accountsOverride),
+    scheduledCommandStore: host.scheduledCommandStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore: new AutomationRuleStore(),
+    completedHaScopes: new Set([scope]),
+    hasLiveHaSnapshot: true,
     ...(nowMs !== undefined ? { nowMs } : {}),
   });
 }
@@ -502,7 +583,15 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
   }
 
 export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false): Promise<void> {
-    if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.isSyncingCloud) return;
+    if (
+      !isHostAttachedToActiveWindow(host) ||
+      host.settings.connectionMode !== "homeAssistant" ||
+      host.isSyncingCloud ||
+      !isHostHaEnabled(host) ||
+      getHostHaLifecyclePhase(host) !== "enabled"
+    ) {
+      return;
+    }
     const endpoint = host.settings.haBaseURL;
     const token = host.settings.haToken;
     const stateToken = host.sourceEpoch.capture();
@@ -516,11 +605,34 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
     if (!silent && host.devices.length === 0) host.render();
     try {
       await host.endpointSubmission;
+      if (
+        !isHostAttachedToActiveWindow(host) ||
+        host.settings.connectionMode !== "homeAssistant" ||
+        host.settings.haBaseURL !== endpoint ||
+        host.settings.haToken !== token ||
+        !isHostHaEnabled(host) ||
+        getHostHaLifecyclePhase(host) !== "enabled" ||
+        !stateToken.isCurrent() ||
+        !syncRun.isCurrent()
+      ) {
+        return;
+      }
       const haClient = new HomeAssistantClient(endpoint, token, host.haInvokeOverride ?? undefined);
       const home = await haClient.snapshot();
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
+      if (
+        !isHostAttachedToActiveWindow(host) ||
+        host.settings.connectionMode !== "homeAssistant" ||
+        host.settings.haBaseURL !== endpoint ||
+        host.settings.haToken !== token ||
+        !isHostHaEnabled(host) ||
+        getHostHaLifecyclePhase(host) !== "enabled" ||
+        !stateToken.isCurrent() ||
+        !syncRun.isCurrent()
+      ) {
+        return;
+      }
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
@@ -535,12 +647,7 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         host.cameraLive.closeCameraLiveView();
       }
       markTimerSnapshotReady(host);
-      revalidateAfterMiAccountReenable({
-        context: buildHostCapabilityContext(host),
-        scheduledCommandStore: host.scheduledCommandStore,
-        activeTimerIdentity: scheduledCommandIdentity(host.settings),
-        ruleStore: new AutomationRuleStore(),
-      });
+      completePendingHaRevalidation(host, endpoint, token);
       const readingPriorityById = new Map(
         host.devices.map((device) => [device.id, environmentReadingPriority(device.kind)]),
       );
@@ -566,7 +673,19 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       if (presentationChanged || !hadValidCache) host.saveSettings();
       shouldUpdateView = !silent || presentationChanged;
     } catch (error) {
-      if (!isHostAttachedToActiveWindow(host) || host.settings.connectionMode !== "homeAssistant" || host.settings.haBaseURL !== endpoint || host.settings.haToken !== token || !stateToken.isCurrent() || !syncRun.isCurrent()) return;
+      if (
+        isHaBlockedRequestError(error) ||
+        !isHostAttachedToActiveWindow(host) ||
+        host.settings.connectionMode !== "homeAssistant" ||
+        host.settings.haBaseURL !== endpoint ||
+        host.settings.haToken !== token ||
+        !isHostHaEnabled(host) ||
+        getHostHaLifecyclePhase(host) !== "enabled" ||
+        !stateToken.isCurrent() ||
+        !syncRun.isCurrent()
+      ) {
+        return;
+      }
       failed = true;
       shouldUpdateView = true;
       appDiagnosticsLog.record({
@@ -1360,8 +1479,11 @@ export async function refreshDualSourceDevices(
         : [];
   if (accounts.length === 0) return;
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
+  const haEnabledAtStart = isHostHaEnabled(host) && getHostHaLifecyclePhase(host) === "enabled";
+  if (!haEnabledAtStart && enabledAccounts.length === 0) return;
   const currentDualAccounts = () =>
     host.miAccountsOverride ?? (store.getAccounts().length > 0 ? store.getAccounts() : accounts);
+  const currentHaActive = () => isHostHaEnabled(host) && getHostHaLifecyclePhase(host) === "enabled";
 
   const syncRun = host.sourceEpoch.claimSyncRun();
   const previousPresentation = cloudPresentationFingerprint(host);
@@ -1373,6 +1495,15 @@ export async function refreshDualSourceDevices(
 
   try {
     await host.endpointSubmission;
+    if (
+      !isHostAttachedToActiveWindow(host) ||
+      !isDualSourceEnabled(host) ||
+      !stateToken.isCurrent() ||
+      !syncRun.isCurrent() ||
+      currentHaActive() !== haEnabledAtStart
+    ) {
+      return;
+    }
     const coordinator = getHostDualSourceCoordinator(host);
     const prevMiState = host.multiAccountState;
     const haInvoke = host.haInvokeOverride ?? undefined;
@@ -1389,19 +1520,22 @@ export async function refreshDualSourceDevices(
           isDualSourceEnabled(host) &&
           stateToken.isCurrent() &&
           syncRun.isCurrent() &&
+          currentHaActive() === haEnabledAtStart &&
           enabledAccounts.length === latestIds.size &&
           enabledAccounts.every((a) => latestIds.has(a.id))
         );
       },
-      fetchHA: async (): Promise<DualSourceInputSnapshot> => {
-        const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
-        haRawSnapshot = res.rawSnapshot;
-        return {
-          home: res.home,
-          identity: homeAssistantIdentity(endpoint, token),
-          identities: res.identities,
-        };
-      },
+      fetchHA: haEnabledAtStart
+        ? async (): Promise<DualSourceInputSnapshot> => {
+            const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
+            haRawSnapshot = res.rawSnapshot;
+            return {
+              home: res.home,
+              identity: homeAssistantIdentity(endpoint, token),
+              identities: res.identities,
+            };
+          }
+        : async (): Promise<DualSourceInputSnapshot | null> => null,
       fetchMi: async (): Promise<DualSourceInputSnapshot | null> => {
         if (enabledAccounts.length === 0) {
           return null;
@@ -1447,6 +1581,7 @@ export async function refreshDualSourceDevices(
       !isDualSourceEnabled(host) ||
       !stateToken.isCurrent() ||
       !syncRun.isCurrent() ||
+      currentHaActive() !== haEnabledAtStart ||
       enabledAccounts.length !== latestEnabledIds.size ||
       !enabledAccounts.every((a) => latestEnabledIds.has(a.id))
     ) {
@@ -1456,7 +1591,7 @@ export async function refreshDualSourceDevices(
       host.multiAccountState = nextMultiAccountState;
     }
 
-    if (outcome.haError) {
+    if (haEnabledAtStart && outcome.haError) {
       appDiagnosticsLog.record({
         summary: outcome.haError,
         category: "homeAssistant",
@@ -1471,13 +1606,16 @@ export async function refreshDualSourceDevices(
       });
     }
 
-    host.haConnectionError = outcome.haError;
+    host.haConnectionError = haEnabledAtStart ? outcome.haError : null;
     host.markCloudValuesFresh();
     applyDualSourceMergeToHost(host, outcome.merged);
-    if (haRawSnapshot && typeof haRawSnapshot === "object") {
+    if (haEnabledAtStart && haRawSnapshot && typeof haRawSnapshot === "object") {
       void ingestHostHASnapshotForDoorbell(host, haRawSnapshot as HASnapshotLike);
     }
     markTimerSnapshotReady(host);
+    if (haEnabledAtStart && !outcome.haError) {
+      completePendingHaRevalidation(host, endpoint, token, accounts);
+    }
     if (nextMultiAccountState) {
       const freshAccountIds = enabledAccounts
         .filter((acc) => nextMultiAccountState?.children[acc.id]?.status.kind === "connected")
@@ -1497,12 +1635,12 @@ export async function refreshDualSourceDevices(
       };
     }
   } catch (error) {
-    if (!isHostAttachedToActiveWindow(host) || !stateToken.isCurrent() || !syncRun.isCurrent()) {
+    if (isHaBlockedRequestError(error) || !isHostAttachedToActiveWindow(host) || !stateToken.isCurrent() || !syncRun.isCurrent()) {
       return;
     }
     failed = true;
     const msg = error instanceof Error ? error.message : String(error);
-    host.haConnectionError = msg;
+    if (haEnabledAtStart) host.haConnectionError = msg;
     host.markCloudValuesStale();
     if (!silent) {
       host.replyBanner = {

@@ -379,6 +379,32 @@ public actor MiAccountsProvider: HomeProvider {
         }
     }
 
+    public func retryLAN(deviceId: String?) async {
+        guard !isShutDown else { return }
+        guard let deviceId else {
+            let providers = children.map { $0.provider }
+            await withTaskGroup(of: Void.self) { group in
+                for provider in providers {
+                    group.addTask { await provider.retryLAN(deviceId: nil) }
+                }
+            }
+            return
+        }
+        if let scopedOwner = MiAccountScope.owner(of: deviceId),
+           let child = childProvider(for: scopedOwner) {
+            let localDid = MiAccountScope.localId(of: deviceId)
+            await child.retryLAN(deviceId: localDid.isEmpty ? nil : localDid)
+            return
+        }
+        let matchedProviders = preferredOwners(for: deviceId).compactMap { childProvider(for: $0) }
+        let targets = matchedProviders.isEmpty ? children.map(\.provider) : matchedProviders
+        await withTaskGroup(of: Void.self) { group in
+            for provider in targets {
+                group.addTask { await provider.retryLAN(deviceId: deviceId) }
+            }
+        }
+    }
+
     public func setPollingContext(_ context: PollingContext) async {
         guard !isShutDown else { return }
         if context.systemActive && !pollingContext.systemActive {

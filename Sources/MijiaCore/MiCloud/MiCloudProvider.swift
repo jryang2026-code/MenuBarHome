@@ -120,8 +120,24 @@ public actor MiCloudProvider: HomeProvider {
     private var lastFullPollAt: ContinuousClock.Instant?
     private var lastWakePollAt: ContinuousClock.Instant?
     private var lastPolledSelection: String?
+    private enum PendingLANRetry: Equatable {
+        case devices(Set<String>)
+        case all
+
+        mutating func merge(_ deviceId: String?) {
+            switch (self, deviceId) {
+            case (.all, _), (_, nil):
+                self = .all
+            case (.devices(var ids), let id?):
+                ids.insert(id)
+                self = .devices(ids)
+            }
+        }
+    }
+
     private var wakePollPending = false
     private var pendingRefreshAfterPoll = false
+    private var pendingLANRetry: PendingLANRetry?
     private var isPolling = false
     private var isShutDown = false
     private static let wakeRefreshCooldown: Duration = .seconds(1)
@@ -209,6 +225,8 @@ public actor MiCloudProvider: HomeProvider {
     public func shutdown() async {
         guard !isShutDown else { return }
         isShutDown = true
+        pendingLANRetry = nil
+        pendingRefreshAfterPoll = false
         loopTask?.cancel()
         loopTask = nil
         waitTask?.cancel()
@@ -267,6 +285,128 @@ public actor MiCloudProvider: HomeProvider {
         }
         refreshSweepPending = true
         prepareLocalNetworkRetryOnRefresh()
+        await performImmediatePoll(api)
+    }
+
+    public func retryLAN(deviceId: String?) async {
+        guard !isShutDown else { return }
+        if let rejected = rejectedSession {
+            guard let current = currentSession(), !current.sharesCredentials(with: rejected) else { return }
+            clearLANCooldownForRetry(targetDids: resolvedTargetDids(for: deviceId.map { .devices([$0]) } ?? .all))
+            lastBroadcastSweepAt = nil
+            lastWakePollAt = nil
+            restartLoop()
+            return
+        }
+        let request: PendingLANRetry = deviceId.map { .devices([$0]) } ?? .all
+        guard let api else {
+            clearLANCooldownForRetry(targetDids: resolvedTargetDids(for: request))
+            lastBroadcastSweepAt = nil
+            lastWakePollAt = nil
+            restartLoop()
+            return
+        }
+        if isPolling {
+            // Keep existing cooldown state untouched until the in-flight poll completes so its
+            // snapshot cannot transiently flip the device to `.cloud` before the retry runs.
+            if pendingLANRetry != nil {
+                pendingLANRetry?.merge(deviceId)
+            } else {
+                pendingLANRetry = request
+            }
+            return
+        }
+        await performImmediateLANRetry(api, retry: request)
+    }
+
+    private func resolvedTargetDids(for retry: PendingLANRetry) -> Set<String>? {
+        switch retry {
+        case .all:
+            return nil
+        case .devices(let deviceIds):
+            var targetDids = deviceIds
+            for record in devices where deviceIds.contains(record.did) {
+                targetDids.insert(record.miotDid)
+            }
+            for deviceId in deviceIds {
+                if let members = groupMembersByGroup[deviceId] {
+                    targetDids.formUnion(members)
+                    for record in devices where members.contains(record.did) {
+                        targetDids.insert(record.miotDid)
+                    }
+                }
+            }
+            return targetDids
+        }
+    }
+
+    private func hasActiveLANEndpointInScope(dids: Set<String>? = nil) -> Bool {
+        guard localClient != nil else { return false }
+        let scopedDevices = scopedDevicesAndRooms().devices
+        for record in scopedDevices {
+            if let dids, !dids.contains(record.did), !dids.contains(record.miotDid) {
+                continue
+            }
+            if lanEndpoint(for: record) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func clearLANCooldownForRetry(targetDids: Set<String>?) {
+        if let targetDids {
+            for did in targetDids {
+                guard var state = lanHealthByDid[did] else { continue }
+                state.cooldownUntil = nil
+                state.consecutiveFailures = 0
+                lanHealthByDid[did] = state
+            }
+        } else {
+            for (did, var state) in lanHealthByDid {
+                state.cooldownUntil = nil
+                state.consecutiveFailures = 0
+                lanHealthByDid[did] = state
+            }
+        }
+    }
+
+    private func executeLANRetry(_ api: any MiCloudAPI, retry: PendingLANRetry) async throws {
+        let targetDids = resolvedTargetDids(for: retry)
+        clearLANCooldownForRetry(targetDids: targetDids)
+        lastBroadcastSweepAt = nil
+        lastWakePollAt = nil
+        prepareLocalNetworkRetryOnRefresh()
+
+        let scopedDevices = scopedDevicesAndRooms().devices
+        let targetKeys = propKeys(of: scopedDevices, dids: targetDids)
+        if !targetKeys.isEmpty, hasActiveLANEndpointInScope(dids: targetDids) {
+            try await poll(api, dids: targetDids, allowBroadcastSweepOnFailure: true)
+            return
+        }
+
+        if (lastCloudError as? MiCloudError) != .http(429) {
+            cloudRetryNotBefore = nil
+        }
+        try await discover(api)
+        try await poll(api, dids: nil, allowBroadcastSweepOnFailure: true)
+    }
+
+    private func performImmediateLANRetry(_ api: any MiCloudAPI, retry: PendingLANRetry) async {
+        do {
+            try await performTrackedPoll(api) {
+                try await executeLANRetry(api, retry: retry)
+            }
+            reportConnected()
+        } catch MiCloudError.sessionExpired {
+            clearExpiredSnapshot()
+            report(MiCloudError.sessionExpired)
+        } catch {
+            report(error)
+        }
+    }
+
+    private func performImmediatePoll(_ api: any MiCloudAPI) async {
         if (lastCloudError as? MiCloudError) != .http(429) {
             cloudRetryNotBefore = nil
         }
@@ -383,11 +523,55 @@ public actor MiCloudProvider: HomeProvider {
         defer {
             isPolling = false
             pendingRefreshAfterPoll = false
+            pendingLANRetry = nil
         }
-        try await body()
-        while pendingRefreshAfterPoll, !Task.isCancelled, !isShutDown {
-            pendingRefreshAfterPoll = false
-            try await poll(api, dids: nil)
+        var pendingError: (any Error)?
+        do {
+            try await body()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch MiCloudError.sessionExpired {
+            throw MiCloudError.sessionExpired
+        } catch {
+            pendingError = error
+        }
+
+        while !Task.isCancelled && !isShutDown {
+            if let retry = pendingLANRetry {
+                pendingLANRetry = nil
+                pendingError = nil
+                if case .all = retry {
+                    pendingRefreshAfterPoll = false
+                }
+                do {
+                    try await executeLANRetry(api, retry: retry)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch MiCloudError.sessionExpired {
+                    throw MiCloudError.sessionExpired
+                } catch {
+                    pendingError = error
+                }
+                continue
+            }
+            if pendingError == nil, pendingRefreshAfterPoll {
+                pendingRefreshAfterPoll = false
+                do {
+                    try await poll(api, dids: nil)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch MiCloudError.sessionExpired {
+                    throw MiCloudError.sessionExpired
+                } catch {
+                    pendingError = error
+                }
+                continue
+            }
+            break
+        }
+
+        if let pendingError {
+            throw pendingError
         }
     }
 
@@ -510,6 +694,7 @@ public actor MiCloudProvider: HomeProvider {
         lastBroadcastSweepAt = nil
         lastRefreshBroadcastSweepAt = nil
         refreshSweepPending = false
+        pendingLANRetry = nil
         updateLocalNetworkDenied(false)
         lanSucceededDids.removeAll()
         lanTransportSucceededDids.removeAll()
@@ -604,7 +789,7 @@ public actor MiCloudProvider: HomeProvider {
                 scheduleCloudBackoff(for: error)
                 return
             }
-            if !devices.isEmpty, !lanSucceededDids.isEmpty {
+            if !devices.isEmpty, (!lanSucceededDids.isEmpty || hasActiveLANEndpointInScope()) {
                 scheduleCloudBackoff(for: error)
                 return
             }
@@ -784,8 +969,16 @@ public actor MiCloudProvider: HomeProvider {
 
     /// Reads the selected home's devices only (all homes when none is selected) (#26).
     @discardableResult
-    private func poll(_ api: any MiCloudAPI, dids: Set<String>?) async throws -> Set<MiotPropKey> {
-        let outcome = try await pollOutcome(api, dids: dids)
+    private func poll(
+        _ api: any MiCloudAPI,
+        dids: Set<String>?,
+        allowBroadcastSweepOnFailure: Bool = false
+    ) async throws -> Set<MiotPropKey> {
+        let outcome = try await pollOutcome(
+            api,
+            dids: dids,
+            allowBroadcastSweepOnFailure: allowBroadcastSweepOnFailure
+        )
         if let cloudError = outcome.cloudError {
             throw cloudError
         }
@@ -794,7 +987,8 @@ public actor MiCloudProvider: HomeProvider {
 
     private func pollOutcome(
         _ api: any MiCloudAPI,
-        dids: Set<String>?
+        dids: Set<String>?,
+        allowBroadcastSweepOnFailure: Bool = false
     ) async throws -> (freshKeys: Set<MiotPropKey>, cloudError: (any Error)?) {
         let allowCooldownSweep: Bool
         if dids == nil {
@@ -813,7 +1007,8 @@ public actor MiCloudProvider: HomeProvider {
                 api: api,
                 keys: keys,
                 scopedDevices: scopedDevices,
-                allowCooldownSweep: allowCooldownSweep
+                allowCooldownSweep: allowCooldownSweep,
+                allowBroadcastSweepOnFailure: allowBroadcastSweepOnFailure
             )
             if dids == nil {
                 lanSucceededDids = outcome.lanSucceededDids
@@ -881,7 +1076,8 @@ public actor MiCloudProvider: HomeProvider {
         api: any MiCloudAPI,
         keys: [MiotPropKey],
         scopedDevices: [MiDeviceRecord],
-        allowCooldownSweep: Bool = false
+        allowCooldownSweep: Bool = false,
+        allowBroadcastSweepOnFailure: Bool = false
     ) async throws -> HybridPropReadOutcome {
         let cloudAllowed = isCloudAllowed
         guard let localClient else {
@@ -1026,7 +1222,7 @@ public actor MiCloudProvider: HomeProvider {
                     failedOutcomes.append(outcome)
                     if !batchSawLocalNetworkDenied,
                        (err as? MiIOError) != .localNetworkDenied,
-                       (lanHealthByDid[outcome.did]?.consecutiveFailures ?? 0) >= lanFailureThreshold { shouldSweep = true }
+                       (allowBroadcastSweepOnFailure || (lanHealthByDid[outcome.did]?.consecutiveFailures ?? 0) >= lanFailureThreshold) { shouldSweep = true }
                 } else if let resultValues = outcome.values {
                     let missingKeys = outcome.keys.filter { resultValues[$0] == nil }
                     recordLANSuccess(did: outcome.did, rttMs: outcome.rttMs, allowClearingDenied: !batchSawLocalNetworkDenied)

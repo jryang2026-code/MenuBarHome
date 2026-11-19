@@ -47,10 +47,12 @@ struct ClassicHoldToConfirmButton: View {
     let title: String
     let count: Int
     let helpText: String
-    let onConfirm: () -> Void
+    let onBeginHold: () -> HomeStore.AllOffHoldMode
+    let onConfirm: (HomeStore.AllOffHoldMode) -> Void
     let onTap: () -> Void
 
     @State private var holding = false
+    @State private var holdLatch = AllOffHoldLatch()
 
     var body: some View {
         let capsule = Capsule(style: .continuous)
@@ -79,11 +81,17 @@ struct ClassicHoldToConfirmButton: View {
         .onTapGesture(perform: onTap)
         .onLongPressGesture(minimumDuration: 0.6, maximumDistance: 20) {
             holding = false
+            let mode = holdLatch.consumeOnConfirm(fallback: onBeginHold)
             // #54: a confirm that turns off the whole room deserves a level-change tap.
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(mode)
         } onPressingChanged: { pressing in
+            holdLatch.pressingChanged(pressing, beginHold: onBeginHold)
             withAnimation(pressing ? .linear(duration: 0.6) : .easeOut(duration: 0.2)) { holding = pressing }
+        }
+        .onDisappear {
+            holding = false
+            holdLatch.reset()
         }
         .panelHelp(helpText)
         // VoiceOver cannot long-press easily; give it an explicit, clearly named action instead.
@@ -92,8 +100,9 @@ struct ClassicHoldToConfirmButton: View {
         .accessibilityHint(Text(L10n.tr("按住 0.6 秒关闭", "Hold 0.6 seconds to turn off")))
         .accessibilityAddTraits(.isButton)
         .accessibilityAction(named: Text(L10n.tr("关闭这 \(count) 台设备", "Turn off these \(count) devices"))) {
+            holdLatch.reset()
             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-            onConfirm()
+            onConfirm(onBeginHold())
         }
     }
 }

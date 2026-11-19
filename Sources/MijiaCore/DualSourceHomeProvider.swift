@@ -1236,6 +1236,55 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
     }
 
+    public func retryLAN(deviceId: String?) async {
+        guard !isShutDown else { return }
+        guard let deviceId else {
+            let ha = homeAssistant
+            let mi = xiaomiCloud
+            await withTaskGroup(of: Void.self) { group in
+                if let ha { group.addTask { await ha.retryLAN(deviceId: nil) } }
+                if let mi { group.addTask { await mi.retryLAN(deviceId: nil) } }
+            }
+            return
+        }
+        if let route = routes[deviceId] {
+            switch route.backend {
+            case .xiaomiCloud:
+                await xiaomiCloud?.retryLAN(deviceId: route.sourceDeviceID)
+            case .homeAssistant:
+                let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+                let ha = homeAssistant
+                let mi = xiaomiCloud
+                await withTaskGroup(of: Void.self) { group in
+                    if let ha { group.addTask { await ha.retryLAN(deviceId: route.sourceDeviceID) } }
+                    if let mi {
+                        for miID in miSourceIDs {
+                            group.addTask { await mi.retryLAN(deviceId: miID) }
+                        }
+                    }
+                }
+            case .demo:
+                break
+            }
+            return
+        }
+        let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+        let ha = homeAssistant
+        let mi = xiaomiCloud
+        await withTaskGroup(of: Void.self) { group in
+            if let ha { group.addTask { await ha.retryLAN(deviceId: deviceId) } }
+            if let mi {
+                if miSourceIDs.isEmpty {
+                    group.addTask { await mi.retryLAN(deviceId: deviceId) }
+                } else {
+                    for miID in miSourceIDs {
+                        group.addTask { await mi.retryLAN(deviceId: miID) }
+                    }
+                }
+            }
+        }
+    }
+
     public func setPollingContext(_ context: PollingContext) async {
         guard !isShutDown else { return }
         if !context.systemActive && pollingContext.systemActive {

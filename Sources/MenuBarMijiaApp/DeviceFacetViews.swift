@@ -287,26 +287,36 @@ struct DeviceFacetSection: View {
 
     var body: some View {
         let focusToken = FacetRowFocus.shared.token
-        if controls.isEmpty {
+        let hasDiagnostics = store.deviceTransportDiagnostics[device.id] != nil
+        if controls.isEmpty && !hasDiagnostics {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                header
-                if isExpanded {
-                    if showsWriteLockNotice {
-                        writeLockNotice
-                    }
-                    ForEach(visible) { control in
-                        row(control)
-                    }
-                    if !folded.isEmpty {
-                        restToggle
-                        if showsRest {
-                            ForEach(folded) { control in
-                                row(control)
+                if !controls.isEmpty {
+                    header
+                    if isExpanded {
+                        if showsWriteLockNotice {
+                            writeLockNotice
+                        }
+                        ForEach(visible) { control in
+                            row(control)
+                        }
+                        if !folded.isEmpty {
+                            restToggle
+                            if showsRest {
+                                ForEach(folded) { control in
+                                    row(control)
+                                }
                             }
                         }
                     }
+                }
+                if hasDiagnostics {
+                    DeviceTransportReadoutRow(
+                        deviceId: device.id,
+                        store: store,
+                        theme: theme
+                    )
                 }
             }
             .onChange(of: focusToken) { _, _ in

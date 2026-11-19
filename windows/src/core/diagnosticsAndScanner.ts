@@ -1,3 +1,4 @@
+import { acquireHaTransportLease, invokeHaWithLease, isHaBlockedRequestError } from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import { currentLanguage,
   resolveLanguage,
@@ -538,6 +539,7 @@ export interface ScanUnsupportedOptions { readonly connectionMode?: HomeBackend 
   readonly specResolver?: MiotSpecResolver;
   readonly haBaseURL?: string;
   readonly haToken?: string;
+  readonly haDisabled?: boolean;
   readonly haInvoke?: HAInvoke;
   readonly languagePreference?: LanguagePreference;
   readonly clientFactory?: (session: MiSession, transport: HttpTransport) => MiCloudClient;
@@ -694,23 +696,36 @@ export class UnsupportedDeviceScanner { public devices: UnsupportedDevice[] = []
         }
       }
 
-      if (scanHA && options.haInvoke && options.haBaseURL && options.haToken) { try {
-          const rawHA = await options.haInvoke<unknown>("ha_snapshot", {
-            baseUrl: options.haBaseURL,
-            token: options.haToken,
-          });
-          const synthesizedHA = HomeAssistantSynthesizer.synthesize(rawHA);
-          const haSkipped = UnsupportedDeviceCollector.homeAssistant(rawHA,
-            synthesizedHA,
-            {
-              forbiddenLiterals: [options.haBaseURL, options.haToken],
-              languagePreference: options.languagePreference,
-            },
-          );
-          collected.push(...haSkipped);
-        } catch (err) { const msg = err instanceof Error ? err.message : String(err);
-          errors.push(redactSensitiveText(msg, [options.haBaseURL, options.haToken]),
-          );
+      if (scanHA && !options.haDisabled && options.haInvoke && options.haBaseURL && options.haToken) {
+        const haLease = acquireHaTransportLease(options.haBaseURL, { token: options.haToken });
+        if (haLease) {
+          try {
+            const rawHA = await invokeHaWithLease<unknown>(haLease, options.haInvoke, "ha_snapshot", {
+              baseUrl: options.haBaseURL,
+              token: options.haToken,
+            });
+            if (haLease.isCurrent() && this.scanGeneration === generation) {
+              const synthesizedHA = HomeAssistantSynthesizer.synthesize(rawHA);
+              const haSkipped = UnsupportedDeviceCollector.homeAssistant(
+                rawHA,
+                synthesizedHA,
+                {
+                  forbiddenLiterals: [options.haBaseURL, options.haToken],
+                  languagePreference: options.languagePreference,
+                },
+              );
+              collected.push(...haSkipped);
+            }
+          } catch (err) {
+            if (haLease.isCurrent() && !isHaBlockedRequestError(err)) {
+              const msg = err instanceof Error ? err.message : String(err);
+              errors.push(
+                redactSensitiveText(msg, [options.haBaseURL, options.haToken]),
+              );
+            }
+          } finally {
+            haLease.release();
+          }
         }
       }
 

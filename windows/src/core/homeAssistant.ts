@@ -1,4 +1,10 @@
 import {
+  HaBlockedRequestError,
+  acquireHaTransportLease,
+  haConnectionScope,
+  invokeHaWithLease,
+} from "./haTransportGate.js";
+import {
   auxiliaryEntitiesForCover,
   buildBinarySensorKind,
   buildCoverKind,
@@ -1500,7 +1506,7 @@ export class HAHomeSnapshot {
 export class HomeAssistantClient {
   public lastRawSnapshot: unknown = null;
   constructor(
-    private readonly baseURL: string,
+    public readonly baseURL: string,
     private readonly token: string,
     private readonly invoke: HAInvoke = async (command, args) => {
       if (!window.__TAURI_INTERNALS__?.invoke)
@@ -1509,18 +1515,40 @@ export class HomeAssistantClient {
     },
   ) {}
   async snapshot(): Promise<SynthesizedHome> {
-    const raw = await this.invoke<unknown>("ha_snapshot", {
-      baseUrl: this.baseURL,
-      token: this.token,
-    });
-    this.lastRawSnapshot = raw;
-    return HomeAssistantSynthesizer.synthesize(raw);
+    const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
+    if (!lease) {
+      throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
+    }
+    try {
+      const raw = await invokeHaWithLease<unknown>(lease, this.invoke, "ha_snapshot", {
+        baseUrl: this.baseURL,
+        token: this.token,
+      });
+      if (!lease.isCurrent()) {
+        throw new HaBlockedRequestError(lease.scope ?? "ha:");
+      }
+      this.lastRawSnapshot = raw;
+      return HomeAssistantSynthesizer.synthesize(raw);
+    } finally {
+      lease.release();
+    }
   }
   async execute(command: DeviceCommand): Promise<void> {
-    await this.invoke("ha_execute", {
-      baseUrl: this.baseURL,
-      token: this.token,
-      command: haServiceCall(command),
-    });
+    const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
+    if (!lease) {
+      throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
+    }
+    try {
+      await invokeHaWithLease(lease, this.invoke, "ha_execute", {
+        baseUrl: this.baseURL,
+        token: this.token,
+        command: haServiceCall(command),
+      });
+      if (!lease.isCurrent()) {
+        throw new HaBlockedRequestError(lease.scope ?? "ha:");
+      }
+    } finally {
+      lease.release();
+    }
   }
 }

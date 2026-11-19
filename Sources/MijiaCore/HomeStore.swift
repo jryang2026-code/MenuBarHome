@@ -157,7 +157,11 @@ public final class HomeStore {
         }
     }
     public internal(set) var deviceTransportDiagnostics: [String: DeviceTransportDiagnostics] = [:]
-    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = []
+    public internal(set) var localNetworkBlocks: Set<LocalNetworkBlockedFeature> = [] {
+        didSet {
+            syncLocalNetworkBlockedNoticeDismissal(from: effectiveLocalNetworkBlocks(for: oldValue))
+        }
+    }
     /// Member did → Mi light-group did from the current snapshot; folding reads it (#189).
     public internal(set) var lightGroupOwners: [String: String] = [:]
     public internal(set) var environmentReadings: [EnvironmentReading] = [] {
@@ -579,11 +583,22 @@ public final class HomeStore {
             userDefaults.set(homeBackend.rawValue, forKey: "home_backend")
             syncHistoryConnectionScopes()
             if homeBackend == .demo { deviceValuesAreStale = false }
+            let previousEffective = oldValue == .demo ? [] : effectiveLocalNetworkBlocks(for: localNetworkBlocks, backend: oldValue)
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
         }
     }
 
     public internal(set) var miSessionMaskedUserId: String? {
-        didSet { syncInMemoryConfiguredCapabilities() }
+        didSet {
+            // Computed before `syncInMemoryConfiguredCapabilities()` so it reflects the pre-change
+            // capability state.
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                hasMi: oldValue != nil
+            )
+            syncInMemoryConfiguredCapabilities()
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
+        }
     }
     /// Every signed-in Mi account, primary (first) first. The panel groups by account when there is
     /// more than one, and adding an account never replaces the ones already signed in.
@@ -618,7 +633,14 @@ public final class HomeStore {
 
     /// Whether an HA token is saved. The chosen `homeBackend` no longer implies the only live source.
     public internal(set) var hasHASource: Bool = false {
-        didSet { syncInMemoryConfiguredCapabilities() }
+        didSet {
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                hasHA: oldValue
+            )
+            syncInMemoryConfiguredCapabilities()
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
+        }
     }
     public var hasMiSource: Bool { miSessionMaskedUserId != nil }
     public var isDualSourceActive: Bool {
@@ -830,6 +852,11 @@ public final class HomeStore {
 
     public var lgConfig: LGWebOSConfig {
         didSet {
+            let previousEffective = effectiveLocalNetworkBlocks(
+                for: localNetworkBlocks,
+                lgConfig: oldValue
+            )
+            syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
             guard !suppressNextLGConfigDidSetSave else { return }
             lgConfigSaveCallsInDidSetForTesting += 1
             lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
@@ -1091,9 +1118,10 @@ public final class HomeStore {
         updater: AppUpdater? = nil,
         credentialVault: CredentialVault? = nil,
         topologyCache: MiTopologyCache? = nil,
-        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil
+        miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)? = nil,
+        defaults: UserDefaults? = nil
     ) {
-        let ud = defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
+        let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory
@@ -1101,7 +1129,7 @@ public final class HomeStore {
         let initialPins = DeviceSourcePinStorage.load(defaults: ud)
         self.pinnedDeviceSourcesBox = DeviceSourcePinBox(initialPins)
         self.pinnedDeviceSources = initialPins
-        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil)
+        let isTestEnvironment = (provider != nil || dualSource != nil || defaultsSuiteName != nil || defaults != nil)
         self.isTestEnvironment = isTestEnvironment
         self.updater = updater ?? AppUpdater()
         self.energyHistory = EnergyHistory(defaults: ud)

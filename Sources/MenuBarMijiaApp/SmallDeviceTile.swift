@@ -217,3 +217,26 @@ struct SmallDeviceTile<MenuContent: View>: View {
         .contextMenu { menuContent() }
     }
 }
+
+extension SmallDeviceTile where MenuContent == DeviceCardContextMenuItems {
+    init(
+        device: SmartDevice,
+        store: HomeStore,
+        accessibilitySummary: String,
+        quickIndex: Int?
+    ) {
+        self.init(
+            device: device,
+            store: store,
+            accessibilitySummary: accessibilitySummary,
+            quickIndex: quickIndex
+        ) {
+            DeviceCardContextMenuItems(
+                device: device,
+                store: store,
+                theme: .liquidGlass,
+                isExpanded: false
+            )
+        }
+    }
+}
