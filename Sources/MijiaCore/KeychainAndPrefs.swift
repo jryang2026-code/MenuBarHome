@@ -60,6 +60,14 @@ public enum KeychainHelper {
         )
     }
 
+    static func isTokenVaultUnavailable(defaults: UserDefaults, vault: CredentialVault?) -> Bool {
+        guard vault != nil || defaults === UserDefaults.standard else { return false }
+        if case .unavailable = (vault ?? .shared).lookup(account, retryingUnavailable: true) {
+            return true
+        }
+        return false
+    }
+
     /// The environment token is a development escape hatch, never a credential of its own (#10):
     /// a saved token wins, an explicit sign-out wins, and without the opt-in it is ignored.
     static func resolvedToken(stored: String, environment: [String: String], signedOut: Bool) -> String {

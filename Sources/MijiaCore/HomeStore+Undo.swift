@@ -102,6 +102,13 @@ extension HomeStore {
 
     @discardableResult
     public func triggerScene(_ scene: HomeScene) -> Task<Bool, Never> {
+        if scenes.contains(where: { $0.id == scene.id }) {
+            let gate = evaluateSceneControlGate(sceneId: scene.id)
+            if !gate.allowed {
+                if let msg = gate.rejectionReason?.userMessage { showToast(msg, isError: true) }
+                return Task { false }
+            }
+        }
         guard !rejectWritesBlockedByMiSession() else { return Task { false } }
         guard !rejectControlWhileLocked() else { return Task { false } }
         return Task {
@@ -125,6 +132,13 @@ extension HomeStore {
         respectScreenLock: Bool = true
     ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
+        if pausedQuickActionIDs.contains(action.rawValue) {
+            showToast(
+                L10n.tr("该快捷动作因连接停用已暂停", "This quick action is paused while its connection is disabled"),
+                isError: true
+            )
+            return nil
+        }
         // Every quick action targets Mi rows only, so a blocked session means no target can be
         // sent: refuse before building rows or a banner instead of flashing them and taking them back.
         if rejectWritesBlockedByMiSession() { return Task { .refusedByMiSession } }

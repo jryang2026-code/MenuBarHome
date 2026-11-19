@@ -152,6 +152,9 @@ final class AutomationEngine {
     /// tests).
     func attach(store: HomeStore) {
         self.store = store
+        store.onAutomationRulesChanged = { [weak self] in
+            self?.rulesDidChange()
+        }
     }
 
     /// Whether any enabled rule needs the 10-second Mac context poller (CoreMediaIO, CoreAudio,

@@ -809,10 +809,28 @@ extension ClassicControlCenterPanel {
 
     var emptyStateView: some View {
         VStack(spacing: 8) {
-            Image(systemName: "sparkles")
+            Image(systemName: store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles")
                 .font(.system(size: DesignTokens.TypeSize.reading))
                 .foregroundStyle(.secondary)
-            if case .disconnected = store.connectionStatus {
+            if store.allConfiguredSourcesTurnedOff {
+                Text(L10n.tr("已停用当前连接", "Connections turned off"))
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(L10n.tr(
+                    "需要时可在连接设置中重新启用，收藏、别名与历史数据均已保留",
+                    "Turn a connection back on anytime in Settings. Favorites, aliases, and history are kept."
+                ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Button(L10n.tr("连接设置", "Connection Settings")) {
+                        SettingsWindowOpener.shared.show(tab: .connection)
+                    }
+                    .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                }
+                .padding(.top, 2)
+            } else if case .disconnected = store.connectionStatus {
                 Text(
                     store.isDualSourceActive
                         ? L10n.tr("尚未连接到 Home Assistant 或米家云端", "Not connected to Home Assistant or Xiaomi Cloud")

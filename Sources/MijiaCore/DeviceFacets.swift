@@ -15,6 +15,16 @@ public enum FacetTarget: Equatable, Sendable {
         case .property, .haProperty: return false
         }
     }
+
+    public var referencedEntityId: String {
+        switch self {
+        case .property(let entityId, _),
+             .action(let entityId),
+             .haProperty(let entityId),
+             .haAction(let entityId):
+            return entityId
+        }
+    }
 }
 
 /// One row under 更多设置 (#5): a generic facet from `MiotFacetEngine` plus the value the last
@@ -94,6 +104,10 @@ public struct FacetControl: Identifiable, Equatable, Sendable {
     public var isOn: Bool? { value?.miotBool }
 
     public var numberValue: Double? { value?.doubleValue }
+
+    public var referencedEntityIds: [String] {
+        target.map { [$0.referencedEntityId] } ?? []
+    }
 }
 
 /// The portion input of a feeding action, shared by the drawer, the confirmation and the command

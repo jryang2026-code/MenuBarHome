@@ -848,6 +848,13 @@ extension HomeStore {
     }
 
     func executeDeviceCommand(_ command: DeviceCommand) async throws {
+        if let ownerId = owningDeviceIdForCommand(command),
+           let reason = capabilityWriteRejection(forDeviceId: ownerId) {
+            throw CapabilityControlBlockedError(reason: reason)
+        }
+        if let reason = miotCommandWriteRejection(for: command.targetEntityId) {
+            throw CapabilityControlBlockedError(reason: reason)
+        }
         if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {
@@ -1069,8 +1076,9 @@ extension HomeStore {
 
     // MARK: Card controls
 
-    /// The row a card control acts on, after the lock-screen and expired-session checks.
+    /// The row a card control acts on, after the capability, lock-screen and expired-session checks.
     func controllableDevice(_ deviceId: String) -> SmartDevice? {
+        if rejectDeviceWriteIfCapabilityDisabled(deviceId: deviceId) != nil { return nil }
         guard let device = devices.first(where: { $0.id == deviceId }) else { return nil }
         guard !rejectWritesBlockedByMiSession(needsMi: !lgClientServes(device)) else { return nil }
         guard !rejectControlWhileLocked() else { return nil }

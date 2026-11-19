@@ -198,6 +198,30 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         store.onDoorbellRing = { [weak self] response in
             self?.respondToDoorbell(response)
         }
+        store.onMiAccountDisabled = { [weak self] _, deviceIds in
+            self?.tearDownDevices(deviceIds)
+        }
+    }
+
+    func tearDownDevices(_ deviceIds: Set<String>) {
+        guard !deviceIds.isEmpty else { return }
+        for id in deviceIds {
+            pendingStopTasks.removeValue(forKey: id)?.cancel()
+            pendingStopGenerations.removeValue(forKey: id)
+        }
+        var keptWarm: [WarmCameraPlayback] = []
+        for warm in warmPlaybacks {
+            if deviceIds.contains(warm.deviceID) {
+                warm.expiryTask?.cancel()
+                warm.playback.stop()
+            } else {
+                keptWarm.append(warm)
+            }
+        }
+        warmPlaybacks = keptWarm
+        if let active = activeDeviceId, deviceIds.contains(active) {
+            closePanel()
+        }
     }
 
     /// Plays the chime and opens the ringing doorbell's camera at the top right (#308). A camera
