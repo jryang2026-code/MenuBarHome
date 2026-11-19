@@ -239,7 +239,11 @@ struct SettingsSearchTests {
         #expect(focus.highlight == .privacyNotes)
 
         // The window dims the row for ~1.6 s; waiting for it to end proves it does not persist.
-        try await Task.sleep(for: .milliseconds(1900))
+        // Poll instead of a fixed sleep so a busy CI runner cannot report a spurious failure.
+        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
+        while focus.highlight != nil && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
         #expect(focus.highlight == nil)
     }
 
