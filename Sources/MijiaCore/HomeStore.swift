@@ -819,6 +819,11 @@ public final class HomeStore {
     /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
     @ObservationIgnored var suppressNextLGConfigDidSetSave = false
     @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
+    /// True while `resetLGWebOSTrustAndPair` runs; pairing-key callbacks from LG clients are dropped meanwhile (#262).
+    @ObservationIgnored var lgTrustResetInFlight = false
+    /// Suspends `resetLGWebOSTrustAndPair` after the trust store was cleared and before the result is
+    /// committed, so tests can change LG settings exactly inside that window (#262).
+    @ObservationIgnored var lgTrustResetSuspensionHookForTesting: (@MainActor () async -> Void)?
 
     public internal(set) var discoveredHAInstances: [HADiscoveredInstance] = []
     /// Another Home Assistant address found after disconnects; only used if the user taps 切换 (#18).

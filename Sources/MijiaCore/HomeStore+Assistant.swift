@@ -789,7 +789,8 @@ extension HomeStore {
         if !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
             missedScheduledCommands.append(entry)
         }
-        isShowingAssistantBar = true
+        // Missed timers are listed in the panel's reminder area, not the command bar; opening the bar here
+        // would only pop an empty surface over the pinned cards.
         notifyMissedScheduledCommandsIfNeeded()
         persistAllScheduledCommands()
     }
@@ -862,7 +863,6 @@ extension HomeStore {
         foreignScheduledCommands = foreign.sorted { $0.fireDate < $1.fireDate }
 
         if !missedScheduledCommands.isEmpty {
-            isShowingAssistantBar = true
             notifyMissedScheduledCommandsIfNeeded()
         }
         persistAllScheduledCommands()

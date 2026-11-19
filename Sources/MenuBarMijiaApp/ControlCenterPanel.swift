@@ -99,12 +99,17 @@ public struct ControlCenterPanel: View {
                 handlePanelDidHide()
                 activitiesExpanded = false
                 expandedStacks = []
+                PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             }
             // Leaving search puts the caret back on the panel, so Esc closes it instead of resigning the field.
             .onChange(of: search.isSearching) { _, searching in handleSearching(searching) }
-            .onChange(of: store.homeBackend) { _, _ in activitiesExpanded = false }
-            .onChange(of: store.panelActivities.count) { _, count in
-                activitiesExpanded = ActivityStackPolicy.sanitizedExpansion(isExpanded: activitiesExpanded, count: count)
+            .onChange(of: store.homeBackend) { _, _ in
+                activitiesExpanded = false
+                PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
+            }
+            .onChange(of: store.panelActivities.count) { _, _ in
+                let ordinaryCount = ActivityStackPolicy.partition(activities: store.panelActivities, store: store).ordinary.count
+                activitiesExpanded = ordinaryCount > 0 ? activitiesExpanded : false
             }
             // #180: typing a query — through the key monitor or the field — ticks the guide's search step.
             .onChange(of: search.query) { _, query in handleSearchQuery(query) }
@@ -344,6 +349,15 @@ public struct ControlCenterPanel: View {
                 deviceColumn
                     .frame(maxHeight: .infinity)
             }
+
+            if !isEditing {
+                Divider()
+                    .overlay(Color.primary.opacity(0.07))
+
+                footerBar
+                    .padding(.horizontal, Self.columnInset + 2)
+                    .padding(.vertical, 9)
+            }
         }
         .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.reveal, value: store.expandedDeviceId)
@@ -415,7 +429,7 @@ public struct ControlCenterPanel: View {
             let quickIndexBadges = quickIndex.badges
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 16) {
-                    if !store.panelActivities.isEmpty {
+                    if !store.panelActivities.isEmpty || !store.missedScheduledCommands.isEmpty {
                         activityStack
                             .foldOrigin { $0.systemNoticeMinY = $1 }
                             .accessibilityIdentifier("panel-system-notice")

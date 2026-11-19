@@ -636,10 +636,6 @@ struct AssistantResponseArea: View {
                 cloudConsentRow(consent)
             }
 
-            if !store.missedScheduledCommands.isEmpty {
-                missedScheduledRow
-            }
-
             if !store.scheduledCommands.isEmpty {
                 scheduledRow
             }
@@ -655,7 +651,6 @@ struct AssistantResponseArea: View {
         }
         .animation(AppleMotion.snappySpring, value: store.assistantState)
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
-        .animation(AppleMotion.snappySpring, value: store.missedScheduledCommands)
         .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
         .animation(AppleMotion.snappySpring, value: store.pausedScheduledCommands)
@@ -670,7 +665,6 @@ struct AssistantResponseArea: View {
                   store.pendingCloudConsent == nil,
                   store.scheduledCommands.isEmpty,
                   store.pausedScheduledCommands.isEmpty,
-                  store.missedScheduledCommands.isEmpty,
                   !asksForTimerNotifications else { return }
             withAnimation(AppleMotion.snappySpring) { store.dismissAssistantBar() }
         }
@@ -756,38 +750,6 @@ struct AssistantResponseArea: View {
         }
         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
         .padding(.horizontal, 4)
-        .transition(.opacity.combined(with: .move(edge: .top)))
-    }
-
-    /// Timers that expired while the app was closed; user can run or dismiss each one.
-    private var missedScheduledRow: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            ForEach(store.missedScheduledCommands) { entry in
-                HStack(spacing: 5) {
-                    Image(systemName: "exclamationmark.clock.fill")
-                        .foregroundStyle(Color.orange)
-                    Text(L10n.tr("已错过：\(entry.reply)", "Missed: \(entry.reply)"))
-                        .foregroundStyle(.primary.opacity(0.88))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Button(L10n.tr("立即执行", "Run Now")) {
-                        Task { await store.runMissedScheduledCommand(id: entry.id) }
-                    }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
-                    Button {
-                        store.dismissMissedScheduledCommand(id: entry.id)
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(DesignTokens.secondaryText)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(Text(L10n.tr("忽略已错过的定时", "Dismiss missed timer")))
-                    .help(L10n.tr("忽略这个已错过的定时", "Dismiss this missed timer"))
-                }
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                .padding(.horizontal, 4)
-            }
-        }
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 
