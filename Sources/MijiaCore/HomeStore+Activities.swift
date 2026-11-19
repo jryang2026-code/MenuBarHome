@@ -11,7 +11,8 @@ extension HomeStore {
     /// home, or an alert recorded in another home, is not this home's activity and stays out.
     public var panelActivities: [PanelActivity] {
         let scope = connectionScopeIdentifier
-        let presentDeviceIds = Set(devices.map(\.id))
+        // A closed type's retained safety devices still own their alert rows (P3a-M).
+        let presentDeviceIds = Set(devices.map(\.id)).union(typeHiddenSafetyDevices.map(\.id))
         return PanelActivityFeed.items(
             notices: panelNoticeKinds,
             safety: recentSafetyAlerts.filter { recorded in
@@ -70,7 +71,8 @@ extension HomeStore {
 
     /// Snapshot removal ends the record, so reconnecting a device cannot revive an old warning.
     func removeActivitiesForMissingDevices() {
-        let presentIds = Set(devices.map(\.id))
+        // A closed type's retained sensors still own their alert rows.
+        let presentIds = Set(devices.map(\.id)).union(typeHiddenSafetyDevices.map(\.id))
         recentSafetyAlerts.removeAll { recorded in
             guard !presentIds.contains(recorded.alert.deviceId) else { return false }
             dismissedActivityIds.remove(recorded.id)

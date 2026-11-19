@@ -177,6 +177,10 @@ extension HomeStore {
         deviceBackends = [:]
         deviceTransportDiagnostics = [:]
         localNetworkBlocks = []
+        // The new provider owns the read plan from scratch: the previous connection's retained
+        // safety set must not outlive it, and this connection refills it on its first snapshot.
+        clearMiotTypePruneReports()
+        syncMiotTypePrunePolicy()
         // The devices on screen belong to the previous connection until the next snapshot lands;
         // scheduling refuses that window instead of stamping a stale list with the new sources.
         listeningSnapshotGeneration = snapshotGeneration
@@ -384,6 +388,12 @@ extension HomeStore {
         case .sessionExpired(let rejected):
             guard isMiAccountEnabled(rejected.historyScopeIdentifier) else { return }
             handleMiSessionRejected(rejected)
+
+        case .miotTypePruneChanged(let report):
+            // A provider that is mid-teardown can still deliver a buffered report; a scope the user
+            // has since disabled must not resurrect its retained safety set (P3a-M).
+            guard report.scope.isEmpty || isMiAccountEnabled(report.scope) else { return }
+            applyMiotTypePruneReport(report)
 
         case .snapshotUpdated(let rawSnapshot):
             var snapshot = rawSnapshot

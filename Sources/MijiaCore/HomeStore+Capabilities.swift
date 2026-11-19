@@ -119,6 +119,7 @@ extension HomeStore {
         }
         let normalized = next.normalized(with: .shared)
         if normalized != capabilitySelection { capabilitySelection = normalized }
+        syncMiotTypePrunePolicy()
     }
 
     func configuredConnectionScopes() -> Set<String> {
@@ -128,15 +129,95 @@ extension HomeStore {
         return scopes
     }
 
+    /// Publishes the enabled types and safety switches to the Mi provider. It reads the box before
+    /// every plan, so a closed type stops being polled on the next refresh (P3a-M).
+    func syncMiotTypePrunePolicy() {
+        var safetyPolicy = currentSafetyRetentionPolicy()
+        // The doorbell is its own switch, not part of the safety master switch (#308), so a closed
+        // camera type keeps ring detection and its chime even with safety alerts off.
+        if doorbellAutoPopup || doorbellChime { safetyPolicy.enabledSignals.insert(.doorbell) }
+        miotTypePruneBox.update(MiotTypePrunePolicy(
+            selection: capabilitySelection,
+            safetyPolicy: safetyPolicy,
+            sourceScope: miSessionScopeIdentifier ?? ""
+        ))
+    }
+
+    /// A closed Mi type keeps its hidden identities in the index so every write entry answers
+    /// 「该设备类型已关闭」 instead of「设备不存在」, and keeps the hidden devices whose enabled alerts
+    /// still need evaluating. Keyed by account scope: one account's empty report never clears another.
+    func applyMiotTypePruneReport(_ report: MiotTypePruneReport) {
+        let key = report.scope.isEmpty ? (miSessionScopeIdentifier ?? "") : report.scope
+        // No owner means no session to attribute this to; guessing could clear a live account's set.
+        guard !key.isEmpty else { return }
+        if report.isEmpty {
+            miotTypePruneReports.removeValue(forKey: key)
+        } else {
+            miotTypePruneReports[key] = report
+        }
+        var changed = false
+        for entry in report.hiddenIndexedDevices where indexedDevicesById[entry.id] != entry {
+            indexedDevicesById[entry.id] = entry
+            changed = true
+        }
+        if changed { persistIndexedDevices() }
+    }
+
+    /// Drops one account's retained safety set. Its index entries stay: a disabled account must keep
+    /// answering「该米家账号已停用」 for its devices.
+    func dropMiotTypePruneReport(scope: String) {
+        miotTypePruneReports.removeValue(forKey: scope)
+    }
+
+    /// Drops every account's retained set; called when the Mi provider is rebuilt or replaced, and
+    /// when the store leaves for Home Assistant or the demo home.
+    func clearMiotTypePruneReports() {
+        guard !miotTypePruneReports.isEmpty else { return }
+        miotTypePruneReports.removeAll()
+    }
+
+    /// Devices a closed type keeps only for enabled alerts: evaluated for safety, never drawn, listed
+    /// or controlled (architecture.md §D 安全保留集).
+    public var typeHiddenSafetyDevices: [SmartDevice] {
+        guard !miotTypePruneReports.isEmpty else { return [] }
+        let visible = Set(devices.map(\.id))
+        var order: [String] = []
+        var freshest: [String: SmartDevice] = [:]
+        for scope in miotTypePruneReports.keys.sorted() {
+            guard let report = miotTypePruneReports[scope] else { continue }
+            for device in report.safetyDevices where !visible.contains(device.id) {
+                guard let kept = freshest[device.id] else {
+                    freshest[device.id] = device
+                    order.append(device.id)
+                    continue
+                }
+                // One shared home can hand the same device to two accounts; the stale account must not
+                // shadow a fresh reading, or a live alarm is never evaluated (same rule as
+                // `MiAccountsProvider.deviceFreshnessRank` for visible cards).
+                if Self.hiddenSafetyFreshnessRank(device) < Self.hiddenSafetyFreshnessRank(kept) {
+                    freshest[device.id] = device
+                }
+            }
+        }
+        return order.compactMap { freshest[$0] }
+    }
+
+    /// Lower is fresher: unverified telemetry first, then an offline card.
+    private static func hiddenSafetyFreshnessRank(_ device: SmartDevice) -> Int {
+        (device.telemetryStale ? 2 : 0) + (device.isOnline ? 0 : 1)
+    }
+
     @discardableResult
     func persistCapabilitySelection(removingScopes: Set<String> = []) -> Bool {
-        CapabilitySelectionStore.save(
+        let saved = CapabilitySelectionStore.save(
             selection: capabilitySelection,
             configuredScopes: configuredConnectionScopes(),
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
             defaults: userDefaults
         )
+        if saved { syncMiotTypePrunePolicy() }
+        return saved
     }
 
     /// Commit order for a disable: the selection must be writable before any reference is paused, or
@@ -357,6 +438,7 @@ extension HomeStore {
 
     func purgeRemovedAccountCapabilities(scopes: Set<String>) {
         guard !scopes.isEmpty else { return }
+        for scope in scopes { dropMiotTypePruneReport(scope: scope) }
         pendingRevalidationScopes.subtract(scopes)
         explicitlyDisabledScopes.subtract(scopes)
         var next = capabilitySelection
@@ -643,6 +725,7 @@ extension HomeStore {
     }
 
     private func applyMiAccountDisabledRuntimeState(id: String) {
+        dropMiotTypePruneReport(scope: id)
         let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
         dual?.markXiaomiAccountDisabled(id)
         if !hasEnabledMiSource {
@@ -1390,7 +1473,9 @@ extension HomeStore {
     private func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
         guard enableSafetyAlerts else { return SafetyRetentionPolicy() }
         var enabled: Set<SafetySignalKind> = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
-        for kind in SensorAlertKind.allCases where sensorAlertPreferences[kind] ?? true {
+        // `isSensorAlertEnabled` applies each alert's own default: contact and motion ship off, so a
+        // closed type must not keep reading them just because the user never touched the switch.
+        for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
             enabled.insert(SafetySignalKind(sensorAlertKind: kind))
         }
         if doorbellAutoPopup || doorbellChime { enabled.insert(.doorbell) }
