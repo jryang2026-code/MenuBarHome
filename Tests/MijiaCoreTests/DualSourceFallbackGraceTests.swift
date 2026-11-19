@@ -103,12 +103,7 @@ struct DualSourceFallbackGraceTests {
         /// Parks a sleeper and returns its stream, or throws once the gate is shut down or the
         /// caller is already cancelled. All state changes happen under the lock; nothing is left
         /// half-registered when it throws.
-        private func park(_ duration: Duration) throws -> (
-            id: UUID,
-            stream: AsyncStream<Bool>,
-            continuation: AsyncStream<Bool>.Continuation,
-            ignoreCancel: Bool
-        ) {
+        private func park(_ duration: Duration) throws -> (stream: AsyncStream<Bool>, ignoreCancel: Bool) {
             try withLocked {
                 if isShutDown { throw CancellationError() }
                 let ignoreCancel = ignoreCancelOnNextPark
@@ -119,10 +114,21 @@ struct DualSourceFallbackGraceTests {
                 }
                 let id = UUID()
                 let (stream, continuation) = AsyncStream<Bool>.makeStream()
+                if !ignoreCancel {
+                    // Installed here, under the lock, rather than after `park` returns: a cancel
+                    // landing between the return and the assignment finished the stream first, so
+                    // the wake counter either missed the cancel or the handler wrote back into
+                    // `sleepers` after the sleeper had already been released (#274). The
+                    // continuation is brand-new and `shutdown()`/`release*` need this same lock to
+                    // finish it, so the handler is only registered here, never invoked.
+                    continuation.onTermination = { [weak self] termination in
+                        if case .cancelled = termination { self?.handleStreamCancelled(id) }
+                    }
+                }
                 storedRecordedDelays.append(duration)
                 storedParkCount += 1
                 sleepers.append(Sleeper(id: id, continuation: continuation, ignoreCancel: ignoreCancel))
-                return (id, stream, continuation, ignoreCancel)
+                return (stream, ignoreCancel)
             }
         }
 
@@ -141,11 +147,8 @@ struct DualSourceFallbackGraceTests {
             }
 
             // Cancelling the awaiting task terminates the stream with `.cancelled`, which wakes
-            // `iterator.next()` with `nil` and unregisters the sleeper — no manual Task, no nested
-            // continuation frames.
-            parked.continuation.onTermination = { [weak self] termination in
-                if case .cancelled = termination { self?.handleStreamCancelled(parked.id) }
-            }
+            // `iterator.next()` with `nil` and unregisters the sleeper (`park` already installed
+            // the termination handler) — no manual Task, no nested continuation frames.
             var iterator = parked.stream.makeAsyncIterator()
             let resumedNormally = await iterator.next() ?? false
             if !resumedNormally { throw CancellationError() }
@@ -349,6 +352,12 @@ struct DualSourceFallbackGraceTests {
     }
 
     /// Runs `body` and always drains its teardown, including when `#require` throws.
+    ///
+    /// Call sites pass an explicit closure (`{ teardown in try await someBody(teardown) }`) instead
+    /// of handing the unbound `async` instance method to this parameter: on `x86_64` Debug a
+    /// partially applied `async` method becomes a curried async thunk, and those thunk coroutine
+    /// frames are what the Swift 6 runtime abort (`freed pointer was not the last allocation`)
+    /// tripped over on the Intel CI runner (#274).
     private func withTeardown(_ body: (Teardown) async throws -> Void) async throws {
         let teardown = Teardown()
         do {
@@ -360,12 +369,16 @@ struct DualSourceFallbackGraceTests {
         await teardown.drain()
     }
 
-    /// Shuts a rig down without leaving a parked sleeper behind: the provider cancels its
-    /// fallback sleepers first, the gate then force-resumes whatever is still parked (even a
-    /// sleeper that ignores cancellation), and the pump is drained last.
+    /// Shuts a rig down without leaving a parked sleeper behind: the gate force-resumes every
+    /// parked sleeper first (even one that ignores cancellation) so `graceSleep` returns and no
+    /// recheck stays alive, the provider is then shut down, and the pump is drained last.
+    ///
+    /// The gate must come first: `provider.shutdown()` awaits its pending fallback recheck, and a
+    /// sleeper still parked in the gate would leave that await in the test's teardown, racing the
+    /// next suite of the parallel run (#274).
     private func shutdownRig(_ rig: Rig) async {
-        await rig.provider.shutdown()
         rig.gate.shutdown()
+        await rig.provider.shutdown()
         rig.pump.cancel()
         await rig.pump.value
     }
@@ -382,8 +395,8 @@ struct DualSourceFallbackGraceTests {
         pump: Task<Void, Never>
     ) {
         teardown.add {
-            await provider.shutdown()
             gate.shutdown()
+            await provider.shutdown()
             pump.cancel()
             await pump.value
         }
@@ -391,7 +404,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A brief Home Assistant blip keeps the paired card and its live camera on HA")
     func briefHABlipHoldsRoutingAndLiveView() async throws {
-        try await withTeardown(briefHABlipHoldsRoutingAndLiveViewBody)
+        try await withTeardown { teardown in
+            try await briefHABlipHoldsRoutingAndLiveViewBody(teardown)
+        }
     }
 
     private func briefHABlipHoldsRoutingAndLiveViewBody(_ teardown: Teardown) async throws {
@@ -422,7 +437,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A real Home Assistant outage flips the card after the grace window and closes the old stream")
     func realHAOutageFlipsAfterGraceAndClosesOldStream() async throws {
-        try await withTeardown(realHAOutageFlipsAfterGraceAndClosesOldStreamBody)
+        try await withTeardown { teardown in
+            try await realHAOutageFlipsAfterGraceAndClosesOldStreamBody(teardown)
+        }
     }
 
     private func realHAOutageFlipsAfterGraceAndClosesOldStreamBody(_ teardown: Teardown) async throws {
@@ -459,7 +476,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A brief Mi cloud blip holds its winning card too")
     func briefMiBlipHoldsRouting() async throws {
-        try await withTeardown(briefMiBlipHoldsRoutingBody)
+        try await withTeardown { teardown in
+            try await briefMiBlipHoldsRoutingBody(teardown)
+        }
     }
 
     private func briefMiBlipHoldsRoutingBody(_ teardown: Teardown) async throws {
@@ -487,7 +506,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A brief MiAccountsProvider account disconnect holds the paired camera and live stream through grace, then fails over on real outage")
     func miAccountsProviderBlipHoldsPairedCameraAndLiveStream() async throws {
-        try await withTeardown(miAccountsProviderBlipHoldsPairedCameraAndLiveStreamBody)
+        try await withTeardown { teardown in
+            try await miAccountsProviderBlipHoldsPairedCameraAndLiveStreamBody(teardown)
+        }
     }
 
     private func miAccountsProviderBlipHoldsPairedCameraAndLiveStreamBody(_ teardown: Teardown) async throws {
@@ -604,7 +625,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Other source events during grace cancel superseded fallback tasks without recompute loops")
     func cancelledFallbackTaskDoesNotRecomputeOrReschedule() async throws {
-        try await withTeardown(cancelledFallbackTaskDoesNotRecomputeOrRescheduleBody)
+        try await withTeardown { teardown in
+            try await cancelledFallbackTaskDoesNotRecomputeOrRescheduleBody(teardown)
+        }
     }
 
     private func cancelledFallbackTaskDoesNotRecomputeOrRescheduleBody(_ teardown: Teardown) async throws {
@@ -673,7 +696,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("System sleep pauses the fallback grace so wake does not immediately flip paired cards")
     func systemSleepFreezesGraceUntilWake() async throws {
-        try await withTeardown(systemSleepFreezesGraceUntilWakeBody)
+        try await withTeardown { teardown in
+            try await systemSleepFreezesGraceUntilWakeBody(teardown)
+        }
     }
 
     private func systemSleepFreezesGraceUntilWakeBody(_ teardown: Teardown) async throws {
@@ -735,7 +760,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Wake adopts fallback immediately when grace expired at or before system sleep")
     func wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleep() async throws {
-        try await withTeardown(wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleepBody)
+        try await withTeardown { teardown in
+            try await wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleepBody(teardown)
+        }
     }
 
     private func wakeAdoptsFallbackWhenGraceAlreadyExpiredBeforeSleepBody(_ teardown: Teardown) async throws {
@@ -838,7 +865,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("sessionExpired immediately skips grace even when the last snapshot still lists Xiaomi as connected")
     func sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatus() async throws {
-        try await withTeardown(sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatusBody)
+        try await withTeardown { teardown in
+            try await sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatusBody(teardown)
+        }
     }
 
     private func sessionExpiredSkipsGraceWithoutTrailingSnapshotOrStatusBody(_ teardown: Teardown) async throws {
@@ -973,7 +1002,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("A source reconfigured or invalidated skips the grace entirely")
     func invalidationSkipsGrace() async throws {
-        try await withTeardown(invalidationSkipsGraceBody)
+        try await withTeardown { teardown in
+            try await invalidationSkipsGraceBody(teardown)
+        }
     }
 
     private func invalidationSkipsGraceBody(_ teardown: Teardown) async throws {
@@ -990,7 +1021,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Expired Xiaomi account drops its candidates so paired devices route to HA immediately including nil-accountId devices while healthy accounts keep winning")
     func sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountID() async throws {
-        try await withTeardown(sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountIDBody)
+        try await withTeardown { teardown in
+            try await sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountIDBody(teardown)
+        }
     }
 
     private func sessionExpiredDropsCandidatesAcrossTieBreakersAndNilAccountIDBody(_ teardown: Teardown) async throws {
@@ -1312,7 +1345,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Shared Xiaomi devices stay uninterrupted on surviving co-owner when another account's session expires")
     func sharedXiaomiDevicesSurviveCoOwnerSessionExpiry() async throws {
-        try await withTeardown(sharedXiaomiDevicesSurviveCoOwnerSessionExpiryBody)
+        try await withTeardown { teardown in
+            try await sharedXiaomiDevicesSurviveCoOwnerSessionExpiryBody(teardown)
+        }
     }
 
     private func sharedXiaomiDevicesSurviveCoOwnerSessionExpiryBody(_ teardown: Teardown) async throws {
@@ -1749,7 +1784,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Single-account sessionExpired keeps cached devices stripped across premature connecting/connected statuses and stale snapshots until a fresh post-relogin snapshot arrives")
     func singleAccountSessionExpiredWaitsForFreshPostReloginSnapshot() async throws {
-        try await withTeardown(singleAccountSessionExpiredWaitsForFreshPostReloginSnapshotBody)
+        try await withTeardown { teardown in
+            try await singleAccountSessionExpiredWaitsForFreshPostReloginSnapshotBody(teardown)
+        }
     }
 
     private func singleAccountSessionExpiredWaitsForFreshPostReloginSnapshotBody(_ teardown: Teardown) async throws {
@@ -1987,7 +2024,9 @@ struct DualSourceFallbackGraceTests {
 
     @Test("Multi-account sessionExpired re-login immediately surfaces connecting and clears miExpiredAccountIDs without waiting for connected")
     func multiAccountReloginSurfacesConnectingAndClearsExpiredImmediately() async throws {
-        try await withTeardown(multiAccountReloginSurfacesConnectingAndClearsExpiredImmediatelyBody)
+        try await withTeardown { teardown in
+            try await multiAccountReloginSurfacesConnectingAndClearsExpiredImmediatelyBody(teardown)
+        }
     }
 
     private func multiAccountReloginSurfacesConnectingAndClearsExpiredImmediatelyBody(_ teardown: Teardown) async throws {
