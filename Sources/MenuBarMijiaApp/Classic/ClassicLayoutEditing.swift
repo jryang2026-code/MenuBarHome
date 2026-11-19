@@ -163,13 +163,24 @@ struct ClassicLayoutEditable: ViewModifier {
     private func jiggling<V: View>(_ view: V) -> some View {
         view
             .rotationEffect(.degrees(isJiggling ? jiggleDegrees : 0))
+            .transaction { transaction in
+                if !isJiggling {
+                    transaction.disablesAnimations = true
+                    transaction.animation = nil
+                }
+            }
             .background {
                 if isJiggling {
                     TimelineView(.animation) { context in
                         let t = context.date.timeIntervalSinceReferenceDate
                         Color.clear
                             .onChange(of: t, initial: true) { _, now in
-                                jiggleDegrees = sin(now * 2 * .pi * 3.6 + phase) * 1.1
+                                var transaction = Transaction()
+                                transaction.disablesAnimations = true
+                                transaction.animation = nil
+                                withTransaction(transaction) {
+                                    jiggleDegrees = sin(now * 2 * .pi * 3.6 + phase) * 1.1
+                                }
                             }
                     }
                 }
