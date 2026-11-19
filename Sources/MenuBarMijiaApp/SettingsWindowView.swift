@@ -2281,6 +2281,22 @@ enum UnsupportedDeviceGrouping {
     }
 }
 
+private struct ScannerResetKey: Equatable {
+    let homeBackend: HomeBackend
+    let accountIDs: [String]
+    let serverURL: String
+}
+
+private struct DiagnosticsRefreshKey: Equatable {
+    let hasHASource: Bool
+    let unsupportedDevices: [UnsupportedDevice]
+    let errorTimestamps: [Date]
+    let deviceCount: Int
+    let onlineCount: Int
+    let hiddenCount: Int
+    let language: AppLanguage
+}
+
 private struct AboutSettingsTab: View {
     let store: HomeStore
     @Binding var disclosure: AboutSettingsDisclosure.State
@@ -2294,6 +2310,26 @@ private struct AboutSettingsTab: View {
     private var scanner: UnsupportedDeviceScanner { .shared }
     private var errorLog: AppDiagnosticsLog { .shared }
 
+    private var scannerResetKey: ScannerResetKey {
+        ScannerResetKey(
+            homeBackend: store.homeBackend,
+            accountIDs: store.miAccounts.map(\.id),
+            serverURL: store.serverURLString
+        )
+    }
+
+    private var diagnosticsRefreshKey: DiagnosticsRefreshKey {
+        DiagnosticsRefreshKey(
+            hasHASource: store.hasHASource,
+            unsupportedDevices: scanner.devices,
+            errorTimestamps: errorLog.errorTimestamps,
+            deviceCount: store.devices.count,
+            onlineCount: store.onlineDeviceCount,
+            hiddenCount: store.hiddenDevices.count,
+            language: store.effectiveLanguage
+        )
+    }
+
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
     }
@@ -2304,354 +2340,378 @@ private struct AboutSettingsTab: View {
 
     var body: some View {
         let _ = store.effectiveLanguage
-        let errorTimestamps = errorLog.errorTimestamps
-        let unsupportedGroups = UnsupportedDeviceGrouping.group(scanner.devices)
 
-        VStack(alignment: .leading, spacing: 16) {
-            SettingsSection(title: L10n.tr("关于 MenuBarHome", "About MenuBarHome"), anchor: .aboutVersion) {
-                HStack(spacing: 10) {
-                    Image(systemName: "house.fill")
-                        .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 34, height: 34)
-                        .background(
-                            LinearGradient(
-                                colors: [Color.orange, DesignTokens.active],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
-                        )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("MenuBarHome")
-                            .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
-                        Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                            .monospacedDigit()
-                    }
-
-                    Spacer()
-
-                    if store.homeBackend == .demo {
-                        Text(L10n.tr("演示模式", "Demo Mode"))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            .foregroundStyle(.orange)
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome")!)
-                    Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues")!)
-                    Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases")!)
-                    Spacer()
-                }
-                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+        aboutContent
+            .onAppear {
+                scanner.invalidateIfContextChanged(for: store)
+                refreshDiagnosticsPreviewIfNeeded()
+                disclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
             }
+            .onChange(of: searchFocus?.highlight) { _, highlight in
+                disclosure.expandForHighlightIfNeeded(highlight)
+            }
+            .onChange(of: showsDiagnosticsPreview) { _, isExpanded in
+                guard isExpanded else { return }
+                scanner.invalidateIfContextChanged(for: store)
+                diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
+            }
+            .onChange(of: scannerResetKey) { _, _ in
+                scanner.reset()
+                refreshDiagnosticsPreviewIfNeeded()
+            }
+            .onChange(of: diagnosticsRefreshKey) { oldKey, newKey in
+                if oldKey.hasHASource != newKey.hasHASource {
+                    scanner.invalidateIfContextChanged(for: store)
+                }
+                refreshDiagnosticsPreviewIfNeeded()
+            }
+            .alert(L10n.tr("退出并清除所有账号与密钥？", "Sign out and clear all accounts and keys?"), isPresented: $confirmsRevoke) {
+                Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+                Button(L10n.tr("退出并清除", "Sign Out & Clear"), role: .destructive) {
+                    scanner.reset()
+                    store.signOutAndRevokeAll()
+                    refreshDiagnosticsPreviewIfNeeded()
+                }
+            } message: {
+                Text(L10n.tr(
+                    "全部米家会话、Home Assistant 连接钥匙以及 AI 密钥与授权将从本机删除；用电与温湿度历史、房间与全关偏好会保留。需要时可重新扫码或填写钥匙连接。",
+                    "All Xiaomi Home sessions, the Home Assistant connection key, and saved AI keys and consent will be removed from this Mac; local power/climate history, rooms and All Off preferences stay. You can reconnect anytime."
+                ))
+            }
+    }
+
+    private var aboutContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            aboutHeader
 
             UpdateSection(store: store)
 
             if store.hasCompletedOnboarding {
-                SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
-                    HStack(spacing: 12) {
-                        Text(L10n.tr(
-                            "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
-                            "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
-                        ))
+                aboutSetupGuide
+            }
+
+            aboutPrivacy
+
+            aboutDiagnostics
+
+            aboutUnsupportedDevices
+
+            aboutAdvancedReset
+
+            aboutQuit
+        }
+    }
+
+    private var aboutHeader: some View {
+        SettingsSection(title: L10n.tr("关于 MenuBarHome", "About MenuBarHome"), anchor: .aboutVersion) {
+            HStack(spacing: 10) {
+                Image(systemName: "house.fill")
+                    .font(.system(size: DesignTokens.TypeSize.title, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.orange, DesignTokens.active],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("MenuBarHome")
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .bold))
+                    Text(L10n.tr("版本 \(appVersion) (\(buildNumber))", "Version \(appVersion) (\(buildNumber))"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                        Spacer(minLength: 8)
-
-                        Button {
-                            guard ContinueOnboardingSection.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else {
-                                return
-                            }
-                            NSApp.keyWindow?.orderOut(nil)
-                            HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "sparkles")
-                                Text(L10n.tr("重新查看初始设置引导", "Reopen Setup Guide"))
-                            }
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        }
-                        .buttonStyle(PillActionButtonStyle())
-                    }
-                }
-            }
-
-            SettingsSection(title: L10n.tr("隐私", "Privacy"), anchor: .privacyNotes) {
-                privacyBullet(L10n.tr("语音只在本机识别时可完全离线；不支持的语种会提示改用苹果服务器。", "On-device speech stays on this Mac; unsupported languages say they fall back to Apple's servers."))
-                privacyBullet(L10n.tr("诊断报告不含设备 ID、令牌、服务器地址或账号信息。", "Diagnostics never include device IDs, tokens, server addresses or account info."))
-                privacyBullet(L10n.tr("演示模式完全离线，不发起任何网络请求。", "Demo mode is fully offline and sends no requests."))
-                privacyBullet(L10n.tr("最近错误只记录次数与时间，不保存错误原文。", "Recent errors are counted by time only; the raw text is not stored."))
-            }
-
-            SettingsSection(title: L10n.tr("排障与诊断", "Troubleshooting & Diagnostics"), anchor: .copyDiagnostics) {
-                Text(L10n.tr(
-                    "复制一段脱敏 Markdown 粘贴到 GitHub Issue。仅包含版本、系统、连接方式、设备型号计数、未显示设备与错误/崩溃时间计数，不含设备 ID、服务器地址、账号或密钥。",
-                    "Copies redacted Markdown for a GitHub issue: versions, OS, backend, model counts, skipped devices, and error/crash timestamps only. No device IDs, server addresses, accounts or keys."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                if let lastErrorAt = errorTimestamps.last {
-                    Text(L10n.tr(
-                        "近期错误：\(errorTimestamps.count) 次（最近一次 \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))）",
-                        "Recent errors: \(errorTimestamps.count), latest \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))"
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                    .monospacedDigit()
+                        .monospacedDigit()
                 }
 
-                HStack(spacing: 8) {
-                    Button {
-                        copyDiagnostics()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "doc.on.doc")
-                            Text(L10n.tr(
-                                "复制排障信息（已自动隐去账号与密钥）",
-                                "Copy Diagnostics (Accounts & Keys Redacted)"
-                            ))
-                        }
-                    }
-                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                Spacer()
 
-                    if didCopy {
-                        Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                            .foregroundStyle(.green)
-                    }
-
-                    Spacer()
-
-                    Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
-                        if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                }
-
-                DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
-                    Text(diagnosticsPreviewMarkdown)
-                        .font(.system(size: DesignTokens.TypeSize.control, design: .monospaced))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                        .background(
-                            Color.primary.opacity(0.04),
-                            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
-                        )
-                        .padding(.top, 4)
-                } label: {
-                    Text(L10n.tr("预览排障报告内容", "Preview Diagnostics Report"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                }
-            }
-
-            SettingsSection(title: L10n.tr("未能显示在面板的设备", "Devices Not Shown in the Panel"), anchor: .scanUnsupportedDevices) {
-                Text(L10n.tr(
-                    "扫描当前账号的原始设备列表，找出被跳过的设备并按原因分组。米家首次扫描会按型号拉取规格，可能需要几十秒；演示模式没有跳过项。",
-                    "Scans the raw device registry for devices the panel skipped, grouped by reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
-                ))
-                .font(.system(size: DesignTokens.TypeSize.caption))
-                .foregroundStyle(DesignTokens.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-
-                HStack {
-                    if let scannedAt = scanner.lastScannedAt, !scanner.isScanning {
-                        Text(L10n.tr("上次扫描：\(scannedAt.formatted(date: .abbreviated, time: .shortened))", "Last scan: \(scannedAt.formatted(date: .abbreviated, time: .shortened))"))
-                            .font(.system(size: DesignTokens.TypeSize.caption))
-                            .foregroundStyle(DesignTokens.secondaryText)
-                    }
-                    Spacer()
-                    Button(scanner.isScanning
-                           ? L10n.tr("扫描中…", "Scanning…")
-                           : L10n.tr("扫描不支持的设备", "Scan Skipped Devices")) {
-                        Task { await scanner.scan(store: store) }
-                    }
-                    .buttonStyle(PillActionButtonStyle())
-                    .disabled(scanner.isScanning)
-                }
-
-                if let error = scanner.errorMessage {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption))
+                if store.homeBackend == .demo {
+                    Text(L10n.tr("演示模式", "Demo Mode"))
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
+            }
 
-                if !scanner.isScanning && scanner.lastScannedAt != nil && unsupportedGroups.isEmpty && scanner.errorMessage == nil {
-                    Label(L10n.tr("没有发现被跳过的设备", "No skipped devices found"), systemImage: "checkmark.circle.fill")
-                        .font(.system(size: DesignTokens.TypeSize.caption))
+            HStack(spacing: 8) {
+                Link(L10n.tr("项目主页", "Repository"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome")!)
+                Link(L10n.tr("问题反馈", "Issues"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues")!)
+                Link(L10n.tr("更新日志", "Releases"), destination: URL(string: "https://github.com/jryang2026-code/MenuBarHome/releases")!)
+                Spacer()
+            }
+            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+        }
+    }
+
+    private var aboutSetupGuide: some View {
+        SettingsSection(title: L10n.tr("初始设置引导", "Setup Guide"), anchor: .setupGuide) {
+            HStack(spacing: 12) {
+                Text(L10n.tr(
+                    "重新打开初始设置引导，再看一遍连接家庭、搜索设备与全关撤销操作。",
+                    "Reopen the setup guide to review connecting your home, searching devices and All Off + Undo."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 8)
+
+                Button {
+                    guard ContinueOnboardingSection.reopenIfUnsavedResolved(store: store, unsaved: unsaved) else {
+                        return
+                    }
+                    NSApp.keyWindow?.orderOut(nil)
+                    HotkeyAndNotificationManager.shared.ensureMenuBarExtraWindowVisible()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sparkles")
+                        Text(L10n.tr("重新查看初始设置引导", "Reopen Setup Guide"))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                }
+                .buttonStyle(PillActionButtonStyle())
+            }
+        }
+    }
+
+    private var aboutPrivacy: some View {
+        SettingsSection(title: L10n.tr("隐私", "Privacy"), anchor: .privacyNotes) {
+            privacyBullet(L10n.tr("语音只在本机识别时可完全离线；不支持的语种会提示改用苹果服务器。", "On-device speech stays on this Mac; unsupported languages say they fall back to Apple's servers."))
+            privacyBullet(L10n.tr("诊断报告不含设备 ID、令牌、服务器地址或账号信息。", "Diagnostics never include device IDs, tokens, server addresses or account info."))
+            privacyBullet(L10n.tr("演示模式完全离线，不发起任何网络请求。", "Demo mode is fully offline and sends no requests."))
+            privacyBullet(L10n.tr("最近错误只记录次数与时间，不保存错误原文。", "Recent errors are counted by time only; the raw text is not stored."))
+        }
+    }
+
+    @ViewBuilder
+    private var aboutDiagnostics: some View {
+        let errorTimestamps = errorLog.errorTimestamps
+
+        SettingsSection(title: L10n.tr("排障与诊断", "Troubleshooting & Diagnostics"), anchor: .copyDiagnostics) {
+            Text(L10n.tr(
+                "复制一段脱敏 Markdown 粘贴到 GitHub Issue。仅包含版本、系统、连接方式、设备型号计数、未显示设备与错误/崩溃时间计数，不含设备 ID、服务器地址、账号或密钥。",
+                "Copies redacted Markdown for a GitHub issue: versions, OS, backend, model counts, skipped devices, and error/crash timestamps only. No device IDs, server addresses, accounts or keys."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let lastErrorAt = errorTimestamps.last {
+                Text(L10n.tr(
+                    "近期错误：\(errorTimestamps.count) 次（最近一次 \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))）",
+                    "Recent errors: \(errorTimestamps.count), latest \(lastErrorAt.formatted(date: .abbreviated, time: .shortened))"
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .monospacedDigit()
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    copyDiagnostics()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "doc.on.doc")
+                        Text(L10n.tr(
+                            "复制排障信息（已自动隐去账号与密钥）",
+                            "Copy Diagnostics (Accounts & Keys Redacted)"
+                        ))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+
+                if didCopy {
+                    Label(L10n.tr("已复制", "Copied"), systemImage: "checkmark.circle.fill")
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(.green)
                 }
 
-                ForEach(unsupportedGroups) { group in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Divider().overlay(Color.primary.opacity(0.06))
+                Spacer()
 
-                        HStack(spacing: 6) {
-                            Text(group.title)
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                            Spacer()
-                            Text(L10n.tr("\(group.count) 台", "\(group.count) device(s)"))
-                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .monospacedDigit()
-                        }
-
-                        ForEach(group.devices) { device in
-                            HStack(alignment: .top, spacing: 8) {
-                                Image(systemName: "questionmark.square.dashed")
-                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                                    .foregroundStyle(DesignTokens.secondaryText)
-                                    .frame(width: 18)
-
-                                VStack(alignment: .leading, spacing: 1) {
-                                    Text(device.name)
-                                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                                    Text(device.model.isEmpty ? L10n.tr("未知型号", "Unknown model") : device.model)
-                                        .font(.system(size: DesignTokens.TypeSize.caption))
-                                        .foregroundStyle(DesignTokens.secondaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-
-                                Spacer()
-
-                                if let url = UnsupportedDeviceFeedbackURL.make(for: device) {
-                                    Link(destination: url) {
-                                        HStack(spacing: 3) {
-                                            Image(systemName: "arrow.up.right.square")
-                                            Text(L10n.tr("去 GitHub 反馈", "Report on GitHub"))
-                                        }
-                                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                                    }
-                                }
-                            }
-                        }
+                Button(L10n.tr("打开 GitHub Issues", "Open GitHub Issues")) {
+                    if let url = URL(string: "https://github.com/jryang2026-code/MenuBarHome/issues") {
+                        NSWorkspace.shared.open(url)
                     }
                 }
+                .buttonStyle(PillActionButtonStyle())
             }
 
-            SettingsSection(title: L10n.tr("高级排障与重置", "Advanced Troubleshooting & Reset")) {
-                DisclosureGroup(isExpanded: $disclosure.isResetExpanded) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack(alignment: .top, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(L10n.tr("退出并清除所有账号与密钥", "Sign Out & Clear All Accounts and Keys"))
-                                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
-
-                                Text(L10n.tr(
-                                    "清除范围：退出全部米家会话、删除 Home Assistant 连接钥匙并断开连接，同时清除已保存的 AI 服务密钥与云端发送授权。保留项：本机用电与温湿度历史、房间排序、隐藏与全关偏好不会删除。",
-                                    "Clears: every Xiaomi Home session, the Home Assistant connection key (disconnecting it), and saved AI service keys and cloud consent. Keeps: local power and climate history, room order, and hidden/All Off preferences."
-                                ))
-                                .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                                Text(L10n.tr(
-                                    "若只想移除某一个家庭平台连接，请前往「家居连接」操作；若只想关闭程序而不删除任何账号，请使用下方「退出 MenuBarHome」。",
-                                    "To remove just one home connection, go to Connections; to close the app without deleting any accounts, use Quit MenuBarHome below."
-                                ))
-                                .font(.system(size: DesignTokens.TypeSize.caption))
-                                .foregroundStyle(DesignTokens.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 12)
-
-                            Button(L10n.tr("退出并清除…", "Sign Out & Clear…")) {
-                                confirmsRevoke = true
-                            }
-                            .buttonStyle(PillActionButtonStyle())
-                        }
-                        .padding(.top, 6)
-                        .settingsRow(anchor: .signOut)
-                    }
-                } label: {
-                    Text(L10n.tr("清除全部本机登录凭据与授权", "Clear all local credentials and authorizations"))
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                }
+            DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
+                Text(diagnosticsPreviewMarkdown)
+                    .font(.system(size: DesignTokens.TypeSize.control, design: .monospaced))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(
+                        Color.primary.opacity(0.04),
+                        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.inset, style: .continuous)
+                    )
+                    .padding(.top, 4)
+            } label: {
+                Text(L10n.tr("预览排障报告内容", "Preview Diagnostics Report"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
+        }
+    }
 
-            SettingsSection(title: L10n.tr("退出", "Quit"), anchor: .quitApp) {
-                HStack {
-                    Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
+    @ViewBuilder
+    private var aboutUnsupportedDevices: some View {
+        let unsupportedGroups = UnsupportedDeviceGrouping.group(scanner.devices)
+
+        SettingsSection(title: L10n.tr("未能显示在面板的设备", "Devices Not Shown in the Panel"), anchor: .scanUnsupportedDevices) {
+            Text(L10n.tr(
+                "扫描当前账号的原始设备列表，找出被跳过的设备并按原因分组。米家首次扫描会按型号拉取规格，可能需要几十秒；演示模式没有跳过项。",
+                "Scans the raw device registry for devices the panel skipped, grouped by reason. The first Mi Cloud scan loads per-model specs and may take a while; demo mode has none."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                if let scannedAt = scanner.lastScannedAt, !scanner.isScanning {
+                    Text(L10n.tr("上次扫描：\(scannedAt.formatted(date: .abbreviated, time: .shortened))", "Last scan: \(scannedAt.formatted(date: .abbreviated, time: .shortened))"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
-                    Spacer()
-                    Button {
-                        NSApplication.shared.terminate(nil)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "power")
-                            Text(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"))
-                        }
-                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
-                        .foregroundStyle(.red.opacity(0.85))
+                }
+                Spacer()
+                Button(scanner.isScanning
+                       ? L10n.tr("扫描中…", "Scanning…")
+                       : L10n.tr("扫描不支持的设备", "Scan Skipped Devices")) {
+                    Task { await scanner.scan(store: store) }
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .disabled(scanner.isScanning)
+            }
+
+            if let error = scanner.errorMessage {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !scanner.isScanning && scanner.lastScannedAt != nil && unsupportedGroups.isEmpty && scanner.errorMessage == nil {
+                Label(L10n.tr("没有发现被跳过的设备", "No skipped devices found"), systemImage: "checkmark.circle.fill")
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.green)
+            }
+
+            ForEach(unsupportedGroups) { group in
+                VStack(alignment: .leading, spacing: 6) {
+                    Divider().overlay(Color.primary.opacity(0.06))
+
+                    HStack(spacing: 6) {
+                        Text(group.title)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        Spacer()
+                        Text(L10n.tr("\(group.count) 台", "\(group.count) device(s)"))
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .monospacedDigit()
                     }
-                    .buttonStyle(.plain)
+
+                    ForEach(group.devices) { device in
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "questionmark.square.dashed")
+                                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                                .foregroundStyle(DesignTokens.secondaryText)
+                                .frame(width: 18)
+
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(device.name)
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                Text(device.model.isEmpty ? L10n.tr("未知型号", "Unknown model") : device.model)
+                                    .font(.system(size: DesignTokens.TypeSize.caption))
+                                    .foregroundStyle(DesignTokens.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Spacer()
+
+                            if let url = UnsupportedDeviceFeedbackURL.make(for: device) {
+                                Link(destination: url) {
+                                    HStack(spacing: 3) {
+                                        Image(systemName: "arrow.up.right.square")
+                                        Text(L10n.tr("去 GitHub 反馈", "Report on GitHub"))
+                                    }
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        .onAppear {
-            scanner.invalidateIfContextChanged(for: store)
-            refreshDiagnosticsPreviewIfNeeded()
-            disclosure.expandForHighlightIfNeeded(searchFocus?.highlight)
-        }
-        .onChange(of: searchFocus?.highlight) { _, highlight in
-            disclosure.expandForHighlightIfNeeded(highlight)
-        }
-        .onChange(of: showsDiagnosticsPreview) { _, isExpanded in
-            guard isExpanded else { return }
-            scanner.invalidateIfContextChanged(for: store)
-            diagnosticsPreviewMarkdown = buildDiagnosticsMarkdown()
-        }
-        .onChange(of: store.homeBackend) { _, _ in
-            scanner.reset()
-            refreshDiagnosticsPreviewIfNeeded()
-        }
-        .onChange(of: store.hasHASource) { _, _ in
-            scanner.invalidateIfContextChanged(for: store)
-            refreshDiagnosticsPreviewIfNeeded()
-        }
-        .onChange(of: store.miAccounts.map(\.id)) { _, _ in
-            scanner.reset()
-            refreshDiagnosticsPreviewIfNeeded()
-        }
-        .onChange(of: store.serverURLString) { _, _ in
-            scanner.reset()
-            refreshDiagnosticsPreviewIfNeeded()
-        }
-        .onChange(of: scanner.devices) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .onChange(of: errorLog.errorTimestamps) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .onChange(of: store.devices.count) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .onChange(of: store.onlineDeviceCount) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .onChange(of: store.hiddenDevices.count) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .onChange(of: store.effectiveLanguage) { _, _ in refreshDiagnosticsPreviewIfNeeded() }
-        .alert(L10n.tr("退出并清除所有账号与密钥？", "Sign out and clear all accounts and keys?"), isPresented: $confirmsRevoke) {
-            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
-            Button(L10n.tr("退出并清除", "Sign Out & Clear"), role: .destructive) {
-                scanner.reset()
-                store.signOutAndRevokeAll()
-                refreshDiagnosticsPreviewIfNeeded()
+    }
+
+    private var aboutAdvancedReset: some View {
+        SettingsSection(title: L10n.tr("高级排障与重置", "Advanced Troubleshooting & Reset")) {
+            DisclosureGroup(isExpanded: $disclosure.isResetExpanded) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(L10n.tr("退出并清除所有账号与密钥", "Sign Out & Clear All Accounts and Keys"))
+                                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+
+                            Text(L10n.tr(
+                                "清除范围：退出全部米家会话、删除 Home Assistant 连接钥匙并断开连接，同时清除已保存的 AI 服务密钥与云端发送授权。保留项：本机用电与温湿度历史、房间排序、隐藏与全关偏好不会删除。",
+                                "Clears: every Xiaomi Home session, the Home Assistant connection key (disconnecting it), and saved AI service keys and cloud consent. Keeps: local power and climate history, room order, and hidden/All Off preferences."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                            Text(L10n.tr(
+                                "若只想移除某一个家庭平台连接，请前往「家居连接」操作；若只想关闭程序而不删除任何账号，请使用下方「退出 MenuBarHome」。",
+                                "To remove just one home connection, go to Connections; to close the app without deleting any accounts, use Quit MenuBarHome below."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 12)
+
+                        Button(L10n.tr("退出并清除…", "Sign Out & Clear…")) {
+                            confirmsRevoke = true
+                        }
+                        .buttonStyle(PillActionButtonStyle())
+                    }
+                    .padding(.top, 6)
+                    .settingsRow(anchor: .signOut)
+                }
+            } label: {
+                Text(L10n.tr("清除全部本机登录凭据与授权", "Clear all local credentials and authorizations"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
             }
-        } message: {
-            Text(L10n.tr(
-                "全部米家会话、Home Assistant 连接钥匙以及 AI 密钥与授权将从本机删除；用电与温湿度历史、房间与全关偏好会保留。需要时可重新扫码或填写钥匙连接。",
-                "All Xiaomi Home sessions, the Home Assistant connection key, and saved AI keys and consent will be removed from this Mac; local power/climate history, rooms and All Off preferences stay. You can reconnect anytime."
-            ))
+        }
+    }
+
+    private var aboutQuit: some View {
+        SettingsSection(title: L10n.tr("退出", "Quit"), anchor: .quitApp) {
+            HStack {
+                Text(L10n.tr("完全退出后菜单栏图标与快捷键都会停止。", "Quitting stops the menu bar icon and the global shortcut."))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                Spacer()
+                Button {
+                    NSApplication.shared.terminate(nil)
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "power")
+                        Text(L10n.tr("退出 MenuBarHome", "Quit MenuBarHome"))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                    .foregroundStyle(.red.opacity(0.85))
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 

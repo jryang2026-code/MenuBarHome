@@ -96,7 +96,7 @@ struct IdlePanelCPUTests {
     /// so it keeps returning `false`: callers must fail on it instead of measuring around it.
     private static func waitForHiddenLayoutQuiescence(
         _ hosting: PanelHostingView<AnyView>,
-        quietWindow: TimeInterval = 0.25,
+        quietWindow: TimeInterval = 0.6,
         deadline: TimeInterval = 5
     ) -> Bool {
         hosting.resetLayoutPassCount()
