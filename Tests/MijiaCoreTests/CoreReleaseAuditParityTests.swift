@@ -523,7 +523,16 @@ extension CoreReleaseAuditTests {
         #expect(store.optimisticLockUntil["l2"] != nil)
 
         // (ii-b) Debouncing write1 + immediate failing non-debounced write2 -> write2 rolls back without dropping write1's lock.
+        // Park write1's debounce on a gate instead of a 90 ms wall-clock wait: on a loaded runner the
+        // debounce fired and settled before the assertions below ran, so "pending" was no longer true.
+        let debounceGate = ScheduledCommandTestSupport.SleepGate()
+        let defaultDebounceSleep = store.controlDebounceSleep
+        store.controlDebounceSleep = { _ in await debounceGate.sleep() }
         store.controlDebounceInterval = .milliseconds(90)
+        // The lock lease is wall clock too; freeze it so the assertion measures "write1 still pending".
+        let defaultOptimisticNow = store.optimisticNow
+        let frozenNow = Date()
+        store.optimisticNow = { frozenNow }
         await provider.setFailingCommands([
             .setClimateMode(entityId: "climate.ac", hvacMode: "heat"),
         ])
@@ -538,7 +547,11 @@ extension CoreReleaseAuditTests {
             Issue.record("Expected climate ac")
         }
         #expect(store.optimisticLockUntil["ac"] != nil, "pending debounced write1 must keep its optimistic lock")
+        await waitUntil { debounceGate.waiting == 1 }
+        debounceGate.release()
         await acTempTask?.value
+        store.controlDebounceSleep = defaultDebounceSleep
+        store.optimisticNow = defaultOptimisticNow
         if case .climate(let finalAC) = try #require(store.devices.first { $0.id == "ac" }).kind {
             #expect(finalAC.hvacMode == "cool")
             #expect(finalAC.targetTemperature == 26)
