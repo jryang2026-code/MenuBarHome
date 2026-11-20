@@ -449,6 +449,7 @@ struct AssistantLocalModelTests {
         ))
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         return (store, mock)
     }
 }

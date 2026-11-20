@@ -7,14 +7,85 @@ import Observation
 extension HomeStore {
     public var assistantConfig: AssistantConfig {
         get { AssistantConfig.load(from: userDefaults, vault: credentialVault) }
-        set { _ = newValue.save(to: userDefaults, vault: credentialVault) }
+        set {
+            let previous = assistantConfig
+            _ = newValue.save(to: userDefaults, vault: credentialVault)
+            let after = assistantConfig
+            if previous.baseURL != after.baseURL || previous.model != after.model || previous.apiKey != after.apiKey {
+                advanceAssistantEpoch()
+            }
+        }
+    }
+
+    /// Supersedes every in-flight AI request: results that arrive under an older generation are
+    /// discarded before they can drive a device or claim the suggestion cache (P5a-M).
+    func advanceAssistantEpoch() {
+        assistantEpoch &+= 1
+    }
+
+    /// Whether the AI assistant feature is enabled. Fresh installs start with it off (the
+    /// `ai-assistant` manifest entry, P4a-M), upgraded users keep it on, and an uncertain
+    /// identity read preserves whatever was read last.
+    public var aiAssistantEnabled: Bool {
+        capabilitySelection.enabledFeatures.contains(.aiAssistant)
+    }
+
+    /// Turns the AI feature on or off (P5a-M). Turning it off supersedes in-flight requests,
+    /// stops the proactive background consumer, and dismisses a pending cloud-consent prompt;
+    /// the saved provider config and key slots stay untouched, so re-enabling restores the
+    /// previous setup. Returns false and keeps the current value when the write is refused:
+    /// identity reads failed closed (`isIdentityUncertain`) or the capability store rejected
+    /// the save.
+    @discardableResult
+    public func setAIAssistantEnabled(_ enabled: Bool) -> Bool {
+        guard enabled != aiAssistantEnabled else { return true }
+        guard !isIdentityUncertain else {
+            showToast(
+                L10n.tr(
+                    "仍无法读取历史配置或凭据，请检查钥匙串授权后重试",
+                    "Still unable to read settings or credentials; check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
+        let previous = capabilitySelection
+        var next = capabilitySelection
+        if enabled {
+            next.enabledFeatures.insert(.aiAssistant)
+        } else {
+            next.enabledFeatures.remove(.aiAssistant)
+        }
+        capabilitySelection = next.normalized(with: .shared)
+        // Supersede in-flight results before persisting: nothing may land after the switch flips.
+        advanceAssistantEpoch()
+        proactiveRefreshTask?.cancel()
+        if !enabled {
+            pendingCloudConsent = nil
+        }
+        guard persistCapabilitySelection() else {
+            capabilitySelection = previous
+            showToast(
+                L10n.tr("无法保存 AI 开关状态，请重试", "Could not save the AI switch; try again"),
+                isError: true
+            )
+            return false
+        }
+        return true
     }
 
     /// Persists an AI configuration and reports whether the Keychain accepted the key (#7). The Settings
     /// and onboarding forms use this instead of the silent setter so a refused write never looks saved.
     @discardableResult
     public func saveAssistantConfig(_ config: AssistantConfig) -> Bool {
-        config.save(to: userDefaults, vault: credentialVault)
+        let previous = assistantConfig
+        guard config.save(to: userDefaults, vault: credentialVault) else { return false }
+        // A provider switch or key change supersedes results still in flight (P5a-M).
+        let after = assistantConfig
+        if previous.baseURL != after.baseURL || previous.model != after.model || previous.apiKey != after.apiKey {
+            advanceAssistantEpoch()
+        }
+        return true
     }
 
     public var userHabitMemory: UserHabitMemory {
@@ -76,6 +147,7 @@ extension HomeStore {
     /// attempt retries after `proactiveRetryCooldown` instead of being swallowed (Codex #116 review).
     @discardableResult
     public func maybeRefreshProactiveSuggestionsInBackground() -> Task<Void, Never>? {
+        guard aiAssistantEnabled else { return nil }
         let signature = proactiveRefreshSignature()
         guard signature != lastProactiveRefreshSignature else { return nil }
         if let retryAfter = proactiveRetryEarliest, Date() < retryAfter { return nil }
@@ -94,13 +166,15 @@ extension HomeStore {
     public func refreshProactiveSuggestionsCache(signature: String? = nil) async {
         guard !isProactiveRecommending, homeBackend != .demo, !assistantState.isUserActive else { return }
         let config = assistantConfig
-        guard !shouldRejectMissingAPIKey(for: config),
+        guard aiAssistantEnabled,
+              !shouldRejectMissingAPIKey(for: config),
               cloudConsentNeeded(for: config, utterance: nil) == nil else { return }
+        let epoch = assistantEpoch
         let attemptedSignature = signature ?? proactiveRefreshSignature()
         let context = controlContextID
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
-        let resolver = makeAssistantResolver(config: config)
+        let resolver = makeAssistantResolver(config: config, epoch: epoch)
         let assistantContext = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -108,7 +182,11 @@ extension HomeStore {
                 scenes: scenes,
                 context: assistantContext
             )
-            guard context == controlContextID, !assistantState.isUserActive else { return }
+            // A disable, provider change or removal supersedes this run: it must not claim the
+            // signature (a superseded signature would never retry) or feed the cache (P5a-M).
+            guard context == controlContextID,
+                  epoch == assistantEpoch,
+                  aiAssistantEnabled, !assistantState.isUserActive else { return }
             // The context counts as served only once a usable result landed (Codex #116 review);
             // an empty result is a valid "home is ideal" answer and falls back to the local
             // ranking instead of stale suggestions (Codex #116 re-review).
@@ -196,6 +274,14 @@ extension HomeStore {
             return
         }
         let config = assistantConfig
+        guard aiAssistantEnabled else {
+            assistantSuggestions = localTopSuggestions()
+            setAssistantState(.failed(L10n.tr(
+                "AI 一句话控制已关闭，指令只在本机解析；可在设置中重新开启。",
+                "AI command control is off; commands are parsed on this Mac only. You can turn it back on in Settings."
+            )))
+            return
+        }
         if shouldRejectMissingAPIKey(for: config) {
             setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
             return
@@ -204,13 +290,14 @@ extension HomeStore {
             pendingCloudConsent = consent
             return
         }
+        let epoch = assistantEpoch
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
 
         let controlContext = controlContextID
         let snapshotDevices = devices
         let snapshotScenes = scenes
-        let resolver = makeAssistantResolver(config: config)
+        let resolver = makeAssistantResolver(config: config, epoch: epoch)
         let context = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -218,7 +305,7 @@ extension HomeStore {
                 scenes: snapshotScenes,
                 context: context
             )
-            guard controlContext == controlContextID else { return }
+            guard controlContext == controlContextID, epoch == assistantEpoch else { return }
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
                 let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
@@ -230,12 +317,22 @@ extension HomeStore {
             }
         } catch {
             guard controlContext == controlContextID else { return }
+            // Superseded runs keep the previous suggestions; showing a fake failure would
+            // describe a request the user already cancelled (P5a-M).
+            if error as? AssistantError == .superseded { return }
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
         }
     }
 
     /// Persists and verifies the given AI configuration against the live endpoint using the same reloaded `assistantConfig` as normal command execution.
     public func verifyAssistantConfig(_ draftConfig: AssistantConfig) async -> (isSuccess: Bool, message: String) {
+        // The probe is an AI request too, so the switch gates it (P5a-M acceptance #1).
+        guard aiAssistantEnabled else {
+            return (
+                false,
+                L10n.tr("AI 一句话控制已关闭，测试连接不可用", "AI command control is off; the connection check is unavailable")
+            )
+        }
         guard saveAssistantConfig(draftConfig) else {
             return (
                 false,
@@ -252,9 +349,15 @@ extension HomeStore {
         if shouldRejectMissingAPIKey(for: resolved) {
             return (false, AssistantError.userMessage(for: AssistantError.missingAPIKey))
         }
-        let resolver = makeAssistantResolver(config: resolved)
+        // Capture after the save (which advances the epoch): a disable or provider change
+        // while the probe runs must stop its initial attempt and any retry (P5a-M).
+        let epoch = assistantEpoch
+        let resolver = makeAssistantResolver(config: resolved, epoch: epoch)
         do {
             let ms = try await resolver.testConnection()
+            guard epoch == assistantEpoch, aiAssistantEnabled else {
+                return (false, L10n.tr("AI 已关闭或服务商已切换，测试中止", "AI was disabled or the provider changed; the check was aborted"))
+            }
             let presetLabel = resolved.preset.shortTitle
             return (
                 true,
@@ -264,6 +367,9 @@ extension HomeStore {
                 )
             )
         } catch {
+            if error as? AssistantError == .superseded, epoch != assistantEpoch || !aiAssistantEnabled {
+                return (false, L10n.tr("AI 已关闭或服务商已切换，测试中止", "AI was disabled or the provider changed; the check was aborted"))
+            }
             return (false, AssistantError.userMessage(for: error))
         }
     }
@@ -319,12 +425,98 @@ extension HomeStore {
         pendingCloudConsent = nil
     }
 
+    // MARK: - Provider Removal (P5a-M)
+
+    /// Removes one AI provider's local configuration: its Keychain key slot, its imported-key
+    /// label and custom-endpoint binding, and the cloud-consent entries that belong to it.
+    /// Sibling providers keep their slots, bindings and consents. When the removed preset is
+    /// the configured one, the saved base URL and model fall back to the shipped default
+    /// preset, whose own saved key (if any) is kept. Returns false when the Keychain refused
+    /// the key delete; nothing else was touched in that case, so Settings can offer a retry.
+    @discardableResult
+    public func removeAssistantProvider(_ preset: AssistantProviderPreset) -> Bool {
+        // Supersede in-flight results synchronously, before any storage write (P5a-W review:
+        // a result landing during the removal window must not drive a device).
+        advanceAssistantEpoch()
+        proactiveRefreshTask?.cancel()
+        // The key delete is the only step that can refuse; run it alone first so a refusal
+        // leaves the config, bindings and consent untouched and the removal retryable.
+        guard AssistantConfig.clearSecret(for: preset, defaults: userDefaults, vault: credentialVault) else {
+            return false
+        }
+        let prunedConsent = removeAssistantProviderBindings(preset: preset)
+        // A pending consent prompt for the removed service must not re-grant it on 允许 — even
+        // when the list had already been revoked and the prompt was still hanging around.
+        if let pending = pendingCloudConsent,
+           AssistantProviderPreset.infer(baseURL: "https://\(pending.endpoint)") == preset {
+            pendingCloudConsent = nil
+        }
+        // Suggestions the removed provider inferred no longer feed the suggestion cache.
+        aiProactiveSuggestions = nil
+        return true
+    }
+
+    /// Drops the UserDefaults-side bindings of one provider: the imported-key label, the
+    /// custom key-endpoint binding, and the consent entries the provider owns (endpoint
+    /// identity → preset, the same ownership rule as P5a-W). Resets the saved base URL and
+    /// model to the default preset when the removed preset was the configured one. Returns
+    /// the pruned consent identities.
+    @discardableResult
+    private func removeAssistantProviderBindings(preset: AssistantProviderPreset) -> [String] {
+        userDefaults.removeObject(forKey: AssistantConfig.importedKeySourceKey(for: preset))
+        if preset == .custom {
+            userDefaults.removeObject(forKey: AssistantConfig.customKeyEndpointKey)
+        }
+        let consented = consentedCloudEndpoints
+        let pruned = consented.filter { endpoint in
+            AssistantProviderPreset.infer(baseURL: "https://\(endpoint)") == preset
+        }
+        if !pruned.isEmpty {
+            userDefaults.set(consented.filter { !pruned.contains($0) }, forKey: Self.cloudConsentKey)
+        }
+        let savedBase = userDefaults.string(forKey: AssistantConfig.baseURLKey) ?? AssistantConfig.defaultBaseURL
+        if AssistantProviderPreset.infer(baseURL: savedBase) == preset {
+            // The configured provider is gone: fall back to the shipped default preset. Its own
+            // key slot is untouched, so `AssistantConfig.load` surfaces that key again.
+            userDefaults.set(AssistantConfig.defaultBaseURL, forKey: AssistantConfig.baseURLKey)
+            userDefaults.set(AssistantConfig.defaultModel, forKey: AssistantConfig.modelKey)
+        }
+        return pruned
+    }
+
     private func shouldRejectMissingAPIKey(for config: AssistantConfig) -> Bool {
         assistantResolverOverride == nil && !config.hasAPIKey && !config.isLoopbackEndpoint
     }
 
-    private func makeAssistantResolver(config: AssistantConfig) -> ModelIntentResolver {
-        assistantResolverOverride ?? ModelIntentResolver(config: config, transport: assistantTransportOverride)
+    /// Builds the model resolver with a transport gate: every attempt — the initial call and
+    /// the in-resolver temperature-400 retry alike — re-checks the AI switch and the captured
+    /// epoch before a byte leaves (P5a-M acceptance #1/#3, mirroring P5a-W).
+    private func makeAssistantResolver(config: AssistantConfig, epoch: Int) -> ModelIntentResolver {
+        if let override = assistantResolverOverride { return override }
+        let base = assistantTransportOverride ?? ModelIntentResolver.defaultTransport(for: config)
+        let gate: ModelIntentResolver.Transport = { [weak self] request in
+            guard let self else { throw AssistantError.superseded }
+            let allowed = await MainActor.run {
+                self.assistantEpoch == epoch && self.aiAssistantEnabled
+            }
+            guard allowed else { throw AssistantError.superseded }
+            return try await base(request)
+        }
+        return ModelIntentResolver(config: config, transport: gate)
+    }
+
+    /// True when a model run's error or generation means the result must be dropped silently:
+    /// the store left mid-run, the AI switch flipped, or the provider changed (P5a-M).
+    func isAssistantRunSuperseded(_ error: Error, epoch: Int) -> Bool {
+        if error as? AssistantError == .superseded { return true }
+        return epoch != assistantEpoch || !aiAssistantEnabled
+    }
+
+    /// Clears the spinner a discarded run left behind without clobbering a newer reply.
+    private func clearThinkingAssistantState() {
+        if case .thinking = assistantState {
+            setAssistantState(.idle)
+        }
     }
 
     /// The on-device resolver when the user has not chosen a provider and Apple's model is usable.
@@ -494,6 +686,9 @@ extension HomeStore {
     @discardableResult
     public func runAssistantCommand(_ text: String) async -> IntentPlan? {
         let controlContext = controlContextID
+        // A disable, provider change or removal while this command runs must discard its late
+        // model result before it can reach the write gate (P5a-M acceptance #3).
+        let assistantGeneration = assistantEpoch
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spoken.isEmpty else { return nil }
         let startedAt = Date()
@@ -533,6 +728,15 @@ extension HomeStore {
             return nil
         } else {
             let config = assistantConfig
+            // AI is off: zero requests, zero retries, no cloud-consent prompt. Local parsing,
+            // habit phrases and saved timers were already handled above (P5a-M acceptance #1).
+            guard aiAssistantEnabled else {
+                setAssistantState(.failed(L10n.tr(
+                    "AI 一句话控制已关闭，指令只在本机解析；可在设置中重新开启。",
+                    "AI command control is off; commands are parsed on this Mac only. You can turn it back on in Settings."
+                )))
+                return nil
+            }
             let localResolver = localCommandResolver(for: config)
             if localResolver == nil {
                 if shouldRejectMissingAPIKey(for: config) {
@@ -545,7 +749,7 @@ extension HomeStore {
                     return nil
                 }
             }
-            let resolver: any AssistantCommandResolving = localResolver ?? makeAssistantResolver(config: config)
+            let resolver: any AssistantCommandResolving = localResolver ?? makeAssistantResolver(config: config, epoch: assistantGeneration)
             let context = buildAssistantContext(mention: .utterance(utterance))
             if !context.habitSummary.isEmpty {
                 habitSummary = context.habitSummary
@@ -560,7 +764,17 @@ extension HomeStore {
                 )
             } catch {
                 guard controlContext == controlContextID else { return nil }
+                // A superseded run stays quiet: the user already switched AI off or changed the
+                // provider, and a stale failure would only describe a cancelled request.
+                if isAssistantRunSuperseded(error, epoch: assistantGeneration) {
+                    clearThinkingAssistantState()
+                    return nil
+                }
                 setAssistantState(.failed(AssistantError.userMessage(for: error)))
+                return nil
+            }
+            guard assistantGeneration == assistantEpoch, aiAssistantEnabled else {
+                clearThinkingAssistantState()
                 return nil
             }
         }

@@ -10,6 +10,7 @@ struct AssistantErrorMessageTests {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.err.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         store.assistantResolverOverride = ModelIntentResolver(
             config: AssistantConfig(baseURL: "https://example.invalid/v1", model: "m", apiKey: "k"),
             transport: { _ in throw URLError(.timedOut) }

@@ -355,8 +355,10 @@ public struct AssistantConfig: Equatable, Sendable {
         )
     }
 
+    /// Writes (or, with an empty key, deletes) the saved key for `preset`. Internal so
+    /// `HomeStore.removeAssistantProvider` can delete one provider's slot atomically (P5a-M).
     @discardableResult
-    private static func clearSecret(for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
+    static func clearSecret(for preset: AssistantProviderPreset, defaults: UserDefaults, vault: CredentialVault? = nil) -> Bool {
         saveSecret("", for: preset, defaults: defaults, vault: vault)
     }
 

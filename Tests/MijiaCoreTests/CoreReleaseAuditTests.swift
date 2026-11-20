@@ -756,6 +756,7 @@ struct CoreReleaseAuditTests {
             credentialVault: CredentialVault(storage: vaultStorage.storage)
         )
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         store.homeBackend = .xiaomiCloud
         store.assistantConfig = AssistantConfig(baseURL: "http://127.0.0.1:9/v1", model: "local-test", apiKey: "")
 

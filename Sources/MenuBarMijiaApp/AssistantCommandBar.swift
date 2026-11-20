@@ -969,6 +969,23 @@ enum AssistantSettingsCopy {
 
     static var providerLabel: String { L10n.tr("服务商", "Provider") }
 
+    /// The feature switch at the top of the AI card (P5a-M). Off means zero AI requests; the
+    /// provider form stays editable so the config can be prepared before turning it back on.
+    static var enableTitle: String {
+        L10n.tr("启用 AI 一句话控制", "Enable AI command control")
+    }
+
+    static var disabledHint: String {
+        L10n.tr(
+            "关闭后不再发送 AI 请求，指令只在本机解析；已保存的服务商配置与密钥会保留。",
+            "When off, no AI requests are sent; commands are parsed on this Mac. Saved provider settings and keys are kept."
+        )
+    }
+
+    static var removeProvider: String { L10n.tr("移除此服务商", "Remove this provider") }
+
+    static var removeProviderConfirm: String { L10n.tr("再点一次确认移除", "Click again to confirm removal") }
+
     static var apiKeyLabel: String {
         L10n.tr("API Key（只存在本机钥匙串）", "API Key (stored only in this Mac's Keychain)")
     }
@@ -1143,6 +1160,8 @@ struct AssistantSettingsSection: View {
     /// Imported-key labels and cloud consent also live in UserDefaults; bump to redraw after import/undo/revoke.
     @State private var storageRevision = 0
     @State private var showsAdvanced = false
+    /// Two-click confirm for 移除此服务商 (P5a-M): the first click only arms the button.
+    @State private var isArmedForRemoval = false
     @Environment(\.settingsUnsavedChanges) private var unsaved
     /// The fields as last loaded or saved; edits that differ from them are unsaved (#148).
     @State private var savedFields: AssistantSettingsDraft.Fields?
@@ -1182,6 +1201,24 @@ struct AssistantSettingsSection: View {
             isLoopback: isLoopback
         )
         VStack(alignment: .leading, spacing: 9) {
+            Toggle(isOn: Binding(
+                get: { store.aiAssistantEnabled },
+                set: { newValue in _ = store.setAIAssistantEnabled(newValue) }
+            )) {
+                Text(AssistantSettingsCopy.enableTitle)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+            }
+            .toggleStyle(.glass)
+            .controlSize(.regular)
+            .settingsRow(anchor: .assistantEnable)
+
+            if !store.aiAssistantEnabled {
+                Text(AssistantSettingsCopy.disabledHint)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             VStack(alignment: .leading, spacing: 3) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(AssistantSettingsCopy.title)
@@ -1216,6 +1253,7 @@ struct AssistantSettingsSection: View {
                                 storedKey: { store.storedAssistantAPIKey(forBaseURL: $0) }
                             )
                             selectedPreset = newPreset
+                            isArmedForRemoval = false
                             apply(fields)
                             if newPreset == .custom { showsAdvanced = true }
                         }
@@ -1230,6 +1268,28 @@ struct AssistantSettingsSection: View {
                 .controlSize(.regular)
             }
             .settingsRow(anchor: .assistantProvider)
+
+            HStack(spacing: 6) {
+                if isArmedForRemoval {
+                    Button(AssistantSettingsCopy.removeProviderConfirm, action: removeSelectedProvider)
+                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
+                    Button(L10n.tr("取消", "Cancel")) { isArmedForRemoval = false }
+                        .buttonStyle(PillActionButtonStyle())
+                } else {
+                    Button(AssistantSettingsCopy.removeProvider) { isArmedForRemoval = true }
+                        .buttonStyle(PillActionButtonStyle())
+                        .help(L10n.tr(
+                            "只清除该服务商的本机配置与密钥，其他服务商不受影响",
+                            "Clears only this provider's local settings and key; other providers are untouched"
+                        ))
+                }
+                Text(L10n.tr("只清除该服务商的密钥与授权，其他服务商保留。", "Clears only this provider's key and consent; other providers are kept."))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer()
+            }
+            .settingsRow(anchor: .assistantRemoveProvider)
 
             labeledField(AssistantSettingsCopy.apiKeyLabel) {
                 SecureField(AssistantSettingsCopy.apiKeyPlaceholder, text: $apiKeyDraft)
@@ -1271,7 +1331,10 @@ struct AssistantSettingsSection: View {
                     }
                 }
                 .buttonStyle(PillActionButtonStyle())
-                .disabled(isTestingConnection)
+                .disabled(isTestingConnection || !store.aiAssistantEnabled)
+                .help(store.aiAssistantEnabled
+                    ? ""
+                    : L10n.tr("AI 一句话控制已关闭，测试连接不可用", "AI command control is off; the connection check is unavailable"))
                 .settingsRow(anchor: .assistantTest)
 
                 Spacer()
@@ -1349,6 +1412,28 @@ struct AssistantSettingsSection: View {
         selectedPreset = resolved.preset
         savedFields = draftFields
         return cfg
+    }
+
+    /// Removes the provider the picker currently shows (P5a-M). Two-click confirm already ran.
+    /// Only that provider's key slot, bindings and consent go; after a successful removal the
+    /// drafts reload from the store so the removed provider's fields cannot be re-saved later.
+    private func removeSelectedProvider() {
+        isArmedForRemoval = false
+        if store.removeAssistantProvider(selectedPreset) {
+            let config = store.assistantConfig
+            baseURLDraft = config.baseURL
+            modelDraft = config.model
+            selectedPreset = AssistantProviderPreset.infer(baseURL: config.baseURL)
+            apiKeyDraft = store.storedAssistantAPIKey(forBaseURL: config.baseURL)
+            savedFields = draftFields
+            storageRevision &+= 1
+            store.showToast(L10n.tr("已移除本机保存的该服务商配置与密钥", "Removed this provider's saved configuration and key"))
+        } else {
+            store.showToast(
+                L10n.tr("无法从系统凭据库移除该服务商的密钥，请重试", "Could not remove this provider's key from the system credential store; try again"),
+                isError: true
+            )
+        }
     }
 
     @ViewBuilder

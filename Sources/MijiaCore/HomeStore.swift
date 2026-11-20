@@ -1646,6 +1646,12 @@ public final class HomeStore {
     var assistantResolverOverride: ModelIntentResolver?
     /// Test seam replacing only the HTTP transport while still resolving `assistantConfig` from `userDefaults`.
     var assistantTransportOverride: ModelIntentResolver.Transport?
+    /// Generation of the AI feature's request surface (P5a-M). Bumped when the AI switch flips,
+    /// the provider config changes, or a provider is removed. A request captures the value
+    /// before its first await and discards anything that arrives under a newer generation, so a
+    /// late result can neither drive a device nor claim the suggestion cache — the macOS mirror
+    /// of Windows' `assistantEpoch`.
+    @ObservationIgnored public internal(set) var assistantEpoch: Int = 0
     /// Test seam replacing the on-device resolver built by `localCommandResolver(for:)`.
     var localAssistantResolverOverride: (any AssistantCommandResolving)?
     /// Test seam overriding whether Apple's on-device model is usable on this machine.
