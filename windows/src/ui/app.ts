@@ -1,4 +1,5 @@
-import type { DeviceCategoryID } from "../core/capabilityManifest.js";
+import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "../core/capabilityManifest.js";
+import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
@@ -281,16 +282,64 @@ export class MenuMijiaWindowsApp {
       : [];
   }
 
-  public setEnabledDeviceCategories(categories: readonly DeviceCategoryID[]): boolean {
+  /**
+   * Persists one device-type choice (P4b-W). The record keeps the semantic value only: choosing every
+   * type removes the key, so "no explicit choice" stays readable and an upgrade keeps its own default.
+   *
+   * When a type is added, enabled scopes are marked for revalidation so the next snapshot restores
+   * the paused timers and automations whose device types are back (the revalidation keeps the rest
+   * paused). The caller pauses affected references before saving and refreshes after success.
+   */
+  public setEnabledDeviceCategories(
+    categories: readonly DeviceCategoryID[],
+    pausedQuickActionIds: readonly string[] = [],
+  ): boolean {
+    const normalized = normalizeDeviceCategorySelection(categories);
+    if (normalized === null) return false;
+    const keepsEveryType = DEVICE_CATEGORY_IDS.every((id) => normalized.includes(id));
+    const selection = resolveHostMiSelectionState(this).selection;
+    const addsCategory = normalized.some((id) => !selection.enabledCategories.includes(id));
+    const scopes = addsCategory ? selection.enabledConnectionScopes : [];
     if (!writeMiAccountSelectionMutation({
-      mutate: (previous) => ({
-        ...previous,
-        extraFields: { ...previous.extraFields, enabledCategories: [...categories] },
-      }),
+      mutate: (previous) => {
+        const extraFields: Record<string, unknown> = { ...previous.extraFields };
+        if (keepsEveryType) delete extraFields.enabledCategories;
+        else extraFields.enabledCategories = [...normalized];
+        return {
+          ...previous,
+          extraFields,
+          pausedQuickActionIds: [...new Set([...previous.pausedQuickActionIds, ...pausedQuickActionIds])],
+          pendingRevalidationAccountIds: [...new Set([
+            ...previous.pendingRevalidationAccountIds,
+            ...scopes.filter((scope) => scope.startsWith("mi:")),
+          ])],
+          pendingRevalidationHaScopes: [...new Set([
+            ...previous.pendingRevalidationHaScopes,
+            ...scopes.filter((scope) => scope.startsWith("ha:")),
+          ])],
+        };
+      },
     })) return false;
-    this.cameraLive.setCameraCategoryEnabled(categories.includes("camera"));
+    this.cameraLive.setCameraCategoryEnabled(normalized.includes("camera"));
+    // The demo home is synthesized locally, so nothing prunes it on refresh: it is rebuilt here.
+    // Real sources refresh after the caller finishes pausing.
+    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
+      this.devices = this.demoDevicesForEnabledTypes();
+    }
     this.render();
     return true;
+  }
+
+  /**
+   * Sample cards for the demo home, minus the device types the user turned off. Nothing prunes the
+   * demo snapshot on a refresh, so the stored selection has to be applied wherever it is built
+   * (P4b-W): here, and at the demo entry points in settings and the first-run guide.
+   */
+  public demoDevicesForEnabledTypes(): SmartDevice[] {
+    const devices = demoDevices();
+    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) return devices;
+    const enabled = new Set(resolveHostMiSelectionState(this).selection.enabledCategories);
+    return devices.filter((device) => enabled.has(deviceCategoryForDevice(device)));
   }
 
   public scenes: HomeScene[];
@@ -548,7 +597,7 @@ export class MenuMijiaWindowsApp {
       !hasSecondaryMiAccountsInIndex();
     this.devices = this.settings.connectionMode === "xiaomiCloud"
       ? (primaryDisabledOnly ? [] : structuredClone(this.settings.cachedXiaomiDevices))
-      : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : demoDevices();
+      : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : this.demoDevicesForEnabledTypes();
     this.scenes = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.scenes ?? []) : this.settings.connectionMode === "demo" ? demoScenes() : [];
     this.environmentReadings = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.environmentReadings ?? []) : [];
     // 更多设置 rows come back with the cached cards: without them the restored panel shows every
@@ -1061,7 +1110,6 @@ export class MenuMijiaWindowsApp {
   }
 
   public evaluateAutomationRuleWriteGate(rule: AutomationRule): string | null {
-    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) return null;
     return evaluateAutomationRuleWriteGate({
       rule,
       context: buildHostCapabilityContext(this),

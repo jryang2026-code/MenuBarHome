@@ -13,6 +13,7 @@ import { KIND_CHIP } from "./listCut.js";
 import { SF_ICONS } from "./appConstants.js";
 import { energyScopeForHost, syncEnergyHostOnRender } from "./energySettingsView.js";
 import { renderSettingsModal as renderSettingsModalView } from "./settingsViews.js";
+import { deviceTypeSelectionRenderKey, renderDeviceTypeSelectionSection } from "./deviceTypeSelectionView.js";
 import {
   isRoomOrderEditorOpen,
   renderRoomOrderEditorModal,
@@ -335,6 +336,10 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
       sourceRevision: host.sourceRevision,
       connDiagHost: host,
       layout: host.layout,
+      deviceTypes: {
+        key: deviceTypeSelectionRenderKey(host),
+        html: () => renderDeviceTypeSelectionSection(host),
+      },
       escapeHtml: (value) => host.escapeHtml(value),
     });
   }

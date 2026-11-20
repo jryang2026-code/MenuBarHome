@@ -1,3 +1,5 @@
+import { DEVICE_CATEGORY_IDS } from "./capabilityManifest.js";
+import { controlTargetRejectionMessage } from "./capabilityReferenceVerdict.js";
 import { ManualControlPolicy } from "./assistant/actionPolicy.js";
 import { inverseCommands } from "./commandEffects.js";
 import type { LanguagePreference } from "./i18n.js";
@@ -1110,7 +1112,10 @@ export async function executeAutomationRule(
       ? host.evaluateAutomationRuleWriteGate(rule)
       : null;
   if (gateMsg === null && rule.pausedByCapabilities?.length) {
-    if (rule.pausedByCapabilities.some((c) => c.startsWith("ha:") || c === "home-assistant")) {
+    const disabledCategory = DEVICE_CATEGORY_IDS.find((id) => rule.pausedByCapabilities?.includes(id));
+    if (disabledCategory !== undefined) {
+      gateMsg = controlTargetRejectionMessage({ code: "categoryDisabled", disabledCategory }, effectivePref);
+    } else if (rule.pausedByCapabilities.some((c) => c.startsWith("ha:") || c === "home-assistant")) {
       gateMsg = tr3("Home Assistant 已停用", "Home Assistant 已停用", "Home Assistant is turned off", undefined, effectivePref);
     } else if (rule.pausedByCapabilities.some((c) => c.startsWith("mi:") || c === "xiaomi-cloud")) {
       gateMsg = tr3("该米家账号已停用", "該米家帳號已停用", "This Xiaomi account is turned off", undefined, effectivePref);

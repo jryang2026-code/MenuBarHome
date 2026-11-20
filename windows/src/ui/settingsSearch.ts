@@ -13,6 +13,7 @@ export type SettingsAnchor =
   | "compactGridMode"
   | "climatePanelModule"
   | "hideOfflineDevices"
+  | "deviceTypes"
   | "hideGroupedLights"
   | "quickScenesBar"
   | "launchAtLogin"
@@ -141,6 +142,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "compactGridMode":
     case "climatePanelModule":
     case "hideOfflineDevices":
+    case "deviceTypes":
     case "hideGroupedLights":
     case "quickScenesBar":
     case "launchAtLogin":
@@ -262,6 +264,12 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_GENERAL,
     title: ["空调使用整行控制条", "空調使用整行控制列", "Full-Width Climate Control Bar"],
     synonyms: ["空调", "空調", "整行", "温控", "冷气", "climate", "ac", "air conditioner", "full width", "panel module", "kongtiao"],
+  },
+  {
+    anchor: "deviceTypes",
+    section: SEC_GENERAL,
+    title: ["设备类型", "裝置類型", "Device Types"],
+    synonyms: ["设备类型", "裝置類型", "类型", "類型", "只用灯和开关", "灯和开关", "全部已支持类型", "自己选", "隐藏设备", "传感器", "摄像机", "device type", "device types", "category", "categories", "lights and switches", "shebei leixing", "leixing"],
   },
   {
     anchor: "hideOfflineDevices",
