@@ -15,3 +15,4 @@ linux-core	Test MijiaCore on Linux	2026-11-19T17:48:34.8311650Z	error: fatalErro
 linux-core	Test MijiaCore on Linux	2026-11-19T17:48:34.8311650Z	error: Process '/Applications/Xcode_26.6.app/Contents/Developer/usr/libexec/swift/pm/swiftpm-testing-helper --test-bundle-path /tmp/MenuBarMijiaPackageTests' exited with unexpected signal code 6
 linux-core	Test MijiaCore on Linux	2026-11-19T17:48:34.8311650Z	##[error]swift test crashed during execution
 ci	Fail the workflow unless every required job succeeded	2026-11-19T17:48:34.8311650Z	❌ macos-test failure
+linux-core	Test MijiaCore on Linux	2026-11-19T17:49:00.0000000Z	✘ Test "HA disable previews device timers and revalidates on fresh snapshot" recorded an issue at HAConnectionDisableTests.swift:522:25: Issue recorded

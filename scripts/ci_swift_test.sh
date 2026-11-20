@@ -315,28 +315,45 @@ swift_test_summary_verdict() {
 }
 
 # Failing cases as `name<TAB>File.swift<TAB>line`, deduped on the case name. The location kept is
-# the first one recorded: later issues in the same case repeat the same breakage.
+# the first one recorded: later issues in the same case repeat the same breakage. Both issue forms
+# count: `recorded an issue at File.swift:1:2` and the parameterized
+# `recorded an issue with 1 argument value → 2 at File.swift:1:2`.
 failed_test_cases() {
     awk '
-        match($0, /✘ Test ".*" recorded an issue at [^ :]+:[0-9]+/) {
-            text = substr($0, RSTART, RLENGTH)
-            sub(/^✘ Test "/, "", text)
-            cut = index(text, "\" recorded an issue at ")
-            if (cut == 0) { next }
-            name = substr(text, 1, cut - 1)
-            rest = substr(text, cut)
-            sub(/^" recorded an issue at /, "", rest)
-            if (!match(rest, /:[0-9]+$/)) { next }
-            file = substr(rest, 1, RSTART - 1)
+        match($0, /✘ Test "[^"]*" recorded an issue/) {
+            head = substr($0, RSTART, RLENGTH)
+            name = substr(head, length("✘ Test \"") + 1)
+            sub(/" recorded an issue$/, "", name)
+            rest = substr($0, RSTART + RLENGTH)
+            if (!match(rest, /[[:space:]]at[[:space:]][^ :]+:[0-9]+/)) { next }
+            place = substr(rest, RSTART, RLENGTH)
+            sub(/^.*at[[:space:]]/, "", place)
+            if (!match(place, /:[0-9]+$/)) { next }
             if (name in seen) { next }
             seen[name] = 1
-            printf "%s\t%s\t%s\n", name, file, substr(rest, RSTART + 1)
+            printf "%s\t%s\t%s\n", name, substr(place, 1, RSTART - 1), substr(place, RSTART + 1)
         }
     ' "$1"
 }
 
 failed_case_count() {
     failed_test_cases "$1" | wc -l | tr -d ' '
+}
+
+# Every case name the log mentions, from the `✘ Test "..."` lines alone. A name that never yields a
+# parsable issue line means the log format changed under us: see `retry_plan`.
+mentioned_case_count() {
+    awk '
+        match($0, /✘ Test "/) {
+            rest = substr($0, RSTART + RLENGTH)
+            if (!match(rest, /^[^"]*"/)) { next }
+            name = substr(rest, 1, RSTART - 1)
+            if (name in seen) { next }
+            seen[name] = 1
+            total++
+        }
+        END { print total + 0 }
+    ' "$1"
 }
 
 # `swift test --filter` matches the test id (`Module.Suite/func()`), never the display name, so a
@@ -420,7 +437,9 @@ retry_verdict() { # rows_file retry_log -> pass | crash | fail | empty | unverif
     fi
     while IFS="$(printf '\t')" read -r name rest; do
         [ -n "$name" ] || continue
-        if ! grep -qF "✔ Test \"$name\" passed" "$retry_log"; then
+        # A parameterized case reports `✔ Test "..." with 2 test cases passed`, so the name alone
+        # is the anchor. The summary above already rejected any `✘` line.
+        if ! grep -qF "✔ Test \"$name\"" "$retry_log"; then
             echo "unverified"
             return 0
         fi
@@ -430,8 +449,9 @@ retry_verdict() { # rows_file retry_log -> pass | crash | fail | empty | unverif
 
 # Should the failing run be rerun once? A crash, a stall, or more than five failing cases is a
 # real break: rerunning those only burns runner minutes.
-retry_plan() { # log retry_enabled stalled -> retry | off | crash | stall | no-cases | too-many
-    local log="$1" enabled="$2" stalled="$3" count
+retry_plan() { # log retry_enabled stalled
+#   -> retry | off | crash | stall | no-cases | too-many | unparsed | no-baseline
+    local log="$1" enabled="$2" stalled="$3" count mentioned
     if [ "$enabled" -ne 1 ]; then
         echo "off"
         return 0
@@ -444,7 +464,20 @@ retry_plan() { # log retry_enabled stalled -> retry | off | crash | stall | no-c
         echo "stall"
         return 0
     fi
+    # A missing baseline is written into the source tree by SnapshotAssertion and reported as an
+    # issue, so the rerun would compare against the PNG the first run just recorded and pass. That
+    # would let a render change through without a committed baseline: never retry those.
+    if grep -q 'No reference was found on disk' "$log"; then
+        echo "no-baseline"
+        return 0
+    fi
     count="$(failed_case_count "$log")"
+    # Rerunning only what we could parse would hide a case the parser missed.
+    mentioned="$(mentioned_case_count "$log")"
+    if [ "$mentioned" -gt "$count" ]; then
+        echo "unparsed"
+        return 0
+    fi
     if [ "$count" -eq 0 ]; then
         echo "no-cases"
         return 0
@@ -654,6 +687,8 @@ EOF
         case "$plan" in
             stall) echo "::warning::not retrying: the run stalled" ;;
             too-many) echo "::warning::not retrying: more than five failing cases, which is a real break" ;;
+            unparsed) echo "::warning::not retrying: some failing cases were not parsable from the log" ;;
+            no-baseline) echo "::warning::not retrying: a snapshot baseline is missing, so a rerun would compare against the PNG this run just recorded" ;;
         esac
     fi
 

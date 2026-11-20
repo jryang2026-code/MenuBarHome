@@ -8,5 +8,10 @@
     "number": 275,
     "title": "无关的 open 票",
     "body": "这条票既不提用例名，也不提文件名。"
+  },
+  {
+    "number": 281,
+    "title": "test(macos): 长用例名只写了名字、没写文件名的间歇票",
+    "body": "用例 \"HA disable previews device timers and revalidates on fresh snapshot\" 在高负载下间歇失败，正文里没有写文件名。"
   }
 ]

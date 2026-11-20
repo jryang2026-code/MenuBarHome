@@ -95,7 +95,8 @@ fi
 
 expect "任务名与失败 job 列表" "失败 job：macos-test, macos-snapshots, windows-core, linux-core, ci"
 expect "Swift 失败用例带文件名与首次失败行号" '"HA disable previews device timers and revalidates on fresh snapshot" HAConnectionDisableTests.swift:522'
-expect "open issue 命中后标已知间歇" '[已知间歇 #308]'
+expect "open issue 命中后标已知间歇（用例名与文件名都命中）" '[已知间歇 #308]'
+expect "票里只写用例名（没写文件名）也能命中" '"HA disable previews device timers and revalidates on fresh snapshot" HAConnectionDisableTests.swift:522 [已知间歇 #281]'
 expect "node TAP 失败用例被点名" "not ok - stops a Xiaomi cloud live view after repeated frame failures instead of renegotiating"
 expect "编译错误首行被点名" "error: fatalError"
 expect "崩溃标记被点名" "exited with unexpected signal code 6"
@@ -110,6 +111,14 @@ if [ "$case_dupes" = "1" ]; then
     printf 'PASS 同名用例去重后只出现一次\n'
 else
     printf 'FAIL 同名用例应只出现一次，实际 %s 次\n' "$case_dupes"
+    failures=$((failures + 1))
+fi
+
+cross_job="$(grep -Fc 'HAConnectionDisableTests.swift:522' "$out" || true)"
+if [ "$cross_job" = "2" ]; then
+    printf 'PASS 同一用例在两个 job 里各出现一次（去重按 job 分桶）\n'
+else
+    printf 'FAIL 同一用例应在两个 job 下各出现一次，实际 %s 次\n' "$cross_job"
     failures=$((failures + 1))
 fi
 

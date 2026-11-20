@@ -188,6 +188,8 @@ seen = set()
 
 
 def push(bucket, key, item):
+    # Deduplicated per job: the same core test can fail in both `macos-test` and `linux-core`, and
+    # each job has to keep its own row.
     if key in seen:
         return
     seen.add(key)
@@ -203,21 +205,21 @@ for line in raw.splitlines():
     job = clean(line.split("\t", 1)[0]).strip() or "?"
     match = SWIFT_CASE.search(body)
     if match:
-        push(swift_cases, ("swift", match.group("name")), (job, match.group("name"), match.group("file"), match.group("line")))
+        push(swift_cases, (job, "swift", match.group("name")), (job, match.group("name"), match.group("file"), match.group("line")))
         continue
     match = SNAPSHOT.search(body)
     if match:
-        push(snapshots, ("snapshot", match.group("name")), (job, match.group("name")))
+        push(snapshots, (job, "snapshot", match.group("name")), (job, match.group("name")))
         continue
     if NO_BASELINE.search(body) and "__Snapshots__" in body:
         # A newly added case has no PNG on disk; the path is `<Suite>.<snapshot>.png`.
         stem = os.path.splitext(os.path.basename(body.split("snapshot: ")[-1].strip()))[0]
         name = stem.split(".", 1)[-1]
-        push(snapshots, ("snapshot", name), (job, f"{name}（缺基线）"))
+        push(snapshots, (job, "snapshot", name), (job, f"{name}（缺基线）"))
         continue
     match = NODE_PLAN.search(body) or NODE_SPEC.match(body)
     if match:
-        push(node_cases, ("node", match.group("name")), (job, match.group("name")))
+        push(node_cases, (job, "node", match.group("name")), (job, match.group("name")))
         continue
     if CRASH.search(body):
         text = "swift test crashed during execution" if "crashed during execution" in body else ""
@@ -232,12 +234,12 @@ for line in raw.splitlines():
                 text = signal.group(0)
             else:
                 text = "Fatal error: " + body.split("Fatal error:", 1)[-1].strip()
-        push(crashes, ("crash", text), (job, one_line(text)))
+        push(crashes, (job, "crash", text), (job, one_line(text)))
         continue
     match = COMPILE.search(body)
     if match and "Process '" not in match.group("text"):
         text = "error: " + match.group("text")
-        push(compile_errors, ("compile", text), (job, one_line(text)))
+        push(compile_errors, (job, "compile", text), (job, one_line(text)))
 
 # --- open issues: a case name or its file name in the title or body ----------------------
 haystacks = []
@@ -249,7 +251,8 @@ for issue in issues:
 
 
 def issue_for(name, file_name=""):
-    lowered = (name or "").lower()
+    """Open issue whose title or body names this case, or failing that its file."""
+    lowered = (name or "").strip().lower()
     if lowered:
         for number, haystack in haystacks:
             if lowered in haystack:
@@ -262,8 +265,9 @@ def issue_for(name, file_name=""):
     return None
 
 
-def tagged(text, file_name=""):
-    number = issue_for(text, file_name)
+def tagged(text, name, file_name=""):
+    """Match on the raw case name, then annotate the formatted row."""
+    number = issue_for(name, file_name)
     return f"{text} [已知间歇 #{number}]" if number else text
 
 
@@ -297,11 +301,12 @@ for job in failed_jobs:
     steps = [s for s in job_steps.get(job, []) if s]
     header = f"--- {job}" + (f"（{', '.join(steps)} 失败）" if steps else "")
     out.append(header)
-    job_swift = [tagged(f'"{clip(name)}" {os.path.basename(file)}:{line}', file) for j, name, file, line in swift_cases if j == job]
-    job_node = [tagged(f"not ok - {clip(name, 90)}") for j, name in node_cases if j == job]
+    job_swift = [tagged(f'"{clip(name)}" {os.path.basename(file)}:{line}', name, file)
+                 for j, name, file, line in swift_cases if j == job]
+    job_node = [tagged(f"not ok - {clip(name, 90)}", name) for j, name in node_cases if j == job]
     job_compile = [text for j, text in compile_errors if j == job]
     job_crash = [text for j, text in crashes if j == job]
-    job_snapshot = [tagged(f'"{clip(name)}"') for j, name in snapshots if j == job]
+    job_snapshot = [tagged(f'"{clip(name)}"', name) for j, name in snapshots if j == job]
     if job_swift:
         emit("swift", job_swift)
     if job_node:

@@ -51,6 +51,19 @@ expect_eq "--filter 推导出两个精确的 Suite.func" \
 FixtureTests.flakyScene" \
     "$(cat "$filters")"
 
+# --- 参数化用例：带参数的 issue 行与 `with N test cases passed` 也算通过 -------------------
+prows="$workdir/param.tsv"
+failed_test_cases "$fixtures/parameterized.log" >"$prows"
+expect_eq "参数化用例的 issue 行能解析出文件:行号" \
+    "Fold layout picks the first card	ParamFixtureTests.swift	6" \
+    "$(sed -n 1p "$prows")"
+expect_eq "参数化用例重跑全过判 pass" "pass" "$(retry_verdict "$prows" "$fixtures/parameterized-pass.log")"
+expect_eq "参数化用例可重跑" "retry" "$(retry_plan "$fixtures/parameterized.log" 1 0)"
+
+# --- 缺基线不重跑：SnapshotAssertion 会把第一轮的 PNG 写进源码树，重跑必然「通过」----------
+expect_eq "缺快照基线不重跑" "no-baseline" "$(retry_plan "$fixtures/missing-baseline.log" 1 0)"
+expect_eq "日志里解析不出的失败用例不重跑" "unparsed" "$(retry_plan "$fixtures/unknown-format.log" 1 0)"
+
 # --- 是否需要重跑 -----------------------------------------------------------------------
 expect_eq "第一次失败且不崩溃不 stall → 重跑一次" "retry" "$(retry_plan "$fixtures/first.log" 1 0)"
 expect_eq "崩溃不重跑" "crash" "$(retry_plan "$fixtures/crash.log" 1 0)"
