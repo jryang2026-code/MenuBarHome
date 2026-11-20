@@ -1,3 +1,4 @@
+import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import {
   AutomationEngine,
   type AutomationRule,
@@ -140,6 +141,9 @@ export interface HostActivityCenter {
   lastClipboardMarkdown: string | null;
   pendingHighRiskUndoRunId?: string | null;
   dismissedProactiveSignature?: string | null;
+  automationGeneration: number;
+  automationResumedAtMs?: number;
+  needsAutomationLockBaseline: boolean;
   /** Wi-Fi 轮询（约 10 秒一次）：最近一次派发的确定读数与探针状态。 */
   wifiPollInFlight: boolean;
   lastWifiPollAtMs: number;
@@ -342,6 +346,8 @@ function createHostActivityCenter(
     pendingHighRiskUndoRunId: null,
     dismissedProactiveSignature: null,
     wifiPollInFlight: false,
+    automationGeneration: 0,
+    needsAutomationLockBaseline: false,
     lastWifiPollAtMs: 0,
     lastWifiReading: null,
     lastWifiProbeState: null,
@@ -1444,16 +1450,61 @@ export async function ingestHostHASnapshotForDoorbell(
   return responses;
 }
 
+export function setEventAutomationRunning(host: MenuMijiaWindowsApp, enabled: boolean, nowMs = Date.now()): boolean {
+  if (enabled === isEventAutomationEnabled(host.settings)) return true;
+  const center = getHostActivityCenter(host);
+  if (enabled) {
+    const context = buildHostCapabilityContext(host);
+    const demo = context.connectionMode === "demo" && !context.dualSourceEnabled;
+    const live = demo || isLiveSnapshotReadyForTelemetry(host);
+    const rules = center.automationEngine.store.load();
+    const onlineDeviceIds = new Set(aliasedHostDevices(host)
+      .filter((device) => device.isOnline && !device.telemetryStale)
+      .map((device) => device.id));
+    const validated = rules.map((rule) => {
+      if (!rule.isEnabled) return rule;
+      const sensorId = rule.triggerOptions.sensorCondition?.deviceId;
+      const action = rule.action;
+      const available = live && (!sensorId || onlineDeviceIds.has(sensorId)) &&
+        (action.kind !== "devices" || (action.deviceIds.length > 0 && action.deviceIds.every((id) => onlineDeviceIds.has(id)))) &&
+        (action.kind !== "scene" || host.scenes.some((scene) =>
+          scene.id === action.sceneId || scene.entityId === action.sceneId));
+      const rejection = evaluateAutomationRuleWriteGate({
+        rule, context, lastManuallyUsedLightId: host.lastManuallyUsedLightId,
+      });
+      return available && rejection === null ? rule : { ...rule, isEnabled: false };
+    });
+    if (validated.some((rule, index) => rule !== rules[index]) &&
+        !center.automationEngine.store.save(validated)) return false;
+    center.automationResumedAtMs = nowMs;
+    center.needsAutomationLockBaseline = true;
+  }
+  center.automationGeneration += 1;
+  center.lockSampleGeneration += 1;
+  center.automationEngine.resetTransientState(true);
+  center.systemSignalBaseline = null;
+  center.lastSystemPollAtMs = 0;
+  center.lastWifiReading = null;
+  center.lastWifiProbeState = null;
+  center.lastWifiPollAtMs = 0;
+  host.settings.eventAutomationEnabled = enabled;
+  return true;
+}
+
 export async function dispatchSystemContextEvent(
   host: MenuMijiaWindowsApp,
   event: SystemContextEvent,
   nowMs = Date.now(),
 ): Promise<RecordedAutomationRun[]> {
+  if (!isEventAutomationEnabled(host.settings)) return [];
   const center = getHostActivityCenter(host);
   // The engine reads the rule store itself: a rule disabled a moment ago must not run, and a
   // refused high-risk rule can only be switched off when no rule snapshot is supplied.
+  const generation = center.automationGeneration;
   const runs = await center.automationEngine.dispatchEvent(host, event, {
     nowMs,
+    canStartRule: () => generation === center.automationGeneration && isEventAutomationEnabled(host.settings),
+    resumedAtMs: center.automationResumedAtMs,
     scope: center.scopeKey,
     displayDevices: aliasedHostDevices(host),
     observationsByDeviceId: center.observationsOverride ?? undefined,
@@ -1494,7 +1545,7 @@ export async function pollSystemContextSignals(
   /** The caller's enabled-rule snapshot; reusing it avoids a second rule-store parse per tick. */
   enabledRules?: readonly AutomationRule[],
 ): Promise<boolean> {
-  if (typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) return false;
+  if (!isEventAutomationEnabled(host.settings) || typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) return false;
   const center = getHostActivityCenter(host);
   if (center.systemPollInFlight) return false;
   if (
@@ -1509,12 +1560,13 @@ export async function pollSystemContextSignals(
 
   center.lastSystemPollAtMs = nowMs;
   center.systemPollInFlight = true;
+  const generation = center.automationGeneration;
   try {
     const signals = await readNativeSystemSignals({
       power: needsPower,
       externalDisplayCount: needsDisplay,
     });
-    if (!isFullPanelHost(host)) return false;
+    if (!isFullPanelHost(host) || generation !== center.automationGeneration) return false;
     const latestRules = center.automationEngine.store.load().filter((r) => r.isEnabled);
     const latestNeed = systemSignalNeed(latestRules);
     if (!latestNeed.power && !latestNeed.externalDisplayCount) {
@@ -1549,7 +1601,7 @@ export async function pollSystemContextSignals(
       );
       fired = fired || runs.length > 0;
     }
-    if (transition.externalDisplayCount !== null) {
+    if (transition.externalDisplayCount !== null && generation === center.automationGeneration) {
       const runs = await dispatchSystemContextEvent(
         host,
         {
@@ -1706,7 +1758,8 @@ export function tickSafetyHealthAndAutomation(
   const center = getHostActivityCenter(host);
   let needsRender = pruneOrphanedDeviceActivities(host, nowMs);
 
-  const enabledRules = center.automationEngine.store.load().filter((r) => r.isEnabled);
+  const automationRunning = isEventAutomationEnabled(host.settings);
+  const enabledRules = automationRunning ? center.automationEngine.store.load().filter((r) => r.isEnabled) : [];
   const baseSensorPolicy =
     center.sensorPolicyOverride ??
     loadSensorAlertPolicy(center.storage, center.lastSampledLockState ?? false);
@@ -1717,17 +1770,27 @@ export function tickSafetyHealthAndAutomation(
 
   if (needsLockSampling && !center.lockPollInFlight) {
     center.lockPollInFlight = true;
+    const automationGeneration = center.automationGeneration;
     void isWorkstationLocked()
       .then(async (locked) => {
         center.lockPollInFlight = false;
         if (!isFullPanelHost(host)) return;
         const previous = center.lastSampledLockState;
-        if (previous === null) {
+        const mayDispatch = automationRunning && automationGeneration === center.automationGeneration;
+        const primeAutomationLock = mayDispatch && center.needsAutomationLockBaseline;
+        if (mayDispatch && (previous === null || primeAutomationLock)) {
           center.automationEngine.primeLockBaseline(locked);
+          center.needsAutomationLockBaseline = false;
+        }
+        if (previous === null || primeAutomationLock) {
           center.lastSampledLockState = locked;
           // 重新建立基线意味着此前的会话/重置已作废：递增代际，让任何在途的
           // 旧锁屏回调失效，不得对新的会话派发过时的 lockChanged。
           center.lockSampleGeneration += 1;
+          return;
+        }
+        if (!mayDispatch) {
+          center.lastSampledLockState = locked;
           return;
         }
         if (locked !== previous) {
@@ -1781,7 +1844,7 @@ export function tickSafetyHealthAndAutomation(
 
   const isLockedSnapshot = center.lastSampledLockState ?? false;
 
-  void pollAndDispatchWifi(host, center, nowMs);
+  if (automationRunning) void pollAndDispatchWifi(host, center, nowMs);
 
   if (isLiveSnapshotReadyForTelemetry(host)) {
     const aliased = aliasedHostDevices(host);
@@ -1823,6 +1886,14 @@ export function tickSafetyHealthAndAutomation(
     }
   }
 
+  if (automationRunning) tickAutomationRules(host, center, enabledRules, nowMs);
+  center.lastEvaluatedAtMs = nowMs;
+  return needsRender;
+}
+
+function tickAutomationRules(
+  host: MenuMijiaWindowsApp, center: HostActivityCenter, enabledRules: readonly AutomationRule[], nowMs: number,
+): void {
   // Power and external-display sampling runs on the macOS 10 s cadence only when enabled rules consume them.
   const need = systemSignalNeed(enabledRules);
   if (need.power || need.externalDisplayCount) {
@@ -1838,9 +1909,6 @@ export function tickSafetyHealthAndAutomation(
   ) {
     void dispatchSystemContextEvent(host, { kind: "tick" }, nowMs);
   }
-  center.lastEvaluatedAtMs = nowMs;
-
-  return needsRender;
 }
 
 export function buildActivityFeed(

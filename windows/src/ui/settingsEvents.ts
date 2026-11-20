@@ -43,7 +43,8 @@ import { withAliases, type HomeOption, type LayoutPrefs } from "./panelPrefs.js"
 import { normalizePanelTheme } from "./panelTheme.js";
 import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import { demoDevices, demoScenes } from "./demo.js";
-import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
+import { isFullPanelHost, setEventAutomationRunning } from "./activityStackView.js";
+import { clearHostSessionAndDualSourceState, submitServiceEndpoints, syncAutomationLifecycle } from "./appLifecycle.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
 import { applyHaTypePruneSnapshot, applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled } from "./cloudRefresh.js";
 import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
@@ -1530,6 +1531,25 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     // Closing 主动建议 drops a suggestion run that is still in flight (P5b-W); switching it back
     // on lets the next shared tick start a fresh one. Commands and timers are not affected.
     if (!checked) host.advanceProactiveEpoch?.();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-event-automation-enabled")?.addEventListener("change", (event) => {
+    if (!isFullPanelHost(host)) return;
+    const toggle = event.target as HTMLInputElement;
+    if (!setEventAutomationRunning(host, toggle.checked)) {
+      toggle.checked = false;
+      host.replyBanner = {
+        text: tr3("无法保存暂停的规则，自动化仍处于关闭状态", "無法儲存暫停的規則，自動化仍處於關閉狀態", "Could not save paused rules. Automation is still off."),
+        source: t("控制失败"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
+    syncAutomationLifecycle(host);
+    host.saveSettings();
     syncSettingsSaveHint(host, "auto-saved");
     host.render();
   });

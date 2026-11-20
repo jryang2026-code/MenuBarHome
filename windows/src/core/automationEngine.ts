@@ -1288,7 +1288,8 @@ export class AutomationEngine {
     return this.context;
   }
 
-  public resetTransientState(): void {
+  public resetTransientState(resetContext = false): void {
+    if (resetContext) this.context = { ...this.context, wifiSSID: null, wifiAuthorized: false, isSystemAsleep: false, isDisplayAsleep: false };
     this.arbitrator.reset();
     this.hasLockBaseline = false;
     this.sensorConditionEdge.clear();
@@ -1340,6 +1341,8 @@ export class AutomationEngine {
     host: AutomationExecutionHost,
     event: SystemContextEvent,
     options: ExecuteAutomationRuleOptions & {
+      readonly canStartRule?: () => boolean;
+      readonly resumedAtMs?: number;
       readonly rules?: readonly AutomationRule[];
       readonly observationsByDeviceId?: Readonly<Record<string, readonly SensorObservation[]>>;
     } = {},
@@ -1599,10 +1602,12 @@ export class AutomationEngine {
     }
 
     if (!this.context.isLocked && !this.context.isSystemAsleep && !this.context.isDisplayAsleep) {
-      this.evaluateLateNightRules(rules, nowMs, matchedRules);
+      this.evaluateLateNightRules(rules, nowMs, matchedRules, options.resumedAtMs);
     }
-    this.evaluateScheduledTimeRules(rules, nowMs, matchedRules);
-    this.evaluateSensorThresholdRules(host, rules, nowMs, matchedRules, options.observationsByDeviceId);
+    if (options.resumedAtMs === undefined || Math.floor(nowMs / 60_000) > Math.floor(options.resumedAtMs / 60_000)) {
+      this.evaluateScheduledTimeRules(rules, nowMs, matchedRules);
+    }
+    this.evaluateSensorThresholdRules(host, rules, nowMs, matchedRules, options.observationsByDeviceId, options.resumedAtMs !== undefined);
 
     const uniqueRules: AutomationRule[] = [];
     const seenRuleIds = new Set<string>();
@@ -1615,7 +1620,7 @@ export class AutomationEngine {
     const startingRevision = host.sourceRevision ?? 0;
     const runs: RecordedAutomationRun[] = [];
     for (const rule of uniqueRules) {
-      if ((host.sourceRevision ?? 0) !== startingRevision) break;
+      if (options.canStartRule?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
       const run = await executeAutomationRule(host, rule, {
         ...options,
         nowMs,
@@ -1623,18 +1628,18 @@ export class AutomationEngine {
       });
       if (run) {
         runs.push(run);
-      } else if (!options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
+      } else if (options.canStartRule?.() !== false && !options.rules && !rule.highRiskApproved && automationRuleHighRiskConfirmation(rule.action, options.displayDevices ?? host.devices) !== null) {
         this.store.save(this.store.load().map((r) => (r.id === rule.id ? { ...r, isEnabled: false } : r)));
       }
     }
     return runs;
   }
 
-  private evaluateLateNightRules(rules: readonly AutomationRule[], nowMs: number, out: AutomationRule[]): void {
+  private evaluateLateNightRules(rules: readonly AutomationRule[], nowMs: number, out: AutomationRule[], resumedAtMs?: number): void {
     for (const rule of rules) {
       if (rule.trigger !== "lateNightUsage") continue;
       const anchorKey = lateNightAnchorKey(rule.triggerOptions.lateNightWindow, nowMs);
-      if (!anchorKey) continue;
+      if (!anchorKey || (resumedAtMs !== undefined && anchorKey === lateNightAnchorKey(rule.triggerOptions.lateNightWindow, resumedAtMs))) continue;
       if (!this.passesConditions(rule, nowMs, this.context.wifiSSID, this.context.wifiAuthorized)) continue;
       if (this.deduper.shouldFire(`lateNight:${rule.id}:${anchorKey}`, nowMs, AUTOMATION_POLICY.nightlyCooldownMs)) {
         out.push(rule);
@@ -1668,6 +1673,7 @@ export class AutomationEngine {
     nowMs: number,
     out: AutomationRule[],
     observationsByDeviceId?: Readonly<Record<string, readonly SensorObservation[]>>,
+    primeFirstSample = false,
   ): void {
     for (const rule of rules) {
       if (rule.trigger !== "sensorThreshold") continue;
@@ -1688,7 +1694,7 @@ export class AutomationEngine {
       }
 
       const edgeKey = `${rule.id}:${cond.deviceId}:${cond.metric}`;
-      const previous = this.sensorConditionEdge.get(edgeKey) ?? false;
+      const previous = this.sensorConditionEdge.get(edgeKey) ?? primeFirstSample;
       this.sensorConditionEdge.set(edgeKey, active);
       if (!active || previous) continue;
 

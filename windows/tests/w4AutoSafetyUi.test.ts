@@ -390,6 +390,14 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     toggleCheck(`[data-auto-rule-toggle="${ruleId}"]`, true);
     assert.equal(new AutomationRuleStore().load()[0]?.isEnabled, true);
 
+    const storedRule = new AutomationRuleStore().load()[0];
+    toggleCheck("#settings-event-automation-enabled", false);
+    assert.equal(JSON.parse(localStorage.getItem(STORAGE_KEY)!).eventAutomationEnabled, false);
+    assert.deepEqual(new AutomationRuleStore().load()[0], storedRule);
+    assert.equal(element<HTMLButtonElement>(`[data-auto-rule-run="${ruleId}"]`).disabled, true);
+    toggleCheck("#settings-event-automation-enabled", true);
+    assert.equal(JSON.parse(localStorage.getItem(STORAGE_KEY)!).eventAutomationEnabled, true);
+
     locked = true;
     await click(`[data-auto-rule-run="${ruleId}"]`);
     await setImmediate();

@@ -1,3 +1,4 @@
+import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import {
   AutomationRuleStore,
   AutomationTriggerDeduper,
@@ -916,7 +917,7 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
             </div>
             <div style="display: flex; align-items: center; gap: 6px; margin-left: auto;">
               <input type="checkbox" data-auto-rule-toggle="${esc(rule.id)}" aria-label="${esc(uiText(lang, "启用规则", "啟用規則", "Enable rule"))}" ${rule.isEnabled ? "checked" : ""} />
-              <button type="button" class="cc-btn-secondary" data-auto-rule-run="${esc(rule.id)}">${esc(uiText(lang, "立即试运行", "立即試運行", "Run Now"))}</button>
+              <button type="button" class="cc-btn-secondary" data-auto-rule-run="${esc(rule.id)}" ${isEventAutomationEnabled(ctx.settings) ? "" : "disabled"}>${esc(uiText(lang, "立即试运行", "立即試運行", "Run Now"))}</button>
               <button type="button" class="cc-btn-secondary" data-auto-rule-delete="${esc(rule.id)}">${esc(uiText(lang, "删除", "刪除", "Delete"))}</button>
             </div>
           </div>`;
@@ -1011,6 +1012,11 @@ export function renderAutomationAndSafetySettingsSections(ctx: SettingsViewConte
 
   return `
     <div class="cc-field" data-settings-anchor="automationRules" id="settings-automation-section">
+      <div class="cc-field-row">
+        <label for="settings-event-automation-enabled">${esc(uiText(lang, "运行电脑状态自动化", "執行電腦狀態自動化", "Run PC Context Automation"))}</label>
+        <input id="settings-event-automation-enabled" type="checkbox" aria-describedby="settings-event-automation-hint" ${isEventAutomationEnabled(ctx.settings) ? "checked" : ""} />
+      </div>
+      <p class="cc-field-hint" id="settings-event-automation-hint">${esc(uiText(lang, "关闭后保留规则。重新开启时，目标不可用的规则会暂停。", "關閉後保留規則。重新開啟時，目標無法使用的規則會暫停。", "Turning this off preserves rules. Rules with unavailable targets are paused when you turn it back on."))}</p>
       <div class="cc-field-row">
         <label>${esc(uiText(lang, "本机状态自动化规则", "本機狀態自動化規則", "PC Context Automation Rules"))}</label>
         <button type="button" class="cc-btn-secondary" id="btn-toggle-auto-form">${esc(
@@ -1406,7 +1412,7 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     }
 
     const runId = btn.dataset.autoRuleRun;
-    if (runId) {
+    if (runId && isEventAutomationEnabled(host.settings)) {
       const rule = ruleStore.load().find((r) => r.id === runId);
       if (!rule || typeof host.applyCommand !== "function") return;
       if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
@@ -1428,11 +1434,13 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       }
       const scopeAtStart = center?.scopeKey ?? computeActivityScopeKey(host);
       const sourceRevisionAtStart = host.sourceRevision ?? 0;
+      const automationGeneration = center?.automationGeneration;
       const isSameScope = (): boolean =>
         (host.sourceRevision ?? 0) === sourceRevisionAtStart &&
         (center?.scopeKey ?? computeActivityScopeKey(host)) === scopeAtStart;
       void (async () => {
         if (isFullPanelHost(host) && (await rejectIfControlBlockedWhileLocked(host))) return;
+        if (!isEventAutomationEnabled(host.settings) || center?.automationGeneration !== automationGeneration) return;
         if (!isSameScope()) return;
         const execHost = host as AutoSafetySettingsHost & {
           applyCommand(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;

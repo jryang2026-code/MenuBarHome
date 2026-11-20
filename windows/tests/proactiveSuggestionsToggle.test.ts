@@ -214,6 +214,7 @@ describe("P5b-W acceptance 1: 主动建议 is a switch of its own", () => {
     const app = mountDemoApp();
     enableLocalSuggestions(app);
     app.settings.proactiveSuggestionsEnabled = false;
+    app.settings.eventAutomationEnabled = false;
     const transport = deferredTransport();
     Object.defineProperty(app, "transport", { value: transport.stub, configurable: true });
     app.refreshDevices = async () => {};
@@ -334,12 +335,13 @@ describe("P5b-W acceptance 2: fresh installs follow the manifest, upgrades keep 
     resolveCapabilityInstallSelection(evidence, manifest);
 
   it("resolves the manifest defaults for a brand-new install", () => {
-    const settings: { aiAssistantEnabled?: boolean; proactiveSuggestionsEnabled?: boolean } = {};
+    const settings: { aiAssistantEnabled?: boolean; proactiveSuggestionsEnabled?: boolean; eventAutomationEnabled?: boolean } = {};
     const outcome = applyFreshInstallFeatureSwitches(settings, resolve({}));
     assert.equal(outcome.applied, true);
     assert.equal(settings.aiAssistantEnabled, false, "ai-assistant is defaultOnFreshInstall: false");
     assert.equal(settings.proactiveSuggestionsEnabled, true, "proactive-suggestions defaults on");
-    assert.deepEqual([...outcome.changedSwitches].sort(), ["aiAssistantEnabled", "proactiveSuggestionsEnabled"]);
+    assert.equal(settings.eventAutomationEnabled, true);
+    assert.deepEqual([...outcome.changedSwitches].sort(), ["aiAssistantEnabled", "eventAutomationEnabled", "proactiveSuggestionsEnabled"]);
   });
 
   it("leaves every other install mode and every explicit choice alone", () => {

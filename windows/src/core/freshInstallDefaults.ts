@@ -19,13 +19,19 @@ import type { CapabilitySelection, CapabilityInstallResolution } from "./capabil
 
 /** Settings fields that carry a feature switch whose default comes from the shared manifest. */
 export interface FeatureSwitchSettings {
+  eventAutomationEnabled?: boolean;
   aiAssistantEnabled?: boolean;
   proactiveSuggestionsEnabled?: boolean;
+}
+
+export function isEventAutomationEnabled(settings: FeatureSwitchSettings): boolean {
+  return settings.eventAutomationEnabled !== false;
 }
 
 export type FeatureSwitchKey = keyof FeatureSwitchSettings;
 
 export const FEATURE_SWITCH_CAPABILITIES = {
+  eventAutomationEnabled: "event-automation",
   aiAssistantEnabled: "ai-assistant",
   proactiveSuggestionsEnabled: "proactive-suggestions",
 } as const satisfies Record<FeatureSwitchKey, FeatureID>;
