@@ -1,0 +1,7 @@
+◇ Test run started.
+◇ Test "Flaky cover case" started.
+◇ Test "Flaky scene case" started.
+✔ Test "Flaky cover case" passed after 0.412 seconds.
+✔ Test "Flaky scene case" passed after 0.512 seconds.
+✔ Suite FixtureTests passed after 0.521 seconds.
+✔ Test run with 2 tests in 1 suite passed after 0.6 seconds.
