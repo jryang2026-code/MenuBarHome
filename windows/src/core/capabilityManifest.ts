@@ -66,9 +66,9 @@ export const DEVICE_CATEGORY_PRIMARY_KIND_TAG = {
 
 /**
  * Which card kinds each category can be drawn from. `fan` also covers the humidifier card and an
- * appliance card whose humidifier service is drawn as one, and `valve` is an appliance card whose
- * hints say valve — so this is a reachability table, not a lookup; `deviceCategoryForCardShape`
- * resolves those overlaps (valve before humidifier before plain appliance).
+ * appliance card whose humidifier service is drawn as one, and `valve` is an appliance card that
+ * controls a HA `valve.*` entity — so this is a reachability table, not a lookup;
+ * `deviceCategoryForCardShape` resolves those overlaps (valve before humidifier before appliance).
  */
 export const DEVICE_CATEGORY_CARD_KINDS = {
   light: ["light"], plug: ["plug"], climate: ["climate"], fan: ["fan", "humidifier", "appliance"],
@@ -105,8 +105,8 @@ export const DEVICE_CATEGORY_PRESETS = {
  * (`models.ts:DeviceCardShape`), never a value, so an empty snapshot classifies like the next one.
  *
  * An appliance card is the one kind that can be two categories: a valve first (a HA `valve.*`
- * entity, a valve model, or a valve name on a card without target temperature or modes), then a
- * humidifier service drawn as a fan. Everything else follows its card kind.
+ * entity, nothing else), then a humidifier service drawn as a fan. Everything else follows its
+ * card kind.
  */
 export function deviceCategoryForCardShape(card: DeviceCardShape): DeviceCategoryID {
   if (card.kind === "appliance") {

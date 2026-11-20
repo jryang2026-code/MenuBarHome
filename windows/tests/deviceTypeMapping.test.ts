@@ -4,78 +4,85 @@ import { resolve } from "node:path";
 import { describe, it } from "node:test";
 import {
   DEVICE_CATEGORY_CARD_KINDS, DEVICE_CATEGORY_IDS, DEVICE_CATEGORY_PRESETS, DEVICE_CATEGORY_PRESET_IDS,
-  DEVICE_KIND_TO_CATEGORY, NON_CAMERA_DEVICE_CATEGORY_IDS,
-  deviceCategoryForCardShape, deviceCategoryForDevice,
+  NON_CAMERA_DEVICE_CATEGORY_IDS, deviceCategoryForDevice,
   type DeviceCategoryID, type DeviceCategoryPresetID,
 } from "../src/core/capabilityManifest.js";
-import {
-  deviceCardShape, deviceCardShapeForKind,
-  type DeviceCardShape, type DeviceKind, type SmartDevice,
-} from "../src/core/models.js";
+import { devicePrimaryEntityId, type SmartDevice, type SynthesizedHome } from "../src/core/models.js";
+import { deviceCategory } from "../src/core/assistant/deviceCategory.js";
 import { miotShortName, parseMiotDeviceSpec, type MiotDeviceSpec } from "../src/core/miCloud/spec.js";
 import { MiotSynthesizer } from "../src/core/miCloud/synthesis.js";
-import type { MiDeviceRecord } from "../src/core/miCloud/client.js";
+import { propKeyString, type MiDeviceRecord } from "../src/core/miCloud/client.js";
 import { buildMiotTypePrunePlan } from "../src/core/miotTypePruning.js";
+import { buildHaTypePrunePlan } from "../src/core/haTypePruning.js";
 import { HomeAssistantSynthesizer } from "../src/core/homeAssistant.js";
 import {
-  evaluateControlTargetGate, partitionCapabilityDevices,
-  type CapabilityIndexedDevice, type CapabilitySelection, type SafetySignalKind,
+  evaluateControlTargetGate, type CapabilitySelection, type SafetySignalKind,
 } from "../src/core/capabilityReferenceVerdict.js";
 import { evaluateSensorAlerts } from "../src/core/safetyAndHealth.js";
 
 // The shared corpus both platforms read: `Tests/Fixtures/capability_selection_golden.json`. P3c-W
 // owns the `deviceTypeMapping` section; the macOS twin (P3c-M) reads the same cases from
-// `GoldenCorpusTests.swift`, so a mapping change has to land on both ends with one assertion set.
-interface FixtureCard {
-  readonly kind: DeviceKind["kind"];
-  readonly entityId: string;
-  readonly model: string;
-  readonly name: string;
-  readonly symbolName?: string | null;
-  readonly heats?: boolean;
-  readonly temperatureWritable?: boolean;
-  readonly availableModes?: readonly string[];
+// `GoldenCorpusTests.swift`. A case names its input — a MIoT model whose shared spec publishes a
+// service, or HA entity states — and the expected manifest category; each end draws its own card
+// shape from that input, so nothing here pins a Windows-only `DeviceKind`.
+interface HAStateRow { readonly entity_id: string; readonly state: string; readonly attributes: Record<string, unknown> }
+interface HAInput {
+  readonly source: "home-assistant";
+  readonly device: { readonly name: string; readonly model: string };
+  readonly states: readonly HAStateRow[];
 }
+interface MiotInput { readonly source: "xiaomi-cloud"; readonly model: string; readonly service?: string; readonly name: string }
 interface FixtureSelection {
   readonly enabledConnections: CapabilitySelection["enabledConnections"];
   readonly enabledConnectionScopes: readonly string[];
   readonly enabledFeatures: CapabilitySelection["enabledFeatures"];
   readonly preset: DeviceCategoryPresetID;
 }
+interface ExpectedCard {
+  readonly id?: string; readonly category: DeviceCategoryID;
+  readonly controlDid?: string; readonly controlSiid?: number; readonly controlEntityId?: string;
+}
+interface PropRef { readonly siid: number; readonly piid: number }
 interface FixtureCorpus {
   readonly deviceTypeMapping: {
     readonly presets: readonly { readonly id: DeviceCategoryPresetID; readonly categories: readonly DeviceCategoryID[] }[];
-    readonly cardCases: readonly {
-      readonly id: string; readonly card: FixtureCard; readonly expectedCategory: DeviceCategoryID;
-    }[];
-    readonly mixedTypeCases: readonly {
-      readonly id: string; readonly source: "xiaomi-cloud" | "home-assistant";
-      readonly primaryModel?: string; readonly secondaryModel?: string; readonly model?: string;
-      readonly name?: string; readonly entities?: readonly string[];
-      readonly expectedCards: number; readonly expectedCategory: DeviceCategoryID;
-      readonly expectedSecondaryCategory?: DeviceCategoryID;
-      readonly expectedSecondaryCategories?: readonly DeviceCategoryID[];
-    }[];
-    readonly splitCardCases: readonly {
-      readonly id: string; readonly source: "xiaomi-cloud" | "home-assistant";
-      readonly model?: string; readonly parentDid?: string;
-      readonly keys?: readonly { readonly did: string; readonly siid: number }[];
-      readonly entities?: readonly string[];
-      readonly expectedCategory: DeviceCategoryID;
-    }[];
-    readonly devices: readonly CapabilityIndexedDevice[];
+    readonly cardCases: readonly { readonly id: string; readonly input: HAInput | MiotInput; readonly expectedCategory: DeviceCategoryID }[];
+    readonly mixedTypeCases: readonly ({
+      readonly id: string; readonly expectedCards: readonly ExpectedCard[];
+      readonly expectedFacetSiids?: readonly number[];
+    } & (
+      | {
+          readonly source: "xiaomi-cloud"; readonly did: string; readonly name: string; readonly model?: string;
+          readonly services?: readonly { readonly model: string; readonly service: string; readonly iid: number }[];
+        }
+      | HAInput
+    ))[];
+    readonly splitCardCases: readonly ({ readonly id: string; readonly expectedCards: readonly ExpectedCard[] } & (
+      | {
+          readonly source: "xiaomi-cloud"; readonly model: string; readonly service: string;
+          readonly serviceIids: readonly number[]; readonly name: string;
+          readonly did?: string; readonly parentDid?: string;
+          readonly keys?: readonly { readonly did: string; readonly siid: number }[];
+        }
+      | HAInput
+    ))[];
+    readonly typeIndexHome: {
+      readonly xiaomiCloud: {
+        readonly connectionScope: string;
+        readonly records: readonly { readonly did: string; readonly name: string; readonly model: string }[];
+      };
+      readonly homeAssistant: { readonly connectionScope: string } & Omit<HAInput, "source">;
+    };
     readonly leakCases: readonly {
       readonly id: string; readonly selection: FixtureSelection; readonly safetySignals: readonly SafetySignalKind[];
-      readonly expectedAvailableDeviceIds: readonly string[];
-      readonly expectedHiddenSafetyRetainedDeviceIds: readonly string[];
-      readonly expectedSafetyEvaluationDeviceIds: readonly string[];
-      readonly expectedReadPlanKeys: readonly string[];
-      readonly expectLeakAlertWhenSensorTriggers: boolean;
+      readonly leakDid: string; readonly alertKey: PropRef; readonly alertValue: unknown;
+      readonly expectedAvailableDids: readonly string[]; readonly expectedRetainedDids: readonly string[];
+      readonly expectedLeakReadKeys: readonly PropRef[]; readonly expectLeakAlert: boolean;
     }[];
     readonly zeroWriteCases: readonly {
-      readonly id: string; readonly targetKind: "device"; readonly targetId: string;
-      readonly candidateIds: readonly string[]; readonly selection: FixtureSelection;
-      readonly safetySignals: readonly SafetySignalKind[];
+      readonly id: string;
+      readonly target: { readonly source: "xiaomi-cloud"; readonly did: string } | { readonly source: "home-assistant"; readonly entityId: string };
+      readonly selection: FixtureSelection; readonly safetySignals: readonly SafetySignalKind[];
       readonly expectedMappedCategory: DeviceCategoryID | null;
       readonly expectedAllowed: boolean; readonly expectedWriteCount: number;
       readonly expectedRejectionCode: string | null;
@@ -92,23 +99,10 @@ const rawSpecs = JSON.parse(
   readFileSync(resolve(process.cwd(), "../Tests/Fixtures/miot_coverage_specs.json"), "utf8"),
 ) as Record<string, unknown>;
 
-const depositShape = (id: string, card: FixtureCard): DeviceCardShape => ({
-  id,
-  kind: card.kind,
-  entityId: card.entityId,
-  model: card.model,
-  name: card.name,
-  symbolName: card.symbolName ?? null,
-  heats: card.heats ?? false,
-  temperatureWritable: card.temperatureWritable ?? false,
-  availableModes: card.availableModes ?? [],
-});
-
-/** A card of `kind` with no hint at all: what a bare kind table would answer. */
-const bareShape = (kind: DeviceKind["kind"]): DeviceCardShape => ({
-  id: `bare:${kind}`, kind, entityId: "", model: "", name: "",
-  symbolName: null, heats: false, temperatureWritable: false, availableModes: [],
-});
+const ALL_TYPES: CapabilitySelection = {
+  enabledConnections: ["xiaomi-cloud", "home-assistant"], enabledConnectionScopes: ["mi:acc1"],
+  enabledFeatures: [], enabledCategories: [...DEVICE_CATEGORY_IDS],
+};
 
 const selectionOf = (fixture: FixtureSelection): CapabilitySelection => {
   const preset = mapping.presets.find((candidate) => candidate.id === fixture.preset);
@@ -127,7 +121,7 @@ const spec = (model: string): MiotDeviceSpec => {
   return parsed;
 };
 
-/** One raw service of a shared spec, optionally moved to another iid so two specs can be merged. */
+/** One raw service of a shared spec, optionally moved to another iid so specs can be merged. */
 const rawService = (model: string, short: string, iid?: number): Record<string, unknown> => {
   const raw = rawSpecs[model] as { services: Array<Record<string, unknown>> };
   const found = raw.services.find((service) => miotShortName(String(service.type)) === short);
@@ -135,12 +129,58 @@ const rawService = (model: string, short: string, iid?: number): Record<string, 
   return iid === undefined ? found : { ...found, iid };
 };
 
+/** A spec that publishes `services`, each copied from a shared spec, under the first one's type. */
+const mergedSpec = (typeModel: string, services: readonly Record<string, unknown>[]): MiotDeviceSpec => {
+  const parsed = parseMiotDeviceSpec({
+    type: (rawSpecs[typeModel] as { type: string }).type, description: "merged", services,
+  });
+  assert.ok(parsed);
+  return parsed;
+};
+
 const record = (did: string, name: string, model: string, extra: Partial<MiDeviceRecord> = {}): MiDeviceRecord => ({
   did, name, model, isOnline: true, specType: null, ...extra,
 });
 
+const synthesizeHA = (deviceId: string, input: Omit<HAInput, "source">): SynthesizedHome =>
+  HomeAssistantSynthesizer.synthesize({
+    areas: [{ area_id: "home", name: "家" }],
+    devices: [{ id: deviceId, name: input.device.name, area_id: "home", model: input.device.model }],
+    entities: input.states.map((row) => ({ entity_id: row.entity_id, device_id: deviceId })),
+    states: input.states,
+  });
+
+const synthesizeMiot = (
+  records: readonly MiDeviceRecord[], specs: Record<string, MiotDeviceSpec>, values = new Map<string, unknown>(),
+): SynthesizedHome => MiotSynthesizer.synthesize(records, [], specs, values);
+
+/** `miot:<did>:<siid>` → its parts, for a card's control address. */
+const miotAddress = (entityId: string | null): { did: string; siid: number } | null => {
+  const match = /^miot:(.+):(\d+)$/.exec(entityId ?? "");
+  return match ? { did: match[1]!, siid: Number(match[2]) } : null;
+};
+
+const assertCards = (home: SynthesizedHome, expected: readonly ExpectedCard[], label: string): void => {
+  assert.equal(home.devices.length, expected.length, `${label}: card count`);
+  const entityIds = home.devices.map((device) => devicePrimaryEntityId(device));
+  assert.equal(new Set(entityIds).size, entityIds.length, `${label}: every card addresses its own entity`);
+  expected.forEach((want, index) => {
+    const card = home.devices[index]!;
+    if (want.id !== undefined) assert.equal(card.id, want.id, `${label}[${index}] id`);
+    assert.equal(deviceCategoryForDevice(card), want.category, `${label}[${index}] category`);
+    const entityId = devicePrimaryEntityId(card);
+    if (want.controlEntityId !== undefined) assert.equal(entityId, want.controlEntityId, `${label}[${index}] entity`);
+    if (want.controlSiid !== undefined) {
+      const address = miotAddress(entityId);
+      assert.ok(address, `${label}[${index}] has a MIoT address, got ${entityId}`);
+      assert.equal(address.siid, want.controlSiid, `${label}[${index}] siid`);
+      if (want.controlDid !== undefined) assert.equal(address.did, want.controlDid, `${label}[${index}] did`);
+    }
+  });
+};
+
 describe("Windows device-type mapping (P3c-W)", () => {
-  it("shares the presets with macOS and covers every approved card type", () => {
+  it("shares the presets with macOS and covers every approved type", () => {
     // Both ends must answer the same lists: the corpus is the only owner of "which categories".
     assert.deepEqual(
       mapping.presets.map((preset) => preset.id).sort(),
@@ -159,180 +199,103 @@ describe("Windows device-type mapping (P3c-W)", () => {
 
     const covered = new Set(mapping.cardCases.map((c) => c.expectedCategory));
     assert.deepEqual([...covered].sort(), [...DEVICE_CATEGORY_IDS].sort());
-    // Every case's card kind can actually reach its category, and every category has a card kind.
-    for (const c of mapping.cardCases) {
-      const kinds: readonly DeviceKind["kind"][] = DEVICE_CATEGORY_CARD_KINDS[c.expectedCategory];
-      assert.ok(kinds.includes(c.card.kind), c.id);
-    }
-    for (const category of DEVICE_CATEGORY_IDS) {
-      const kinds: readonly DeviceKind["kind"][] = DEVICE_CATEGORY_CARD_KINDS[category];
-      assert.ok(kinds.length > 0, category);
-      const reachable = kinds.some(
-        (kind) => deviceCategoryForCardShape(bareShape(kind)) === category,
-      ) || covered.has(category);
-      assert.ok(reachable, `unreachable category ${category}`);
-    }
+    for (const category of DEVICE_CATEGORY_IDS) assert.ok(DEVICE_CATEGORY_CARD_KINDS[category].length > 0, category);
     // The camera card maps here like any other; only its teardown is P3c-CW.
     assert.equal(NON_CAMERA_DEVICE_CATEGORY_IDS.includes("camera"), false);
     assert.equal(NON_CAMERA_DEVICE_CATEGORY_IDS.length, DEVICE_CATEGORY_IDS.length - 1);
   });
 
-  it("maps every shared card case through the one classifier", () => {
+  it("maps every shared input through the synthesizer and the one classifier", () => {
     for (const c of mapping.cardCases) {
-      assert.equal(deviceCategoryForCardShape(depositShape(`case:${c.id}`, c.card)), c.expectedCategory, c.id);
+      let card: SmartDevice;
+      let planned: DeviceCategoryID | undefined;
+      if (c.input.source === "home-assistant") {
+        const home = synthesizeHA(`d-${c.id}`, c.input);
+        assert.equal(home.devices.length, 1, `${c.id}: one card`);
+        card = home.devices[0]!;
+        planned = buildHaTypePrunePlan({
+          devices: home.devices, selection: ALL_TYPES, connectionScope: "ha:test", safetySignals: [],
+        }).categoryByDeviceId.get(card.id);
+      } else {
+        const input = c.input;
+        const deviceSpec = spec(input.model);
+        if (input.service !== undefined) {
+          assert.ok(deviceSpec.services.some((s) => miotShortName(s.type) === input.service), `${c.id}: spec has ${input.service}`);
+        }
+        const raw = record(`did-${c.id}`, input.name, input.model);
+        const home = synthesizeMiot([raw], { [input.model]: deviceSpec });
+        assert.equal(home.devices.length, 1, `${c.id}: one card`);
+        card = home.devices[0]!;
+        planned = buildMiotTypePrunePlan({
+          rawDevices: [raw], specs: { [input.model]: deviceSpec }, selection: ALL_TYPES,
+          connectionScope: "mi:acc1", safetySignals: [],
+        }).categoryByDeviceId.get(card.id);
+      }
+      assert.equal(deviceCategoryForDevice(card), c.expectedCategory, c.id);
+      // The prune plan classifies the same input the same way, before any value is read.
+      assert.equal(planned, c.expectedCategory, `${c.id}: prune plan`);
     }
-
-    // The two derivations that are not a card-kind lookup answer from the shape alone.
-    const valveByName = depositShape("case:valve", {
-      kind: "appliance", entityId: "miot:601:2", model: "custom.shutoff.x1", name: "燃气阀",
-      temperatureWritable: false, availableModes: [],
-    });
-    assert.equal(deviceCategoryForCardShape(valveByName), "valve");
-    // …and a shape that says nothing still gets the plain kind answer: `appliance` is not `valve`.
-    assert.equal(deviceCategoryForCardShape(bareShape("appliance")), "appliance");
-    for (const kind of Object.keys(DEVICE_KIND_TO_CATEGORY) as Array<DeviceKind["kind"]>) {
-      assert.equal(deviceCategoryForCardShape(bareShape(kind)), DEVICE_KIND_TO_CATEGORY[kind], kind);
-    }
-
-    // `deviceCategoryForDevice` is the same classifier behind a synthesized device.
-    const waterValve: SmartDevice = {
-      id: "valve.water_main", name: "总水阀", roomId: "kitchen", roomName: "厨房",
-      model: "tuya.valve", isOnline: true,
-      kind: {
-        kind: "appliance", entityId: "valve.water_main", isOn: false, powerPresent: true, powerWritable: true,
-        currentMode: null, availableModes: [], modeWritable: false, targetTemperature: null, currentTemperature: null,
-        minTemp: 0, maxTemp: 100, step: 1, temperatureWritable: false, statusText: null, faultText: null,
-        remainingMinutes: null, startAction: null, pauseAction: null, stopAction: null,
-        powerEntityId: "valve.water_main", modeEntityId: "valve.water_main", temperatureEntityId: "valve.water_main",
-        light: null, fanLevel: null, currentHumidity: null, symbolName: null, roomReading: false, heats: false,
-      },
-    };
-    assert.equal(deviceCategoryForDevice(waterValve), "valve");
-    const humidifierAppliance: SmartDevice = {
-      ...waterValve,
-      id: "humidifier.guest", name: "客房加湿器", model: "custom.humidifier.x1",
-      kind: {
-        ...waterValve.kind as Extract<DeviceKind, { kind: "appliance" }>,
-        entityId: "humidifier.guest", temperatureWritable: true, symbolName: "humidity.fill",
-      },
-    };
-    assert.equal(deviceCategoryForDevice(humidifierAppliance), "fan");
-    assert.deepEqual(deviceCardShape(waterValve), deviceCardShapeForKind(waterValve.kind, waterValve));
   });
 
-  it("classifies the cards the synthesizers actually draw, mixed types included", () => {
-    const allTypes: CapabilitySelection = {
-      enabledConnections: ["xiaomi-cloud", "home-assistant"], enabledConnectionScopes: ["mi:acc1"],
-      enabledFeatures: [], enabledCategories: [...DEVICE_CATEGORY_IDS],
-    };
-    const miotCards = (devices: readonly MiDeviceRecord[], specs: Record<string, MiotDeviceSpec>) => {
+  it("never lets a name or the online state turn a water heater into a valve", () => {
+    const online = mapping.cardCases.find((c) => c.id === "ha_water_heater_named_after_a_gas_valve_online")!;
+    const offline = mapping.cardCases.find((c) => c.id === "ha_water_heater_named_after_a_gas_valve_offline")!;
+    const cards = [online, offline].map((c) => synthesizeHA("d-water-heater", c.input as HAInput).devices[0]!);
+    assert.equal(cards[0]!.isOnline, true);
+    assert.equal(cards[1]!.isOnline, false);
+    for (const card of cards) {
+      assert.equal(card.kind.kind, "appliance");
+      assert.equal(deviceCategoryForDevice(card), "appliance", `online=${card.isOnline}`);
+      // The assistant reads the same shape check, so it never offers a valve intent for it either.
+      assert.notEqual(deviceCategory(card), "valve", `assistant online=${card.isOnline}`);
+    }
+  });
+
+  it("keeps a mixed-type device one card with its secondary services on it", () => {
+    for (const c of mapping.mixedTypeCases) {
+      if (c.source === "home-assistant") {
+        // The second domain folds into the one card and never reclassifies or splits it.
+        assertCards(synthesizeHA(`d-${c.id}`, c), c.expectedCards, c.id);
+        continue;
+      }
+      const model = c.model ?? c.services![0]!.model;
+      const deviceSpec = c.services === undefined
+        ? spec(model)
+        : mergedSpec(model, c.services.map((s) => rawService(s.model, s.service, s.iid)));
+      const home = synthesizeMiot([record(c.did, c.name, model)], { [model]: deviceSpec });
+      assertCards(home, c.expectedCards, c.id);
+      const facetSiids = (home.deviceFacets?.[c.did] ?? []).map((facet) => miotAddress(facet.target?.entityId ?? null)?.siid);
+      for (const siid of c.expectedFacetSiids ?? []) {
+        assert.ok(facetSiids.includes(siid), `${c.id}: siid ${siid} stays on the card, got ${facetSiids.join(",")}`);
+      }
+    }
+  });
+
+  it("splits every key and track into its own card of the same type", () => {
+    for (const c of mapping.splitCardCases) {
+      if (c.source === "home-assistant") {
+        assertCards(synthesizeHA(`d-${c.id}`, c), c.expectedCards, c.id);
+        continue;
+      }
+      // The spec publishes the same service once per key or track, as the real devices do.
+      const deviceSpec = mergedSpec(c.model, c.serviceIids.map((iid) => rawService(c.model, c.service, iid)));
+      const records = c.keys === undefined
+        ? [record(c.did!, c.name, c.model)]
+        : [
+            record(c.parentDid!, c.name, c.model),
+            ...c.keys.map((key) => record(key.did, `${c.name} ${key.did}`, c.model, {
+              splitParentDid: c.parentDid!, splitSiid: key.siid,
+            })),
+          ];
+      const home = synthesizeMiot(records, { [c.model]: deviceSpec });
+      assertCards(home, c.expectedCards, c.id);
       const plan = buildMiotTypePrunePlan({
-        rawDevices: devices, specs, selection: allTypes, connectionScope: "mi:acc1", safetySignals: [],
+        rawDevices: records, specs: { [c.model]: deviceSpec }, selection: ALL_TYPES,
+        connectionScope: "mi:acc1", safetySignals: [],
       });
-      return { plan, cards: [...plan.categoryByDeviceId.entries()] };
-    };
-    // A fan with a light service: one card, the light stays a 更多设置 row, the type is the fan.
-    const fanLight = mapping.mixedTypeCases.find((c) => c.primaryModel !== undefined)!;
-    const primaryService = miotShortName((rawSpecs[fanLight.primaryModel!] as { type: string }).type);
-    const secondaryService = miotShortName((rawSpecs[fanLight.secondaryModel!] as { type: string }).type);
-    const merged = parseMiotDeviceSpec({
-      type: (rawSpecs[fanLight.primaryModel!] as { type: string }).type,
-      description: "mixed device",
-      services: [rawService(fanLight.primaryModel!, primaryService), rawService(fanLight.secondaryModel!, secondaryService, 9)],
-    });
-    assert.ok(merged);
-    const mixedRecord = record("3001", fanLight.name ?? "mixed", fanLight.primaryModel!);
-    const mixed = miotCards([mixedRecord], { [fanLight.primaryModel!]: merged });
-    assert.deepEqual(mixed.cards, [["3001", fanLight.expectedCategory]]);
-    const mixedReads = MiotSynthesizer.planReadKeys(mixedRecord, merged);
-    assert.equal(mixedReads.length, fanLight.expectedCards, "a mixed device draws one card");
-    // The secondary service (moved to siid 9) is still read and drawn as facets on the same card.
-    assert.ok(mixedReads[0]!.facets.some((key) => key.siid === 9), "secondary service stays on the card");
-
-    // A speaker that also publishes lights, a curtain and an air conditioner: still one speaker.
-    const speakerCase = mapping.mixedTypeCases.find((c) => c.model !== undefined)!;
-    const speakerModel = speakerCase.model!;
-    const speaker = miotCards([record("4001", speakerCase.name ?? "mixed", speakerModel)], { [speakerModel]: spec(speakerModel) });
-    assert.deepEqual(speaker.cards, [["4001", speakerCase.expectedCategory]]);
-    // Every secondary service lives on that one card, never as a card of its own.
-    assert.equal(speaker.cards.length, 1, (speakerCase.expectedSecondaryCategories ?? []).join(","));
-
-    // Home Assistant folds one registry device into one card: the primary domain wins the card (the
-    // existing order), so the second domain is not a second card and never reclassifies it.
-    const haCase = mapping.mixedTypeCases.find((c) => c.source === "home-assistant")!;
-    const haEntities = haCase.entities!;
-    const ha = HomeAssistantSynthesizer.synthesize({
-      areas: [{ area_id: "bedroom", name: "卧室" }],
-      devices: [{ id: "d-mixed", name: haCase.id, area_id: "bedroom", model: "test.mixed" }],
-      entities: haEntities.map((entityId) => ({ entity_id: entityId, device_id: "d-mixed" })),
-      states: haEntities.map((entityId) => ({
-        entity_id: entityId,
-        state: "on",
-        attributes: entityId.startsWith("fan.") ? { percentage: 40 } : { brightness: 128 },
-      })),
-    });
-    assert.equal(ha.devices.length, haCase.expectedCards, "one physical device, one card");
-    assert.equal(deviceCategoryForDevice(ha.devices[0]!), haCase.expectedCategory);
-  });
-
-  it("keeps every split key and track its own card of the same type", () => {
-    const switchCase = mapping.splitCardCases.find((c) => c.id === "multi_key_wall_switch_keeps_one_plug_card_per_key")!;
-    const switchModel = switchCase.model!;
-    const keys = switchCase.keys!;
-    const switchPlan = buildMiotTypePrunePlan({
-      rawDevices: [
-        record(switchCase.parentDid!, "双键开关", switchModel),
-        ...keys.map((key) => record(key.did, `双键开关 ${key.did}`, switchModel, {
-          splitParentDid: switchCase.parentDid!, splitSiid: key.siid,
-        })),
-      ],
-      specs: { [switchModel]: spec(switchModel) },
-      selection: {
-        enabledConnections: ["xiaomi-cloud"], enabledConnectionScopes: ["mi:acc1"],
-        enabledFeatures: [], enabledCategories: [...DEVICE_CATEGORY_IDS],
-      },
-      connectionScope: "mi:acc1",
-      safetySignals: [],
-    });
-    // The parent draws nothing; each key is its own plug card.
-    assert.deepEqual([...switchPlan.categoryByDeviceId.keys()].sort(), keys.map((key) => key.did).sort());
-    for (const key of keys) assert.equal(switchPlan.categoryByDeviceId.get(key.did), switchCase.expectedCategory, key.did);
-
-    // A dual-track motor publishes two curtain services: one cover card per track, never one card
-    // with both tracks.
-    const curtainCase = mapping.splitCardCases.find((c) => c.id === "dual_track_curtain_keeps_one_cover_card_per_track")!;
-    const curtainModel = curtainCase.model!;
-    const dualTrack = parseMiotDeviceSpec({
-      type: (rawSpecs[curtainModel] as { type: string }).type,
-      description: "dual track",
-      services: [rawService(curtainModel, "curtain"), rawService(curtainModel, "curtain", 5)],
-    });
-    assert.ok(dualTrack);
-    const curtainPlan = buildMiotTypePrunePlan({
-      rawDevices: [record("5001", "双轨窗帘", curtainModel)],
-      specs: { [curtainModel]: dualTrack },
-      selection: {
-        enabledConnections: ["xiaomi-cloud"], enabledConnectionScopes: ["mi:acc1"],
-        enabledFeatures: [], enabledCategories: [...DEVICE_CATEGORY_IDS],
-      },
-      connectionScope: "mi:acc1",
-      safetySignals: [],
-    });
-    assert.equal(curtainPlan.categoryByDeviceId.size, 2);
-    for (const category of curtainPlan.categoryByDeviceId.values()) assert.equal(category, curtainCase.expectedCategory);
-
-    // Home Assistant splits a device with two covers per track as well.
-    const haCover = mapping.splitCardCases.find((c) => c.id === "ha_double_cover_device_keeps_one_cover_card_per_track")!;
-    const ha = HomeAssistantSynthesizer.synthesize({
-      areas: [{ area_id: "living", name: "客厅" }],
-      devices: [{ id: "d-double-cover", name: "双轨窗帘", area_id: "living", model: "test.cover" }],
-      entities: haCover.entities!.map((entityId) => ({ entity_id: entityId, device_id: "d-double-cover" })),
-      states: haCover.entities!.map((entityId) => ({
-        entity_id: entityId, state: "open", attributes: { current_position: 40, supported_features: 15 },
-      })),
-    });
-    assert.equal(ha.devices.length, haCover.entities!.length);
-    for (const device of ha.devices) assert.equal(deviceCategoryForDevice(device), haCover.expectedCategory, device.id);
+      // The prune plan sees the same cards: same ids, same type, the parent draws nothing.
+      assert.deepEqual([...plan.categoryByDeviceId.keys()].sort(), home.devices.map((d) => d.id).sort(), c.id);
+    }
   });
 
   it("leaves the read plan untouched when every type is enabled", () => {
@@ -347,14 +310,9 @@ describe("Windows device-type mapping (P3c-W)", () => {
     const specs = Object.fromEntries(Object.values(models).map((model) => [model, spec(model)]));
     const devices = Object.entries(models).map(([did, model]) => record(did, did, model));
     const plan = buildMiotTypePrunePlan({
-      rawDevices: devices,
-      specs,
-      selection: {
-        enabledConnections: ["xiaomi-cloud"], enabledConnectionScopes: ["mi:acc1"],
-        enabledFeatures: [], enabledCategories: [...DEVICE_CATEGORY_PRESETS.allSupportedTypes],
-      },
-      connectionScope: "mi:acc1",
-      safetySignals: ["leak"],
+      rawDevices: devices, specs,
+      selection: { ...ALL_TYPES, enabledCategories: [...DEVICE_CATEGORY_PRESETS.allSupportedTypes] },
+      connectionScope: "mi:acc1", safetySignals: ["leak"],
     });
     const legacyReads = devices.flatMap((device) => {
       const deviceSpec = specs[device.model]!;
@@ -371,58 +329,66 @@ describe("Windows device-type mapping (P3c-W)", () => {
     assert.deepEqual([...plan.categoryByDeviceId.keys()].sort(), devices.map((device) => device.did).sort());
   });
 
-  it("keeps reading and alerting a leak while the sensor type is closed", () => {
-    const leakCard: SmartDevice = {
-      id: "sensor.kitchen_leak", name: "厨房水浸传感器", roomId: "kitchen", roomName: "厨房",
-      model: "lumi.sensor_wleak.aq1", isOnline: true,
-      kind: {
-        kind: "sensor", temperature: null, humidity: null, battery: 90, statusText: "浸水告警", alertKind: "leak",
-        safetyObservations: [{ entityId: "105.2.1", kind: "leak", alarming: true }],
-      },
-    };
-    // The fixed assertion starts at the mapping: a flood sensor is the `sensor` type.
-    assert.equal(deviceCategoryForDevice(leakCard), "sensor");
+  // The fixed assertions read their index from the real prune plans of one shared home.
+  const home = mapping.typeIndexHome;
+  const miRecords = home.xiaomiCloud.records.map((r) => record(r.did, r.name, r.model));
+  const miSpecs = Object.fromEntries(miRecords.map((r) => [r.model, spec(r.model)]));
+  const haCards = synthesizeHA("d-type-index", home.homeAssistant).devices;
+  const prunePlans = (selection: CapabilitySelection, safetySignals: readonly SafetySignalKind[]) => ({
+    mi: buildMiotTypePrunePlan({
+      rawDevices: miRecords, specs: miSpecs, selection, connectionScope: home.xiaomiCloud.connectionScope, safetySignals,
+    }),
+    ha: buildHaTypePrunePlan({
+      devices: haCards, selection, connectionScope: home.homeAssistant.connectionScope, safetySignals,
+    }),
+  });
 
+  it("keeps reading and alerting a leak while the sensor type is closed", () => {
     for (const c of mapping.leakCases) {
       const selection = selectionOf(c.selection);
       assert.equal(selection.enabledCategories.includes("sensor"), false, c.id);
-      const partition = partitionCapabilityDevices(mapping.devices, selection, { enabledSignals: c.safetySignals });
-      assert.deepEqual(partition.availableDeviceIds, c.expectedAvailableDeviceIds, c.id);
-      assert.deepEqual(partition.hiddenSafetyRetainedDeviceIds, c.expectedHiddenSafetyRetainedDeviceIds, c.id);
-      assert.deepEqual(partition.safetyEvaluationDeviceIds, c.expectedSafetyEvaluationDeviceIds, c.id);
-      assert.deepEqual(partition.readPlanKeys, c.expectedReadPlanKeys, c.id);
-      // Only the alert evaluation sees the closed card; the panel never does.
-      const evaluated = partition.safetyEvaluationDeviceIds.includes(leakCard.id) ? [leakCard] : [];
-      const result = evaluateSensorAlerts(evaluated, {}, 1_700_000_000_000, {
+      const { mi } = prunePlans(selection, c.safetySignals);
+      assert.equal(mi.categoryByDeviceId.get(c.leakDid), "sensor", c.id);
+      assert.deepEqual([...mi.visibleDeviceIds].sort(), [...c.expectedAvailableDids].sort(), c.id);
+      assert.deepEqual([...mi.safetyRetainedDeviceIds].sort(), [...c.expectedRetainedDids].sort(), c.id);
+      // The closed leak sensor reads only what its alert needs — or nothing once the alert is off.
+      const leakReads = mi.readKeys.filter((key) => key.did === c.leakDid).map((key) => `${key.siid}.${key.piid}`);
+      assert.deepEqual(leakReads.sort(), c.expectedLeakReadKeys.map((key) => `${key.siid}.${key.piid}`).sort(), c.id);
+      assert.equal(mi.visibleRecords.some((r) => r.did === c.leakDid), false, `${c.id}: never on the panel`);
+
+      // Only the alert evaluation sees the retained card, synthesized from the retained reads.
+      const values = new Map<string, unknown>();
+      const alertKey = { did: c.leakDid, ...c.alertKey };
+      if (mi.readKeys.some((key) => propKeyString(key) === propKeyString(alertKey))) {
+        values.set(propKeyString(alertKey), c.alertValue);
+      }
+      const evaluated = synthesizeMiot(mi.safetyRecords, miSpecs, values);
+      const result = evaluateSensorAlerts(evaluated.devices, {}, 1_700_000_000_000, {
         enabled: { leak: c.safetySignals.includes("leak") }, onlyWhenAway: false, includesAway: true,
-      });
-      assert.equal(result.alerts.length > 0, c.expectLeakAlertWhenSensorTriggers, c.id);
+      }, { deviceFacets: evaluated.deviceFacets ?? {} });
+      assert.equal(result.alerts.length > 0, c.expectLeakAlert, c.id);
     }
   });
 
   it("rejects a hidden target from its mapped type with zero writes", () => {
     for (const c of mapping.zeroWriteCases) {
       const selection = selectionOf(c.selection);
-      const indexed = mapping.devices.find((device) => device.id === c.targetId);
-      if (c.expectedMappedCategory === null) {
-        assert.equal(indexed, undefined, c.id);
-      } else {
-        // The gate's reason is the mapping's own answer, not a hand-written category.
-        assert.equal(indexed?.category, c.expectedMappedCategory, c.id);
-      }
+      const { mi, ha } = prunePlans(selection, c.safetySignals);
+      const index = [...mi.hiddenIndexedDevices, ...ha.hiddenIndexedDevices];
+      const targetId = c.target.source === "xiaomi-cloud"
+        ? c.target.did
+        : haCards.find((card) => devicePrimaryEntityId(card) === (c.target as { entityId: string }).entityId)?.id
+          ?? c.target.entityId;
+      const mapped = mi.categoryByDeviceId.get(targetId) ?? ha.categoryByDeviceId.get(targetId) ?? null;
+      assert.equal(mapped, c.expectedMappedCategory, c.id);
       const verdict = evaluateControlTargetGate({
-        targetKind: c.targetKind,
-        targetId: c.targetId,
-        candidateIds: [...c.candidateIds],
-        selection,
-        devices: mapping.devices,
+        targetKind: "device", targetId, candidateIds: [], selection, devices: index,
       });
       assert.equal(verdict.allowed, c.expectedAllowed, c.id);
       assert.equal(verdict.writeCount, c.expectedWriteCount, c.id);
       assert.equal(verdict.rejectionReason?.code ?? null, c.expectedRejectionCode, c.id);
-      if (c.expectedMappedCategory !== null) {
-        assert.equal(verdict.rejectionReason?.disabledCategory, c.expectedMappedCategory, c.id);
-      }
+      // The gate's reason is the mapping's own answer, from the same index.
+      if (mapped !== null) assert.equal(verdict.rejectionReason?.disabledCategory, mapped, c.id);
     }
   });
 });

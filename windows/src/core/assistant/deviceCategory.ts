@@ -25,24 +25,14 @@ export function isHumidifierAppliance(dev: SmartDevice): boolean {
 }
 
 /**
- * A valve drawn as an appliance card: an HA `valve.*` entity, a valve model, or a name that says so
- * while the card offers neither a target temperature nor modes. Kept on the shape so the mapping can
- * classify a planned card without building a `SmartDevice` for it first.
+ * A valve drawn as an appliance card: the card controls a HA `valve.*` entity. Only the entity
+ * domain counts — never the name, the model or a live value — so a `water_heater.*` card named
+ * 「燃气阀旁热水器」 stays an appliance whether it is online or not (a MIoT shut-off valve draws no
+ * card at all, #265). Kept on the shape so the mapping can classify a planned card without building
+ * a `SmartDevice` for it first.
  */
 export function isValveCardShape(card: DeviceCardShape): boolean {
-  if (card.kind !== "appliance") return false;
-  const eid = card.entityId.toLowerCase();
-  const m = card.model.toLowerCase();
-  return (
-    eid.startsWith("valve.") ||
-    m.includes("valve") ||
-    (!card.temperatureWritable &&
-      card.availableModes.length === 0 &&
-      (card.name.includes("水阀") ||
-        card.name.includes("气阀") ||
-        card.name.includes("燃气阀") ||
-        card.name.includes("阀门")))
-  );
+  return card.kind === "appliance" && card.entityId.toLowerCase().startsWith("valve.");
 }
 
 export function isValveDevice(dev: SmartDevice): boolean {
