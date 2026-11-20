@@ -30,8 +30,7 @@ enum SensorAlerts {
         var ledger = ledger
         var alerts: [SafetyAlert] = []
         for device in devices where !device.telemetryStale {
-            guard case .sensor(let spec) = device.kind else { continue }
-            for observation in spec.observations {
+            for observation in device.safetyObservations {
                 let previous = ledger[observation.sourceId]
                 ledger[observation.sourceId] = observation.alarming
                 let firstSample = previous == nil && observation.kind.notifiesOnFirstSample

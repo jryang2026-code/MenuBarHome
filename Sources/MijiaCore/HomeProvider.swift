@@ -50,6 +50,9 @@ public enum HomeProviderEvent: Sendable {
     /// One Mi account's device-type pruning result (P3a-M): the identities a closed type keeps for
     /// the write gate and the hidden devices whose enabled safety alerts still need evaluating.
     case miotTypePruneChanged(MiotTypePruneReport)
+    /// The Home Assistant connection's device-type pruning result (P3b-M), in the same report shape
+    /// and scoped to its `ha:` address.
+    case haTypePruneChanged(MiotTypePruneReport)
 }
 
 public enum HomeProviderError: LocalizedError, Equatable, Sendable {
@@ -200,6 +203,8 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private var snapshot = HAHomeSnapshot()
+    /// Read for every frame, so a type the user closes stops re-synthesizing on the next one (P3b-M).
+    private let typePrunePolicyLoader: @Sendable () -> HATypePrunePolicy
     /// Told about another Home Assistant address found after repeated disconnects. The provider never
     /// switches by itself: the token only goes to a new address after the user agrees (#18).
     private let onAddressSuggestion: (@Sendable (HADiscoveredInstance) -> Void)?
@@ -250,8 +255,10 @@ public actor HAWebSocketProvider: HomeProvider {
         rediscover: @escaping @Sendable (String) async -> [HADiscoveredInstance] = { await HADiscovery.discoverOnLAN(currentURLHint: $0) },
         allowsToken: @escaping @Sendable (String) -> Bool = { HAPlaintextConsent.allowsToken(to: $0, defaults: .standard) },
         onPlaintextConsentNeeded: (@Sendable (String) -> Void)? = nil,
-        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { false }
+        isNetworkSatisfied: @escaping @Sendable () async -> Bool = { false },
+        typePrunePolicyLoader: @escaping @Sendable () -> HATypePrunePolicy = { .unpruned }
     ) {
+        self.typePrunePolicyLoader = typePrunePolicyLoader
         self.baseURLString = Self.normalizeBaseURL(baseURLString)
         self.token = token
         self.onAddressSuggestion = onAddressSuggestion
@@ -466,6 +473,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     activeWebSocket = nil
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
+                    publishStaleRetainedDevices()
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                     return
                 } else {
@@ -473,6 +481,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
+                    publishStaleRetainedDevices()
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                 }
                 try? await reconnectSleep(.seconds(backoffSeconds))
@@ -662,11 +671,11 @@ public actor HAWebSocketProvider: HomeProvider {
                         }
                         continue
                     }
-                    if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh) {
-                        continuation?.yield(.snapshotUpdated(home))
+                    if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh, typePrunePolicy: typePrunePolicyLoader()) {
+                        publish(home)
                     }
-                } else if let home = try snapshot.receive(msg) {
-                    continuation?.yield(.snapshotUpdated(home))
+                } else if let home = try snapshot.receive(msg, typePrunePolicy: typePrunePolicyLoader()) {
+                    publish(home)
                 }
                 for ring in snapshot.takeDoorbellRings() {
                     continuation?.yield(.doorbellRang(ring))
@@ -675,6 +684,23 @@ public actor HAWebSocketProvider: HomeProvider {
         } catch {
             failPendingStartupReplies(with: error)
             throw error
+        }
+    }
+
+    /// The pruning report goes first, so the host already knows a card is closed rather than gone
+    /// when the snapshot without it lands.
+    private func publish(_ home: SynthesizedHome) {
+        if let report = snapshot.takeTypePruneReport() {
+            continuation?.yield(.haTypePruneChanged(report))
+        }
+        continuation?.yield(.snapshotUpdated(home))
+    }
+
+    /// A lost connection stops feeding the type-retained devices, so their last reading must not keep
+    /// raising alerts while Home Assistant is away (P3b-M).
+    private func publishStaleRetainedDevices() {
+        if let report = snapshot.staleTypePruneReport() {
+            continuation?.yield(.haTypePruneChanged(report))
         }
     }
 

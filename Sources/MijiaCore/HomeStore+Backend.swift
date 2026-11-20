@@ -395,6 +395,12 @@ extension HomeStore {
             guard report.scope.isEmpty || isMiAccountEnabled(report.scope) else { return }
             applyMiotTypePruneReport(report)
 
+        case .haTypePruneChanged(let report):
+            // Only the connection and address in use own a retained set; a late report from a
+            // disabled connection or a replaced address is dropped (P3b-M).
+            guard isHAConnectionEnabled, report.scope == homeAssistantScopeIdentifier else { return }
+            applyMiotTypePruneReport(report)
+
         case .snapshotUpdated(let rawSnapshot):
             var snapshot = rawSnapshot
             let snapshotEpoch = rawSnapshot.miAccountsEpoch
@@ -952,6 +958,8 @@ extension HomeStore {
             }
         }
         let defaults = UncheckedUserDefaults(userDefaults)
+        let pruneBox = haTypePruneBox
+        syncMiotTypePrunePolicy()
         return HAWebSocketProvider(
             baseURLString: baseURLString,
             token: token,
@@ -962,7 +970,8 @@ extension HomeStore {
                     self?.askHAPlaintext(url)
                 }
             },
-            isNetworkSatisfied: { @MainActor [weak self] in self?.knownNetworkSatisfied == true }
+            isNetworkSatisfied: { @MainActor [weak self] in self?.knownNetworkSatisfied == true },
+            typePrunePolicyLoader: { pruneBox.get() }
         )
     }
 

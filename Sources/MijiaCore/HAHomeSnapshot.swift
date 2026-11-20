@@ -28,6 +28,13 @@ struct HAHomeSnapshot {
     /// Last valid press timestamp per doorbell entity. It survives `unavailable`, so a doorbell
     /// coming back with a press already seen is not a new press.
     private var doorbellTimestamps: [String: String] = [:]
+    /// The type-pruning policy the last published round was built under (P3b-M).
+    private var appliedPrunePolicy: HATypePrunePolicy?
+    /// Entities whose every card a closed type dropped with no enabled alert left to feed: a state
+    /// change on one of them has no consumer, so it neither re-synthesizes nor publishes.
+    private var unconsumedEntityIds: Set<String> = []
+    private var lastPruneReport: MiotTypePruneReport?
+    private var pendingPruneReport: MiotTypePruneReport?
 
     /// Doorbell presses seen since the last call. Initial loads and `get_states` refreshes never ring.
     mutating func takeDoorbellRings() -> [DoorbellRing] {
@@ -35,7 +42,34 @@ struct HAHomeSnapshot {
         return rings
     }
 
-    mutating func receive(_ message: [String: JSONValue], isRefreshStatesResult: Bool = false) throws -> SynthesizedHome? {
+    /// The pruning result of the round just returned, when it differs from the one reported last.
+    /// The first round of a connection always reports, so a fresh connection replaces whatever the
+    /// host kept from the previous one.
+    mutating func takeTypePruneReport() -> MiotTypePruneReport? {
+        defer { pendingPruneReport = nil }
+        return pendingPruneReport
+    }
+
+    /// The last report with its retained devices marked stale, once the connection is lost: they no
+    /// longer receive state, so `SafetyMonitor` must skip them as it skips the visible cards after the
+    /// fallback grace. The next connection's first round reports fresh values again.
+    mutating func staleTypePruneReport() -> MiotTypePruneReport? {
+        guard let last = lastPruneReport, last.safetyDevices.contains(where: { !$0.telemetryStale }) else { return nil }
+        let stale = MiotTypePruneReport(
+            scope: last.scope,
+            hiddenIndexedDevices: last.hiddenIndexedDevices,
+            hiddenDeviceIds: last.hiddenDeviceIds,
+            safetyDevices: last.safetyDevices.map { var device = $0; device.telemetryStale = true; return device }
+        )
+        lastPruneReport = stale
+        return stale
+    }
+
+    mutating func receive(
+        _ message: [String: JSONValue],
+        isRefreshStatesResult: Bool = false,
+        typePrunePolicy: HATypePrunePolicy = .unpruned
+    ) throws -> SynthesizedHome? {
         if message["type"]?.stringValue == "result", let id = message["id"]?.intValue {
             guard (1...4).contains(id) || isRefreshStatesResult else { return nil }
             guard message["success"]?.boolValue == true else { throw ReadError.rejected }
@@ -72,7 +106,16 @@ struct HAHomeSnapshot {
                         rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
                     }
                 }
-                states[state.entityId] = state
+                let previous = states.updateValue(state, forKey: state.entityId)
+                // The plan classified the entity from its last state. A first state or a new device
+                // class (a gas row naming itself) can give the card an enabled alert, so re-plan.
+                if pendingInitialResults.isEmpty,
+                   appliedPrunePolicy == typePrunePolicy,
+                   unconsumedEntityIds.contains(state.entityId),
+                   let previous,
+                   previous.attributes["device_class"] == state.attributes["device_class"] {
+                    return nil
+                }
             } else if data["new_state"] == .null {
                 let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
                 guard let entityId, states.removeValue(forKey: entityId) != nil else {
@@ -86,7 +129,49 @@ struct HAHomeSnapshot {
             return nil
         }
         guard pendingInitialResults.isEmpty else { return nil }
-        return DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
+        let home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
+        return applyTypePruning(to: home, policy: typePrunePolicy)
+    }
+
+    /// Home Assistant has no per-domain `get_states`, so the link is unchanged and the saving is here:
+    /// a closed type's cards leave the round, and their own state changes stop re-synthesizing
+    /// (architecture.md §D, network saving counted as 0).
+    private mutating func applyTypePruning(to home: SynthesizedHome, policy: HATypePrunePolicy) -> SynthesizedHome {
+        appliedPrunePolicy = policy
+        let cardEntities = policy.prunesNothing
+            ? [:]
+            : DeviceSynthesizer.haCardEntities(cardIds: Set(home.devices.map(\.id)), entities: entities)
+        guard let plan = DeviceSynthesizer.haTypePrunePlan(
+            home: home, cardEntities: cardEntities, states: states, policy: policy
+        ) else {
+            unconsumedEntityIds = []
+            // An empty report clears what the host kept; a provider that never ran under a host
+            // scope has nothing to clear.
+            if let scope = policy.sourceScope.isEmpty ? lastPruneReport?.scope : policy.sourceScope {
+                stagePruneReport(MiotTypePruneReport(scope: scope, hiddenIndexedDevices: [], hiddenDeviceIds: [], safetyDevices: []))
+            }
+            return home
+        }
+        let dropped = Set(plan.hiddenIndexedDevices.map(\.id)).subtracting(plan.safetyRetainedDeviceIds)
+        // An entity whose device drew no card stays consumed: its next state may create one.
+        var owners: [String: [String]] = [:]
+        for (card, rows) in cardEntities {
+            for row in rows { owners[row.entity_id, default: []].append(card) }
+        }
+        unconsumedEntityIds = Set(owners.filter { $0.value.allSatisfy(dropped.contains) }.keys)
+        stagePruneReport(MiotTypePruneReport(
+            scope: policy.sourceScope,
+            hiddenIndexedDevices: plan.hiddenIndexedDevices,
+            hiddenDeviceIds: dropped,
+            safetyDevices: home.devices.filter { plan.safetyRetainedDeviceIds.contains($0.id) }
+        ))
+        return DeviceSynthesizer.applying(plan, to: home)
+    }
+
+    private mutating func stagePruneReport(_ report: MiotTypePruneReport) {
+        guard report != lastPruneReport else { return }
+        lastPruneReport = report
+        pendingPruneReport = report
     }
 
     private func isActiveEntity(_ entityId: String) -> Bool {

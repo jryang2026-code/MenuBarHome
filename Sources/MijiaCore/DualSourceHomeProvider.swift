@@ -701,6 +701,9 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .miotTypePruneChanged(let report):
             continuation?.yield(.miotTypePruneChanged(report))
 
+        case .haTypePruneChanged(let report):
+            continuation?.yield(.haTypePruneChanged(report))
+
         case .localNetworkPermissionChanged(let blocked):
             if backend == .homeAssistant { haLocalNetworkBlocks = blocked }
             else if backend == .xiaomiCloud { miLocalNetworkBlocks = blocked }

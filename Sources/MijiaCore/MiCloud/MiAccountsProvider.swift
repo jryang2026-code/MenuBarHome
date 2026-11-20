@@ -514,6 +514,8 @@ public actor MiAccountsProvider: HomeProvider {
             continuation?.yield(.doorbellRang(ring))
         case .miotTypePruneChanged(let report):
             continuation?.yield(.miotTypePruneChanged(report))
+        case .haTypePruneChanged:
+            break
         case .snapshotUpdated(let home):
             snapshots[accountId] = home
             localNetworkBlocksByAccount[accountId] = home.localNetworkBlockedFeatures
