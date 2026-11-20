@@ -72,6 +72,7 @@ public struct OnboardingGuideView: View {
                         haConnectSection
                     case .connectedSummary:
                         connectedSummarySection
+                        deviceTypeCard
                         launchAtLoginCard
                     }
                 }
@@ -512,6 +513,28 @@ public struct OnboardingGuideView: View {
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .glassTile(isActive: true, cornerRadius: DesignTokens.Radius.card)
+    }
+
+    // MARK: - Device Types (P4b-M)
+
+    /// Every supported type stays on until the user applies a preset or their own list (architecture.md §I).
+    private var deviceTypeCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L10n.tr("选择要显示的设备类型", "Choose Device Types to Show"))
+                .font(.system(size: 11.5, weight: .semibold))
+                .accessibilityAddTraits(.isHeader)
+            Text(L10n.tr(
+                "默认显示全部已支持类型；之后也可在设置「常规 › 设备类型」里调整。",
+                "Every supported type shows by default; change it later in Settings › General › Device Types."
+            ))
+            .font(.system(size: 11))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+            DeviceTypeSelectionView(store: store)
+        }
+        .padding(11)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .glassTile(isActive: false, cornerRadius: DesignTokens.Radius.card)
     }
 
     // MARK: - Launch at Login Card

@@ -1,9 +1,11 @@
 import Foundation
 import Testing
+import StateTestSupport
 @testable import MijiaCore
 
 /// #59: automation executions go through HomeStore's normal dispatch path, never train habits, and
 /// offer undo even for a single device.
+@Suite(.timeLimit(.minutes(1)))
 struct AutomationExecutionTests {
     static let studyLight = SmartDevice(
         id: "light_study",
@@ -46,6 +48,99 @@ struct AutomationExecutionTests {
         try await store.waitForTestSnapshot()
         store.hideDevice(Self.hiddenLight.id)
         return (store, mock)
+    }
+
+    @Test("Disabling and immediately re-enabling stops an in-flight device rule and preserves undo")
+    @MainActor
+    func stopsRemainingWrites() async throws {
+        let (store, mock) = try await makeStore()
+        store.assistantNow = { Date(timeIntervalSince1970: 1_800_000_000) }
+        await mock.holdNextExecute()
+        let task = Task {
+            await store.runAutomation(intents: [
+                .init(targetId: Self.studyLight.id, operation: .power(false)),
+                .init(targetId: Self.hiddenLight.id, operation: .power(false))
+            ], title: "离开关灯")
+        }
+        try await awaitState { store.devices.first(where: { $0.id == Self.studyLight.id })?.isActiveOn == false }
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(store.setEventAutomationEnabled(true))
+        await mock.releaseExecute()
+        let result = await task.value
+        store.pauseUndoBannerCountdown()
+        #expect(result.attemptedCount == 1)
+        #expect(result.succeededCount == 1)
+        #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study", isOn: false)])
+        #expect(store.undoBanner?.restoreCommands == [.setLightPower(entityId: "light.study", isOn: true)])
+    }
+
+    private struct HeldWriteProvider: HomeProvider {
+        let mock: MockHomeProvider
+        let gate: ScheduledCommandTestSupport.SleepGate
+
+        func events() -> AsyncStream<HomeProviderEvent> { mock.events() }
+        func refreshNow() async { await mock.refreshNow() }
+
+        func execute(_ command: DeviceCommand) async throws {
+            if case .setLightBrightness = command { await gate.sleep() }
+            try await mock.execute(command)
+        }
+    }
+
+    @Test("Disabling during a quick action keeps the first step and skips its pending color write")
+    @MainActor
+    func stopsRemainingQuickActionSteps() async throws {
+        var light = Self.studyLight
+        light.kind = .light(LightSpec(entityId: "light.study", isOn: true, brightnessPercent: 80, colorTempKelvin: 4000))
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        let mock = MockHomeProvider(snapshot: .init(devices: [light]))
+        let store = HomeStore(provider: HeldWriteProvider(mock: mock, gate: gate),
+                              defaultsSuiteName: "test.automation.quick.\(UUID().uuidString)")
+        try await store.waitForTestSnapshot()
+        let task = try #require(store.runAutomationQuickAction(.softNightLight))
+        store.pauseUndoBannerCountdown()
+        try await awaitState { gate.waiting == 1 }
+        #expect(store.setEventAutomationEnabled(false))
+        gate.release()
+        #expect(await task.value == .partial)
+        #expect(await mock.executedCommands == [.setLightBrightness(entityId: "light.study", percent: 15)])
+        #expect(store.undoBanner?.restoreCommands == [.setLightBrightness(entityId: "light.study", percent: 80)])
+    }
+
+    @Test("Re-enabling accepts an already-off light and pauses unavailable quick actions")
+    @MainActor
+    func revalidatesQuickActions() async throws {
+        let (store, mock) = try await makeStore()
+        var light = Self.studyLight
+        light.kind = .light(LightSpec(entityId: "light.study", isOn: false, brightnessWritable: false, colorWritable: false))
+        await mock.updateSnapshot(.init(devices: [light], scenes: Self.scenes))
+        try await awaitState { store.devices.count == 1 && store.devices.first?.isActiveOn == false }
+
+        let ruleStore = AutomationRuleStore(defaults: store.userDefaults)
+        let lightsOff = AutomationRule(trigger: .away, action: .quickAction(.lightsOff))
+        let softLight = AutomationRule(trigger: .away, action: .quickAction(.softNightLight))
+        let sleepOff = AutomationRule(trigger: .away, action: .quickAction(.climateSleepOff))
+        ruleStore.save([lightsOff, softLight, sleepOff])
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(ruleStore.load() == [lightsOff, softLight, sleepOff])
+        #expect(store.setEventAutomationEnabled(true))
+        #expect(ruleStore.load().map(\.isEnabled) == [true, false, false])
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("Re-enabling retains a valid scene rule in a home without devices")
+    @MainActor
+    func revalidatesSceneOnlyHome() async throws {
+        let (store, mock) = try await makeStore()
+        await mock.updateSnapshot(.init(scenes: Self.scenes))
+        try await awaitState { store.devices.isEmpty && store.scenes == Self.scenes }
+        let rule = AutomationRule(trigger: .back, action: .scene(sceneId: "scene_home"))
+        let ruleStore = store.automationRuleStore
+        ruleStore.save([rule])
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(store.setEventAutomationEnabled(true))
+        #expect(ruleStore.load() == [rule])
+        #expect(await mock.executedCommands.isEmpty)
     }
 
     @Test("A device rule runs through the store, keeps its undo banner, and records no habit")

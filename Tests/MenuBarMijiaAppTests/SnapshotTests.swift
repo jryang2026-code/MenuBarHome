@@ -841,6 +841,23 @@ struct SnapshotTests {
         )
     }
 
+    @Test("The device type picker previews what 只用灯和开关 hides before anything is applied")
+    func deviceTypeSelectionPreviewSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        let stored = fixture.store.capabilitySelection.enabledCategories
+        assertRendered(
+            snapshotReady(
+                DeviceTypeSelectionView(store: fixture.store, initialDraft: DeviceCategoryPreset.lightAndSwitch.categorySet)
+                    .padding(12)
+                    .frame(width: 420, height: 260, alignment: .topLeading)
+            ),
+            size: CGSize(width: 420, height: 260),
+            named: "device-type-selection-preview-zh-light"
+        )
+        #expect(fixture.store.capabilitySelection.enabledCategories == stored, "a draft never writes")
+    }
+
     @Test("Round tiles show their icon at the actual quarter-row width", arguments: ["light", "sensor"])
     func roundTileSnapshots(kind: String) async throws {
         let fixture = try await SnapshotFixture()
@@ -2111,6 +2128,24 @@ struct SnapshotTests {
                 scheme: scheme
             )
         }
+    }
+
+    @Test("Automation settings render the runtime switch while rules are paused")
+    func automationRuntimeOffSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        #expect(fixture.store.setEventAutomationEnabled(false))
+        assertRendered(
+            snapshotReady(
+                AutomationSettingsSection(store: fixture.store)
+                    .padding(12)
+                    .frame(width: 620, alignment: .leading),
+                scheme: .light
+            ),
+            size: CGSize(width: 620, height: 740),
+            named: "settings-automation-off",
+            scheme: .light
+        )
     }
 
     @Test("General settings render Unhide All when multiple devices are manually hidden")

@@ -1200,6 +1200,14 @@ public final class HomeStore {
         enabledCategories: Set(DeviceCategoryID.allCases)
     ) {
         didSet {
+            if oldValue.enabledFeatures.contains(.eventAutomation) != eventAutomationEnabled {
+                automationGeneration &+= 1
+                let generation = automationGeneration
+                Task { @MainActor [weak self] in
+                    guard let self, self.automationGeneration == generation else { return }
+                    self.automationAvailabilityDidChange()
+                }
+            }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
             // The cards are still in `devices` here; the next refresh prunes them, so the stop requests
@@ -1231,6 +1239,8 @@ public final class HomeStore {
     public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
     /// Fires once when the camera type closes, with the camera cards still on the panel (P3c-CM).
     public var onCameraCategoryDisabled: (@MainActor ([SmartDevice]) -> Void)?
+    @ObservationIgnored var automationGeneration: UInt64 = 0
+    @ObservationIgnored var reconciledAutomationGeneration: UInt64 = 0
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
