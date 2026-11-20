@@ -36,6 +36,7 @@ import { setLanguage } from "../src/core/i18n.js";
 import type { HomeScene, SmartDevice } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
+import { scheduledCommandIdentity } from "../src/ui/scheduledCommands.js";
 
 const HA_SCOPE = "ha:http://home.local:8123";
 
@@ -323,7 +324,12 @@ describe("P4b-W · persistence", () => {
 });
 
 describe("P4b-W · Settings and the guide share one block", () => {
-  function startDemo(): MenuMijiaWindowsApp {
+  /** How many type checkboxes the block renders as checked (the 自己选 list only). */
+function emailCheckedCount(): number {
+  return [...document.querySelectorAll<HTMLInputElement>("[data-device-type-category]")].filter((input) => input.checked).length;
+}
+
+function startDemo(): MenuMijiaWindowsApp {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true }));
     return new MenuMijiaWindowsApp(el("#app"));
   }
@@ -412,6 +418,72 @@ describe("P4b-W · Settings and the guide share one block", () => {
     assert.equal(el('[data-device-type-mode="custom"]').getAttribute("aria-pressed"), "true");
   });
 
+  it("refuses to uncheck the last remaining type instead of silently selecting every type", async () => {
+    startDemo();
+    await click("#btn-settings");
+    await click('[data-device-type-mode="custom"]');
+    for (const category of ALL_CATEGORIES) {
+      if (category === "light") continue;
+      el<HTMLInputElement>(`[data-device-type-category="${category}"]`).click();
+      await setImmediate();
+    }
+    assert.equal(emailCheckedCount(), 1);
+    el<HTMLInputElement>('[data-device-type-category="light"]').click();
+    await setImmediate();
+
+    // The draft keeps its one type, the checkbox stays checked and the reason is announced.
+    assert.equal(emailCheckedCount(), 1);
+    assert.equal(el<HTMLInputElement>('[data-device-type-category="light"]').checked, true);
+    assert.match(el("[data-device-type-error]").textContent ?? "", /至少要保留一个设备类型/);
+    assert.ok(document.activeElement === el("[data-device-type-error]"), "focus lands on the refusal");
+    // The same list still responds: re-checking a type adds it back to the draft.
+    el<HTMLInputElement>('[data-device-type-category="plug"]').click();
+    await setImmediate();
+    assert.equal(emailCheckedCount(), 2);
+    assert.equal(document.querySelector("[data-device-type-error]"), null, "the refusal clears on the next edit");
+  });
+
+  it("restores the live timer queues when pausing an affected timer cannot be stored", async () => {
+    const app = startDemo();
+    const identity = scheduledCommandIdentity(app.settings);
+    const queue = app.scheduledCommandStore.queue(identity);
+    queue.scheduledCommands = [{
+      id: "timer_cool_down", command: "10 分钟后关空调", reply: "好", delaySeconds: 600,
+      fireTimestampMs: Date.now() + 600_000,
+      intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }],
+    }];
+    assert.equal(app.scheduledCommandStore.persist(), true);
+
+    await click("#btn-settings");
+    await click('[data-device-type-mode="lightAndSwitch"]');
+    assert.match(el("[data-device-type-preview]").textContent ?? "", /10 分钟后关空调/);
+
+    const originalSetItem = localStorage.setItem.bind(localStorage);
+    Object.defineProperty(localStorage, "setItem", {
+      configurable: true,
+      writable: true,
+      value: (key: string, value: string): void => {
+        if (key === SCHEDULED_COMMANDS_STORAGE_KEY) throw new Error("QuotaExceededError");
+        originalSetItem(key, value);
+      },
+    });
+    try {
+      await click("[data-device-type-apply]");
+      assert.match(el("[data-device-type-error]").textContent ?? "", /已恢复原样/);
+      // The live store is what keeps running, so it must be back too — not only the stored copy.
+      const live = app.scheduledCommandStore.queue(identity);
+      assert.deepEqual(live.scheduledCommands.map((item) => item.id), ["timer_cool_down"]);
+      assert.deepEqual(live.pausedScheduledCommands ?? [], []);
+      assert.equal(
+        (JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as Record<string, unknown>).enabledCategories,
+        undefined,
+        "the selection is restored as well",
+      );
+    } finally {
+      Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: originalSetItem });
+    }
+  });
+
   it("reports a store that refuses the write, keeps the old choice and focuses the message", async () => {
     const app = startDemo();
     await click("#btn-settings");
@@ -452,6 +524,32 @@ describe("P4b-W · Settings and the guide share one block", () => {
       JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}").enabledCategories,
       ["light", "plug"],
     );
+  });
+
+  it("marks every enabled source for revalidation, so turning a type back on resumes what it paused", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      connectionMode: "homeAssistant",
+      haBaseURL: "http://home.local:8123",
+      haToken: "token",
+      hasCompletedOnboarding: true,
+    }));
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    assert.equal(app.setEnabledDeviceCategories(["light", "plug"]), true);
+    const record = JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as {
+      pendingRevalidationHaScopes?: unknown;
+    };
+    // The pending flag is what makes the next completed snapshot revalidate the paused timers and
+    // automations; without it they would stay paused after the type comes back.
+    assert.deepEqual(record.pendingRevalidationHaScopes, [HA_SCOPE]);
+  });
+
+  it("keeps the demo home on the stored selection after a restart", () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true }));
+    localStorage.setItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, JSON.stringify({
+      schemaVersion: 1, migrationComplete: true, disabledMiAccountIds: [], enabledCategories: ["light", "plug"],
+    }));
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    assert.deepEqual(app.devices.map((device) => deviceCategoryForDevice(device)).sort(), ["light", "light", "plug"]);
   });
 
   it("switches the block's copy with the interface language", async () => {

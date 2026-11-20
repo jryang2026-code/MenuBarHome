@@ -354,7 +354,7 @@ function switchConnectionModeInOnboarding(
   if (mode !== "xiaomiCloud") host.cloudValuesStale = false;
   host.selectRoom(null);
   if (mode === "demo") {
-    host.devices = demoDevices();
+    host.devices = host.demoDevicesForEnabledTypes?.() ?? demoDevices();
     host.scenes = demoScenes();
   } else if (mode === "xiaomiCloud") {
     host.devices = structuredClone(host.settings.cachedXiaomiDevices);

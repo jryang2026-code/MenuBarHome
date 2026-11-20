@@ -143,6 +143,8 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   syncKeyFieldWithEndpoint(apiKeyEl: HTMLInputElement, baseURL: string): void;
   apiKeyFor?(baseURL: string): string;
   escapeHtml?(value: string): string;
+  /** Demo sample cards for the stored device types; falls back to the full sample home (P4b-W). */
+  demoDevicesForEnabledTypes?(): SmartDevice[];
   /** Invalidates in-flight AI requests after an enable/disable or provider change (P5a-W). */
   advanceAssistantEpoch?(): void;
   /**
@@ -588,7 +590,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   session.envImportStatus = null;
 
   host.settings.connectionMode = "demo";
-  host.devices = demoDevices();
+  host.devices = host.demoDevicesForEnabledTypes?.() ?? demoDevices();
   host.scenes = demoScenes();
   host.environmentReadings = [];
   host.homes = [];
@@ -1322,7 +1324,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       if (mode !== "homeAssistant" && !isDualSourceEnabled(host)) applyHaTypePruneSnapshot(host, null);
       host.selectRoom(null);
       if (mode === "demo") {
-        host.devices = demoDevices();
+        host.devices = host.demoDevicesForEnabledTypes?.() ?? demoDevices();
         host.scenes = demoScenes();
       } else if (mode === "xiaomiCloud") {
         host.devices = structuredClone(host.settings.cachedXiaomiDevices);

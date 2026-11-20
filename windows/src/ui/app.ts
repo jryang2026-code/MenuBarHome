@@ -286,29 +286,55 @@ export class MenuMijiaWindowsApp {
    * Persists one device-type choice (P4b-W). The record keeps the semantic value only: choosing every
    * type removes the key, so "no explicit choice" stays readable and an upgrade keeps its own default.
    *
-   * Deliberately does not refresh: the caller pauses the references the change affects first, and a
-   * refresh started here would read a selection the caller may still roll back.
+   * Every enabled scope is marked for revalidation, so the next completed snapshot restores exactly
+   * the paused timers and automations whose device types are back (the revalidation keeps the rest
+   * paused). Deliberately does not refresh: the caller pauses the references the change affects first,
+   * and a refresh started here would read a selection the caller may still roll back.
    */
   public setEnabledDeviceCategories(categories: readonly DeviceCategoryID[]): boolean {
     const normalized = normalizeDeviceCategorySelection(categories);
     if (normalized === null) return false;
     const keepsEveryType = DEVICE_CATEGORY_IDS.every((id) => normalized.includes(id));
+    const scopes = resolveHostMiSelectionState(this).selection.enabledConnectionScopes;
     if (!writeMiAccountSelectionMutation({
       mutate: (previous) => {
         const extraFields: Record<string, unknown> = { ...previous.extraFields };
         if (keepsEveryType) delete extraFields.enabledCategories;
         else extraFields.enabledCategories = [...normalized];
-        return { ...previous, extraFields };
+        return {
+          ...previous,
+          extraFields,
+          pendingRevalidationAccountIds: [...new Set([
+            ...previous.pendingRevalidationAccountIds,
+            ...scopes.filter((scope) => scope.startsWith("mi:")),
+          ])],
+          pendingRevalidationHaScopes: [...new Set([
+            ...previous.pendingRevalidationHaScopes,
+            ...scopes.filter((scope) => scope.startsWith("ha:")),
+          ])],
+        };
       },
     })) return false;
     this.cameraLive.setCameraCategoryEnabled(normalized.includes("camera"));
-    // The demo home is synthesized locally, so nothing prunes it on refresh: re-derive the sample
-    // cards here. Real sources refresh after the caller finishes pausing.
+    // The demo home is synthesized locally, so nothing prunes it on refresh: it is rebuilt here.
+    // Real sources refresh after the caller finishes pausing.
     if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
-      this.devices = demoDevices().filter((device) => normalized.includes(deviceCategoryForDevice(device)));
+      this.devices = this.demoDevicesForEnabledTypes();
     }
     this.render();
     return true;
+  }
+
+  /**
+   * Sample cards for the demo home, minus the device types the user turned off. Nothing prunes the
+   * demo snapshot on a refresh, so the stored selection has to be applied wherever it is built
+   * (P4b-W): here, and at the demo entry points in settings and the first-run guide.
+   */
+  public demoDevicesForEnabledTypes(): SmartDevice[] {
+    const devices = demoDevices();
+    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) return devices;
+    const enabled = new Set(resolveHostMiSelectionState(this).selection.enabledCategories);
+    return devices.filter((device) => enabled.has(deviceCategoryForDevice(device)));
   }
 
   public scenes: HomeScene[];
@@ -566,7 +592,7 @@ export class MenuMijiaWindowsApp {
       !hasSecondaryMiAccountsInIndex();
     this.devices = this.settings.connectionMode === "xiaomiCloud"
       ? (primaryDisabledOnly ? [] : structuredClone(this.settings.cachedXiaomiDevices))
-      : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : demoDevices();
+      : this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.devices ?? []) : this.demoDevicesForEnabledTypes();
     this.scenes = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.scenes ?? []) : this.settings.connectionMode === "demo" ? demoScenes() : [];
     this.environmentReadings = this.settings.connectionMode === "homeAssistant" ? structuredClone(haCache?.environmentReadings ?? []) : [];
     // 更多设置 rows come back with the cached cards: without them the restored panel shows every

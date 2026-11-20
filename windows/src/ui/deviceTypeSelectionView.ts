@@ -433,9 +433,16 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
     return { status: "saveFailed", preview };
   }
   if (preview.verdict.itemsToPause.length > 0) {
+    const timerStore = storeFor(host);
+    // The live store is what the app keeps reading (`processScheduledCommands`), so a rollback has to
+    // put its queues back, not just the stored copy.
+    let timerSnapshot: ReturnType<ScheduledCommandStore["snapshotQueues"]> | null = null;
+    try {
+      timerSnapshot = timerStore.snapshotQueues();
+    } catch {}
     const paused = applyPauseItemsFromVerdict({
       verdict: preview.verdict,
-      scheduledCommandStore: storeFor(host),
+      scheduledCommandStore: timerStore,
       ruleStore: ruleStoreFor(host),
       activeTimerIdentity: scheduledCommandIdentity(host.settings),
       activeConnectionScopes: scopes,
@@ -444,6 +451,11 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
       // Put the previous selection back before reporting: the user asked for one atomic change.
       const restored = host.setEnabledDeviceCategories?.(previous) ?? false;
       if (!restored) restoreRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, rawSelection);
+      if (timerSnapshot !== null) {
+        try {
+          timerStore.restoreQueues(timerSnapshot);
+        } catch {}
+      }
       restoreRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY, rawTimers);
       restoreRawStorageItem(AutomationRuleStore.storageKey, rawRules);
       host.render();
@@ -465,8 +477,23 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
     `Applied: ${draft.categories.length} device type(s) shown; refreshing devices.`,
     lang,
   );
-  if (host.settings.connectionMode !== "demo") void host.refreshDevices(false);
+  refreshAfterSelectionChange(host);
   return { status: "applied", preview };
+}
+
+/**
+ * Refreshes so the Mi/HA pruning plans (P3a-W, P3b-W) pick the new selection up. A sync that started
+ * before this change already captured the previous one, so it is superseded first: its snapshot is
+ * dropped by `cloudSnapshotIsStale` instead of drawing cards the user just hid (or omitting the ones
+ * they just enabled).
+ */
+function refreshAfterSelectionChange(host: DeviceTypeSelectionHost): void {
+  if (host.settings.connectionMode === "demo") return;
+  if (host.isSyncingCloud) {
+    host.sourceEpoch.claimSyncRun();
+    host.isSyncingCloud = false;
+  }
+  void host.refreshDevices(false);
 }
 
 /**
@@ -496,7 +523,22 @@ export function bindDeviceTypeSelectionEvents(host: DeviceTypeSelectionHost): vo
       const category = input.dataset.deviceTypeCategory as DeviceCategoryID | undefined;
       if (!category || !(DEVICE_CATEGORY_IDS as readonly string[]).includes(category)) return;
       const current = session.customCategories ?? appliedDeviceCategories(host);
-      session.customCategories = toggleDeviceCategory(current, category);
+      const next = toggleDeviceCategory(current, category);
+      if (next.length === 0) {
+        // An empty list would render as "everything checked" and the next toggle would act on it, so
+        // the last type cannot be turned off: 全部 already means "show every type".
+        clearTransient(session);
+        session.error = tr3(
+          "至少要保留一个设备类型。",
+          "至少要保留一個裝置類型。",
+          "Keep at least one device type.",
+          currentLanguage(),
+        );
+        host.render();
+        focusAfterRender(host, "[data-device-type-error]");
+        return;
+      }
+      session.customCategories = next;
       session.mode = "custom";
       clearTransient(session);
       host.render();
