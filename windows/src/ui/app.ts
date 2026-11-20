@@ -881,9 +881,14 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
       return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
     }
-    const { indexedDevices } = buildIndexedCapabilityDevices(buildHostCapabilityContext(this));
+    const context = buildHostCapabilityContext(this);
+    const { indexedDevices } = buildIndexedCapabilityDevices(context);
+    // A type switched off before the refresh lands would otherwise fail the whole 全关 batch (#346).
+    const enabledCategories = context.state.selection.enabledCategories;
     const availableIds = new Set(
-      indexedDevices.filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled).map((d) => d.id),
+      indexedDevices
+        .filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled && enabledCategories.includes(d.category))
+        .map((d) => d.id),
     );
     return allOffTargets(
       this.filteredDevices.filter((d) => availableIds.has(d.id)),
