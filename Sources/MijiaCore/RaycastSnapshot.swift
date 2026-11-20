@@ -494,7 +494,7 @@ extension HomeStore {
     public func companionCanExecute(generation: UInt64) -> Bool { companionIntegrationEnabled && companionGeneration == generation }
     public var companionSnapshotFileURL: URL { raycastSnapshotTestURL ?? RaycastSnapshotExporter.defaultSnapshotURL }
 
-    public func withCompanionCommandGeneration<T>(_ generation: UInt64, body: () async -> T) async -> T {
+    public func withCompanionCommandGeneration<T>(_ generation: UInt64, body: @MainActor () async -> T) async -> T {
         let previous = activeCompanionCommandGeneration
         activeCompanionCommandGeneration = generation
         defer { activeCompanionCommandGeneration = previous }
