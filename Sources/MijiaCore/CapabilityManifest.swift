@@ -38,6 +38,24 @@ public enum DeviceCategoryID: String, CaseIterable, Codable, Hashable, Sendable 
     }
 }
 
+/// Device-type selection presets shared with Windows (`DEVICE_CATEGORY_PRESETS`, P3c-M / P4b-M).
+/// Both platforms read `Tests/Fixtures/capability_selection_golden.json` (`deviceTypeMapping.presets`)
+/// to keep preset IDs and category membership identical.
+public enum DeviceCategoryPreset: String, CaseIterable, Codable, Hashable, Sendable {
+    case allSupportedTypes
+    /// 「只用灯和开关」. A wall switch driving a lamp is drawn as a `.plug` card, so the preset keeps both.
+    case lightAndSwitch
+
+    public var categories: [DeviceCategoryID] {
+        switch self {
+        case .allSupportedTypes: DeviceCategoryID.allCases
+        case .lightAndSwitch: [.light, .plug]
+        }
+    }
+
+    public var categorySet: Set<DeviceCategoryID> { Set(categories) }
+}
+
 public enum CapabilityID: Hashable, Sendable, CaseIterable {
     case connection(ConnectionCapabilityID), feature(FeatureID), deviceCategory(DeviceCategoryID)
     public static var allCases: [CapabilityID] {
