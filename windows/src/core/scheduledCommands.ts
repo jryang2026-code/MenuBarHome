@@ -4,6 +4,32 @@ import { partitionDueTimers } from "./models.js";
 export const SCHEDULED_COMMANDS_STORAGE_KEY = "menumijia.windows.scheduledCommands.v1";
 
 /**
+ * Pause reason owned by the timer switch (P5d-TW).
+ *
+ * It is stored beside the capability reasons in `PausedScheduledCommand.pausedCapabilities`, so one
+ * entry can be held by several independent owners at once and each owner releases only its own
+ * reason. The `feature:` prefix is deliberate: it can never collide with a manifest capability ID,
+ * and `revalidatePausedTimer` treats an unknown reason as "keep paused", so no capability resume
+ * path (account / connection / device type) can release a timer this switch is holding, and this
+ * switch cannot release a timer those paths are holding. Only `releaseFeaturePause` removes it.
+ */
+export const TIMER_FEATURE_PAUSE_REASON = "feature:scheduled-commands";
+
+/** The subset of the settings record the timer switch reads. */
+export interface TimerFeatureSwitchSettings {
+  readonly scheduledCommandsEnabled?: boolean;
+}
+
+/**
+ * 定时任务 switch (P5d-TW). Only an explicit `false` turns timers off: a missing key is the state of
+ * an upgrade (and of a fresh install whose manifest has no timer row), which keeps the always-on
+ * behavior every existing user already had.
+ */
+export function isScheduledCommandsEnabled(settings: TimerFeatureSwitchSettings): boolean {
+  return settings.scheduledCommandsEnabled !== false;
+}
+
+/**
  * Returns target IDs referenced by `item.intents` that exist in neither `devices` nor `scenes`
  * of the active home (`HomeStore+Assistant.swift:missingPlanTargets`, ADR-0019).
  */
@@ -217,6 +243,97 @@ export class ScheduledCommandStore {
       }
     }
     return this.persist();
+  }
+
+  /**
+   * Parks every waiting timer for the timer switch (P5d-TW) and records this switch as one more
+   * pause reason on the ones already paused: the plan, the fire time, the source scopes and the
+   * original partition all stay, so re-enabling can revalidate instead of guessing. Missed timers
+   * stay in the missed partition — they are already off the automatic path.
+   *
+   * Returns whether anything changed; a queue that is already parked is left byte-for-byte alone so
+   * the caller can skip the write. `scopesForQueue` stamps a timer that never recorded its own
+   * scopes, so a legacy entry can still be revalidated against the queue it came from.
+   */
+  pauseForFeatureSwitch(scopesForQueue?: (identity: string) => readonly string[]): boolean {
+    let changed = false;
+    for (const [identity, queue] of this.sources) {
+      const paused = queue.pausedScheduledCommands ?? [];
+      const restamped: PausedScheduledCommand[] = [];
+      let queueChanged = false;
+      for (const entry of paused) {
+        if (entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON)) {
+          restamped.push(entry);
+          continue;
+        }
+        restamped.push({ ...entry, pausedCapabilities: [...entry.pausedCapabilities, TIMER_FEATURE_PAUSE_REASON] });
+        queueChanged = true;
+      }
+      const parked = queue.scheduledCommands.map((item): PausedScheduledCommand => ({
+        command: item,
+        originalPartition: "waiting",
+        sourceScopes: item.sourceScopes ? [...item.sourceScopes] : [...(scopesForQueue?.(identity) ?? [])],
+        pausedCapabilities: [TIMER_FEATURE_PAUSE_REASON],
+      }));
+      if (parked.length > 0) {
+        queue.scheduledCommands = [];
+        queueChanged = true;
+      }
+      if (!queueChanged) continue;
+      queue.pausedScheduledCommands = [...restamped, ...parked];
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** True while any queue still has a timer the automatic path could pick up. */
+  hasWaitingTimers(): boolean {
+    for (const queue of this.sources.values()) if (queue.scheduledCommands.length > 0) return true;
+    return false;
+  }
+
+  /**
+   * Queues that still hold this switch's pause reason. A queue whose source is not active keeps the
+   * reason until that source is back, so its timers cannot be released without a revalidation.
+   */
+  featurePausedIdentities(): string[] {
+    const identities: string[] = [];
+    for (const [identity, queue] of this.sources) {
+      if ((queue.pausedScheduledCommands ?? []).some((entry) => entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON))) {
+        identities.push(identity);
+      }
+    }
+    return identities;
+  }
+
+  /** True while at least one entry is still held by the timer switch. */
+  hasFeaturePause(): boolean {
+    return this.featurePausedIdentities().length > 0;
+  }
+
+  /**
+   * Drops this switch's pause reason and nothing else: whatever another owner still records (a
+   * disabled device type, a disabled account or connection) keeps holding the entry, and the
+   * caller's revalidation decides between waiting and missed afterwards.
+   *
+   * `identities` limits the release to queues whose source was verified in this pass.
+   *
+   * Returns whether anything changed.
+   */
+  releaseFeaturePause(identities?: ReadonlySet<string>): boolean {
+    let changed = false;
+    for (const [identity, queue] of this.sources) {
+      if (identities !== undefined && !identities.has(identity)) continue;
+      const paused = queue.pausedScheduledCommands ?? [];
+      if (!paused.some((entry) => entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON))) continue;
+      queue.pausedScheduledCommands = paused.map((entry) =>
+        entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON)
+          ? { ...entry, pausedCapabilities: entry.pausedCapabilities.filter((cap) => cap !== TIMER_FEATURE_PAUSE_REASON) }
+          : entry,
+      );
+      changed = true;
+    }
+    return changed;
   }
 
   queue(identity: string | null): TimerQueue {

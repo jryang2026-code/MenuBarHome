@@ -131,7 +131,7 @@ import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCac
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
 import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
-import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits, type ExecuteIntentsOptions } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
 import { tr3 } from "../core/safetyAndHealth.js";
@@ -1034,7 +1034,7 @@ export class MenuMijiaWindowsApp {
     intents: readonly DeviceIntent[],
     replyText: string,
     sourceLabel: string,
-    options: { recordHabits?: boolean } = {},
+    options: ExecuteIntentsOptions = {},
   ): Promise<boolean> {
     if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
       const gateMsg = evaluateIntentsWriteGate({

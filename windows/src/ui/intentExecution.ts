@@ -41,7 +41,7 @@ import { tr3 } from "./undoTracker.js";
 import { buildHostCapabilityContext, isDualSourceEnabled } from "./cloudRefresh.js";
 import { evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
 
-export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled";
+export type BatchStopReason = "undo" | "preempted" | "sourceChanged" | "cancelled" | "disabled";
 
 export interface ExecuteIntentsOptions {
   readonly recordHabits?: boolean;
@@ -52,6 +52,12 @@ export interface ExecuteIntentsOptions {
    */
   readonly concurrency?: number;
   readonly batch?: RunningBatch;
+  /**
+   * Re-checked before every dispatched command (P5d-TW). Returning false stops the batch the way a
+   * mid-batch Undo does: remaining steps are never written, and the steps that already succeeded keep
+   * their receipt and undo entry.
+   */
+  readonly canContinue?: () => boolean;
 }
 
 let nextBatchSeq = 1;
@@ -530,6 +536,10 @@ export async function executeIntents(
       const runTargetBatch = async (targetBatch: TargetBatch): Promise<void> => {
         for (const { deviceId, command, intentIndex } of targetBatch.items) {
           if (runningBatch.isStopped) return;
+          if (options.canContinue?.() === false) {
+            runningBatch.stop("disabled");
+            return;
+          }
           if (sourceRevision !== host.sourceRevision) {
             runningBatch.stop("sourceChanged");
             return;
@@ -699,7 +709,10 @@ export async function executeIntents(
     }
 
     if (runningBatch.isStopped) {
-      if (runningBatch.stopReason === "cancelled" && runningBatchByHost.get(host) === runningBatch) {
+      if (
+        (runningBatch.stopReason === "cancelled" || runningBatch.stopReason === "disabled") &&
+        runningBatchByHost.get(host) === runningBatch
+      ) {
         const finalSteps = runningBatch.untakenSteps(host);
         const stoppedUndo: UndoAction | null =
           canUndo && finalSteps.length > 0

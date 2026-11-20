@@ -28,6 +28,7 @@ import {
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
 import { joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
+import { isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import {
   APPEARANCES,
   DEFAULT_GLOBAL_SHORTCUT,
@@ -1079,6 +1080,14 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
           <input id="settings-block-while-locked" type="checkbox" ${ctx.settings.blockControlWhileLocked ? "checked" : ""} />
         </div>
         <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
+      </div>
+
+      <div data-settings-anchor="scheduledCommands">
+        <div class="cc-field-row" style="margin-top: 8px;">
+          <label for="settings-scheduled-commands-enabled">${t("运行定时任务")}</label>
+          <input id="settings-scheduled-commands-enabled" type="checkbox" ${isScheduledCommandsEnabled(ctx.settings) ? "checked" : ""} />
+        </div>
+        <p class="cc-field-hint">${t("关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。")}</p>
       </div>
 
       <div data-settings-anchor="raycast">

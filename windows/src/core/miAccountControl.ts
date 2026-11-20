@@ -975,6 +975,12 @@ export function revalidateAfterMiAccountReenable(options: {
   readonly completedScopes?: ReadonlySet<string>;
   readonly completedHaScopes?: ReadonlySet<string>;
   readonly hasLiveHaSnapshot?: boolean;
+  /**
+   * P5d-TW: resume paused timers only. The timer switch owns no automation rule or quick-action
+   * pause, so re-enabling it must not flip rules back on (they stay with `eventAutomationEnabled`
+   * and with the capability owners that paused them).
+   */
+  readonly timersOnly?: boolean;
 }): boolean {
   const nowEpochSeconds = Math.floor((options.nowMs ?? Date.now()) / 1000);
   const completedMiScopes = new Set<string>();
@@ -1198,6 +1204,7 @@ export function revalidateAfterMiAccountReenable(options: {
     options.scheduledCommandStore.restoreQueues(timerSnapshot);
     return false;
   }
+  if (options.timersOnly) return true;
 
   const disabledDevIds = new Set([
     ...effectiveKnownDisabled.map((d) => d.id),

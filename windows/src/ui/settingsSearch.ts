@@ -38,6 +38,7 @@ export type SettingsAnchor =
   | "cloudConsent"
   | "habitMemory"
   | "habitShare"
+  | "scheduledCommands"
   | "blockControlWhileLocked"
   | "raycast"
   | "allowURLControl"
@@ -176,6 +177,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "habitShare":
       return "assistant";
     case "blockControlWhileLocked":
+    case "scheduledCommands":
     case "raycast":
     case "allowURLControl":
     case "advancedDeviceWrites":
@@ -426,6 +428,15 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_SECURITY,
     title: ["锁屏时禁止控制设备", "鎖定螢幕時禁止控制裝置", "Block Device Control While Locked"],
     synonyms: ["锁屏", "鎖屏", "锁定", "禁止控制", "防误控", "安全锁", "lock", "locked", "lock screen", "workstation lock", "block", "security", "suoping"],
+  },
+  {
+    anchor: "scheduledCommands",
+    section: SEC_SECURITY,
+    title: ["运行定时任务", "執行定時任務", "Run Scheduled Commands"],
+    synonyms: [
+      "定时", "定時", "定时任务", "定時任務", "定时指令", "排程", "暂停定时", "错过",
+      "timer", "timers", "scheduled", "schedule", "scheduled commands", "pause timers", "missed timer", "dingshi",
+    ],
   },
   {
     anchor: "raycast",
