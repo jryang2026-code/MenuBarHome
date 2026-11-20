@@ -20,6 +20,7 @@ import {
 import type { RaycastCommandFeedback } from "./raycastSnapshot.js";
 import { formatTemperature } from "./temperature.js";
 import { evaluateDisabledDeviceUrlGate, evaluateDisabledSceneUrlGate } from "./miAccountControl.js";
+import { tr3 } from "./safetyAndHealth.js";
 
 export type AppURLCommand =
   | { readonly kind: "toggle"; readonly deviceId: string }
@@ -460,6 +461,34 @@ export interface AppURLCommandHost {
   focusDeviceFromUrl(deviceId: string): UrlDeviceFocusResult;
   /** False for cards the panel hides (e.g. offline devices while "hide offline" is on). */
   isDeviceVisibleInPanel?(deviceId: string): boolean;
+  /**
+   * The host write gate for a device the link resolved to, checked before any confirmation is shown
+   * so a type switched off before the refresh lands is refused instead of prompting first (#346).
+   */
+  evaluateDeviceWriteGate?(deviceId: string): string | null;
+}
+
+/**
+ * A link that carries a `bridgeToken` comes from a companion (Raycast, CLI, MCP). Once its token no
+ * longer matches — the integration was switched off, or reopened with a new token — it is refused
+ * outright, never downgraded to a prompt or to direct control (P6a-W).
+ */
+export function companionTokenRejectedMessage(integrationEnabled: boolean): string {
+  return integrationEnabled
+    ? tr3(
+        "外部工具的本机令牌已失效，请让它重新读取快照后再试",
+        "外部工具的本機權杖已失效，請讓它重新讀取快照後再試",
+        "The companion's local token has expired; let it reload the snapshot and try again",
+      )
+    : tr3(
+        "Raycast 与本地 CLI / MCP 集成已关闭，未执行该命令",
+        "Raycast 與本機 CLI / MCP 整合已關閉，未執行該命令",
+        "Raycast & local CLI / MCP integration is off; the command was not run",
+      );
+}
+
+function deviceOfResolvedTarget(resolved: ResolvedURLTarget): SmartDevice | null {
+  return "device" in resolved ? resolved.device : null;
 }
 
 export type UrlDeviceFocusResult = "focused" | "unsaved-settings" | "source-changed";
@@ -1132,6 +1161,15 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
     });
   };
 
+  const carriesBridgeToken = (envelope.token?.trim() ?? "") !== "";
+  const companionTokenRejected = (): boolean => {
+    if (!carriesBridgeToken) return false;
+    if (URLDirectControl.isValidBridgeToken(envelope.token, host.getActiveRaycastBridgeToken())) return false;
+    finish(companionTokenRejectedMessage(host.settings.enableRaycastIntegration), true);
+    return true;
+  };
+  if (companionTokenRejected()) return;
+
   if (host.waitForInitialSnapshotIfNeeded) {
     await host.waitForInitialSnapshotIfNeeded();
   }
@@ -1166,11 +1204,20 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
   }
 
   const controlsDevice = appURLCommandControlsDevice(envelope.command);
+  const initialDevice = deviceOfResolvedTarget(initialResolved);
+  if (controlsDevice && initialDevice && host.evaluateDeviceWriteGate) {
+    const gateMsg = host.evaluateDeviceWriteGate(initialDevice.id);
+    if (gateMsg !== null) {
+      finish(gateMsg, true);
+      return;
+    }
+  }
   // `focus` is gated too: a locked workstation must not reveal or scroll to a card (RaycastControls parity).
   if (await host.isControlBlockedByScreenLock()) {
     finish(screenLockBlockedMessage(), true);
     return;
   }
+  if (companionTokenRejected()) return;
 
   const expectedToken = host.getActiveRaycastBridgeToken();
   const isTrustedBridge = URLDirectControl.isValidBridgeToken(envelope.token, expectedToken);

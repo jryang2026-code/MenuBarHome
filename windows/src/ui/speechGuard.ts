@@ -28,7 +28,7 @@ import type {
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
-import { evaluateQuickActionSourceWriteGate } from "../core/miAccountControl.js";
+import { evaluateDeviceEntityWriteGate, evaluateQuickActionSourceWriteGate } from "../core/miAccountControl.js";
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
@@ -56,7 +56,16 @@ interface QueuedOpenUrl {
    * must never run against another: its `bridgeToken` and device ids belong to the old home.
    */
   readonly sourceRevision: number;
+  /** `companionEpoch` on arrival: switching the integration off or on drops every link queued before. */
+  readonly companionEpoch: number;
   readonly done: () => void;
+}
+
+/** What 检测接入 last found, shown under the integration switch until the next check. */
+export interface CompanionNotice {
+  readonly checkedAt: number;
+  readonly lines: readonly string[];
+  readonly isError: boolean;
 }
 
 interface UndoHoverPauseSnapshot {
@@ -83,6 +92,11 @@ interface HostRuntimeGuardState {
   lockBlockCount: number;
   exportSeq: number;
   bridgeTokenWarningShown: boolean;
+  /** Bumped by every integration switch; in-flight and queued external links of an older epoch are dropped. */
+  companionEpoch: number;
+  /** The generation the native host issued for the current switch; snapshot writes must carry it. */
+  companionGeneration: Promise<number | null>;
+  companionNotice: CompanionNotice | null;
 }
 
 export interface LockGuardHost {
@@ -141,6 +155,9 @@ function hostState(host: object): HostRuntimeGuardState {
       lockBlockCount: 0,
       exportSeq: 0,
       bridgeTokenWarningShown: false,
+      companionEpoch: 0,
+      companionGeneration: Promise.resolve(null),
+      companionNotice: null,
     };
     runtimeStateByHost.set(host, state);
   }
@@ -973,9 +990,12 @@ async function exportRaycastSnapshotNow(
   // The dedupe stamp is only advanced by a write that actually landed. Recording it up front made
   // one transient I/O failure permanent: every later render saw "already exported" and skipped.
   const seq = ++state.exportSeq;
+  const generation = await state.companionGeneration;
+  if (seq !== state.exportSeq || !host.settings.enableRaycastIntegration) return;
   try {
     await invoke("write_raycast_snapshot", {
       contents: JSON.stringify(snapshot, null, 2),
+      generation,
     });
   } catch {
     // Transient filesystem error: leaving `lastExportedComparableJson` stale lets the next render
@@ -1012,10 +1032,18 @@ export function setRaycastIntegrationEnabled(
   const persistSettings = options?.persistSettings ?? true;
   const shouldRender = options?.render ?? true;
   const state = hostState(host);
+  const changed = host.settings.enableRaycastIntegration !== enabled;
   host.settings.enableRaycastIntegration = enabled;
   if (persistSettings) {
     host.saveSettings();
   }
+  if (changed || !enabled) {
+    // Whatever external link is waiting belongs to the run that just ended (P6a-W).
+    state.companionEpoch += 1;
+    state.companionNotice = null;
+    cancelPendingExternalUrlWork(host);
+  }
+  registerCompanionWithNativeHost(host, enabled);
   if (enabled) {
     if (getActiveRaycastBridgeTokenForHost(host) === undefined) {
       // No CSPRNG: `warnBridgeTokenUnavailable` already turned the integration back off.
@@ -1044,6 +1072,122 @@ export function setRaycastIntegrationEnabled(
   }
 }
 
+/** Moves the native registration (`companion.rs`), which only accepts writes of the generation it returns. */
+function registerCompanionWithNativeHost(host: MenuMijiaWindowsApp, enabled: boolean): void {
+  const state = hostState(host);
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  state.companionGeneration = invoke
+    ? invoke<unknown>("set_companion_integration", { enabled }).then(
+        (generation) => (typeof generation === "number" ? generation : null),
+        () => null,
+      )
+    : Promise.resolve(null);
+}
+
+export function getCompanionNotice(host: MenuMijiaWindowsApp): CompanionNotice | null {
+  return hostState(host).companionNotice;
+}
+
+export function setCompanionNotice(host: MenuMijiaWindowsApp, lines: readonly string[], isError: boolean): void {
+  hostState(host).companionNotice = { checkedAt: Date.now(), lines, isError };
+}
+
+interface NativeCompanionStatus {
+  readonly enabled?: boolean;
+  readonly snapshotPath?: string | null;
+  readonly snapshotExists?: boolean;
+  readonly snapshotModifiedMs?: number | null;
+  readonly forwardingReady?: boolean;
+}
+
+async function readNativeCompanionStatus(): Promise<NativeCompanionStatus | null> {
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) return null;
+  try {
+    const status = await invoke<unknown>("companion_status");
+    return status && typeof status === "object" ? (status as NativeCompanionStatus) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * MCP client config for 复制配置. It names the snapshot path only: the `bridgeToken` stays in the
+ * owner-only snapshot file and is never put on the shared clipboard.
+ */
+export function buildCompanionConfigText(snapshotPath: string | null): string {
+  const env = snapshotPath ? { MENUBARMIJIA_SNAPSHOT_PATH: snapshotPath } : {};
+  return JSON.stringify(
+    {
+      mcpServers: {
+        menubarhome: {
+          command: "python",
+          args: [tr3("<MenuBarHome 源码目录>\\scripts\\mijia-mcp", "<MenuBarHome 原始碼目錄>\\scripts\\mijia-mcp", "<MenuBarHome source folder>\\scripts\\mijia-mcp")],
+          env,
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+export async function copyCompanionConfig(host: MenuMijiaWindowsApp): Promise<boolean> {
+  const status = await readNativeCompanionStatus();
+  const text = buildCompanionConfigText(status?.snapshotPath ?? null);
+  const nav = host.root.ownerDocument?.defaultView?.navigator ?? globalThis.navigator;
+  try {
+    if (typeof nav?.clipboard?.writeText !== "function") return false;
+    await nav.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 检测接入: what this machine can actually confirm — the snapshot, forwarding and the last companion command. */
+export async function detectCompanionIntegration(host: MenuMijiaWindowsApp): Promise<CompanionNotice> {
+  const state = hostState(host);
+  const epoch = state.companionEpoch;
+  if (host.settings.enableRaycastIntegration) {
+    // A write still waiting on a retry would make the first check report a missing snapshot.
+    await exportRaycastSnapshotNow(host, true);
+  }
+  const status = await readNativeCompanionStatus();
+  const lines: string[] = [];
+  let isError = false;
+  if (!host.settings.enableRaycastIntegration) {
+    lines.push(tr3("集成已关闭：没有快照，外部工具发来的命令会被拒绝。", "整合已關閉：沒有快照，外部工具傳來的命令會被拒絕。", "Integration is off: no snapshot, and companion commands are refused."));
+  } else if (status === null) {
+    isError = true;
+    lines.push(tr3("无法读取本机集成状态。", "無法讀取本機整合狀態。", "Could not read the local integration status."));
+  } else {
+    if (status.snapshotExists && status.enabled) {
+      const at = status.snapshotModifiedMs ? new Date(status.snapshotModifiedMs).toLocaleTimeString() : "";
+      lines.push(tr3("设备快照已导出 {at}", "裝置快照已匯出 {at}", "Device snapshot exported {at}", { at }).trim());
+    } else {
+      isError = true;
+      lines.push(tr3("设备快照未导出，外部工具读不到设备。", "裝置快照未匯出，外部工具讀不到裝置。", "The device snapshot is missing, so companions cannot see devices."));
+    }
+    lines.push(
+      status.forwardingReady
+        ? tr3("链接转发正常：外部链接会交给正在运行的这个窗口。", "連結轉發正常：外部連結會交給正在執行的這個視窗。", "Link forwarding works: links reach this running instance.")
+        : tr3("链接转发未就绪，可重启应用后再检测。", "連結轉發未就緒，可重新啟動應用程式後再檢測。", "Link forwarding is not ready; restart the app and check again."),
+    );
+    if (!status.forwardingReady) isError = true;
+    const feedback = state.lastCommandFeedback;
+    lines.push(
+      feedback?.requestId
+        ? tr3("最近一次外部命令：{time}", "最近一次外部命令：{time}", "Last companion command: {time}", { time: new Date(feedback.completedAt).toLocaleTimeString() })
+        : tr3("还没收到外部工具的命令。", "還沒收到外部工具的命令。", "No companion command received yet."),
+    );
+  }
+  const detection: CompanionNotice = { checkedAt: Date.now(), lines, isError };
+  // A switch during the check makes the answer describe a run that is gone.
+  if (epoch === state.companionEpoch) state.companionNotice = detection;
+  return detection;
+}
+
 function syncDynamicTrayTooltip(host: MenuMijiaWindowsApp): void {
   const state = hostState(host);
   const summary = formatDynamicTraySummary(
@@ -1068,8 +1212,23 @@ function createUrlCommandHostAdapter(
   expectedRevision: number,
 ): AppURLCommandHost {
   const state = hostState(host);
-  const revisionStillMatches = () => host.sourceRevision === expectedRevision;
+  const companionEpoch = state.companionEpoch;
+  const revisionStillMatches = () =>
+    host.sourceRevision === expectedRevision && state.companionEpoch === companionEpoch;
   let createdUndoAction: UndoAction | null = null;
+  // The same gate the panel write runs, asked before any prompt so a type closed ahead of the
+  // refresh is refused up front and 全关 leaves it out instead of failing the whole batch (#346).
+  const deviceWriteGate = (deviceId: string): string | null => {
+    if (host.settings.connectionMode === "demo" && !isDualSourceEnabled(host)) return null;
+    return evaluateDeviceEntityWriteGate({
+      targetKind: "device",
+      targetIdOrEntityId: deviceId,
+      resolvedActiveDeviceId: host.devices.some((d) => d.id === deviceId) ? deviceId : null,
+      context: buildHostCapabilityContext(host),
+      rejectUnknown: true,
+      languagePreference: host.settings.interfaceLanguage,
+    });
+  };
   return {
     lockHost: host,
     get devices() {
@@ -1245,7 +1404,7 @@ function createUrlCommandHostAdapter(
           }
         }
         const targets = allOffTargets(
-          foldGrouped(host, host.devices),
+          foldGrouped(host, host.devices).filter((d) => deviceWriteGate(d.id) === null),
           host.settings.allOffOverrides,
         );
         if (targets.length === 0) {
@@ -1276,6 +1435,8 @@ function createUrlCommandHostAdapter(
         isError: noUndo,
       };
     },
+
+    evaluateDeviceWriteGate: deviceWriteGate,
 
     isDeviceVisibleInPanel(deviceId: string): boolean {
       const dev = host.devices.find((d) => d.id === deviceId);
@@ -1324,8 +1485,9 @@ export function enqueueIncomingOpenUrl(
   const state = hostState(host);
   // The stamp is taken here, at the moment the link arrives, not when it is finally dequeued.
   const sourceRevision = host.sourceRevision;
+  const companionEpoch = state.companionEpoch;
   return new Promise<void>((done) => {
-    state.urlQueue.push({ url: rawUrl, sourceRevision, done });
+    state.urlQueue.push({ url: rawUrl, sourceRevision, companionEpoch, done });
     if (!state.isDrainingUrlQueue) {
       state.isDrainingUrlQueue = true;
       void (async () => {
@@ -1335,6 +1497,14 @@ export function enqueueIncomingOpenUrl(
             try {
               if (host.sourceRevision !== item.sourceRevision) {
                 reportStaleExternalUrl(host, item.url);
+                continue;
+              }
+              if (state.companionEpoch !== item.companionEpoch) {
+                reportStaleExternalUrl(
+                  host,
+                  item.url,
+                  tr3("Raycast 与本地 CLI / MCP 集成已切换，已取消之前排队的外部链接", "Raycast 與本機 CLI / MCP 整合已切換，已取消之前排隊的外部連結", "Raycast & local CLI / MCP integration was switched; earlier queued links were cancelled"),
+                );
                 continue;
               }
               await onOpenURL(
@@ -1357,10 +1527,13 @@ export function enqueueIncomingOpenUrl(
  * Answers a link that outlived its data source. Without this the user would see nothing at all:
  * the device ids and `bridgeToken` in the link refer to the home that is no longer loaded.
  */
-function reportStaleExternalUrl(host: MenuMijiaWindowsApp, rawUrl: string): void {
+function reportStaleExternalUrl(
+  host: MenuMijiaWindowsApp,
+  rawUrl: string,
+  staleMessage = tr3("数据源已切换，已取消外部链接执行", "資料源已切換，已取消外部連結執行", "Data source changed; external link cancelled"),
+): void {
   const state = hostState(host);
   const envelope = AppURLParser.parseEnvelope(rawUrl);
-  const staleMessage = tr3("数据源已切换，已取消外部链接执行", "資料源已切換，已取消外部連結執行", "Data source changed; external link cancelled");
   host.replyBanner = {
     text: staleMessage,
     source: t("外部链接"),
@@ -1408,6 +1581,7 @@ function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
     }
   });
 
+  registerCompanionWithNativeHost(host, host.settings.enableRaycastIntegration);
   if (host.settings.enableRaycastIntegration) {
     getActiveRaycastBridgeTokenForHost(host);
     void exportRaycastSnapshotNow(host, true);
