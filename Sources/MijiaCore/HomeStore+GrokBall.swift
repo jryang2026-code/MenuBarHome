@@ -13,7 +13,10 @@ extension HomeStore {
     static let grokBallCelebrationSeconds: TimeInterval = 2.4
 
     /// Fresh model choices first, with local suggestions filling any remaining radial slots.
+    /// Empty while 主动建议 is off: the stage then ranks no habits (P5b-M).
     public var grokBallRadialSuggestions: [GrokBallRadialItem] {
+        guard proactiveSuggestionsEnabled else { return [] }
+        proactiveWorkCounters.rankings += 1
         var suggestions: [AssistantSuggestion] = []
         let local = userHabitMemory.topSuggestions(
             devices: devices, scenes: [], favoriteIds: favoriteOrder, environmentReadings: environmentReadings

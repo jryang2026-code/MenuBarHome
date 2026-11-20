@@ -30,6 +30,31 @@ struct AssistantToggleWordingTests {
         }
     }
 
+    @Test("Proactive-suggestions switch wording ships in all three languages (P5b-M)")
+    func proactiveWordingShipsInThreeLanguages() async throws {
+        let refused = (zh: "无法保存主动建议开关状态，请重试", en: "Could not save the suggestions switch; try again")
+        let stageOff = (zh: "主动建议已关闭，可在设置中重新开启", en: "Proactive suggestions are off. Turn them back on in Settings.")
+        for language in [AppLanguage.zhHans, AppLanguage.zhHant, AppLanguage.en] {
+            try await L10n.$overrideLanguage.withValue(language) {
+                switch language {
+                case .zhHant:
+                    #expect(AssistantSettingsCopy.proactiveTitle == "主動建議（猜你想做）")
+                    #expect(AssistantSettingsCopy.proactiveHint == "關閉後，面板不再顯示建議，也不再為建議做後台推斷；安全提醒、撤銷和定時照常運行。")
+                    #expect(L10n.tr(refused.zh, refused.en) == "無法儲存主動建議開關狀態，請重試")
+                    #expect(L10n.tr(stageOff.zh, stageOff.en) == "主動建議已關閉，可在設定中重新開啟")
+                case .en:
+                    #expect(AssistantSettingsCopy.proactiveTitle == "Proactive suggestions")
+                    #expect(AssistantSettingsCopy.proactiveHint == "When off, the panel shows no suggestions and makes no background inference for them; safety alerts, undo and timers keep running.")
+                    #expect(L10n.tr(refused.zh, refused.en) == refused.en)
+                    #expect(L10n.tr(stageOff.zh, stageOff.en) == stageOff.en)
+                default:
+                    #expect(AssistantSettingsCopy.proactiveTitle == "主动建议（猜你想做）")
+                    #expect(L10n.tr(stageOff.zh, stageOff.en) == stageOff.zh)
+                }
+            }
+        }
+    }
+
     @Test("The AI-off banner and probe wording ships in all three languages")
     func bannerWordingShipsInThreeLanguages() async throws {
         let offBanner = (

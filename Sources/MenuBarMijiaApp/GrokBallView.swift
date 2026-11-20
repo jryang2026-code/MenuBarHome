@@ -513,7 +513,9 @@ struct GrokBallSuggestions: View {
             }
 
             if items.isEmpty {
-                Text(L10n.tr("暂无可用建议，先试着控制设备", "No suggestions yet. Try controlling a device first."))
+                Text(store.proactiveSuggestionsEnabled
+                    ? L10n.tr("暂无可用建议，先试着控制设备", "No suggestions yet. Try controlling a device first.")
+                    : L10n.tr("主动建议已关闭，可在设置中重新开启", "Proactive suggestions are off. Turn them back on in Settings."))
                     .font(.system(size: DesignTokens.TypeSize.caption))
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)

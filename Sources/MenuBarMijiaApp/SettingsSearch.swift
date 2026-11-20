@@ -50,6 +50,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case assistantRemoveProvider
     case assistantAPIKey
     case assistantTest
+    case proactiveSuggestions
     case habitMemory
 
     // 显示与面板主题（合并入常规）
@@ -94,7 +95,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .miMultiAccounts, .dualSourceFusion:
             return .connection
         case .askWhenUnsure, .confidenceThreshold, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
-             .assistantAPIKey, .assistantTest, .habitMemory:
+             .assistantAPIKey, .assistantTest, .proactiveSuggestions, .habitMemory:
             return .assistant
         case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
              .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
@@ -375,6 +376,9 @@ enum SettingsSearch {
             entry(.assistantTest, section: assistantSection, zhTitle: "测试 AI 连接",
                   enTitle: "Test the AI Connection",
                   synonyms: ["测试", "连接", "test", "connection", "verify", "check"]),
+            entry(.proactiveSuggestions, section: assistantSection, zhTitle: "主动建议",
+                  enTitle: "Proactive Suggestions",
+                  synonyms: ["建议", "猜你想做", "猜你想控", "推荐", "suggestions", "proactive", "recommend"]),
             entry(.habitMemory, section: assistantSection, zhTitle: "习惯记忆", enTitle: "Habit Memory",
                   synonyms: ["习惯", "记忆", "偏好", "习惯学习", "habit", "memory", "learn"]),
 
