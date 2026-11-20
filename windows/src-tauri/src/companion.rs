@@ -36,7 +36,11 @@ const SINGLE_INSTANCE_MUTEX_NAME: &str = r"Local\MenuBarHome.SingleInstance.Mute
 #[cfg(all(windows, not(test)))]
 const WIN32_ERROR_ALREADY_EXISTS: u32 = 183;
 
-static SNAPSHOT_IO_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+/// Serializes snapshot I/O and holds the host-owned companion registration (P6a-W). Only the
+/// explicit toggle moves the registration; a write is accepted for the generation it was issued
+/// for, so a late call from before a switch-off cannot republish a revoked token.
+static SNAPSHOT_IO_LOCK: LazyLock<Mutex<CompanionRegistration>> =
+    LazyLock::new(|| Mutex::new(CompanionRegistration::default()));
 static SNAPSHOT_TMP_SEQ: AtomicU64 = AtomicU64::new(1);
 static WEBVIEW_URL_LISTENER_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_OPEN_URLS: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
@@ -126,13 +130,57 @@ pub(crate) fn remove_snapshot_in_dir(dir: &Path) -> Result<(), String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CompanionRegistration {
+    pub(crate) enabled: bool,
+    pub(crate) generation: u64,
+}
+
+/// Every toggle starts a new generation; switching off also deletes the snapshot inside the same
+/// critical section, so no write of the ended run can land after it.
+pub(crate) fn set_companion_registration(
+    registration: &mut CompanionRegistration,
+    dir: Option<&Path>,
+    enabled: bool,
+) -> Result<u64, String> {
+    registration.generation = registration.generation.saturating_add(1);
+    registration.enabled = enabled;
+    if !enabled {
+        if let Some(dir) = dir {
+            remove_snapshot_in_dir(dir)?;
+        }
+    }
+    Ok(registration.generation)
+}
+
+pub(crate) fn write_snapshot_for_registration(
+    registration: &CompanionRegistration,
+    dir: &Path,
+    generation: Option<u64>,
+    contents: &str,
+) -> Result<PathBuf, String> {
+    if !registration.enabled || generation != Some(registration.generation) {
+        return Err("外部快捷工具联动已关闭或已重新开启，旧的快照写入已丢弃".to_string());
+    }
+    write_snapshot_in_dir(dir, contents)
+}
+
 #[tauri::command]
-pub(crate) fn write_raycast_snapshot(contents: String) -> Result<(), String> {
-    let _guard = SNAPSHOT_IO_LOCK
+pub(crate) fn set_companion_integration(enabled: bool) -> Result<u64, String> {
+    let mut registration = SNAPSHOT_IO_LOCK
+        .lock()
+        .map_err(|_| "快照写入锁不可用".to_string())?;
+    let dir = companion_local_dir();
+    set_companion_registration(&mut registration, dir.as_deref(), enabled)
+}
+
+#[tauri::command]
+pub(crate) fn write_raycast_snapshot(contents: String, generation: Option<u64>) -> Result<(), String> {
+    let registration = SNAPSHOT_IO_LOCK
         .lock()
         .map_err(|_| "快照写入锁不可用".to_string())?;
     let dir = companion_local_dir().ok_or_else(|| "无法定位 LOCALAPPDATA 目录".to_string())?;
-    write_snapshot_in_dir(&dir, &contents).map(|_| ())
+    write_snapshot_for_registration(&registration, &dir, generation, &contents).map(|_| ())
 }
 
 #[tauri::command]
@@ -144,6 +192,53 @@ pub(crate) fn remove_raycast_snapshot() -> Result<(), String> {
         return Ok(());
     };
     remove_snapshot_in_dir(&dir)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CompanionStatus {
+    pub(crate) enabled: bool,
+    pub(crate) snapshot_path: Option<String>,
+    pub(crate) snapshot_exists: bool,
+    pub(crate) snapshot_modified_ms: Option<u64>,
+    /// This instance published `ipc-endpoint.json` and it still points here, so second launches
+    /// and `menumijia://` links forward to it.
+    pub(crate) forwarding_ready: bool,
+}
+
+pub(crate) fn companion_status_in_dir(
+    registration: &CompanionRegistration,
+    dir: Option<&Path>,
+    owned_endpoint: Option<&(u16, String)>,
+) -> CompanionStatus {
+    let snapshot = dir.map(|dir| dir.join(SNAPSHOT_FILE_NAME));
+    let metadata = snapshot.as_ref().and_then(|path| std::fs::metadata(path).ok());
+    let forwarding_ready = match (dir, owned_endpoint) {
+        (Some(dir), Some((port, secret))) => read_ipc_endpoint(dir).is_some_and(|current| {
+            current.port == *port && constant_time_secret_matches(secret, &current.secret)
+        }),
+        _ => false,
+    };
+    CompanionStatus {
+        enabled: registration.enabled,
+        snapshot_path: snapshot.map(|path| path.to_string_lossy().into_owned()),
+        snapshot_exists: metadata.as_ref().is_some_and(|m| m.is_file()),
+        snapshot_modified_ms: metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|elapsed| elapsed.as_millis() as u64),
+        forwarding_ready,
+    }
+}
+
+#[tauri::command]
+pub(crate) fn companion_status() -> Result<CompanionStatus, String> {
+    let registration = *SNAPSHOT_IO_LOCK
+        .lock()
+        .map_err(|_| "快照写入锁不可用".to_string())?;
+    let owned = ACTIVE_IPC_OWNERSHIP.lock().ok().and_then(|guard| (*guard).clone());
+    let dir = companion_local_dir();
+    Ok(companion_status_in_dir(&registration, dir.as_deref(), owned.as_ref()))
 }
 
 /// The schemes this app answers to: the original, and the product's current name (#166). Both run
@@ -931,6 +1026,49 @@ mod tests {
 
         let wrong_dir = base.join("OtherFolder");
         assert!(write_snapshot_in_dir(&wrong_dir, payload_one).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn companion_registration_rejects_writes_from_an_ended_generation() {
+        let base = scratch_dir("registration");
+        let dir = base.join("MenuBarMijia");
+        let payload = r#"{"schemaVersion":1,"bridgeToken":"old","devices":[],"scenes":[],"quickActions":[]}"#;
+        let mut registration = CompanionRegistration::default();
+
+        assert!(
+            write_snapshot_for_registration(&registration, &dir, Some(0), payload).is_err(),
+            "nothing is published before the webview registers"
+        );
+        let first = set_companion_registration(&mut registration, Some(&dir), true).expect("enable");
+        let path = write_snapshot_for_registration(&registration, &dir, Some(first), payload)
+            .expect("current generation writes");
+        assert!(path.exists());
+        assert!(write_snapshot_for_registration(&registration, &dir, None, payload).is_err());
+
+        let off = set_companion_registration(&mut registration, Some(&dir), false).expect("disable");
+        assert!(off > first);
+        assert!(!path.exists(), "switching off deletes the snapshot in the same critical section");
+        assert!(
+            write_snapshot_for_registration(&registration, &dir, Some(first), payload).is_err(),
+            "a late write of the ended run cannot republish a revoked token"
+        );
+
+        let reopened = set_companion_registration(&mut registration, Some(&dir), true).expect("re-enable");
+        assert!(write_snapshot_for_registration(&registration, &dir, Some(first), payload).is_err());
+        assert!(write_snapshot_for_registration(&registration, &dir, Some(off), payload).is_err());
+        assert!(!path.exists(), "an old IPC write never reopens the integration");
+        write_snapshot_for_registration(&registration, &dir, Some(reopened), payload).expect("new run writes");
+
+        let status = companion_status_in_dir(&registration, Some(&dir), None);
+        assert!(status.enabled && status.snapshot_exists && status.snapshot_modified_ms.is_some());
+        assert!(!status.forwarding_ready, "no owned endpoint means no forwarding");
+        let endpoint = IpcEndpoint { port: 4321, secret: "ab".repeat(32), pid: 1 };
+        write_ipc_endpoint(&dir, &endpoint).expect("publish endpoint");
+        let owned = (endpoint.port, endpoint.secret.clone());
+        assert!(companion_status_in_dir(&registration, Some(&dir), Some(&owned)).forwarding_ready);
+        let foreign = (endpoint.port, "cd".repeat(32));
+        assert!(!companion_status_in_dir(&registration, Some(&dir), Some(&foreign)).forwarding_ready);
         let _ = std::fs::remove_dir_all(&base);
     }
 

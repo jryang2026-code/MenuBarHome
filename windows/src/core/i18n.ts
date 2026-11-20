@@ -761,6 +761,27 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。",
     "Blocks manual and external URL actions while Windows is locked; scheduled timers still run on time.",
   ],
+  "运行定时任务": ["运行定时任务", "Run Scheduled Commands"],
+  "关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。": [
+    "关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。",
+    "Turning this off stops timers from firing and never catches up; pending timers stay paused with their plans. Turning it back on revalidates every target first, and timers that came due meanwhile go to the missed flow instead of running silently.",
+  ],
+  "定时任务已关闭，开启后才能执行这条定时": [
+    "定时任务已关闭，开启后才能执行这条定时",
+    "Scheduled commands are off. Turn them back on to run this timer.",
+  ],
+  "定时任务已关闭，开启后才能新建定时": [
+    "定时任务已关闭，开启后才能新建定时",
+    "Scheduled commands are off. Turn them back on to create a timer.",
+  ],
+  "无法保存暂停的定时，定时任务仍处于开启状态": [
+    "无法保存暂停的定时，定时任务仍处于开启状态",
+    "Could not save the paused timers, so scheduled commands stay on.",
+  ],
+  "定时任务开关已改变，已停止剩余步骤": [
+    "定时任务开关已改变，已停止剩余步骤",
+    "The scheduled-commands switch changed, so the remaining steps were stopped.",
+  ],
   "Raycast 与本地 CLI / MCP 集成": [
     "Raycast 与本地 CLI / MCP 集成",
     "Raycast, Local CLI & MCP Integration",

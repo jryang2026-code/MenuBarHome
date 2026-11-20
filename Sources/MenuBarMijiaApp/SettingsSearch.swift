@@ -27,6 +27,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case globalHotkey
     case weeklyReport
     case hiddenDevices
+    case scheduledCommands
     case automationRules
     case raycast
     case energyHistory
@@ -88,7 +89,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .compactGrid,
              .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .grokBall, .voiceInput,
              .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
-             .automationRules, .raycast, .energyHistory,
+             .scheduledCommands, .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
             return .general
         case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
@@ -307,6 +308,9 @@ enum SettingsSearch {
                   synonyms: ["周报", "健康报告", "weekly", "report", "digest", "health"]),
             entry(.hiddenDevices, section: generalSection, zhTitle: "已隐藏的设备", enTitle: "Hidden Devices",
                   synonyms: ["隐藏设备", "恢复显示", "取消隐藏", "hidden", "unhide", "restore", "show"]),
+            entry(.scheduledCommands, section: automationSection,
+                  zhTitle: "运行定时任务", enTitle: "Run Scheduled Commands",
+                  synonyms: ["定时", "定時", "排程", "暂停定时", "错过", "timer", "schedule", "scheduled command"]),
             entry(.automationRules, section: automationSection,
                   zhTitle: "Mac 状态自动化规则", enTitle: "Mac State Automation Rules",
                   synonyms: ["自动化", "规则", "合盖", "休眠", "唤醒", "外接显示器", "专注模式", "日历",

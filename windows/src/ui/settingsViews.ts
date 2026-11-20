@@ -16,6 +16,7 @@ import {
   hasPendingMiVaultDeletion,
   isSpeechRecognitionSupported,
   isVoiceInputEnabled,
+  type CompanionNotice,
   type UpdateDownloadProgress,
 } from "./speechGuard.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
@@ -27,6 +28,7 @@ import {
   normalizeMiCloudRegion,
 } from "../core/miCloudClient.js";
 import { joinsAllOff, type HomeScene, type SmartDevice } from "../core/models.js";
+import { isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import {
   APPEARANCES,
   DEFAULT_GLOBAL_SHORTCUT,
@@ -206,6 +208,8 @@ export interface SettingsViewContext {
    * built on demand; `key` makes an inactive-tab cache notice when the draft changed.
    */
   readonly deviceTypes?: { readonly key: string; readonly html: () => string };
+  /** The last 复制配置 / 检测接入 / 断开 result for the companion integration (P6a-W). */
+  readonly companionNotice?: CompanionNotice | null;
   escapeHtml(value: string): string;
 }
 
@@ -1044,6 +1048,27 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
   `;
 }
 
+/** 复制配置, 检测接入 and 断开 for Raycast / CLI / MCP, plus what a companion can reach on this PC (P6a-W). */
+function renderCompanionControls(ctx: SettingsViewContext): string {
+  const enabled = ctx.settings.enableRaycastIntegration;
+  const notice = ctx.companionNotice;
+  const noticeHtml = notice
+    ? `<p class="cc-field-hint" id="settings-companion-notice" role="status"${notice.isError ? ' style="color: #e74c3c;"' : ""}>${notice.lines.map((line) => ctx.escapeHtml(line)).join("<br />")}</p>`
+    : `<p class="cc-field-hint" id="settings-companion-notice" role="status" hidden></p>`;
+  return `
+        <p class="cc-field-hint">${ctx.escapeHtml(tr3(
+          "访问范围：仅这台电脑的当前用户。外部工具只读快照里的设备、场景和状态，通过 menumijia:// 链接控制；拿不到米家或 Home Assistant 账号，高风险确认和锁屏拦截照常生效。断开不会改动外部工具自己的配置文件。",
+          "存取範圍：僅這台電腦的目前使用者。外部工具只讀快照裡的裝置、場景和狀態，透過 menumijia:// 連結控制；拿不到米家或 Home Assistant 帳號，高風險確認和鎖定畫面攔截照常生效。中斷連線不會改動外部工具自己的設定檔。",
+          "Access: only the current user on this PC. Companions read devices, scenes and status from the snapshot and control them through menumijia:// links; they never get your Mi Home or Home Assistant account, and high-risk confirmation and the lock-screen guard still apply. Disconnecting leaves the tools' own config files untouched.",
+        ))}</p>
+        <div class="cc-field-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap; justify-content: flex-start;">
+          <button type="button" class="cc-btn-secondary" id="btn-companion-copy-config">${ctx.escapeHtml(tr3("复制配置", "複製設定", "Copy Config"))}</button>
+          <button type="button" class="cc-btn-secondary" id="btn-companion-detect">${ctx.escapeHtml(tr3("检测接入", "檢測接入", "Check Connection"))}</button>
+          ${enabled ? `<button type="button" class="cc-btn-secondary" id="btn-companion-disconnect">${ctx.escapeHtml(tr3("断开并吊销令牌", "中斷連線並撤銷權杖", "Disconnect & Revoke Token"))}</button>` : ""}
+        </div>
+        ${noticeHtml}`;
+}
+
 /** 全关与更新: what 全关 switches off, companion/security controls, plus the update card when none is waiting on the general tab. */
 function renderSystemPanel(ctx: SettingsViewContext): string {
   return `
@@ -1057,12 +1082,21 @@ function renderSystemPanel(ctx: SettingsViewContext): string {
         <p class="cc-field-hint">${t("锁屏期间拦截手动与外部链接控制；已设好的定时任务仍按时执行。")}</p>
       </div>
 
+      <div data-settings-anchor="scheduledCommands">
+        <div class="cc-field-row" style="margin-top: 8px;">
+          <label for="settings-scheduled-commands-enabled">${t("运行定时任务")}</label>
+          <input id="settings-scheduled-commands-enabled" type="checkbox" ${isScheduledCommandsEnabled(ctx.settings) ? "checked" : ""} />
+        </div>
+        <p class="cc-field-hint">${t("关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。")}</p>
+      </div>
+
       <div data-settings-anchor="raycast">
         <div class="cc-field-row" style="margin-top: 8px;">
           <label for="settings-raycast-integration">${t("Raycast 与本地 CLI / MCP 集成")}</label>
           <input id="settings-raycast-integration" type="checkbox" ${ctx.settings.enableRaycastIntegration ? "checked" : ""} />
         </div>
         <p class="cc-field-hint">${t("在 %LOCALAPPDATA%\\MenuBarMijia 导出设备快照并签发本机令牌（不含账号凭据）；关闭后立即删除快照并吊销令牌。")}</p>
+        ${renderCompanionControls(ctx)}
       </div>
 
       <div data-settings-anchor="allowURLControl">

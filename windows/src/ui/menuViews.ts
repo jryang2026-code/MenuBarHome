@@ -27,6 +27,7 @@ import {
 } from "../core/dualSourceProvider.js";
 import { getHostActivityCenter } from "./activityStackView.js";
 import { getHostAutoSafetySession } from "./automationSettingsView.js";
+import { getCompanionNotice } from "./speechGuard.js";
 import {
   getHostDualSourceCoordinator,
   getHostDualSourceState,
@@ -340,6 +341,7 @@ export function renderSettingsModal(host: MenuMijiaWindowsApp): string {
         key: deviceTypeSelectionRenderKey(host),
         html: () => renderDeviceTypeSelectionSection(host),
       },
+      companionNotice: getCompanionNotice(host),
       escapeHtml: (value) => host.escapeHtml(value),
     });
   }

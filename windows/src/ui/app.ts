@@ -131,7 +131,7 @@ import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCac
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
 import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
-import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
+import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits, type ExecuteIntentsOptions } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
 import { registerUndoActionBatch } from "../core/optimisticLock.js";
 import { tr3 } from "../core/safetyAndHealth.js";
@@ -881,9 +881,14 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
       return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
     }
-    const { indexedDevices } = buildIndexedCapabilityDevices(buildHostCapabilityContext(this));
+    const context = buildHostCapabilityContext(this);
+    const { indexedDevices } = buildIndexedCapabilityDevices(context);
+    // A type switched off before the refresh lands would otherwise fail the whole 全关 batch (#346).
+    const enabledCategories = context.state.selection.enabledCategories;
     const availableIds = new Set(
-      indexedDevices.filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled).map((d) => d.id),
+      indexedDevices
+        .filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled && enabledCategories.includes(d.category))
+        .map((d) => d.id),
     );
     return allOffTargets(
       this.filteredDevices.filter((d) => availableIds.has(d.id)),
@@ -1029,7 +1034,7 @@ export class MenuMijiaWindowsApp {
     intents: readonly DeviceIntent[],
     replyText: string,
     sourceLabel: string,
-    options: { recordHabits?: boolean } = {},
+    options: ExecuteIntentsOptions = {},
   ): Promise<boolean> {
     if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
       const gateMsg = evaluateIntentsWriteGate({

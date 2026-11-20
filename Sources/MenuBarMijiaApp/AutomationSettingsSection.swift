@@ -34,6 +34,7 @@ struct AutomationSettingsSection: View {
     @State private var companionCheckReport: CompanionCheckReport?
     /// Loaded in `onAppear`; a `@State` initializer would re-decode `UserDefaults` on every render.
     @State private var rules: [AutomationRule] = []
+    @State private var timersToPause: [ScheduledCommand]?
     /// Mirrors the Location authorization so the conditions editor can explain a silent rule.
     @State private var locationAuthorized = MacHardwareProbe.isWiFiAuthorized
 
@@ -96,9 +97,58 @@ struct AutomationSettingsSection: View {
         }
     }
 
+    private var scheduledCommandsToggle: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle(L10n.tr("运行定时任务", "Run Scheduled Commands"), isOn: Binding(
+                get: { store.scheduledCommandsEnabled },
+                set: { enabled in
+                    let affected = store.scheduledCommandsAffectedByDisable
+                    if enabled || affected.isEmpty {
+                        store.setScheduledCommandsEnabled(enabled)
+                    } else {
+                        timersToPause = affected
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+
+            Text(L10n.tr(
+                "关闭后停止到点执行和补发，已排定的定时暂停保留；重新开启时先复验目标，已过期的不补发，改为进入错过流程。",
+                "Turning this off stops timers from firing and never catches up; pending timers stay paused with their plans. Turning it back on revalidates every target first, and timers that came due meanwhile go to the missed flow instead of running silently."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(DesignTokens.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .settingsRow(anchor: .scheduledCommands)
+        .confirmationDialog(
+            L10n.tr("关闭定时任务？", "Turn off scheduled commands?"),
+            isPresented: Binding(
+                get: { timersToPause != nil },
+                set: { if !$0 { timersToPause = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: timersToPause
+        ) { entries in
+            Button(L10n.tr("暂停这些项并关闭", "Pause These & Turn Off")) {
+                let current = store.scheduledCommandsAffectedByDisable
+                if current != entries, !current.isEmpty {
+                    Task { @MainActor in timersToPause = current }
+                } else {
+                    store.setScheduledCommandsEnabled(false, confirming: current)
+                }
+            }
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+        } message: { entries in
+            Text(entries.map(\.reply).joined(separator: "\n"))
+        }
+    }
+
     var body: some View {
         let _ = store.effectiveLanguage
         SettingsSection(title: L10n.tr("自动化与外部控制", "Automation & External Control"), anchor: .automationRules) {
+            scheduledCommandsToggle
+
             Toggle(L10n.tr("运行自动化规则", "Run automation rules"), isOn: Binding(
                 get: { store.eventAutomationEnabled },
                 set: { enabled in

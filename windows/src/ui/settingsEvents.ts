@@ -52,7 +52,7 @@ import { clearConnectionRemovals, pendingConnectionRemovalScopes } from "../core
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { scheduledCommandIdentity } from "./scheduledCommands.js";
+import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   importAmbientAssistantKey,
@@ -69,7 +69,7 @@ import {
   searchSettings,
   type SettingsAnchor,
 } from "./settingsSearch.js";
-import { setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
+import { copyCompanionConfig, detectCompanionIntegration, setCompanionNotice, setPendingMiVaultDeletion, setRaycastIntegrationEnabled } from "./speechGuard.js";
 import { switchSource, type SourceSwitchHost } from "./sourceSwitch.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
@@ -1043,6 +1043,47 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     syncSettingsSaveHint(host, "auto-saved");
   });
 
+  const companionHost = host as unknown as MenuMijiaWindowsApp;
+  host.root.querySelector<HTMLButtonElement>("#btn-companion-copy-config")?.addEventListener("click", () => {
+    void copyCompanionConfig(companionHost).then((copied) => {
+      setCompanionNotice(
+        companionHost,
+        [
+          copied
+            ? tr3(
+                "已复制 MCP 配置（不含令牌）。把 args 里的路径换成你电脑上 scripts\\mijia-mcp 的位置，再粘贴到 Claude、Cursor 等工具的配置里。",
+                "已複製 MCP 設定（不含權杖）。把 args 裡的路徑換成你電腦上 scripts\\mijia-mcp 的位置，再貼到 Claude、Cursor 等工具的設定裡。",
+                "Copied the MCP config (no token). Point args at scripts\\mijia-mcp on this PC, then paste it into Claude, Cursor or a similar tool.",
+              )
+            : tr3("无法写入剪贴板，请稍后重试。", "無法寫入剪貼簿，請稍後重試。", "Could not write to the clipboard; try again."),
+        ],
+        !copied,
+      );
+      host.render();
+    });
+  });
+  host.root.querySelector<HTMLButtonElement>("#btn-companion-detect")?.addEventListener("click", (event) => {
+    const button = event.currentTarget as HTMLButtonElement;
+    button.disabled = true;
+    void detectCompanionIntegration(companionHost).finally(() => host.render());
+  });
+  host.root.querySelector<HTMLButtonElement>("#btn-companion-disconnect")?.addEventListener("click", () => {
+    setRaycastIntegrationEnabled(companionHost, false, { render: false });
+    setCompanionNotice(
+      companionHost,
+      [
+        tr3(
+          "已断开：快照已删除，旧令牌已吊销，之前排队的外部命令不会再执行。外部工具自己的配置未改动。",
+          "已中斷連線：快照已刪除，舊權杖已撤銷，之前排隊的外部命令不會再執行。外部工具自己的設定未改動。",
+          "Disconnected: the snapshot is deleted, the old token is revoked and earlier queued commands will not run. The tools' own config is untouched.",
+        ),
+      ],
+      false,
+    );
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
+  });
+
   host.root.querySelector<HTMLInputElement>("#settings-allow-direct-url")?.addEventListener("change", (event) => {
     host.settings.allowDirectURLControl = (event.target as HTMLInputElement).checked;
     syncSettingsSaveHint(host, "auto-saved");
@@ -1555,6 +1596,26 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       return;
     }
     syncAutomationLifecycle(host);
+    host.saveSettings();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-scheduled-commands-enabled")?.addEventListener("change", (event) => {
+    if (!isFullPanelHost(host)) return;
+    const toggle = event.target as HTMLInputElement;
+    if (!setScheduledCommandsRunning(host, toggle.checked)) {
+      // The paused entries could not be written, so the switch stays on: a timer that is still
+      // waiting must not look parked while it can fire.
+      toggle.checked = true;
+      host.replyBanner = {
+        text: t("无法保存暂停的定时，定时任务仍处于开启状态"),
+        source: t("控制失败"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
     host.saveSettings();
     syncSettingsSaveHint(host, "auto-saved");
     host.render();

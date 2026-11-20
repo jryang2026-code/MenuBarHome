@@ -1265,6 +1265,8 @@ public final class HomeStore {
     /// Timers paused by an account/connection disable. Observed so the assistant bar can list them;
     /// they stay cancellable while paused.
     public internal(set) var pausedScheduledCommands: [PausedScheduledCommand] = []
+    public internal(set) var scheduledCommandsEnabled = true
+    @ObservationIgnored var scheduledCommandsGeneration: UInt64 = 0
     @ObservationIgnored var pausedQuickActionIDs: Set<String> = []
     /// Scopes each paused quick action lost, so its resume decision can be per-item instead of
     /// waiting for every account.
