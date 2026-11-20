@@ -60,6 +60,8 @@ struct HATypePruningTests {
             object(["entity_id": "cover.disabled_curtain", "device_id": "dev_disabled"]),
             object(["entity_id": "cover.hidden_blind", "hidden_by": "user"]),
             object(["entity_id": "scene.movie"]),
+            // A scene the registry files under the curtain's device is still its own target.
+            object(["entity_id": "scene.balcony_close", "device_id": "dev_cover"]),
             object(["entity_id": "script.goodnight"]),
         ]),
         "states": .array([
@@ -72,6 +74,7 @@ struct HATypePruningTests {
             state("cover.disabled_curtain", "open"),
             state("cover.hidden_blind", "open"),
             state("scene.movie", "scening", ["friendly_name": .string("观影")]),
+            state("scene.balcony_close", "scening", ["friendly_name": .string("关阳台窗帘")]),
             state("script.goodnight", "off", ["friendly_name": .string("晚安")]),
         ]),
     ]
@@ -155,7 +158,7 @@ struct HATypePruningTests {
         #expect(!home.devices.contains { $0.id == "dev_cover" })
         #expect(home.devices.contains { $0.id == "dev_light" })
         #expect(!home.rooms.contains { $0.name == "阳台" }, "a room with only hidden cards goes too")
-        #expect(home.scenes.map(\.entityId).sorted() == ["scene.movie", "script.goodnight"], "scenes and scripts are never pruned")
+        #expect(home.scenes.map(\.entityId).sorted() == ["scene.balcony_close", "scene.movie", "script.goodnight"], "scenes and scripts are never pruned")
 
         let pruned = try #require(report)
         #expect(pruned.scope == Self.scope)
@@ -164,10 +167,12 @@ struct HATypePruningTests {
         let entry = try #require(pruned.hiddenIndexedDevices.first { $0.id == "dev_cover" })
         #expect(entry.category == .cover && entry.connection == .homeAssistant && entry.sourceScope == Self.scope)
         #expect(entry.readKeys.contains("cover.balcony"), "a stored entity command finds its hidden owner")
+        #expect(!entry.readKeys.contains("scene.balcony_close"), "a scene under the device never resolves to the hidden card")
         // Upstream hidden or disabled entities never become cards, so they never enter the index.
         #expect(!pruned.hiddenIndexedDevices.contains { $0.id == "dev_disabled" || $0.id == "cover.hidden_blind" })
 
         #expect(try snapshot.receive(Self.stateChanged("cover.balcony", "closed"), typePrunePolicy: policy) == nil)
+        #expect(try snapshot.receive(Self.stateChanged("scene.balcony_close", "unavailable"), typePrunePolicy: policy) != nil, "a scene change is never skipped")
         #expect(snapshot.takeTypePruneReport() == nil)
         let next = try #require(try snapshot.receive(Self.stateChanged("light.ceiling", "off"), typePrunePolicy: policy))
         #expect(next.devices.first { $0.id == "dev_light" }?.isActiveOn == false)
@@ -196,6 +201,13 @@ struct HATypePruningTests {
         let alarming = try #require(snapshot.takeTypePruneReport()?.safetyDevices.first)
         guard case .sensor(let spec) = alarming.kind else { Issue.record("expected a sensor"); return }
         #expect(spec.observations.contains { $0.kind == .leak && $0.alarming })
+
+        // A lost connection marks the retained devices stale once, so their last reading stops alerting.
+        let staleReport = snapshot.staleTypePruneReport()
+        let stale = try #require(staleReport)
+        #expect(stale.safetyDevices.map(\.telemetryStale) == [true])
+        let again = snapshot.staleTypePruneReport()
+        #expect(again == nil)
 
         let (_, _, dropped) = try Self.load(Self.home, policy: Self.policy(closed: [.sensor]))
         #expect(dropped?.safetyDevices.isEmpty == true)

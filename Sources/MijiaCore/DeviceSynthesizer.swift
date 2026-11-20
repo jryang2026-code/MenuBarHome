@@ -1992,7 +1992,9 @@ extension DeviceSynthesizer {
             cardsByDevice[deviceId, default: []].append(id)
         }
         var result: [String: [HAEntityEntry]] = [:]
-        for entity in entities {
+        // Scenes and scripts are their own targets, never part of a device card, even when the
+        // registry lists them under a device (architecture.md §B manual rule).
+        for entity in entities where !entity.entity_id.hasPrefix("scene.") && !entity.entity_id.hasPrefix("script.") {
             let owners = entity.device_id.flatMap { cardsByDevice[$0] }
                 ?? (cardIds.contains(entity.entity_id) ? [entity.entity_id] : [])
             for owner in owners { result[owner, default: []].append(entity) }

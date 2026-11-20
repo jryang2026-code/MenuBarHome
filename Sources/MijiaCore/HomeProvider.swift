@@ -473,6 +473,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     activeWebSocket = nil
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
+                    publishStaleRetainedDevices()
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                     return
                 } else {
@@ -480,6 +481,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     await suggestOtherAddressIfDue(consecutiveFailures: consecutiveFailures)
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
+                    publishStaleRetainedDevices()
                     continuation?.yield(.statusChanged(.disconnected(msg)))
                 }
                 try? await reconnectSleep(.seconds(backoffSeconds))
@@ -692,6 +694,14 @@ public actor HAWebSocketProvider: HomeProvider {
             continuation?.yield(.haTypePruneChanged(report))
         }
         continuation?.yield(.snapshotUpdated(home))
+    }
+
+    /// A lost connection stops feeding the type-retained devices, so their last reading must not keep
+    /// raising alerts while Home Assistant is away (P3b-M).
+    private func publishStaleRetainedDevices() {
+        if let report = snapshot.staleTypePruneReport() {
+            continuation?.yield(.haTypePruneChanged(report))
+        }
     }
 
     func fetchInitialRegistries(ws: any HAWebSocketConnection) async throws {

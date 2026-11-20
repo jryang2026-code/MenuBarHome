@@ -50,6 +50,21 @@ struct HAHomeSnapshot {
         return pendingPruneReport
     }
 
+    /// The last report with its retained devices marked stale, once the connection is lost: they no
+    /// longer receive state, so `SafetyMonitor` must skip them as it skips the visible cards after the
+    /// fallback grace. The next connection's first round reports fresh values again.
+    mutating func staleTypePruneReport() -> MiotTypePruneReport? {
+        guard let last = lastPruneReport, last.safetyDevices.contains(where: { !$0.telemetryStale }) else { return nil }
+        let stale = MiotTypePruneReport(
+            scope: last.scope,
+            hiddenIndexedDevices: last.hiddenIndexedDevices,
+            hiddenDeviceIds: last.hiddenDeviceIds,
+            safetyDevices: last.safetyDevices.map { var device = $0; device.telemetryStale = true; return device }
+        )
+        lastPruneReport = stale
+        return stale
+    }
+
     mutating func receive(
         _ message: [String: JSONValue],
         isRefreshStatesResult: Bool = false,
