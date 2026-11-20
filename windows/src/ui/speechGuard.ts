@@ -1070,6 +1070,11 @@ function createUrlCommandHostAdapter(
     get sourceRevision() {
       return host.sourceRevision;
     },
+    // The queued-link path is a production write entry, so it needs the same hidden index the panel
+    // and voice gates get; without it a closed type answers "missing device" (P3a-W, P3b-W).
+    get hiddenDevices() {
+      return host.hiddenDevices;
+    },
     get settings() {
       return host.settings;
     },

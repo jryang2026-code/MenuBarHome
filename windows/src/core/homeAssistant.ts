@@ -30,7 +30,7 @@ import {
   type HAState,
 } from "./haDomains.js";
 import {
-  buildHaTypePrunePlan, haTypePruningActive,
+  buildHaTypePrunePlan, haAuxiliarySafetySignals, haTypePruningActive,
   type HaTypePruneOptions, type HaTypePrunePlan,
 } from "./haTypePruning.js";
 import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
@@ -889,6 +889,7 @@ interface PendingHACard {
   readonly card: SmartDevice;
   readonly entities: readonly Row[];
   readonly claimed: ReadonlySet<string>;
+  readonly allowBinaryFallback: boolean;
 }
 
 export class HomeAssistantSynthesizer {
@@ -1011,6 +1012,7 @@ export class HomeAssistantSynthesizer {
         },
         entities,
         claimed,
+        allowBinaryFallback,
       });
     };
 
@@ -1130,10 +1132,20 @@ export class HomeAssistantSynthesizer {
     // when an alert that is still on reads its signal; everything else drops to an identity entry so
     // an old link, timer or AI intent is answered by name instead of "device not found".
     const prune = options?.prune ?? null;
+    // A closed card is kept when an enabled alert can still read it, and for a non-sensor card that
+    // alert often lives in an auxiliary `binary_sensor` that becomes a 更多设置 facet, so those rows
+    // have to be part of the signal before the split (P3b-W).
+    const auxiliarySignals = new Map(
+      pending.map((item) => [
+        item.card.id,
+        haAuxiliarySafetySignals(item.entities, states, item.allowBinaryFallback),
+      ] as const),
+    );
     const prunePlan = prune !== null && haTypePruningActive(prune.selection, prune.connectionScope)
       ? buildHaTypePrunePlan({
           devices: pending.map((item) => item.card),
           ...prune,
+          auxiliarySignalsByDeviceId: auxiliarySignals,
         })
       : null;
     const devices: SmartDevice[] = [];

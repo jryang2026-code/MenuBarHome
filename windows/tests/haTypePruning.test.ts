@@ -9,7 +9,7 @@ import {
 import { DEVICE_CATEGORY_IDS, type DeviceCategoryID } from "../src/core/capabilityManifest.js";
 import { HomeAssistantSynthesizer } from "../src/core/homeAssistant.js";
 import {
-  buildHaTypePrunePlan, haSafetySignalsForDevice, haTypePruningActive,
+  buildHaTypePrunePlan, haAuxiliarySafetySignals, haSafetySignalsForDevice, haTypePruningActive,
 } from "../src/core/haTypePruning.js";
 import { miotSafetySignalsForPrefs, miotSafetySignalsForSensorPolicy } from "../src/core/miotTypePruning.js";
 import { safetySignalsForPrefs, safetySignalsForSensorPolicy } from "../src/core/safetySignalPolicy.js";
@@ -51,6 +51,7 @@ const snapshot = {
     { id: "d-contact", name: "阳台门窗", area_id: "living", model: "test.contact" },
     { id: "d-cover", name: "客厅窗帘", area_id: "living", model: "test.cover" },
     { id: "d-valve", name: "燃气阀", area_id: "living", model: "tuya.valve" },
+    { id: "d-gas", name: "燃气关断阀", area_id: "living", model: "tuya.valve" },
   ],
   entities: [
     { entity_id: "light.living", device_id: "d-light" },
@@ -62,6 +63,9 @@ const snapshot = {
     { entity_id: "binary_sensor.door", device_id: "d-contact" },
     { entity_id: "cover.living", device_id: "d-cover" },
     { entity_id: "valve.gas_main", device_id: "d-valve" },
+    // An auxiliary alarm row: the card is a valve, the gas alert arrives as a 更多设置 facet.
+    { entity_id: "valve.gas_shutoff", device_id: "d-gas" },
+    { entity_id: "binary_sensor.gas_leak", device_id: "d-gas" },
     { entity_id: "scene.movie" },
     { entity_id: "script.leaving" },
   ],
@@ -86,6 +90,8 @@ const snapshot = {
       attributes: { friendly_name: "客厅窗帘", current_position: 40, supported_features: 15 },
     },
     { entity_id: "valve.gas_main", state: "closed", attributes: { friendly_name: "燃气阀", device_class: "gas" } },
+    { entity_id: "valve.gas_shutoff", state: "closed", attributes: { friendly_name: "燃气关断阀", device_class: "gas" } },
+    { entity_id: "binary_sensor.gas_leak", state: "off", attributes: { friendly_name: "燃气泄漏", device_class: "gas" } },
     { entity_id: "scene.movie", state: "scenic", attributes: { friendly_name: "影院模式" } },
     { entity_id: "script.leaving", state: "off", attributes: { friendly_name: "离家" } },
   ],
@@ -141,7 +147,7 @@ describe("Home Assistant device-type pruning (P3b-W)", () => {
       }
     }
     assert.deepEqual(cards.map((device) => device.id), [
-      "d-light", "d-climate", "d-plug", "d-leak", "d-smoke", "d-lock", "d-contact", "d-cover", "d-valve",
+      "d-light", "d-climate", "d-plug", "d-leak", "d-smoke", "d-lock", "d-contact", "d-cover", "d-valve", "d-gas",
     ]);
     const leakKind = card("d-leak").kind, lockKind = card("d-lock").kind;
     assert.equal(leakKind.kind === "sensor" ? leakKind.alertKind : undefined, "leak");
@@ -159,7 +165,7 @@ describe("Home Assistant device-type pruning (P3b-W)", () => {
     assert.deepEqual(pruned.home.rooms.map((room) => [room.id, room.deviceCount]), [["living", 1]]);
     // Every withheld card keeps an identity entry, so the gate can name its type.
     assert.deepEqual(pruned.hiddenIndexedDevices.map((device) => device.id).sort(), [
-      "d-contact", "d-cover", "d-leak", "d-light", "d-lock", "d-plug", "d-smoke", "d-valve",
+      "d-contact", "d-cover", "d-gas", "d-leak", "d-light", "d-lock", "d-plug", "d-smoke", "d-valve",
     ]);
     const lightIndex = pruned.hiddenIndexedDevices.find((device) => device.id === "d-light");
     assert.equal(lightIndex?.category, "light");
@@ -216,6 +222,21 @@ describe("Home Assistant device-type pruning (P3b-W)", () => {
     // so a closed valve card is pruned whole rather than read for nothing.
     assert.deepEqual(haSafetySignalsForDevice(card("d-valve")), []);
     assert.deepEqual(haSafetySignalsForDevice(card("d-cover")), []);
+    // A non-sensor card can still carry an alarm as a 更多设置 facet: `extractSensorObservations`
+    // reads those rows for every card kind, so the card keeps its signal while the alert is on.
+    assert.deepEqual(haSafetySignalsForDevice(card("d-gas")), []);
+    assert.deepEqual(
+      haAuxiliarySafetySignals(
+        [snapshot.entities.find((e) => e.entity_id === "binary_sensor.gas_leak")!],
+        new Map([["binary_sensor.gas_leak", { entityId: "binary_sensor.gas_leak", state: "off", attributes: { device_class: "gas" } }]]),
+      ),
+      ["gas"],
+    );
+    assert.deepEqual(splitWith([], ["gas"]).safetyDevices.map((d) => d.id), ["d-gas"]);
+    assert.deepEqual(splitWith([], []).safetyDevices, []);
+    // The retained card keeps its facets, which is where the evaluator finds the alarm row.
+    const gasRetained = splitWith([], ["gas"]);
+    assert.ok(Object.hasOwn(gasRetained.safetyDeviceFacets ?? {}, "d-gas"));
     assert.deepEqual(splitWith([], ["starredOffline"], { starredDeviceIds: ["d-light"] }).safetyDevices.map((d) => d.id), ["d-light"]);
     assert.deepEqual(splitWith([], []).safetyDevices, []);
   });
@@ -382,7 +403,7 @@ describe("Home Assistant type-prune plan (P3b-W)", () => {
     assert.equal(plan.partition.showsHiddenSafetyNotice, true);
     // Every card that is not drawn keeps an index entry, retained or dropped.
     assert.deepEqual([...plan.hiddenDeviceIds].sort(), [
-      "d-contact", "d-cover", "d-leak", "d-lock", "d-plug", "d-smoke", "d-valve",
+      "d-contact", "d-cover", "d-gas", "d-leak", "d-lock", "d-plug", "d-smoke", "d-valve",
     ]);
     assert.equal(plan.hiddenIndexedDevices.length, plan.hiddenDeviceIds.size);
   });

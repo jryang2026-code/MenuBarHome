@@ -32,7 +32,7 @@ import {
   scheduledCommandIdentity,
   scheduledCommandsReady,
 } from "../src/ui/scheduledCommands.js";
-import { executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
+import { enqueueIncomingOpenUrl, executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
 import { onOpenURL, type AppURLCommandHost } from "../src/core/appUrlCommand.js";
 import {
   AutomationRuleStore,
@@ -1758,5 +1758,43 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
       }) ?? "";
     assert.match(offlineBanner, /Home Assistant.*已停用/);
     assert.doesNotMatch(offlineBanner, /离线|turned off/i);
+  });
+
+  it("answers a closed HA type for a queued companion link with zero writes (P3b-W)", async () => {
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "{{SECRET_7swvbi2f}}";
+    await app.refreshHADevices(false);
+    const strip = app.devices.find((d) => d.name === "HA灯带")!;
+    assert.ok(strip);
+    // Stand in for a device-type selection that withholds the light: the card leaves the panel and
+    // only its identity entry stays, scoped to this endpoint.
+    app.devices = app.devices.filter((d) => d.id !== strip.id);
+    app.haTypePruneScope = HA_SCOPE;
+    app.hiddenHADevices = [{
+      id: strip.id,
+      name: strip.name,
+      category: "light",
+      connection: "home-assistant",
+      sourceScope: HA_SCOPE,
+      isSourceAvailable: true,
+      upstreamHiddenOrDisabled: false,
+      participatesInAllOff: true,
+      safetySignals: [],
+      readKeys: ["light.ha_strip"],
+      safetyReadKeys: [],
+    }];
+
+    const writesBefore = h.countCmd("ha_execute");
+    // The queued external-link path goes through `createUrlCommandHostAdapter`, which is a production
+    // write entry of its own: it must forward the hidden index, not only the direct URL callers.
+    await enqueueIncomingOpenUrl(
+      app,
+      `menumijia://power?device=${encodeURIComponent(strip.id)}&on=true`,
+    );
+    assert.match(app.replyBanner?.text ?? "", /该设备类型已关闭/);
+    assert.equal(h.countCmd("ha_execute"), writesBefore, "a closed type must not write over a companion link");
   });
 });

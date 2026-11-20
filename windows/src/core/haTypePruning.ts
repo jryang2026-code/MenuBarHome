@@ -4,6 +4,7 @@ import {
   type CapabilityIndexedDevice, type CapabilitySelection, type DeviceSetPartition, type SafetySignalKind,
 } from "./capabilityReferenceVerdict.js";
 import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "./capabilityManifest.js";
+import { haBinarySensorKind, type HARow, type HAState } from "./haDomains.js";
 import { devicePrimaryEntityId, joinsAllOff, type SmartDevice } from "./models.js";
 
 /**
@@ -51,6 +52,31 @@ export function haSafetySignalsForDevice(device: SmartDevice, starredOffline = f
   return SAFETY_SIGNAL_KINDS.filter((signal) => signals.has(signal));
 }
 
+/**
+ * Signals a card's own auxiliary `binary_sensor` rows can still raise. `SafetyMonitor` reads those
+ * rows as 更多设置 facets for every card kind (`extractSensorObservations`), so a classic case like a
+ * gas shut-off valve whose alert arrives as a facet must keep its card while the gas alert is on.
+ * The device class is decisive here, exactly as it is for a sensor card.
+ */
+export function haAuxiliarySafetySignals(
+  entities: readonly HARow[],
+  states: ReadonlyMap<string, HAState>,
+  allowObjectIdFallback = false,
+): SafetySignalKind[] {
+  const signals = new Set<SafetySignalKind>();
+  for (const entity of entities) {
+    const kind = haBinarySensorKind(entity, states, allowObjectIdFallback);
+    if (kind !== null) signals.add(SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
+  }
+  return SAFETY_SIGNAL_KINDS.filter((signal) => signals.has(signal));
+}
+
+/** One card's own signals, shape-based plus whatever its auxiliary entities can raise. */
+function unionSignals(a: readonly SafetySignalKind[], b: readonly SafetySignalKind[]): SafetySignalKind[] {
+  const signals = new Set<SafetySignalKind>([...a, ...b]);
+  return SAFETY_SIGNAL_KINDS.filter((signal) => signals.has(signal));
+}
+
 export interface HaTypePruneOptions {
   /** Host selection: enabled categories plus the enabled connection scopes. */
   readonly selection: CapabilitySelection;
@@ -62,6 +88,11 @@ export interface HaTypePruneOptions {
   readonly starredDeviceIds?: readonly string[];
   /** 全关 overrides, so a hidden card still reports the all-off membership it had. */
   readonly allOffOverrides?: Readonly<Record<string, boolean>>;
+  /**
+   * Per-card signals from its auxiliary entities (`haAuxiliarySafetySignals`). The synthesizer has
+   * the entity rows; a caller that passes only cards can leave this out.
+   */
+  readonly auxiliarySignalsByDeviceId?: ReadonlyMap<string, readonly SafetySignalKind[]>;
 }
 
 export interface HaTypePrunePlan {
@@ -105,7 +136,10 @@ function indexedDevice(
     isSourceAvailable: true,
     upstreamHiddenOrDisabled: false,
     participatesInAllOff: joinsAllOff(device, options.allOffOverrides ?? {}),
-    safetySignals: haSafetySignalsForDevice(device, starred),
+    safetySignals: unionSignals(
+      haSafetySignalsForDevice(device, starred),
+      options.auxiliarySignalsByDeviceId?.get(device.id) ?? [],
+    ),
     readKeys,
     safetyReadKeys: readKeys,
   };
