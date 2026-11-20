@@ -592,6 +592,15 @@ public enum MiSessionStore {
     }
 
     /// Accepts the v2 envelope or the bare `MiSession` that every earlier build wrote.
+    static func decodeAccountsStrict(from data: Data) -> [MiAccount]? {
+        guard let sessions = decodeSessions(from: data) else { return nil }
+        return deduped(sessions).map { MiAccount(session: $0) }
+    }
+
+    static func encodeAccounts(_ accounts: [MiAccount]) -> Data? {
+        encode(deduped(accounts.map(\.session)))
+    }
+
     private static func decodeSessions(from data: Data) -> [MiSession]? {
         if let envelope = try? JSONDecoder().decode(Envelope.self, from: data), envelope.version == envelopeVersion {
             return envelope.accounts

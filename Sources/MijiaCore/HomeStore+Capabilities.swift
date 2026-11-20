@@ -32,7 +32,8 @@ extension HomeStore {
     // MARK: - Connection & Account Enablement Queries
 
     public func isMiAccountEnabled(_ accountId: String) -> Bool {
-        capabilitySelection.enabledConnections.contains(.xiaomiCloud)
+        guard !isMiAccountPendingRemoval(accountId) else { return false }
+        return capabilitySelection.enabledConnections.contains(.xiaomiCloud)
             && capabilitySelection.enabledConnectionScopes.contains(accountId)
     }
 
@@ -51,6 +52,7 @@ extension HomeStore {
     }
 
     public var isHAConnectionEnabled: Bool {
+        if hasPendingHARemoval { return false }
         if explicitlyDisabledConnections.contains(.homeAssistant) { return false }
         guard hasHASource else {
             return !explicitlyDisabledScopes.contains(homeAssistantScopeIdentifier)
@@ -315,6 +317,7 @@ extension HomeStore {
         expectedPauseItemKeys: Set<String>? = nil
     ) -> CapabilityDeactivationVerdict {
         if enabled {
+            guard !isMiAccountPendingRemoval(id) else { return allowedDeactivationVerdict(for: capabilitySelection) }
             let next = proposedSelectionForMiAccount(id: id, enabled: true).normalized(with: .shared)
             guard next != capabilitySelection else { return allowedDeactivationVerdict(for: capabilitySelection) }
             explicitlyDisabledConnections.remove(.xiaomiCloud)
@@ -396,6 +399,7 @@ extension HomeStore {
     ) -> CapabilityDeactivationVerdict {
         let haScope = homeAssistantScopeIdentifier
         if enabled {
+            guard !hasPendingHARemoval else { return allowedDeactivationVerdict(for: capabilitySelection) }
             let next = proposedSelectionForHAConnection(enabled: true).normalized(with: .shared)
             let wasDisabled = explicitlyDisabledConnections.contains(.homeAssistant)
                 || explicitlyDisabledScopes.contains(haScope)

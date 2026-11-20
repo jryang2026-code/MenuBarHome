@@ -36,6 +36,21 @@ public final class CredentialVault: @unchecked Sendable {
         case unavailable
     }
 
+    /// Decision for a targeted read-merge-write mutation of a single vault slot (P2c-M).
+    public enum SlotMutation: Equatable, Sendable {
+        case keep
+        case replace(Data?)
+        case abort(String)
+    }
+
+    public enum SlotMutationOutcome: Equatable, Sendable {
+        case updated
+        case unchanged
+        case unavailable
+        case writeFailed
+        case aborted(String)
+    }
+
     /// The single Keychain item that holds the encoded vault.
     public struct Storage: Sendable {
         public enum ReadResult: Equatable, Sendable {
@@ -147,6 +162,51 @@ public final class CredentialVault: @unchecked Sendable {
         guard items[account] == nil else { return true }
         items[account] = data
         return persist(items)
+    }
+
+    /// Refreshes the single-item vault from storage and atomically transforms only `account`,
+    /// preserving every other slot intact. Fails closed when the vault is unreadable or corrupt.
+    @discardableResult
+    public func mutateSlot(_ account: String, _ transform: (Data?) -> SlotMutation) -> SlotMutationOutcome {
+        lock.lock()
+        defer { lock.unlock() }
+        var pendingLegacyDelete: Set<String> = []
+        guard var items = loadLatestItemsForWriteUnlocked(completedLegacyAccounts: &pendingLegacyDelete) else {
+            return .unavailable
+        }
+        switch transform(items[account]) {
+        case .keep:
+            state = .loaded(items)
+            return .unchanged
+        case .abort(let reason):
+            return .aborted(reason)
+        case .replace(let nextData):
+            if items[account] == nextData && pendingLegacyDelete.isEmpty {
+                state = .loaded(items)
+                return .unchanged
+            }
+            items[account] = nextData
+            guard persist(items) else { return .writeFailed }
+            for legacyAccount in pendingLegacyDelete { legacy.delete(legacyAccount) }
+            return .updated
+        }
+    }
+
+    private func loadLatestItemsForWriteUnlocked(completedLegacyAccounts: inout Set<String>) -> [String: Data]? {
+        let wasLoaded: Bool = if case .loaded = state { true } else { false }
+        loadIfNeeded(retryingUnavailable: true, completedLegacyAccounts: &completedLegacyAccounts)
+        guard case .loaded(let cached) = state else { return nil }
+        guard wasLoaded, completedLegacyAccounts.isEmpty else { return cached }
+        switch storage.read() {
+        case .found(let blob):
+            guard let fresh = Self.decode(blob) else { state = .unavailable; return nil }
+            return fresh
+        case .notFound:
+            return [:]
+        case .unavailable:
+            state = .unavailable
+            return nil
+        }
     }
 
     /// True once this process has read the vault (or found there is nothing to read).

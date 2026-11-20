@@ -232,7 +232,8 @@ public enum CapabilitySelectionStore {
         checkHATokenVault: Bool,
         hasLegacySettingsOrOnboarding: Bool,
         hasPersistedLocalData: Bool,
-        legacyFeatureFlags: [FeatureID: Bool]
+        legacyFeatureFlags: [FeatureID: Bool],
+        connectionRemovalReadError: Bool = false
     ) -> CapabilityInstallResolution {
         var explicitSelection: CapabilitySelection?
         var identityReadFailure: String?
@@ -276,6 +277,9 @@ public enum CapabilitySelectionStore {
             }
         }
 
+        if identityReadFailure == nil && connectionRemovalReadError {
+            identityReadFailure = "corrupt_connection_removal"
+        }
         if identityReadFailure == nil && checkMiVault,
            case .unavailable = miAccountsResult {
             identityReadFailure = "mi_accounts_unavailable"
