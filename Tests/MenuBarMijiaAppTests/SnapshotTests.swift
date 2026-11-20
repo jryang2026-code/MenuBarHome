@@ -84,7 +84,7 @@ struct SnapshotTests {
         fixture.store.dismissLaunchAtLoginSuggestion()
 
         assertRendered(
-            snapshotReady(themedPanel(.liquidGlass, store: fixture.store).padding(.top, 1)),
+            snapshotReady(themedPanel(.liquidGlass, store: fixture.store)),
             size: CGSize(width: 376, height: 560),
             named: themedName(.liquidGlass, "panel-types-zh-light")
         )
