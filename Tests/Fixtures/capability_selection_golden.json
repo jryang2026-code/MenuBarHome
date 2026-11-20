@@ -1361,7 +1361,7 @@
           {"entity_id": "light.bedroom_lamp", "state": "on", "attributes": {"brightness": 128}}
         ],
         "expectedCards": [{"controlEntityId": "light.bedroom_lamp", "category": "light"}],
-        "note": "HA 注册表把同一 device 的实体合成一张卡；灯优先的既有顺序不变，风扇实体不另成卡。Windows 目前不把这个风扇放进更多设置（既有行为，单独跟进），所以这里不断言副服务。"
+        "note": "HA 注册表把同一 device 的实体合成一张卡；灯优先的既有顺序不变，风扇实体不另成卡。Windows 已把风扇作为灯卡的更多设置一行、写入寻址 fan.*（#327），macOS 现阶段仍丢弃该实体（#327 跟进），所以这里不断言副服务。"
       }
     ],
     "splitCardCases": [

@@ -503,6 +503,51 @@ describe("Home Assistant domain synthesis & golden fixtures", () => {
     assert.equal(home.deviceFacets?.["dev_airp_1"], undefined, "claimed purifier sensors do not duplicate in facets");
   });
 
+  it("keeps a fan that shares the lamp's device on that card's 更多设置, and writes it to the fan (#327)", () => {
+    const home = HomeAssistantSynthesizer.synthesize({
+      areas: [{ area_id: "bedroom", name: "卧室" }],
+      devices: [{ id: "dev_fan_lamp", name: "卧室吊扇灯", area_id: "bedroom", model: "test.mixed" }],
+      entities: [
+        { entity_id: "fan.bedroom", device_id: "dev_fan_lamp" },
+        { entity_id: "light.bedroom_lamp", device_id: "dev_fan_lamp" },
+      ],
+      states: [
+        { entity_id: "fan.bedroom", state: "on", attributes: { percentage: 40, friendly_name: "吊扇" } },
+        { entity_id: "light.bedroom_lamp", state: "on", attributes: { brightness: 128 } },
+      ],
+    });
+
+    // The lamp still decides the card, and the card still writes the lamp.
+    assert.equal(home.devices.length, 1, "one card for the whole device");
+    const card = home.devices[0]!;
+    assert.equal(card.kind.kind, "light");
+    assert.equal(card.kind.entityId, "light.bedroom_lamp");
+
+    // The fan entity is claimed by neither the card nor a facet, so it used to vanish: it belongs
+    // in 更多设置 as the card's own second power row.
+    const fan = home.deviceFacets?.[card.id]?.find((facet) => facet.id === "fan.bedroom");
+    assert.ok(fan, "the fan entity rides on the lamp card");
+    assert.equal(fan.kind, "toggle");
+    assert.equal(fan.serviceName, "fan");
+    assert.equal(fan.title, "吊扇");
+    assert.equal(fan.value, true);
+    assert.equal(fan.isWritable, true);
+    assert.deepEqual(fan.target, { kind: "property", entityId: "fan.bedroom", piid: 0 });
+
+    // The write goes to the fan entity, never to the lamp it shares the device with.
+    const mapped = homeAssistantCommand(
+      { kind: "setMiotProperty", entityId: "fan.bedroom", piid: 0, value: false },
+      home.devices,
+      home.deviceFacets,
+    );
+    assert.deepEqual(haServiceCall(mapped), {
+      domain: "fan",
+      service: "turn_off",
+      entity_id: "fan.bedroom",
+      data: {},
+    });
+  });
+
   it("never leaks disabled_by or hidden_by registry entities back through states fallback (CODING_STANDARDS §1)", () => {
     const snapshot = {
       areas: [{ area_id: "study", name: "书房" }],

@@ -1016,7 +1016,12 @@ function buildSingleHAFacet(
 
   const semantic = typeof entity.translation_key === "string" ? entity.translation_key.trim() : "";
   const rawName = semantic.length > 0 ? semantic : objectId;
-  const name = rawName.replaceAll("_", "-");
+  // Home Assistant files a ceiling fan and its lamp under one device: the lamp draws the card and
+  // the fan is the card's second power row. A card that controls a fan claims its own entity, so
+  // an unclaimed `fan.*` only ever rides along on another card and needs the name a MIoT service's
+  // own power property has (`on`) — the low-risk whitelist entry, not an object id (#327).
+  const isSecondaryFan = domain === "fan" && device.kind.kind !== "fan";
+  const name = isSecondaryFan ? "on" : rawName.replaceAll("_", "-");
   const objectName = objectId.replaceAll("_", "-");
   const category = haText(entity.entity_category).toLowerCase();
   if (category === "config") return null;
@@ -1033,9 +1038,11 @@ function buildSingleHAFacet(
     domain === "input_boolean" ||
     domain === "select" ||
     domain === "number" ||
-    domain === "button";
+    domain === "button" ||
+    isSecondaryFan;
   if (!writable && domain !== "sensor" && domain !== "binary_sensor") {
-    // `text.*` and primary-card domains stay strictly out of 更多设置.
+    // `text.*` and the remaining primary-card domains stay strictly out of 更多设置. `fan.*` is
+    // the one exception, and only as another card's power row (`isSecondaryFan` above).
     return null;
   }
   if (writable && category === "diagnostic") return null;
@@ -1085,6 +1092,16 @@ function buildSingleHAFacet(
   switch (domain) {
     case "switch":
     case "input_boolean": {
+      if (stateLower !== "on" && stateLower !== "off") return null;
+      return make("toggle", stateLower === "on", [], null, null, {
+        kind: "property",
+        entityId,
+        piid: 0,
+      });
+    }
+    case "fan": {
+      // The lamp card's 更多设置 keeps the fan it shares a device with; the write addresses the
+      // fan entity, so `fan.turn_on` never lands on the lamp (#327).
       if (stateLower !== "on" && stateLower !== "off") return null;
       return make("toggle", stateLower === "on", [], null, null, {
         kind: "property",
@@ -1175,6 +1192,8 @@ export function mapHAFacetCommand(
   switch (domain) {
     case "switch":
     case "input_boolean":
+    // A secondary fan's power row (#327) writes the fan entity in its own domain.
+    case "fan":
       return {
         kind: "setSwitch",
         entityId: baseEntityId,
