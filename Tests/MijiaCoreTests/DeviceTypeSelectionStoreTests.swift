@@ -71,7 +71,7 @@ struct DeviceTypeSelectionStoreTests {
         #expect(impact.removedCategories == [.sensor])
         #expect(impact.hiddenCardNames == [Self.leakSensor.name])
         #expect(impact.retainedSafetyDevices.map(\.id) == [Self.leakSensor.id])
-        #expect(impact.retainedSafetyDevices.first?.signals.contains(.leak) == true)
+        #expect(impact.retainedSafetyDevices.first?.signals == [.leak], "an unstarred sensor is not listed under 星标离线")
         #expect(impact.showsManualSceneNotice)
         #expect(store.capabilitySelection.enabledCategories == allTypes, "a preview never writes")
 

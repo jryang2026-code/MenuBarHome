@@ -127,11 +127,15 @@ extension HomeStore {
         let target = deviceCategoryTarget(picked)
         let removed = capabilitySelection.enabledCategories.subtracting(target)
         let verdict = evaluateCapabilityDeactivation(proposed: proposedSelection(categories: target), expectedGeneration: nil)
-        let enabledSignals = currentSafetyRetentionPolicy().enabledSignals
+        let policy = currentSafetyRetentionPolicy()
         let indexed = Dictionary(currentIndexedDevicesList().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let retained = verdict.partition.hiddenSafetyRetainedDeviceIds.compactMap { id -> DeviceTypeSelectionImpact.RetainedSafetyDevice? in
             guard let device = indexed[id] else { return nil }
-            let signals = SafetySignalKind.allCases.filter { device.safetySignals.contains($0) && enabledSignals.contains($0) }
+            // Same test as `partitionDevices`: 星标离线 only keeps a device the user starred.
+            let signals = SafetySignalKind.allCases.filter { signal in
+                device.safetySignals.contains(signal) && policy.enabledSignals.contains(signal)
+                    && (signal != .starredOffline || policy.starredDeviceIds.contains(id))
+            }
             return .init(id: id, name: device.name, signals: signals)
         }
         return DeviceTypeSelectionImpact(
