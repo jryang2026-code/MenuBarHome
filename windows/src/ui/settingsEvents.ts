@@ -11,6 +11,7 @@ import {
   inferAssistantPreset,
   isAiAssistantEnabled,
   isLocalNetworkEndpoint,
+  isProactiveSuggestionsEnabled,
   listReadableHabits,
   parseAssistantEndpoint,
   removeAssistantProviderState,
@@ -138,6 +139,11 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   escapeHtml?(value: string): string;
   /** Invalidates in-flight AI requests after an enable/disable or provider change (P5a-W). */
   advanceAssistantEpoch?(): void;
+  /**
+   * Invalidates only the in-flight suggestion run after the 主动建议 switch changes (P5b-W);
+   * user-initiated commands keep their own `assistantEpoch`.
+   */
+  advanceProactiveEpoch?(): void;
   /** Current feature-level AI generation; request helpers capture and compare it (P5a-W). */
   readonly assistantEpoch?: number;
   /** False while startup credential hydration is still reading the vault (P5a-W). */
@@ -1503,6 +1509,18 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     host.saveSettings();
     // Flipping the switch mid-request must discard the in-flight result (P5a-W #3).
     host.advanceAssistantEpoch?.();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-proactive-enabled")?.addEventListener("change", (event) => {
+    const checked = (event.target as HTMLInputElement).checked;
+    if (isProactiveSuggestionsEnabled(host.settings) === checked) return;
+    host.settings.proactiveSuggestionsEnabled = checked;
+    host.saveSettings();
+    // Closing 主动建议 drops a suggestion run that is still in flight (P5b-W); switching it back
+    // on lets the next shared tick start a fresh one. Commands and timers are not affected.
+    if (!checked) host.advanceProactiveEpoch?.();
     syncSettingsSaveHint(host, "auto-saved");
     host.render();
   });
