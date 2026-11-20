@@ -37,6 +37,47 @@ struct AutomationEngineTests {
         return (defaults, suite)
     }
 
+    @Test("System observers exist only while automation has enabled rules")
+    func detachesSystemObservers() async throws {
+        let (defaults, suite) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mock = MockHomeProvider(snapshot: .init(devices: [Self.studyLight]))
+        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        try await store.waitForTestSnapshot()
+        let frozen = Date(timeIntervalSince1970: 1_800_000_000)
+        let contextProvider = FakeMacContextProvider()
+        let engine = AutomationEngine(defaults: defaults, contextProvider: contextProvider, now: { frozen })
+        engine.start(with: store)
+        #expect(!engine.isObservingSystem)
+        #expect(!contextProvider.isStarted)
+
+        let ruleStore = AutomationRuleStore(defaults: defaults)
+        ruleStore.save([
+            .init(trigger: .away, action: .quickAction(.lightsOff)),
+            .init(trigger: .powerConnected, action: .quickAction(.lightsOff))
+        ])
+        engine.rulesDidChange()
+        #expect(engine.isObservingSystem)
+        #expect(contextProvider.isStarted)
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(!engine.isObservingSystem)
+        #expect(!contextProvider.isStarted)
+        await engine.handle(trigger: .away, at: frozen)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.setEventAutomationEnabled(true))
+        #expect(engine.isObservingSystem)
+
+        await engine.handle(trigger: .away, at: frozen)
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(store.setEventAutomationEnabled(true))
+        await engine.handle(trigger: .away, at: frozen.addingTimeInterval(1))
+        #expect(await mock.executedCommands.count == 1)
+
+        ruleStore.save([])
+        engine.rulesDidChange()
+        #expect(!engine.isObservingSystem)
+    }
+
     @Test("Away rule turns the light off once per minute and leaves an undo banner")
     func awayRuleExecutesAndDedupes() async throws {
         let (defaults, suite) = try makeDefaults()

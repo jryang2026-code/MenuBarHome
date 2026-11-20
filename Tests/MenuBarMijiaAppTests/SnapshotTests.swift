@@ -2113,6 +2113,24 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Automation settings render the runtime switch while rules are paused")
+    func automationRuntimeOffSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        #expect(fixture.store.setEventAutomationEnabled(false))
+        assertRendered(
+            snapshotReady(
+                AutomationSettingsSection(store: fixture.store)
+                    .padding(12)
+                    .frame(width: 620, alignment: .leading),
+                scheme: .light
+            ),
+            size: CGSize(width: 620, height: 740),
+            named: "settings-automation-off",
+            scheme: .light
+        )
+    }
+
     @Test("General settings render Unhide All when multiple devices are manually hidden")
     func settingsGeneralBulkUnhideSnapshots() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)

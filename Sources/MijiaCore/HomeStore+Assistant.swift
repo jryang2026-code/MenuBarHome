@@ -1659,7 +1659,9 @@ extension HomeStore {
         offersUndoBanner: Bool = false,
         receiptStartedAt: Date? = nil,
         usedHabitContext: Bool = false,
-        habitSummary: String? = nil
+        habitSummary: String? = nil,
+        automationGeneration: UInt64? = nil,
+        onAutomationCompletion: ((Int, Int, Int) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
@@ -1688,22 +1690,29 @@ extension HomeStore {
             intentsByTarget[intent.targetId, default: []].append(intent)
         }
 
-        // Devices run concurrently so every tile flips at once; one device's intents stay ordered
-        // (e.g. hvac mode before target temperature).
-        let deviceTasks = groupOrder.map { targetId in
-            let intents = intentsByTarget[targetId] ?? []
-            return Task { () -> [AssistantApplyOutcome] in
-                var out: [AssistantApplyOutcome] = []
-                for intent in intents {
-                    guard context == self.controlContextID else { return out }
-                    out.append(await self.apply(intent, context: context))
-                }
-                return out
-            }
-        }
         var outcomes: [AssistantApplyOutcome] = []
-        for task in deviceTasks {
-            outcomes.append(contentsOf: await task.value)
+        if let automationGeneration {
+            // Rules send sequentially so disabling automation can stop subsequent writes.
+            for intent in plan.intents {
+                guard context == controlContextID, automationCanWrite(generation: automationGeneration) else { break }
+                outcomes.append(await apply(intent, context: context))
+            }
+        } else {
+            // Other plans run devices concurrently while preserving each device's intent order.
+            let deviceTasks = groupOrder.map { targetId in
+                let intents = intentsByTarget[targetId] ?? []
+                return Task { () -> [AssistantApplyOutcome] in
+                    var out: [AssistantApplyOutcome] = []
+                    for intent in intents {
+                        guard context == self.controlContextID else { break }
+                        out.append(await self.apply(intent, context: context))
+                    }
+                    return out
+                }
+            }
+            for task in deviceTasks {
+                outcomes.append(contentsOf: await task.value)
+            }
         }
         guard context == controlContextID else { return plan }
 
@@ -1729,6 +1738,11 @@ extension HomeStore {
             case .skipped:
                 break
             }
+        }
+
+        onAutomationCompletion?(outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count)
+        if outcomes.isEmpty, let automationGeneration, !automationCanWrite(generation: automationGeneration) {
+            return plan
         }
 
         // Only explicit user actions become habits, and only for intents that actually succeeded (#34/#113).

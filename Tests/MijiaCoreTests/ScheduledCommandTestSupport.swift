@@ -1,3 +1,4 @@
+import Observation
 import Foundation
 @testable import MijiaCore
 
@@ -83,6 +84,7 @@ enum ScheduledCommandTestSupport {
     /// Each sleeper has its own continuation. A shared `AsyncStream` would be finished by the first
     /// cancelled reader, and every later `sleep()` on the gate would return at once.
     @MainActor
+    @Observable
     final class SleepGate {
         private var sleepers: [(id: UUID, continuation: CheckedContinuation<Void, Never>)] = []
         private var cancelledBeforeParking: Set<UUID> = []

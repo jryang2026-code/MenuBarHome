@@ -73,6 +73,17 @@ struct AutomationSettingsSection: View {
     var body: some View {
         let _ = store.effectiveLanguage
         SettingsSection(title: L10n.tr("自动化与外部控制", "Automation & External Control"), anchor: .automationRules) {
+            Toggle(L10n.tr("运行自动化规则", "Run automation rules"), isOn: Binding(
+                get: { store.eventAutomationEnabled },
+                set: { enabled in
+                    if store.setEventAutomationEnabled(enabled) {
+                        rules = store.automationRuleStore.load()
+                    }
+                }
+            ))
+            .toggleStyle(.switch)
+            .disabled(store.identityMigrationDiagnostic != nil)
+
             Text(L10n.tr(
                 "规则默认没有任何内容。锁屏、合盖、睡眠会合并成一个「离开」触发；解锁与唤醒合并成「回来」。同一触发一分钟内只执行一次。摄像头 / 麦克风、电源与电量、Wi-Fi、专注状态、日历和深夜使用等 Mac 专属触发默认关闭，按需逐条添加；Wi-Fi 名称、专注状态和日历需要系统权限，未授权时对应规则不会触发。",
                 "No rules exist by default. Lock, lid close and sleep are grouped as Away; unlock and wake as Back. The same trigger runs at most once per minute. Mac-only signals (camera/microphone, power and battery, Wi-Fi, Focus, Calendar, late-night use) are off until you add a rule. Wi-Fi name, Focus status and Calendar need system permission; without it their rules do not fire."
@@ -154,7 +165,7 @@ struct AutomationSettingsSection: View {
             .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
-            rules = AutomationRuleStore().load()
+            rules = store.automationRuleStore.load()
             locationAuthorized = MacHardwareProbe.isWiFiAuthorized
         }
         // Coming back from System Settings is the moment the state actually changed.
@@ -231,25 +242,25 @@ struct AutomationSettingsSection: View {
 
     private func delete(_ rule: AutomationRule) {
         rules.removeAll { $0.id == rule.id }
-        var stored = AutomationRuleStore().load()
+        var stored = store.automationRuleStore.load()
         stored.removeAll { $0.id == rule.id }
-        AutomationRuleStore().save(stored)
+        store.automationRuleStore.save(stored)
         rules = stored
-        AutomationEngine.shared.rulesDidChange()
+        store.onAutomationRulesChanged?()
     }
 
     /// Writes one rule against the current store instead of the array read on appear, so a background
     /// revalidation that paused or resumed another rule is not overwritten with stale rows (M5).
     private func update(_ rule: AutomationRule) {
-        var stored = AutomationRuleStore().load()
+        var stored = store.automationRuleStore.load()
         if let index = stored.firstIndex(where: { $0.id == rule.id }) {
             stored[index] = rule
         } else {
             stored.append(rule)
         }
-        AutomationRuleStore().save(stored)
+        store.automationRuleStore.save(stored)
         rules = stored
-        AutomationEngine.shared.rulesDidChange()
+        store.onAutomationRulesChanged?()
     }
 
     /// One line under the action summary: the trigger's own parameter, then the conditions.
@@ -725,12 +736,12 @@ struct AutomationSettingsSection: View {
             guard confirmHighRiskRule(confirmation) else { return }
             rule.highRiskApproved = true
         }
-        var stored = AutomationRuleStore().load()
+        var stored = store.automationRuleStore.load()
         stored.append(rule)
-        AutomationRuleStore().save(stored)
+        store.automationRuleStore.save(stored)
         rules = stored
         newDeviceIds = []
-        AutomationEngine.shared.rulesDidChange()
+        store.onAutomationRulesChanged?()
     }
 
     private func confirmHighRiskRule(_ confirmation: ManualControlConfirmation) -> Bool {
@@ -743,5 +754,5 @@ struct AutomationSettingsSection: View {
     }
 
     /// #174: a newly enabled Wi-Fi/Focus/calendar rule asks for its permission now, not at the next
-    /// app launch. Every write above calls `AutomationEngine.shared.rulesDidChange()` after saving.
+    /// app launch. Every write above calls `store.onAutomationRulesChanged?()` after saving.
 }
