@@ -286,16 +286,20 @@ export class MenuMijiaWindowsApp {
    * Persists one device-type choice (P4b-W). The record keeps the semantic value only: choosing every
    * type removes the key, so "no explicit choice" stays readable and an upgrade keeps its own default.
    *
-   * Every enabled scope is marked for revalidation, so the next completed snapshot restores exactly
+   * When a type is added, enabled scopes are marked for revalidation so the next snapshot restores
    * the paused timers and automations whose device types are back (the revalidation keeps the rest
-   * paused). Deliberately does not refresh: the caller pauses the references the change affects first,
-   * and a refresh started here would read a selection the caller may still roll back.
+   * paused). The caller pauses affected references before saving and refreshes after success.
    */
-  public setEnabledDeviceCategories(categories: readonly DeviceCategoryID[]): boolean {
+  public setEnabledDeviceCategories(
+    categories: readonly DeviceCategoryID[],
+    pausedQuickActionIds: readonly string[] = [],
+  ): boolean {
     const normalized = normalizeDeviceCategorySelection(categories);
     if (normalized === null) return false;
     const keepsEveryType = DEVICE_CATEGORY_IDS.every((id) => normalized.includes(id));
-    const scopes = resolveHostMiSelectionState(this).selection.enabledConnectionScopes;
+    const selection = resolveHostMiSelectionState(this).selection;
+    const addsCategory = normalized.some((id) => !selection.enabledCategories.includes(id));
+    const scopes = addsCategory ? selection.enabledConnectionScopes : [];
     if (!writeMiAccountSelectionMutation({
       mutate: (previous) => {
         const extraFields: Record<string, unknown> = { ...previous.extraFields };
@@ -304,6 +308,7 @@ export class MenuMijiaWindowsApp {
         return {
           ...previous,
           extraFields,
+          pausedQuickActionIds: [...new Set([...previous.pausedQuickActionIds, ...pausedQuickActionIds])],
           pendingRevalidationAccountIds: [...new Set([
             ...previous.pendingRevalidationAccountIds,
             ...scopes.filter((scope) => scope.startsWith("mi:")),
@@ -1105,7 +1110,6 @@ export class MenuMijiaWindowsApp {
   }
 
   public evaluateAutomationRuleWriteGate(rule: AutomationRule): string | null {
-    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) return null;
     return evaluateAutomationRuleWriteGate({
       rule,
       context: buildHostCapabilityContext(this),

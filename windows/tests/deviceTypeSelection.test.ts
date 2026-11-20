@@ -26,15 +26,18 @@ import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   previewDeviceCategorySelection,
   resolveMiAccountSelectionState,
+  revalidateAfterMiAccountReenable,
   writeMiAccountSelectionMutation,
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../src/core/miAccountControl.js";
-import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
+import { AutomationRuleStore, createAutomationRule, executeAutomationRule } from "../src/core/automationEngine.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../src/core/scheduledCommands.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { HomeScene, SmartDevice } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
+import { buildHostCapabilityContext } from "../src/ui/cloudRefresh.js";
+import { enqueueIncomingOpenUrl, getActiveRaycastBridgeTokenForHost, setRaycastIntegrationEnabled } from "../src/ui/speechGuard.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { scheduledCommandIdentity } from "../src/ui/scheduledCommands.js";
 
@@ -443,46 +446,99 @@ function startDemo(): MenuMijiaWindowsApp {
     assert.equal(document.querySelector("[data-device-type-error]"), null, "the refusal clears on the next edit");
   });
 
-  it("restores the live timer queues when pausing an affected timer cannot be stored", async () => {
+  it("keeps climateSleepOff paused with fan enabled until climate is restored and revalidated", async () => {
     const app = startDemo();
-    const identity = scheduledCommandIdentity(app.settings);
-    const queue = app.scheduledCommandStore.queue(identity);
-    queue.scheduledCommands = [{
-      id: "timer_cool_down", command: "10 分钟后关空调", reply: "好", delaySeconds: 600,
-      fireTimestampMs: Date.now() + 600_000,
-      intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }],
-    }];
-    assert.equal(app.scheduledCommandStore.persist(), true);
-
-    await click("#btn-settings");
-    await click('[data-device-type-mode="lightAndSwitch"]');
-    assert.match(el("[data-device-type-preview]").textContent ?? "", /10 分钟后关空调/);
-
-    const originalSetItem = localStorage.setItem.bind(localStorage);
-    Object.defineProperty(localStorage, "setItem", {
-      configurable: true,
-      writable: true,
-      value: (key: string, value: string): void => {
-        if (key === SCHEDULED_COMMANDS_STORAGE_KEY) throw new Error("QuotaExceededError");
-        originalSetItem(key, value);
-      },
+    const ruleStore = new AutomationRuleStore();
+    const rule = createAutomationRule({
+      id: "sleep_off", trigger: "away", action: { kind: "quickAction", quickAction: "climateSleepOff" }, isEnabled: true,
     });
-    try {
-      await click("[data-device-type-apply]");
-      assert.match(el("[data-device-type-error]").textContent ?? "", /已恢复原样/);
-      // The live store is what keeps running, so it must be back too — not only the stored copy.
-      const live = app.scheduledCommandStore.queue(identity);
-      assert.deepEqual(live.scheduledCommands.map((item) => item.id), ["timer_cool_down"]);
-      assert.deepEqual(live.pausedScheduledCommands ?? [], []);
-      assert.equal(
-        (JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as Record<string, unknown>).enabledCategories,
-        undefined,
-        "the selection is restored as well",
-      );
-    } finally {
-      Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: originalSetItem });
-    }
+    assert.equal(ruleStore.save([rule]), true);
+    await click("#btn-settings");
+    await click('[data-device-type-mode="custom"]');
+    await click('[data-device-type-category="climate"]');
+    await click("[data-device-type-apply]");
+    assert.equal(revalidateAfterMiAccountReenable({
+      context: buildHostCapabilityContext(app),
+      scheduledCommandStore: app.scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(app.settings),
+      ruleStore,
+    }), true);
+    const [paused] = ruleStore.load();
+    assert.equal(paused?.isEnabled, false);
+    assert.ok(paused.pausedByCapabilities?.includes("climate"));
+    assert.match(app.evaluateAutomationRuleWriteGate(paused) ?? "", /停用|关闭/);
+    assert.equal(await executeAutomationRule(app, paused), null);
+    await click('[data-device-type-mode="allSupportedTypes"]');
+    await click("[data-device-type-apply]");
+    assert.equal(ruleStore.load()[0]?.isEnabled, true);
+    assert.equal(ruleStore.load()[0]?.pausedByCapabilities, undefined);
   });
+
+  it("persists lightsOff pause and rejects both voice and URL execution", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-device-type-mode="custom"]');
+    await click('[data-device-type-category="light"]');
+    await click("[data-device-type-apply]");
+    assert.ok(JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}").pausedQuickActionIds.includes("lightsOff"));
+    await app.handleNaturalCommand("quick:lightsOff");
+    assert.match(app.replyBanner?.text ?? "", /全屋关灯.*已暂停/);
+    app.replyBanner = null;
+    setRaycastIntegrationEnabled(app, true);
+    const token = getActiveRaycastBridgeTokenForHost(app);
+    assert.ok(token);
+    await enqueueIncomingOpenUrl(app, `menumijia://scene?name=quick%3AlightsOff&token=${encodeURIComponent(token)}&id=paused-lights`);
+    assert.match((app.replyBanner as { text: string } | null)?.text ?? "", /全屋关灯.*已暂停/);
+  });
+
+  for (const failingKey of [AutomationRuleStore.storageKey, MI_ACCOUNT_CAPABILITY_STORAGE_KEY]) {
+    it(`rolls back the timer and rule when ${failingKey} cannot be written`, async () => {
+      const app = startDemo();
+      const identity = scheduledCommandIdentity(app.settings);
+      const queue = app.scheduledCommandStore.queue(identity);
+      queue.scheduledCommands = [{
+        id: "timer_cool_down", command: "10 分钟后关空调", reply: "好", delaySeconds: 600,
+        fireTimestampMs: Date.now() + 600_000,
+        intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }],
+      }];
+      assert.equal(app.scheduledCommandStore.persist(), true);
+
+      const ruleStore = new AutomationRuleStore();
+      const rule = createAutomationRule({
+        id: "rule_cool_down", trigger: "away", action: { kind: "quickAction", quickAction: "climateSleepOff" }, isEnabled: true,
+      });
+      assert.equal(ruleStore.save([rule]), true);
+      await click("#btn-settings");
+      await click('[data-device-type-mode="lightAndSwitch"]');
+      assert.match(el("[data-device-type-preview]").textContent ?? "", /10 分钟后关空调/);
+
+      const before = [SCHEDULED_COMMANDS_STORAGE_KEY, AutomationRuleStore.storageKey, MI_ACCOUNT_CAPABILITY_STORAGE_KEY]
+        .map((key) => localStorage.getItem(key));
+      const originalSetItem = localStorage.setItem.bind(localStorage);
+      Object.defineProperty(localStorage, "setItem", {
+        configurable: true,
+        writable: true,
+        value: (key: string, value: string): void => {
+          if (key === failingKey) throw new Error("QuotaExceededError");
+          originalSetItem(key, value);
+        },
+      });
+      try {
+        await click("[data-device-type-apply]");
+        assert.match(el("[data-device-type-error]").textContent ?? "", /保持原样/);
+        // The live store is what keeps running, so it must be back too — not only the stored copy.
+        const live = app.scheduledCommandStore.queue(identity);
+        assert.deepEqual(live.scheduledCommands.map((item) => item.id), ["timer_cool_down"]);
+        assert.deepEqual(live.pausedScheduledCommands ?? [], []);
+        assert.equal(app.cameraLive.cameraCategoryEnabled, true);
+        assert.deepEqual([SCHEDULED_COMMANDS_STORAGE_KEY, AutomationRuleStore.storageKey, MI_ACCOUNT_CAPABILITY_STORAGE_KEY]
+          .map((key) => localStorage.getItem(key)), before);
+      } finally {
+        Object.defineProperty(localStorage, "setItem", { configurable: true, writable: true, value: originalSetItem });
+      }
+    });
+
+  }
 
   it("reports a store that refuses the write, keeps the old choice and focuses the message", async () => {
     const app = startDemo();
@@ -538,9 +594,9 @@ function startDemo(): MenuMijiaWindowsApp {
     const record = JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}") as {
       pendingRevalidationHaScopes?: unknown;
     };
-    // The pending flag is what makes the next completed snapshot revalidate the paused timers and
-    // automations; without it they would stay paused after the type comes back.
-    assert.deepEqual(record.pendingRevalidationHaScopes, [HA_SCOPE]);
+    assert.equal(record.pendingRevalidationHaScopes, undefined);
+    assert.equal(app.setEnabledDeviceCategories(ALL_CATEGORIES), true);
+    assert.deepEqual(JSON.parse(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY) ?? "{}").pendingRevalidationHaScopes, [HA_SCOPE]);
   });
 
   it("keeps the demo home on the stored selection after a restart", () => {

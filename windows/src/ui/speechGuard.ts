@@ -27,6 +27,7 @@ import type {
 } from "./appTypes.js";
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
+import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
 import { evaluateQuickActionSourceWriteGate } from "../core/miAccountControl.js";
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
@@ -645,14 +646,24 @@ export async function executeBuiltInQuickAction(
   host: MenuMijiaWindowsApp,
   actionId: QuickActionId,
 ): Promise<void> {
-  if (resolveHostMiSelectionState(host).pausedQuickActionIds.has(actionId)) {
+  const state = resolveHostMiSelectionState(host);
+  if (state.pausedQuickActionIds.has(actionId)) {
+    const categoryDisabled = QUICK_ACTION_TARGET_CATEGORIES[actionId].some(
+      (id) => !state.selection.enabledCategories.includes(id),
+    );
     const title = quickActionTitle(actionId);
     host.replyBanner = {
-      text: tr3(
-        `「${title}」功能已随关联连接停用而暂停，重新开启对应连接后即可恢复`,
-        `「${title}」功能已隨關聯連線停用而暫停，重新開啟對應連線後即可恢復`,
-        `"${title}" is paused because its linked connection is turned off; turn the connection back on to resume`,
-      ),
+      text: categoryDisabled
+        ? tr3(
+            `「${title}」已暂停，请重新开启关联的设备类型。`,
+            `「${title}」已暫停，請重新開啟關聯的裝置類型。`,
+            `"${title}" is paused. Re-enable the linked device types.`,
+          )
+        : tr3(
+            `「${title}」功能已随关联连接停用而暂停，重新开启对应连接后即可恢复`,
+            `「${title}」功能已隨關聯連線停用而暫停，重新開啟對應連線後即可恢復`,
+            `"${title}" is paused because its linked connection is turned off; turn the connection back on to resume`,
+          ),
       source: tr3("快捷功能", "捷徑功能", "Quick Actions"),
       isError: true,
     };

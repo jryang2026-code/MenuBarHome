@@ -1209,19 +1209,21 @@ export function revalidateAfterMiAccountReenable(options: {
   ]);
   let rulesMutated = false;
   const resumedRules = options.ruleStore.load().map((rule) => {
-    if (!rule.pausedByCapabilities?.length) return rule;
-    const scopes = rule.pausedByCapabilities.filter((c) => c.startsWith("mi:") || c.startsWith("ha:"));
+    const reasons = rule.pausedByCapabilities;
+    if (!reasons?.length) return rule;
+    if (DEVICE_CATEGORY_IDS.some((id) => reasons.includes(id) && !selection.enabledCategories.includes(id))) return rule;
+    const scopes = reasons.filter((c) => c.startsWith("mi:") || c.startsWith("ha:"));
     if (scopes.some((s) => unverifiedMiScopes.has(s) || (s.startsWith("ha:") && unverifiedHaScopes.has(normalizeHaScopeString(s))))) {
       return rule;
     }
     if (
-      rule.pausedByCapabilities.includes("xiaomi-cloud") &&
+      reasons.includes("xiaomi-cloud") &&
       (effectivePendingScopes.size > 0 || (!hasLiveXiaomiSnapshot && configuredMiScopes.length > 0))
     ) {
       return rule;
     }
     if (
-      rule.pausedByCapabilities.includes("home-assistant") &&
+      reasons.includes("home-assistant") &&
       (effectivePendingHaScopes.size > 0 || (!hasLiveHaSnapshot && Boolean(currentHaScope)) || unverifiedHaScopes.size > 0)
     ) {
       return rule;
@@ -1229,11 +1231,11 @@ export function revalidateAfterMiAccountReenable(options: {
     const allSignedOutReasons =
       (scopes.length > 0 && scopes.every(isSignedOutScope)) ||
       (scopes.length === 0 &&
-        rule.pausedByCapabilities.includes("xiaomi-cloud") &&
+        reasons.includes("xiaomi-cloud") &&
         configuredMiScopes.length === 0 &&
         unverifiedMiScopes.size === 0) ||
       (scopes.length === 0 &&
-        rule.pausedByCapabilities.includes("home-assistant") &&
+        reasons.includes("home-assistant") &&
         currentHaScope === null &&
         unverifiedHaScopes.size === 0);
     if (rule.action.kind === "devices") {
@@ -1258,6 +1260,7 @@ export function revalidateAfterMiAccountReenable(options: {
     if (rule.action.kind === "quickAction") {
       if (effectivePendingScopes.size > 0 || effectivePendingHaScopes.size > 0) return rule;
       const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[rule.action.quickAction] ?? [];
+      if (cats.some((cat) => !selection.enabledCategories.includes(cat))) return rule;
       const hasCat = [...availSet].some((id) => {
         const dev = devById.get(id);
         return (
@@ -1286,6 +1289,7 @@ export function revalidateAfterMiAccountReenable(options: {
   if (effectivePendingScopes.size === 0 && effectivePendingHaScopes.size === 0) {
     for (const qaId of effectiveState.pausedQuickActionIds) {
       const cats: readonly DeviceCategoryID[] = QUICK_ACTION_TARGET_CATEGORIES[qaId as QuickActionReferenceKind] ?? [];
+      if (cats.some((cat) => !selection.enabledCategories.includes(cat))) continue;
       const availHasCategory = [...availSet].some((id) => {
         const dev = devById.get(id);
         return (
@@ -1931,9 +1935,15 @@ export function evaluateAutomationRuleWriteGate(options: {
   readonly lastManuallyUsedLightId?: string | null;
   readonly languagePreference?: LanguagePreference;
 }): string | null {
-  if (options.context.connectionMode === "demo" && !options.context.dualSourceEnabled) return null;
   const pref = effectivePref(options.languagePreference);
   const { state } = options.context;
+  const disabledCategory = DEVICE_CATEGORY_IDS.find((id) =>
+    options.rule.pausedByCapabilities?.includes(id) && !state.selection.enabledCategories.includes(id),
+  );
+  if (disabledCategory !== undefined) {
+    return controlTargetRejectionMessage({ code: "categoryDisabled", disabledCategory }, pref);
+  }
+  if (options.context.connectionMode === "demo" && !options.context.dualSourceEnabled) return null;
   const currentHaScope = haConnectionScope(options.context.haBaseURL ?? null, options.context.haToken ?? null);
   if (options.rule.pausedByCapabilities?.length) {
     for (const cap of options.rule.pausedByCapabilities) {

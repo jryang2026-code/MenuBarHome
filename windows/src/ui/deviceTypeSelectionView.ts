@@ -11,10 +11,9 @@ import {
 } from "../core/deviceTypeSelection.js";
 import { capabilitySoftNoticeMessage, type AffectedReferenceItem } from "../core/capabilityReferenceVerdict.js";
 import { currentLanguage, type AppLanguage } from "../core/i18n.js";
-import { applyPauseItemsFromVerdict, previewDeviceCategorySelection, writeMiAccountSelectionMutation, MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../core/miAccountControl.js";
+import { applyPauseItemsFromVerdict, previewDeviceCategorySelection, writeMiAccountSelectionMutation, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
 import type { SmartDevice } from "../core/models.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { CAPABILITY_SELECTION_STORAGE_KEY } from "../core/haTransportGate.js";
 import { buildHostCapabilityContext, hostMiotTypePruneOptions, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
@@ -29,7 +28,7 @@ function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = cur
 export interface DeviceTypeSelectionHost extends SettingsEventsHost {
   readonly scheduledCommandStore?: ScheduledCommandStore;
   /** Persists one choice. Returns false when nothing was stored, so the caller keeps the old one. */
-  setEnabledDeviceCategories?(categories: readonly DeviceCategoryID[]): boolean;
+  setEnabledDeviceCategories?(categories: readonly DeviceCategoryID[], pausedQuickActionIds: readonly string[]): boolean;
 }
 
 interface DeviceTypeSelectionSession {
@@ -378,12 +377,16 @@ function readRawStorageItem(key: string): string | null {
   }
 }
 
-function restoreRawStorageItem(key: string, previous: string | null): void {
+function restoreRawStorageItem(key: string, previous: string | null, restored: boolean): boolean {
   try {
-    if (typeof localStorage === "undefined") return;
+    if (typeof localStorage === "undefined") return restored;
+    if (localStorage.getItem(key) === previous) return true;
     if (previous === null) localStorage.removeItem(key);
     else localStorage.setItem(key, previous);
-  } catch {}
+    return true;
+  } catch {
+    return restored;
+  }
 }
 
 /**
@@ -414,58 +417,69 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
     session.status = tr3("设备类型未变化。", "裝置類型未變更。", "Device types are unchanged.", lang);
     return { status: "applied", preview };
   }
-  const scopes = buildHostCapabilityContext(host as unknown as Parameters<typeof buildHostCapabilityContext>[0]).state.selection.enabledConnectionScopes;
-  const rawSelection = readRawStorageItem(CAPABILITY_SELECTION_STORAGE_KEY);
+  const contextHost = host as unknown as Parameters<typeof buildHostCapabilityContext>[0];
+  const timerStore = storeFor(host);
+  const ruleStore = ruleStoreFor(host);
+  const identity = scheduledCommandIdentity(host.settings);
+  const needsPause = preview.verdict.itemsToPause.length > 0;
+  const timerSnapshot = needsPause ? timerStore.snapshotQueues() : null;
+  const prevRules = needsPause ? ruleStore.load() : [];
   const rawTimers = readRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY);
   const rawRules = readRawStorageItem(AutomationRuleStore.storageKey);
+  const restoreReferences = (): boolean => {
+    if (timerSnapshot === null) return true;
+    const timersRestored = restoreRawStorageItem(
+      SCHEDULED_COMMANDS_STORAGE_KEY, rawTimers, timerStore.restoreQueues(timerSnapshot),
+    );
+    const rulesRestored = restoreRawStorageItem(
+      AutomationRuleStore.storageKey, rawRules, ruleStore.save(prevRules),
+    );
+    return timersRestored && rulesRestored;
+  };
+  const rollbackError = tr3(
+    "无法完整恢复定时或自动化，请检查这些项目后再试。",
+    "無法完整恢復定時或自動化，請檢查這些項目後再試。",
+    "Could not fully restore the timers or automations. Check them before retrying.",
+    lang,
+  );
+  const paused = needsPause ? applyPauseItemsFromVerdict({
+    verdict: preview.verdict,
+    scheduledCommandStore: timerStore,
+    ruleStore,
+    activeTimerIdentity: identity,
+    activeConnectionScopes: buildHostCapabilityContext(contextHost).state.selection.enabledConnectionScopes,
+  }) : { ok: true, pausedQuickActionIds: [] };
+  if (!paused.ok) {
+    session.error = restoreReferences() ? tr3(
+      "无法暂停被引用的定时或自动化，设备类型保持原样。",
+      "無法暫停被引用的定時或自動化，裝置類型維持原樣。",
+      "Could not pause the affected timers or automations. Device types are unchanged.",
+      lang,
+    ) : rollbackError;
+    return { status: "pauseFailed", preview };
+  }
   const written = host.setEnabledDeviceCategories
-    ? host.setEnabledDeviceCategories(draft.categories)
+    ? host.setEnabledDeviceCategories(draft.categories, paused.pausedQuickActionIds)
     : writeMiAccountSelectionMutation({
-        mutate: (prev) => ({ ...prev, extraFields: { ...prev.extraFields, enabledCategories: [...draft.categories] } }),
+        mutate: (prev) => ({
+          ...prev,
+          extraFields: { ...prev.extraFields, enabledCategories: [...draft.categories] },
+          pausedQuickActionIds: [...new Set([...prev.pausedQuickActionIds, ...paused.pausedQuickActionIds])],
+        }),
       });
   if (!written) {
-    session.error = tr3(
+    session.error = restoreReferences() ? tr3(
       "本地设置暂时无法保存，设备类型保持原样。请检查磁盘空间或重启应用后再试。",
       "本機設定暫時無法儲存，裝置類型保持原樣。請檢查磁碟空間或重新啟動應用程式後再試。",
       "Could not save the setting, so the device types are unchanged. Check disk space or restart the app and try again.",
       lang,
-    );
+    ) : rollbackError;
     return { status: "saveFailed", preview };
   }
-  if (preview.verdict.itemsToPause.length > 0) {
-    const timerStore = storeFor(host);
-    // The live store is what the app keeps reading (`processScheduledCommands`), so a rollback has to
-    // put its queues back, not just the stored copy.
-    let timerSnapshot: ReturnType<ScheduledCommandStore["snapshotQueues"]> | null = null;
-    try {
-      timerSnapshot = timerStore.snapshotQueues();
-    } catch {}
-    const paused = applyPauseItemsFromVerdict({
-      verdict: preview.verdict,
-      scheduledCommandStore: timerStore,
-      ruleStore: ruleStoreFor(host),
-      activeTimerIdentity: scheduledCommandIdentity(host.settings),
-      activeConnectionScopes: scopes,
-    });
-    if (!paused.ok) {
-      // Put the previous selection back before reporting: the user asked for one atomic change.
-      const restored = host.setEnabledDeviceCategories?.(previous) ?? false;
-      if (!restored) restoreRawStorageItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY, rawSelection);
-      if (timerSnapshot !== null) {
-        try {
-          timerStore.restoreQueues(timerSnapshot);
-        } catch {}
-      }
-      restoreRawStorageItem(SCHEDULED_COMMANDS_STORAGE_KEY, rawTimers);
-      restoreRawStorageItem(AutomationRuleStore.storageKey, rawRules);
-      host.render();
-      session.error = tr3(
-        "无法暂停被引用的定时或自动化，设备类型已恢复原样。",
-        "無法暫停被引用的定時或自動化，裝置類型已恢復原樣。",
-        "Could not pause the affected timers or automations; the device types were restored.",
-        lang,
-      );
-      return { status: "pauseFailed", preview };
+  if (host.settings.connectionMode === "demo" && draft.categories.some((id) => !previous.includes(id))) {
+    const context = buildHostCapabilityContext(contextHost);
+    if (!context.dualSourceEnabled) {
+      revalidateAfterMiAccountReenable({ context, scheduledCommandStore: timerStore, activeTimerIdentity: identity, ruleStore });
     }
   }
   session.mode = null;
@@ -488,7 +502,7 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
  * they just enabled).
  */
 function refreshAfterSelectionChange(host: DeviceTypeSelectionHost): void {
-  if (host.settings.connectionMode === "demo") return;
+  if (host.settings.connectionMode === "demo" && !buildHostCapabilityContext(host as unknown as Parameters<typeof buildHostCapabilityContext>[0]).dualSourceEnabled) return;
   if (host.isSyncingCloud) {
     host.sourceEpoch.claimSyncRun();
     host.isSyncingCloud = false;
