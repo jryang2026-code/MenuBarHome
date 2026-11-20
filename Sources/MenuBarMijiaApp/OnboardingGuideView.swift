@@ -754,7 +754,7 @@ public struct OnboardingGuideView: View {
                     .font(.system(size: 11, design: .monospaced))
 
                 Button(L10n.tr("保存", "Save")) {
-                    if saveOnboardingAssistantDraft(showErrorToast: true) != nil {
+                    if saveOnboardingAssistantDraft(showErrorToast: true, enablesAssistant: true) != nil {
                         store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                     }
                 }
@@ -828,7 +828,7 @@ public struct OnboardingGuideView: View {
     }
 
     @discardableResult
-    private func saveOnboardingAssistantDraft(showErrorToast: Bool) -> AssistantConfig? {
+    private func saveOnboardingAssistantDraft(showErrorToast: Bool, enablesAssistant: Bool) -> AssistantConfig? {
         guard let cfg = AssistantSettingsDraft.configToSave(preset: selectedPreset, fields: draftFields) else {
             if showErrorToast {
                 store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
@@ -844,10 +844,12 @@ public struct OnboardingGuideView: View {
             }
             return nil
         }
-        // Configuring a provider during onboarding is an explicit opt-in: the fresh-install
-        // default keeps the feature off, so saving here turns it on (P5a-M Codex review).
+        // Only the AI card's own Save button is an explicit opt-in that turns the feature on
+        // (P5a-M Codex review). The guide's Done button also saves a non-empty draft, and the draft
+        // is prefilled with the stored key when the guide is reopened from Settings, so Done must
+        // never re-enable an assistant the user turned off (#318 review).
         // A refused write already shows its own toast (identity uncertain / store refused).
-        if !store.aiAssistantEnabled {
+        if enablesAssistant, !store.aiAssistantEnabled {
             _ = store.setAIAssistantEnabled(true)
         }
         let resolved = store.assistantConfig
@@ -944,11 +946,15 @@ public struct OnboardingGuideView: View {
                 let trimmedBase = baseURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 let trimmedModel = modelDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 let currentPreset = AssistantProviderPreset.infer(baseURL: store.assistantConfig.baseURL)
-                if !trimmedKey.isEmpty
+                let storedKey = store.storedAssistantAPIKey(forBaseURL: store.assistantConfig.baseURL)
+                // A draft that only echoes the stored config (the reopened-guide prefill) is not a
+                // new choice, so it must not turn a deliberately disabled assistant back on.
+                let draftChangesConfig = trimmedKey != storedKey
                     || selectedPreset != currentPreset
                     || trimmedBase != store.assistantConfig.baseURL
-                    || (!trimmedModel.isEmpty && trimmedModel != store.assistantConfig.model) {
-                    _ = saveOnboardingAssistantDraft(showErrorToast: false)
+                    || (!trimmedModel.isEmpty && trimmedModel != store.assistantConfig.model)
+                if !trimmedKey.isEmpty || draftChangesConfig {
+                    _ = saveOnboardingAssistantDraft(showErrorToast: false, enablesAssistant: draftChangesConfig)
                 }
                 withAnimation(AppleMotion.snappySpring) {
                     store.finishOnboardingGuide()
