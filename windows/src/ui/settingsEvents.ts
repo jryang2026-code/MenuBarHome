@@ -52,7 +52,7 @@ import { clearConnectionRemovals, pendingConnectionRemovalScopes } from "../core
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import { ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { scheduledCommandIdentity } from "./scheduledCommands.js";
+import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import {
   importAmbientAssistantKey,
@@ -1549,6 +1549,26 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       return;
     }
     syncAutomationLifecycle(host);
+    host.saveSettings();
+    syncSettingsSaveHint(host, "auto-saved");
+    host.render();
+  });
+
+  host.root.querySelector<HTMLInputElement>("#settings-scheduled-commands-enabled")?.addEventListener("change", (event) => {
+    if (!isFullPanelHost(host)) return;
+    const toggle = event.target as HTMLInputElement;
+    if (!setScheduledCommandsRunning(host, toggle.checked)) {
+      // The paused entries could not be written, so the switch stays on: a timer that is still
+      // waiting must not look parked while it can fire.
+      toggle.checked = true;
+      host.replyBanner = {
+        text: t("无法保存暂停的定时，定时任务仍处于开启状态"),
+        source: t("控制失败"),
+        isError: true,
+      };
+      host.render();
+      return;
+    }
     host.saveSettings();
     syncSettingsSaveHint(host, "auto-saved");
     host.render();

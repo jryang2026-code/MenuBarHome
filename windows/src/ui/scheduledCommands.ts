@@ -3,7 +3,10 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { t } from "../core/i18n.js";
 import type { ScheduledCommand } from "../core/models.js";
-import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
+import {
+  isScheduledCommandsEnabled,
+  missingScheduledCommandTargets,
+} from "../core/scheduledCommands.js";
 import type { PersistedSettings } from "./appTypes.js";
 import {
   buildHostCapabilityContext,
@@ -12,8 +15,30 @@ import {
   resolveEnabledMiAccountsForHost,
   resolveHostMiSelectionState,
 } from "./cloudRefresh.js";
-import { evaluateDisabledUtteranceGate, evaluateIntentsWriteGate } from "../core/miAccountControl.js";
+import { AutomationRuleStore } from "../core/automationEngine.js";
+import {
+  evaluateDisabledUtteranceGate,
+  evaluateIntentsWriteGate,
+  parseTimerIdentityScope,
+  revalidateAfterMiAccountReenable,
+} from "../core/miAccountControl.js";
 import { isWorkstationLockBlockingControl as isControlBlockedWhileLocked } from "./transport.js";
+
+/**
+ * Generation of the timer switch (P5d-TW). Every flip advances it, so a run that started before the
+ * switch was turned off sees a stale generation and stops before its next device write — the same
+ * rule the automation switch uses for its in-flight rules. Already accepted writes keep their
+ * receipt and undo entry; only the remaining steps are dropped.
+ */
+const timerSwitchGenerations = new WeakMap<object, number>();
+
+export function scheduledCommandsGeneration(host: object): number {
+  return timerSwitchGenerations.get(host) ?? 0;
+}
+
+function advanceScheduledCommandsGeneration(host: object): void {
+  timerSwitchGenerations.set(host, scheduledCommandsGeneration(host) + 1);
+}
 
 export function scheduledCommandIdentity(settings: PersistedSettings): string | null {
   switch (settings.connectionMode) {
@@ -46,6 +71,18 @@ export function markTimerSnapshotReady(host: MenuMijiaWindowsApp): void {
 }
 
 export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
+  if (!isScheduledCommandsEnabled(host.settings)) {
+    // Nothing fires and nothing is caught up while the switch is off. The park below is idempotent:
+    // it also catches a waiting entry that appeared while the switch was already off (an older build
+    // or a failed write), so a due timer can never slip through the gap.
+    if (parkWaitingTimersForFeatureSwitch(host)) timerStorageFailure(host);
+    return false;
+  }
+  // Re-enabling revalidates before anything may fire again; until the current source's snapshot is
+  // back, entries stay parked and every tick retries (no silent catch-up, no stale-target write).
+  if (host.scheduledCommandStore.hasFeaturePause() && !resumeScheduledCommandsAfterEnable(host, nowMs)) {
+    return false;
+  }
   const count = host.scheduledCommands.length;
   const missed = host.missedScheduledCommands.length;
   const knownTargetIds = new Set<string>([
@@ -71,6 +108,99 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
 }
 
 /**
+ * Scopes a parked timer that never recorded its own scopes is stamped with: the queue's own source,
+ * or `demo` because the demo home is evaluated against `["demo", ...enabledConnectionScopes]`.
+ * Without this a legacy demo timer would look foreign to the resume revalidation and stay parked.
+ */
+function queueScopesForTimer(identity: string): readonly string[] {
+  const scope = parseTimerIdentityScope(identity);
+  if (scope) return [scope];
+  return identity === "demo" ? ["demo"] : [];
+}
+
+/**
+ * Parks waiting timers for the switch. Returns whether the park needed a storage write and that
+ * write failed, so the caller can report a storage problem instead of pretending it is off.
+ */
+function parkWaitingTimersForFeatureSwitch(host: MenuMijiaWindowsApp): boolean {
+  if (!host.scheduledCommandStore.hasWaitingTimers()) return false;
+  const snapshot = host.scheduledCommandStore.snapshotQueues();
+  if (!host.scheduledCommandStore.pauseForFeatureSwitch(queueScopesForTimer)) return false;
+  if (host.scheduledCommandStore.persist()) return false;
+  host.scheduledCommandStore.restoreQueues(snapshot);
+  return true;
+}
+
+/**
+ * Turns the timer switch on or off (P5d-TW).
+ *
+ * Off parks the waiting timers under `TIMER_FEATURE_PAUSE_REASON` — plans, fire times, source
+ * stamps, original partitions and any other pause reason survive — and advances the generation so a
+ * run already in flight stops before its next write. On resumes with a revalidation first: every
+ * target must still be enabled on an available source, entries that came due while the switch was
+ * off go to the missed flow (never to an execution), and anything that cannot be verified yet stays
+ * parked until the current source's snapshot is back.
+ */
+export function setScheduledCommandsRunning(
+  host: MenuMijiaWindowsApp,
+  enabled: boolean,
+  nowMs = Date.now(),
+): boolean {
+  if (enabled === isScheduledCommandsEnabled(host.settings)) return true;
+  advanceScheduledCommandsGeneration(host);
+  if (!enabled) {
+    const snapshot = host.scheduledCommandStore.snapshotQueues();
+    const changed = host.scheduledCommandStore.pauseForFeatureSwitch(queueScopesForTimer);
+    if (changed && !host.scheduledCommandStore.persist()) {
+      // Fail closed: the timer stays armed rather than claiming an off state the disk never got.
+      host.scheduledCommandStore.restoreQueues(snapshot);
+      return false;
+    }
+    host.settings.scheduledCommandsEnabled = false;
+    host.render();
+    return true;
+  }
+  host.settings.scheduledCommandsEnabled = true;
+  // A failure here is not a reason to refuse the switch: the entries keep the switch's pause reason
+  // and every tick retries, so nothing fires before it has been revalidated.
+  resumeScheduledCommandsAfterEnable(host, nowMs);
+  host.render();
+  return true;
+}
+
+/**
+ * Revalidates the timers the switch is holding, then resumes them.
+ *
+ * Returns false when the current source is not verified yet (retried by the next tick) or when the
+ * write failed (everything is restored, so nothing is silently released). Uses the shared
+ * `revalidatePausedTimer` rules with `timersOnly`: the timer switch owns no rule pause, so turning
+ * timers back on must not re-enable automation rules.
+ */
+export function resumeScheduledCommandsAfterEnable(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
+  if (!host.scheduledCommandStore.hasFeaturePause()) return true;
+  if (!scheduledCommandsReady(host)) return false;
+  const snapshot = host.scheduledCommandStore.snapshotQueues();
+  host.scheduledCommandStore.releaseFeaturePause();
+  if (!host.scheduledCommandStore.persist()) {
+    host.scheduledCommandStore.restoreQueues(snapshot);
+    return false;
+  }
+  const resumed = revalidateAfterMiAccountReenable({
+    context: buildHostCapabilityContext(host),
+    scheduledCommandStore: host.scheduledCommandStore,
+    activeTimerIdentity: scheduledCommandIdentity(host.settings),
+    ruleStore: new AutomationRuleStore(),
+    nowMs,
+    timersOnly: true,
+  });
+  if (!resumed) {
+    host.scheduledCommandStore.restoreQueues(snapshot);
+    return false;
+  }
+  return true;
+}
+
+/**
  * Runs a missed timer the user just confirmed ("Run Now"), following the store rule in
  * `CODING_STANDARDS.md` §7.
  *
@@ -87,6 +217,13 @@ export async function confirmMissedScheduledCommand(
 ): Promise<void> {
   const preItem = host.missedScheduledCommands.find((entry) => entry.id === id);
   if (!preItem) return;
+  // "Run Now" is a timer execution too: with the switch off nothing timer-driven is written, and the
+  // entry stays exactly where it is so it can be run after timers are back on.
+  if (!isScheduledCommandsEnabled(host.settings)) {
+    host.replyBanner = { text: t("定时任务已关闭，开启后才能执行这条定时"), source: t("定时任务"), isError: true };
+    host.render();
+    return;
+  }
   if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
     const capContext = buildHostCapabilityContext(host);
     const gateMsg =
@@ -171,6 +308,13 @@ export function cancelScheduledCommands(host: MenuMijiaWindowsApp, id?: string):
 }
 
 export function enqueueScheduledCommand(host: MenuMijiaWindowsApp, item: ScheduledCommand): boolean {
+  // A new timer would only be parked again: refuse it at the entry point instead of accepting a
+  // timer that will not run.
+  if (!isScheduledCommandsEnabled(host.settings)) {
+    host.replyBanner = { text: t("定时任务已关闭，开启后才能新建定时"), source: t("定时任务"), isError: true };
+    host.render();
+    return false;
+  }
   if (!scheduledCommandsReady(host)) {
     host.replyBanner = { text: t("请等待设备同步完成后再执行定时指令"), source: t("定时任务"), isError: true };
     host.render();

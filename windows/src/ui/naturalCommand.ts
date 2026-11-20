@@ -1,8 +1,8 @@
-import { cancelScheduledCommands, enqueueScheduledCommand } from "./scheduledCommands.js";
+import { cancelScheduledCommands, enqueueScheduledCommand, scheduledCommandsGeneration } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { parseQuickActionCommand } from "../core/quickActions.js";
-import { missingScheduledCommandTargets } from "../core/scheduledCommands.js";
+import { missingScheduledCommandTargets, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import {
   DelayPhrase,
   INSECURE_ENDPOINT_MESSAGE,
@@ -547,12 +547,22 @@ export async function runScheduledCommand(host: MenuMijiaWindowsApp, item: Sched
     }
     const aliasedDevices = withAliases(host.layout, host.devices);
     const intents = IntentValidator.sanitize(item.intents, aliasedDevices, host.scenes);
-    await host.executeIntents(
+    // A timer run is a multi-step write. Turning the timer switch off (or any later flip) must stop
+    // the remaining steps before their next command; the ones already accepted keep their undo.
+    const generation = scheduledCommandsGeneration(host);
+    const completed = await host.executeIntents(
       intents,
       IntentReply.describe(intents, aliasedDevices, host.scenes),
       t("定时任务"),
-      { recordHabits: false },
+      {
+        recordHabits: false,
+        canContinue: () => isScheduledCommandsEnabled(host.settings) && scheduledCommandsGeneration(host) === generation,
+      },
     );
+    if (!completed && scheduledCommandsGeneration(host) !== generation) {
+      host.replyBanner = { text: t("定时任务开关已改变，已停止剩余步骤"), source: t("定时任务"), isError: true };
+      host.render();
+    }
     return;
   }
   if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {

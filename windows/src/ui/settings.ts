@@ -366,6 +366,11 @@ export function loadSettings(): LoadedSettings {
         ...(typeof parsed.proactiveSuggestionsEnabled === "boolean"
           ? { proactiveSuggestionsEnabled: parsed.proactiveSuggestionsEnabled }
           : {}),
+        // 定时任务 (P5d-TW): same explicit-`false` rule. A missing key is every existing install and a
+        // brand-new one alike — the manifest declares no timer feature, so both keep timers on.
+        ...(typeof parsed.scheduledCommandsEnabled === "boolean"
+          ? { scheduledCommandsEnabled: parsed.scheduledCommandsEnabled }
+          : {}),
         enableRaycastIntegration:
           typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
         allowDirectURLControl:

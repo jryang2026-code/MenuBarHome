@@ -136,6 +136,14 @@ export interface PersistedSettings {
    */
   proactiveSuggestionsEnabled?: boolean;
   eventAutomationEnabled?: boolean;
+  /**
+   * 定时任务 (P5d-TW); missing means on. The shared manifest has no timer row, so a fresh install
+   * and an upgrade both keep the always-on behavior. Off parks the pending timers (plan, fire time,
+   * source stamps, original partition and any other pause reason survive), stops the remaining steps
+   * of a run that is in flight, and refuses new timers. Turning it back on revalidates every target
+   * first: entries that came due in between go to the missed flow instead of firing.
+   */
+  scheduledCommandsEnabled?: boolean;
   /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
   enableRaycastIntegration: boolean;
   /** Runs `menumijia://` links without the external-link confirmation prompt when on. */
