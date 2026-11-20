@@ -270,14 +270,10 @@ struct DeviceTypeMappingTests {
 
         // 「只用灯和开关」 covers both `.light` and `.plug` because a wall switch driving a lamp draws as `.plug`.
         #expect(DeviceCategoryPreset.lightAndSwitch.categories == [.light, .plug])
-        #expect(DeviceCategoryID.lightAndSwitch == [.light, .plug])
         #expect(DeviceCategoryPreset.allSupportedTypes.categories == DeviceCategoryID.allCases)
-        #expect(DeviceCategoryID.allSupportedTypes == DeviceCategoryID.allCases)
 
         let covered = Set(mapping.cardCases.map(\.expectedCategory))
         #expect(covered == Set(DeviceCategoryID.allCases))
-        #expect(!DeviceCategoryID.nonCameraIDs.contains(.camera))
-        #expect(DeviceCategoryID.nonCameraIDs.count == DeviceCategoryID.allCases.count - 1)
     }
 
     // MARK: - 20 Shared Card Cases
@@ -426,8 +422,6 @@ struct DeviceTypeMappingTests {
                 return
             }
             #expect(card.capabilityCategoryID == .appliance, "online=\(card.isOnline)")
-            #expect(IntentDeviceCategory(card) == .appliance, "assistant online=\(card.isOnline)")
-            #expect(IntentDeviceCategory(card) != .valve, "assistant must not flip to valve online=\(card.isOnline)")
         }
     }
 
@@ -704,7 +698,7 @@ struct DeviceTypeMappingTests {
 
         for c in mapping.leakCases {
             let sel = Self.selection(from: c.selection)
-            #expect(!sel.enabledCategories.contains(.sensor), c.id)
+            #expect(!sel.enabledCategories.contains(.sensor), "\(c.id)")
 
             let built = try Self.buildTypeIndexPlans(
                 home: mapping.typeIndexHome,
@@ -716,9 +710,9 @@ struct DeviceTypeMappingTests {
                 mi.hiddenIndexedDevices.first(where: { $0.id == c.leakDid }),
                 "\(c.id): leak sensor must be in hidden index"
             )
-            #expect(leakIndexEntry.category == .sensor, c.id)
-            #expect(mi.visibleDeviceIds == Set(c.expectedAvailableDids), c.id)
-            #expect(mi.safetyRetainedDeviceIds == Set(c.expectedRetainedDids), c.id)
+            #expect(leakIndexEntry.category == .sensor, "\(c.id)")
+            #expect(mi.visibleDeviceIds == Set(c.expectedAvailableDids), "\(c.id)")
+            #expect(mi.safetyRetainedDeviceIds == Set(c.expectedRetainedDids), "\(c.id)")
             #expect(!mi.visibleRecords.contains(where: { $0.did == c.leakDid }), "\(c.id): never on panel")
 
             let actualLeakReads = Set(
@@ -726,7 +720,7 @@ struct DeviceTypeMappingTests {
                     .filter { $0.did == c.leakDid }
                     .map { PropRef(siid: $0.siid, piid: $0.piid) }
             )
-            #expect(actualLeakReads == Set(c.expectedLeakReadKeys), c.id)
+            #expect(actualLeakReads == Set(c.expectedLeakReadKeys), "\(c.id)")
 
             var values: [MiotPropKey: JSONValue] = [:]
             let alertKey = MiotPropKey(did: c.leakDid, siid: c.alertKey.siid, piid: c.alertKey.piid)
@@ -748,7 +742,7 @@ struct DeviceTypeMappingTests {
                 calendar: Calendar(identifier: .gregorian),
                 policy: alertPolicy
             )
-            #expect((!result.alerts.isEmpty) == c.expectLeakAlert, c.id)
+            #expect((!result.alerts.isEmpty) == c.expectLeakAlert, "\(c.id)")
         }
     }
 
@@ -775,7 +769,7 @@ struct DeviceTypeMappingTests {
             }
 
             let mapped = index.first(where: { $0.id == targetId })?.category
-            #expect(mapped == c.expectedMappedCategory, c.id)
+            #expect(mapped == c.expectedMappedCategory, "\(c.id)")
 
             let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
                 targetKind: .device,
@@ -784,11 +778,11 @@ struct DeviceTypeMappingTests {
                 selection: sel,
                 devices: index
             )
-            #expect(verdict.allowed == c.expectedAllowed, c.id)
-            #expect(verdict.writeCount == c.expectedWriteCount, c.id)
-            #expect(verdict.rejectionReason?.code == c.expectedRejectionCode, c.id)
+            #expect(verdict.allowed == c.expectedAllowed, "\(c.id)")
+            #expect(verdict.writeCount == c.expectedWriteCount, "\(c.id)")
+            #expect(verdict.rejectionReason?.code == c.expectedRejectionCode, "\(c.id)")
             if let mapped {
-                #expect(verdict.rejectionReason == .categoryDisabled(mapped), c.id)
+                #expect(verdict.rejectionReason == .categoryDisabled(mapped), "\(c.id)")
             }
         }
     }

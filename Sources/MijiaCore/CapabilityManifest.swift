@@ -29,13 +29,6 @@ public enum DeviceCategoryID: String, CaseIterable, Codable, Hashable, Sendable 
     case camera = "camera", sensor = "sensor", valve = "valve", generic = "generic"
 
     public static let baselineUnlistedIDs: Set<DeviceCategoryID> = [.light, .vacuum, .tv]
-    /// Approved non-camera categories pinned by P3c-M; camera teardown and recovery belong to P3c-CM.
-    public static let nonCameraIDs: [DeviceCategoryID] = allCases.filter { $0 != .camera }
-    /// All device categories listed by the manifest (`DeviceCategoryPreset.allSupportedTypes`).
-    public static let allSupportedTypes: [DeviceCategoryID] = DeviceCategoryPreset.allSupportedTypes.categories
-    /// 「只用灯和开关」 preset (`DeviceCategoryPreset.lightAndSwitch`). A wall switch driving a lamp
-    /// is drawn as a `.plug` card, so both `.light` and `.plug` belong in this preset.
-    public static let lightAndSwitch: [DeviceCategoryID] = DeviceCategoryPreset.lightAndSwitch.categories
     public var primaryListCutTag: DeviceKindTag {
         switch self {
         case .light: .light; case .plug, .valve: .plug; case .climate: .climate; case .fan: .fan
@@ -50,6 +43,7 @@ public enum DeviceCategoryID: String, CaseIterable, Codable, Hashable, Sendable 
 /// to keep preset IDs and category membership identical.
 public enum DeviceCategoryPreset: String, CaseIterable, Codable, Hashable, Sendable {
     case allSupportedTypes
+    /// 「只用灯和开关」. A wall switch driving a lamp is drawn as a `.plug` card, so the preset keeps both.
     case lightAndSwitch
 
     public var categories: [DeviceCategoryID] {
