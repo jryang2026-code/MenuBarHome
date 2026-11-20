@@ -298,7 +298,7 @@ public enum IntentDeviceCategory: String, Equatable, Sendable, CaseIterable {
             let lowerModel = device.model.lowercased()
             if lowerEntity.hasPrefix("humidifier.") || lowerModel.contains("humidifier") || s.symbolName == "humidity.fill" {
                 self = .airPurifier
-            } else if lowerEntity.hasPrefix("valve.") || lowerModel.contains("valve") || (!s.temperatureWritable && s.availableModes.isEmpty && (device.name.contains("水阀") || device.name.contains("气阀") || device.name.contains("燃气阀") || device.name.contains("阀门"))) {
+            } else if lowerEntity.hasPrefix("valve.") {
                 self = .valve
             } else {
                 self = .appliance
