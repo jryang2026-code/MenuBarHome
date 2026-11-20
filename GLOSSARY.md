@@ -140,6 +140,10 @@ _Avoid_: Local scene（本地场景）、Custom script（自定义脚本）
 当前视图内开启中且允许参与「全关」的 `SmartDevice` 集合（macOS `HomeStore.allOffTargets`；Windows `models.ts:allOffTargets`，插座、扫地机、摄像机等默认不加入，支持单设备覆盖；通用卡不可加入）。
 _Avoid_: All devices（全部设备）
 
+**DeviceTypeSelection（设备类型选择）**：
+用户持久化的设备类型选择（全部已支持类型 / 只用灯和开关 / 自己选），存于连接选择的同一记录（`extraFields.enabledCategories`），决定面板、搜索、AI 目录与直接控制入口纳入哪些 `DeviceCategoryID`。它只裁剪可用集合，安全保留集由 `partitionCapabilityDevices` 决定；缺失即「未选择」= 显示全部。Windows 见 `deviceTypeSelection.ts` 与 `deviceTypeSelectionView.ts`（P4b-W）。
+_Avoid_: DeviceListCut（一次性房间/类型筛选）、Device visibility（单台设备手动隐藏）
+
 **DeviceListCut（房间或类型筛选）**：
 内存态一次性筛选（全部 / 单房间 / 单设备类型），不写入磁盘且不改写房间计数/磁贴尺寸基准。
 _Avoid_: IntentDeviceCategory（意图设备大类）、Persistent filter（持久筛选）

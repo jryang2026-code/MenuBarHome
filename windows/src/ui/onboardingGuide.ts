@@ -25,6 +25,7 @@ import {
 } from "./cloudRefresh.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
 import { switchSource } from "./sourceSwitch.js";
+import { bindDeviceTypeSelectionEvents, deviceTypeSelectionIsAvailable, renderDeviceTypeSelectionSection } from "./deviceTypeSelectionView.js";
 import { invokeTauriVoid } from "./transport.js";
 
 export type AssistantProviderPresetId = string;
@@ -634,7 +635,23 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
 
       ${renderConnectStep()}
 
-      <div class="cc-field" data-onboarding-step="3">
+      ${
+        deviceTypeSelectionIsAvailable(host)
+          ? `<div class="cc-field" data-onboarding-step="3" data-onboarding-device-types>
+              <label style="font-weight: 600;">${esc(tr3("选设备类型与功能", "選裝置類型與功能", "Device Types"))}</label>
+              <p class="cc-field-hint" style="margin: 2px 0 6px 0;">${esc(
+                tr3(
+                  "默认显示全部已支持类型。只想看灯和开关，或自己逐类挑选，都在这里改。",
+                  "預設顯示全部已支援類型。只想看燈和開關，或自己逐類挑選，都在這裡改。",
+                  "Every supported type is shown by default. Keep only lights and switches, or pick each type, here.",
+                ),
+              )}</p>
+              ${renderDeviceTypeSelectionSection(host, { showHeading: false })}
+            </div>`
+          : ""
+      }
+
+      <div class="cc-field" data-onboarding-step="4">
         <label style="font-weight: 600;">${esc(t("快捷操作与托盘提示"))}</label>
         <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("点击右下角系统托盘图标或按 {hotkey} 随时呼出面板。", { hotkey: hotkeyText }))}</p>
         <p class="cc-field-hint" style="margin: 3px 0;">• ${esc(t("磁贴左侧一键开关，右侧展开精细调节。"))}</p>
@@ -1089,4 +1106,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   sheet.querySelector("#btn-finish-onboarding")?.addEventListener("click", () => completeAndClose(true));
   sheet.querySelector("#btn-skip-onboarding")?.addEventListener("click", () => completeAndClose(true));
   sheet.querySelector("#btn-onboarding-skip")?.addEventListener("click", () => completeAndClose(true));
+  // Step 4 (P4b-W): the same block Settings renders, bound to the same handlers, so the guide and the
+  // settings page cannot drift apart.
+  bindDeviceTypeSelectionEvents(host as unknown as Parameters<typeof bindDeviceTypeSelectionEvents>[0]);
 }

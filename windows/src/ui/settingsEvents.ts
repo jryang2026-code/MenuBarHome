@@ -74,6 +74,7 @@ import { createTransport, invokeTauriVoid } from "./transport.js";
 import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
 import { bindConnectionsAndDiagEvents } from "./connectionsAndDiagView.js";
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
+import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
@@ -917,6 +918,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   }
 
   syncSettingsSaveHint(host);
+  // A closed sheet ends the device-type draft (CODING_STANDARDS §13): reopening Settings starts from
+  // the stored selection, not from an abandoned preview.
+  if (host.activeSheet === "none") clearDeviceTypeSelectionSession(host);
 
   host.root.querySelector("#btn-cloud-allow")?.addEventListener("click", () => {
     const pending = host.pendingCloudConsent;
@@ -1706,6 +1710,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   bindEnergySettingsEvents(host);
   bindAutomationSettingsEvents(host);
   bindConnectionsAndDiagEvents(host);
+  bindDeviceTypeSelectionEvents(host);
 
   host.root.querySelector("#btn-save-settings")?.addEventListener("click", () => {
     commitSettingsSave(host);

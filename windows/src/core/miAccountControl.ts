@@ -2,14 +2,18 @@ import { LocalIntentParser, normalizeSceneName } from "./assistant.js";
 import { AutomationRuleStore, automationTriggerTitle, summarizeAutomationAction, type AutomationRule } from "./automationEngine.js";
 import { DEVICE_CATEGORY_IDS, FEATURE_IDS, deviceCategoryForDevice, loadSharedCapabilityManifest, type CapabilityID, type ConnectionCapabilityID, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
-  QUICK_ACTION_TARGET_CATEGORIES, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
+  QUICK_ACTION_TARGET_CATEGORIES, SAFETY_SIGNAL_KINDS, controlTargetRejectionMessage, evaluateCapabilityDeactivation, evaluateControlTargetGate, evaluatePlanTargetsGate,
   isValidCapabilityIndexedDevice, partitionCapabilityDevices, resolveCapabilityInstallSelection, revalidatePausedTimer, type AutomationReference,
   type CapabilityDeactivationVerdict, type CapabilityIndexedDevice, type CapabilityInstallResolutionMode,
   type CapabilityReferenceGraph, type CapabilitySelection, type ControlTargetKind, type ControlTargetRejectionReason,
-  type QuickActionReference, type QuickActionReferenceKind, type SafetyRetentionPolicy, type SceneReference, type TimerReference,
+  type QuickActionReference, type QuickActionReferenceKind, type SafetyRetentionPolicy, type SafetySignalKind,
+  type SceneReference, type TimerReference,
 } from "./capabilityReferenceVerdict.js";
+import { normalizeDeviceCategorySelection } from "./deviceTypeSelection.js";
 import type { DeviceMergeRoute } from "./dualSourceProvider.js";
 import { pendingConnectionRemovalScopes } from "./connectionRemoval.js";
+import type { DeviceTypeSelectionCard, DeviceTypeSelectionPreview } from "./deviceTypeSelection.js";
+import { haSafetySignalsForDevice } from "./haTypePruning.js";
 import { CAPABILITY_SELECTION_STORAGE_KEY, haConnectionScope } from "./haTransportGate.js";
 import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
@@ -233,9 +237,10 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
         enabledConnections: enabledConns,
         enabledConnectionScopes: configuredScopes.filter((s) => !disabledSet.has(s) && !disabledHaSet.has(s)),
         enabledFeatures: [...FEATURE_IDS],
-        enabledCategories: Array.isArray(stored.parsed.extraFields.enabledCategories)
-          ? DEVICE_CATEGORY_IDS.filter((id) => (stored.parsed?.extraFields.enabledCategories as unknown[]).includes(id))
-          : [...DEVICE_CATEGORY_IDS],
+        // A stored list that cannot be read keeps every type instead of hiding the whole home
+        // (P4b-W fail-closed). An absent list is the pre-P4b-W state and also means "all types".
+        enabledCategories: normalizeDeviceCategorySelection(stored.parsed.extraFields.enabledCategories)
+          ?? [...DEVICE_CATEGORY_IDS],
       }
     : null;
   const failure = options.identityReadFailure?.trim() || (stored.readError ? "capability_selection_read_error" : stored.corruptRaw !== null ? "corrupt_capability_selection_storage" : "");
@@ -815,6 +820,95 @@ export function previewHaConnectionDisable(options: {
       currentGeneration: options.currentGeneration ?? null,
     },
   );
+}
+
+/**
+ * Device-type deactivation preview (P4b-W). Same verdict engine and reference assembly as the
+ * connection previews above, so "如果关掉传感器会怎样" has one answer on both ends.
+ *
+ * The device index is the host's own (`buildIndexedCapabilityDevices`), enriched with the alert shape
+ * each card can carry: `haSafetySignalsForDevice` reads the card both sources already synthesized, so
+ * the set an enabled alert keeps reading can be named without a Mi spec round.
+ */
+export function previewDeviceCategorySelection(options: {
+  readonly proposedCategories: readonly DeviceCategoryID[];
+  readonly context: HostCapabilityContextInput;
+  readonly scheduledCommandStore: ScheduledCommandStore;
+  readonly activeTimerIdentity: string | null;
+  readonly ruleStore: AutomationRuleStore;
+  readonly safetyPolicy: SafetyRetentionPolicy;
+  readonly preferences?: CapabilityReferenceGraph["preferences"];
+  readonly expectedGeneration?: number | null;
+  readonly currentGeneration?: number | null;
+  readonly languagePreference?: LanguagePreference;
+}): DeviceTypeSelectionPreview {
+  const pref = effectivePref(options.languagePreference);
+  const current = options.context.state.selection;
+  const proposedCategories = [...new Set(options.proposedCategories)];
+  const { indexedDevices, sceneRefs } = buildIndexedCapabilityDevices(options.context);
+  const deviceById = new Map(options.context.devices.map((device) => [device.id, device] as const));
+  const starred = new Set(options.safetyPolicy.starredDeviceIds ?? []);
+  const index = indexedDevices.map((entry) => {
+    if (entry.safetySignals.length > 0) return entry;
+    const device = deviceById.get(entry.id);
+    if (!device) return entry;
+    return { ...entry, safetySignals: haSafetySignalsForDevice(device, starred.has(entry.id)) };
+  });
+  const devById = new Map(index.map((d) => [d.id, d] as const));
+  const sceneById = new Map(sceneRefs.map((s) => [s.id, s] as const));
+  const timers = collectTimerReferencesForDeactivation({
+    scheduledCommandStore: options.scheduledCommandStore,
+    activeTimerIdentity: options.activeTimerIdentity,
+    activeSessionScopes: current.enabledConnectionScopes,
+    devById,
+    sceneById,
+  });
+  const verdict = evaluateCapabilityDeactivation(
+    current,
+    { ...current, enabledCategories: proposedCategories },
+    loadSharedCapabilityManifest(),
+    index,
+    options.safetyPolicy,
+    {
+      timers,
+      automations: options.ruleStore.load().map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
+      quickActions: BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({
+        id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id),
+      })),
+      scenes: sceneRefs,
+      ...(options.preferences ? { preferences: options.preferences } : {}),
+      ...(options.scheduledCommandStore.hasStorageError() ? { corruptedStoreReasons: ["scheduledCommands"] } : {}),
+      expectedGeneration: options.expectedGeneration ?? null,
+      currentGeneration: options.currentGeneration ?? null,
+    },
+  );
+
+  const proposedSet = new Set(proposedCategories);
+  const hiddenCards: DeviceTypeSelectionCard[] = [];
+  for (const device of options.context.devices) {
+    const category = deviceCategoryForDevice(device);
+    if (!proposedSet.has(category)) hiddenCards.push({ id: device.id, name: device.name, category });
+  }
+  const retainedIds = new Set(verdict.partition.hiddenSafetyRetainedDeviceIds);
+  const retainedSignals = new Set<SafetySignalKind>();
+  const enabledSignals = new Set(options.safetyPolicy.enabledSignals);
+  const retainedSafetyCards: DeviceTypeSelectionCard[] = [];
+  for (const entry of index) {
+    if (!retainedIds.has(entry.id)) continue;
+    // Only the alerts that are actually on explain why the card is still read; an off alert must not
+    // be advertised as a reason to keep it.
+    for (const signal of entry.safetySignals) if (enabledSignals.has(signal)) retainedSignals.add(signal);
+    retainedSafetyCards.push({ id: entry.id, name: deviceById.get(entry.id)?.name ?? entry.name, category: entry.category });
+  }
+  return {
+    currentCategories: DEVICE_CATEGORY_IDS.filter((id) => current.enabledCategories.includes(id)),
+    proposedCategories: DEVICE_CATEGORY_IDS.filter((id) => proposedSet.has(id)),
+    hiddenCards,
+    retainedSafetyCards,
+    retainedSafetySignals: SAFETY_SIGNAL_KINDS.filter((kind) => retainedSignals.has(kind)),
+    affectedReferences: verdict.itemsToPause,
+    verdict,
+  };
 }
 
 export function applyPauseItemsFromVerdict(options: {

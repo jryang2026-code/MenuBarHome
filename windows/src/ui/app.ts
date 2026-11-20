@@ -1,4 +1,5 @@
-import type { DeviceCategoryID } from "../core/capabilityManifest.js";
+import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "../core/capabilityManifest.js";
+import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
@@ -281,14 +282,31 @@ export class MenuMijiaWindowsApp {
       : [];
   }
 
+  /**
+   * Persists one device-type choice (P4b-W). The record keeps the semantic value only: choosing every
+   * type removes the key, so "no explicit choice" stays readable and an upgrade keeps its own default.
+   *
+   * Deliberately does not refresh: the caller pauses the references the change affects first, and a
+   * refresh started here would read a selection the caller may still roll back.
+   */
   public setEnabledDeviceCategories(categories: readonly DeviceCategoryID[]): boolean {
+    const normalized = normalizeDeviceCategorySelection(categories);
+    if (normalized === null) return false;
+    const keepsEveryType = DEVICE_CATEGORY_IDS.every((id) => normalized.includes(id));
     if (!writeMiAccountSelectionMutation({
-      mutate: (previous) => ({
-        ...previous,
-        extraFields: { ...previous.extraFields, enabledCategories: [...categories] },
-      }),
+      mutate: (previous) => {
+        const extraFields: Record<string, unknown> = { ...previous.extraFields };
+        if (keepsEveryType) delete extraFields.enabledCategories;
+        else extraFields.enabledCategories = [...normalized];
+        return { ...previous, extraFields };
+      },
     })) return false;
-    this.cameraLive.setCameraCategoryEnabled(categories.includes("camera"));
+    this.cameraLive.setCameraCategoryEnabled(normalized.includes("camera"));
+    // The demo home is synthesized locally, so nothing prunes it on refresh: re-derive the sample
+    // cards here. Real sources refresh after the caller finishes pausing.
+    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
+      this.devices = demoDevices().filter((device) => normalized.includes(deviceCategoryForDevice(device)));
+    }
     this.render();
     return true;
   }

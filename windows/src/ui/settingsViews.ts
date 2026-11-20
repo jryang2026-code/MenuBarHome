@@ -201,6 +201,11 @@ export interface SettingsViewContext {
   readonly sourceRevision?: number;
   readonly connDiagHost?: ConnectionsAndDiagHost;
   readonly layout?: LayoutPrefs;
+  /**
+   * The device-type block (P4b-W). `html` re-reads the host's live selection and references, so it is
+   * built on demand; `key` makes an inactive-tab cache notice when the draft changed.
+   */
+  readonly deviceTypes?: { readonly key: string; readonly html: () => string };
   escapeHtml(value: string): string;
 }
 
@@ -323,6 +328,7 @@ export function buildInactiveTabCacheKey(ctx: SettingsViewContext, tabId: Settin
       ctx.settings.appearance, ctx.settings.panelTheme, ctx.settings.panelOpacity, ctx.settings.interfaceLanguage,
       ctx.settings.temperatureUnit, ctx.settings.panelHeight, ctx.panelAnchor, ctx.settings.climatePanel,
       ctx.settings.isCompactGridMode, ctx.settings.hideOfflineDevices, ctx.settings.hideGroupedLights, ctx.settings.showQuickActionsBar,
+      ctx.deviceTypes?.key,
       ctx.settings.launchAtLogin, ctx.settings.enableGlobalHotkey, ctx.settings.globalHotkey,
       ctx.isRecordingHotkey, ctx.hotkeyNeedsHint, ctx.hotkeyRegistrationError,
       readCustomHomeTitle(ctx.settings), ctx.connDiagHost?.connDiagSession?.titleDraft,
@@ -541,6 +547,8 @@ function renderGeneralPanel(ctx: SettingsViewContext): string {
         ${renderGeneralHiddenDevicesRestore(ctx)}
       </div>
     </section>
+
+    ${ctx.deviceTypes?.html() ?? ""}
 
     <details class="cc-conn-secondary" data-conn-section="advancedDisplay" data-general-section="advancedDisplay">
       <summary class="cc-conn-secondary-summary">${ctx.escapeHtml(
