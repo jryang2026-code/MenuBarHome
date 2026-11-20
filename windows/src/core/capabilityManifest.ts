@@ -1,6 +1,6 @@
 import sharedManifestJson from "../../../Shared/capability-manifest.json";
-import { isHumidifierAppliance, isValveDevice } from "./assistant/deviceCategory.js";
-import type { DeviceKind, HomeBackend, SmartDevice } from "./models.js";
+import { isHumidifierCardShape, isValveCardShape } from "./assistant/deviceCategory.js";
+import { deviceCardShape, type DeviceCardShape, type DeviceKind, type HomeBackend, type SmartDevice } from "./models.js";
 
 export const CAPABILITY_KINDS = ["connection", "feature", "deviceCategory"] as const;
 export type CapabilityKind = (typeof CAPABILITY_KINDS)[number];
@@ -64,12 +64,60 @@ export const DEVICE_CATEGORY_PRIMARY_KIND_TAG = {
   tv: "tv", camera: "camera", sensor: "sensor", valve: "appliance", generic: "generic",
 } as const satisfies Record<DeviceCategoryID, DeviceKind["kind"]>;
 
-export function deviceCategoryForDevice(device: SmartDevice): DeviceCategoryID {
-  if (device.kind.kind === "appliance") {
-    if (isValveDevice(device)) return "valve";
-    if (isHumidifierAppliance(device)) return "fan";
+/**
+ * Which card kinds each category can be drawn from. `fan` also covers the humidifier card and an
+ * appliance card whose humidifier service is drawn as one, and `valve` is an appliance card that
+ * controls a HA `valve.*` entity — so this is a reachability table, not a lookup;
+ * `deviceCategoryForCardShape` resolves those overlaps (valve before humidifier before appliance).
+ */
+export const DEVICE_CATEGORY_CARD_KINDS = {
+  light: ["light"], plug: ["plug"], climate: ["climate"], fan: ["fan", "humidifier", "appliance"],
+  cover: ["cover"], appliance: ["appliance"], fridge: ["fridge"], vacuum: ["vacuum"],
+  speaker: ["speaker"], tv: ["tv"], camera: ["camera"], sensor: ["sensor"],
+  valve: ["appliance"], generic: ["generic"],
+} as const satisfies Record<DeviceCategoryID, readonly DeviceKind["kind"][]>;
+
+/**
+ * The approved card types P3c-W pins in the shared corpus, i.e. everything except the camera, whose
+ * own teardown and recovery package is P3c-CW. The mapping still answers `camera` for a camera card
+ * (a camera is a camera); this list only scopes the type-mapping assertions.
+ */
+export const NON_CAMERA_DEVICE_CATEGORY_IDS: readonly DeviceCategoryID[] =
+  DEVICE_CATEGORY_IDS.filter((id) => id !== "camera");
+
+export const DEVICE_CATEGORY_PRESET_IDS = ["allSupportedTypes", "lightAndSwitch"] as const;
+export type DeviceCategoryPresetID = (typeof DEVICE_CATEGORY_PRESET_IDS)[number];
+
+/**
+ * The selection presets both platforms offer (P3c-W). `allSupportedTypes` is the manifest's own
+ * category list; `lightAndSwitch` is 「只用灯和开关」 — a wall switch that drives a lamp is drawn as
+ * a plug card, so both ids are in it. A preset is a list of categories, never of names or models.
+ * Both ends must return the same lists; the shared corpus
+ * `Tests/Fixtures/capability_selection_golden.json` (`deviceTypeMapping.presets`) pins them.
+ */
+export const DEVICE_CATEGORY_PRESETS = {
+  allSupportedTypes: DEVICE_CATEGORY_IDS,
+  lightAndSwitch: ["light", "plug"],
+} as const satisfies Record<DeviceCategoryPresetID, readonly DeviceCategoryID[]>;
+
+/**
+ * The one place a card becomes a device type. Reads only the card's shape
+ * (`models.ts:DeviceCardShape`), never a value, so an empty snapshot classifies like the next one.
+ *
+ * An appliance card is the one kind that can be two categories: a valve first (a HA `valve.*`
+ * entity, nothing else), then a humidifier service drawn as a fan. Everything else follows its
+ * card kind.
+ */
+export function deviceCategoryForCardShape(card: DeviceCardShape): DeviceCategoryID {
+  if (card.kind === "appliance") {
+    if (isValveCardShape(card)) return "valve";
+    if (isHumidifierCardShape(card)) return "fan";
   }
-  return DEVICE_KIND_TO_CATEGORY[device.kind.kind];
+  return DEVICE_KIND_TO_CATEGORY[card.kind];
+}
+
+export function deviceCategoryForDevice(device: SmartDevice): DeviceCategoryID {
+  return deviceCategoryForCardShape(deviceCardShape(device));
 }
 
 export interface CapabilityPlatformAvailability { readonly macos: CapabilitySupportStatus; readonly windows: CapabilitySupportStatus; }

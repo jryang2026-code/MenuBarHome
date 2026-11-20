@@ -1,34 +1,42 @@
-import type { SmartDevice } from "../models.js";
+import { deviceCardShape, type DeviceCardShape, type SmartDevice } from "../models.js";
 import { toSimplifiedChinese } from "./chineseIntentTables.js";
 
 export type IntentCategory = "light" | "climate" | "heater" | "fan" | "airPurifier" | "dehumidifier" | "diffuser" | "plug" | "vacuum" | "tv" | "camera" | "valve" | "other";
 
-export function isHumidifierAppliance(dev: SmartDevice): boolean {
-  if (dev.kind.kind === "humidifier") return true;
-  if (dev.kind.kind !== "appliance") return false;
-  const eid = dev.kind.entityId.toLowerCase();
-  const m = dev.model.toLowerCase();
+/**
+ * A `humidifier` service drawn as an appliance, or the humidifier card itself, is shown as a fan.
+ * The shape version is what the device-type mapping calls; `isHumidifierAppliance` keeps the
+ * `SmartDevice` signature for the assistant, prompt context and companion export.
+ */
+export function isHumidifierCardShape(card: DeviceCardShape): boolean {
+  if (card.kind === "humidifier") return true;
+  if (card.kind !== "appliance") return false;
+  const eid = card.entityId.toLowerCase();
+  const m = card.model.toLowerCase();
   return (
     eid.startsWith("humidifier.") ||
     m.includes("humidifier") ||
-    dev.kind.symbolName === "humidity.fill"
+    card.symbolName === "humidity.fill"
   );
 }
 
+export function isHumidifierAppliance(dev: SmartDevice): boolean {
+  return isHumidifierCardShape(deviceCardShape(dev));
+}
+
+/**
+ * A valve drawn as an appliance card: the card controls a HA `valve.*` entity. Only the entity
+ * domain counts — never the name, the model or a live value — so a `water_heater.*` card named
+ * 「燃气阀旁热水器」 stays an appliance whether it is online or not (a MIoT shut-off valve draws no
+ * card at all, #265). Kept on the shape so the mapping can classify a planned card without building
+ * a `SmartDevice` for it first.
+ */
+export function isValveCardShape(card: DeviceCardShape): boolean {
+  return card.kind === "appliance" && card.entityId.toLowerCase().startsWith("valve.");
+}
+
 export function isValveDevice(dev: SmartDevice): boolean {
-  if (dev.kind.kind !== "appliance") return false;
-  const eid = dev.kind.entityId.toLowerCase();
-  const m = dev.model.toLowerCase();
-  return (
-    eid.startsWith("valve.") ||
-    m.includes("valve") ||
-    (!dev.kind.temperatureWritable &&
-      dev.kind.availableModes.length === 0 &&
-      (dev.name.includes("水阀") ||
-        dev.name.includes("气阀") ||
-        dev.name.includes("燃气阀") ||
-        dev.name.includes("阀门")))
-  );
+  return isValveCardShape(deviceCardShape(dev));
 }
 
 

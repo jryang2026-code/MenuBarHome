@@ -488,8 +488,8 @@ export interface ScheduledCommand {
   readonly sourceScopes?: readonly string[];
 }
 
-export function devicePrimaryEntityId(device: SmartDevice): string | null {
-  const k = device.kind;
+/** The entity a card's controls address, from its kind alone. */
+export function primaryEntityIdForKind(k: DeviceKind): string | null {
   switch (k.kind) {
     case "light":
     case "climate":
@@ -516,6 +516,55 @@ export function devicePrimaryEntityId(device: SmartDevice): string | null {
       return _exhaustive;
     }
   }
+}
+
+export function devicePrimaryEntityId(device: SmartDevice): string | null {
+  return primaryEntityIdForKind(device.kind);
+}
+
+/**
+ * The card facts the device-type mapping reads (P3c-W).
+ *
+ * Only the *shape* of a card — its kind, the entity its controls address and the model/symbol hints
+ * the synthesizers already publish — never a live value such as online-gated writability, so a
+ * card classifies identically on an empty snapshot, once its reads arrive, and while it is offline. Both platforms draw from the same card vocabulary:
+ * this is the Windows side of `DeviceKind`, the macOS side is `DeviceKind.capabilityCategoryID`
+ * plus the same hints.
+ */
+export interface DeviceCardShape {
+  /** Card id (`<did>`, `<did>.s<siid>` for a split key, `<did>#<entity>` for a HA cover track). */
+  readonly id: string;
+  readonly kind: DeviceKind["kind"];
+  readonly entityId: string;
+  readonly model: string;
+  readonly name: string;
+  readonly symbolName: string | null;
+  /** `ApplianceSpec.heats`: the card can start a heater, which keeps it an appliance. */
+  readonly heats: boolean;
+}
+
+/** The card shape of a synthesized device. */
+export function deviceCardShape(device: SmartDevice): DeviceCardShape {
+  return deviceCardShapeForKind(device.kind, device);
+}
+
+/**
+ * The card shape of a card that has no `SmartDevice` yet — a MIoT plan before synthesis, or a case
+ * from the shared type-mapping corpus. `identity` only needs the three fields the mapping reads.
+ */
+export function deviceCardShapeForKind(
+  kind: DeviceKind,
+  identity: { readonly id: string; readonly model: string; readonly name: string },
+): DeviceCardShape {
+  return {
+    id: identity.id,
+    kind: kind.kind,
+    entityId: primaryEntityIdForKind(kind) ?? identity.id,
+    model: identity.model,
+    name: identity.name,
+    symbolName: "symbolName" in kind ? kind.symbolName ?? null : null,
+    heats: kind.kind === "appliance" && kind.heats,
+  };
 }
 
 /** Plugs often power a router, fridge or NAS, and 全关 should not send a cleaning vacuum home (#23). */
