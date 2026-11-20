@@ -1487,6 +1487,14 @@ public final class HomeStore {
         if provider == nil, dualSource == nil, initialBackend != .demo, !isIdentityUncertain {
             startLGWebOSIfNeeded()
         }
+        let interruptedRemovals = initialRemovalState.records.filter { $0.stage != .failed }
+        if !isIdentityUncertain, !interruptedRemovals.isEmpty {
+            Task { @MainActor [weak self] in
+                for record in interruptedRemovals {
+                    _ = await self?.retryConnectionRemoval(scope: record.scope)
+                }
+            }
+        }
     }
 
     /// One `MiCloudProvider` per account behind a single `HomeProvider`, so a second sign-in merges

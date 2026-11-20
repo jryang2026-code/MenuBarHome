@@ -89,6 +89,10 @@ extension HomeStore {
         pauseConfirmed: Bool = false, expectedGeneration: Int? = nil, expectedPauseItemKeys: Set<String>? = nil
     ) async -> ConnectionRemovalOutcome {
         guard !isIdentityUncertain, !hasCorruptConnectionRemovalState else { return .blockedByUncertainIdentity }
+        syncPendingConnectionRemovals()
+        if let pending = pendingConnectionRemovals.first(where: { $0.kind == .ha }) {
+            return await retryConnectionRemoval(scope: pending.scope)
+        }
         if isHAConnectionEnabled, let stop = preflightDeactivation(
             preview: previewSetHAConnectionEnabled(false), pauseConfirmed: pauseConfirmed,
             expectedPauseItemKeys: expectedPauseItemKeys,
@@ -123,6 +127,11 @@ extension HomeStore {
     ) async -> ConnectionRemovalOutcome {
         guard !isIdentityUncertain, !hasCorruptConnectionRemovalState else { return .blockedByUncertainIdentity }
         let scope = ConnectionRemovalStore.miScope(accountId: id)
+        syncPendingConnectionRemovals()
+        if pendingMiRemovalScopes.contains(scope) {
+            return await retryConnectionRemoval(scope: scope)
+        }
+        guard miAccounts.contains(where: { $0.id == scope }) else { return .completed }
         if isMiAccountEnabled(scope), let stop = preflightDeactivation(
             preview: previewSetMiAccountEnabled(false, id: scope), pauseConfirmed: pauseConfirmed,
             expectedPauseItemKeys: expectedPauseItemKeys,
@@ -153,9 +162,13 @@ extension HomeStore {
     @discardableResult
     public func retryConnectionRemoval(scope: String) async -> ConnectionRemovalOutcome {
         guard !isIdentityUncertain, !hasCorruptConnectionRemovalState else { return .blockedByUncertainIdentity }
-        guard let existing = ConnectionRemovalStore.find(scope: scope, defaults: userDefaults) else {
-            syncPendingConnectionRemovals()
+        syncPendingConnectionRemovals()
+        guard !hasCorruptConnectionRemovalState else { return .blockedByUncertainIdentity }
+        guard let existing = pendingConnectionRemovals.first(where: { $0.scope == scope }) else {
             return .completed
+        }
+        guard !isRemovingConnectionScopes.contains(scope) else {
+            return .incomplete(reason: "removal_in_progress", remainingSlots: existing.slotNames)
         }
         guard let refreshed = ConnectionRemovalStore.beginRemoval(
             kind: existing.kind, scope: existing.scope, accountId: existing.accountId,

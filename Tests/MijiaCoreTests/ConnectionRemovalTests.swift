@@ -160,17 +160,6 @@ struct ConnectionRemovalTests {
         #expect(miPreview.remainingMiAccountCount == 1)
         #expect(miPreview.preservesHistory)
 
-        // Direct CredentialVault.deleteSlots boundary: only named slot removed; unavailable vault fails closed.
-        let isoMem = MemoryVaultStorage()
-        let isoVault = CredentialVault(storage: isoMem.storage)
-        try Self.seedAllSlots(vault: isoVault, defaults: defaults)
-        #expect(isoVault.deleteSlots(["ha_access_token"]) == .updated)
-        #expect(isoVault.lookup("ha_access_token") == .missing)
-        #expect(isoVault.lookup("assistant_api_key_openai") == .value(Data("sk-openai".utf8)))
-        #expect(isoVault.lookup(MiSessionStore.keychainAccount) != .missing)
-        isoMem.readResult = .unavailable
-        #expect(isoVault.deleteSlots(["mi_session"]) == .unavailable)
-
         let removalTask = Task { await store.removeHomeAssistantConnection() }
         await gated.waitUntilShutdownStarted()
 
@@ -309,6 +298,46 @@ struct ConnectionRemovalTests {
         #expect(ConnectionRemovalStore.find(scope: store.homeAssistantScopeIdentifier, defaults: defaults)?.ownerVersion ?? 0 > 1)
     }
 
+    @Test("Launch resumes interrupted removal while keeping its scope offline")
+    @MainActor
+    func launchResumesInterruptedRemoval() async throws {
+        let (suite, defaults) = try Self.makeSuite("interrupted-launch")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        try Self.seedAllSlots(vault: vault, defaults: defaults)
+        defaults.set(Self.haURL, forKey: "ha_server_url")
+        try #require(ConnectionRemovalStore.beginRemoval(
+            kind: .mi, scope: Self.accB.id, accountId: Self.accB.id,
+            credentialFingerprint: ConnectionRemovalStore.fingerprint(miSession: Self.sessionB),
+            nowMs: Int64(Self.fixedNow.timeIntervalSince1970 * 1000), defaults: defaults
+        ) != nil)
+
+        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault,
+                              miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+        store.toastAutoDismissInterval = nil
+        #expect(store.miAccounts.map(\.id) == [Self.accA.id])
+        try await awaitState { store.pendingConnectionRemovals.isEmpty }
+        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: vault).map(\.id) == [Self.accA.id])
+        #expect(vault.lookup("assistant_api_key_openai") == .value(Data("sk-openai".utf8)))
+    }
+
+    @Test("A removal without a captured owner preserves credentials that appear later")
+    @MainActor
+    func removalWithoutOwnerFailsClosed() throws {
+        let (suite, defaults) = try Self.makeSuite("missing-owner")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        let record = try #require(ConnectionRemovalStore.beginRemoval(
+            kind: .ha, scope: ConnectionRemovalStore.haScope(serverURL: Self.haURL),
+            nowMs: Int64(Self.fixedNow.timeIntervalSince1970 * 1000), defaults: defaults
+        ))
+        let token = Data("replacement-token".utf8)
+        #expect(vault.set(token, for: KeychainHelper.tokenAccount))
+        #expect(ConnectionRemovalStore.executeSlotDeletion(record: record, defaults: defaults, vault: vault)
+            == .incomplete(reason: "ha_owner_unreadable", remainingSlots: [KeychainHelper.tokenAccount]))
+        #expect(vault.lookup(KeychainHelper.tokenAccount) == .value(token))
+    }
+
     @Test("Uncertain identity blocks all connection removals with zero deletions; pause confirmation gates active timers")
     @MainActor
     func identityUncertainBlocksDeletesAndPauseGateWorks() async throws {
@@ -343,6 +372,7 @@ struct ConnectionRemovalTests {
             defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
             let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault, miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
             store.toastAutoDismissInterval = nil
+            store.assistantNow = { Self.fixedNow }
             let haLight = SmartDevice(id: "light.desk", name: "书桌灯", roomId: "r1", roomName: "书房", model: "ha.light", isOnline: true, kind: .light(LightSpec(entityId: "light.desk", isOn: true)))
             store.deviceBackends = ["light.desk": .homeAssistant]
             store.devices = [haLight]

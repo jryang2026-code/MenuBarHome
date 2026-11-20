@@ -192,25 +192,6 @@ public final class CredentialVault: @unchecked Sendable {
         }
     }
 
-    /// Removes only the exact named slots from the shared vault item after refreshing from storage.
-    @discardableResult
-    public func deleteSlots(_ accounts: [String]) -> SlotMutationOutcome {
-        let targets = Set(accounts)
-        guard !targets.isEmpty else { return .unchanged }
-        lock.lock()
-        defer { lock.unlock() }
-        var pendingLegacyDelete: Set<String> = []
-        guard var items = loadLatestItemsForWriteUnlocked(completedLegacyAccounts: &pendingLegacyDelete) else {
-            return .unavailable
-        }
-        var changed = false
-        for account in targets where items.removeValue(forKey: account) != nil { changed = true }
-        if !changed && pendingLegacyDelete.isEmpty { state = .loaded(items); return .unchanged }
-        guard persist(items) else { return .writeFailed }
-        for legacyAccount in pendingLegacyDelete { legacy.delete(legacyAccount) }
-        return .updated
-    }
-
     private func loadLatestItemsForWriteUnlocked(completedLegacyAccounts: inout Set<String>) -> [String: Data]? {
         let wasLoaded: Bool = if case .loaded = state { true } else { false }
         loadIfNeeded(retryingUnavailable: true, completedLegacyAccounts: &completedLegacyAccounts)

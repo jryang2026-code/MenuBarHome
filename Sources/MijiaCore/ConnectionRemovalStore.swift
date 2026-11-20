@@ -156,6 +156,9 @@ public enum ConnectionRemovalStore {
         guard normalizedScope.hasPrefix("\(kind.rawValue):"), normalizedScope.count > kind.rawValue.count + 1 else {
             return nil
         }
+        if kind == .mi {
+            guard let accountId, miScope(accountId: accountId) == normalizedScope else { return nil }
+        }
         let allowed = allowedSlotsByKind[kind] ?? []
         let requested = slotNames ?? allowedSlots(for: kind)
         guard !requested.isEmpty, requested.allSatisfy({ allowed.contains($0) }) else { return nil }
@@ -242,16 +245,23 @@ public enum ConnectionRemovalStore {
     public static func executeSlotDeletion(
         record: ConnectionRemovalRecord, defaults: UserDefaults = .standard, vault: CredentialVault? = nil
     ) -> ConnectionRemovalSlotExecution {
-        if let live = find(scope: record.scope, defaults: defaults), live.ownerVersion != record.ownerVersion {
-            return .completed(reboundPreserved: true)
+        storeLock.withLock {
+            let state = readStateUnlocked(defaults: defaults).state
+            guard !state.readError else {
+                return .incomplete(reason: "removal_record_unreadable", remainingSlots: record.slotNames)
+            }
+            guard let live = state.records.first(where: { $0.scope == record.scope }),
+                  live.ownerVersion == record.ownerVersion else {
+                return .completed(reboundPreserved: true)
+            }
+            let allowed = allowedSlotsByKind[live.kind] ?? []
+            guard !live.slotNames.isEmpty, live.slotNames.allSatisfy({ allowed.contains($0) }) else {
+                return .incomplete(reason: "invalid_slot_list", remainingSlots: record.slotNames)
+            }
+            return live.kind == .ha
+                ? deleteHASlot(record: live, defaults: defaults, vault: vault)
+                : deleteMiSlot(record: live, defaults: defaults, vault: vault)
         }
-        let allowed = allowedSlotsByKind[record.kind] ?? []
-        guard !record.slotNames.isEmpty, record.slotNames.allSatisfy({ allowed.contains($0) }) else {
-            return .incomplete(reason: "invalid_slot_list", remainingSlots: record.slotNames)
-        }
-        return record.kind == .ha
-            ? deleteHASlot(record: record, defaults: defaults, vault: vault)
-            : deleteMiSlot(record: record, defaults: defaults, vault: vault)
     }
 
     private static func deleteHASlot(
@@ -261,7 +271,10 @@ public enum ConnectionRemovalStore {
         let transform: (Data?) -> (CredentialVault.SlotMutation, Bool) = { existing in
             guard let existing else { return (.keep, false) }
             guard let text = String(data: existing, encoding: .utf8) else { return (.abort("ha_token_unreadable"), false) }
-            if let expected = record.credentialFingerprint, let actual = fingerprint(haToken: text), actual != expected {
+            guard let expected = record.credentialFingerprint, let actual = fingerprint(haToken: text) else {
+                return (.abort("ha_owner_unreadable"), false)
+            }
+            if actual != expected {
                 return (.keep, true)
             }
             return (.replace(nil), false)
@@ -291,7 +304,8 @@ public enum ConnectionRemovalStore {
                 return (.abort("mi_session_unreadable"), false)
             }
             guard let target = accounts.first(where: { $0.id == targetId }) else { return (.keep, false) }
-            if let expected = record.credentialFingerprint, fingerprint(miSession: target.session) != expected {
+            guard let expected = record.credentialFingerprint else { return (.abort("mi_owner_unreadable"), false) }
+            if fingerprint(miSession: target.session) != expected {
                 return (.keep, true)
             }
             let remaining = accounts.filter { $0.id != targetId }
@@ -445,22 +459,20 @@ public enum ConnectionRemovalStore {
         guard let createdAtMs = created, let updatedAtMs = updated else { return nil }
 
         let allowed = allowedSlotsByKind[kind] ?? []
-        let slots: [String]
-        if let rawSlots = d["slotNames"] {
-            guard case .array(let items) = rawSlots, !items.isEmpty else { return nil }
-            var out: [String] = []
-            for item in items {
-                guard let name = item.stringValue, allowed.contains(name) else { return nil }
-                if !out.contains(name) { out.append(name) }
-            }
-            slots = out
-        } else { slots = allowedSlots(for: kind) }
+        guard case .array(let items) = d["slotNames"], !items.isEmpty else { return nil }
+        let slots = items.compactMap(\.stringValue)
+        guard slots.count == items.count, Set(slots).count == slots.count,
+              slots.allSatisfy({ allowed.contains($0) }) else { return nil }
 
         guard let accountId = strictOptionalText(d["accountId"], limit: 128),
               let displayName = strictOptionalText(d["displayName"], limit: 128),
               let serverURL = strictOptionalText(d["serverURL"], limit: 512),
               let fingerprint = strictOptionalText(d["credentialFingerprint"], limit: 128),
               let lastError = strictOptionalText(d["lastError"], limit: 240) else { return nil }
+
+        if kind == .mi {
+            guard let accountId, miScope(accountId: accountId) == scope else { return nil }
+        }
 
         return ConnectionRemovalRecord(
             scope: scope, kind: kind, ownerVersion: ownerVersion, createdAtMs: createdAtMs,
