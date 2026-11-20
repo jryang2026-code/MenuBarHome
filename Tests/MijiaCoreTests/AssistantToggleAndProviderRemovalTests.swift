@@ -367,6 +367,49 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(store.pendingCloudConsent == nil, "allowing it would re-grant the removed provider's consent")
     }
 
+    @Test("Removing the provider clears the served signature and displayed AI suggestions")
+    @MainActor
+    func removalResetsSuggestionCache() async throws {
+        let (store, _, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        #expect(store.maybeRefreshProactiveSuggestionsInBackground() != nil)
+        await waitUntil { transport.count == 1 }
+        transport.release(Self.chat(#"{"suggestions":[]}"#))
+        try await awaitState { store.isProactiveRecommending == false }
+        #expect(store.lastProactiveRefreshSignature != nil, "the removed provider's refresh claimed the signature")
+
+        #expect(store.removeAssistantProvider(.deepSeek))
+        #expect(store.lastProactiveRefreshSignature == nil, "a preserved signature would stop the next provider from refreshing")
+        #expect(store.aiProactiveSuggestions == nil)
+        #expect(store.assistantSuggestions == store.localTopSuggestions(), "displayed AI chips must not survive as executable suggestions")
+        // The signature reset unblocks the next provider: the fallback preset still has its
+        // sibling key, so a new background refresh may leave (that is the point of the reset).
+        #expect(store.maybeRefreshProactiveSuggestionsInBackground() != nil)
+    }
+
+    @Test("Disabling AI clears a superseded request's spinner immediately")
+    @MainActor
+    func toggleOffClearsThinkingState() async throws {
+        let (store, _, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        let task = Task { await store.runAssistantCommand("我要睡觉了") }
+        await waitUntil { transport.count == 1 }
+        #expect(store.assistantState == .thinking)
+        #expect(store.setAIAssistantEnabled(false))
+        #expect(store.assistantState == .idle, "the spinner must clear at the switch, not when the stale request returns")
+        transport.release(Self.chat(Self.powerOnPlan))
+        #expect(await task.value == nil)
+        #expect(store.assistantState == .idle, "the discarded run must not clobber the cleared state")
+    }
+
     // MARK: - Toggle write failures
 
     @Test("A refused capability-store write keeps the switch value")

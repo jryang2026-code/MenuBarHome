@@ -62,6 +62,14 @@ extension HomeStore {
         proactiveRefreshTask?.cancel()
         if !enabled {
             pendingCloudConsent = nil
+            // A spinner left over from a superseded request would keep 语音提交 locked out
+            // (SpeechInputController refuses while .thinking), so clear it here instead of
+            // waiting for the stale cloud response to return (P5a-M Codex review).
+            clearThinkingAssistantState()
+            // Suggestions and cache the AI produced stop being displayed: with the feature
+            // off they could still be tapped, and keeping the signature served would block
+            // a fresh AI refresh after re-enabling.
+            resetAISuggestionCache()
         }
         guard persistCapabilitySelection() else {
             capabilitySelection = previous
@@ -451,9 +459,21 @@ extension HomeStore {
            AssistantProviderPreset.infer(baseURL: "https://\(pending.endpoint)") == preset {
             pendingCloudConsent = nil
         }
-        // Suggestions the removed provider inferred no longer feed the suggestion cache.
-        aiProactiveSuggestions = nil
+        // The removed provider's inferred suggestions and served signature must not survive:
+        // displayed chips stay executable through applyAssistantSuggestion, and a preserved
+        // signature would stop the next provider from ever refreshing the cache (P5a-M
+        // Codex review). The spinner of a superseded request goes too.
+        resetAISuggestionCache()
+        clearThinkingAssistantState()
         return true
+    }
+
+    /// Drops the AI-served suggestion state: the cached recommendations, the ambient signature
+    /// they claimed, and the displayed chips fall back to the local Top 4.
+    private func resetAISuggestionCache() {
+        aiProactiveSuggestions = nil
+        lastProactiveRefreshSignature = nil
+        assistantSuggestions = localTopSuggestions()
     }
 
     /// Drops the UserDefaults-side bindings of one provider: the imported-key label, the
