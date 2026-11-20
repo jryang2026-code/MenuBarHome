@@ -1327,6 +1327,9 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     /// `12****89` style owner label, so the panel can tell same-named devices apart.
     public var accountLabel: String?
     public var telemetryStale: Bool
+    /// Alarm rows (`binary_sensor` gas / smoke / moisture) on a card that is not a sensor, such as
+    /// the gas row on a valve. The card keeps its own kind; these only feed `SensorAlerts`.
+    public var auxiliarySafetyObservations: [SensorObservation]
 
     public init(
         id: String,
@@ -1339,7 +1342,8 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         isSharedHome: Bool = false,
         accountId: String? = nil,
         accountLabel: String? = nil,
-        telemetryStale: Bool = false
+        telemetryStale: Bool = false,
+        auxiliarySafetyObservations: [SensorObservation] = []
     ) {
         self.id = id
         self.name = name
@@ -1352,6 +1356,14 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
         self.accountId = accountId
         self.accountLabel = accountLabel
         self.telemetryStale = telemetryStale
+        self.auxiliarySafetyObservations = auxiliarySafetyObservations
+    }
+
+    /// Every alarm reading this card feeds the sensor alerts: a sensor's own rows plus any alarm rows
+    /// on another kind of card.
+    var safetyObservations: [SensorObservation] {
+        guard case .sensor(let spec) = kind else { return auxiliarySafetyObservations }
+        return spec.observations + auxiliarySafetyObservations
     }
 
     /// Whether this device can be toggled on/off with a single primary click

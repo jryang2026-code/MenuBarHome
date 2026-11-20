@@ -813,7 +813,12 @@ public enum DeviceSynthesizer {
     ) -> SmartDevice? {
         let observations = safetyObservations(deviceId: deviceId, entities: entities, states: states)
         if var built {
-            guard case .sensor(var spec) = built.kind else { return built }
+            guard case .sensor(var spec) = built.kind else {
+                // An alarm row on another kind of card (a valve's gas row) still alerts by entity;
+                // the card keeps its own state.
+                built.auxiliarySafetyObservations = observations
+                return built
+            }
             spec.observations = observations
             built.kind = .sensor(spec)
             return built

@@ -214,13 +214,81 @@ struct HATypePruningTests {
         #expect(dropped?.hiddenDeviceIds == ["dev_leak"])
     }
 
-    @Test("A gas alarm row on a valve card keeps the valve while the gas alert is on")
+    static func gasAlerts(_ devices: [SmartDevice], _ monitor: inout SafetyMonitor) -> [SafetyAlert] {
+        monitor.evaluate(
+            devices: devices, favorites: [],
+            sensorPolicy: SensorAlertPolicy(enabled: [.gas: true], onlyWhenAway: false, includesAway: false),
+            now: Date(timeIntervalSince1970: 1_000_000)
+        ).filter { $0.id.hasPrefix("sensor:gas:") }
+    }
+
+    static func monitor() -> SafetyMonitor {
+        SafetyMonitor(defaults: UserDefaults(suiteName: "test.ha-type-pruning.\(UUID().uuidString)")!)
+    }
+
+    static func gasOn(_ attributes: [String: JSONValue] = ["device_class": .string("gas")]) -> [String: JSONValue] {
+        stateChanged("binary_sensor.gas_alarm", "on", attributes)
+    }
+
+    @Test("A gas alarm row on a valve card keeps the valve while the gas alert is on, and its alarm alerts")
     func auxiliaryAlarmRowKeepsTheCard() throws {
-        let (_, home, report) = try Self.load(Self.home, policy: Self.policy(closed: [.valve], signals: [.gas]))
+        let policy = Self.policy(closed: [.valve], signals: [.gas])
+        var (snapshot, home, report) = try Self.load(Self.home, policy: policy)
         #expect(!home.devices.contains { $0.id == "dev_valve" })
         #expect(report?.safetyDevices.map(\.id) == ["dev_valve"])
+        var monitor = Self.monitor()
+        let whileOff = Self.gasAlerts(report?.safetyDevices ?? [], &monitor)
+        #expect(whileOff.isEmpty, "off raises nothing")
+
+        let gasFrame = try snapshot.receive(Self.gasOn(), typePrunePolicy: policy)
+        #expect(gasFrame != nil)
+        let alarmingReport = snapshot.takeTypePruneReport()
+        let alarming = try #require(alarmingReport)
+        let hiddenAlerts = Self.gasAlerts(alarming.safetyDevices, &monitor)
+        #expect(hiddenAlerts.map(\.deviceId) == ["dev_valve"])
+        guard case .valve = alarming.safetyDevices.first?.kind else { Issue.record("the valve keeps its own state"); return }
+
         let (_, _, dropped) = try Self.load(Self.home, policy: Self.policy(closed: [.valve], signals: [.leak]))
         #expect(dropped?.hiddenDeviceIds == ["dev_valve"])
+
+        // Every type on, the visible valve card's gas row alerts the same way.
+        var (unpruned, visible, _) = try Self.load(Self.home, policy: .unpruned)
+        var visibleMonitor = Self.monitor()
+        let visibleOff = Self.gasAlerts(visible.devices, &visibleMonitor)
+        #expect(visibleOff.isEmpty)
+        let nextFrame = try unpruned.receive(Self.gasOn())
+        let next = try #require(nextFrame)
+        let visibleAlerts = Self.gasAlerts(next.devices, &visibleMonitor)
+        #expect(visibleAlerts.map(\.deviceId) == ["dev_valve"])
+    }
+
+    @Test("An alarm row's first state, or its first device class, re-plans the round under an unchanged policy")
+    func firstAlarmStateIsNeverSkipped() throws {
+        let policy = Self.policy(closed: [.valve], signals: [.gas])
+        let states = Self.home["states"]?.arrayValue ?? []
+        let others = states.filter { $0["entity_id"]?.stringValue != "binary_sensor.gas_alarm" }
+        let variants: [(String, [JSONValue])] = [
+            ("no state in get_states", others),
+            ("a state without a device class", others + [Self.state("binary_sensor.gas_alarm", "off")]),
+        ]
+        for (label, firstStates) in variants {
+            var root = Self.home
+            root["states"] = .array(firstStates)
+            var (snapshot, _, report) = try Self.load(root, policy: policy)
+            #expect(report?.hiddenDeviceIds == ["dev_valve"], "\(label): nothing names gas yet")
+            if label == "a state without a device class" {
+                let classless = try snapshot.receive(Self.gasOn([:]), typePrunePolicy: policy)
+                #expect(classless == nil, "an unchanged class is still skipped")
+            }
+            let home = try snapshot.receive(Self.gasOn(), typePrunePolicy: policy)
+            #expect(home != nil, "\(label): the first gas frame publishes at once")
+            let retainedReport = snapshot.takeTypePruneReport()
+            let retained = try #require(retainedReport)
+            #expect(retained.safetyDevices.map(\.id) == ["dev_valve"])
+            var monitor = Self.monitor()
+            let alerts = Self.gasAlerts(retained.safetyDevices, &monitor)
+            #expect(alerts.map(\.deviceId) == ["dev_valve"], "\(label): the alarm alerts at once")
+        }
     }
 
     @Test("A starred card of a closed type is kept only while the offline alert is on")

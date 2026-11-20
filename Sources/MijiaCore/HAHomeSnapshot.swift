@@ -106,10 +106,14 @@ struct HAHomeSnapshot {
                         rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
                     }
                 }
-                states[state.entityId] = state
+                let previous = states.updateValue(state, forKey: state.entityId)
+                // The plan classified the entity from its last state. A first state or a new device
+                // class (a gas row naming itself) can give the card an enabled alert, so re-plan.
                 if pendingInitialResults.isEmpty,
                    appliedPrunePolicy == typePrunePolicy,
-                   unconsumedEntityIds.contains(state.entityId) {
+                   unconsumedEntityIds.contains(state.entityId),
+                   let previous,
+                   previous.attributes["device_class"] == state.attributes["device_class"] {
                     return nil
                 }
             } else if data["new_state"] == .null {
