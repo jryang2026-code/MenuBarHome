@@ -355,9 +355,14 @@ export function loadSettings(): LoadedSettings {
         voiceInputEnabled:
           typeof parsed.voiceInputEnabled === "boolean" ? parsed.voiceInputEnabled : true,
         // Same rule as voice: only an explicit `false` turns AI off, so every upgrade keeps
-        // the assistant behavior the user had before P5a-W.
-        aiAssistantEnabled:
-          typeof parsed.aiAssistantEnabled === "boolean" ? parsed.aiAssistantEnabled : true,
+        // the assistant behavior the user had before P5a-W. A missing field stays undefined so
+        // the fresh-install default (P5b-W) can still be filled in; upgrades read it as on.
+        ...(typeof parsed.aiAssistantEnabled === "boolean" ? { aiAssistantEnabled: parsed.aiAssistantEnabled } : {}),
+        // 主动建议 (P5b-W): same explicit-`false` rule; undefined means "never chosen", which the
+        // manifest's `defaultOnFreshInstall` resolves at startup.
+        ...(typeof parsed.proactiveSuggestionsEnabled === "boolean"
+          ? { proactiveSuggestionsEnabled: parsed.proactiveSuggestionsEnabled }
+          : {}),
         enableRaycastIntegration:
           typeof parsed.enableRaycastIntegration === "boolean" ? parsed.enableRaycastIntegration : false,
         allowDirectURLControl:
@@ -456,7 +461,6 @@ function buildDefaultSettings(): PersistedSettings {
     launchAtLogin: false,
     blockControlWhileLocked: true,
     voiceInputEnabled: true,
-    aiAssistantEnabled: true,
     enableRaycastIntegration: false,
     allowDirectURLControl: false,
     cameraStreamURLs: {},

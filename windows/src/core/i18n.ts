@@ -423,6 +423,8 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "AI 一句话控制": ["AI 一句话控制", "AI command control"],
   "AI 一句话控制已关闭，指令只在本机解析；可在设置中重新开启。": ["AI 一句话控制已关闭，指令只在本机解析；可在设置中重新开启。", "AI command control is off; commands are parsed on this PC only. Re-enable it in Settings."],
   "关闭后，指令只在本机解析，不再发送 AI 请求；已保存的服务商配置与密钥保留。": ["关闭后，指令只在本机解析，不再发送 AI 请求；已保存的服务商配置与密钥保留。", "When off, commands are parsed on this PC and no AI requests are sent; saved provider configs and keys are kept."],
+  "主动建议": ["主动建议", "Proactive suggestions"],
+  "关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。": ["关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。", "When off, the panel shows no suggestions and makes no background inference for them; safety alerts, undo and timers keep running."],
   "移除此服务商的本机配置与密钥": ["移除此服务商的本机配置与密钥", "Remove this provider's saved config and key"],
   "只移除当前服务商保存的密钥、端点绑定与云端授权；其他服务商的密钥与绑定保留。": ["只移除当前服务商保存的密钥、端点绑定与云端授权；其他服务商的密钥与绑定保留。", "Removes only this provider's saved key, endpoint binding and cloud consent; other providers' keys and bindings are kept."],
   "再点一次确认移除": ["再点一次确认移除", "Click again to confirm removal"],
