@@ -1,0 +1,8 @@
+◇ Test run started.
+✘ Test "Case 1" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test "Case 2" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test "Case 3" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test "Case 4" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test "Case 5" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test "Case 6" recorded an issue at FixtureTests.swift:6:9: Expectation failed
+✘ Test run with 6 tests in 1 suite failed after 3.4 seconds with 6 issues.

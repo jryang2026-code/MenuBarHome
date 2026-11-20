@@ -1,0 +1,12 @@
+[
+  {
+    "number": 308,
+    "title": "test(core): LG 重置配对被拒用例的连接基线断言间歇失败",
+    "body": "失败断言：`Tests/MijiaCoreTests/CredentialSaveAndRegionTests.swift:337`，用例 \"resetLGWebOSTrustAndPair refusal preserves the pinned TLS certificate, pairing key, and active client connection\"。"
+  },
+  {
+    "number": 275,
+    "title": "无关的 open 票",
+    "body": "这条票既不提用例名，也不提文件名。"
+  }
+]

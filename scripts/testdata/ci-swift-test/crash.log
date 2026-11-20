@@ -1,0 +1,4 @@
+◇ Test run started.
+◇ Test "Flaky cover case" started.
+✘ Test "Flaky cover case" recorded an issue at FixtureTests.swift:6:9: Expectation failed: (cover → .closed) == .open
+error: Process '/tmp/FixturePackageTests.xctest/Contents/MacOS/FixturePackageTests --testing-library swift-testing' exited with unexpected signal code 6

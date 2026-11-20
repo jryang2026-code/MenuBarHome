@@ -353,6 +353,8 @@ run_script_self_tests() {
         run_clean_env bash scripts/test_nas_setup.sh
         run_clean_env bash scripts/test_merge_pr.sh
         run_clean_env bash scripts/test_ci_errors.sh
+        run_clean_env bash scripts/test_ci_failures.sh
+        run_clean_env bash scripts/test_ci_swift_test.sh
         run_clean_env "$PYTHON_BIN" scripts/test_check_windows_test_timeouts.py
         run_clean_env bash scripts/test_harness_tools.sh
     fi
