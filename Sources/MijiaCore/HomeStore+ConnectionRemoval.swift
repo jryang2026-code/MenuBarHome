@@ -21,6 +21,44 @@ extension HomeStore {
         if pendingConnectionRemovals != state.records { pendingConnectionRemovals = state.records }
     }
 
+    static let corruptConnectionRemovalDiagnostic = "corrupt_connection_removal"
+
+    /// True only when the unreadable removal record is the sole reason identity is uncertain.
+    /// The launch diagnostic records the first failure only, so the later vault checks are re-run here.
+    public var canDiscardCorruptConnectionRemovalRecord: Bool {
+        hasCorruptConnectionRemovalState
+            && identityMigrationDiagnostic == Self.corruptConnectionRemovalDiagnostic
+            && identityReadFailureIgnoringRemovalRecord() == nil
+    }
+
+    private func identityReadFailureIgnoringRemovalRecord() -> String? {
+        if !CapabilitySelectionStore.canPersist(defaults: userDefaults) { return "corrupt_capability_selection" }
+        let checkMiVault = credentialVault != nil || (!isTestEnvironment && userDefaults === UserDefaults.standard)
+        if checkMiVault, case .unavailable = MiSessionStore.loadAccountsResult(
+            defaults: userDefaults, vault: credentialVault, migrateLegacyEnvelope: false
+        ) { return "mi_accounts_unavailable" }
+        let needsHAToken = homeBackend != .demo && (!usesInjectedProvider || credentialVault != nil)
+        if needsHAToken, KeychainHelper.isTokenVaultUnavailable(defaults: userDefaults, vault: credentialVault) {
+            return "ha_token_unavailable"
+        }
+        return nil
+    }
+
+    /// Settings → 未完成移除 → 放弃损坏记录. Removes only the unreadable record (after confirming its
+    /// quarantine copy), never a credential slot, then re-runs identity reads so accounts reappear.
+    /// Connections the record meant to remove must be removed again by the user.
+    @discardableResult
+    public func discardCorruptConnectionRemovalRecord() -> Bool {
+        syncPendingConnectionRemovals()
+        guard canDiscardCorruptConnectionRemovalRecord else { return false }
+        guard ConnectionRemovalStore.discardCorruptPayload(defaults: userDefaults) else {
+            showToast(L10n.tr("无法放弃损坏的移除记录，请稍后重试", "Could not discard the damaged removal record; try again later"), isError: true)
+            return false
+        }
+        syncPendingConnectionRemovals()
+        return retryIdentityMigration()
+    }
+
     func loadActiveMiAccounts() -> [MiAccount] {
         guard !hasCorruptConnectionRemovalState else { return [] }
         let blocked = pendingMiRemovalScopes
@@ -92,6 +130,12 @@ extension HomeStore {
         syncPendingConnectionRemovals()
         if let pending = pendingConnectionRemovals.first(where: { $0.kind == .ha }) {
             return await retryConnectionRemoval(scope: pending.scope)
+        }
+        // Without a readable token the record would carry no owner fingerprint and every retry would
+        // abort on `ha_owner_unreadable`; refuse before writing anything so the user can simply retry.
+        if KeychainHelper.isTokenVaultUnavailable(defaults: userDefaults, vault: credentialVault, retryingUnavailable: true) {
+            showToast(L10n.tr("暂时无法读取钥匙串，未移除连接，请授权钥匙串访问后重试", "Keychain is unavailable; the connection was not removed. Allow Keychain access and try again"), isError: true)
+            return .incomplete(reason: "keychain_unavailable", remainingSlots: [KeychainHelper.tokenAccount])
         }
         if isHAConnectionEnabled, let stop = preflightDeactivation(
             preview: previewSetHAConnectionEnabled(false), pauseConfirmed: pauseConfirmed,
@@ -170,10 +214,19 @@ extension HomeStore {
         guard !isRemovingConnectionScopes.contains(scope) else {
             return .incomplete(reason: "removal_in_progress", remainingSlots: existing.slotNames)
         }
+        var fingerprint = existing.credentialFingerprint
+        if fingerprint == nil, existing.kind == .ha {
+            // Records written before the vault pre-check may lack the owner. HA saves stay blocked while a
+            // removal is pending, so the token readable now is the one the removal targeted.
+            guard !KeychainHelper.isTokenVaultUnavailable(defaults: userDefaults, vault: credentialVault, retryingUnavailable: true) else {
+                return .incomplete(reason: "keychain_unavailable", remainingSlots: existing.slotNames)
+            }
+            fingerprint = ConnectionRemovalStore.fingerprint(haToken: KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault))
+        }
         guard let refreshed = ConnectionRemovalStore.beginRemoval(
             kind: existing.kind, scope: existing.scope, accountId: existing.accountId,
             displayName: existing.displayName, serverURL: existing.serverURL,
-            slotNames: existing.slotNames, credentialFingerprint: existing.credentialFingerprint,
+            slotNames: existing.slotNames, credentialFingerprint: fingerprint,
             stage: .draining, defaults: userDefaults
         ) else {
             return .incomplete(reason: "removal_record_write_failed", remainingSlots: existing.slotNames)

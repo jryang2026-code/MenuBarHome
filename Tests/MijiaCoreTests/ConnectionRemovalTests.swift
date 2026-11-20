@@ -321,21 +321,134 @@ struct ConnectionRemovalTests {
         #expect(vault.lookup("assistant_api_key_openai") == .value(Data("sk-openai".utf8)))
     }
 
-    @Test("A removal without a captured owner preserves credentials that appear later")
+    @Test("HA removal with an unreadable token vault writes no record and succeeds on retry once readable")
     @MainActor
-    func removalWithoutOwnerFailsClosed() throws {
-        let (suite, defaults) = try Self.makeSuite("missing-owner")
+    func haRemovalWithUnreadableVaultStaysRetryable() async throws {
+        let (suite, defaults) = try Self.makeSuite("unreadable-vault")
         defer { defaults.removePersistentDomain(forName: suite) }
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        let record = try #require(ConnectionRemovalStore.beginRemoval(
-            kind: .ha, scope: ConnectionRemovalStore.haScope(serverURL: Self.haURL),
+        // A legacy per-account HA item whose read is declined: identity stays certain in demo,
+        // but the token cannot be fingerprinted yet.
+        let legacy = MemoryLegacyItems([KeychainHelper.tokenAccount: Data("ha-secret-tok".utf8)], unreadable: [KeychainHelper.tokenAccount])
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage, legacy: legacy.legacy)
+        defaults.set(Self.haURL, forKey: "ha_server_url")
+        defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
+        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault, miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+        store.toastAutoDismissInterval = nil
+        #expect(!store.isIdentityUncertain)
+
+        let refused = await store.removeHomeAssistantConnection()
+        #expect(refused == .incomplete(reason: "keychain_unavailable", remainingSlots: [KeychainHelper.tokenAccount]))
+        #expect(defaults.object(forKey: ConnectionRemovalStore.storageKey) == nil)
+        #expect(store.pendingConnectionRemovals.isEmpty)
+        #expect(store.toastNotice?.isError == true)
+
+        legacy.allow(KeychainHelper.tokenAccount)
+        #expect(await store.removeHomeAssistantConnection() == .completed)
+        #expect(vault.lookup(KeychainHelper.tokenAccount) == .missing)
+        #expect(ConnectionRemovalStore.readState(defaults: defaults).records.isEmpty)
+    }
+
+    @Test("A pending HA record without an owner fingerprint recaptures it on retry and finishes")
+    @MainActor
+    func ownerlessHARecordRecapturesFingerprintOnRetry() async throws {
+        let (suite, defaults) = try Self.makeSuite("ownerless-retry")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        try Self.seedAllSlots(vault: vault, defaults: defaults)
+        defaults.set(Self.haURL, forKey: "ha_server_url")
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        let haScope = ConnectionRemovalStore.haScope(serverURL: Self.haURL)
+        try #require(ConnectionRemovalStore.beginRemoval(
+            kind: .ha, scope: haScope, serverURL: Self.haURL, stage: .failed, error: "keychain_unavailable",
             nowMs: Int64(Self.fixedNow.timeIntervalSince1970 * 1000), defaults: defaults
-        ))
-        let token = Data("replacement-token".utf8)
-        #expect(vault.set(token, for: KeychainHelper.tokenAccount))
-        #expect(ConnectionRemovalStore.executeSlotDeletion(record: record, defaults: defaults, vault: vault)
-            == .incomplete(reason: "ha_owner_unreadable", remainingSlots: [KeychainHelper.tokenAccount]))
-        #expect(vault.lookup(KeychainHelper.tokenAccount) == .value(token))
+        )?.credentialFingerprint == nil)
+
+        let store = HomeStore(defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage), miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+        store.toastAutoDismissInterval = nil
+        #expect(store.homeAssistantScopeIdentifier == haScope)
+        #expect(await store.retryConnectionRemoval(scope: haScope) == .completed)
+        let reread = CredentialVault(storage: mem.storage)
+        #expect(reread.lookup(KeychainHelper.tokenAccount) == .missing)
+        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: reread).count == 2)
+        #expect(reread.lookup("assistant_api_key_openai") == .value(Data("sk-openai".utf8)))
+        #expect(ConnectionRemovalStore.readState(defaults: defaults).records.isEmpty)
+    }
+
+    @Test("Relaunch after a crash between slot deletion and record clear converges without errors or extra deletions")
+    @MainActor
+    func halfDeletedCleaningRecordsConvergeOnRelaunch() async throws {
+        let (suite, defaults) = try Self.makeSuite("half-deleted")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        try Self.seedAllSlots(vault: vault, defaults: defaults)
+        defaults.set(Self.haURL, forKey: "ha_server_url")
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        let nowMs = Int64(Self.fixedNow.timeIntervalSince1970 * 1000)
+        try #require(ConnectionRemovalStore.beginRemoval(
+            kind: .ha, scope: ConnectionRemovalStore.haScope(serverURL: Self.haURL), serverURL: Self.haURL,
+            credentialFingerprint: ConnectionRemovalStore.fingerprint(haToken: "ha-secret-tok"),
+            stage: .cleaning, nowMs: nowMs, defaults: defaults
+        ) != nil)
+        try #require(ConnectionRemovalStore.beginRemoval(
+            kind: .mi, scope: Self.accB.id, accountId: Self.accB.id,
+            credentialFingerprint: ConnectionRemovalStore.fingerprint(miSession: Self.sessionB),
+            stage: .cleaning, nowMs: nowMs, defaults: defaults
+        ) != nil)
+        // The crash hit after both slots were rewritten but before either record was cleared.
+        #expect(vault.set(nil, for: KeychainHelper.tokenAccount))
+        #expect(MiSessionStore.saveAccounts([Self.accA], defaults: defaults, vault: vault))
+        let slotsAfterCrash = try #require(mem.storedItems)
+
+        let restarted = HomeStore(defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage), miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+        restarted.toastAutoDismissInterval = nil
+        restarted.assistantNow = { Self.fixedNow }
+        #expect(!restarted.isIdentityUncertain)
+        try await awaitState { restarted.pendingConnectionRemovals.isEmpty && restarted.isRemovingConnectionScopes.isEmpty }
+        #expect(ConnectionRemovalStore.readState(defaults: defaults).records.isEmpty)
+        #expect(restarted.toastNotice?.isError != true)
+        #expect(mem.storedItems == slotsAfterCrash)
+        #expect(restarted.miAccounts.map(\.id) == [Self.accA.id])
+        #expect(!restarted.hasHASource)
+    }
+
+    @Test("Re-scanning the same Xiaomi account while its removal drains is refused and leaves the vault untouched")
+    @MainActor
+    func sameAccountRescanDuringDrainIsRefused() async throws {
+        let (suite, defaults) = try Self.makeSuite("rescan-during-drain")
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        try Self.seedAllSlots(vault: vault, defaults: defaults)
+        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault, miAccountsProviderFactory: Self.stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+        store.toastAutoDismissInterval = nil
+        store.assistantNow = { Self.fixedNow }
+
+        let (entered, enteredCont) = AsyncStream<Void>.makeStream()
+        let (release, releaseCont) = AsyncStream<Void>.makeStream()
+        store.connectionRemovalBeforeSlotDeleteHook = { _ in
+            enteredCont.yield(())
+            var it = release.makeAsyncIterator()
+            _ = await it.next()
+        }
+        let removal = Task { await store.removeMiAccount(id: Self.accB.id) }
+        var enteredIt = entered.makeAsyncIterator()
+        _ = await enteredIt.next()
+
+        let slotsDuringDrain = try #require(mem.storedItems)
+        let rescanned = MiSession(userId: "20002", cUserId: "c2", ssecurity: "sec-b-rescan", serviceToken: "tok-b-rescan", region: "sg", expiresAt: Date(timeIntervalSince1970: 4_000_000_000))
+        #expect(!store.completeMiLogin(rescanned))
+        #expect(store.toastNotice?.isError == true)
+        #expect(mem.storedItems == slotsDuringDrain)
+        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: vault).map(\.session) == [Self.sessionA, Self.sessionB])
+
+        releaseCont.yield(())
+        releaseCont.finish()
+        enteredCont.finish()
+        #expect(await removal.value == .completed)
+        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: vault).map(\.id) == [Self.accA.id])
+        #expect(vault.lookup("assistant_api_key_openai") == .value(Data("sk-openai".utf8)))
     }
 
     @Test("Uncertain identity blocks all connection removals with zero deletions; pause confirmation gates active timers")

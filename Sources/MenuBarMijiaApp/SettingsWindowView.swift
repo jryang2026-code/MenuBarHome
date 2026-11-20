@@ -1388,6 +1388,7 @@ private struct ConnectionSettingsTab: View {
     @State private var pendingHADisableConfirmation: HADisableConnectionConfirmation?
     @State private var haRemovalPreview: ConnectionRemovalPreview?
     @State private var showHARemovalDetails = false
+    @State private var confirmsDiscardCorruptRemoval = false
     @State private var pendingHARemovalPauseConfirmation: HADisableConnectionConfirmation?
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
@@ -1789,6 +1790,39 @@ private struct ConnectionSettingsTab: View {
         }
     }
 
+    private var corruptRemovalDiscardRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(L10n.tr(
+                "放弃后已保存的凭据保持不变，原先想移除的连接需要重新发起移除。",
+                "Saved credentials stay as they are. Any connection you meant to remove must be removed again."
+            ))
+            .font(.system(size: DesignTokens.TypeSize.caption))
+            .foregroundStyle(.primary.opacity(0.9))
+            .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button(L10n.tr("放弃损坏记录", "Discard Damaged Record")) {
+                confirmsDiscardCorruptRemoval = true
+            }
+            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+        }
+        .alert(L10n.tr("放弃损坏的移除记录？", "Discard the damaged removal record?"), isPresented: $confirmsDiscardCorruptRemoval) {
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
+            Button(L10n.tr("放弃记录", "Discard Record"), role: .destructive) {
+                let reloadsToken = tokenDraft == haBaselineToken
+                guard store.discardCorruptConnectionRemovalRecord(), reloadsToken else { return }
+                let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+                tokenDraft = initialHAToken.token
+                tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
+                haBaselineToken = tokenDraft
+            }
+        } message: {
+            Text(L10n.tr(
+                "只删除这条无法读取的记录（原始数据已另存备份），不会删除任何米家会话、Home Assistant 钥匙或 AI 密钥。之后账号会恢复显示；如仍想移除某个连接，请重新发起移除。",
+                "Only this unreadable record is deleted (a backup of the raw data is kept). No Xiaomi session, Home Assistant token, or AI key is deleted. Accounts reappear afterwards; to remove a connection, start the removal again."
+            ))
+        }
+    }
+
     @ViewBuilder
     private var pendingConnectionRemovalsSection: some View {
         SettingsSection(title: L10n.tr("未完成移除", "Unfinished Removals")) {
@@ -1796,13 +1830,18 @@ private struct ConnectionSettingsTab: View {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text(L10n.tr(
-                        "连接移除记录已损坏，已隔离原始数据并暂停相关凭据写入与重连，避免误删或误恢复。",
-                        "The connection removal record is unreadable. Raw data was quarantined and credential saves/reconnects stay blocked fail-closed."
-                    ))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.primary.opacity(0.9))
-                    .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(L10n.tr(
+                            "连接移除记录已损坏，已隔离原始数据并暂停相关凭据写入与重连，避免误删或误恢复。",
+                            "The connection removal record is unreadable. Raw data was quarantined and credential saves/reconnects stay blocked fail-closed."
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.primary.opacity(0.9))
+                        .fixedSize(horizontal: false, vertical: true)
+                        if store.canDiscardCorruptConnectionRemovalRecord {
+                            corruptRemovalDiscardRow
+                        }
+                    }
                 }
             }
             ForEach(store.pendingConnectionRemovals) { record in

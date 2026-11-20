@@ -1932,6 +1932,31 @@ struct SnapshotTests {
         }
     }
 
+    @Test("Connection settings offer discarding a corrupt removal record when it is the only identity failure")
+    func settingsConnectionCorruptRemovalSnapshots() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer {
+            fixture.store.userDefaults.removeObject(forKey: ConnectionRemovalStore.storageKey)
+            fixture.store.userDefaults.removeObject(forKey: ConnectionRemovalStore.unreadableKeyPrefix)
+            fixture.restore()
+        }
+        fixture.store.userDefaults.set(Data("{broken-removal-json".utf8), forKey: ConnectionRemovalStore.storageKey)
+        #expect(!fixture.store.retryIdentityMigration())
+        #expect(fixture.store.canDiscardCorruptConnectionRemovalRecord)
+        fixture.store.dismissToast()
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                SettingsWindowView(store: fixture.store, selectedTab: .connection)
+                    .environment(\.colorScheme, scheme)
+                    .environment(\.reduceMotionOverride, true)
+                    .environment(\.reduceTransparencyOverride, true),
+                size: CGSize(width: 780, height: 680),
+                named: "settings-connection-corrupt-removal-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("Panel renders healthy Devices synced footer in dual-source when Home Assistant is disabled and Xiaomi stays online")
     func panelDualSourceHADisabledMiOnlineSnapshot() async throws {
         let fixture = try await SnapshotFixture(

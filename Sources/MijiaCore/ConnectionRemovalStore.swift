@@ -136,6 +136,20 @@ public enum ConnectionRemovalStore {
         }
     }
 
+    /// Drops an unreadable removal payload only after a byte-identical quarantine copy is confirmed.
+    /// Touches no credential slot. Returns false when the payload is readable or the copy cannot be confirmed.
+    @discardableResult
+    public static func discardCorruptPayload(defaults: UserDefaults = .standard) -> Bool {
+        storeLock.withLock {
+            let read = readStateUnlocked(defaults: defaults)
+            guard read.state.readError, let raw = read.state.corruptData else { return false }
+            let key = storeQuarantineCopyUnlocked(raw, defaults: defaults)
+            guard defaults.data(forKey: key) == raw else { return false }
+            defaults.removeObject(forKey: storageKey)
+            return defaults.object(forKey: storageKey) == nil
+        }
+    }
+
     // MARK: - State Transitions
 
     @discardableResult
@@ -415,7 +429,10 @@ public enum ConnectionRemovalStore {
         let rawData: Data
         if let data = rawObject as? Data { rawData = data }
         else if let str = rawObject as? String { rawData = Data(str.utf8) }
-        else { return corruptEnvelope(Data("non-data-removal-payload".utf8)) }
+        else {
+            let archived = try? PropertyListSerialization.data(fromPropertyList: rawObject, format: .binary, options: 0)
+            return corruptEnvelope(archived ?? Data("non-data-removal-payload".utf8))
+        }
 
         guard let root = try? JSONDecoder().decode(JSONValue.self, from: rawData),
               case .object(let dict) = root,
