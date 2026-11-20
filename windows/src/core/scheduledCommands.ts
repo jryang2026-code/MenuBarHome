@@ -292,14 +292,23 @@ export class ScheduledCommandStore {
     return false;
   }
 
-  /** True while at least one entry is still held by the timer switch. */
-  hasFeaturePause(): boolean {
-    for (const queue of this.sources.values()) {
+  /**
+   * Queues that still hold this switch's pause reason. A queue whose source is not active keeps the
+   * reason until that source is back, so its timers cannot be released without a revalidation.
+   */
+  featurePausedIdentities(): string[] {
+    const identities: string[] = [];
+    for (const [identity, queue] of this.sources) {
       if ((queue.pausedScheduledCommands ?? []).some((entry) => entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON))) {
-        return true;
+        identities.push(identity);
       }
     }
-    return false;
+    return identities;
+  }
+
+  /** True while at least one entry is still held by the timer switch. */
+  hasFeaturePause(): boolean {
+    return this.featurePausedIdentities().length > 0;
   }
 
   /**
@@ -307,11 +316,14 @@ export class ScheduledCommandStore {
    * disabled device type, a disabled account or connection) keeps holding the entry, and the
    * caller's revalidation decides between waiting and missed afterwards.
    *
+   * `identities` limits the release to queues whose source was verified in this pass.
+   *
    * Returns whether anything changed.
    */
-  releaseFeaturePause(): boolean {
+  releaseFeaturePause(identities?: ReadonlySet<string>): boolean {
     let changed = false;
-    for (const queue of this.sources.values()) {
+    for (const [identity, queue] of this.sources) {
+      if (identities !== undefined && !identities.has(identity)) continue;
       const paused = queue.pausedScheduledCommands ?? [];
       if (!paused.some((entry) => entry.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON))) continue;
       queue.pausedScheduledCommands = paused.map((entry) =>

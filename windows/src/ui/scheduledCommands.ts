@@ -71,6 +71,10 @@ export function markTimerSnapshotReady(host: MenuMijiaWindowsApp): void {
 }
 
 export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
+  // Captured before the resume: a deferred resume can move overdue entries into the missed queue in
+  // this very tick, and those rows need the same render/assistant-bar treatment as a due timer.
+  const waitingBefore = host.scheduledCommands.length;
+  const missedBefore = host.missedScheduledCommands.length;
   if (!isScheduledCommandsEnabled(host.settings)) {
     // Nothing fires and nothing is caught up while the switch is off. The park below is idempotent:
     // it also catches a waiting entry that appeared while the switch was already off (an older build
@@ -83,8 +87,6 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
   if (host.scheduledCommandStore.hasFeaturePause() && !resumeScheduledCommandsAfterEnable(host, nowMs)) {
     return false;
   }
-  const count = host.scheduledCommands.length;
-  const missed = host.missedScheduledCommands.length;
   const knownTargetIds = new Set<string>([
     ...host.devices.map((device) => device.id),
     ...host.scenes.map((scene) => scene.id),
@@ -99,12 +101,12 @@ export function processScheduledCommands(host: MenuMijiaWindowsApp, nowMs = Date
     timerStorageFailure(host);
     return true;
   }
-  if (host.missedScheduledCommands.length > missed) {
+  if (host.missedScheduledCommands.length > missedBefore) {
     host.isShowingAssistantBar = true;
     host.queueBackgroundRender();
   }
   for (const item of run) void host.runScheduledCommand(item);
-  return count > 0 || host.missedScheduledCommands.length !== missed;
+  return waitingBefore > 0 || host.missedScheduledCommands.length !== missedBefore;
 }
 
 /**
@@ -177,10 +179,22 @@ export function setScheduledCommandsRunning(
  * timers back on must not re-enable automation rules.
  */
 export function resumeScheduledCommandsAfterEnable(host: MenuMijiaWindowsApp, nowMs = Date.now()): boolean {
-  if (!host.scheduledCommandStore.hasFeaturePause()) return true;
+  const activeIdentity = scheduledCommandIdentity(host.settings);
+  const activeScope = activeIdentity === null ? null : parseTimerIdentityScope(activeIdentity);
+  // Only queues of the current source can be verified now. A queue whose own source is inactive keeps
+  // the switch's reason: releasing it here would leave those entries paused with no owner to retry
+  // them, so they would never come back after switching back to that source.
+  const releasable = new Set(
+    host.scheduledCommandStore.featurePausedIdentities().filter(
+      (identity) =>
+        identity === activeIdentity ||
+        (activeScope !== null && parseTimerIdentityScope(identity) === activeScope),
+    ),
+  );
+  if (releasable.size === 0) return true;
   if (!scheduledCommandsReady(host)) return false;
   const snapshot = host.scheduledCommandStore.snapshotQueues();
-  host.scheduledCommandStore.releaseFeaturePause();
+  host.scheduledCommandStore.releaseFeaturePause(releasable);
   if (!host.scheduledCommandStore.persist()) {
     host.scheduledCommandStore.restoreQueues(snapshot);
     return false;
@@ -247,6 +261,7 @@ export async function confirmMissedScheduledCommand(
     }
   }
   const identity = scheduledCommandIdentity(host.settings);
+  const generation = scheduledCommandsGeneration(host);
 
   const needsNativeLockProbe =
     host.settings.blockControlWhileLocked &&
@@ -257,7 +272,14 @@ export async function confirmMissedScheduledCommand(
     return;
   }
 
-  // Everything below runs without an `await`, so nothing can change underneath the removal.
+  // Everything below runs without an `await`, so nothing can change underneath the removal. The
+  // switch and its generation are rechecked here too: turning timers off during the lock probe must
+  // keep the entry for a later run instead of consuming it into a refused execution.
+  if (!isScheduledCommandsEnabled(host.settings) || scheduledCommandsGeneration(host) !== generation) {
+    host.replyBanner = { text: t("定时任务已关闭，开启后才能执行这条定时"), source: t("定时任务"), isError: true };
+    host.render();
+    return;
+  }
   if (!scheduledCommandsReady(host) || scheduledCommandIdentity(host.settings) !== identity) {
     host.replyBanner = { text: t("请等待设备同步完成后再执行定时指令"), source: t("定时任务"), isError: true };
     host.render();

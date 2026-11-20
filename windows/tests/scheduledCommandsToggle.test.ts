@@ -290,6 +290,79 @@ describe("Timer switch: back on", () => {
     assert.deepEqual(instance.scheduledCommands.map((entry) => entry.id), ["retry"]);
   });
 
+  it("keeps the switch's reason on a queue whose source is inactive until that source returns", () => {
+    const instance = app();
+    // A timer queue of a source that is not the active one (e.g. the user switched to HA).
+    const miIdentity = JSON.stringify(["xiaomiCloud", "10001", "cn"]);
+    const foreign = instance.scheduledCommandStore.queue(miIdentity);
+    foreign.scheduledCommands.push(timer("mi-timer", now + 600_000));
+    instance.scheduledCommandStore.persist();
+    setScheduledCommandsRunning(instance, false);
+    assert.deepEqual(
+      foreign.pausedScheduledCommands?.map((entry) => [entry.command.id, entry.pausedCapabilities]),
+      [["mi-timer", [TIMER_FEATURE_PAUSE_REASON]]],
+    );
+
+    // Turning timers on for the demo home cannot verify the Mi queue, so its reason stays. Dropping it
+    // here would strand the entry with no owner left to retry it after switching back.
+    assert.equal(setScheduledCommandsRunning(instance, true), true);
+    assert.deepEqual(foreign.pausedScheduledCommands?.map((entry) => entry.pausedCapabilities), [
+      [TIMER_FEATURE_PAUSE_REASON],
+    ]);
+    assert.equal(foreign.scheduledCommands.length, 0);
+
+    // Back on the Mi source the queue is verified and classified again.
+    instance.settings.connectionMode = "xiaomiCloud";
+    instance.settings.miSession = {
+      userId: "10001", cUserId: "", serviceToken: "tok", ssecurity: "sec", passToken: "", region: "cn",
+    };
+    instance.timerCredentialsReady = true;
+    instance.timerSnapshot = { identity: miIdentity, sourceRevision: instance.sourceRevision };
+    processScheduledCommands(instance, now + 1000);
+    assert.deepEqual(foreign.pausedScheduledCommands?.map((entry) => entry.pausedCapabilities), []);
+    assert.equal(foreign.scheduledCommands.length + foreign.missedScheduledCommands.length, 1);
+  });
+
+  it("reports the missed rows a deferred resume creates on the same tick", () => {
+    const instance = app();
+    instance.scheduledCommands.push(timer("late", now - 1000));
+    setScheduledCommandsRunning(instance, false);
+
+    const realPersist = instance.scheduledCommandStore.persist.bind(instance.scheduledCommandStore);
+    instance.scheduledCommandStore.persist = () => false;
+    assert.equal(setScheduledCommandsRunning(instance, true), true, "the switch flips even when the resume write fails");
+    instance.scheduledCommandStore.persist = realPersist;
+    assert.equal(instance.missedScheduledCommands.length, 0);
+    assert.equal(processScheduledCommands(instance, now), true, "the tick must report the newly missed timer");
+    assert.deepEqual(instance.missedScheduledCommands.map((entry) => entry.id), ["late"]);
+    assert.equal(instance.isShowingAssistantBar, true);
+  });
+
+  it("keeps the missed entry when the switch closes during the lock probe", async () => {
+    const instance = app();
+    instance.missedScheduledCommands.push(timer("probe", now - 5000));
+    instance.scheduledCommandStore.persist();
+    const calls = fakeExecutor(instance);
+    instance.settings.blockControlWhileLocked = true;
+    let releaseLock: (value: boolean) => void = () => {};
+    const lockProbe = new Promise<boolean>((resolve) => {
+      releaseLock = resolve;
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async (command: string) => (command === "is_workstation_locked" ? lockProbe : undefined) },
+      configurable: true,
+    });
+
+    const run = confirmMissedScheduledCommand(instance, "probe");
+    await setImmediate();
+    assert.equal(setScheduledCommandsRunning(instance, false), true);
+    releaseLock(false);
+    await run;
+    assert.deepEqual(instance.missedScheduledCommands.map((entry) => entry.id), ["probe"]);
+    assert.equal(calls.length, 0);
+    assert.match(instance.replyBanner?.text ?? "", /定时任务已关闭/);
+  });
+
   it("does not release a pause another owner still holds, and its own release does not either", () => {
     const instance = app();
     const entry = {
