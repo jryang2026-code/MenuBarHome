@@ -21,7 +21,7 @@ import {
   inferAssistantPreset,
   isProactiveSuggestionsEnabled,
 } from "../core/assistant.js";
-import { applyFreshInstallFeatureSwitches } from "../core/freshInstallDefaults.js";
+import { applyFreshInstallFeatureSwitches, isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
@@ -754,6 +754,7 @@ export interface ResumeRecoveryHost {
   readonly settings: {
     readonly connectionMode: string;
     readonly miSession: unknown;
+    readonly eventAutomationEnabled?: boolean;
   };
   readonly activeSheet: string;
   readonly isSyncingCloud: boolean;
@@ -1011,6 +1012,7 @@ interface HostLifecycleState {
   keyDisposers: Array<() => void>;
   recoveryController: ResumeRecoveryController | null;
   recoveryDisposers: Array<() => void>;
+  syncAutomationListeners?: () => void;
 }
 
 const hostLifecycles = new WeakMap<object, HostLifecycleState>();
@@ -1036,6 +1038,7 @@ function clearKeyListeners(state: HostLifecycleState): void {
 }
 
 function clearRecoveryListeners(state: HostLifecycleState): void {
+  state.syncAutomationListeners = undefined;
   state.recoveryController?.dispose();
   state.recoveryController = null;
   for (const stop of state.recoveryDisposers.splice(0)) stop();
@@ -1072,6 +1075,10 @@ function listen(
 ): () => void {
   target.addEventListener(type, handler);
   return () => target.removeEventListener(type, handler);
+}
+
+export function syncAutomationLifecycle(host: object): void {
+  hostLifecycles.get(host)?.syncAutomationListeners?.();
 }
 
 export function bindLifecycleRecovery(
@@ -1157,16 +1164,30 @@ export function bindLifecycleRecovery(
     notifyDisplayPowerChanged(host, detail?.asleep === true);
   };
 
+  const automationDisposers: Array<() => void> = [];
+  const stopAutomationListeners = () => {
+    for (const stop of automationDisposers.splice(0)) stop();
+  };
+  state.syncAutomationListeners = () => {
+    if (!isEventAutomationEnabled(host.settings)) {
+      stopAutomationListeners();
+    } else if (automationDisposers.length === 0) {
+      automationDisposers.push(
+        listen(ownerWin, "menumijia:system-sleep", onSystemSleep),
+        listen(ownerWin, "menumijia:system-wake", onSystemWake),
+        listen(ownerWin, "menumijia:display-power", onDisplayPower),
+      );
+    }
+  };
+  state.syncAutomationListeners();
   state.recoveryDisposers.push(
+    stopAutomationListeners,
     listen(ownerDoc, "visibilitychange", onVisibilityChange),
     listen(ownerDoc, "resume", onResume),
     listen(ownerWin, "focus", onFocus),
     listen(ownerWin, "online", onOnline),
     listen(ownerWin, "offline", onOffline),
     listen(ownerWin, "menumijia:resume", onResume),
-    listen(ownerWin, "menumijia:system-sleep", onSystemSleep),
-    listen(ownerWin, "menumijia:system-wake", onSystemWake),
-    listen(ownerWin, "menumijia:display-power", onDisplayPower),
     listen(ownerWin, "pagehide", onPageHide),
   );
 

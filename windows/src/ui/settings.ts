@@ -360,6 +360,9 @@ export function loadSettings(): LoadedSettings {
         ...(typeof parsed.aiAssistantEnabled === "boolean" ? { aiAssistantEnabled: parsed.aiAssistantEnabled } : {}),
         // 主动建议 (P5b-W): same explicit-`false` rule; undefined means "never chosen", which the
         // manifest's `defaultOnFreshInstall` resolves at startup.
+        ...(typeof parsed.eventAutomationEnabled === "boolean"
+          ? { eventAutomationEnabled: parsed.eventAutomationEnabled }
+          : {}),
         ...(typeof parsed.proactiveSuggestionsEnabled === "boolean"
           ? { proactiveSuggestionsEnabled: parsed.proactiveSuggestionsEnabled }
           : {}),

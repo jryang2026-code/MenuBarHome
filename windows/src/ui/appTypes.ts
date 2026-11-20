@@ -135,6 +135,7 @@ export interface PersistedSettings {
    * nothing suggestion-specific is read, computed, prompted or counted.
    */
   proactiveSuggestionsEnabled?: boolean;
+  eventAutomationEnabled?: boolean;
   /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
   enableRaycastIntegration: boolean;
   /** Runs `menumijia://` links without the external-link confirmation prompt when on. */

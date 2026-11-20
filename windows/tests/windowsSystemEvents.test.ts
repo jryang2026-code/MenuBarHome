@@ -8,14 +8,16 @@ import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
+  dispatchSystemContextEvent,
   getHostActivityCenter,
+  setEventAutomationRunning,
   notifyDisplayPowerChanged,
   notifySystemSleep,
   notifySystemWake,
   pollSystemContextSignals,
   tickSafetyHealthAndAutomation,
 } from "../src/ui/activityStackView.js";
-import { bindLifecycleRecovery } from "../src/ui/appLifecycle.js";
+import { bindLifecycleRecovery, syncAutomationLifecycle } from "../src/ui/appLifecycle.js";
 import { createAutomationRule } from "../src/core/automationEngine.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
@@ -526,5 +528,173 @@ describe("Windows suspend/display-power notifications", () => {
     await flush();
     assert.equal(sent.length, 1, "the engine's 60 s per-trigger cooldown still applies");
     dispose();
+  });
+});
+
+describe("PC context automation runtime switch", () => {
+  it("detaches native event consumers and retains rules while stopped", async () => {
+    const rule = createAutomationRule({ id: "sleep", trigger: "systemSleep", action: LIGHT_OFF_ACTION });
+    const { app, sent } = trackingApp([rule]);
+    const center = getHostActivityCenter(app);
+    const stored = center.automationEngine.store.load();
+    const stub = stubNative();
+    const stop = bindLifecycleRecovery(app);
+    try {
+      setEventAutomationRunning(app, false);
+      syncAutomationLifecycle(app);
+      window.dispatchEvent(new window.CustomEvent("menumijia:system-sleep"));
+      tickSafetyHealthAndAutomation(app);
+      await flush();
+      assert.deepEqual(sent, []);
+      assert.deepEqual(stub.calls, []);
+      assert.deepEqual(center.automationEngine.store.load(), stored);
+      assert.equal(center.automationEngine.snapshot.isSystemAsleep, false);
+
+      setEventAutomationRunning(app, true);
+      syncAutomationLifecycle(app);
+      window.dispatchEvent(new window.CustomEvent("menumijia:system-sleep"));
+      await flush();
+      assert.equal(sent.length, 1);
+    } finally {
+      stop();
+    }
+  });
+
+  it("pauses unavailable targets and skips the schedule minute already in progress", async () => {
+    const now = new Date(2026, 10, 20, 12, 0, 10).getTime();
+    const missing = createAutomationRule({
+      id: "missing", trigger: "systemSleep",
+      action: { ...LIGHT_OFF_ACTION, deviceIds: ["light.removed"] },
+    });
+    const schedule = createAutomationRule({
+      id: "schedule", trigger: "scheduledTime", action: LIGHT_OFF_ACTION,
+      triggerOptions: { scheduledTime: { hour: 12, minute: 0 } },
+    });
+    const { app, sent } = trackingApp([missing, schedule]);
+    const store = getHostActivityCenter(app).automationEngine.store;
+    setEventAutomationRunning(app, false, now);
+    assert.equal(store.load().find((rule) => rule.id === "missing")?.isEnabled, true);
+    setEventAutomationRunning(app, true, now);
+    assert.deepEqual(store.load().find((rule) => rule.id === "missing"), { ...missing, isEnabled: false });
+    await dispatchSystemContextEvent(app, { kind: "tick" }, now + 1_000);
+    assert.deepEqual(sent, []);
+    await dispatchSystemContextEvent(app, { kind: "tick" }, now + 86_400_000);
+    assert.equal(sent.length, 1);
+  });
+
+  it("pauses a climate quick action after fan is disabled and keeps lights off available", () => {
+    const rules = (["climateSleepOff", "lightsOff"] as const).map((quickAction) =>
+      createAutomationRule({ id: quickAction, trigger: "systemSleep", action: { kind: "quickAction", quickAction } }));
+    const { app } = trackingApp(rules);
+    app.settings.connectionMode = "homeAssistant";
+    const light = makeLight();
+    if (light.kind.kind === "light") light.kind.isOn = false;
+    app.devices = [light, {
+      ...light, id: "climate.bedroom",
+      kind: {
+        kind: "climate", entityId: "climate.bedroom", isOn: false,
+        hvacMode: "off", availableModes: ["cool"], targetTemperature: 26,
+        currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1,
+        fanMode: null, availableFanModes: [],
+      },
+    }];
+    assert.equal(app.setEnabledDeviceCategories(["light", "climate", "fan"]), true);
+    setEventAutomationRunning(app, false);
+    assert.equal(app.setEnabledDeviceCategories(["light", "climate"]), true);
+    assert.equal(setEventAutomationRunning(app, true), true);
+    assert.deepEqual(getHostActivityCenter(app).automationEngine.store.load().map(({ id, isEnabled }) =>
+      [id, isEnabled]), [["climateSleepOff", false], ["lightsOff", true]]);
+  });
+
+  for (const restart of [false, true]) {
+    it(`stops a multi-target run after ${restart ? "a quick restart" : "switching off"} and keeps its undo`, async () => {
+      const action = restart
+        ? { kind: "quickAction", quickAction: "softNightLight" } as const
+        : { ...LIGHT_OFF_ACTION, deviceIds: ["light.desk", "light.bedroom"] };
+      const { app, sent } = trackingApp([createAutomationRule({ trigger: "systemSleep", action })]);
+      const light = makeLight();
+      assert.equal(light.kind.kind, "light");
+      app.devices = [makeLight(), { ...light, id: "light.bedroom", kind: { ...light.kind, entityId: "light.bedroom" } }];
+      let release!: (accepted: boolean) => void;
+      const command = new Promise<boolean>((resolve) => { release = resolve; });
+      app.applyCommand = (cmd) => {
+        sent.push(cmd);
+        return command;
+      };
+
+      const dispatch = dispatchSystemContextEvent(app, { kind: "systemSleep" });
+      assert.equal(sent.length, 1);
+      setEventAutomationRunning(app, false);
+      if (restart) assert.equal(setEventAutomationRunning(app, true), true);
+      release(true);
+      const runs = await dispatch;
+
+      assert.equal(sent.length, 1);
+      assert.deepEqual(runs[0]?.steps.map((step) => step.deviceId), ["light.desk"]);
+      assert.equal(runs[0]?.attemptedCount, 1);
+      assert.ok(app.lastUndoAction);
+    });
+  }
+
+  it("stays off when rule pauses cannot be saved", () => {
+    const rule = createAutomationRule({
+      trigger: "systemSleep",
+      action: { ...LIGHT_OFF_ACTION, deviceIds: ["light.removed"] },
+    });
+    const { app } = trackingApp([rule]);
+    const store = getHostActivityCenter(app).automationEngine.store;
+    setEventAutomationRunning(app, false);
+    store.save = () => false;
+    assert.equal(setEventAutomationRunning(app, true), false);
+    assert.equal(app.settings.eventAutomationEnabled, false);
+    assert.equal(store.load()[0]?.isEnabled, true);
+  });
+
+  it("discards an old power sample even when automation has already restarted", async () => {
+    const now = Date.now();
+    const rule = createAutomationRule({ trigger: "powerConnected", action: LIGHT_OFF_ACTION });
+    const { app, sent } = trackingApp([rule]);
+    const center = getHostActivityCenter(app);
+    stubNative({ power: { hasBattery: true, onExternalPower: false, batteryPercent: 70 } });
+    await pollSystemContextSignals(app, now);
+
+    let release!: (status: NativeStub["power"]) => void;
+    const power = new Promise<NativeStub["power"]>((resolve) => { release = resolve; });
+    window.__TAURI_INTERNALS__ = {
+      invoke: async <T>(cmd: string): Promise<T> =>
+        (cmd === "system_power_status" ? await power : false) as T,
+    };
+    const poll = pollSystemContextSignals(app, now + SYSTEM_CONTEXT_POLL_INTERVAL_MS);
+    setEventAutomationRunning(app, false);
+    setEventAutomationRunning(app, true);
+    release({ hasBattery: true, onExternalPower: true, batteryPercent: 70 });
+    assert.equal(await poll, false);
+    assert.equal(center.systemSignalBaseline, null);
+    assert.deepEqual(sent, []);
+  });
+
+  it("keeps the started rule's undo and discards the next rule even after a quick restart", async () => {
+    const rules = ["first", "queued"].map((id) =>
+      createAutomationRule({ id, trigger: "systemSleep", action: LIGHT_OFF_ACTION }));
+    const { app } = trackingApp(rules);
+    let release!: (accepted: boolean) => void;
+    const command = new Promise<boolean>((resolve) => { release = resolve; });
+    let writes = 0;
+    app.applyCommand = () => {
+      writes += 1;
+      return command;
+    };
+
+    const dispatch = dispatchSystemContextEvent(app, { kind: "systemSleep" });
+    assert.equal(writes, 1);
+    setEventAutomationRunning(app, false);
+    setEventAutomationRunning(app, true);
+    release(true);
+    const runs = await dispatch;
+
+    assert.equal(writes, 1);
+    assert.deepEqual(runs.map((run) => run.ruleId), ["first"]);
+    assert.ok(app.lastUndoAction);
+    assert.equal(getHostActivityCenter(app).recentAutomationRuns.length, 1);
   });
 });
