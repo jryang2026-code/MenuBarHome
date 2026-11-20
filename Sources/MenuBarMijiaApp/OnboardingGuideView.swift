@@ -844,6 +844,12 @@ public struct OnboardingGuideView: View {
             }
             return nil
         }
+        // Configuring a provider during onboarding is an explicit opt-in: the fresh-install
+        // default keeps the feature off, so saving here turns it on (P5a-M Codex review).
+        // A refused write already shows its own toast (identity uncertain / store refused).
+        if !store.aiAssistantEnabled {
+            _ = store.setAIAssistantEnabled(true)
+        }
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
         modelDraft = resolved.model
