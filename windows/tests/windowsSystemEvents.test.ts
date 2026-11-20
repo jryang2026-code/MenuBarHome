@@ -582,6 +582,60 @@ describe("PC context automation runtime switch", () => {
     assert.equal(sent.length, 1);
   });
 
+  it("pauses a climate quick action after fan is disabled and keeps lights off available", () => {
+    const rules = (["climateSleepOff", "lightsOff"] as const).map((quickAction) =>
+      createAutomationRule({ id: quickAction, trigger: "systemSleep", action: { kind: "quickAction", quickAction } }));
+    const { app } = trackingApp(rules);
+    app.settings.connectionMode = "homeAssistant";
+    const light = makeLight();
+    if (light.kind.kind === "light") light.kind.isOn = false;
+    app.devices = [light, {
+      ...light, id: "climate.bedroom",
+      kind: {
+        kind: "climate", entityId: "climate.bedroom", isOn: false,
+        hvacMode: "off", availableModes: ["cool"], targetTemperature: 26,
+        currentTemperature: null, minTemp: 16, maxTemp: 30, step: 1,
+        fanMode: null, availableFanModes: [],
+      },
+    }];
+    assert.equal(app.setEnabledDeviceCategories(["light", "climate", "fan"]), true);
+    setEventAutomationRunning(app, false);
+    assert.equal(app.setEnabledDeviceCategories(["light", "climate"]), true);
+    assert.equal(setEventAutomationRunning(app, true), true);
+    assert.deepEqual(getHostActivityCenter(app).automationEngine.store.load().map(({ id, isEnabled }) =>
+      [id, isEnabled]), [["climateSleepOff", false], ["lightsOff", true]]);
+  });
+
+  for (const restart of [false, true]) {
+    it(`stops a multi-target run after ${restart ? "a quick restart" : "switching off"} and keeps its undo`, async () => {
+      const action = restart
+        ? { kind: "quickAction", quickAction: "softNightLight" } as const
+        : { ...LIGHT_OFF_ACTION, deviceIds: ["light.desk", "light.bedroom"] };
+      const { app, sent } = trackingApp([createAutomationRule({ trigger: "systemSleep", action })]);
+      const light = makeLight();
+      assert.equal(light.kind.kind, "light");
+      app.devices = [makeLight(), { ...light, id: "light.bedroom", kind: { ...light.kind, entityId: "light.bedroom" } }];
+      let release!: (accepted: boolean) => void;
+      const command = new Promise<boolean>((resolve) => { release = resolve; });
+      app.applyCommand = (cmd) => {
+        sent.push(cmd);
+        return command;
+      };
+
+      const dispatch = dispatchSystemContextEvent(app, { kind: "systemSleep" });
+      assert.equal(sent.length, 1);
+      setEventAutomationRunning(app, false);
+      if (restart) assert.equal(setEventAutomationRunning(app, true), true);
+      release(true);
+      const runs = await dispatch;
+
+      assert.equal(sent.length, 1);
+      assert.deepEqual(runs[0]?.steps.map((step) => step.deviceId), ["light.desk"]);
+      assert.equal(runs[0]?.attemptedCount, 1);
+      assert.ok(app.lastUndoAction);
+    });
+  }
+
   it("stays off when rule pauses cannot be saved", () => {
     const rule = createAutomationRule({
       trigger: "systemSleep",

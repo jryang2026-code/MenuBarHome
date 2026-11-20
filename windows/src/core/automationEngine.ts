@@ -1079,6 +1079,7 @@ function commandsForPowerIntent(
 }
 
 interface ExecuteAutomationRuleOptions {
+  readonly canContinue?: () => boolean;
   readonly nowMs?: number;
   readonly firedAtMs?: number;
   readonly scope?: string;
@@ -1145,11 +1146,13 @@ export async function executeAutomationRule(
   if (rule.action.kind === "quickAction") {
     const planned = planQuickAction(rule.action.quickAction, host.devices, host.lastManuallyUsedLightId ?? null);
     for (const target of planned.targets) {
+      if (options.canContinue?.() === false) break;
       if ((host.sourceRevision ?? 0) !== startingRevision) return null;
       if (target.commands.length === 0) continue;
       attemptedCount += 1;
       let accepted = 0;
       for (const cmd of target.commands) {
+        if (options.canContinue?.() === false) break;
         if (await host.applyCommand(cmd, true)) accepted += 1;
         else break;
       }
@@ -1175,6 +1178,7 @@ export async function executeAutomationRule(
       return null;
     }
     for (const deviceId of rule.action.deviceIds) {
+      if (options.canContinue?.() === false) break;
       if ((host.sourceRevision ?? 0) !== startingRevision) return null;
       const dev = host.devices.find((d) => d.id === deviceId);
       if (!dev || !dev.isOnline || isDeviceActiveOn(dev) === rule.action.isOn) continue;
@@ -1185,6 +1189,7 @@ export async function executeAutomationRule(
       const snapshotDev: SmartDevice = { ...dev, kind: previousKind };
       const acceptedCmds: DeviceCommand[] = [];
       for (const cmd of cmds) {
+        if (options.canContinue?.() === false) break;
         if (await host.applyCommand(cmd, true)) acceptedCmds.push(cmd);
         else break;
       }
@@ -1623,6 +1628,7 @@ export class AutomationEngine {
       if (options.canStartRule?.() === false || (host.sourceRevision ?? 0) !== startingRevision) break;
       const run = await executeAutomationRule(host, rule, {
         ...options,
+        canContinue: options.canStartRule ?? options.canContinue,
         nowMs,
         ...(confirmedLockAtMs !== null && confirmedLockRuleIds.has(rule.id) ? { firedAtMs: confirmedLockAtMs } : {}),
       });

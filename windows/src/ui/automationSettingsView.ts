@@ -1435,17 +1435,20 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
       const scopeAtStart = center?.scopeKey ?? computeActivityScopeKey(host);
       const sourceRevisionAtStart = host.sourceRevision ?? 0;
       const automationGeneration = center?.automationGeneration;
+      const canContinue = (): boolean =>
+        isEventAutomationEnabled(host.settings) && center?.automationGeneration === automationGeneration;
       const isSameScope = (): boolean =>
         (host.sourceRevision ?? 0) === sourceRevisionAtStart &&
         (center?.scopeKey ?? computeActivityScopeKey(host)) === scopeAtStart;
       void (async () => {
         if (isFullPanelHost(host) && (await rejectIfControlBlockedWhileLocked(host))) return;
-        if (!isEventAutomationEnabled(host.settings) || center?.automationGeneration !== automationGeneration) return;
+        if (!canContinue()) return;
         if (!isSameScope()) return;
         const execHost = host as AutoSafetySettingsHost & {
           applyCommand(cmd: DeviceCommand, silent?: boolean): Promise<boolean>;
         };
         const run = await executeAutomationRule(execHost, rule, {
+          canContinue,
           scope: scopeAtStart,
           displayDevices: aliasedDevices,
           evaluateRuleWriteGate: (r) =>

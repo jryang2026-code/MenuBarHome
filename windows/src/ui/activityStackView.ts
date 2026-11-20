@@ -1,3 +1,5 @@
+import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
+import { supportsClimateSleepOff, supportsLightsOff, supportsSoftNightLight } from "../core/quickActions.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import {
   AutomationEngine,
@@ -1458,9 +1460,14 @@ export function setEventAutomationRunning(host: MenuMijiaWindowsApp, enabled: bo
     const demo = context.connectionMode === "demo" && !context.dualSourceEnabled;
     const live = demo || isLiveSnapshotReadyForTelemetry(host);
     const rules = center.automationEngine.store.load();
-    const onlineDeviceIds = new Set(aliasedHostDevices(host)
-      .filter((device) => device.isOnline && !device.telemetryStale)
-      .map((device) => device.id));
+    const onlineDevices = aliasedHostDevices(host).filter((device) => device.isOnline && !device.telemetryStale);
+    const onlineDeviceIds = new Set(onlineDevices.map((device) => device.id));
+    const enabledCategories = context.state.selection.enabledCategories;
+    const quickActionSupport = {
+      lightsOff: supportsLightsOff,
+      softNightLight: supportsSoftNightLight,
+      climateSleepOff: supportsClimateSleepOff,
+    };
     const validated = rules.map((rule) => {
       if (!rule.isEnabled) return rule;
       const sensorId = rule.triggerOptions.sensorCondition?.deviceId;
@@ -1468,7 +1475,11 @@ export function setEventAutomationRunning(host: MenuMijiaWindowsApp, enabled: bo
       const available = live && (!sensorId || onlineDeviceIds.has(sensorId)) &&
         (action.kind !== "devices" || (action.deviceIds.length > 0 && action.deviceIds.every((id) => onlineDeviceIds.has(id)))) &&
         (action.kind !== "scene" || host.scenes.some((scene) =>
-          scene.id === action.sceneId || scene.entityId === action.sceneId));
+          scene.id === action.sceneId || scene.entityId === action.sceneId)) &&
+        (action.kind !== "quickAction" || demo || (
+          QUICK_ACTION_TARGET_CATEGORIES[action.quickAction].every((category) => enabledCategories.includes(category)) &&
+          onlineDevices.some(quickActionSupport[action.quickAction])
+        ));
       const rejection = evaluateAutomationRuleWriteGate({
         rule, context, lastManuallyUsedLightId: host.lastManuallyUsedLightId,
       });
