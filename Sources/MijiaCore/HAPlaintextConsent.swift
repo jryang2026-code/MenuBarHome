@@ -64,6 +64,16 @@ public enum HAPlaintextConsent {
         defaults.set(urls.sorted(), forKey: defaultsKey)
     }
 
+    public static func revoke(_ baseURL: String, defaults: UserDefaults) {
+        var urls = approved(defaults)
+        guard urls.remove(key(baseURL)) != nil else { return }
+        if urls.isEmpty {
+            defaults.removeObject(forKey: defaultsKey)
+        } else {
+            defaults.set(urls.sorted(), forKey: defaultsKey)
+        }
+    }
+
     public static func revokeAll(defaults: UserDefaults) {
         defaults.removeObject(forKey: defaultsKey)
     }

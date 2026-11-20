@@ -104,9 +104,11 @@ extension HomeStore {
         isTestEnvironment: Bool,
         checkHATokenVault: Bool,
         legacyVoiceInput: Bool,
-        legacyGrokBall: Bool
+        legacyGrokBall: Bool,
+        pendingMiRemovalScopes: Set<String> = [],
+        connectionRemovalReadError: Bool = false
     ) -> CapabilityInstallResolution {
-        var scopes = accountsResult.accounts.map(\.id)
+        var scopes = accountsResult.accounts.map(\.id).filter { !pendingMiRemovalScopes.contains($0) }
         if hasHASource {
             scopes.append("ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(serverURLString))")
         }
@@ -116,6 +118,7 @@ extension HomeStore {
             || defaults.object(forKey: "mi_cloud_region") != nil
             || defaults.object(forKey: Self.onboardingMilestonesKey) != nil
             || defaults.object(forKey: "home_name") != nil
+            || defaults.object(forKey: ConnectionRemovalStore.storageKey) != nil
             || lgHasConfiguredHost
         let hasLocalData = !DevicePreferenceIndex.referencedIDs(defaults: defaults).isEmpty
             || defaults.object(forKey: ScheduledCommand.storageKey) != nil
@@ -130,7 +133,8 @@ extension HomeStore {
             checkHATokenVault: checkHATokenVault,
             hasLegacySettingsOrOnboarding: hasLegacySettings,
             hasPersistedLocalData: hasLocalData,
-            legacyFeatureFlags: [.voiceInput: legacyVoiceInput, .grokball: legacyGrokBall]
+            legacyFeatureFlags: [.voiceInput: legacyVoiceInput, .grokball: legacyGrokBall],
+            connectionRemovalReadError: connectionRemovalReadError
         )
     }
 
@@ -138,6 +142,7 @@ extension HomeStore {
     /// `uncertainFallback` launch. Returns true once reads succeed and migration/state are resolved.
     @discardableResult
     public func retryIdentityMigration() -> Bool {
+        syncPendingConnectionRemovals()
         if let vault = credentialVault {
             _ = vault.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
         } else if !isTestEnvironment && userDefaults === UserDefaults.standard {
@@ -148,9 +153,12 @@ extension HomeStore {
             vault: credentialVault,
             retryingUnavailable: false
         )
-        let reloadedAccounts = reloadedAccountsResult.accounts
+        let pendingMi = pendingMiRemovalScopes
+        let reloadedAccounts = hasCorruptConnectionRemovalState
+            ? []
+            : reloadedAccountsResult.accounts.filter { !pendingMi.contains($0.id) }
         let needsHAToken = homeBackend != .demo && (!usesInjectedProvider || credentialVault != nil)
-        let reloadedHAToken = needsHAToken
+        let reloadedHAToken = (!hasPendingHARemoval && needsHAToken)
             ? KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
             : ""
         let reloadedHasHA = !reloadedHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -165,7 +173,9 @@ extension HomeStore {
             isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsHAToken,
             legacyVoiceInput: enableVoiceInput,
-            legacyGrokBall: enableGrokBall
+            legacyGrokBall: enableGrokBall,
+            pendingMiRemovalScopes: pendingMi,
+            connectionRemovalReadError: hasCorruptConnectionRemovalState
         )
         capabilitySelection = resolution.selection
         capabilityResolutionMode = resolution.mode
@@ -242,6 +252,16 @@ extension HomeStore {
         let impact = hasEnabledMiSource
             ? L10n.tr("原有米家连接与已保存令牌保持不变，双源未启用。", "Your Xiaomi Home connection and saved token are unchanged; dual-source was not enabled.")
             : L10n.tr("未写入令牌，原有连接配置保持不变。", "No token was saved; your existing connection settings are unchanged.")
+        guard !hasPendingHARemoval else {
+            return .failed(
+                reason: L10n.tr(
+                    "有一个 Home Assistant 连接还没移除完，请先重试清理再保存连接",
+                    "A Home Assistant removal is still unfinished; retry the cleanup before saving this connection"
+                ),
+                impact: impact,
+                action: L10n.tr("请到「设置 › 家居连接」重试未完成的移除后再连接。", "Go to Settings › Connections and retry the unfinished removal first.")
+            )
+        }
         guard !trimmedURL.isEmpty else {
             return .failed(
                 reason: L10n.tr("请填写 Home Assistant 地址", "Enter your Home Assistant address"),
