@@ -2092,6 +2092,27 @@ struct SnapshotTests {
         }
     }
 
+    @Test("GrokBall suggestions say 主动建议 is off instead of ranking habits (P5b-M)")
+    func grokBallSuggestionsOffSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        #expect(fixture.store.setProactiveSuggestionsEnabled(false))
+        defer { _ = fixture.store.setProactiveSuggestionsEnabled(true) }
+        for scheme in [ColorScheme.light, .dark] {
+            assertRendered(
+                snapshotReady(
+                    GrokBallSuggestions(store: fixture.store)
+                        .padding(8)
+                        .frame(width: 260),
+                    scheme: scheme
+                ),
+                size: CGSize(width: 276, height: 70),
+                named: "grokball-suggestions-off-\(scheme == .dark ? "dark" : "light")",
+                scheme: scheme
+            )
+        }
+    }
+
     @Test("General settings render Unhide All when multiple devices are manually hidden")
     func settingsGeneralBulkUnhideSnapshots() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)
