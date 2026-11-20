@@ -605,12 +605,12 @@ PY
         printf 'PASS adopt rejects symlink artifact cleanly\n'
     fi
 
-    # 7. Happy path: validates, installs, commits locally without pushing
+    # 7. Happy path (including in-progress CI run with null conclusion): validates, installs, commits locally without pushing
     if ! (
         cd "$repo"
         PATH="$fake_bin:$PATH" \
         FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
-        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"in_progress\",\"conclusion\":null,\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
         FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${head_sha}\",\"expired\":false}]}" \
         FAKE_ADOPT_DOWNLOAD_SRC="$src_good" \
             bash "$script_path" 42
@@ -639,7 +639,7 @@ PY
             printf 'FAIL adopt commit missing panel.png\n' >&2
             failures=$((failures + 1))
         else
-            printf 'PASS adopt happy path validates, installs, and commits locally\n'
+            printf 'PASS adopt happy path validates, installs, and commits locally (including null conclusion)\n'
         fi
     fi
 

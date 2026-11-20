@@ -114,14 +114,17 @@ pr_info="$("$python_bin" -I - "$tmp/pr.json" <<'PY'
 import json
 import sys
 
+def field(val):
+    return str(val or "").replace("\x1f", " ").replace("\r", " ").replace("\n", " ")
+
 doc = json.load(open(sys.argv[1], encoding="utf-8"))
-state = str(doc.get("state") or "")
-head = str(doc.get("headRefOid") or "").lower()
-branch = str(doc.get("headRefName") or "")
-print(f"{state}\t{head}\t{branch}")
+state = field(doc.get("state"))
+head = field(doc.get("headRefOid")).lower()
+branch = field(doc.get("headRefName"))
+print("\x1f".join([state, head, branch]))
 PY
 )"
-IFS=$'\t' read -r pr_state pr_head pr_branch <<EOF
+IFS=$'\x1f' read -r pr_state pr_head pr_branch <<EOF
 $pr_info
 EOF
 
@@ -149,6 +152,9 @@ run_info="$("$python_bin" -I - "$tmp/runs.json" "$pr_head" <<'PY'
 import json
 import sys
 
+def field(val):
+    return str(val or "").replace("\x1f", " ").replace("\r", " ").replace("\n", " ")
+
 runs = json.load(open(sys.argv[1], encoding="utf-8"))
 target_sha = sys.argv[2].lower()
 if not isinstance(runs, list):
@@ -164,11 +170,23 @@ matching = [r for r in ci_runs if str(r.get("headSha") or "").lower() == target_
 if matching:
     matching.sort(key=lambda r: (str(r.get("createdAt") or ""), r["databaseId"]), reverse=True)
     best = matching[0]
-    print(f"MATCH\t{best['databaseId']}\t{best.get('status') or ''}\t{best.get('conclusion') or ''}\t{str(best.get('headSha') or '').lower()}")
+    print("\x1f".join([
+        "MATCH",
+        field(best["databaseId"]),
+        field(best.get("status")),
+        field(best.get("conclusion")),
+        field(best.get("headSha")).lower(),
+    ]))
 elif ci_runs:
     ci_runs.sort(key=lambda r: (str(r.get("createdAt") or ""), r["databaseId"]), reverse=True)
     best = ci_runs[0]
-    print(f"MISMATCH\t{best['databaseId']}\t{best.get('status') or ''}\t{best.get('conclusion') or ''}\t{str(best.get('headSha') or '').lower()}")
+    print("\x1f".join([
+        "MISMATCH",
+        field(best["databaseId"]),
+        field(best.get("status")),
+        field(best.get("conclusion")),
+        field(best.get("headSha")).lower(),
+    ]))
 PY
 )"
 
@@ -177,7 +195,7 @@ if [ -z "$run_info" ]; then
     exit 1
 fi
 
-IFS=$'\t' read -r run_match run_id run_status run_conclusion run_head <<EOF
+IFS=$'\x1f' read -r run_match run_id run_status run_conclusion run_head <<EOF
 $run_info
 EOF
 
@@ -215,13 +233,13 @@ other = [
     if isinstance(a, dict) and str(a.get("name") or "").startswith("snapshot-baselines-")
 ]
 if other:
-    print("SHA_MISMATCH\t" + ",".join(other))
+    print("SHA_MISMATCH\x1f" + ",".join(other))
 else:
     print("MISSING")
 PY
 )"
 
-IFS=$'\t' read -r artifact_code artifact_detail <<EOF
+IFS=$'\x1f' read -r artifact_code artifact_detail <<EOF
 $artifact_status
 EOF
 
