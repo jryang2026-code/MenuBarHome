@@ -125,7 +125,7 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, hiddenTypeDevices, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
 import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
@@ -254,6 +254,24 @@ export class MenuMijiaWindowsApp {
    * show or control; the host write gate reads them to answer "该设备类型已关闭" (P3a-W).
    */
   public hiddenMiDevices: readonly CapabilityIndexedDevice[] = [];
+  /**
+   * The Home Assistant half of the same index (P3b-W), plus the endpoint it belongs to: a card kept
+   * from an endpoint the app has since left must not answer for the current connection.
+   */
+  public haTypePruneScope: string | null = null;
+  public hiddenHADevices: readonly CapabilityIndexedDevice[] = [];
+  /** Home Assistant cards a closed type keeps only so enabled alerts still read their signal. */
+  public safetyRetainedHADevices: SmartDevice[] = [];
+  public safetyRetainedHADeviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
+  /**
+   * Every card the type selection withholds, from both sources, for the URL / companion write gate
+   * (P3a-W, P3b-W). Each source's own half is scoped to its connection, so this drops the half that
+   * belongs to an endpoint or account the host has since left.
+   */
+  public get hiddenDevices(): readonly CapabilityIndexedDevice[] {
+    return hiddenTypeDevices(this);
+  }
+
   public scenes: HomeScene[];
   public environmentReadings: EnvironmentReading[] = [];
   public listCut: DeviceListCut = { kind: "all" };

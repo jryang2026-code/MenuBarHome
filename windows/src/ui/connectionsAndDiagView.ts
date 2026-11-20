@@ -61,7 +61,7 @@ import { clearHostActivitiesOnSignOut, isFullPanelHost } from "./activityStackVi
 import { APP_VERSION, SF_ICONS } from "./appConstants.js";
 import type { PendingHighRiskConfirmation, PersistedSettings, ReplyBannerState } from "./appTypes.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
-import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, dropMiotTypePruneSnapshotForAccount, applyMiotTypePruneSnapshot, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
+import { adoptRecoveredPrimarySession, buildHostCapabilityContext, canUseDualSource, collectHostKnownScenes, dropMiotTypePruneSnapshotForAccount, applyMiotTypePruneSnapshot, applyHaTypePruneSnapshot, getHostDualSourceState, getHostHaLifecyclePhase, getHostMiAccountsState, getHostMiAccountsStore, isDualSourceEnabled, isHostHaEnabled, recomputeHostDualSource, resolveHostMiSelectionState, setHostDeviceSourcePin, setHostDualSourceEnabled, setHostMiAccounts, type HostMultiAccountState } from "./cloudRefresh.js";
 import { cancelEchoReadBack } from "./commandDispatch.js";
 import { applyOrder, type HomeOption, type LayoutPrefs } from "./panelPrefs.js";
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
@@ -309,6 +309,11 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   safetyRetainedDevices?: SmartDevice[];
   safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+  /** The Home Assistant half of the same snapshot (P3b-W); see `applyHaTypePruneSnapshot`. */
+  haTypePruneScope?: string | null;
+  safetyRetainedHADevices?: SmartDevice[];
+  safetyRetainedHADeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenHADevices?: readonly CapabilityIndexedDevice[];
   /** A high-risk write armed by its first tap; a backend switch disarms it. */
   pendingHighRisk: PendingHighRiskConfirmation | null;
   groupOwnerByMemberDid: Map<string, string>;
@@ -1427,6 +1432,9 @@ export async function setHaConnectionEnabledOnHost(
   }
   resetHostUnsupportedScanner(host);
   host.haConnectionError = null;
+  // A disabled connection keeps no alert-only cards: its sensors were read for that endpoint, and
+  // the identity entries would otherwise answer for a connection that is off (P3b-W).
+  applyHaTypePruneSnapshot(host, null);
 
   const enabledMiAfter = filterEnabledMiAccounts(allAccounts, resolveHostMiSelectionState(host, allAccounts));
   const nextDual = wasDualSource
@@ -2242,6 +2250,9 @@ export async function disconnectHomeAssistantOnHost(host: ConnectionsAndDiagHost
   host.settings.haToken = "";
   host.settings.cachedHAHome = null;
   host.haConnectionError = null;
+  // The retained sensors and hidden index entries belong to the endpoint just removed; nobody may
+  // keep alerting from them or answer "该设备类型已关闭" for another connection (P3b-W).
+  applyHaTypePruneSnapshot(host, null);
   setHostDualSourceEnabled(host, false, { persist: true });
   resetHostUnsupportedScanner(host);
 
@@ -2379,6 +2390,7 @@ export async function retryConnectionRemovalOnHost(
     host.settings.haToken = "";
     host.settings.cachedHAHome = null;
     host.haConnectionError = null;
+    applyHaTypePruneSnapshot(host, null);
     clearHaScopeLifecycle(record.scope);
     removeDisconnectedHaFromSelection(record.scope);
     const tokenField = host.root.querySelector<HTMLInputElement>("#settings-ha-token");

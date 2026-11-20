@@ -51,7 +51,7 @@ import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
 import { filterSafetyAlertsByGuardPrefs, loadSafetyGuardPrefs } from "./automationSettingsView.js";
-import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsState, haCacheIfEnabled, isDualSourceEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostDualSourceState, getHostMiAccountsState, haCacheIfEnabled, isDualSourceEnabled, safetyRetainedHADeviceFacets, safetyRetainedHADevices } from "./cloudRefresh.js";
 import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate } from "../core/miAccountControl.js";
 import { energyScopeForHost } from "./energySettingsView.js";
 import { withAliases } from "./panelPrefs.js";
@@ -188,17 +188,25 @@ function aliasedHostDevices(host: MenuMijiaWindowsApp): SmartDevice[] {
 }
 
 /**
- * Devices whose category is turned off but whose enabled alerts still need their signal (P3a-W).
- * They are read and synthesized by the Mi refresh but never enter `host.devices`, so they can only
- * reach alert evaluation — never a card, a search hit, an AI target or a control entry. A source
- * that is no longer live drops them, so a signed-out account cannot keep alerting from stale data.
+ * Cards whose category is turned off but whose enabled alerts still need their signal (P3a-W,
+ * P3b-W). They are read and synthesized by the refresh but never enter `host.devices`, so they can
+ * only reach alert evaluation — never a card, a search hit, an AI target or a control entry. A source
+ * that is no longer live drops them, so a signed-out account or a removed Home Assistant connection
+ * cannot keep alerting from stale data.
  */
 function safetyRetainedDeviceIds(host: MenuMijiaWindowsApp): Set<string> {
-  const retained = host.safetyRetainedDevices ?? [];
-  if (retained.length === 0) return new Set<string>();
-  const miLive =
-    host.settings.connectionMode === "xiaomiCloud" || isDualSourceEnabled(host);
-  return new Set(miLive ? retained.map((device) => device.id) : []);
+  const mi = host.safetyRetainedDevices ?? [];
+  const ha = host.safetyRetainedHADevices ?? [];
+  // Nothing retained at all is the common case: skip the scope checks that prove it is still live.
+  if (mi.length === 0 && ha.length === 0) return new Set<string>();
+  const ids = new Set<string>();
+  if (host.settings.connectionMode === "xiaomiCloud" || isDualSourceEnabled(host)) {
+    for (const device of mi) ids.add(device.id);
+  }
+  // The Home Assistant half already answers for its own connection: an endpoint or mode change
+  // drops it, so a removed connection cannot keep alerting from its last snapshot (P3b-W).
+  for (const device of safetyRetainedHADevices(host)) ids.add(device.id);
+  return ids;
 }
 
 /** Cards plus the alert-only devices, and the facets of both, for `SafetyMonitor` only. */
@@ -206,13 +214,19 @@ function safetyEvaluationDevices(host: MenuMijiaWindowsApp, cards: readonly Smar
   readonly devices: SmartDevice[];
   readonly facets: Readonly<Record<string, readonly FacetControl[]>>;
 } {
-  const devices = [...cards];
   const retainedIds = safetyRetainedDeviceIds(host);
-  if (retainedIds.size === 0) return { devices, facets: host.deviceFacets };
-  const retained = (host.safetyRetainedDevices ?? []).filter((device) => retainedIds.has(device.id));
+  if (retainedIds.size === 0) return { devices: [...cards], facets: host.deviceFacets };
+  const retained = [
+    ...(host.safetyRetainedDevices ?? []),
+    ...safetyRetainedHADevices(host),
+  ].filter((device) => retainedIds.has(device.id));
   return {
-    devices: [...devices, ...retained],
-    facets: { ...host.deviceFacets, ...(host.safetyRetainedDeviceFacets ?? {}) },
+    devices: [...cards, ...retained],
+    facets: {
+      ...host.deviceFacets,
+      ...(host.safetyRetainedDeviceFacets ?? {}),
+      ...safetyRetainedHADeviceFacets(host),
+    },
   };
 }
 

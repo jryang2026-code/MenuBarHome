@@ -1303,7 +1303,13 @@ function hiddenTypeDeviceIdentifierMatches(rec: CapabilityIndexedDevice, targetI
   const owner = MiAccountScope.owner(base);
   if (owner !== null && miAccountScope(owner) !== rec.sourceScope) return false;
   const wanted = [base, MiAccountScope.localId(base)];
-  const ids = [rec.id, MiAccountScope.localId(rec.id)];
+  // `readKeys` names what the card is keyed by on its own source. A Home Assistant card's key is
+  // its entity id, and an old link or AI intent may still spell the entity rather than the card id
+  // (P3b-W); a Mi card's prop keys are not addresses, so they stay out of the match.
+  const ids = [
+    rec.id, MiAccountScope.localId(rec.id),
+    ...(rec.connection === "home-assistant" ? rec.readKeys : []),
+  ];
   return wanted.some(
     (target) =>
       ids.includes(target) ||

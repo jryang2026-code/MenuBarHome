@@ -7,46 +7,22 @@ import { miotShortName, type MiotDeviceSpec } from "./miCloud/spec.js";
 import { MiotSynthesizer } from "./miCloud/synthesis.js";
 import type { MiDeviceRecord, MiotPropKey } from "./miCloud/client.js";
 import {
-  inferSensorAlertKindsFromMetadata, SENSOR_ALERT_KINDS, sensorAlertEnabledByDefault, stripLockNeutralTokens,
-  type SensorAlertKind, type SensorAlertPolicy,
-} from "./safetyAndHealth.js";
+  safetySignalsForPrefs, safetySignalsForSensorPolicy, type SafetySignalPrefs,
+} from "./safetySignalPolicy.js";
+import { inferSensorAlertKindsFromMetadata, stripLockNeutralTokens } from "./safetyAndHealth.js";
 
 /**
- * Alerts a closed type still keeps reading for, from the host's safety switches. `enableSafetyAlerts`
- * is the master switch of 安全与提醒's own block — the long-run, low-battery and pinned-offline
- * alerts — and each of those keeps only its own signal. The sensor alerts below it are a separate
- * block with their own switches, so a smoke or lock alert keeps its reads while the master switch is
- * off (architecture.md §D, ruling 3).
+ * Alerts a closed type still keeps reading for, from the host's safety switches. The mapping itself
+ * is shared with the Home Assistant plan (`safetySignalPolicy.ts`); these names stay for the Mi
+ * callers that predate it.
  */
-export interface MiotSafetyPrefs {
-  readonly enableSafetyAlerts: boolean;
-  readonly longRunningPlug: boolean;
-  readonly longRunningClimate: boolean;
-  readonly lowBattery: boolean;
-  readonly favoriteOffline: boolean;
-}
+export type MiotSafetyPrefs = SafetySignalPrefs;
 
 /** Every safety signal the host is currently evaluating, in the shared vocabulary's own order. */
-export function miotSafetySignalsForPrefs(prefs: MiotSafetyPrefs, policy: SensorAlertPolicy): SafetySignalKind[] {
-  const signals = new Set<SafetySignalKind>(miotSafetySignalsForSensorPolicy(policy));
-  if (prefs.enableSafetyAlerts) {
-    if (prefs.longRunningPlug) {
-      signals.add("longRunningPlug");
-      signals.add("highPower");
-    }
-    if (prefs.longRunningClimate) signals.add("longRunningClimate");
-    if (prefs.lowBattery) signals.add("lowBattery");
-    if (prefs.favoriteOffline) signals.add("starredOffline");
-  }
-  return SAFETY_SIGNAL_KINDS.filter((kind) => signals.has(kind));
-}
+export const miotSafetySignalsForPrefs = safetySignalsForPrefs;
 
 /** Every sensor-alert signal the host is currently evaluating, in the shared `SafetySignalKind` vocabulary. */
-export function miotSafetySignalsForSensorPolicy(policy: SensorAlertPolicy): SafetySignalKind[] {
-  return SENSOR_ALERT_KINDS
-    .filter((kind: SensorAlertKind) => policy.enabled[kind] ?? sensorAlertEnabledByDefault(kind))
-    .map((kind) => SENSOR_ALERT_TO_SAFETY_SIGNAL[kind]);
-}
+export const miotSafetySignalsForSensorPolicy = safetySignalsForSensorPolicy;
 
 /**
  * The alert engine's own read surface, one field per entry. Splitting instead of concatenating keeps

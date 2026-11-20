@@ -45,7 +45,7 @@ import type { ConnectionMode, PendingHighRiskConfirmation, PersistedSettings, Re
 import { demoDevices, demoScenes } from "./demo.js";
 import { clearHostSessionAndDualSourceState, submitServiceEndpoints } from "./appLifecycle.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
-import { applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled } from "./cloudRefresh.js";
+import { applyHaTypePruneSnapshot, applyMiotTypePruneSnapshot, buildHostCapabilityContext, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled } from "./cloudRefresh.js";
 import { haConnectionScope, removeDisconnectedHaFromSelection, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
 import { clearConnectionRemovals, pendingConnectionRemovalScopes } from "../core/connectionRemoval.js";
 import { clearHaScopeLifecycle } from "../core/haTransportGate.js";
@@ -98,6 +98,11 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   safetyRetainedDevices?: SmartDevice[];
   safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+  /** The Home Assistant half of the same snapshot (P3b-W); see `applyHaTypePruneSnapshot`. */
+  haTypePruneScope?: string | null;
+  safetyRetainedHADevices?: SmartDevice[];
+  safetyRetainedHADeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenHADevices?: readonly CapabilityIndexedDevice[];
   scenes: HomeScene[];
   environmentReadings: EnvironmentReading[];
   homes: HomeOption[];
@@ -567,6 +572,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   host.settings.haBaseURL = "";
   host.settings.haToken = "";
   host.settings.cachedHAHome = null;
+  applyHaTypePruneSnapshot(host, null);
 
   host.settings.openRouterApiKey = "";
   host.settings.assistantKeyEndpoint = null;
@@ -1307,6 +1313,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
       // Leaving Mi behind must also drop the alert-only devices and hidden index entries it left in
       // the panel; the refresh paths only rewrite them while a Mi source is still selected (P3a-W).
       if (mode !== "xiaomiCloud" && !isDualSourceEnabled(host)) applyMiotTypePruneSnapshot(host, null);
+      // Symmetrically, the Home Assistant alert-only cards and hidden entries belong to the endpoint
+      // this switch is leaving (P3b-W).
+      if (mode !== "homeAssistant" && !isDualSourceEnabled(host)) applyHaTypePruneSnapshot(host, null);
       host.selectRoom(null);
       if (mode === "demo") {
         host.devices = demoDevices();
