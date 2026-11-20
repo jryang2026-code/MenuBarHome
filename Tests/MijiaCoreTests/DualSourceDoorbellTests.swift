@@ -100,7 +100,8 @@ struct DualSourceDoorbellTests {
             case .doorbellRang(let ring):
                 rings.append(ring)
             case .statusChanged, .sessionExpired, .sourceStatusesChanged, .localNetworkPermissionChanged,
-                 .miotTypePruneChanged:
+                 .miotTypePruneChanged,
+                 .haTypePruneChanged:
                 break
             }
         }

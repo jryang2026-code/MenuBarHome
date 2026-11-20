@@ -391,7 +391,8 @@ extension HomeStore {
                                  .localNetworkPermissionChanged,
                                  .sessionExpired,
                                  .doorbellRang,
-                                 .miotTypePruneChanged:
+                                 .miotTypePruneChanged,
+                                 .haTypePruneChanged:
                                 break
                             }
                         }

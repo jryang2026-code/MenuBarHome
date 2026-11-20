@@ -131,8 +131,9 @@ extension HomeStore {
         return scopes
     }
 
-    /// Publishes the enabled types and safety switches to the Mi provider. It reads the box before
-    /// every plan, so a closed type stops being polled on the next refresh (P3a-M).
+    /// Publishes the enabled types and safety switches to the Mi and Home Assistant providers. Mi
+    /// reads its box before every plan, so a closed type stops being polled on the next refresh
+    /// (P3a-M); Home Assistant reads its box for every frame (P3b-M).
     func syncMiotTypePrunePolicy() {
         var safetyPolicy = currentSafetyRetentionPolicy()
         // The doorbell is its own switch, not part of the safety master switch (#308), so a closed
@@ -142,6 +143,11 @@ extension HomeStore {
             selection: capabilitySelection,
             safetyPolicy: safetyPolicy,
             sourceScope: miSessionScopeIdentifier ?? ""
+        ))
+        haTypePruneBox.update(HATypePrunePolicy(
+            selection: capabilitySelection,
+            safetyPolicy: safetyPolicy,
+            sourceScope: homeAssistantScopeIdentifier
         ))
     }
 
@@ -165,8 +171,8 @@ extension HomeStore {
         if changed { persistIndexedDevices() }
     }
 
-    /// Drops one account's retained safety set. Its index entries stay: a disabled account must keep
-    /// answering「该米家账号已停用」 for its devices.
+    /// Drops one account's (or the Home Assistant address's) retained safety set. Its index entries
+    /// stay: a disabled source must keep answering「该米家账号已停用」 for its devices.
     func dropMiotTypePruneReport(scope: String) {
         miotTypePruneReports.removeValue(forKey: scope)
     }
@@ -505,6 +511,7 @@ extension HomeStore {
         let oldScope = "ha:\(HAWebSocketProvider.canonicalHistoryScopeURL(oldServerURL))"
         let newScope = homeAssistantScopeIdentifier
         guard oldScope != newScope else { return }
+        dropMiotTypePruneReport(scope: oldScope)
         let carriesEnablement = capabilitySelection.enabledConnections.contains(.homeAssistant)
         var next = capabilitySelection
         next.enabledConnectionScopes.remove(oldScope)
@@ -660,6 +667,8 @@ extension HomeStore {
         // Synchronously seal off reads, writes, and events on the active dual provider before any
         // async shutdown task runs so no refresh or history fetch can slip through the window.
         (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.homeAssistant)
+        // A disabled connection evaluates nothing; its retained safety set goes with it (P3b-M).
+        dropMiotTypePruneReport(scope: homeAssistantScopeIdentifier)
 
         guard homeBackend != .demo else {
             clearHATeardownState()
@@ -1184,7 +1193,11 @@ extension HomeStore {
             return parsed.did
         }
         if indexedDevicesById[entityId] != nil { return entityId }
-        return nil
+        // A closed Home Assistant type keeps its cards' entities as read keys (P3b-M), so a stored
+        // entity command still meets「该设备类型已关闭」 instead of slipping past the gate.
+        return indexedDevicesById.values
+            .filter { $0.connection == .homeAssistant && $0.readKeys.contains(entityId) }
+            .map(\.id).min()
     }
 
     // MARK: - Device Indexing & Reference Graph

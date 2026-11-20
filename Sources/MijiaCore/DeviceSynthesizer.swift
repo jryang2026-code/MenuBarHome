@@ -1916,3 +1916,165 @@ public enum DeviceSynthesizer {
         kind.tag.rank
     }
 }
+
+// MARK: - Device-Type Pruning (P3b-M)
+
+/// What the Home Assistant connection shows and evaluates, in the shared capability vocabulary — the
+/// same `selection` and `safetyPolicy` the host uses for the write gate, so Mi and Home Assistant
+/// answer "visible / safety-retained / pruned" identically (architecture.md §D).
+public struct HATypePrunePolicy: Equatable, Sendable {
+    public var selection: CapabilitySelection
+    public var safetyPolicy: SafetyRetentionPolicy
+    /// The connection's capability scope, `ha:<canonical address>`.
+    public var sourceScope: String
+
+    public init(selection: CapabilitySelection, safetyPolicy: SafetyRetentionPolicy, sourceScope: String) {
+        self.selection = selection
+        self.safetyPolicy = safetyPolicy
+        self.sourceScope = sourceScope
+    }
+
+    /// Every type on, for a provider that runs outside a store (onboarding probes, tests).
+    public static let unpruned = HATypePrunePolicy(
+        selection: CapabilitySelection(
+            enabledConnections: [], enabledConnectionScopes: [], enabledFeatures: [],
+            enabledCategories: Set(DeviceCategoryID.allCases)
+        ),
+        safetyPolicy: SafetyRetentionPolicy(),
+        sourceScope: ""
+    )
+
+    /// Nothing may be pruned: every type is on, the connection is off, or this address is not an
+    /// enabled scope yet (a reconnect to a new address must never look like a closed type).
+    public var prunesNothing: Bool {
+        guard selection.enabledCategories.count < DeviceCategoryID.allCases.count else { return true }
+        guard selection.enabledConnections.contains(.homeAssistant) else { return true }
+        return !selection.enabledConnectionScopes.contains(sourceScope)
+    }
+}
+
+/// Host-owned view of the enabled types and safety switches, read by the Home Assistant provider off
+/// the main actor for every frame, so a change applies to the next frame without a reconnect.
+public final class HATypePrunePolicyBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var policy: HATypePrunePolicy
+
+    public init(policy: HATypePrunePolicy = .unpruned) { self.policy = policy }
+
+    public func update(_ next: HATypePrunePolicy) {
+        lock.lock()
+        defer { lock.unlock() }
+        policy = next
+    }
+
+    public func get() -> HATypePrunePolicy {
+        lock.lock()
+        defer { lock.unlock() }
+        return policy
+    }
+}
+
+/// One Home Assistant round split by the shared partition verdict.
+struct HATypePrunePlan: Equatable {
+    let visibleDeviceIds: Set<String>
+    let safetyRetainedDeviceIds: Set<String>
+    /// Identity entries of every card this round does not draw, for 「该设备类型已关闭」.
+    let hiddenIndexedDevices: [CapabilityIndexedDevice]
+}
+
+extension DeviceSynthesizer {
+    /// The registry rows each card is built from: a device's rows belong to its card, or to every
+    /// split cover track `<device>#<entity>` of it; an orphan row is its own card.
+    static func haCardEntities(cardIds: Set<String>, entities: [HAEntityEntry]) -> [String: [HAEntityEntry]] {
+        var cardsByDevice: [String: [String]] = [:]
+        for id in cardIds {
+            let deviceId = id.split(separator: "#", maxSplits: 1).first.map(String.init) ?? id
+            cardsByDevice[deviceId, default: []].append(id)
+        }
+        var result: [String: [HAEntityEntry]] = [:]
+        for entity in entities {
+            let owners = entity.device_id.flatMap { cardsByDevice[$0] }
+                ?? (cardIds.contains(entity.entity_id) ? [entity.entity_id] : [])
+            for owner in owners { result[owner, default: []].append(entity) }
+        }
+        return result
+    }
+
+    /// Which alerts one Home Assistant card can report on macOS. The actuator alerts read the card's
+    /// own state, so they follow its kind; the alarm alerts follow the device classes Home Assistant
+    /// names explicitly (`binary_sensor.device_class`). An alarm row on a non-sensor card (a gas
+    /// valve's leak row) counts too, as on Windows (`haAuxiliarySafetySignals`, #317), so a closed type
+    /// never drops a card whose own registry names an enabled alarm.
+    static func haSafetySignals(
+        for device: SmartDevice,
+        entities: [HAEntityEntry],
+        states: [String: HAEntityState]
+    ) -> Set<SafetySignalKind> {
+        // Every card can go offline; `partitionDevices` keeps it only when it is also starred.
+        var signals: Set<SafetySignalKind> = [.starredOffline]
+        switch device.kind {
+        case .plug: signals.formUnion([.longRunningPlug, .highPower])
+        case .climate: signals.insert(.longRunningClimate)
+        case .camera: signals.insert(.doorbell)
+        case .sensor(let spec):
+            // `SafetyMonitor` reads a battery from the sensor card only.
+            if spec.battery != nil { signals.insert(.lowBattery) }
+            for observation in spec.observations { signals.insert(SafetySignalKind(sensorAlertKind: observation.kind)) }
+        default: break
+        }
+        for entity in entities {
+            if let kind = safetyKind(of: entity, states: states) { signals.insert(SafetySignalKind(sensorAlertKind: kind)) }
+        }
+        return signals
+    }
+
+    /// Splits one synthesized round into the cards to draw, the cards a closed type keeps only for
+    /// enabled alerts, and the cards to drop. Nil when the policy prunes nothing, so a full selection
+    /// keeps the round byte for byte.
+    static func haTypePrunePlan(
+        home: SynthesizedHome,
+        cardEntities: [String: [HAEntityEntry]],
+        states: [String: HAEntityState],
+        policy: HATypePrunePolicy
+    ) -> HATypePrunePlan? {
+        guard !policy.prunesNothing else { return nil }
+        let entries = home.devices.map { device in
+            let rows = cardEntities[device.id] ?? []
+            // The read keys are the card's entities, so a stored entity command (an undo, a timer)
+            // still finds its hidden owner in the index.
+            let readKeys = Set(rows.map(\.entity_id) + device.referencedEntityIds
+                + (home.deviceFacets[device.id] ?? []).flatMap(\.referencedEntityIds)).sorted()
+            return CapabilityIndexedDevice(
+                id: device.id, name: device.name, category: device.capabilityCategoryID,
+                connection: .homeAssistant, sourceScope: policy.sourceScope,
+                isSourceAvailable: true, upstreamHiddenOrDisabled: false,
+                participatesInAllOff: HomeStore.joinsAllOffByDefault(device),
+                safetySignals: haSafetySignals(for: device, entities: rows, states: states),
+                readKeys: readKeys, safetyReadKeys: readKeys
+            )
+        }
+        let partition = CapabilityReferenceEngine.partitionDevices(
+            devices: entries, selection: policy.selection, safetyPolicy: policy.safetyPolicy
+        )
+        let visible = Set(partition.availableDeviceIds)
+        return HATypePrunePlan(
+            visibleDeviceIds: visible,
+            safetyRetainedDeviceIds: Set(partition.hiddenSafetyRetainedDeviceIds),
+            hiddenIndexedDevices: entries.filter { !visible.contains($0.id) }
+        )
+    }
+
+    /// The round as the panel sees it: hidden cards leave with their facets, readings, identities and
+    /// now-empty rooms. Scenes and scripts are never pruned (architecture.md §B manual rule).
+    static func applying(_ plan: HATypePrunePlan, to home: SynthesizedHome) -> SynthesizedHome {
+        var pruned = home
+        let visible = plan.visibleDeviceIds
+        pruned.devices = home.devices.filter { visible.contains($0.id) }
+        let roomIds = Set(pruned.devices.map(\.roomId))
+        pruned.rooms = home.rooms.filter { roomIds.contains($0.id) }
+        pruned.environmentReadings = home.environmentReadings.filter { visible.contains($0.id) }
+        pruned.deviceFacets = home.deviceFacets.filter { visible.contains($0.key) }
+        pruned.deviceIdentities = home.deviceIdentities.filter { visible.contains($0.key) }
+        return pruned
+    }
+}

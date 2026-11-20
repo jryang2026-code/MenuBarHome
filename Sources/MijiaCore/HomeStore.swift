@@ -716,6 +716,8 @@ public final class HomeStore {
     /// Host's enabled device types and safety switches, read by the Mi provider off the main actor
     /// (P3a-M). Updated by `syncMiotTypePrunePolicy()`.
     @ObservationIgnored let miotTypePruneBox = MiotTypePrunePolicyBox()
+    /// The same policy for the Home Assistant provider, scoped to its address (P3b-M).
+    @ObservationIgnored let haTypePruneBox = HATypePrunePolicyBox()
     /// One entry per Mi account that currently hides cards: the identities a closed type keeps for
     /// the write gate and the hidden devices whose enabled alerts still need evaluating.
     var miotTypePruneReports: [String: MiotTypePruneReport] = [:]
