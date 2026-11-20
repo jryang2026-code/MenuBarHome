@@ -135,7 +135,12 @@ extension HomeStore {
             checkHATokenVault: checkHATokenVault,
             hasLegacySettingsOrOnboarding: hasLegacySettings,
             hasPersistedLocalData: hasLocalData,
-            legacyFeatureFlags: [.voiceInput: legacyVoiceInput, .grokball: legacyGrokBall],
+            legacyFeatureFlags: [
+                .voiceInput: legacyVoiceInput,
+                .grokball: legacyGrokBall,
+                // macOS shipped Raycast integration off by default; upgrades keep the old switch.
+                .companionIntegration: defaults.bool(forKey: RaycastSnapshotExporter.integrationEnabledKey),
+            ],
             connectionRemovalReadError: connectionRemovalReadError
         )
     }

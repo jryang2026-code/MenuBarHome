@@ -200,6 +200,30 @@ struct AssistantToggleAndProviderRemovalTests {
         }
     }
 
+    @Test("A companion ask disconnected while the model answers drives nothing (P6a-M)")
+    @MainActor
+    func lateResultAfterCompanionDisconnectDiscarded() async throws {
+        let (store, mock, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        let task = Task {
+            await store.withCompanionCommandGeneration(generation) {
+                await store.runAssistantCommand("我要睡觉了")
+            }
+        }
+        await waitUntil { transport.count == 1 }
+        #expect(store.setCompanionIntegrationEnabled(false))
+        transport.release(Self.chat(Self.powerOnPlan))
+        #expect(await task.value == nil, "the disconnected companion run returns no plan")
+        #expect(await mock.executedCommands.isEmpty, "a late result must not actuate the device")
+        #expect(store.scheduledCommands.isEmpty, "nor leave a timer behind")
+    }
+
     @Test("No retry may leave once AI is switched off mid-flight")
     @MainActor
     func inResolverRetryGatedAfterToggleOff() async throws {

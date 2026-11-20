@@ -31,7 +31,7 @@ struct CompanionIntegrationToggleTests {
         return store
     }
 
-    @Test("Fresh installs default off, upgraded users default on, and uncertain identity stays fail-closed")
+    @Test("Fresh installs default off, upgrades keep the old Raycast switch, and uncertain identity stays off")
     func installDefaultsAndUncertainFallback() async throws {
         let fresh = try await Self.makeStore()
         #expect(fresh.capabilityResolutionMode == .freshInstall && !fresh.companionIntegrationEnabled && fresh.raycastBridgeToken == nil)
@@ -39,7 +39,8 @@ struct CompanionIntegrationToggleTests {
         let upgradedDefaults = InMemoryUserDefaults()
         upgradedDefaults.set(true, forKey: "has_completed_onboarding")
         let upgraded = try await Self.makeStore(defaults: upgradedDefaults)
-        #expect(upgraded.capabilityResolutionMode == .legacyPreserved && upgraded.companionIntegrationEnabled && upgraded.raycastBridgeToken != nil)
+        #expect(upgraded.capabilityResolutionMode == .legacyPreserved && !upgraded.companionIntegrationEnabled && upgraded.raycastBridgeToken == nil,
+                "macOS shipped the integration off; an upgrade must not switch it on")
 
         let legacyRaycastDefaults = InMemoryUserDefaults()
         legacyRaycastDefaults.set(true, forKey: RaycastSnapshotExporter.integrationEnabledKey)
@@ -49,13 +50,12 @@ struct CompanionIntegrationToggleTests {
         let mem = MemoryVaultStorage(); mem.readResult = .unavailable
         let uncertainDefaults = InMemoryUserDefaults(); uncertainDefaults.set(true, forKey: "has_completed_onboarding")
         let uncertain = try await Self.makeStore(defaults: uncertainDefaults, vault: CredentialVault(storage: mem.storage))
-        #expect(uncertain.isIdentityUncertain && uncertain.companionIntegrationEnabled)
-        #expect(uncertain.setCompanionIntegrationEnabled(false) == false && uncertain.companionIntegrationEnabled)
+        #expect(uncertain.isIdentityUncertain && !uncertain.companionIntegrationEnabled && uncertain.raycastBridgeToken == nil)
     }
 
     @Test("Persistence failure rolls back the switch and keeps token and snapshot intact")
     func persistenceFailureRollsBack() async throws {
-        let defaults = InMemoryUserDefaults(); defaults.set(true, forKey: "has_completed_onboarding")
+        let defaults = InMemoryUserDefaults(); defaults.set(true, forKey: "has_completed_onboarding"); defaults.set(true, forKey: RaycastSnapshotExporter.integrationEnabledKey)
         let store = try await Self.makeStore(defaults: defaults)
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("p6am-rb-\(UUID().uuidString)", isDirectory: true)
         let snapshotURL = tempDir.appendingPathComponent("raycast-snapshot.json")
