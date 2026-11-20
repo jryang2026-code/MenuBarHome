@@ -1191,6 +1191,12 @@ extension HomeStore {
     // MARK: - Scheduled Commands
 
     private func schedule(_ plan: IntentPlan, after delay: TimeInterval) -> IntentPlan {
+        guard scheduledCommandsEnabled else {
+            let message = L10n.tr("定时任务已关闭，开启后才能新建定时", "Scheduled commands are off. Turn them back on to create a timer.")
+            showToast(message, isError: true)
+            setAssistantState(.failed(message))
+            return plan
+        }
         let scopes = activeConnectionScopes
         // A timer made against the previous source's device list would be stamped with the new
         // sources; wait for one snapshot after `startListening()` before offering to schedule. LG rows
@@ -1215,9 +1221,7 @@ extension HomeStore {
             sourceScope: connectionScopeIdentifier,
             sourceScopes: scopes.sorted()
         )
-        scheduledCommands.append(entry)
-        scheduledCommands.sort { $0.fireDate < $1.fireDate }
-        persistAllScheduledCommands()
+        guard commitScheduledCommands(waiting: scheduledCommands + [entry]) else { return plan }
         startScheduledTask(for: entry, delay: delay)
         var reply = plan
         reply.reply = L10n.tr("好的，", "Scheduled — ") + entry.reply
@@ -1243,19 +1247,103 @@ extension HomeStore {
         }
     }
 
-    /// Saves every source's timers. Only the current source's arrays are shown, so writing just those
-    /// would delete the other source's timers on the next save (ADR-0019).
-    private func persistAllScheduledCommands() {
-        let all = scheduledCommands + missedScheduledCommands + foreignScheduledCommands
-        ScheduledCommand.save(all.sorted { $0.fireDate < $1.fireDate }, to: userDefaults)
+    public var scheduledCommandsAffectedByDisable: [ScheduledCommand] {
+        scheduledCommands + missedScheduledCommands + foreignScheduledCommands
     }
 
-    func persistScheduledCommandsFromCapabilities() {
-        persistAllScheduledCommands()
+    public var visiblePausedScheduledCommands: [PausedScheduledCommand] {
+        pausedScheduledCommands.filter { paused in
+            if !paused.requiresTimerRevalidation || !paused.pausedCapabilities.isEmpty || !paused.pausedScopes.isEmpty {
+                return true
+            }
+            let cmd = paused.command
+            return timerScopeMatches(cmd) || (cmd.effectiveSourceScopes == nil && connectionScopeIdentifier != nil)
+        }
     }
 
-    func startScheduledTaskFromCapabilities(for entry: ScheduledCommand, delay: TimeInterval) {
-        startScheduledTask(for: entry, delay: delay)
+    @discardableResult
+    public func setScheduledCommandsEnabled(_ enabled: Bool, confirming entries: [ScheduledCommand] = []) -> Bool {
+        guard enabled != scheduledCommandsEnabled else { return true }
+        if enabled { return revalidatePausedTimers(enabling: true) }
+        guard entries == scheduledCommandsAffectedByDisable else { return false }
+
+        var paused = pausedScheduledCommands
+        for (queue, partition) in [(scheduledCommands, TimerPartition.waiting),
+                                   (missedScheduledCommands, .missed), (foreignScheduledCommands, .foreign)] {
+            paused += queue.map { PausedScheduledCommand(command: $0, originalPartition: partition, pausedCapabilities: []) }
+        }
+        for index in paused.indices { paused[index].requiresTimerRevalidation = true }
+        guard commitScheduledCommands(waiting: [], missed: [], foreign: [], paused: paused, enabled: false) else {
+            return false
+        }
+        for entry in entries { disarmScheduledCommand(entry.id) }
+        return true
+    }
+
+    @discardableResult
+    func commitScheduledCommands(
+        waiting: [ScheduledCommand]? = nil, missed: [ScheduledCommand]? = nil,
+        foreign: [ScheduledCommand]? = nil, paused: [PausedScheduledCommand]? = nil, enabled: Bool? = nil
+    ) -> Bool {
+        let waiting = waiting ?? scheduledCommands
+        let missed = missed ?? missedScheduledCommands
+        let foreign = foreign ?? foreignScheduledCommands
+        let paused = paused ?? pausedScheduledCommands
+        let enabled = enabled ?? scheduledCommandsEnabled
+        let state = ScheduledCommandState(enabled: enabled, active: waiting + missed + foreign, paused: paused)
+        guard state.save(to: userDefaults) else {
+            let message = if !enabled && scheduledCommandsEnabled {
+                L10n.tr("无法保存暂停的定时，定时任务仍处于开启状态", "Could not save the paused timers, so scheduled commands stay on.")
+            } else {
+                L10n.tr("定时指令无法保存，请重试", "Could not save scheduled commands. Please try again.")
+            }
+            showToast(message, isError: true)
+            return false
+        }
+        if scheduledCommandsEnabled != enabled {
+            scheduledCommandsGeneration &+= 1
+            scheduledCommandsEnabled = enabled
+        }
+        scheduledCommands = waiting.sorted { $0.fireDate < $1.fireDate }
+        missedScheduledCommands = missed.sorted { $0.fireDate < $1.fireDate }
+        foreignScheduledCommands = foreign.sorted { $0.fireDate < $1.fireDate }
+        pausedScheduledCommands = paused
+        return true
+    }
+
+    func disarmScheduledCommand(_ id: UUID) {
+        scheduledTasks.removeValue(forKey: id)?.cancel()
+        scheduledTaskTokens.removeValue(forKey: id)
+        notifiedMissedTimerIds.remove(id)
+    }
+
+    private func scheduledCommandsCanWrite(generation: UInt64) -> Bool {
+        scheduledCommandsEnabled && scheduledCommandsGeneration == generation
+    }
+
+    private var scheduledCommandsOffMessage: String {
+        L10n.tr("定时任务已关闭，开启后才能执行这条定时", "Scheduled commands are off. Turn them back on to run this timer.")
+    }
+
+    func timerPlanCanResume(_ plan: IntentPlan) -> Bool {
+        guard rowsBelongToConnectedSources(for: plan),
+              planHasOnlyLGTargets(plan) || (hasReceivedInitialSnapshot && !deviceValuesAreStale) else { return false }
+        return plan.intents.allSatisfy { intent in
+            if intent.operation == .activateScene {
+                return sourceStatuses[.homeAssistant]?.isConnected != false
+                    && scenes.contains { $0.id == intent.targetId }
+                    && evaluateSceneControlGate(sceneId: intent.targetId).allowed
+            }
+            guard let device = devices.first(where: { $0.id == intent.targetId }),
+                  device.isOnline, capabilityWriteRejection(for: device) == nil,
+                  IntentDeviceCategory(device).isAssistantControllable else { return false }
+            let (connection, scope) = inferSource(for: device)
+            guard !pendingRevalidationScopes.contains(scope) else { return false }
+            if connection == .homeAssistant, sourceStatuses[.homeAssistant]?.isConnected == false { return false }
+            if connection == .xiaomiCloud,
+               (miAccountStatuses[scope] ?? sourceStatuses[.xiaomiCloud])?.isConnected == false { return false }
+            return Self.assistantEffect(of: intent.operation, on: device) != nil
+        }
     }
 
     /// Re-partitions timers after the connected sources changed. Called from `startListening()`, where
@@ -1265,7 +1353,9 @@ extension HomeStore {
         restoreScheduledCommands()
     }
 
-    private func startScheduledTask(for entry: ScheduledCommand, delay: TimeInterval) {
+    func startScheduledTask(for entry: ScheduledCommand, delay: TimeInterval) {
+        guard scheduledCommandsEnabled else { return }
+        let generation = scheduledCommandsGeneration
         scheduledTasks[entry.id]?.cancel()
         let sleep = assistantSleep
         let waitSeconds = max(0, delay)
@@ -1282,7 +1372,7 @@ extension HomeStore {
             guard let self, !Task.isCancelled else { return }
             // A source switch while this timer slept re-partitions the lists elsewhere; the timer must
             // not run against whatever home happens to be connected now.
-            guard self.timerScopeMatches(entry) else {
+            guard self.scheduledCommandsCanWrite(generation: generation), self.timerScopeMatches(entry) else {
                 self.finishScheduledTask(entry.id, token: token)
                 return
             }
@@ -1297,7 +1387,7 @@ extension HomeStore {
                 self.finishScheduledTask(entry.id, token: token)
                 return
             }
-            guard self.timerScopeMatches(entry) else {
+            guard self.scheduledCommandsCanWrite(generation: generation), self.timerScopeMatches(entry) else {
                 self.finishScheduledTask(entry.id, token: token)
                 return
             }
@@ -1310,16 +1400,15 @@ extension HomeStore {
             // Consume before sending. A switch while the request is in flight re-partitions from disk,
             // and an entry still there would be armed or moved to missed again and could run twice.
             // Losing a timer to a crash mid-execution is the safer failure for hardware.
-            self.scheduledCommands.removeAll { $0.id == entry.id }
-            self.missedScheduledCommands.removeAll { $0.id == entry.id }
-            self.foreignScheduledCommands.removeAll { $0.id == entry.id }
-            self.persistAllScheduledCommands()
-            _ = await self.executeIntentPlan(entry.plan, recordedUtterance: nil, origin: .scheduled)
             self.finishScheduledTask(entry.id, token: token)
+            guard self.commitScheduledCommands(waiting: self.scheduledCommands.filter { $0.id != entry.id }) else { return }
+            _ = await self.executeIntentPlan(
+                entry.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
+            )
         }
     }
 
-    private func timerScopeMatches(_ entry: ScheduledCommand) -> Bool {
+    func timerScopeMatches(_ entry: ScheduledCommand) -> Bool {
         // A plan whose targets are all LG LAN cards never depends on a cloud scope (ADR-0023).
         if timerTargetsAreAllLGLan(entry.plan) { return true }
         guard let scopes = entry.effectiveSourceScopes else { return false }
@@ -1354,14 +1443,11 @@ extension HomeStore {
 
     private func moveToMissed(_ entry: ScheduledCommand, taskToken: UUID) {
         finishScheduledTask(entry.id, token: taskToken)
-        scheduledCommands.removeAll { $0.id == entry.id }
-        if !missedScheduledCommands.contains(where: { $0.id == entry.id }) {
-            missedScheduledCommands.append(entry)
-        }
-        // Missed timers are listed in the panel's reminder area, not the command bar; opening the bar here
-        // would only pop an empty surface over the pinned cards.
+        guard commitScheduledCommands(
+            waiting: scheduledCommands.filter { $0.id != entry.id },
+            missed: missedScheduledCommands + [entry]
+        ) else { return }
         notifyMissedScheduledCommandsIfNeeded()
-        persistAllScheduledCommands()
     }
 
     private func waitForInitialSnapshotIfNeeded() async {
@@ -1392,18 +1478,19 @@ extension HomeStore {
         scheduledCommandsScope = scopes
         let primaryScope = connectionScopeIdentifier
 
-        let persisted = ScheduledCommand.load(from: userDefaults)
-        guard !persisted.isEmpty else {
+        guard let state = ScheduledCommandState.load(from: userDefaults) else {
             scheduledCommands = []
             missedScheduledCommands = []
             foreignScheduledCommands = []
             return
         }
+        scheduledCommandsEnabled = state.enabled
+        pausedScheduledCommands = state.paused
 
         var upcoming: [ScheduledCommand] = []
         var missed: [ScheduledCommand] = []
         var foreign: [ScheduledCommand] = []
-        for stored in persisted {
+        for stored in state.enabled ? state.active : [] {
             if stored.effectiveSourceScopes == nil {
                 // No recorded scope means the creating home is unknown. Adopting it to whichever
                 // source happens to be connected could fire it in a home it never belonged to, so
@@ -1442,7 +1529,6 @@ extension HomeStore {
         if !missedScheduledCommands.isEmpty {
             notifyMissedScheduledCommandsIfNeeded()
         }
-        persistAllScheduledCommands()
     }
 
     public func notifyMissedScheduledCommandsIfNeeded() {
@@ -1462,6 +1548,11 @@ extension HomeStore {
         // 立即补执行 is a person acting now, so the lock-screen preference applies (#143). Checked
         // before anything else: a refused run stays in the list and can be retried after unlocking.
         if rejectControlWhileLocked() { return nil }
+        guard scheduledCommandsEnabled else {
+            showToast(scheduledCommandsOffMessage, isError: true)
+            return nil
+        }
+        let generation = scheduledCommandsGeneration
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
         // Same exemption as the armed path: a plan targeting only LG LAN cards is driven locally, so
         // an unrelated cloud scope being off must not block "Run Now" either (ADR-0023).
@@ -1481,6 +1572,7 @@ extension HomeStore {
         // A switch or a lock can land while we wait for the snapshot. Re-check before consuming the
         // entry: it is removed and persisted only once the run is actually going ahead.
         if rejectControlWhileLocked() { return nil }
+        guard scheduledCommandsCanWrite(generation: generation) else { return nil }
         if let entryScopes {
             guard lgOnly || Self.sourceScopesMatch(entryScopes, active: activeConnectionScopes) else { return nil }
         } else {
@@ -1512,16 +1604,17 @@ extension HomeStore {
         // have taken it. Existence check, removal and persistence run in one stretch without an await
         // so exactly one waiter can win.
         guard let current = missedScheduledCommands.first(where: { $0.id == id }) else { return nil }
-        missedScheduledCommands.removeAll { $0.id == id }
+        guard commitScheduledCommands(missed: missedScheduledCommands.filter { $0.id != id }) else { return nil }
         notifiedMissedTimerIds.remove(id)
-        persistAllScheduledCommands()
-        return await executeIntentPlan(current.plan, recordedUtterance: nil, origin: .scheduled)
+        return await executeIntentPlan(
+            current.plan, recordedUtterance: nil, origin: .scheduled, timerGeneration: generation
+        )
     }
 
     public func dismissMissedScheduledCommand(id: UUID) {
-        missedScheduledCommands.removeAll { $0.id == id }
-        notifiedMissedTimerIds.remove(id)
-        persistAllScheduledCommands()
+        if commitScheduledCommands(missed: missedScheduledCommands.filter { $0.id != id }) {
+            notifiedMissedTimerIds.remove(id)
+        }
     }
 
     /// 确认 on a legacy timer saved before scopes existed (#22). It stamps the timer with the sources
@@ -1532,11 +1625,17 @@ extension HomeStore {
     /// previous home, or when the plan's devices are not here.
     @discardableResult
     public func confirmScheduledCommandSource(id: UUID) async -> Bool {
+        guard scheduledCommandsEnabled else {
+            showToast(scheduledCommandsOffMessage, isError: true)
+            return false
+        }
+        let generation = scheduledCommandsGeneration
         guard let entry = missedScheduledCommands.first(where: { $0.id == id }),
               entry.effectiveSourceScopes == nil,
               let tappedOwner = currentLegacyTimerOwner() else { return false }
         await waitForInitialSnapshotIfNeeded()
-        guard currentLegacyTimerOwner() == tappedOwner else { return false }
+        guard scheduledCommandsCanWrite(generation: generation),
+              currentLegacyTimerOwner() == tappedOwner else { return false }
         // Confirming stamps the newly connected sources; it must not do that while the device rows
         // still come from the previous home (#22).
         guard rowsBelongToConnectedSources(for: entry.plan) else {
@@ -1570,20 +1669,15 @@ extension HomeStore {
             sourceScope: connectionScopeIdentifier,
             sourceScopes: tappedOwner.scopes.sorted()
         )
-        missedScheduledCommands.removeAll { $0.id == id }
+        let remaining = missedScheduledCommands.filter { $0.id != id }
         let now = assistantNow()
         if confirmed.fireDate > now {
+            guard commitScheduledCommands(waiting: scheduledCommands + [confirmed], missed: remaining) else { return false }
             notifiedMissedTimerIds.remove(id)
-            scheduledCommands.append(confirmed)
-            scheduledCommands.sort { $0.fireDate < $1.fireDate }
-            persistAllScheduledCommands()
             startScheduledTask(for: confirmed, delay: confirmed.fireDate.timeIntervalSince(now))
         } else {
-            // The user is looking at it in the panel; a "missed while closed" banner would only repeat it.
+            guard commitScheduledCommands(missed: remaining + [confirmed]) else { return false }
             notifiedMissedTimerIds.insert(id)
-            missedScheduledCommands.append(confirmed)
-            missedScheduledCommands.sort { $0.fireDate < $1.fireDate }
-            persistAllScheduledCommands()
         }
         return true
     }
@@ -1606,27 +1700,17 @@ extension HomeStore {
     /// Paused timers count too: they are shown in the bar and "cancel every timer" has to include them.
     @discardableResult
     public func cancelScheduledCommands(id: UUID? = nil) -> Int {
-        let targets = scheduledCommands.filter { id == nil || $0.id == id }
-        for entry in targets {
-            scheduledTasks.removeValue(forKey: entry.id)?.cancel()
-            scheduledTaskTokens.removeValue(forKey: entry.id)
-        }
-        scheduledCommands.removeAll { entry in targets.contains { $0.id == entry.id } }
-
-        let missedTargets = missedScheduledCommands.filter { id == nil || $0.id == id }
-        for entry in missedTargets {
-            notifiedMissedTimerIds.remove(entry.id)
-        }
-        missedScheduledCommands.removeAll { entry in missedTargets.contains { $0.id == entry.id } }
-
-        let pausedTargets = pausedScheduledCommands.filter { id == nil || $0.command.id == id }
-        if !pausedTargets.isEmpty {
-            let removed = Set(pausedTargets.map(\.command.id))
-            pausedScheduledCommands.removeAll { removed.contains($0.command.id) }
-            PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
-        }
-        persistAllScheduledCommands()
-        return targets.count + missedTargets.count + pausedTargets.count
+        func matches(_ entry: ScheduledCommand) -> Bool { id == nil || entry.id == id }
+        let targets = (scheduledCommands + missedScheduledCommands).filter(matches)
+        let pausedTargets = Set(visiblePausedScheduledCommands.filter { matches($0.command) }.map(\.command.id))
+        let count = targets.count + pausedTargets.count
+        guard count > 0, commitScheduledCommands(
+            waiting: scheduledCommands.filter { !matches($0) },
+            missed: missedScheduledCommands.filter { !matches($0) },
+            paused: pausedScheduledCommands.filter { !pausedTargets.contains($0.command.id) }
+        ) else { return 0 }
+        for entry in targets { disarmScheduledCommand(entry.id) }
+        return count
     }
 
     /// Where an executed plan came from; only explicit user actions train habits (#34).
@@ -1661,6 +1745,7 @@ extension HomeStore {
         usedHabitContext: Bool = false,
         habitSummary: String? = nil,
         automationGeneration: UInt64? = nil,
+        timerGeneration: UInt64? = nil,
         onAutomationCompletion: ((Int, Int, Int) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
@@ -1690,11 +1775,17 @@ extension HomeStore {
             intentsByTarget[intent.targetId, default: []].append(intent)
         }
 
+        func runtimeAllowsWrites() -> Bool {
+            if let timerGeneration { return scheduledCommandsCanWrite(generation: timerGeneration) }
+            if let automationGeneration { return automationCanWrite(generation: automationGeneration) }
+            return true
+        }
+
         var outcomes: [AssistantApplyOutcome] = []
-        if let automationGeneration {
-            // Rules send sequentially so disabling automation can stop subsequent writes.
+        if timerGeneration != nil || automationGeneration != nil {
+            // A switch stops the next step without cancelling a write already sent to the provider.
             for intent in plan.intents {
-                guard context == controlContextID, automationCanWrite(generation: automationGeneration) else { break }
+                guard context == controlContextID, runtimeAllowsWrites() else { break }
                 outcomes.append(await apply(intent, context: context))
             }
         } else {
@@ -1741,9 +1832,7 @@ extension HomeStore {
         }
 
         onAutomationCompletion?(outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count)
-        if outcomes.isEmpty, let automationGeneration, !automationCanWrite(generation: automationGeneration) {
-            return plan
-        }
+        if outcomes.isEmpty, !runtimeAllowsWrites() { return plan }
 
         // Only explicit user actions become habits, and only for intents that actually succeeded (#34/#113).
         var habitReceipt: UserHabitMemory.RecordingReceipt?
@@ -1759,11 +1848,14 @@ extension HomeStore {
             userHabitMemory = memory
         }
 
+        let timerInterrupted = timerGeneration != nil && outcomes.count < plan.intents.count && !runtimeAllowsWrites()
+        let completedReply = timerInterrupted
+            ? IntentReply.describe(succeededIntents, devices: devices, scenes: scenes) : plan.reply
         if !appliedDeviceIds.isEmpty {
             let actionId = UUID()
             lastAssistantUndo = AssistantUndoEntry(
                 actionId: actionId,
-                reply: plan.reply,
+                reply: completedReply,
                 restore: restoreCommands.reversed(),
                 previous: previousSnapshot.filter { appliedDeviceIds.contains($0.id) },
                 at: Date(),
@@ -1772,10 +1864,10 @@ extension HomeStore {
             // Automation rules always offer undo, even for one device, and keep the banner long enough
             // to survive a lock/sleep round trip (#59). GrokBall pills promise undo too (#114).
             // The panel keeps its 2+ device rule (#53).
-            if appliedDeviceIds.count > 1 || origin == .automation || offersUndoBanner {
+            if appliedDeviceIds.count > 1 || origin == .automation || offersUndoBanner || timerInterrupted {
                 scheduleUndoBanner(
                     actionId: actionId,
-                    title: plan.reply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : plan.reply,
+                    title: completedReply.isEmpty ? L10n.tr("已执行 AI 指令", "Executed AI command") : completedReply,
                     restoreCommands: restoreCommands.reversed(),
                     previousDevices: previousSnapshot,
                     deviceCount: appliedDeviceIds.count,
@@ -1785,6 +1877,15 @@ extension HomeStore {
             }
         }
 
+        if timerInterrupted {
+            let message = L10n.tr("定时任务开关已改变，已停止剩余步骤", "The scheduled-commands switch changed, so the remaining steps were stopped.")
+            var partial = plan
+            partial.intents = succeededIntents
+            partial.reply = succeededIntents.isEmpty ? message
+                : completedReply + "\n" + message
+            setAssistantState(succeededIntents.isEmpty ? .failed(message) : .done(partial.reply))
+            return partial
+        }
         if !failedNames.isEmpty {
             let sep = L10n.isEnglish ? ", " : "、"
             setAssistantState(.failed(L10n.tr("\(failedNames.joined(separator: sep)) 未响应", "\(failedNames.joined(separator: sep)) did not respond")))

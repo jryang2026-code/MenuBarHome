@@ -1839,40 +1839,34 @@ extension HomeStore {
         }
 
         if !timerPauseById.isEmpty {
-            func extractPaused(from list: inout [ScheduledCommand], partition: TimerPartition) {
-                var kept: [ScheduledCommand] = []
-                for entry in list {
-                    if let pause = timerPauseById[entry.id] {
-                        scheduledTasks.removeValue(forKey: entry.id)?.cancel()
-                        scheduledTaskTokens.removeValue(forKey: entry.id)
-                        notifiedMissedTimerIds.remove(entry.id)
-                        pausedScheduledCommands.append(
-                            PausedScheduledCommand(
-                                command: entry, originalPartition: partition,
-                                pausedCapabilities: pause.caps.isEmpty ? fallbackCapabilities : pause.caps,
-                                pausedScopes: pause.scopes
-                            )
-                        )
+            var paused = pausedScheduledCommands
+            func kept(_ queue: [ScheduledCommand], partition: TimerPartition) -> [ScheduledCommand] {
+                queue.filter { entry in
+                    guard let pause = timerPauseById[entry.id] else { return true }
+                    if let index = paused.firstIndex(where: { $0.command.id == entry.id }) {
+                        paused[index].originalPartition = partition
                     } else {
-                        kept.append(entry)
+                        paused.append(PausedScheduledCommand(
+                            command: entry, originalPartition: partition,
+                            pausedCapabilities: [], pausedScopes: pause.scopes
+                        ))
                     }
+                    return false
                 }
-                list = kept
             }
-            extractPaused(from: &scheduledCommands, partition: .waiting)
-            extractPaused(from: &missedScheduledCommands, partition: .missed)
-            extractPaused(from: &foreignScheduledCommands, partition: .foreign)
-            for idx in pausedScheduledCommands.indices {
-                guard let pause = timerPauseById[pausedScheduledCommands[idx].command.id] else { continue }
-                let caps = Set(pausedScheduledCommands[idx].pausedCapabilities).union(
+            let waiting = kept(scheduledCommands, partition: .waiting)
+            let missed = kept(missedScheduledCommands, partition: .missed)
+            let foreign = kept(foreignScheduledCommands, partition: .foreign)
+            for idx in paused.indices {
+                guard let pause = timerPauseById[paused[idx].command.id] else { continue }
+                paused[idx].pausedCapabilities = Set(paused[idx].pausedCapabilities).union(
                     pause.caps.isEmpty ? fallbackCapabilities : pause.caps
                 ).sorted { $0.rawValue < $1.rawValue }
-                let scopes = Set(pausedScheduledCommands[idx].pausedScopes).union(pause.scopes).sorted()
-                pausedScheduledCommands[idx].pausedCapabilities = caps
-                pausedScheduledCommands[idx].pausedScopes = scopes
+                paused[idx].pausedScopes = Set(paused[idx].pausedScopes).union(pause.scopes).sorted()
             }
-            PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
-            persistScheduledCommandsFromCapabilities()
+            if commitScheduledCommands(waiting: waiting, missed: missed, foreign: foreign, paused: paused) {
+                for id in timerPauseById.keys { disarmScheduledCommand(id) }
+            }
         }
 
         if !rulePauseById.isEmpty {
@@ -1936,75 +1930,93 @@ extension HomeStore {
         return true
     }
 
+    @discardableResult
+    func revalidatePausedTimers(enabling: Bool = false) -> Bool {
+        guard scheduledCommandsEnabled || enabling else { return true }
+        if pausedScheduledCommands.isEmpty { return !enabling || commitScheduledCommands(enabled: true) }
+        let indexed = currentIndexedDevicesList()
+        let indexedById = Dictionary(uniqueKeysWithValues: indexed.map { ($0.id, $0) })
+        let sceneRefs = currentSceneReferences()
+        let (groups, _) = loadDeviceGroupReferences()
+        let now = assistantNow()
+        let nowEpoch = Int(now.timeIntervalSince1970.rounded(.down))
+        let activeScopes = activeConnectionScopes.filter { scope in
+            guard let conn = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
+            return isCapabilityScopeConfigured(conn, scope: scope)
+        }
+        var stillPaused: [PausedScheduledCommand] = []
+        var waiting = scheduledCommands
+        var missed = missedScheduledCommands
+        var foreign = foreignScheduledCommands
+        var resumed: [ScheduledCommand] = []
+        for paused in pausedScheduledCommands {
+            let cmd = paused.command
+            let hasCapabilityPause = !paused.requiresTimerRevalidation
+                || !paused.pausedCapabilities.isEmpty || !paused.pausedScopes.isEmpty
+            if hasCapabilityPause, !pausedItemScopesAreSettled(pausedTimerScopes(paused)) {
+                stillPaused.append(paused)
+                continue
+            }
+            let disposition: PausedTimerResumeDisposition
+            if paused.requiresTimerRevalidation {
+                let knownSource = cmd.effectiveSourceScopes != nil || timerTargetsAreAllLGLan(cmd.plan, indexedById: indexedById)
+                // Foreign entries wait for their own home to return and pass the live checks.
+                guard knownSource ? timerScopeMatches(cmd) : connectionScopeIdentifier != nil,
+                      timerPlanCanResume(cmd.plan),
+                      paused.pausedCapabilities.allSatisfy({ cap in
+                          if case .connection = cap { return true } // The affected scopes were checked above.
+                          return capabilitySelection.contains(cap)
+                      }) else {
+                    stillPaused.append(paused)
+                    continue
+                }
+                disposition = knownSource && paused.originalPartition != .missed && cmd.fireDate > now
+                    ? .armWaiting : .moveToMissed
+            } else {
+                let ref = makeTimerReference(
+                    for: cmd, partition: paused.originalPartition,
+                    pausedCapabilities: paused.pausedCapabilities, indexedById: indexedById
+                )
+                disposition = CapabilityReferenceEngine.revalidatePausedTimer(
+                    timer: ref, fireAtEpochSeconds: Int(cmd.fireDate.timeIntervalSince1970.rounded(.down)),
+                    nowEpochSeconds: nowEpoch, activeConnectionScopes: activeScopes,
+                    selection: capabilitySelection, devices: indexed, scenes: sceneRefs, deviceGroups: groups
+                )
+            }
+            switch disposition {
+            case .keepPaused:
+                stillPaused.append(paused)
+            case .armWaiting:
+                if !waiting.contains(where: { $0.id == cmd.id }) {
+                    waiting.append(cmd)
+                    resumed.append(cmd)
+                }
+            case .moveToMissed:
+                if !missed.contains(where: { $0.id == cmd.id }) { missed.append(cmd) }
+            case .partitionForeign:
+                if !foreign.contains(where: { $0.id == cmd.id }) { foreign.append(cmd) }
+            }
+        }
+        guard enabling || stillPaused != pausedScheduledCommands else { return true }
+        let addedMissed = missed.count > missedScheduledCommands.count
+        guard commitScheduledCommands(waiting: waiting, missed: missed, foreign: foreign, paused: stillPaused, enabled: true)
+        else { return false }
+        for cmd in resumed { startScheduledTask(for: cmd, delay: cmd.fireDate.timeIntervalSince(now)) }
+        if addedMissed {
+            isShowingAssistantBar = true
+            notifyMissedScheduledCommandsIfNeeded()
+        }
+        return true
+    }
+
     func revalidatePausedItems(snapshot: SynthesizedHome? = nil) {
+        revalidatePausedTimers()
         let authoritative = revalidationIsAuthoritative(snapshot)
         let indexed = currentIndexedDevicesList()
         let indexedById = Dictionary(uniqueKeysWithValues: indexed.map { ($0.id, $0) })
         let sceneRefs = currentSceneReferences()
         let (groups, _) = loadDeviceGroupReferences()
         let groupById = Dictionary(uniqueKeysWithValues: groups.map { ($0.id, $0) })
-        let now = assistantNow()
-        let nowEpoch = Int(now.timeIntervalSince1970.rounded(.down))
-
-        if !pausedScheduledCommands.isEmpty {
-            let activeScopesForRevalidation = activeConnectionScopes.filter { scope in
-                guard let conn = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
-                return isCapabilityScopeConfigured(conn, scope: scope)
-            }
-            var stillPaused: [PausedScheduledCommand] = []
-            var timersChanged = false
-            for paused in pausedScheduledCommands {
-                if !pausedItemScopesAreSettled(pausedTimerScopes(paused)) {
-                    stillPaused.append(paused)
-                    continue
-                }
-                let cmd = paused.command
-                let ref = makeTimerReference(
-                    for: cmd, partition: paused.originalPartition,
-                    pausedCapabilities: paused.pausedCapabilities, indexedById: indexedById
-                )
-                let disposition = CapabilityReferenceEngine.revalidatePausedTimer(
-                    timer: ref, fireAtEpochSeconds: Int(cmd.fireDate.timeIntervalSince1970.rounded(.down)),
-                    nowEpochSeconds: nowEpoch, activeConnectionScopes: activeScopesForRevalidation,
-                    selection: capabilitySelection, devices: indexed, scenes: sceneRefs, deviceGroups: groups
-                )
-                switch disposition {
-                case .keepPaused:
-                    stillPaused.append(paused)
-                case .armWaiting:
-                    timersChanged = true
-                    if !scheduledCommands.contains(where: { $0.id == cmd.id }) {
-                        scheduledCommands.append(cmd)
-                        scheduledCommands.sort { $0.fireDate < $1.fireDate }
-                        startScheduledTaskFromCapabilities(for: cmd, delay: cmd.fireDate.timeIntervalSince(now))
-                    }
-                case .moveToMissed:
-                    timersChanged = true
-                    if !missedScheduledCommands.contains(where: { $0.id == cmd.id }) {
-                        missedScheduledCommands.append(cmd)
-                        missedScheduledCommands.sort { $0.fireDate < $1.fireDate }
-                    }
-                case .partitionForeign:
-                    timersChanged = true
-                    if !foreignScheduledCommands.contains(where: { $0.id == cmd.id }) {
-                        foreignScheduledCommands.append(cmd)
-                        foreignScheduledCommands.sort { $0.fireDate < $1.fireDate }
-                    }
-                }
-            }
-            if stillPaused != pausedScheduledCommands {
-                pausedScheduledCommands = stillPaused
-                PausedScheduledCommand.save(pausedScheduledCommands, to: userDefaults)
-            }
-            if timersChanged {
-                if !missedScheduledCommands.isEmpty {
-                    isShowingAssistantBar = true
-                    notifyMissedScheduledCommandsIfNeeded()
-                }
-                persistScheduledCommandsFromCapabilities()
-            }
-        }
-
         let ruleStore = AutomationRuleStore(defaults: userDefaults)
         var rules = ruleStore.load()
         var rulesChanged = false

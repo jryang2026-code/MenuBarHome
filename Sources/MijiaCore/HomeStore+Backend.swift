@@ -169,6 +169,9 @@ extension HomeStore {
         if !rooms.contains(where: { $0.id == dev.roomId || $0.name == dev.roomName }) {
             rooms.append(RoomArea(id: dev.roomId, name: dev.roomName, sortOrder: 1))
         }
+        if dev.isOnline, pausedScheduledCommands.contains(where: \.requiresTimerRevalidation) {
+            revalidatePausedTimers()
+        }
     }
 
     public func startListening() {
@@ -732,6 +735,10 @@ extension HomeStore {
                 expandedDeviceId = nil
             }
             reconcileReenabledScopesAfterSnapshot(snapshot)
+            if snapshot.isInitialLoadComplete, snapshot.closesAwayGap,
+               pausedScheduledCommands.contains(where: \.requiresTimerRevalidation) {
+                revalidatePausedTimers()
+            }
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
             isApplyingProviderSnapshot = false

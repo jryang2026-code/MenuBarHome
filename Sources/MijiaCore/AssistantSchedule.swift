@@ -200,14 +200,15 @@ public struct ScheduledCommand: Codable, Identifiable, Equatable, Sendable {
     }
 
     public static func load(from defaults: UserDefaults) -> [ScheduledCommand] {
-        guard let data = defaults.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode([ScheduledCommand].self, from: data) else {
-            return []
-        }
-        return decoded.sorted { $0.fireDate < $1.fireDate }
+        (ScheduledCommandState.load(from: defaults)?.active ?? []).sorted { $0.fireDate < $1.fireDate }
     }
 
     public static func save(_ commands: [ScheduledCommand], to defaults: UserDefaults) {
+        if var state = ScheduledCommandState.loadVersioned(from: defaults) {
+            state.active = commands
+            _ = state.save(to: defaults)
+            return
+        }
         if commands.isEmpty {
             defaults.removeObject(forKey: storageKey)
             return
@@ -228,6 +229,7 @@ public struct PausedScheduledCommand: Codable, Equatable, Sendable {
     /// The scopes this timer actually lost. A timer stamps every source connected at creation, so
     /// waiting on the whole stamp would also wait for unrelated accounts.
     public var pausedScopes: [String]
+    var requiresTimerRevalidation = false
 
     public init(
         command: ScheduledCommand,
@@ -241,7 +243,9 @@ public struct PausedScheduledCommand: Codable, Equatable, Sendable {
         self.pausedScopes = pausedScopes
     }
 
-    private enum CodingKeys: String, CodingKey { case command, originalPartition, pausedCapabilities, pausedScopes }
+    private enum CodingKeys: String, CodingKey {
+        case command, originalPartition, pausedCapabilities, pausedScopes, requiresTimerRevalidation
+    }
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -249,6 +253,7 @@ public struct PausedScheduledCommand: Codable, Equatable, Sendable {
         originalPartition = try container.decode(TimerPartition.self, forKey: .originalPartition)
         pausedCapabilities = try container.decodeIfPresent([CapabilityID].self, forKey: .pausedCapabilities) ?? []
         pausedScopes = try container.decodeIfPresent([String].self, forKey: .pausedScopes) ?? []
+        requiresTimerRevalidation = try container.decodeIfPresent(Bool.self, forKey: .requiresTimerRevalidation) ?? false
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -257,23 +262,68 @@ public struct PausedScheduledCommand: Codable, Equatable, Sendable {
         try container.encode(originalPartition, forKey: .originalPartition)
         try container.encode(pausedCapabilities, forKey: .pausedCapabilities)
         if !pausedScopes.isEmpty { try container.encode(pausedScopes, forKey: .pausedScopes) }
+        if requiresTimerRevalidation { try container.encode(true, forKey: .requiresTimerRevalidation) }
     }
 
     public static func load(from defaults: UserDefaults) -> [PausedScheduledCommand] {
-        guard let data = defaults.data(forKey: storageKey),
-              let decoded = try? JSONDecoder().decode([PausedScheduledCommand].self, from: data) else {
-            return []
-        }
-        return decoded
+        ScheduledCommandState.load(from: defaults)?.paused ?? []
     }
 
     public static func save(_ entries: [PausedScheduledCommand], to defaults: UserDefaults) {
+        if var state = ScheduledCommandState.loadVersioned(from: defaults) {
+            state.paused = entries
+            _ = state.save(to: defaults)
+            return
+        }
         if entries.isEmpty {
             defaults.removeObject(forKey: storageKey)
             return
         }
         guard let data = try? JSONEncoder().encode(entries) else { return }
         defaults.set(data, forKey: storageKey)
+    }
+}
+
+/// The switch and both queues share one commit. Legacy arrays can still be read and are only
+/// replaced on a successful commit. An older build cannot arm the versioned record as a timer array.
+struct ScheduledCommandState: Codable {
+    var version = 2
+    var enabled = true
+    var active: [ScheduledCommand] = []
+    var paused: [PausedScheduledCommand] = []
+
+    static func loadVersioned(from defaults: UserDefaults) -> Self? {
+        guard let data = defaults.data(forKey: ScheduledCommand.storageKey),
+              let state = try? JSONDecoder().decode(Self.self, from: data), state.version == 2 else { return nil }
+        return state
+    }
+
+    static func load(from defaults: UserDefaults) -> Self? {
+        if let state = loadVersioned(from: defaults) { return state }
+        let decoder = JSONDecoder()
+        var state = Self()
+        do {
+            if let raw = defaults.object(forKey: ScheduledCommand.storageKey) {
+                guard let data = raw as? Data else { return nil }
+                state.active = try decoder.decode([ScheduledCommand].self, from: data)
+            }
+            if let raw = defaults.object(forKey: PausedScheduledCommand.storageKey) {
+                guard let data = raw as? Data else { return nil }
+                state.paused = try decoder.decode([PausedScheduledCommand].self, from: data)
+            }
+            return state
+        } catch {
+            return nil
+        }
+    }
+
+    func save(to defaults: UserDefaults) -> Bool {
+        guard Self.load(from: defaults) != nil,
+              let data = try? JSONEncoder().encode(self) else { return false }
+        defaults.set(data, forKey: ScheduledCommand.storageKey)
+        guard defaults.data(forKey: ScheduledCommand.storageKey) == data else { return false }
+        defaults.removeObject(forKey: PausedScheduledCommand.storageKey)
+        return true
     }
 }
 
