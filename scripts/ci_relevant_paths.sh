@@ -181,7 +181,7 @@ while IFS= read -r path || [ -n "$path" ]; do
             core=true
             scripts=true
             ;;
-        scripts/ci_snapshot_locale.sh|scripts/ci_snapshot_branch.sh|scripts/ci_commit_snapshot_baselines.sh|.github/workflows/record-snapshots.yml)
+        scripts/ci_snapshot_locale.sh|scripts/ci_snapshot_branch.sh|scripts/ci_snapshot_artifact.sh|scripts/ci_commit_snapshot_baselines.sh|scripts/record_snapshots.sh|.github/workflows/record-snapshots.yml)
             code=true
             macos=true
             scripts=true

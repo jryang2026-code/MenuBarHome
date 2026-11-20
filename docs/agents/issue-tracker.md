@@ -29,7 +29,7 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 
 ## Pull requests & skill hooks
 
-- **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines. UI snapshot pixels are compared by `macos-snapshots` on `macos-26-intel`. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
+- **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines. UI snapshot pixels are compared by `macos-test` on `macos-26-intel`. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
 - **Push discipline**: a subagent runs `git merge origin/main` only for a conflict or a check that demands it. Batch one round of fixes into one push — never "merge main, push, fix, push again": every push cancels the running macOS jobs (1213 macOS minutes lost on 2026-11-19). Triage a red run with `bash scripts/ci-failures.sh <run-id|pr>` first, before reading logs.
 - **Merge**: `bash scripts/merge-pr.sh <n> <head-sha>` (squash + watch the main CI run; with a plain `gh pr merge <n> --squash --delete-branch` you must watch main yourself).
 - **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `triage` reads this flag.)_

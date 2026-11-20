@@ -6,8 +6,7 @@
 #
 # Temperature and measurement units follow the system locale. GitHub-hosted Macs
 # default to a US locale (Fahrenheit). Tests and the UI snapshot baselines use zh_CN.
-# --require-xcode is for the reference renderer only. The local VM that may run
-# macos-test does not have to satisfy it.
+# --require-xcode is enforced on the reference renderer jobs (macos-test and record-snapshots).
 set -euo pipefail
 
 require=""

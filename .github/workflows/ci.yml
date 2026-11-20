@@ -45,6 +45,7 @@ jobs:
         id: filter
         env:
           EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           BEFORE_SHA: ${{ github.event.before }}
@@ -54,11 +55,21 @@ jobs:
             printf 'code=true\nmacos=true\nwindows=true\ncore=true\nraycast=true\nscripts=true\nmacos_build=true\nappintents=true\nwindows_native=true\nnas=true\ngo2rtc=true\n' >> "$GITHUB_OUTPUT"
           }
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            full_ci
-            echo "workflow_dispatch always runs full CI"
-            exit 0
-          fi
-          if [ "$EVENT_NAME" = "pull_request" ]; then
+            if [ "$REF_NAME" = "refs/heads/main" ]; then
+              full_ci
+              echo "workflow_dispatch on main always runs full CI"
+              exit 0
+            fi
+            if ! git rev-parse --verify --quiet "origin/main^{commit}" >/dev/null; then
+              git fetch --no-tags origin main 2>/dev/null || true
+            fi
+            if ! base="$(git merge-base origin/main "$HEAD_SHA" 2>/dev/null)" || [ -z "$base" ]; then
+              full_ci
+              echo "could not resolve merge-base with origin/main; running full CI"
+              exit 0
+            fi
+            head="$HEAD_SHA"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
             base="$BASE_SHA"
             head="$HEAD_SHA"
           else
@@ -106,15 +117,15 @@ jobs:
         run: bash scripts/install_ripgrep.sh
       - name: Secret, coding-standard, capability-matrix, and script checks
         # 这些检查与操作系统无关，放在 Ubuntu 上，避免占用 macOS 配额。
-        # scripts 改动或 push main 时补跑完整脚本自检；常规 code PR 只跑快速 lint。
+        # scripts 改动或 main 上补跑完整脚本自检；常规 PR（含分支派发 CI）只跑快速 lint。
         run: |
-          if [ "${{ needs.changes.outputs.scripts }}" = "true" ] || [ "${{ github.event_name }}" != "pull_request" ]; then
+          if [ "${{ needs.changes.outputs.scripts }}" = "true" ] || [ "${{ github.ref }}" = "refs/heads/main" ]; then
             bash scripts/check.sh --lint-only --script-tests
           else
             bash scripts/check.sh --lint-only
           fi
       - name: Test NAS deployment safety
-        if: needs.changes.outputs.nas == 'true' || needs.changes.outputs.scripts == 'true' || github.event_name != 'pull_request'
+        if: needs.changes.outputs.nas == 'true' || needs.changes.outputs.scripts == 'true' || github.ref == 'refs/heads/main'
         run: bash scripts/test_nas_setup.sh
 
   linux-core:
@@ -222,13 +233,13 @@ jobs:
 
   windows-camera-bin:
     needs: changes
-    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
+    if: needs.changes.outputs.code == 'true' && ((github.ref == 'refs/heads/main' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
     # 构建安装包内置的 go2rtc 与最小 LGPL ffmpeg；结果由 windows-rust-test 与 windows-installer 消费。
     uses: ./.github/workflows/camera-bin.yml
 
   windows-rust-test:
     needs: [changes, windows-camera-bin]
-    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
+    if: needs.changes.outputs.code == 'true' && ((github.ref == 'refs/heads/main' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
     # 原生层改动在 PR 上也运行（含 Win32 前端单测 + Cargo 测试）；纯前端 PR 只跑 Ubuntu windows-core。
     runs-on: windows-latest
     defaults:
@@ -262,7 +273,7 @@ jobs:
   windows-installer:
     needs: [changes, windows-camera-bin]
     # 原生层 / 打包配置改动在 PR 上同步验证安装包，main 上凡 Windows 改动都出安装包产物。
-    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
+    if: needs.changes.outputs.code == 'true' && ((github.ref == 'refs/heads/main' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true')
     # 安装包依赖 windows-camera-bin 的内置组件；前端测试由 windows-core 覆盖，
     # cargo test 在 windows-rust-test。前端由 tauri 的 beforeBuildCommand 构建。
     runs-on: windows-latest
@@ -335,24 +346,28 @@ jobs:
   macos-test:
     needs: changes
     if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
-    # 全部 Swift 单测，不含像素比对。三个 macOS job 里只有这个可以排到本地隔离 VM：
-    # VM 单任务串行，三个都排过去时一次运行占用约 20 分钟，后面的 PR 全在排队。
-    # Empty MACOS_CI_RUNNER keeps GitHub-hosted macOS; the local option is an isolated VM.
-    # 像素比对在 macos-snapshots，固定 macos-26-intel。VM 不是基准渲染机。
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.MACOS_CI_RUNNER || '"macos-26-intel"') || 'macos-26-intel' }}
+    # 全部 Swift 单测与 UI 快照像素比对在同一台托管机上复用一次 debug 编译产物。
+    # 唯一的像素基准：固定 GitHub 托管的 macos-26-intel（Xcode 26.6，zh_CN）。
+    # 换镜像或 Xcode 后必须重录基线。如需重新启用本地 VM，须先将单测拆回独立 job。
+    runs-on: macos-26-intel
     timeout-minutes: 45
+    # GitHub Actions 权限粒度仅支持 workflow/job 级（无 step 级）。
+    # 本 job 显式降到 contents: read（不再继承 workflow 级 actions: write）：
+    # actions/cache 与 actions/upload-artifact 使用 runner 运行时令牌，不依赖 GITHUB_TOKEN 的 actions: write。
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
       - name: Select Xcode 26.6
-        if: runner.environment == 'github-hosted'
         uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
         with:
           xcode-version: "26.6"
       - name: Toolchain info
-        run: xcodebuild -version && swift --version
+        run: xcodebuild -version && swift --version && sw_vers
       # 只有 main 写缓存：key 带 sha，PR 也写的话一次运行 370 MB，很快撑满仓库的 10 GB。
       - name: Restore Swift build cache
         id: swift-debug-cache
@@ -361,7 +376,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .build
-          # v4 + runner.arch separates hosted macos-26-intel (X64) from local VM (ARM64).
+          # v4 + runner.arch keeps hosted Intel caches separate from arm64 caches.
           key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
           restore-keys: |
             spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
@@ -370,17 +385,59 @@ jobs:
         run: rm -rf .build
       - name: Restore source mtimes for the Swift cache
         run: bash scripts/ci_restore_mtimes.sh
-      - name: Match the reference locale
-        # 温度单位跟随系统区域。托管机默认美国区（华氏度），测试和黄金语料的基准是中国区。
-        # 不传 --require-xcode：这个 job 可能跑在本地 VM 上，VM 的 Xcode 不必等于基准。
-        run: bash scripts/ci_snapshot_locale.sh
-      - name: Swift tests
+      - name: Reference locale
+        id: reference-locale
+        # 温度单位跟随系统区域。托管机默认美国区（华氏度），测试、黄金语料与 UI 快照基准是中国区。
+        run: bash scripts/ci_snapshot_locale.sh --require-xcode 26.6
+      - name: Swift unit tests
+        id: unit-tests
         env:
           # A deadlocked test samples its stacks and fails here instead of burning the 45-minute
           # job timeout in silence.
           SWIFT_TEST_STALL_SECONDS: "300"
-        # 像素比对不在这里。本 job 可能被排到本地 VM，而基准是 macos-26-intel。
         run: bash scripts/ci_swift_test.sh --skip SnapshotTests
+      - name: Compare UI snapshots
+        id: snapshot-tests
+        # 单测失败时照常跑快照比对，让一次运行同时返回两类结果与可采纳基线。
+        if: always() && !cancelled() && steps.reference-locale.outcome == 'success'
+        env:
+          SWIFT_TEST_STALL_SECONDS: "300"
+          SNAPSHOT_ARTIFACTS: ${{ runner.temp }}/snapshot-failures
+        run: bash scripts/ci_swift_test.sh --filter SnapshotTests
+      - name: Upload snapshot mismatches
+        if: always() && !cancelled() && steps.snapshot-tests.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-failures
+          path: ${{ runner.temp }}/snapshot-failures
+          if-no-files-found: ignore
+      - name: Record snapshot baselines on mismatch
+        id: record-snapshots
+        # 仅同仓库 PR 分支或本仓库非 main 分支派发运行才录制基线，阻止 fork PR 产出可采纳产物。
+        # 同机复用已编译的 .build，在基准环境立即重录整套 PNG 并校验，供本地 adopt 脚本直接采纳。
+        if: >-
+          always() && !cancelled() && steps.snapshot-tests.outcome == 'failure' && (
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+            (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main')
+          )
+        env:
+          SWIFT_TEST_STALL_SECONDS: "300"
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+        run: |
+          bash scripts/record_snapshots.sh
+          bash scripts/ci_snapshot_artifact.sh validate Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests
+      - name: Upload recorded snapshot baselines
+        if: >-
+          always() && !cancelled() && steps.record-snapshots.outcome == 'success' && (
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+            (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main')
+          )
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-baselines-${{ github.event.pull_request.head.sha || github.sha }}
+          path: Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests/*.png
+          if-no-files-found: error
       - name: Trim Swift build cache
         if: success() && github.ref == 'refs/heads/main'
         run: |
@@ -394,13 +451,23 @@ jobs:
         with:
           path: .build
           key: ${{ steps.swift-debug-cache.outputs.cache-primary-key || format('spm-debug-v4-{0}-{1}-{2}', runner.os, runner.arch, github.sha) }}
+      - name: Verify combined macOS test verdict
+        if: always() && !cancelled() && steps.reference-locale.outcome == 'success'
+        env:
+          UNIT_OUTCOME: ${{ steps.unit-tests.outcome }}
+          SNAPSHOT_OUTCOME: ${{ steps.snapshot-tests.outcome }}
+        run: |
+          set -euo pipefail
+          echo "unit-tests=${UNIT_OUTCOME} snapshot-tests=${SNAPSHOT_OUTCOME}"
+          if [ "${UNIT_OUTCOME}" != "success" ] || [ "${SNAPSHOT_OUTCOME}" != "success" ]; then
+            exit 1
+          fi
 
   macos-appintents:
     needs: changes
-    # PR 只在 AppIntents / 打包入口 / CommandIntent / Package 变更时运行；main 在 macos=true 时运行。
-    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true')
+    # PR（含分支 workflow_dispatch）只在 AppIntents / 打包入口 / CommandIntent / Package 变更时运行；main 在 macos=true 时运行。
+    if: needs.changes.outputs.code == 'true' && ((github.ref == 'refs/heads/main' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true')
     # xcodebuild 提取 App Intents。和 swift test 串在一台 3 核机器上时，冷启动会把两者相加。
-    # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
     runs-on: macos-26-intel
     timeout-minutes: 30
     steps:
@@ -447,10 +514,9 @@ jobs:
 
   macos-release:
     needs: changes
-    # PR 只在 build_app.sh / go2rtc-ptz / release 脚本 / Resources / Package 变更时运行；main 在 macos=true 时运行。
-    if: needs.changes.outputs.code == 'true' && ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true')
+    # PR（含分支 workflow_dispatch）只在 build_app.sh / go2rtc-ptz / release 脚本 / Resources / Package 变更时运行；main 在 macos=true 时运行。
+    if: needs.changes.outputs.code == 'true' && ((github.ref == 'refs/heads/main' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true')
     # Release -O 通用二进制（#2 这类崩溃只在 -O 下出现）以及符号表路径泄露检查。
-    # 固定在托管机，与本地 VM 上的 macos-test 并行，不读 MACOS_CI_RUNNER。
     runs-on: macos-26-intel
     timeout-minutes: 45
     steps:
@@ -510,56 +576,9 @@ jobs:
           path: .build
           key: ${{ steps.swift-release-cache.outputs.cache-primary-key || format('spm-release-v3-{0}-{1}-{2}', runner.os, runner.arch, github.sha) }}
 
-  macos-snapshots:
-    needs: changes
-    if: needs.changes.outputs.code == 'true' && needs.changes.outputs.macos == 'true'
-    # 唯一的像素基准。不要改成 MACOS_CI_RUNNER。换镜像或 Xcode 后必须重录基线。
-    runs-on: macos-26-intel
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      # macos-26-intel ships Xcode 26.6 (17F113). Do not select latest.
-      - name: Select Xcode 26.6
-        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
-        with:
-          xcode-version: "26.6"
-      - name: Toolchain info
-        run: xcodebuild -version && swift --version && sw_vers
-      - name: Restore Swift build cache
-        id: swift-debug-cache
-        continue-on-error: true
-        timeout-minutes: 10
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build
-          key: spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-${{ github.sha }}
-          restore-keys: |
-            spm-debug-v4-${{ runner.os }}-${{ runner.arch }}-
-      - name: Reset incomplete Swift build cache
-        if: steps.swift-debug-cache.outcome != 'success'
-        run: rm -rf .build
-      - name: Restore source mtimes for the Swift cache
-        run: bash scripts/ci_restore_mtimes.sh
-      - name: Reference locale
-        run: bash scripts/ci_snapshot_locale.sh --require-xcode 26.6
-      - name: Compare UI snapshots
-        env:
-          SWIFT_TEST_STALL_SECONDS: "300"
-          SNAPSHOT_ARTIFACTS: ${{ runner.temp }}/snapshot-failures
-        run: bash scripts/ci_swift_test.sh --filter SnapshotTests
-      - name: Upload snapshot mismatches
-        if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: snapshot-failures
-          path: ${{ runner.temp }}/snapshot-failures
-          if-no-files-found: ignore
-
   ci:
     # 始终运行的汇总检查。无需 checkout；仅核对本次实际命中的面是否全绿。
-    needs: [changes, nas-safety, linux-core, raycast, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents, macos-snapshots]
+    needs: [changes, nas-safety, linux-core, raycast, go2rtc-test, windows-core, windows-camera-bin, windows-rust-test, windows-installer, macos-test, macos-release, macos-appintents]
     if: always() && !cancelled()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -582,12 +601,11 @@ jobs:
           WINDOWS_RUST_TEST: ${{ needs.windows-rust-test.result }}
           WINDOWS_INSTALLER: ${{ needs.windows-installer.result }}
           MACOS_TEST: ${{ needs.macos-test.result }}
-          MACOS_SNAPSHOTS: ${{ needs.macos-snapshots.result }}
           MACOS_RELEASE: ${{ needs.macos-release.result }}
           MACOS_INTENTS: ${{ needs.macos-appintents.result }}
-          WINDOWS_NATIVE_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true') && 'true' || 'false' }}
-          MACOS_BUILD_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true') && 'true' || 'false' }}
-          APPINTENTS_ACTIVE: ${{ ((github.event_name != 'pull_request' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true') && 'true' || 'false' }}
+          WINDOWS_NATIVE_ACTIVE: ${{ ((github.ref == 'refs/heads/main' && needs.changes.outputs.windows == 'true') || needs.changes.outputs.windows_native == 'true') && 'true' || 'false' }}
+          MACOS_BUILD_ACTIVE: ${{ ((github.ref == 'refs/heads/main' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.macos_build == 'true') && 'true' || 'false' }}
+          APPINTENTS_ACTIVE: ${{ ((github.ref == 'refs/heads/main' && needs.changes.outputs.macos == 'true') || needs.changes.outputs.appintents == 'true') && 'true' || 'false' }}
         run: |
           set -euo pipefail
           if [ "${CHANGES:-}" != "success" ]; then
@@ -624,7 +642,6 @@ jobs:
           check_job "windows-rust-test" "$WINDOWS_RUST_TEST" "$WINDOWS_NATIVE_ACTIVE"
           check_job "windows-installer" "$WINDOWS_INSTALLER" "$WINDOWS_NATIVE_ACTIVE"
           check_job "macos-test" "$MACOS_TEST" "$MACOS"
-          check_job "macos-snapshots" "$MACOS_SNAPSHOTS" "$MACOS"
           check_job "macos-release" "$MACOS_RELEASE" "$MACOS_BUILD_ACTIVE"
           check_job "macos-appintents" "$MACOS_INTENTS" "$APPINTENTS_ACTIVE"
           exit "$fail"
