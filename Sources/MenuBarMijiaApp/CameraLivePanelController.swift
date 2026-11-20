@@ -158,6 +158,14 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     var frameDefaults: UserDefaults = .standard
     var consumeMJPEGOverride: (@MainActor (URL, @escaping @MainActor (NSImage) -> Void) async -> Void)?
     var bridgeShutdownOverride: (@Sendable () async -> Void)?
+    /// Test seam for the warm-stream lifetime. Production sleeps for `warmPlaybackLifetime`.
+    var warmExpirySleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    /// Releases the original sessions and then the helper after the camera type closed. A reopen
+    /// waits for it, so the new stream never meets the helper being stopped.
+    private(set) var cameraTypeShutdownTask: Task<Void, Never>?
+    private var cameraTypeShutdownGeneration = 0
+    var warmPlaybackCount: Int { warmPlaybacks.count }
+    var pendingStopCount: Int { pendingStopTasks.count }
     var hasLiveOwnedProcessOverride: (() -> Bool)?
     private(set) var terminationTask: Task<Void, Never>?
     /// The window sits where a ring put it, so closing it must not overwrite the user's saved position.
@@ -203,6 +211,62 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
         store.onHAConnectionDisabled = { [weak self] deviceIds in
             self?.tearDownDevices(deviceIds)
+        }
+        store.onCameraCategoryDisabled = { [weak self] cameras in
+            self?.stopForClosedCameraType(cameras)
+        }
+    }
+
+    /// The camera type closed (P3c-CM): cancel preparation and retries, drop frames and warm streams,
+    /// let each original session send its stop request, then stop every relay and the helper. Hiding
+    /// the panel normally keeps the helper running; this does not. A camera opened after the type
+    /// returns starts everything again on demand.
+    func stopForClosedCameraType(_ cameras: [SmartDevice]) {
+        finishPTZMove(notify: false)
+        retryFailedPTZStop()
+        let ptzStop = ptzStopTask
+        let previousShutdown = cameraTypeShutdownTask
+        let previousClose = closeReleaseTask
+        let pendingStops = Array(pendingStopTasks.values)
+        var streamingIDs = Set(warmPlaybacks.map(\.deviceID))
+        if let activeDeviceId { streamingIDs.insert(activeDeviceId) }
+        // A per-id release would find no card once the type is pruned; the task below sends the same
+        // stops with the cards captured now.
+        closePanel(releasingStreams: false)
+        pendingStopTasks.removeAll()
+        pendingStopGenerations.removeAll()
+        activeDeviceId = nil
+        activeLensID = nil
+        activeCameraEntityID = nil
+        errorMessage = nil
+
+        let devicesByID = Dictionary(cameras.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let store = self.store
+        let bridgeShutdown = bridgeShutdownOverride
+        cameraTypeShutdownGeneration &+= 1
+        let generation = cameraTypeShutdownGeneration
+        cameraTypeShutdownTask = Task { @MainActor [weak self] in
+            await previousShutdown?.value
+            await ptzStop?.value
+            await previousClose?.value
+            for task in pendingStops { await task.value }
+            if let store {
+                for id in streamingIDs.sorted() {
+                    if let device = devicesByID[id] {
+                        await store.stopCameraStream(device: device)
+                    } else {
+                        await store.stopCameraStream(for: id)
+                    }
+                }
+            }
+            if let bridgeShutdown {
+                await bridgeShutdown()
+            } else {
+                await XiaomiCameraBridge.shared.shutdown()
+            }
+            if self?.cameraTypeShutdownGeneration == generation {
+                self?.cameraTypeShutdownTask = nil
+            }
         }
     }
 
@@ -459,6 +523,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func closePanel() {
+        closePanel(releasingStreams: true)
+    }
+
+    private func closePanel(releasingStreams: Bool) {
         guard !isClosing else { return }
         isClosing = true
         defer { isClosing = false }
@@ -486,6 +554,10 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         isMuted = true
         panelWindow?.orderOut(nil)
 
+        guard releasingStreams else {
+            closeReleaseTask = nil
+            return
+        }
         closeReleaseTask = Task { @MainActor [weak self] in
             guard let store else { return }
             var deviceIDs = Set(activePlaybackIDs)
@@ -513,6 +585,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
             || !ptzUnresolvedStops.isEmpty
             || ptzStopTask != nil
             || closeReleaseTask != nil
+            || cameraTypeShutdownTask != nil
             || !pendingStopTasks.isEmpty
             || bridgeShutdownOverride != nil
             || hasOwnedBridge
@@ -552,6 +625,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         retryFailedPTZStop()
         let ptzStopToAwait = ptzStopTask
         let previousCloseTask = closeReleaseTask
+        let typeShutdownTask = cameraTypeShutdownTask
         let pendingTasks = Array(pendingStopTasks.values)
         let closingDeviceId = activeDeviceId
         let activePlaybackIDs = warmPlaybacks.map(\.deviceID)
@@ -568,6 +642,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let (raceStream, raceContinuation) = AsyncStream<Void>.makeStream()
         let drainTask = Task<Void, Never> { @MainActor in
             await ptzStopToAwait?.value
+            await typeShutdownTask?.value
             await previousCloseTask?.value
             await currentCloseTask?.value
             for pendingTask in pendingTasks {
@@ -690,8 +765,9 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         while warmPlaybacks.count > Self.maxWarmPlaybacks {
             releaseWarmPlayback(warmPlaybacks.removeFirst())
         }
+        let sleep = warmExpirySleep
         warm.expiryTask = Task { @MainActor [weak self, weak warm] in
-            try? await Task.sleep(for: Self.warmPlaybackLifetime)
+            try? await sleep(Self.warmPlaybackLifetime)
             guard !Task.isCancelled, let self, let warm else { return }
             self.releaseWarmPlayback(warm)
         }
@@ -914,6 +990,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         resolveTask = Task { @MainActor [weak self] in
             await priorResolveTask?.value
             guard let self else { return }
+            await self.cameraTypeShutdownTask?.value
             await self.closeReleaseTask?.value
             await self.pendingStopTasks[deviceId]?.value
             guard !Task.isCancelled else { return }

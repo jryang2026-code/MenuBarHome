@@ -1198,7 +1198,15 @@ public final class HomeStore {
         enabledConnectionScopes: [],
         enabledFeatures: Set(FeatureID.allCases),
         enabledCategories: Set(DeviceCategoryID.allCases)
-    )
+    ) {
+        didSet {
+            guard oldValue.enabledCategories.contains(.camera),
+                  !capabilitySelection.enabledCategories.contains(.camera) else { return }
+            // The cards are still in `devices` here; the next refresh prunes them, so the stop requests
+            // have to carry the devices themselves.
+            onCameraCategoryDisabled?(devices.filter { if case .camera = $0.kind { true } else { false } })
+        }
+    }
     public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
     public internal(set) var identityMigrationDiagnostic: String?
     public internal(set) var capabilityGeneration: Int = 0
@@ -1221,6 +1229,8 @@ public final class HomeStore {
     @ObservationIgnored var activeHAOnboardingTask: Task<HAOnboardingConnectOutcome, Never>?
     public var onMiAccountDisabled: (@MainActor (String, Set<String>) -> Void)?
     public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
+    /// Fires once when the camera type closes, with the camera cards still on the panel (P3c-CM).
+    public var onCameraCategoryDisabled: (@MainActor ([SmartDevice]) -> Void)?
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?

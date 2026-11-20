@@ -169,6 +169,13 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     private var onJoinedStartup: (@Sendable () async -> Void)?
     private var relayPortOverride: (@Sendable () throws -> UInt16)?
     private var putStreamOverride: (@Sendable (String, String) async throws -> Void)?
+    private var processShutdownOverride: (@Sendable () async -> Void)?
+    private var onStartWaitingForShutdown: (@Sendable () async -> Void)?
+    /// Bumped by every `shutdown()`. A start that began under an older value gives up at its next
+    /// checkpoint, so a closed camera type never gets a relay or a helper back.
+    private var runtimeEpoch: UInt64 = 0
+    private var shutdownTask: Task<Void, Never>?
+    private var shutdownSeq: UInt64 = 0
 
     var activeRelayCount: Int { relays.count }
 
@@ -188,6 +195,14 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         self.activeOwner = activeOwner
         self.relayPortOverride = relayPortOverride
         self.putStreamOverride = putStreamOverride
+    }
+
+    func setProcessShutdownOverride(
+        _ override: (@Sendable () async -> Void)?,
+        onStartWaiting: (@Sendable () async -> Void)? = nil
+    ) {
+        processShutdownOverride = override
+        onStartWaitingForShutdown = onStartWaiting
     }
 
     private struct RelayHandle {
@@ -260,12 +275,18 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
         let cleanDid = Self.sanitizeDid(did)
         let streamKey = Self.streamKey(cleanDid: cleanDid, subdid: subdid)
+        // A reopen right after a shutdown must not reuse the helper that is being stopped.
+        while let pending = shutdownTask {
+            await onStartWaitingForShutdown?()
+            await pending.value
+        }
+        let epoch = runtimeEpoch
         let slot = await acquireStreamSlot(streamKey: streamKey)
         defer { releaseStreamSlot(streamKey: streamKey, slot: slot) }
-        try Task.checkCancellation()
+        try checkRuntime(epoch)
 
         try await ensureGo2RTCRunning()
-        try Task.checkCancellation()
+        try checkRuntime(epoch)
 
         let suffix = channel == 0 ? "" : "_c\(channel)"
         let rawName = Self.rawStreamName(cleanDid: streamKey, channel: channel)
@@ -277,7 +298,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         // A lens switch replaces this camera's streams. A second camera on the same hub
         // gets its own relay, because the relay thread keeps one go2rtc address.
         await stopBridgeInternal(http: session, names: Self.allStreamNames(cleanDid: streamKey))
-        try Task.checkCancellation()
+        try checkRuntime(epoch)
 
         let (relayPort, relayGeneration) = try beginSharedRelayWithGeneration(relayKey: streamKey) {
             try ensureRelayPort(
@@ -311,9 +332,9 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             throw HomeProviderError.serviceCallFailed(500, "Local streaming service did not start")
         }
         try await putStream(http: session, owner: owner.session, name: rawName, src: xiaomiURL)
-        try Task.checkCancellation()
+        try checkRuntime(epoch)
         try await putStream(http: session, owner: owner.session, name: mjpegName, src: "ffmpeg:\(rawName)#video=mjpeg")
-        try Task.checkCancellation()
+        try checkRuntime(epoch)
 
         // `mp4` (empty) selects go2rtc's H.264 + H.265 fMP4 profile, so the camera's own
         // bitstream reaches VideoToolbox without an FFmpeg transcode in between.
@@ -336,7 +357,28 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         endSharedRelay(relayKey: streamKey)
     }
 
+    private func checkRuntime(_ epoch: UInt64) throws {
+        try Task.checkCancellation()
+        if runtimeEpoch != epoch { throw CancellationError() }
+    }
+
+    /// Stops every relay and the helper. Overlapping calls run one after another, and starts that
+    /// arrive meanwhile wait for the last one, so a quick close and reopen keeps one set of handles.
     public func shutdown() async {
+        runtimeEpoch &+= 1
+        startupTask?.cancel()
+        shutdownSeq &+= 1
+        let seq = shutdownSeq
+        let previous = shutdownTask
+        let task = Task<Void, Never> {
+            await previous?.value
+            await self.performShutdown(seq: seq)
+        }
+        shutdownTask = task
+        await task.value
+    }
+
+    private func performShutdown(seq: UInt64) async {
         let pending = startupTask
         startupTask = nil
         pending?.cancel()
@@ -347,7 +389,11 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         relays.removeAll()
         relaySessions = HubRelaySessions()
         relayGenerations.removeAll()
-        if let record = existingOwnedRecord() {
+        if let processShutdownOverride {
+            await processShutdownOverride()
+            go2rtcProcess = nil
+            activeOwner = nil
+        } else if let record = existingOwnedRecord() {
             await stopOwnedProcess(record)
         } else if let proc = go2rtcProcess {
             let pid = proc.processIdentifier
@@ -360,6 +406,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         }
         ptzEndpointAvailable = false
         Self.scrubPersistedStreamsFromConfig()
+        if shutdownSeq == seq { shutdownTask = nil }
     }
 
     private func acquireStreamSlot(
@@ -610,7 +657,8 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             }
         }
         startupTask = task
-        defer { startupTask = nil }
+        // A shutdown may have replaced this task already; only the owner clears its own slot.
+        defer { if startupTask == task { startupTask = nil } }
         try await task.value
     }
 
