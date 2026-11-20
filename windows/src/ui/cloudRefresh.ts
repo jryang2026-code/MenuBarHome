@@ -67,7 +67,9 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
-import { buildMiotTypePrunePlan, miotSafetySignalsForPrefs } from "../core/miotTypePruning.js";
+import { buildMiotTypePrunePlan } from "../core/miotTypePruning.js";
+import type { HaTypePruneOptions } from "../core/haTypePruning.js";
+import { safetySignalsForPrefs } from "../core/safetySignalPolicy.js";
 import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
 import { loadSafetyGuardPrefs } from "./automationSettingsView.js";
 import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
@@ -155,7 +157,7 @@ export function hostMiotTypePruneOptions(
     // "安全与提醒" owns these: the master switch drops the long-run, battery and pinned-offline
     // alerts, and each keeps only its own signal. The sensor alerts have their own switches below
     // it, so they stay on (architecture.md §D, ruling 3).
-    safetySignals: miotSafetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
+    safetySignals: safetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
     starredDeviceIds: [...new Set([
       ...(host.layout?.pinnedDeviceIds ?? []),
       ...(host.settings.layout?.pinnedDeviceIds ?? []),
@@ -208,6 +210,115 @@ export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice
     safetyDeviceFacets: facets,
     hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
   });
+}
+
+/**
+ * Device-type pruning inputs for one Home Assistant round (P3b-W). The selection is the host's own —
+ * the same one the Mi refresh uses — because a turned-off type is turned off on both sources.
+ */
+export function hostHaTypePruneOptions(
+  host: MiSelectionHost & {
+    readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+    readonly settings: DualSourceInspectableHost["settings"] & {
+      readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
+      readonly allOffOverrides?: Readonly<Record<string, boolean>>;
+    };
+  },
+): HaTypePruneOptions | null {
+  const scope = haConnectionScope(host.settings.haBaseURL ?? null, host.settings.haToken ?? null);
+  if (!scope) return null;
+  return {
+    selection: resolveHostMiSelectionState(host).selection,
+    connectionScope: scope,
+    safetySignals: safetySignalsForPrefs(loadSafetyGuardPrefs(), loadSensorAlertPolicy()),
+    starredDeviceIds: [...new Set([
+      ...(host.layout?.pinnedDeviceIds ?? []),
+      ...(host.settings.layout?.pinnedDeviceIds ?? []),
+    ])],
+    ...(host.settings.allOffOverrides ? { allOffOverrides: host.settings.allOffOverrides } : {}),
+  };
+}
+
+/**
+ * The off-panel half of a Home Assistant snapshot. `safetyDevices` are synthesized only so enabled
+ * alerts keep their signal; `hiddenDevices` let the host write gate answer "该设备类型已关闭"
+ * instead of "设备不存在" for a closed type. Neither ever becomes a card, search hit, AI target or
+ * control entry (architecture.md §D).
+ */
+export interface HostHaTypePruneSnapshot {
+  /** The `ha:` scope these entries belong to; a different endpoint makes them stale. */
+  readonly scope: string;
+  readonly safetyDevices?: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+}
+
+/** The host fields the off-panel Home Assistant snapshot owns; every production host is wider. */
+export interface HaTypePruneHostSlice {
+  haTypePruneScope?: string | null;
+  safetyRetainedHADevices?: SmartDevice[];
+  safetyRetainedHADeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  hiddenHADevices?: readonly CapabilityIndexedDevice[];
+}
+
+export function applyHaTypePruneSnapshot(
+  host: HaTypePruneHostSlice,
+  snapshot: HostHaTypePruneSnapshot | null | undefined,
+): void {
+  host.haTypePruneScope = snapshot?.scope ?? null;
+  host.safetyRetainedHADevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
+  host.safetyRetainedHADeviceFacets = snapshot?.safetyDeviceFacets ?? {};
+  host.hiddenHADevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+}
+
+/**
+ * The retained and hidden halves belong to one endpoint. Turning the connection off, removing it or
+ * pointing the app at another Home Assistant leaves them behind, so every reader asks whether the
+ * scope that wrote them is still the current one.
+ */
+export interface HaTypePruneHostFields extends HaTypePruneHostSlice {
+  readonly settings: {
+    readonly haBaseURL?: string | null;
+    readonly haToken?: string | null;
+    readonly connectionMode?: string;
+    readonly dualSourceEnabled?: boolean;
+  };
+  readonly dualSourceEnabledOverride?: boolean | null;
+  readonly miSession?: unknown;
+}
+
+export function haTypePruneSnapshotIsCurrent(host: HaTypePruneHostFields): boolean {
+  // The slice is only live while Home Assistant is an active source: a host that switched back to
+  // Mi must not answer for, or alert from, a connection it is no longer reading.
+  if (host.settings.connectionMode !== "homeAssistant" && !isDualSourceEnabled(host as DualSourceInspectableHost)) {
+    return false;
+  }
+  const scope = haConnectionScope(host.settings.haBaseURL ?? null, host.settings.haToken ?? null);
+  return scope !== null && (host.haTypePruneScope ?? null) === scope;
+}
+
+/** Home Assistant cards a closed type keeps only for enabled alerts, scoped to the live endpoint. */
+export function safetyRetainedHADevices(host: HaTypePruneHostFields): readonly SmartDevice[] {
+  return haTypePruneSnapshotIsCurrent(host) ? host.safetyRetainedHADevices ?? [] : [];
+}
+
+/** Facet rows of `safetyRetainedHADevices`; a retained generic card's alert labels live here. */
+export function safetyRetainedHADeviceFacets(
+  host: HaTypePruneHostFields,
+): Readonly<Record<string, readonly FacetControl[]>> {
+  return haTypePruneSnapshotIsCurrent(host) ? host.safetyRetainedHADeviceFacets ?? {} : {};
+}
+
+/**
+ * Every identity entry the device-type selection withholds, from both sources, for the host write
+ * gate and the voice/AI resolution stub (P3a-W, P3b-W).
+ */
+export function hiddenTypeDevices(
+  host: HaTypePruneHostFields & { readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[] },
+): readonly CapabilityIndexedDevice[] {
+  const mi = host.hiddenMiDevices ?? [];
+  const ha = haTypePruneSnapshotIsCurrent(host) ? host.hiddenHADevices ?? [] : [];
+  return ha.length === 0 ? mi : [...mi, ...ha];
 }
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
@@ -293,15 +404,16 @@ export function collectHostKnownScenes(
 }
 
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
+  const hidden = hiddenTypeDevices(host);
   return {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
-    ...(host.hiddenMiDevices?.length ? { hiddenDevices: host.hiddenMiDevices } : {}),
+    ...(hidden.length ? { hiddenDevices: hidden } : {}),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
     ...(dualRoutes ? { dualRoutes } : {}),
     haBaseURL: host.settings.haBaseURL ?? "", haToken: host.settings.haToken ?? "",
@@ -738,7 +850,9 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
         return;
       }
       const haClient = new HomeAssistantClient(endpoint, token, host.haInvokeOverride ?? undefined);
-      const home = await haClient.snapshot();
+      const prune = hostHaTypePruneOptions(host);
+      const synthesized = await haClient.snapshotWithPrune(prune);
+      const home = synthesized.home;
       const identity = homeAssistantIdentity(endpoint, token);
       if (!identity) throw new Error("Invalid Home Assistant URL");
       if (
@@ -757,6 +871,16 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
       host.deviceFacets = merged.deviceFacets;
       applyMiotTypePruneSnapshot(host, null);
+      // A closed type contributes nothing to the panel, search, the AI directory, the companion
+      // export or a control entry; only its enabled alerts still read it (architecture.md §D).
+      applyHaTypePruneSnapshot(host, synthesized.prunePlan === null || prune === null
+        ? null
+        : {
+            scope: prune.connectionScope,
+            safetyDevices: synthesized.safetyDevices,
+            ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
+            hiddenDevices: synthesized.hiddenIndexedDevices,
+          });
       host.scenes = home.scenes;
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
@@ -1654,12 +1778,20 @@ export async function refreshDualSourceDevices(
       },
       fetchHA: haEnabledAtStart
         ? async (): Promise<DualSourceInputSnapshot> => {
-            const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke);
+            const haPrune = hostHaTypePruneOptions(host);
+            const res = await fetchHASnapshotWithIdentities(endpoint, token, haInvoke, haPrune);
             haRawSnapshot = res.rawSnapshot;
             return {
               home: res.home,
               identity: homeAssistantIdentity(endpoint, token),
               identities: res.identities,
+              ...(haPrune !== null
+                ? {
+                    safetyDevices: res.safetyDevices,
+                    ...(res.safetyDeviceFacets ? { safetyDeviceFacets: res.safetyDeviceFacets } : {}),
+                    hiddenDevices: res.hiddenIndexedDevices,
+                  }
+                : {}),
             };
           }
         : async (): Promise<DualSourceInputSnapshot | null> => null,
@@ -1746,6 +1878,16 @@ export async function refreshDualSourceDevices(
       safetyDeviceFacets: lastMiSnapshot?.safetyDeviceFacets,
       hiddenDevices: lastMiSnapshot?.hiddenDevices,
     });
+    const lastHaSnapshot = coordinator.getLastHASnapshot();
+    const haPruneScope = haConnectionScope(endpoint, token);
+    applyHaTypePruneSnapshot(host, haEnabledAtStart && haPruneScope !== null && lastHaSnapshot
+      ? {
+          scope: haPruneScope,
+          safetyDevices: lastHaSnapshot.safetyDevices,
+          ...(lastHaSnapshot.safetyDeviceFacets ? { safetyDeviceFacets: lastHaSnapshot.safetyDeviceFacets } : {}),
+          hiddenDevices: lastHaSnapshot.hiddenDevices,
+        }
+      : null);
     if (haEnabledAtStart && haRawSnapshot && typeof haRawSnapshot === "object") {
       void ingestHostHASnapshotForDoorbell(host, haRawSnapshot as HASnapshotLike);
     }

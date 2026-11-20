@@ -372,8 +372,8 @@ export interface AppURLCommandHost {
   readonly devices: SmartDevice[];
   readonly scenes: HomeScene[];
   readonly sourceRevision: number;
-  /** Identity index of the cards the device-type selection withholds (P3a-W). */
-  readonly hiddenMiDevices?: readonly import("./capabilityReferenceVerdict.js").CapabilityIndexedDevice[];
+  /** Identity index of every card the device-type selection withholds, both sources (P3a-W, P3b-W). */
+  readonly hiddenDevices?: readonly import("./capabilityReferenceVerdict.js").CapabilityIndexedDevice[];
   readonly settings: {
     readonly enableRaycastIntegration: boolean;
     readonly allowDirectURLControl: boolean;
@@ -703,7 +703,7 @@ async function runIntentOnDevice(
       if (!confirmed || host.sourceRevision !== revisionBeforePrompt) {
         host.clearPendingHighRisk();
         if (host.sourceRevision !== revisionBeforePrompt) {
-          const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenMiDevices });
+          const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenDevices });
           if (disabledMsg !== null) return { message: disabledMsg, isError: true };
         }
         return {
@@ -716,7 +716,7 @@ async function runIntentOnDevice(
       if (await host.isControlBlockedByScreenLock()) { return { message: screenLockBlockedMessage(), isError: true }; }
       const latestDev = host.devices.find((d) => d.id === deviceId);
       if (!latestDev) {
-        const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenMiDevices });
+        const disabledMsg = evaluateDisabledDeviceUrlGate(deviceId, { ...host.settings, deviceAliases: host.layout.aliases, hiddenDevices: host.hiddenDevices });
         if (disabledMsg !== null) return { message: disabledMsg, isError: true };
         return { message: trText("设备已不在面板中", "The device is no longer available"), isError: true};
       }
@@ -1139,7 +1139,7 @@ export async function onOpenURL(rawUrl: string, host: AppURLCommandHost): Promis
   const urlSettingsWithAliases = () => ({
     ...host.settings,
     deviceAliases: host.layout.aliases,
-    hiddenDevices: host.hiddenMiDevices,
+    hiddenDevices: host.hiddenDevices,
   });
   const checkUrlDisabledGate = (): string | null => {
     if ("deviceId" in envelope.command) {
