@@ -234,7 +234,8 @@ public final class HomeStore {
     var miLoginStartBackend: HomeBackend?
 
     public func loadHAToken() -> String {
-        KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
+        guard !hasPendingHARemoval else { return "" }
+        return KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
     }
 
     public func storedAssistantAPIKey(forBaseURL baseURL: String) -> String {
@@ -1194,6 +1195,14 @@ public final class HomeStore {
     public internal(set) var capabilityMergeConflictCount: Int = 0
     public internal(set) var lastCapabilityMergeDiagnostic: String?
     public internal(set) var isVerifyingHAOnboarding: Bool = false
+    /// Unfinished single-connection removal records (P2c-M); surfaced in Settings for retry.
+    public internal(set) var pendingConnectionRemovals: [ConnectionRemovalRecord] = []
+    /// True when `connection_removal_v1` failed strict parsing (fail-closed, never treated as empty).
+    public internal(set) var hasCorruptConnectionRemovalState: Bool = false
+    /// Scopes currently executing drain + slot deletion on this instance.
+    public internal(set) var isRemovingConnectionScopes: Set<String> = []
+    /// Test seam invoked right after drain completes and before credential slots are mutated.
+    @ObservationIgnored var connectionRemovalBeforeSlotDeleteHook: (@MainActor (ConnectionRemovalRecord) async -> Void)?
     @ObservationIgnored var capabilityStoreRevision: Int?
     @ObservationIgnored let usesInjectedProvider: Bool
     @ObservationIgnored var preDemoBackend: HomeBackend?
@@ -1269,8 +1278,20 @@ public final class HomeStore {
             L10n.currentLanguage = initialEffective
         }
 
+        let initialRemovalState = ConnectionRemovalStore.readState(defaults: ud)
+        if initialRemovalState.readError {
+            ConnectionRemovalStore.quarantineCorruptPayloadIfNeeded(defaults: ud)
+        }
+        self.hasCorruptConnectionRemovalState = initialRemovalState.readError
+        self.pendingConnectionRemovals = initialRemovalState.records
+        let pendingMiScopesAtLaunch = Set(initialRemovalState.records.filter { $0.kind == .mi }.map(\.scope))
+        let hasPendingHAAtLaunch = initialRemovalState.readError
+            || initialRemovalState.records.contains { $0.kind == .ha }
+
         let initialAccountsResult = MiSessionStore.loadAccountsResult(defaults: ud, vault: credentialVault)
-        let initialAccounts = initialAccountsResult.accounts
+        let initialAccounts = initialRemovalState.readError
+            ? []
+            : initialAccountsResult.accounts.filter { !pendingMiScopesAtLaunch.contains($0.id) }
         self.miAccounts = initialAccounts
         let initialMiSession = initialAccounts.first?.session
         let savedRegion = ud.string(forKey: "mi_cloud_region").flatMap(MiCloudRegion.init(rawValue:))
@@ -1284,7 +1305,7 @@ public final class HomeStore {
         self.homeBackend = initialBackend
         // Demo mode and injected providers without a dedicated test vault must not touch the system Keychain.
         let needsInitialHAToken = initialBackend != .demo && ((provider == nil && dualSource == nil) || credentialVault != nil)
-        let initialHAToken = needsInitialHAToken
+        let initialHAToken = (!hasPendingHAAtLaunch && needsInitialHAToken)
             ? KeychainHelper.loadToken(defaults: ud, vault: credentialVault)
             : ""
         self.hasHASource = !initialHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -1382,7 +1403,9 @@ public final class HomeStore {
             isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsInitialHAToken,
             legacyVoiceInput: HomePreferences.enableVoiceInput.load(from: ud),
-            legacyGrokBall: HomePreferences.enableGrokBall.load(from: ud)
+            legacyGrokBall: HomePreferences.enableGrokBall.load(from: ud),
+            pendingMiRemovalScopes: pendingMiScopesAtLaunch,
+            connectionRemovalReadError: initialRemovalState.readError
         )
         self.capabilitySelection = capResolution.selection
         self.capabilityResolutionMode = capResolution.mode
@@ -1487,7 +1510,7 @@ public final class HomeStore {
     /// Re-reads the stored accounts (a login, a removal or a sign-out changed them) and rebuilds the
     /// provider around the enabled list.
     func makeMiAccountsProvider() -> MiAccountsProvider {
-        miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        miAccounts = loadActiveMiAccounts()
         let enabled = enabledMiAccounts
         activeMiProviderAccounts = enabled
         if let factory = miAccountsProviderFactory {

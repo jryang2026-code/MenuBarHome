@@ -1136,7 +1136,7 @@ extension HomeStore {
         var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revokedIDs: Set<String>)?
         var miAccountsChanged = false
         if wantsMi {
-            let latestAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+            let latestAccounts = loadActiveMiAccounts()
             miAccounts = latestAccounts
             let enabledAccounts = enabledMiAccounts
             let previousAccounts = activeMiProviderAccounts
@@ -1326,6 +1326,17 @@ extension HomeStore {
             )
             return false
         }
+        let candidateScope = MiAccount(session: session).id
+        if isMiAccountPendingRemoval(candidateScope) {
+            showToast(
+                L10n.tr(
+                    "该米家账号仍有未完成的移除，请先重试清理再重新登录",
+                    "This Xiaomi account still has an unfinished removal; retry the cleanup before signing in again"
+                ),
+                isError: true
+            )
+            return false
+        }
         guard MiSessionStore.upsert(session, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
@@ -1335,7 +1346,7 @@ extension HomeStore {
         }
         // The primary (first) account drives the summary and the history scope, so signing in a
         // second account must not relabel the panel with the newcomer.
-        miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        miAccounts = loadActiveMiAccounts()
         if let added = miAccounts.first(where: {
             $0.session.userId == session.userId && $0.session.region.caseInsensitiveCompare(session.region) == .orderedSame
         }) ?? miAccounts.first {
@@ -1380,6 +1391,7 @@ extension HomeStore {
     /// account is still signed out so the UI does not keep showing it.
     @discardableResult
     public func logoutMiAccount() -> Bool {
+        guard !isIdentityUncertain else { return false }
         let removedScopes = Set(miAccounts.map(\.id))
         let cleared = MiSessionStore.clear(defaults: userDefaults, vault: credentialVault)
         topologyCache?.removeAll()
@@ -1429,6 +1441,16 @@ extension HomeStore {
     /// Returns false and shows an error when any credential survived the deletion.
     @discardableResult
     public func signOutAndRevokeAll() -> Bool {
+        guard !isIdentityUncertain else {
+            showToast(
+                L10n.tr(
+                    "无法确认现有配置或凭据，未执行退出与清除，请检查钥匙串授权后重试",
+                    "Could not verify existing settings or credentials; no credentials were deleted. Check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
         invalidateUndoContext()
         topologyCache?.removeAll()
         var complete = true
@@ -1441,6 +1463,8 @@ extension HomeStore {
         HAPlaintextConsent.revokeAll(defaults: userDefaults)
         haPlaintextPrompt = nil
         if complete {
+            _ = ConnectionRemovalStore.clearAll(defaults: userDefaults)
+            syncPendingConnectionRemovals()
             showToast(L10n.tr("已退出并吊销本地保存的令牌", "Signed out and removed saved tokens"))
         } else {
             showToast(
@@ -1460,6 +1484,7 @@ extension HomeStore {
     /// could not be deleted, leaving the current connection untouched.
     @discardableResult
     public func disconnectHomeAssistant() -> Bool {
+        guard !isIdentityUncertain else { return false }
         guard KeychainHelper.saveToken("", defaults: userDefaults, vault: credentialVault) else {
             return false
         }
@@ -1504,6 +1529,7 @@ extension HomeStore {
     /// Removes one account and keeps the rest: its devices, readings, rooms and homes leave the panel
     /// right away instead of waiting for the next merged snapshot.
     public func logoutMiAccount(id: String) {
+        guard !isIdentityUncertain else { return }
         guard MiSessionStore.remove(accountID: id, defaults: userDefaults, vault: credentialVault) else {
             showToast(
                 L10n.tr("无法更新钥匙串，请授权钥匙串访问后重试", "Could not update Keychain; allow Keychain access and try again"),
@@ -1514,7 +1540,7 @@ extension HomeStore {
         topologyCache?.remove(accountID: id)
         invalidateUndoContext()
         revokedMiAccountScopes.insert(id)
-        miAccounts = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        miAccounts = loadActiveMiAccounts()
         purgeRemovedAccountCapabilities(scopes: [id])
         let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
         dual?.markXiaomiAccountDisabled(id)
@@ -1619,6 +1645,16 @@ extension HomeStore {
     @discardableResult
     public func updateConnection(serverURL: String, token: String) -> Bool {
         if identityMigrationDiagnostic != nil, !retryIdentityMigration() {
+            return false
+        }
+        if hasPendingHARemoval {
+            showToast(
+                L10n.tr(
+                    "有一个 Home Assistant 连接还没移除完，请先重试清理再保存连接",
+                    "A Home Assistant removal is still unfinished; retry the cleanup before saving this connection"
+                ),
+                isError: true
+            )
             return false
         }
         // A refused Keychain write must not report "Saved": the token would be gone after relaunch.

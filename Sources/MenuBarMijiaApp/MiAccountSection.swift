@@ -115,6 +115,9 @@ public struct MiAccountSection: View {
     @State private var loginTask: Task<Void, Never>?
     @State private var pendingLogoutConfirmation: LogoutConfirmation?
     @State private var pendingDisableConfirmation: DisableConnectionConfirmation?
+    @State private var pendingAccountRemovalPreview: ConnectionRemovalPreview?
+    @State private var showRemovalDetails = false
+    @State private var pendingRemovalPauseConfirmation: DisableConnectionConfirmation?
     @State private var regionDisclosure: RegionDisclosureState
     private let autoStartsQRLogin: Bool
     private let showsRegionPicker: Bool
@@ -286,6 +289,10 @@ public struct MiAccountSection: View {
             }
 
             // #146 & WP3a: risk notice stays always visible in default view (>= 12pt).
+            if let preview = pendingAccountRemovalPreview {
+                miRemovalConfirmationCard(preview)
+            }
+
             unofficialRiskNotice
 
             if showsRegionPicker {
@@ -349,6 +356,9 @@ public struct MiAccountSection: View {
         .onDisappear {
             pendingLogoutConfirmation = nil
             pendingDisableConfirmation = nil
+            pendingAccountRemovalPreview = nil
+            pendingRemovalPauseConfirmation = nil
+            showRemovalDetails = false
             cancelLogin()
         }
         .alert(
@@ -399,6 +409,90 @@ public struct MiAccountSection: View {
             }
         } message: { confirmation in
             Text(confirmation.messageText)
+        }
+        .alert(
+            pendingRemovalPauseConfirmation?.title ?? "",
+            isPresented: Binding(
+                get: { pendingRemovalPauseConfirmation != nil },
+                set: { if !$0 { pendingRemovalPauseConfirmation = nil } }
+            ),
+            presenting: pendingRemovalPauseConfirmation
+        ) { confirmation in
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) { pendingRemovalPauseConfirmation = nil }
+            Button(L10n.tr("暂停这些项并移除", "Pause These & Remove"), role: .destructive) {
+                pendingRemovalPauseConfirmation = nil
+                Task {
+                    await executeMiAccountRemoval(
+                        accountId: confirmation.account.id,
+                        pauseConfirmed: true,
+                        expectedGeneration: confirmation.generation,
+                        expectedPauseItemKeys: confirmation.pauseItemKeys
+                    )
+                }
+            }
+        } message: { confirmation in
+            Text(confirmation.messageText)
+        }
+    }
+
+    @ViewBuilder
+    private func miRemovalConfirmationCard(_ preview: ConnectionRemovalPreview) -> some View {
+        ConnectionRemovalConfirmationCard(
+            title: L10n.format("移除账号「%@」", "Remove Account \"%@\"", preview.displayName),
+            preview: preview,
+            isBusy: store.isRemovingConnectionScopes.contains(preview.scope),
+            showDetails: $showRemovalDetails,
+            onCancel: {
+                pendingAccountRemovalPreview = nil
+                showRemovalDetails = false
+            },
+            onConfirm: {
+                let generation = store.capabilityGeneration
+                Task {
+                    await executeMiAccountRemoval(
+                        accountId: preview.scope, pauseConfirmed: false,
+                        expectedGeneration: generation, expectedPauseItemKeys: nil
+                    )
+                }
+            }
+        )
+    }
+
+    private func executeMiAccountRemoval(
+        accountId: String,
+        pauseConfirmed: Bool,
+        expectedGeneration: Int?,
+        expectedPauseItemKeys: Set<String>?
+    ) async {
+        UnsupportedDeviceScanner.shared.reset()
+        let outcome = await store.removeMiAccount(
+            id: accountId,
+            pauseConfirmed: pauseConfirmed,
+            expectedGeneration: expectedGeneration,
+            expectedPauseItemKeys: expectedPauseItemKeys
+        )
+        switch outcome {
+        case .completed, .incomplete:
+            pendingAccountRemovalPreview = nil
+            showRemovalDetails = false
+        case .requiresPauseConfirmation(let verdict):
+            if let account = store.miAccounts.first(where: { $0.id == accountId }) {
+                pendingRemovalPauseConfirmation = DisableConnectionConfirmation(
+                    account: account,
+                    itemsToPause: verdict.itemsToPause,
+                    generation: store.capabilityGeneration
+                )
+            }
+        case .blockedByDeactivation(let verdict):
+            reportBlockedDisable(verdict)
+        case .blockedByUncertainIdentity:
+            store.showToast(
+                L10n.tr(
+                    "无法确认现有配置或凭据，未执行移除，请检查钥匙串授权后重试",
+                    "Could not verify existing settings or credentials; removal was not performed. Check Keychain access and try again"
+                ),
+                isError: true
+            )
         }
     }
 
@@ -476,8 +570,15 @@ public struct MiAccountSection: View {
 
                 Spacer()
 
-                Button(L10n.tr("退出登录", "Sign Out")) { pendingLogoutConfirmation = .all }
-                    .buttonStyle(PillActionButtonStyle())
+                Button(L10n.tr("退出登录", "Sign Out")) {
+                    if let account, let preview = store.previewMiAccountRemoval(id: account.id) {
+                        showRemovalDetails = false
+                        pendingAccountRemovalPreview = preview
+                    } else {
+                        pendingLogoutConfirmation = .all
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
             }
         }
     }
@@ -511,8 +612,11 @@ public struct MiAccountSection: View {
                             .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                         }
                         connectionToggleButton(for: account, isEnabled: isEnabled)
-                        Button(L10n.tr("移除", "Remove")) { pendingLogoutConfirmation = .account(account) }
-                            .buttonStyle(PillActionButtonStyle())
+                        Button(L10n.tr("移除", "Remove")) {
+                            showRemovalDetails = false
+                            pendingAccountRemovalPreview = store.previewMiAccountRemoval(id: account.id)
+                        }
+                        .buttonStyle(PillActionButtonStyle())
                     }
                     accountStatusLine(isEnabled: isEnabled, disconnectReason: disconnectReason, expiryState: expiryState)
                 }
@@ -663,5 +767,57 @@ public struct MiAccountSection: View {
         let image = NSImage(size: rep.size)
         image.addRepresentation(rep)
         return image
+    }
+}
+
+struct ConnectionRemovalConfirmationCard: View {
+    let title: String?
+    let preview: ConnectionRemovalPreview
+    let isBusy: Bool
+    @Binding var showDetails: Bool
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(Color.primary.opacity(0.08))
+            if let title {
+                Text(title).font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+            }
+            Text(preview.summaryText)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: title == nil ? .medium : .regular))
+                .foregroundStyle(.primary.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            DisclosureGroup(isExpanded: $showDetails) {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(preview.detailItems, id: \.self) { line in
+                        Text("• \(line)")
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Text(preview.platformRevocationHint)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 2)
+                }
+                .padding(.top, 4)
+            } label: {
+                Text(L10n.tr("查看移除范围与平台撤权指引", "View Removal Scope & Platform Revocation Guide"))
+                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    .foregroundStyle(DesignTokens.secondaryText)
+            }
+            HStack(spacing: 8) {
+                Spacer()
+                Button(L10n.tr("取消", "Cancel"), action: onCancel)
+                    .buttonStyle(PillActionButtonStyle())
+                    .disabled(isBusy)
+                Button(isBusy ? L10n.tr("移除中…", "Removing…") : L10n.tr("确认移除", "Confirm Remove"), action: onConfirm)
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .red))
+                    .disabled(isBusy)
+            }
+        }
+        .padding(.top, 4)
     }
 }

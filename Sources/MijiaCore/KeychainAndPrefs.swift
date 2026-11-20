@@ -24,7 +24,8 @@ public enum MenuBarDisplayMode: String, CaseIterable, Identifiable, Sendable {
 
 public enum KeychainHelper {
     public static let service = "com.jryang1997.MenuBarMijia"
-    private static let account = "ha_access_token"
+    static let tokenAccount = "ha_access_token"
+    private static let account = tokenAccount
     /// `UserDefaults` key where ≤1.0.6 mirrored the HA token in plain text. Only read by
     /// `migratePlaintextCredentialsToKeychain`; nothing writes it any more (#16).
     static let legacyPlaintextTokenKey = "ha_fallback_token"

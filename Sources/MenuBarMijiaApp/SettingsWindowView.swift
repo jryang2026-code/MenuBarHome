@@ -1386,6 +1386,9 @@ private struct ConnectionSettingsTab: View {
     @State private var haExpanded = false
     @State private var addMiAccountTrigger = 0
     @State private var pendingHADisableConfirmation: HADisableConnectionConfirmation?
+    @State private var haRemovalPreview: ConnectionRemovalPreview?
+    @State private var showHARemovalDetails = false
+    @State private var pendingHARemovalPauseConfirmation: HADisableConnectionConfirmation?
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
     /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
@@ -1536,6 +1539,10 @@ private struct ConnectionSettingsTab: View {
             }
 
             if store.homeBackend != .demo {
+                if !store.pendingConnectionRemovals.isEmpty || store.hasCorruptConnectionRemovalState {
+                    pendingConnectionRemovalsSection
+                }
+
                 if !store.effectiveLocalNetworkBlocks.isEmpty {
                     SettingsSection(title: L10n.tr("本地网络权限", "Local Network Permission")) {
                         LocalNetworkPermissionBannerView(
@@ -1557,67 +1564,7 @@ private struct ConnectionSettingsTab: View {
                 }
 
                 if showsHomeAssistantForm {
-                    SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
-                        if HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: store.hasHASource) {
-                            haConnectionStatusHeader
-                        }
-
-                        homeAssistantForm
-
-                        HStack {
-                            Button(store.isDiscoveringHA ? L10n.tr("查找中…", "Finding…") : L10n.tr("查找家中的 Home Assistant", "Find Home Assistant on LAN")) {
-                                Task {
-                                    let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
-                                    if let first = found.first {
-                                        urlDraft = first.baseURL
-                                        store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
-                                    } else {
-                                        store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
-                                    }
-                                }
-                            }
-                            .buttonStyle(PillActionButtonStyle())
-                            .disabled(store.isDiscoveringHA || !store.isHAConnectionEnabled)
-                            .settingsRow(anchor: .haDiscovery)
-
-                            Button(L10n.tr("填入默认地址", "Use Default URL")) {
-                                urlDraft = KeychainHelper.defaultNASURL
-                            }
-                            .buttonStyle(PillActionButtonStyle())
-
-                            Spacer()
-
-                            UnsavedChangesBadge(isVisible: haIsDirty)
-
-                            if store.hasHASource {
-                                Button(L10n.tr("断开连接", "Disconnect")) {
-                                    if store.disconnectHomeAssistant() {
-                                        tokenDraft = ""
-                                        haBaselineToken = ""
-                                        tokenLookupWasUnavailable = false
-                                        store.showToast(L10n.tr("已断开 Home Assistant", "Disconnected from Home Assistant"))
-                                    } else {
-                                        store.showToast(
-                                            L10n.tr("无法更新钥匙串，请授权钥匙串访问后重试", "Could not update Keychain; allow Keychain access and try again"),
-                                            isError: true
-                                        )
-                                    }
-                                }
-                                .buttonStyle(PillActionButtonStyle())
-                            }
-
-                            Button(
-                                HAConnectionSaveGuard.saveButtonTitle(
-                                    hasHASource: store.hasHASource,
-                                    isHAConnectionEnabled: store.isHAConnectionEnabled
-                                )
-                            ) {
-                                saveHomeAssistant()
-                            }
-                            .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
-                        }
-                        .padding(.top, 2)
-                    }
+                    homeAssistantConfiguredSection
                 } else {
                     SettingsSection(title: "Home Assistant") {
                         Button {
@@ -1701,6 +1648,9 @@ private struct ConnectionSettingsTab: View {
         .onChange(of: haIsDirty) { _, _ in registerUnsavedForm() }
         .onDisappear {
             pendingHADisableConfirmation = nil
+            pendingHARemovalPauseConfirmation = nil
+            haRemovalPreview = nil
+            showHARemovalDetails = false
             unsaved?.unregister("home-assistant")
         }
         .onChange(of: searchFocus?.highlight) { _, highlight in
@@ -1751,6 +1701,205 @@ private struct ConnectionSettingsTab: View {
             }
         } message: { confirmation in
             Text(confirmation.messageText)
+        }
+        .alert(
+            pendingHARemovalPauseConfirmation?.title ?? "",
+            isPresented: Binding(
+                get: { pendingHARemovalPauseConfirmation != nil },
+                set: { if !$0 { pendingHARemovalPauseConfirmation = nil } }
+            ),
+            presenting: pendingHARemovalPauseConfirmation
+        ) { confirmation in
+            Button(L10n.tr("取消", "Cancel"), role: .cancel) {
+                pendingHARemovalPauseConfirmation = nil
+            }
+            Button(L10n.tr("暂停这些项并移除", "Pause These & Remove"), role: .destructive) {
+                pendingHARemovalPauseConfirmation = nil
+                Task {
+                    await executeHARemoval(
+                        pauseConfirmed: true,
+                        expectedGeneration: confirmation.generation,
+                        expectedPauseItemKeys: confirmation.pauseItemKeys
+                    )
+                }
+            }
+        } message: { confirmation in
+            Text(confirmation.messageText)
+        }
+    }
+
+    @ViewBuilder
+    private var homeAssistantConfiguredSection: some View {
+        SettingsSection(title: "Home Assistant", anchor: .haServerAddress) {
+            if HAConnectionSaveGuard.showsConnectionStatusHeader(hasHASource: store.hasHASource) {
+                haConnectionStatusHeader
+            }
+
+            homeAssistantForm
+
+            HStack {
+                Button(store.isDiscoveringHA ? L10n.tr("查找中…", "Finding…") : L10n.tr("查找家中的 Home Assistant", "Find Home Assistant on LAN")) {
+                    Task {
+                        let found = await store.discoverHomeAssistantOnLAN(autoApplyIfDefault: false)
+                        if let first = found.first {
+                            urlDraft = first.baseURL
+                            store.showToast(L10n.tr("已发现：\(first.displaySummary)", "Found: \(first.displaySummary)"))
+                        } else {
+                            store.showToast(L10n.tr("未在局域网扫描到 Home Assistant", "No Home Assistant found on LAN"), isError: true)
+                        }
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle())
+                .disabled(store.isDiscoveringHA || !store.isHAConnectionEnabled)
+                .settingsRow(anchor: .haDiscovery)
+
+                Button(L10n.tr("填入默认地址", "Use Default URL")) {
+                    urlDraft = KeychainHelper.defaultNASURL
+                }
+                .buttonStyle(PillActionButtonStyle())
+
+                Spacer()
+
+                UnsavedChangesBadge(isVisible: haIsDirty)
+
+                if store.hasHASource {
+                    Button(L10n.tr("断开连接", "Disconnect")) {
+                        showHARemovalDetails = false
+                        haRemovalPreview = store.previewHomeAssistantRemoval()
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                    .disabled(store.isRemovingConnectionScopes.contains(ConnectionRemovalStore.haScope(serverURL: store.serverURLString)))
+                }
+
+                Button(
+                    HAConnectionSaveGuard.saveButtonTitle(
+                        hasHASource: store.hasHASource,
+                        isHAConnectionEnabled: store.isHAConnectionEnabled
+                    )
+                ) {
+                    saveHomeAssistant()
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+            }
+            .padding(.top, 2)
+
+            if let preview = haRemovalPreview {
+                haRemovalConfirmationCard(preview)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var pendingConnectionRemovalsSection: some View {
+        SettingsSection(title: L10n.tr("未完成移除", "Unfinished Removals")) {
+            if store.hasCorruptConnectionRemovalState {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(L10n.tr(
+                        "连接移除记录已损坏，已隔离原始数据并暂停相关凭据写入与重连，避免误删或误恢复。",
+                        "The connection removal record is unreadable. Raw data was quarantined and credential saves/reconnects stay blocked fail-closed."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.primary.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            ForEach(store.pendingConnectionRemovals) { record in
+                let busy = store.isRemovingConnectionScopes.contains(record.scope)
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(record.displayName ?? record.scope)
+                                .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                            Text(L10n.tr("未完成移除 · 重试", "Removal not finished · Retry"))
+                                .font(.system(size: DesignTokens.TypeSize.caption))
+                                .foregroundStyle(.orange)
+                        }
+                        Spacer()
+                        Button(busy ? L10n.tr("清理中…", "Cleaning…") : L10n.tr("重试清理", "Retry Cleanup")) {
+                            Task {
+                                let outcome = await store.retryConnectionRemoval(scope: record.scope)
+                                if case .completed = outcome, record.kind == .ha {
+                                    tokenDraft = ""
+                                    haBaselineToken = ""
+                                    tokenLookupWasUnavailable = false
+                                }
+                            }
+                        }
+                        .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                        .disabled(busy)
+                    }
+                    Text(L10n.tr(
+                        "在清理完成前，该连接保持停用且不会被重新启用或覆盖凭据。",
+                        "Until cleanup completes, this connection stays blocked and will not reconnect or overwrite credentials."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func haRemovalConfirmationCard(_ preview: ConnectionRemovalPreview) -> some View {
+        ConnectionRemovalConfirmationCard(
+            title: nil,
+            preview: preview,
+            isBusy: store.isRemovingConnectionScopes.contains(preview.scope),
+            showDetails: $showHARemovalDetails,
+            onCancel: {
+                haRemovalPreview = nil
+                showHARemovalDetails = false
+            },
+            onConfirm: {
+                let generation = store.capabilityGeneration
+                Task { await executeHARemoval(pauseConfirmed: false, expectedGeneration: generation, expectedPauseItemKeys: nil) }
+            }
+        )
+    }
+
+    private func executeHARemoval(
+        pauseConfirmed: Bool,
+        expectedGeneration: Int?,
+        expectedPauseItemKeys: Set<String>?
+    ) async {
+        let outcome = await store.removeHomeAssistantConnection(
+            pauseConfirmed: pauseConfirmed,
+            expectedGeneration: expectedGeneration,
+            expectedPauseItemKeys: expectedPauseItemKeys
+        )
+        switch outcome {
+        case .completed:
+            haRemovalPreview = nil
+            showHARemovalDetails = false
+            tokenDraft = ""
+            haBaselineToken = ""
+            tokenLookupWasUnavailable = false
+        case .requiresPauseConfirmation(let verdict):
+            pendingHARemovalPauseConfirmation = HADisableConnectionConfirmation(
+                itemsToPause: verdict.itemsToPause,
+                generation: store.capabilityGeneration
+            )
+        case .blockedByDeactivation(let verdict):
+            reportBlockedHADisable(verdict)
+        case .blockedByUncertainIdentity:
+            store.showToast(
+                L10n.tr(
+                    "无法确认现有配置或凭据，未执行移除，请检查钥匙串授权后重试",
+                    "Could not verify existing settings or credentials; removal was not performed. Check Keychain access and try again"
+                ),
+                isError: true
+            )
+        case .incomplete:
+            haRemovalPreview = nil
+            showHARemovalDetails = false
+            tokenDraft = ""
+            haBaselineToken = ""
+            tokenLookupWasUnavailable = false
         }
     }
 
