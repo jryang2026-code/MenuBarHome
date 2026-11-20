@@ -32,7 +32,14 @@ import {
   scheduledCommandIdentity,
   scheduledCommandsReady,
 } from "../src/ui/scheduledCommands.js";
-import { enqueueIncomingOpenUrl, executeBuiltInQuickAction } from "../src/ui/speechGuard.js";
+import {
+  enqueueIncomingOpenUrl,
+  executeBuiltInQuickAction,
+  getActiveRaycastBridgeTokenForHost,
+  hasPendingUrlConfirmation,
+  setRaycastIntegrationEnabled,
+} from "../src/ui/speechGuard.js";
+import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
 import { onOpenURL, type AppURLCommandHost } from "../src/core/appUrlCommand.js";
 import {
   AutomationRuleStore,
@@ -1758,6 +1765,33 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
       }) ?? "";
     assert.match(offlineBanner, /Home Assistant.*已停用/);
     assert.doesNotMatch(offlineBanner, /离线|turned off/i);
+  });
+
+  it("refuses a type closed before the refresh lands ahead of any link prompt, and 全关 leaves it out (#346)", async () => {
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "{{SECRET_7swvbi2f}}";
+    app.settings.allowDirectURLControl = false;
+    await app.refreshHADevices(false);
+    const strip = app.devices.find((d) => d.name === "HA灯带")!;
+    assert.ok(strip && app.allOffTargets.some((d) => d.id === strip.id));
+
+    assert.equal(app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS.filter((c) => c !== "light")), true);
+    assert.ok(app.devices.some((d) => d.id === strip.id), "the refresh that prunes the card has not landed yet");
+    const writesBefore = h.countCmd("ha_execute");
+
+    await enqueueIncomingOpenUrl(app, `menumijia://power?device=${encodeURIComponent(strip.id)}&on=false`);
+    assert.equal(hasPendingUrlConfirmation(app), false, "no prompt is shown for a target the gate refuses");
+    assert.match(app.replyBanner?.text ?? "", /该设备类型已关闭/);
+
+    assert.equal(app.allOffTargets.some((d) => d.id === strip.id), false);
+    setRaycastIntegrationEnabled(app, true);
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    await enqueueIncomingOpenUrl(app, `menumijia://scene?name=allOff&token=${token}`);
+    assert.doesNotMatch(app.replyBanner?.text ?? "", /该设备类型已关闭/, "全关 skips the closed type instead of failing the batch");
+    assert.equal(h.countCmd("ha_execute"), writesBefore);
   });
 
   it("answers a closed HA type for a queued companion link with zero writes (P3b-W)", async () => {
