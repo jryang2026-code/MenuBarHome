@@ -353,6 +353,23 @@ export class MenuMijiaWindowsApp {
     return this.assistantEpochCount;
   }
   /**
+   * Suggestion-branch generation (P5b-W): closing the 主动建议 switch advances it, so a run that
+   * is already in flight is dropped and its cache, cooldown and in-flight marker go with it.
+   * Commands, consent and pending suggestions stay on `assistantEpoch` — this counter never
+   * cancels a user-initiated request.
+   */
+  private proactiveEpochCount = 0;
+  public get proactiveEpoch(): number {
+    return this.proactiveEpochCount;
+  }
+  public advanceProactiveEpoch(): void {
+    this.proactiveEpochCount += 1;
+    this.isRefreshingProactive = false;
+    this.proactiveRetryAfterMs = null;
+    this.aiProactiveSignature = null;
+    this.aiProactiveSuggestions = null;
+  }
+  /**
    * Invalidates every in-flight AI request: late natural-command results return before the
    * write gate, and the proactive branch drops its cache, cooldown and in-flight marker so
    * the next tick starts clean instead of resurrecting a stale run.

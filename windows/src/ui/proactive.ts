@@ -10,6 +10,7 @@ import {
   habitActionable,
   isAiAssistantEnabled,
   isLocalAssistantEndpoint,
+  isProactiveSuggestionsEnabled,
   timeBucketLabel,
 } from "../core/assistant.js";
 import type { AssistantSuggestion, SmartDevice } from "../core/models.js";
@@ -162,6 +163,10 @@ export function proactiveSignature(host: MenuMijiaWindowsApp): string {
 
 /** The Top-4 zero-delay suggestions: the AI cache when fresh, otherwise ranked locally (#113). */
 export function currentProactiveSuggestions(host: MenuMijiaWindowsApp): AssistantSuggestion[] {
+  // 主动建议 off (P5b-W): nothing suggestion-specific may be read or computed — no ambient
+  // signature, no habit ranking, no cached AI result. Callers render nothing, so no prompt or
+  // suggestion count exists either.
+  if (!isProactiveSuggestionsEnabled(host.settings)) return [];
   if (host.pendingSuggestions.length > 0) return [];
   const signature = proactiveSignature(host);
   const aliasedDevices = proactiveVisibleDevices(host);
@@ -197,6 +202,9 @@ export function renderProactiveInlinePill(host: MenuMijiaWindowsApp, item: Assis
 export function proactiveHasConsumer(
   host: Pick<MenuMijiaWindowsApp, "isRefreshingProactive" | "settings" | "apiKeyFor">,
 ): boolean {
+  // 主动建议 off (P5b-W): the feature switch comes before any provider, key or consent read, so a
+  // closed switch costs the tick nothing beyond this check.
+  if (!isProactiveSuggestionsEnabled(host.settings)) return false;
   if (host.isRefreshingProactive || host.settings.connectionMode === "demo") return false;
   // AI off (P5a-W): the background inference is a pure AI consumer and must not send.
   if (!isAiAssistantEnabled(host.settings)) return false;
@@ -215,6 +223,7 @@ export function proactiveHasConsumer(
  * and keeps the previous cache when the request fails.
  */
 export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): void {
+  if (!isProactiveSuggestionsEnabled(host.settings)) return;
   if (!proactiveHasConsumer(host)) return;
   if (host.proactiveRetryAfterMs !== null && Date.now() < host.proactiveRetryAfterMs) return;
   const signature = proactiveSignature(host);
@@ -226,12 +235,20 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
   // epoch advance already cleared `isRefreshingProactive`, so the late callback returns
   // without touching state a newer run may own.
   const assistantEpoch = host.assistantEpoch;
+  // Closing the suggestions switch mid-flight advances this generation; a late result then returns
+  // without touching the cache, the cooldown or the panel (P5b-W, same pattern as P5a-W).
+  const proactiveEpoch = host.proactiveEpoch;
   const selectedHomeId = host.settings.selectedHomeId;
   host.isRefreshingProactive = true;
   // Gate every transport attempt (initial call and in-resolver retries alike): a run that
   // was superseded or disabled mid-flight must not send anything further (P5a-W #1/#3).
   const gatedTransport: HttpTransport = (request) => {
-    if (assistantEpoch !== host.assistantEpoch || !isAiAssistantEnabled(host.settings)) {
+    if (
+      assistantEpoch !== host.assistantEpoch ||
+      proactiveEpoch !== host.proactiveEpoch ||
+      !isAiAssistantEnabled(host.settings) ||
+      !isProactiveSuggestionsEnabled(host.settings)
+    ) {
       return Promise.reject(new Error("assistant request superseded"));
     }
     return host.transport(request);
@@ -261,7 +278,7 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
     )
     .then((suggestions) => {
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
-      if (assistantEpoch !== host.assistantEpoch) return;
+      if (assistantEpoch !== host.assistantEpoch || proactiveEpoch !== host.proactiveEpoch) return;
       host.isRefreshingProactive = false;
       if (proactiveSignature(host) === signature) {
         // The context counts as served only once a usable result landed (Codex #116 review).
@@ -278,7 +295,7 @@ export function maybeRefreshProactiveInBackground(host: MenuMijiaWindowsApp): vo
     })
     .catch(() => {
       if (sourceRevision !== host.sourceRevision || host.settings.selectedHomeId !== selectedHomeId) return;
-      if (assistantEpoch !== host.assistantEpoch) return;
+      if (assistantEpoch !== host.assistantEpoch || proactiveEpoch !== host.proactiveEpoch) return;
       // Silent: the previous cache keeps showing; retry after a cooldown (Codex #116 review).
       host.isRefreshingProactive = false;
       host.proactiveRetryAfterMs = Date.now() + PROACTIVE_RETRY_COOLDOWN_MS;
