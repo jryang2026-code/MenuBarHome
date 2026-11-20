@@ -2113,11 +2113,12 @@ struct SnapshotTests {
         }
     }
 
-    @Test("Automation settings render the runtime switch while rules are paused")
+    @Test("Automation settings render the runtime switches while rules and timers are paused")
     func automationRuntimeOffSnapshot() async throws {
         let fixture = try await SnapshotFixture(configuredHASource: false)
         defer { fixture.restore() }
         #expect(fixture.store.setEventAutomationEnabled(false))
+        #expect(fixture.store.setScheduledCommandsEnabled(false))
         assertRendered(
             snapshotReady(
                 AutomationSettingsSection(store: fixture.store)
@@ -2125,7 +2126,7 @@ struct SnapshotTests {
                     .frame(width: 620, alignment: .leading),
                 scheme: .light
             ),
-            size: CGSize(width: 620, height: 740),
+            size: CGSize(width: 620, height: 820),
             named: "settings-automation-off",
             scheme: .light
         )

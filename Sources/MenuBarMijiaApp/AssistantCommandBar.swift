@@ -640,7 +640,7 @@ struct AssistantResponseArea: View {
                 scheduledRow
             }
 
-            if !store.pausedScheduledCommands.isEmpty {
+            if !store.visiblePausedScheduledCommands.isEmpty {
                 pausedScheduledRow
             }
 
@@ -653,7 +653,7 @@ struct AssistantResponseArea: View {
         .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
         .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
         .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
-        .animation(AppleMotion.snappySpring, value: store.pausedScheduledCommands)
+        .animation(AppleMotion.snappySpring, value: store.visiblePausedScheduledCommands)
         .animation(AppleMotion.snappySpring, value: asksForTimerNotifications)
         .animation(AppleMotion.snappySpring, value: speech.isListening)
         // The receipt is a glance, not a log: it folds away unless something still needs the user.
@@ -664,7 +664,7 @@ struct AssistantResponseArea: View {
                   case .done = store.assistantState,
                   store.pendingCloudConsent == nil,
                   store.scheduledCommands.isEmpty,
-                  store.pausedScheduledCommands.isEmpty,
+                  store.visiblePausedScheduledCommands.isEmpty,
                   !asksForTimerNotifications else { return }
             withAnimation(AppleMotion.snappySpring) { store.dismissAssistantBar() }
         }
@@ -790,7 +790,7 @@ struct AssistantResponseArea: View {
     /// a countdown and stay cancellable instead of disappearing (M1).
     private var pausedScheduledRow: some View {
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(store.pausedScheduledCommands, id: \.command.id) { paused in
+            ForEach(store.visiblePausedScheduledCommands, id: \.command.id) { paused in
                 HStack(spacing: 5) {
                     Image(systemName: "pause.circle")
                         .foregroundStyle(DesignTokens.secondaryText)
