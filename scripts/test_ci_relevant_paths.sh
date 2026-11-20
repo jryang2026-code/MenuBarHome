@@ -59,6 +59,10 @@ expect_true_keys "Shared capability manifest runs lint, macOS, Windows, and Linu
     "Shared/capability-manifest.json\n" \
     code macos windows core
 
+expect_true_keys "scripts/lib is sourced by both Swift test runners, so it runs both suites" \
+    "scripts/lib/swift_test_retry.sh\n" \
+    code macos core scripts
+
 expect_true_keys "unknown path falls back to full CI" \
     "unknown.bin\n" \
     "${ALL_KEYS[@]}"
