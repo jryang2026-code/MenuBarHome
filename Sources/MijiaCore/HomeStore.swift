@@ -1200,6 +1200,10 @@ public final class HomeStore {
         enabledCategories: Set(DeviceCategoryID.allCases)
     ) {
         didSet {
+            if !isPersistingCompanionToggle,
+               oldValue.enabledFeatures.contains(.companionIntegration) != companionIntegrationEnabled {
+                applyCompanionIntegrationTransition(enabled: companionIntegrationEnabled)
+            }
             if oldValue.enabledFeatures.contains(.eventAutomation) != eventAutomationEnabled {
                 automationGeneration &+= 1
                 let generation = automationGeneration
@@ -1242,6 +1246,11 @@ public final class HomeStore {
     @ObservationIgnored var automationGeneration: UInt64 = 0
     @ObservationIgnored var reconciledAutomationGeneration: UInt64 = 0
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
+    /// Monotonic generation for companion integration (Raycast / CLI / MCP / external links).
+    public internal(set) var companionGeneration: UInt64 = 0
+    @ObservationIgnored public internal(set) var activeCompanionCommandGeneration: UInt64?
+    @ObservationIgnored var isPersistingCompanionToggle = false
+    public var onCompanionIntegrationChanged: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []

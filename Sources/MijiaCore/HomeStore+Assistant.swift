@@ -879,6 +879,11 @@ extension HomeStore {
                 clearThinkingAssistantState()
                 return nil
             }
+            // A companion command disconnected while the model was answering must not act.
+            if let companion = activeCompanionCommandGeneration, !companionCanExecute(generation: companion) {
+                clearThinkingAssistantState()
+                return nil
+            }
         }
         guard controlContext == controlContextID else { return nil }
         if !plan.intents.isEmpty {

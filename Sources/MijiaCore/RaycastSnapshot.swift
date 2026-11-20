@@ -325,10 +325,54 @@ public struct RaycastSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+/// Read-only status of the local companion integration (Raycast, local CLI, MCP).
+public enum CompanionCheckStatus: String, Equatable, Sendable { case disabled, ready, needsAttention }
+
+/// Result of a read-only companion integration check; never mutates external app configs.
+public struct CompanionCheckReport: Equatable, Sendable {
+    public let status: CompanionCheckStatus
+    public let summary: String
+    public let snapshotPath: String
+    public let snapshotPresent, tokenMatches, permissionsOwnerOnly: Bool
+    public let exportedDeviceCount, exportedSceneCount: Int
+
+    public init(
+        status: CompanionCheckStatus, summary: String, snapshotPath: String,
+        snapshotPresent: Bool = false, tokenMatches: Bool = false,
+        permissionsOwnerOnly: Bool = false, exportedDeviceCount: Int = 0, exportedSceneCount: Int = 0
+    ) {
+        self.status = status; self.summary = summary; self.snapshotPath = snapshotPath
+        self.snapshotPresent = snapshotPresent; self.tokenMatches = tokenMatches
+        self.permissionsOwnerOnly = permissionsOwnerOnly
+        self.exportedDeviceCount = exportedDeviceCount; self.exportedSceneCount = exportedSceneCount
+    }
+}
+
+/// Builds copyable configuration snippets for local companions without editing external files
+/// or exposing `bridgeToken` / home credentials (ADR-0013, P6a-M).
+public enum CompanionIntegrationConfig {
+    public static let placeholderMCPCommandPath = "/ABSOLUTE/PATH/TO/MenuBarHome/scripts/mijia-mcp"
+
+    public static func mcpConfigJSON(
+        snapshotURL: URL = RaycastSnapshotExporter.defaultSnapshotURL,
+        mcpCommandPath: String? = nil
+    ) -> String {
+        let trimmed = mcpCommandPath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = (trimmed?.isEmpty == false) ? trimmed! : placeholderMCPCommandPath
+        let payload: [String: Any] = [
+            "mcpServers": ["menubarhome": ["command": command, "env": ["MENUBARMIJIA_SNAPSHOT_PATH": snapshotURL.path]]]
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]),
+              let text = String(data: data, encoding: .utf8) else { return "{}" }
+        return text
+    }
+}
+
 /// Writes `RaycastSnapshot` atomically with `0600` owner-only permissions.
 public enum RaycastSnapshotExporter {
     public static let bridgeTokenDefaultsKey = "raycast_bridge_token_v1"
-    /// Settings → 自动化与外部控制 → Raycast 集成. Off by default: no snapshot file and no token.
+    /// Legacy defaults mirror for companion integration. Authoritative state lives in
+    /// `CapabilitySelectionStore` under `FeatureID.companionIntegration` (P6a-M).
     public static let integrationEnabledKey = "raycast_integration_enabled"
 
     public static let defaultSnapshotURL: URL = {
@@ -354,18 +398,53 @@ public enum RaycastSnapshotExporter {
 
     /// Serial, so a slower older write can never land after a newer one.
     private static let writeQueue = DispatchQueue(label: "MenuBarMijia.RaycastSnapshotExporter", qos: .utility)
+    private static let generationLock = NSLock()
+    private nonisolated(unsafe) static var exportGenerations: [URL: UInt64] = [:]
 
-    public static func writeInBackground(_ snapshot: RaycastSnapshot, to fileURL: URL = defaultSnapshotURL) {
+    public static func currentExportGeneration(for fileURL: URL = defaultSnapshotURL) -> UInt64 {
+        let key = fileURL.standardizedFileURL
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        return exportGenerations[key] ?? 0
+    }
+
+    /// Synchronously advances the generation for `fileURL`, so any queued `writeInBackground`
+    /// carrying an older generation becomes a no-op before touching disk.
+    @discardableResult
+    public static func invalidateExports(for fileURL: URL = defaultSnapshotURL) -> UInt64 {
+        let key = fileURL.standardizedFileURL
+        generationLock.lock()
+        defer { generationLock.unlock() }
+        let next = (exportGenerations[key] ?? 0) &+ 1
+        exportGenerations[key] = next
+        return next
+    }
+
+    public static func writeInBackground(
+        _ snapshot: RaycastSnapshot,
+        to fileURL: URL = defaultSnapshotURL,
+        generation: UInt64? = nil
+    ) {
+        let key = fileURL.standardizedFileURL
+        let expectedGeneration = generation ?? currentExportGeneration(for: key)
         writeQueue.async {
+            guard currentExportGeneration(for: key) == expectedGeneration else { return }
             try? write(snapshot, to: fileURL)
         }
     }
 
-    /// Queued behind any pending write, so a late write cannot recreate the file after it is removed.
+    /// Invalidates all queued writes synchronously and queues file removal on `writeQueue`, so a
+    /// late write can never recreate the file after disconnect/disable.
     public static func removeInBackground(at fileURL: URL = defaultSnapshotURL) {
+        _ = invalidateExports(for: fileURL)
         writeQueue.async {
             try? FileManager.default.removeItem(at: fileURL)
         }
+    }
+
+    /// Waits for all queued background snapshot writes/removals to finish (test synchronization).
+    public static func flushBackgroundQueue() {
+        writeQueue.sync {}
     }
 
     public static func write(_ snapshot: RaycastSnapshot, to fileURL: URL = defaultSnapshotURL) throws {
@@ -394,36 +473,154 @@ extension HomeStore {
     private static let roomAliasesDefaultsKey = "room_aliases"
     private static let roomOrderDefaultsKey = "room_custom_order"
 
-    /// Whether the user turned on the Raycast companion (default off).
-    public var raycastIntegrationEnabled: Bool {
-        userDefaults.bool(forKey: RaycastSnapshotExporter.integrationEnabledKey)
+    public static var companionDisabledMessage: String {
+        L10n.tr(
+            "外部伴生集成已关闭，已拒绝伴生命令",
+            "Companion integration is turned off; companion command rejected"
+        )
     }
 
-    /// Local random bridge token used to authenticate `menumijia://...?token=...` requests from
-    /// `raycast-mijia`. `nil` while the integration is off, so no link can skip confirmation.
+    public static var companionInvalidTokenMessage: String {
+        L10n.tr(
+            "伴生令牌已失效，请重新获取最新本地快照后重试",
+            "Companion token is invalid or expired; refresh from the latest local snapshot and try again"
+        )
+    }
+
+    /// Authoritative companion integration toggle (`FeatureID.companionIntegration`).
+    /// Fresh installs default off; upgraded users preserve existing behavior (on).
+    public var companionIntegrationEnabled: Bool { capabilitySelection.enabledFeatures.contains(.companionIntegration) }
+    public var raycastIntegrationEnabled: Bool { companionIntegrationEnabled }
+    public func companionCanExecute(generation: UInt64) -> Bool { companionIntegrationEnabled && companionGeneration == generation }
+    public var companionSnapshotFileURL: URL { raycastSnapshotTestURL ?? RaycastSnapshotExporter.defaultSnapshotURL }
+
+    public func withCompanionCommandGeneration<T>(_ generation: UInt64, body: @MainActor () async -> T) async -> T {
+        let previous = activeCompanionCommandGeneration
+        activeCompanionCommandGeneration = generation
+        defer { activeCompanionCommandGeneration = previous }
+        return await body()
+    }
+
+    /// Local random bridge token for `menumijia://...?token=...`; `nil` while integration is off.
     public var raycastBridgeToken: String? {
-        guard raycastIntegrationEnabled else { return nil }
+        guard companionIntegrationEnabled else { return nil }
         return RaycastSnapshotExporter.loadOrCreateBridgeToken(in: userDefaults)
     }
 
-    /// Turning the integration on creates a token and exports at once. Turning it off deletes the
-    /// snapshot and the token, so links carrying the old token need confirmation again and the next
-    /// enable issues a new token.
-    public func setRaycastIntegration(enabled: Bool) {
-        userDefaults.set(enabled, forKey: RaycastSnapshotExporter.integrationEnabledKey)
-        if enabled {
-            exportRaycastSnapshotIfNeeded()
-            return
+    /// Turns companion integration on or off and persists atomically; rolls back on write failure (P6a-M).
+    @discardableResult
+    public func setCompanionIntegrationEnabled(_ enabled: Bool) -> Bool {
+        if enabled == companionIntegrationEnabled {
+            if enabled { exportRaycastSnapshotIfNeeded() }
+            return true
         }
+        guard !isIdentityUncertain else {
+            showToast(L10n.tr("仍无法读取历史配置或凭据，请检查钥匙串授权后重试", "Still unable to read settings or credentials; check Keychain access and try again"), isError: true)
+            return false
+        }
+        let previous = capabilitySelection
+        var next = capabilitySelection
+        if enabled { next.enabledFeatures.insert(.companionIntegration) } else { next.enabledFeatures.remove(.companionIntegration) }
+        isPersistingCompanionToggle = true
+        capabilitySelection = next.normalized(with: .shared)
+        let saved = persistCapabilitySelection()
+        if !saved {
+            capabilitySelection = previous
+            isPersistingCompanionToggle = false
+            showToast(L10n.tr("无法保存伴生集成开关状态，请重试", "Could not save the companion integration switch; try again"), isError: true)
+            return false
+        }
+        isPersistingCompanionToggle = false
+        let actualEnabled = companionIntegrationEnabled
+        if actualEnabled != previous.enabledFeatures.contains(.companionIntegration) {
+            applyCompanionIntegrationTransition(enabled: actualEnabled)
+        }
+        return actualEnabled == enabled
+    }
+
+    func applyCompanionIntegrationTransition(enabled: Bool) {
+        userDefaults.set(enabled, forKey: RaycastSnapshotExporter.integrationEnabledKey)
+        companionGeneration &+= 1
+        capabilityGeneration &+= 1
         raycastExportTask?.cancel()
         raycastExportTask = nil
+        if enabled {
+            _ = RaycastSnapshotExporter.loadOrCreateBridgeToken(in: userDefaults)
+            exportRaycastSnapshotIfNeeded()
+            onCompanionIntegrationChanged?(true)
+            return
+        }
         lastExportedRaycastSnapshot = nil
+        lastRaycastCommandFeedback = nil
         userDefaults.removeObject(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey)
+        let targetURL = companionSnapshotFileURL
+        _ = RaycastSnapshotExporter.invalidateExports(for: targetURL)
         if let testURL = raycastSnapshotTestURL {
             try? FileManager.default.removeItem(at: testURL)
         } else if !isTestEnvironment {
-            RaycastSnapshotExporter.removeInBackground()
+            RaycastSnapshotExporter.removeInBackground(at: targetURL)
         }
+        onCompanionIntegrationChanged?(false)
+    }
+
+    @discardableResult
+    public func setRaycastIntegration(enabled: Bool) -> Bool { setCompanionIntegrationEnabled(enabled) }
+
+    /// Disconnects companion integration: revokes token, deletes snapshot, drops pending commands; never edits external configs.
+    @discardableResult
+    public func disconnectCompanionIntegration() -> Bool {
+        guard setCompanionIntegrationEnabled(false) else { return false }
+        showToast(L10n.tr(
+            "已断开伴生集成，旧令牌与本地快照已失效；不会自动修改外部应用配置",
+            "Disconnected companion integration. Old tokens and the local snapshot are revoked; external app configs are not modified."
+        ))
+        return true
+    }
+
+    public func companionMCPConfigurationJSON(mcpCommandPath: String? = nil) -> String {
+        CompanionIntegrationConfig.mcpConfigJSON(snapshotURL: companionSnapshotFileURL, mcpCommandPath: mcpCommandPath)
+    }
+
+    /// Read-only diagnostic check of the local companion integration and snapshot file.
+    public func checkCompanionIntegrationStatus() -> CompanionCheckReport {
+        let fileURL = companionSnapshotFileURL, path = fileURL.path
+        guard companionIntegrationEnabled else {
+            return CompanionCheckReport(
+                status: .disabled,
+                summary: L10n.tr(
+                    "伴生集成已关闭，当前不导出快照并拒绝伴生命令；普通外部链接仍按安全与提醒设置执行",
+                    "Companion integration is off; snapshot export is stopped and companion commands are rejected. Ordinary external links still follow Safety & Alerts."
+                ),
+                snapshotPath: path
+            )
+        }
+        let fm = FileManager.default, exists = fm.fileExists(atPath: path)
+        guard exists, let data = try? Data(contentsOf: fileURL),
+              let decoded = try? JSONDecoder().decode(RaycastSnapshot.self, from: data),
+              decoded.schemaVersion == RaycastSnapshot.currentSchemaVersion else {
+            return CompanionCheckReport(
+                status: .needsAttention,
+                summary: L10n.tr("尚未检测到有效的本地快照文件，请等待设备同步完成或重新开启此功能", "No valid local snapshot file was found yet; wait for device sync or re-enable this feature"),
+                snapshotPath: path, snapshotPresent: exists
+            )
+        }
+        let tokenMatches = URLDirectControl.isValidBridgeToken(decoded.bridgeToken, expectedToken: raycastBridgeToken)
+        let perms = ((try? fm.attributesOfItem(atPath: path)[.posixPermissions]) as? NSNumber)?.intValue ?? 0
+        let ownerOnly = (perms & 0o777) == 0o600
+        let devicesCount = decoded.devices.count, scenesCount = decoded.scenes.count
+        let (status, summary): (CompanionCheckStatus, String)
+        if !tokenMatches {
+            (status, summary) = (.needsAttention, L10n.tr("本地快照中的令牌已过期，请重新开启或等待下一次快照刷新", "The token in the local snapshot is stale; re-enable or wait for the next snapshot refresh"))
+        } else if !ownerOnly {
+            (status, summary) = (.needsAttention, L10n.tr("本地快照权限不是仅本机用户可读（0600），建议断开后重新开启", "Local snapshot permissions are not owner-only (0600); disconnect and turn this feature back on"))
+        } else {
+            (status, summary) = (.ready, L10n.format("伴生集成正常 · 已导出 %@ 台设备与 %@ 个场景（仅本机 0600 权限）", "Companion ready · Exported %@ device(s) and %@ scene(s) (local 0600 only)", String(devicesCount), String(scenesCount)))
+        }
+        return CompanionCheckReport(
+            status: status, summary: summary, snapshotPath: path, snapshotPresent: true,
+            tokenMatches: tokenMatches, permissionsOwnerOnly: ownerOnly,
+            exportedDeviceCount: devicesCount, exportedSceneCount: scenesCount
+        )
     }
 
     /// All visible devices across all rooms (ignoring the panel's temporary `listCut` filter),
@@ -452,8 +649,12 @@ extension HomeStore {
         command: String,
         message: String,
         isError: Bool = false,
-        now: Date = Date()
+        now: Date = Date(),
+        expectedGeneration: UInt64? = nil
     ) {
+        if let expectedGeneration, !companionCanExecute(generation: expectedGeneration) {
+            return
+        }
         let iso = Self.raycastISO8601String(from: now)
         lastRaycastCommandFeedback = RaycastCommandFeedback(
             requestId: requestId,
@@ -462,11 +663,15 @@ extension HomeStore {
             isError: isError,
             completedAt: iso
         )
-        exportRaycastSnapshotIfNeeded(now: now)
+        exportRaycastSnapshotIfNeeded(now: now, expectedGeneration: expectedGeneration)
     }
 
     /// Executes a built-in quick action or undo scene requested via `menumijia://scene?name=...`.
     public func executeBuiltInURLScene(_ builtIn: BuiltInURLScene) async -> (message: String, isError: Bool) {
+        if let activeGeneration = activeCompanionCommandGeneration,
+           !companionCanExecute(generation: activeGeneration) {
+            return (Self.companionDisabledMessage, true)
+        }
         switch builtIn {
         case .lightsOff, .softNightLight, .climateSleepOff:
             guard let action = builtIn.quickAction else {
@@ -653,20 +858,28 @@ extension HomeStore {
     /// one export 0.3 s after the last change, so the main actor does not encode and write the file
     /// on every `didSet`.
     public func scheduleRaycastSnapshotExport() {
-        guard raycastIntegrationEnabled, !isApplyingProviderSnapshot else { return }
+        guard companionIntegrationEnabled, !isApplyingProviderSnapshot else { return }
         raycastExportTask?.cancel()
+        let generation = companionGeneration
         let sleep = raycastExportSleep
         raycastExportTask = Task { @MainActor [weak self] in
             try? await sleep(.milliseconds(300))
-            guard !Task.isCancelled, let self else { return }
-            self.exportRaycastSnapshotIfNeeded()
+            guard !Task.isCancelled, let self, self.companionCanExecute(generation: generation) else { return }
+            self.exportRaycastSnapshotIfNeeded(expectedGeneration: generation)
         }
     }
 
     /// Writes the snapshot now. Command feedback uses this directly because Raycast is waiting for it;
     /// everything else goes through `scheduleRaycastSnapshotExport()`.
-    public func exportRaycastSnapshotIfNeeded(to customURL: URL? = nil, now: Date = Date()) {
-        guard raycastIntegrationEnabled || customURL != nil, !isApplyingProviderSnapshot else { return }
+    public func exportRaycastSnapshotIfNeeded(
+        to customURL: URL? = nil,
+        now: Date = Date(),
+        expectedGeneration: UInt64? = nil
+    ) {
+        guard companionIntegrationEnabled || customURL != nil, !isApplyingProviderSnapshot else { return }
+        if let expectedGeneration, !companionCanExecute(generation: expectedGeneration) {
+            return
+        }
         let targetURL: URL
         if let customURL {
             targetURL = customURL
@@ -696,7 +909,8 @@ extension HomeStore {
         if customURL != nil || raycastSnapshotTestURL != nil {
             try? RaycastSnapshotExporter.write(snapshot, to: targetURL)
         } else {
-            RaycastSnapshotExporter.writeInBackground(snapshot, to: targetURL)
+            let exportGeneration = RaycastSnapshotExporter.currentExportGeneration(for: targetURL)
+            RaycastSnapshotExporter.writeInBackground(snapshot, to: targetURL, generation: exportGeneration)
         }
     }
 

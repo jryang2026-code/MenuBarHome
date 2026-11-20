@@ -2143,8 +2143,36 @@ struct SnapshotTests {
                     .frame(width: 620, alignment: .leading),
                 scheme: .light
             ),
-            size: CGSize(width: 620, height: 820),
+            size: CGSize(width: 620, height: 940),
             named: "settings-automation-off",
+            scheme: .light
+        )
+    }
+
+    @Test("Automation settings render companion integration disabled and check-report states (P6a-M)")
+    func companionIntegrationStatesSnapshot() async throws {
+        let fixture = try await SnapshotFixture(configuredHASource: false)
+        defer { fixture.restore() }
+        #expect(fixture.store.setCompanionIntegrationEnabled(false))
+        let offReport = CompanionCheckReport(
+            status: .disabled,
+            summary: fixture.store.checkCompanionIntegrationStatus().summary,
+            snapshotPath: "~/Library/Application Support/MenuBarMijia/raycast-snapshot.json",
+            snapshotPresent: false,
+            tokenMatches: false,
+            permissionsOwnerOnly: false,
+            exportedDeviceCount: 0,
+            exportedSceneCount: 0
+        )
+        assertRendered(
+            snapshotReady(
+                AutomationSettingsSection(store: fixture.store, initialCompanionCheckReport: offReport)
+                    .padding(12)
+                    .frame(width: 620, alignment: .leading),
+                scheme: .light
+            ),
+            size: CGSize(width: 620, height: 920),
+            named: "settings-companion-off-checked",
             scheme: .light
         )
     }

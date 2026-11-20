@@ -154,7 +154,14 @@ extension HomeStore {
         return raycastControllable(devices[idx])
     }
 
+    private func companionRevokedRefusal() -> RaycastDirectResult? {
+        guard let generation = activeCompanionCommandGeneration,
+              !companionCanExecute(generation: generation) else { return nil }
+        return (true, Self.companionDisabledMessage, true)
+    }
+
     private func raycastControllable(_ device: SmartDevice) -> (device: SmartDevice?, refusal: RaycastDirectResult?) {
+        if let refusal = companionRevokedRefusal() { return (nil, refusal) }
         if let reason = capabilityWriteRejection(for: device) {
             let msg = reason.userMessage
             showToast(msg, isError: true)
@@ -217,6 +224,7 @@ extension HomeStore {
     ) async -> RaycastDirectResult {
         let expectedContext = modalContext ?? captureModalDeviceContext(for: device)
         let context = expectedContext.controlContextID
+        if let refusal = companionRevokedRefusal() { return refusal }
         if let reason = rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) {
             return (true, reason.userMessage, true)
         }
@@ -227,6 +235,12 @@ extension HomeStore {
         let write = beginOptimisticWrite(from: device, to: updated, lock: lock)
         do {
             for command in commands {
+                if let refusal = companionRevokedRefusal() {
+                    if controlContextID == context {
+                        revert(write, restoring: reportedDevice(for: device.id))
+                    }
+                    return refusal
+                }
                 if let reason = rejectDeviceWriteIfCapabilityDisabled(deviceId: device.id) {
                     if controlContextID == context {
                         revert(write, restoring: reportedDevice(for: device.id))
@@ -741,6 +755,7 @@ extension HomeStore {
     /// `menumijia://focus?device=<id>`: shows that device's drawer. Navigation only, so it runs
     /// without the confirmation sheet; the list cut is replaced so the card is actually on screen.
     public func focusRaycastDevice(deviceId: String) -> RaycastDirectResult {
+        if let refusal = companionRevokedRefusal() { return refusal }
         guard let device = devices.first(where: { $0.id == deviceId }) else {
             return (true, L10n.tr("设备已不在面板中", "The device is no longer available"), true)
         }

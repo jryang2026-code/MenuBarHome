@@ -13,6 +13,11 @@ struct MenuBarMijiaApp: App {
         KeychainUpgradeNotice.presentIfNeeded()
         let sharedStore = HomeStore.shared
         sharedStore.manualControlConfirmationHandler = ManualControlConfirmationPresenter.present
+        sharedStore.onCompanionIntegrationChanged = { enabled in
+            if !enabled {
+                URLCommandHandler.shared.invalidatePendingCommands()
+            }
+        }
         sharedStore.launchAtLoginSystem = SystemLaunchAtLogin()
         LaunchAtLoginCoordinator.live(store: sharedStore).refresh()
         KeychainUpgradeNotice.recordIfLoaded()

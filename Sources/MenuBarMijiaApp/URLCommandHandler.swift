@@ -32,8 +32,10 @@ final class URLCommandHandler {
         }
     }
 
-    private var pendingURLs: [URL] = []
+    private struct PendingURL { let url: URL; let generation: UInt64; let isCompanion: Bool }
+    private var pendingURLs: [PendingURL] = []
     private var isDraining = false
+    private var drainTask: Task<Void, Never>?
 
     /// Test seam replacing modal `NSAlert` confirmation in unit tests.
     var confirmationHandler: ((String) -> Bool)?
@@ -42,37 +44,91 @@ final class URLCommandHandler {
 
     init() {}
 
-    func enqueue(_ urls: [URL]) {
+    /// Drops queued companion links so disabling (even if re-enabled right away) never runs older commands.
+    func invalidatePendingCommands() {
+        pendingURLs.removeAll { $0.isCompanion }
+    }
+
+    func enqueue(_ urls: [URL], in store: HomeStore = HomeStore.shared) {
         guard !urls.isEmpty else { return }
-        pendingURLs.append(contentsOf: urls)
+        let generation = store.companionGeneration
+        var accepted: [PendingURL] = []
+        for url in urls {
+            let isCompanion = AppURLParser.parseEnvelope(url)?.token != nil
+            if isCompanion, !store.companionIntegrationEnabled {
+                store.showToast(HomeStore.companionDisabledMessage, isError: true)
+                continue
+            }
+            accepted.append(PendingURL(url: url, generation: generation, isCompanion: isCompanion))
+        }
+        guard !accepted.isEmpty else { return }
+        pendingURLs.append(contentsOf: accepted)
         guard !isDraining else { return }
         isDraining = true
-        Task { @MainActor [weak self] in
-            await self?.drain()
+        drainTask = Task { @MainActor [weak self] in
+            await self?.drain(in: store)
         }
     }
 
-    private func drain() async {
+    func waitForDrainForTesting() async {
+        await drainTask?.value
+    }
+
+    private func drain(in store: HomeStore) async {
         while !pendingURLs.isEmpty {
-            let url = pendingURLs.removeFirst()
-            await handle(url)
+            let item = pendingURLs.removeFirst()
+            if item.isCompanion, !store.companionCanExecute(generation: item.generation) { continue }
+            await handle(item.url, in: store, expectedGeneration: item.isCompanion ? item.generation : nil)
         }
         isDraining = false
+        drainTask = nil
     }
 
-    func handle(_ url: URL, in store: HomeStore = HomeStore.shared) async {
+    func handle(_ url: URL, in store: HomeStore = HomeStore.shared, expectedGeneration: UInt64? = nil) async {
         guard let envelope = AppURLParser.parseEnvelope(url) else {
             let message = L10n.tr("无法识别的控制链接", "Unrecognized control link")
             store.showToast(message, isError: true)
-            store.recordRaycastCommandFeedback(
-                requestId: nil,
-                command: "invalid",
-                message: message,
-                isError: true
-            )
+            store.recordRaycastCommandFeedback(requestId: nil, command: "invalid", message: message, isError: true)
             return
         }
 
+        // Token-bearing links are companion commands (Raycast / CLI / MCP): reject immediately when
+        // companion integration is off or the token is stale/revoked — never downgrade to ordinary
+        // link confirmation or `allow_url_direct_control` (P6a-M, aligned with P6a-W #350).
+        if envelope.token != nil {
+            guard store.companionIntegrationEnabled else {
+                store.showToast(HomeStore.companionDisabledMessage, isError: true)
+                return
+            }
+            let activeGeneration = expectedGeneration ?? store.companionGeneration
+            guard store.companionCanExecute(generation: activeGeneration) else { return }
+            if URLDirectControl.isRejectedCompanionToken(envelope.token, expectedToken: store.raycastBridgeToken) {
+                let message = HomeStore.companionInvalidTokenMessage
+                store.showToast(message, isError: true)
+                store.recordRaycastCommandFeedback(
+                    requestId: envelope.requestId,
+                    command: commandLabel(for: envelope.command),
+                    message: message,
+                    isError: true,
+                    expectedGeneration: activeGeneration
+                )
+                return
+            }
+            await store.withCompanionCommandGeneration(activeGeneration) {
+                await handleValidated(envelope, companionGeneration: activeGeneration, in: store)
+            }
+            return
+        }
+
+        // Ordinary links without `token=` continue following the existing confirmation / direct-control rules.
+        await handleValidated(envelope, companionGeneration: nil, in: store)
+    }
+
+    private func handleValidated(
+        _ envelope: AppURLCommandEnvelope,
+        companionGeneration: UInt64?,
+        in store: HomeStore
+    ) async {
         // A link can be the launch reason; wait briefly for the provider's first snapshot so the
         // confirmation sheet can name the device instead of failing.
         do {
@@ -80,6 +136,18 @@ final class URLCommandHandler {
         } catch {
             finish(error.localizedDescription, isError: true, envelope: envelope, store: store)
             return
+        }
+        if let generation = companionGeneration {
+            guard store.companionCanExecute(generation: generation) else {
+                if !store.companionIntegrationEnabled { store.showToast(HomeStore.companionDisabledMessage, isError: true) }
+                return
+            }
+            if URLDirectControl.isRejectedCompanionToken(envelope.token, expectedToken: store.raycastBridgeToken) {
+                let message = HomeStore.companionInvalidTokenMessage
+                store.showToast(message, isError: true)
+                store.recordRaycastCommandFeedback(requestId: envelope.requestId, command: commandLabel(for: envelope.command), message: message, isError: true, expectedGeneration: generation)
+                return
+            }
         }
 
         guard let resolved = resolve(envelope.command, store: store) else {
@@ -93,7 +161,8 @@ final class URLCommandHandler {
                 requestId: envelope.requestId,
                 command: commandLabel(for: envelope.command),
                 message: message,
-                isError: true
+                isError: true,
+                expectedGeneration: companionGeneration
             )
             return
         }
@@ -104,7 +173,8 @@ final class URLCommandHandler {
                 requestId: envelope.requestId,
                 command: commandLabel(for: envelope.command),
                 message: rejection,
-                isError: true
+                isError: true,
+                expectedGeneration: companionGeneration
             )
             return
         }
@@ -129,12 +199,17 @@ final class URLCommandHandler {
             let preConfirmGeneration = store.capabilityGeneration
             let prompt = description(for: resolved)
             let approved = confirmationHandler?(prompt) ?? confirm(prompt)
+            if let generation = companionGeneration, !store.companionCanExecute(generation: generation) {
+                if !store.companionIntegrationEnabled { store.showToast(HomeStore.companionDisabledMessage, isError: true) }
+                return
+            }
             guard approved else {
                 store.recordRaycastCommandFeedback(
                     requestId: envelope.requestId,
                     command: commandLabel(for: envelope.command),
                     message: L10n.tr("已取消外部链接执行", "Cancelled external link execution"),
-                    isError: true
+                    isError: true,
+                    expectedGeneration: companionGeneration
                 )
                 return
             }
@@ -158,6 +233,8 @@ final class URLCommandHandler {
             }
             didConfirm = true
         }
+
+        if let generation = companionGeneration, !store.companionCanExecute(generation: generation) { return }
 
         // Keep Raycast/Tinycast keyboard focus when invoked with a valid local bridgeToken;
         // only open the menu-bar window upfront for untrusted external links. `focus` opens it
@@ -448,6 +525,8 @@ final class URLCommandHandler {
                 return
             }
             let succeeded = await store.triggerScene(scene).value
+            if let activeGeneration = store.activeCompanionCommandGeneration,
+               !store.companionCanExecute(generation: activeGeneration) { return }
             let message = succeeded
                 ? L10n.format("已触发场景：%@", "Activated scene: %@", scene.name)
                 : L10n.format("场景「%@」执行失败", "Scene \"%@\" failed", scene.name)
@@ -455,7 +534,8 @@ final class URLCommandHandler {
                 requestId: envelope.requestId,
                 command: commandLabel(for: envelope.command),
                 message: message,
-                isError: !succeeded
+                isError: !succeeded,
+                expectedGeneration: store.activeCompanionCommandGeneration
             )
             // `triggerScene` already reports success/failure through the store toast; only mirror it
             // to the notification banner so a Raycast/Stream Deck trigger is visible.
@@ -472,7 +552,9 @@ final class URLCommandHandler {
                 finish(direct.message, isError: direct.isError, envelope: envelope, store: store)
                 return
             }
+            if let gen = store.activeCompanionCommandGeneration, !store.companionCanExecute(generation: gen) { return }
             let plan = await store.runAssistantCommand(text)
+            if let gen = store.activeCompanionCommandGeneration, !store.companionCanExecute(generation: gen) { return }
             let state = store.assistantState
             if store.pendingCloudConsent != nil {
                 // The consent card lives in the assistant bar; open it so the user can allow the
@@ -537,7 +619,10 @@ final class URLCommandHandler {
         case .focus(let device):
             let outcome = store.focusRaycastDevice(deviceId: device.id)
             finish(outcome.message, isError: outcome.isError, envelope: envelope, store: store)
-            if !outcome.isError { openMenuBarWindowIfNeeded() }
+            if !outcome.isError,
+               store.activeCompanionCommandGeneration.map(store.companionCanExecute(generation:)) ?? true {
+                openMenuBarWindowIfNeeded()
+            }
         }
     }
 
@@ -564,12 +649,17 @@ final class URLCommandHandler {
         envelope: AppURLCommandEnvelope,
         store: HomeStore
     ) {
+        if let activeGeneration = store.activeCompanionCommandGeneration,
+           !store.companionCanExecute(generation: activeGeneration) {
+            return
+        }
         store.showToast(message, isError: isError)
         store.recordRaycastCommandFeedback(
             requestId: envelope.requestId,
             command: commandLabel(for: envelope.command),
             message: message,
-            isError: isError
+            isError: isError,
+            expectedGeneration: store.activeCompanionCommandGeneration
         )
         HotkeyAndNotificationManager.shared.deliverExternalActionNotification(
             title: L10n.tr("MenuBarHome 外部链接", "MenuBarHome external link"),
