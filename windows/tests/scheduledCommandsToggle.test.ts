@@ -36,6 +36,7 @@ import {
 } from "../src/core/scheduledCommands.js";
 import type { ScheduledCommand } from "../src/core/models.js";
 import {
+  applyMiotTypePruneSnapshot,
   buildHostCapabilityContext,
   resolveHostMiSelectionState,
 } from "../src/ui/cloudRefresh.js";
@@ -378,18 +379,21 @@ describe("Timer switch: back on", () => {
     assert.equal(setScheduledCommandsRunning(instance, false), true);
     assert.deepEqual(paused(instance)[0]?.pausedCapabilities, ["light", TIMER_FEATURE_PAUSE_REASON]);
 
-    // The light type comes back while timers are still off: the capability path cannot release a
-    // timer the timer switch is holding.
+    // The light type comes back while timers are still off: the type's own resume path (P4b-W calls
+    // the shared revalidation) cannot release a timer the timer switch is holding.
     instance.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS);
-    revalidateAfterMiAccountReenable({
-      context: buildHostCapabilityContext(instance),
-      scheduledCommandStore: instance.scheduledCommandStore,
-      activeTimerIdentity: scheduledCommandIdentity(instance.settings),
-      ruleStore: new AutomationRuleStore(),
-      nowMs: now,
-      timersOnly: true,
-    });
+    assert.equal(
+      revalidateAfterMiAccountReenable({
+        context: buildHostCapabilityContext(instance),
+        scheduledCommandStore: instance.scheduledCommandStore,
+        activeTimerIdentity: scheduledCommandIdentity(instance.settings),
+        ruleStore: new AutomationRuleStore(),
+        nowMs: now,
+      }),
+      true,
+    );
     assert.deepEqual(paused(instance).map((item) => item.command.id), ["dual"]);
+    assert.ok(paused(instance)[0]?.pausedCapabilities.includes(TIMER_FEATURE_PAUSE_REASON));
 
     // Timers come back on, but the device type is off again: only this switch's reason goes.
     instance.setEnabledDeviceCategories(["climate"]);
@@ -415,23 +419,68 @@ describe("Timer switch: back on", () => {
     assert.deepEqual(instance.scheduledCommands.map((item) => item.id), ["dual"]);
   });
 
-  it("uses the disabled device type as a revalidation reason", () => {
+  it("keeps a timer paused when only its hidden card is left in the identity index", () => {
+    const instance = app();
+    instance.scheduledCommands.push(timer("hidden-light-timer", now + 600_000, "light.study_desk"));
+    instance.scheduledCommandStore.persist();
+    setScheduledCommandsRunning(instance, false);
+    instance.setEnabledDeviceCategories(["climate"]);
+    // A real home keeps a closed type's card in the identity index (architecture.md §D), so the
+    // revalidation can tell "type is off" apart from "device is gone" and keep the timer paused.
+    applyMiotTypePruneSnapshot(instance, {
+      safetyDevices: [],
+      safetyDeviceFacets: {},
+      hiddenDevices: [{
+        id: "light.study_desk", name: "书房台灯", category: "light", connection: null, sourceScope: "demo",
+        isSourceAvailable: true, upstreamHiddenOrDisabled: false, participatesInAllOff: false,
+        safetySignals: [], readKeys: ["light.study_desk"], safetyReadKeys: [],
+      }],
+    });
+    assert.equal(setScheduledCommandsRunning(instance, true), true);
+    assert.equal(instance.scheduledCommands.length, 0);
+    assert.deepEqual(paused(instance).map((item) => item.command.id), ["hidden-light-timer"]);
+    assert.deepEqual(paused(instance)[0]?.pausedCapabilities, [], "no reason is left; the type gate holds it");
+    assert.deepEqual(instance.missedScheduledCommands, []);
+    assert.equal(resolveHostMiSelectionState(instance).selection.enabledCategories.includes("light"), false);
+
+    // The type's own release path (P4b-W adds the categories and completes the revalidation) arms it.
+    applyMiotTypePruneSnapshot(instance, null);
+    instance.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS);
+    revalidateAfterMiAccountReenable({
+      context: buildHostCapabilityContext(instance),
+      scheduledCommandStore: instance.scheduledCommandStore,
+      activeTimerIdentity: scheduledCommandIdentity(instance.settings),
+      ruleStore: new AutomationRuleStore(),
+      nowMs: now,
+      timersOnly: true,
+    });
+    assert.deepEqual(paused(instance), []);
+    assert.deepEqual(instance.scheduledCommands.map((item) => item.id), ["hidden-light-timer"]);
+  });
+
+  it("never arms or runs a timer whose device type is off in the demo home", async () => {
     const instance = app();
     instance.scheduledCommands.push(timer("light-timer", now + 600_000));
     instance.scheduledCommandStore.persist();
     setScheduledCommandsRunning(instance, false);
+    // P4b-W rebuilds the demo sample home when a type closes, so the target leaves this home instead
+    // of staying behind as a hidden card. The revalidation must then send the timer to the missed flow
+    // — user-visible, never fired — rather than re-arming it against a card that is not there.
     instance.setEnabledDeviceCategories(["climate"]);
     assert.equal(setScheduledCommandsRunning(instance, true), true);
     assert.equal(instance.scheduledCommands.length, 0);
-    assert.deepEqual(
-      paused(instance).map((item) => [item.command.id, item.pausedCapabilities]),
-      [["light-timer", []]],
-      "the reason list is what is left; the device-type gate keeps it paused",
-    );
-    assert.equal(
-      resolveHostMiSelectionState(instance).selection.enabledCategories.includes("light"),
-      false,
-    );
+    assert.deepEqual(instance.missedScheduledCommands.map((entry) => entry.id), ["light-timer"]);
+    assert.deepEqual(paused(instance), []);
+    const calls = fakeExecutor(instance);
+    await confirmMissedScheduledCommand(instance, "light-timer");
+    assert.equal(calls.length, 0, "the closed type cannot be run around through the missed card");
+    assert.deepEqual(instance.missedScheduledCommands.map((entry) => entry.id), ["light-timer"]);
+
+    // Nothing is stranded: after the type returns the same entry runs normally.
+    instance.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS);
+    await confirmMissedScheduledCommand(instance, "light-timer");
+    assert.equal(calls.length, 1);
+    assert.deepEqual(instance.missedScheduledCommands, []);
   });
 });
 
