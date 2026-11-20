@@ -106,6 +106,9 @@ with zf:
         seen.add(fname)
         if info.flag_bits & 0x1:
             fail(f"快照归档包含加密条目：{fname}")
+        # BZIP2/LZMA decompress without an output bound before read() returns on older CPython.
+        if info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            fail(f"快照归档条目压缩方法不受支持（{info.compress_type}）：{fname}")
         unix_mode = (info.external_attr >> 16) & 0xFFFF
         if stat.S_ISLNK(unix_mode):
             fail(f"快照归档包含符号链接：{fname}")
@@ -247,6 +250,9 @@ def decode_and_verify_png(path: str, base: str) -> None:
 
         if ctype == b"IHDR":
             fail(f"PNG 存在重复 IHDR：{base}")
+        # PNG §13.1: a decoder must reject an unknown critical chunk (uppercase first letter).
+        if ctype[0:1].isupper() and ctype not in (b"PLTE", b"IDAT", b"IEND"):
+            fail(f"PNG 包含未知关键块 {ctype.decode('ascii')}：{base}")
         if ctype == b"PLTE":
             if seen_idat or length == 0 or length % 3 != 0 or length > 256 * 3:
                 fail(f"PNG PLTE 块非法：{base}")

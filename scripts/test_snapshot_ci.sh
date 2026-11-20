@@ -304,6 +304,22 @@ open(sys.argv[1], "wb").write(blob)
 PY
 expect_validate_fail "reject corrupt IDAT zlib stream" "$bad_idat_dir"
 
+# Valid IHDR/IDAT/IEND plus an unknown critical chunk: PNG §13.1 decoders must reject it.
+unknown_critical_dir="$artifact_root/unknown-critical"
+mkdir -p "$unknown_critical_dir"
+python3 - "$unknown_critical_dir/panel.png" <<'PY'
+import struct, sys, zlib
+sig = b"\x89PNG\r\n\x1a\n"
+ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+def chunk(tag, data):
+    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+blob = (sig + chunk(b"IHDR", ihdr) + chunk(b"ZZZZ", b"x")
+        + chunk(b"IDAT", zlib.compress(bytes([0, 1, 2, 3]))) + chunk(b"IEND", b""))
+open(sys.argv[1], "wb").write(blob)
+PY
+expect_validate_fail "reject unknown critical chunk" "$unknown_critical_dir"
+
 # PNG with dimensions exceeding MAX_DIMENSION (4096)
 huge_dim_dir="$artifact_root/huge-dim"
 mkdir -p "$huge_dim_dir"
@@ -380,6 +396,31 @@ if bash scripts/ci_snapshot_artifact.sh extract-zip "$oversized_zip" "$artifact_
     failures=$((failures + 1))
 else
     printf 'PASS extract-zip rejects >64 MiB archive before unpacking\n'
+fi
+
+lzma_dir="$artifact_root/lzma-src"
+mkdir -p "$lzma_dir"
+tiny_png "$lzma_dir/panel.png" 7
+lzma_zip="$artifact_root/lzma.zip"
+python3 - "$lzma_dir/panel.png" "$lzma_zip" <<'PY'
+import sys, zipfile
+with zipfile.ZipFile(sys.argv[2], "w", compression=zipfile.ZIP_LZMA) as zf:
+    zf.write(sys.argv[1], arcname="panel.png")
+PY
+if bash scripts/ci_snapshot_artifact.sh extract-zip "$lzma_zip" "$artifact_root/out-lzma" >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+    printf 'FAIL extract-zip should reject non-STORED/DEFLATED entries\n' >&2
+    failures=$((failures + 1))
+else
+    printf 'PASS extract-zip rejects LZMA entries\n'
+fi
+
+good_zip="$artifact_root/good.zip"
+make_zip_from_dir "$lzma_dir" "$good_zip"
+if bash scripts/ci_snapshot_artifact.sh extract-zip "$good_zip" "$artifact_root/out-good" >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+    printf 'PASS extract-zip accepts DEFLATED entries\n'
+else
+    printf 'FAIL extract-zip should accept DEFLATED entries\n' >&2
+    failures=$((failures + 1))
 fi
 
 rm -rf "$artifact_root"
