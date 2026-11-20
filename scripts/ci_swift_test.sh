@@ -16,12 +16,14 @@
 # runner is destroyed with the job, so this metadata is only readable inside the step that saw it.
 #
 # A failing run is rerun once, filtered to just the failing cases, to separate a flake from a real
-# break inside one job (see `retry_plan`). The rerun needs the case's `Suite.func`, which the log
-# does not print: `--filter` matches the test id, never the display name, so the function is read
-# from the source file named in the recorded location. A rerun that passes turns the job green with
-# `::warning::flaky tests passed on retry` plus a `$GITHUB_STEP_SUMMARY` table; a crash, a stall,
-# more than five failing cases, or a rerun that fails again keeps the failure. CI only (`CI=true`);
-# `CI_RETRY_FAILED=0/1` overrides either way.
+# break inside one job. The parse and verdict rules live in `scripts/lib/swift_test_retry.sh`, which
+# the Linux runner (`scripts/linux-check/run.sh`) sources too: one implementation, both platforms.
+# The rerun needs the case's `Suite.func`, which the log does not print: `--filter` matches the test
+# id, never the display name, so the function is read from the source file named in the recorded
+# location. A rerun that passes turns the job green with `::warning::flaky tests passed on retry`
+# plus a `$GITHUB_STEP_SUMMARY` table; a crash, a stall, more than five failing cases, or a rerun
+# that fails again keeps the failure. CI only (`CI=true`); `CI_RETRY_FAILED=0/1` overrides either
+# way.
 #
 # Usage:
 #   bash scripts/ci_swift_test.sh [swift test arguments...]
@@ -286,333 +288,25 @@ PY
 }
 
 # ---------------------------------------------------------------------------------------------
-# Log helpers. scripts/test_ci_swift_test.sh sources this file and drives them with fixture logs.
+# 解析、判定与「失败用例只重跑一次」的流程在 scripts/lib/swift_test_retry.sh，与 Linux 的
+# scripts/linux-check/run.sh 共用同一份实现。这里只保留 macOS 自己的两件事：跑一次 `swift test`
+# 的 pty/行缓冲前缀与 stall 采样，以及崩溃时的 `.ips` 报告 dump。
+# scripts/test_ci_swift_test.sh sources this file and drives it with fixture logs.
 # ---------------------------------------------------------------------------------------------
 
-# A test process that died takes the summary with it: the crash outranks any passing target.
-log_has_crash() {
-    grep -qE 'unexpected signal code|Fatal error:|crashed during execution' "$1"
-}
+# shellcheck source=scripts/lib/swift_test_retry.sh
+. "$ROOT_DIR/scripts/lib/swift_test_retry.sh"
 
-# Swift Testing's own verdict: every target summary passed, no issue was recorded in any target,
-# and no later target (`Test run started.`) hung before printing its own summary.
-swift_test_summary_verdict() {
-    awk '
-        /(^|◇ )Test run started\./ { pending_target = 1; next }
-        /Test run with [0-9]+ tests? in [0-9]+ suites?/ {
-            summaries++
-            pending_target = 0
-            if ($0 !~ /Test run with [0-9]+ tests? in [0-9]+ suites? passed/) {
-                failed = 1
-            }
-            next
-        }
-        /✘ Test |recorded an issue/ { failed = 1 }
-        END {
-            print (summaries > 0 && !failed && !pending_target) ? "pass" : "fail"
-        }
-    ' "$1"
-}
+# A pty keeps stdout line-buffered (BSD `script`: the command is the rest of the argv).
+SWIFT_TEST_LAUNCH_CMD="script -q /dev/null"
+SWIFT_TEST_SAMPLE_FN="sample_stalled_test_processes"
 
-# Failing cases as `name<TAB>File.swift<TAB>line`, deduped on the case name. The location kept is
-# the first one recorded: later issues in the same case repeat the same breakage. Both issue forms
-# count: `recorded an issue at File.swift:1:2` and the parameterized
-# `recorded an issue with 1 argument value → 2 at File.swift:1:2`.
-failed_test_cases() {
-    awk '
-        match($0, /✘ Test "[^"]*" recorded an issue/) {
-            head = substr($0, RSTART, RLENGTH)
-            name = substr(head, length("✘ Test \"") + 1)
-            sub(/" recorded an issue$/, "", name)
-            rest = substr($0, RSTART + RLENGTH)
-            if (!match(rest, /[[:space:]]at[[:space:]][^ :]+:[0-9]+/)) { next }
-            place = substr(rest, RSTART, RLENGTH)
-            sub(/^.*at[[:space:]]/, "", place)
-            if (!match(place, /:[0-9]+$/)) { next }
-            if (name in seen) { next }
-            seen[name] = 1
-            printf "%s\t%s\t%s\n", name, substr(place, 1, RSTART - 1), substr(place, RSTART + 1)
-        }
-    ' "$1"
-}
-
-failed_case_count() {
-    failed_test_cases "$1" | wc -l | tr -d ' '
-}
-
-# Every case name the log mentions, from the `✘ Test "..."` lines alone. A name that never yields a
-# parsable issue line means the log format changed under us: see `retry_plan`.
-mentioned_case_count() {
-    awk '
-        match($0, /✘ Test "/) {
-            rest = substr($0, RSTART + RLENGTH)
-            if (!match(rest, /^[^"]*"/)) { next }
-            name = substr(rest, 1, RSTART - 1)
-            if (name in seen) { next }
-            seen[name] = 1
-            total++
-        }
-        END { print total + 0 }
-    ' "$1"
-}
-
-# `swift test --filter` matches the test id (`Module.Suite/func()`), never the display name, so a
-# failing case is traced back to its function through the source file named in its log location.
-# Prints one `Suite.func` per failing case (a bare `func` when no enclosing type was found).
-retry_filter_args() { # rows_file repo_root
-    local rows="$1" root="$2" name file line path candidate first derived seen=""
-    while IFS="$(printf '\t')" read -r name file line; do
-        [ -n "$file" ] && [ -n "$line" ] || continue
-        path=""
-        first=""
-        while IFS= read -r candidate; do
-            [ -n "$candidate" ] || continue
-            [ -n "$first" ] || first="$candidate"
-            # Two test files can share a basename; the one quoting the case name is the right one.
-            if grep -Fq -- "$name" "$candidate"; then
-                path="$candidate"
-                break
-            fi
-        done <<EOF
-$(find "$root/Tests" -name "$file" -type f 2>/dev/null || true)
-EOF
-        [ -n "$path" ] || path="$first"
-        [ -n "$path" ] || continue
-        derived="$(awk -v LINE="$line" '
-            { src[NR] = $0 }
-            END {
-                fn_line = 0
-                fn_name = ""
-                for (i = LINE; i >= 1; i--) {
-                    if (match(src[i], /^[[:space:]]*(static[[:space:]]+)?func[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
-                        text = substr(src[i], RSTART, RLENGTH)
-                        sub(/^[[:space:]]*(static[[:space:]]+)?func[[:space:]]+/, "", text)
-                        fn_name = text
-                        fn_line = i
-                        break
-                    }
-                }
-                if (fn_name == "") { exit 0 }
-                indent = match(src[fn_line], /[^[:space:]]/) - 1
-                suite = ""
-                for (i = fn_line - 1; i >= 1; i--) {
-                    if (match(src[i], /^[[:space:]]*(@[A-Za-z]+\(.*\)[[:space:]]+)?((final|public|internal)[[:space:]]+)?(struct|class|enum|extension)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*/)) {
-                        candidate_line = substr(src[i], RSTART, RLENGTH)
-                        ind = match(src[i], /[^[:space:]]/) - 1
-                        if (ind >= indent) { continue }
-                        sub(/^.*(struct|class|enum|extension)[[:space:]]+/, "", candidate_line)
-                        if (match(candidate_line, /[A-Za-z_][A-Za-z0-9_]*/)) {
-                            suite = substr(candidate_line, RSTART, RLENGTH)
-                        }
-                        break
-                    }
-                }
-                print (suite == "" ? fn_name : suite "." fn_name)
-            }
-        ' "$path")"
-        [ -n "$derived" ] || continue
-        case " $seen " in
-            *" $derived "*) continue ;;
-        esac
-        seen="$seen $derived"
-        printf '%s\n' "$derived"
-    done <"$rows"
-}
-
-# Did the rerun actually pass? `pass` also needs every failing case to show up as passed: a filter
-# that matched nothing would otherwise look like a green rerun.
-retry_verdict() { # rows_file retry_log -> pass | crash | fail | empty | unverified
-    local rows="$1" retry_log="$2" name rest
-    if log_has_crash "$retry_log"; then
-        echo "crash"
-        return 0
-    fi
-    if [ "$(swift_test_summary_verdict "$retry_log")" != "pass" ]; then
-        echo "fail"
-        return 0
-    fi
-    if grep -q 'No matching test cases were run' "$retry_log"; then
-        echo "empty"
-        return 0
-    fi
-    while IFS="$(printf '\t')" read -r name rest; do
-        [ -n "$name" ] || continue
-        # A parameterized case reports `✔ Test "..." with 2 test cases passed`, so the name alone
-        # is the anchor. The summary above already rejected any `✘` line.
-        if ! grep -qF "✔ Test \"$name\"" "$retry_log"; then
-            echo "unverified"
-            return 0
-        fi
-    done <"$rows"
-    echo "pass"
-}
-
-# Should the failing run be rerun once? A crash, a stall, or more than five failing cases is a
-# real break: rerunning those only burns runner minutes.
-retry_plan() { # log retry_enabled stalled
-#   -> retry | off | crash | stall | no-cases | too-many | unparsed | no-baseline
-    local log="$1" enabled="$2" stalled="$3" count mentioned
-    if [ "$enabled" -ne 1 ]; then
-        echo "off"
-        return 0
-    fi
-    if log_has_crash "$log"; then
-        echo "crash"
-        return 0
-    fi
-    if [ "$stalled" -ne 0 ]; then
-        echo "stall"
-        return 0
-    fi
-    # A missing baseline is written into the source tree by SnapshotAssertion and reported as an
-    # issue, so the rerun would compare against the PNG the first run just recorded and pass. That
-    # would let a render change through without a committed baseline: never retry those.
-    if grep -q 'No reference was found on disk' "$log"; then
-        echo "no-baseline"
-        return 0
-    fi
-    count="$(failed_case_count "$log")"
-    # Rerunning only what we could parse would hide a case the parser missed.
-    mentioned="$(mentioned_case_count "$log")"
-    if [ "$mentioned" -gt "$count" ]; then
-        echo "unparsed"
-        return 0
-    fi
-    if [ "$count" -eq 0 ]; then
-        echo "no-cases"
-        return 0
-    fi
-    if [ "$count" -gt 5 ]; then
-        echo "too-many"
-        return 0
-    fi
-    echo "retry"
-}
-
-# The rerun cleared the cases: say so in the log and on the job summary page.
-report_flaky() { # rows_file
-    local rows="$1" name file line names="" table="" count=0
-    while IFS="$(printf '\t')" read -r name file line; do
-        [ -n "$name" ] || continue
-        count=$((count + 1))
-        names="${names:+$names, }$name"
-        table="${table}| \`$(printf '%s' "$name" | sed 's/|/\\|/g')\` | \`${file}:${line}\` |
-"
-    done <"$rows"
-    [ "$count" -gt 0 ] || return 0
-    echo "::warning::flaky tests passed on retry: ${names}"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-        {
-            printf '### flaky tests passed on retry（%s）\n\n' "$count"
-            printf '首次失败的位置：\n\n'
-            printf '| 用例 | 首次失败 |\n| --- | --- |\n%s' "$table"
-        } >>"$GITHUB_STEP_SUMMARY"
-    fi
-}
-
-# One `swift test` run under the stall watchdog, streaming its log into the job output.
-# Sets RUN_EXIT, RUN_STALLED, RUN_STARTED (epoch) and RUN_PIDS for the caller.
-run_with_watchdog() { # log_file script_arguments...
-    local log="$1"
-    shift
-    local stall_seconds="${SWIFT_TEST_STALL_SECONDS:-300}"
-    local tick=10 pid_poll_step=1
-    local pids_file test_pid tail_pid stalled=0 last_size=-1 stall_detected=0
-    local since_size_check=0 step_elapsed size exit_code
-    pids_file="$(mktemp -t swift-test-pids)"
-    ALL_PID_FILES="${ALL_PID_FILES:-} ${pids_file}"
-    echo "swift test log: $log"
-    RUN_STARTED="$(date +%s)"
-
-    # A pty keeps stdout line-buffered: without it the final summary can sit in a 4 KiB buffer
-    # forever when the process hangs at exit, and the watchdog would never see the result.
-    script -q /dev/null swift test "$@" >"$log" 2>&1 &
-    test_pid=$!
-    printf '%s\n' "$test_pid" >"$pids_file"
-    record_descendant_pids "$test_pid" "$pids_file"
-    # Stream the log into the job output so a killed job still leaves the last test visible.
-    tail -n +1 -f "$log" &
-    tail_pid=$!
-
-    sample_process() {
-        for pid in $(pgrep -f swiftpm-testing || true); do
-            echo "=== sample ${pid}"
-            sample "$pid" 5 -mayDie 2>/dev/null || true
-        done
-    }
-
-    while kill -0 "$test_pid" 2>/dev/null; do
-        sleep "$pid_poll_step"
-        record_descendant_pids "$test_pid" "$pids_file"
-        since_size_check=$((since_size_check + pid_poll_step))
-        if [ "$since_size_check" -lt "$tick" ]; then
-            continue
-        fi
-        step_elapsed="$since_size_check"
-        since_size_check=0
-        size="$(wc -c <"$log" | tr -d ' ')"
-        if [ "$size" = "$last_size" ]; then
-            stalled=$((stalled + step_elapsed))
-        else
-            stalled=0
-            last_size="$size"
-        fi
-        if [ "$stalled" -ge "$stall_seconds" ]; then
-            sample_process
-            kill -TERM "$test_pid" 2>/dev/null || true
-            sleep 2
-            pkill -TERM -f swiftpm-testing 2>/dev/null || true
-            sleep 2
-            pkill -KILL -f swiftpm-testing 2>/dev/null || true
-            stall_detected=1
-            break
-        fi
+sample_stalled_test_processes() {
+    local pid
+    for pid in $(pgrep -f swiftpm-testing || true); do
+        echo "=== sample ${pid}"
+        sample "$pid" 5 -mayDie 2>/dev/null || true
     done
-    record_descendant_pids "$test_pid" "$pids_file"
-    wait "$test_pid" 2>/dev/null
-    exit_code=$?
-    kill "$tail_pid" 2>/dev/null || true
-    wait "$tail_pid" 2>/dev/null || true
-
-    RUN_EXIT="$exit_code"
-    RUN_STALLED="$stall_detected"
-    RUN_PIDS="$(tr '\n' ',' <"$pids_file" | sed 's/,$//')"
-}
-
-record_descendant_pids() {
-    local root_pid="$1"
-    local pids_file="$2"
-    ps -eo pid=,ppid= 2>/dev/null | awk -v root="$root_pid" -v file="$pids_file" '
-        BEGIN {
-            known[root] = 1
-            while ((getline line < file) > 0) {
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-                if (line ~ /^[0-9]+$/) known[line] = 1
-            }
-            close(file)
-        }
-        {
-            p = $1; pp = $2
-            if (p ~ /^[0-9]+$/ && pp ~ /^[0-9]+$/) {
-                n++
-                pids[n] = p
-                ppids[n] = pp
-            }
-        }
-        END {
-            changed = 1
-            while (changed) {
-                changed = 0
-                for (i = 1; i <= n; i++) {
-                    if ((ppids[i] in known) && !(pids[i] in known)) {
-                        known[pids[i]] = 1
-                        changed = 1
-                    }
-                }
-            }
-            for (k in known) print k
-        }
-    ' > "${pids_file}.tmp" 2>/dev/null && mv "${pids_file}.tmp" "$pids_file" || rm -f "${pids_file}.tmp"
 }
 
 # A flake is reported as a passing job with a warning, so the fix stays visible. Everything else
@@ -620,17 +314,9 @@ record_descendant_pids() {
 main() {
     ALL_PID_FILES=""
     trap 'for f in $ALL_PID_FILES; do rm -f "$f" "$f.tmp"; done' EXIT
-    local retry_enabled=0
-    case "${CI:-}" in
-        true | 1) retry_enabled=1 ;;
-    esac
-    case "${CI_RETRY_FAILED:-}" in
-        0) retry_enabled=0 ;;
-        1) retry_enabled=1 ;;
-    esac
-
-    local first_log rows_file retry_log plan filter_args filter_count retry_state
-    first_log="$(mktemp -t swift-test)"
+    local retry_enabled first_log
+    retry_enabled="$(swift_test_retry_enabled)"
+    first_log="$(mktemp "${TMPDIR:-/tmp}/swift-test.XXXXXX")"
     run_with_watchdog "$first_log" "$@"
     local first_exit="$RUN_EXIT" first_stalled="$RUN_STALLED" first_pids="$RUN_PIDS" first_started="$RUN_STARTED"
     echo "=== swift test process exit: ${first_exit} (stalled=${first_stalled})"
@@ -654,42 +340,8 @@ main() {
 
     # Swift Testing's own summary failed. Rerunning only the failing cases separates a flake from a
     # real break in one job instead of one manual `gh run rerun --failed` per red push.
-    plan="$(retry_plan "$first_log" "$retry_enabled" "$first_stalled")"
-    if [ "$plan" = "retry" ]; then
-        rows_file="$(mktemp -t swift-test-cases)"
-        failed_test_cases "$first_log" >"$rows_file"
-        filter_args=()
-        filter_count=0
-        local filter_value
-        while IFS= read -r filter_value; do
-            [ -n "$filter_value" ] || continue
-            filter_args[${#filter_args[@]}]="--filter"
-            filter_args[${#filter_args[@]}]="$filter_value"
-            filter_count=$((filter_count + 1))
-        done <<EOF
-$(retry_filter_args "$rows_file" "$ROOT_DIR")
-EOF
-        if [ "$filter_count" -eq 0 ]; then
-            echo "::warning::could not trace the failing cases back to a test function; not retrying"
-        else
-            echo "=== flaky check: rerunning ${filter_count} failing case(s) with --filter"
-            retry_log="$(mktemp -t swift-test-retry)"
-            run_with_watchdog "$retry_log" "$@" "${filter_args[@]}"
-            echo "=== retry process exit: ${RUN_EXIT} (stalled=${RUN_STALLED})"
-            retry_state="$(retry_verdict "$rows_file" "$retry_log")"
-            if [ "$retry_state" = "pass" ]; then
-                report_flaky "$rows_file"
-                return 0
-            fi
-            echo "::warning::the retry did not clear the failure (${retry_state}); reporting the first run"
-        fi
-    elif [ "$retry_enabled" -eq 1 ]; then
-        case "$plan" in
-            stall) echo "::warning::not retrying: the run stalled" ;;
-            too-many) echo "::warning::not retrying: more than five failing cases, which is a real break" ;;
-            unparsed) echo "::warning::not retrying: some failing cases were not parsable from the log" ;;
-            no-baseline) echo "::warning::not retrying: a snapshot baseline is missing, so a rerun would compare against the PNG this run just recorded" ;;
-        esac
+    if retry_failed_cases "$first_log" "$retry_enabled" "$first_stalled" "$ROOT_DIR" "$@"; then
+        return 0
     fi
 
     if [ "$first_stalled" -eq 1 ]; then

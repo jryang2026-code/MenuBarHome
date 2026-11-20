@@ -3,6 +3,7 @@ import {
   endpointAllowsSendingSecrets,
   inferAssistantPreset,
   isAiAssistantEnabled,
+  isProactiveSuggestionsEnabled,
   listReadableHabits,
   parseAssistantEndpoint,
   type HabitSequenceEntry,
@@ -839,6 +840,14 @@ function renderAssistantPanel(ctx: SettingsViewContext): string {
         <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("关闭后，指令只在本机解析，不再发送 AI 请求；已保存的服务商配置与密钥保留。")}</p>
       </div>
       <input id="settings-ai-enabled" type="checkbox" ${isAiAssistantEnabled(ctx.settings) ? "checked" : ""} />
+    </div>
+
+    <div class="cc-field cc-field-row" data-settings-anchor="proactiveSuggestions">
+      <div>
+        <label for="settings-proactive-enabled">${t("主动建议")}</label>
+        <p class="cc-field-hint" style="margin: 2px 0 0 0;">${t("关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。")}</p>
+      </div>
+      <input id="settings-proactive-enabled" type="checkbox" ${isProactiveSuggestionsEnabled(ctx.settings) ? "checked" : ""} />
     </div>
 
     <div class="cc-field">

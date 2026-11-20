@@ -97,6 +97,9 @@ expect "任务名与失败 job 列表" "失败 job：macos-test, macos-snapshots
 expect "Swift 失败用例带文件名与首次失败行号" '"HA disable previews device timers and revalidates on fresh snapshot" HAConnectionDisableTests.swift:522'
 expect "open issue 命中后标已知间歇（用例名与文件名都命中）" '[已知间歇 #308]'
 expect "票里只写用例名（没写文件名）也能命中" '"HA disable previews device timers and revalidates on fresh snapshot" HAConnectionDisableTests.swift:522 [已知间歇 #281]'
+expect "只有文件名命中的票标「同文件、需核对」，不冒充已知间歇" 'CoverDragTakeoverTests.swift:'
+expect "文件名命中给弱标签" '[同文件 issue #290，需核对]'
+reject "文件名命中不标已知间歇" '[已知间歇 #290]'
 expect "node TAP 失败用例被点名" "not ok - stops a Xiaomi cloud live view after repeated frame failures instead of renegotiating"
 expect "编译错误首行被点名" "error: fatalError"
 expect "崩溃标记被点名" "exited with unexpected signal code 6"

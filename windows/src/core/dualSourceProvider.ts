@@ -19,6 +19,7 @@ import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionSt
   type SmartDevice, type SynthesizedHome,
 } from "./models.js";
 import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
+import type { HaTypePruneOptions } from "./haTypePruning.js";
 
 function tr3(zhHans: string, zhHant: string, en: string, params?: Readonly<Record<string, string | number>>,
   preference?: LanguagePreference): string { const lang: AppLanguage = preference !== undefined
@@ -1021,9 +1022,13 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
     if (typeof window === "undefined" || !window.__TAURI_INTERNALS__?.invoke) {
       throw new Error("Home Assistant requires the Windows app");
     }
-    return window.__TAURI_INTERNALS__.invoke(command, args); }): Promise<{ readonly rawSnapshot: unknown;
+    return window.__TAURI_INTERNALS__.invoke(command, args); }, prune: HaTypePruneOptions | null = null,
+): Promise<{ readonly rawSnapshot: unknown;
   readonly home: SynthesizedHome;
   readonly identities: Record<string, DeviceSourceIdentity>;
+  readonly safetyDevices: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  readonly hiddenIndexedDevices: readonly CapabilityIndexedDevice[];
 }> {
   const lease = acquireHaTransportLease(baseURL, { token: token });
   if (!lease) {
@@ -1037,9 +1042,19 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
     if (!lease.isCurrent()) {
       throw new HaBlockedRequestError(lease.scope ?? "ha:");
     }
-    const home = HomeAssistantSynthesizer.synthesize(rawSnapshot);
+    const synthesized = HomeAssistantSynthesizer.synthesizeWithPrune(rawSnapshot, prune === null ? null : { prune });
+    const home = synthesized.home;
+    // Identities follow the drawn cards: a hidden card never pairs, because both sides of a pair
+    // show or hide together (architecture.md §D).
     const identities = extractHADeviceIdentities(rawSnapshot, home);
-    return { rawSnapshot, home, identities };
+    return {
+      rawSnapshot,
+      home,
+      identities,
+      safetyDevices: synthesized.safetyDevices,
+      ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
+      hiddenIndexedDevices: synthesized.hiddenIndexedDevices,
+    };
   } finally {
     lease.release();
   }

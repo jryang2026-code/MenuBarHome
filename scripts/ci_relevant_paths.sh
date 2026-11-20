@@ -181,6 +181,13 @@ while IFS= read -r path || [ -n "$path" ]; do
             core=true
             scripts=true
             ;;
+        # 共享脚本被 macOS 与 Linux 的测试入口同时 source，改了就要两边都跑。
+        scripts/lib/*)
+            code=true
+            macos=true
+            core=true
+            scripts=true
+            ;;
         scripts/ci_snapshot_locale.sh|scripts/ci_snapshot_branch.sh|scripts/ci_snapshot_artifact.sh|scripts/ci_commit_snapshot_baselines.sh|scripts/record_snapshots.sh|.github/workflows/record-snapshots.yml)
             code=true
             macos=true

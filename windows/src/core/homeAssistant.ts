@@ -29,6 +29,11 @@ import {
   type HARow as Row,
   type HAState,
 } from "./haDomains.js";
+import {
+  buildHaTypePrunePlan, haAuxiliarySafetySignals, haTypePruningActive,
+  type HaTypePruneOptions, type HaTypePrunePlan,
+} from "./haTypePruning.js";
+import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
 import { t } from "./i18n.js";
 import { sha256 } from "./miCloudCrypto.js";
 import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
@@ -859,8 +864,40 @@ function buildKind(
   };
 }
 
+/**
+ * One synthesis result. `home` is what the panel, search, AI directory and companion export get;
+ * `safetyDevices` are cards a closed type keeps only so enabled alerts can still be evaluated, and
+ * `hiddenIndexedDevices` let the host write gate answer "该设备类型已关闭" instead of "设备不存在"
+ * (architecture.md §D, P3b-W). Without pruning both off-panel lists are empty and `home` is exactly
+ * what it was before P3b-W.
+ */
+export interface HASynthesizedResult {
+  readonly home: SynthesizedHome;
+  readonly safetyDevices: readonly SmartDevice[];
+  readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
+  readonly hiddenIndexedDevices: readonly CapabilityIndexedDevice[];
+  /** `null` whenever this round pruned nothing, including every pre-P3b-W caller. */
+  readonly prunePlan: HaTypePrunePlan | null;
+}
+
+export interface HASynthesizeOptions {
+  readonly prune?: HaTypePruneOptions | null;
+}
+
+/** A card the registry pass built, held back until the type selection is known. */
+interface PendingHACard {
+  readonly card: SmartDevice;
+  readonly entities: readonly Row[];
+  readonly claimed: ReadonlySet<string>;
+  readonly allowBinaryFallback: boolean;
+}
+
 export class HomeAssistantSynthesizer {
   static synthesize(raw: unknown): SynthesizedHome {
+    return HomeAssistantSynthesizer.synthesizeWithPrune(raw, null).home;
+  }
+
+  static synthesizeWithPrune(raw: unknown, options: HASynthesizeOptions | null): HASynthesizedResult {
     const snapshot = decode(raw);
     const states = new Map(
       snapshot.states.map((state) => [state.entityId, state]),
@@ -921,8 +958,10 @@ export class HomeAssistantSynthesizer {
       }
     }
 
-    const devices: SmartDevice[] = [];
-    const deviceFacets: Record<string, FacetControl[]> = {};
+    // Cards are collected first and split afterwards: only the selection's own verdict can tell a
+    // drawn card from one a closed type keeps for its alerts, and the expensive half of a card
+    // (its 更多设置 facets) is built only for the two kept groups.
+    const pending: PendingHACard[] = [];
     const roomIds: Record<string, string> = {
       客厅: "ke_ting",
       书房: "shu_fang",
@@ -961,20 +1000,20 @@ export class HomeAssistantSynthesizer {
       const claimed = new Set<string>();
       const built = buildKind(entities, states, model, cleanName, claimed, allowBinaryFallback);
       if (!built) return;
-      const card: SmartDevice = {
-        id,
-        name: cleanName,
-        roomId,
-        roomName,
-        model,
-        isOnline: built.online,
-        kind: built.kind,
-      };
-      devices.push(card);
-      const facets = buildHAFacets(entities, states, claimed, card);
-      if (facets.length > 0) {
-        deviceFacets[card.id] = facets;
-      }
+      pending.push({
+        card: {
+          id,
+          name: cleanName,
+          roomId,
+          roomName,
+          model,
+          isOnline: built.online,
+          kind: built.kind,
+        },
+        entities,
+        claimed,
+        allowBinaryFallback,
+      });
     };
 
     const append = (
@@ -1089,6 +1128,44 @@ export class HomeAssistantSynthesizer {
       );
     }
 
+    // The selection's own verdict decides what this round draws. A closed type keeps a card only
+    // when an alert that is still on reads its signal; everything else drops to an identity entry so
+    // an old link, timer or AI intent is answered by name instead of "device not found".
+    const prune = options?.prune ?? null;
+    // A closed card is kept when an enabled alert can still read it, and for a non-sensor card that
+    // alert often lives in an auxiliary `binary_sensor` that becomes a 更多设置 facet, so those rows
+    // have to be part of the signal before the split (P3b-W).
+    const auxiliarySignals = new Map(
+      pending.map((item) => [
+        item.card.id,
+        haAuxiliarySafetySignals(item.entities, states, item.allowBinaryFallback),
+      ] as const),
+    );
+    const prunePlan = prune !== null && haTypePruningActive(prune.selection, prune.connectionScope)
+      ? buildHaTypePrunePlan({
+          devices: pending.map((item) => item.card),
+          ...prune,
+          auxiliarySignalsByDeviceId: auxiliarySignals,
+        })
+      : null;
+    const devices: SmartDevice[] = [];
+    const deviceFacets: Record<string, FacetControl[]> = {};
+    const safetyDevices: SmartDevice[] = [];
+    const safetyDeviceFacets: Record<string, FacetControl[]> = {};
+    for (const item of pending) {
+      const visible = prunePlan === null || prunePlan.visibleDeviceIds.has(item.card.id);
+      const retained = prunePlan !== null && prunePlan.safetyRetainedDeviceIds.has(item.card.id);
+      if (!visible && !retained) continue;
+      const facets = buildHAFacets(item.entities, states, item.claimed, item.card);
+      if (visible) {
+        devices.push(item.card);
+        if (facets.length > 0) deviceFacets[item.card.id] = facets;
+      } else {
+        safetyDevices.push(item.card);
+        if (facets.length > 0) safetyDeviceFacets[item.card.id] = facets;
+      }
+    }
+
     const fallbackScenes = snapshot.states
       .filter(
         (state) =>
@@ -1102,6 +1179,8 @@ export class HomeAssistantSynthesizer {
         name: nonEmpty(state.attributes.friendly_name, state.entityId),
       }));
 
+    // Platform scenes and scripts are not cards, so a closed device type leaves them startable: the
+    // host still warns that a manual scene may control hidden devices (architecture.md §B).
     const scenes = [...registryScenes, ...fallbackScenes];
     const rooms = [...new Set(devices.map((device) => device.roomId))].map(
       (id) => ({
@@ -1112,16 +1191,22 @@ export class HomeAssistantSynthesizer {
       }),
     );
     return {
-      devices,
-      rooms,
-      scenes,
-      environmentReadings: [...devices]
-        .sort((a, b) => environmentReadingPriority(a.kind) - environmentReadingPriority(b.kind))
-        .flatMap((device) => {
-          const reading = deviceEnvironmentReading(device);
-          return reading ? [reading] : [];
-        }),
-      ...(Object.keys(deviceFacets).length > 0 ? { deviceFacets } : {}),
+      home: {
+        devices,
+        rooms,
+        scenes,
+        environmentReadings: [...devices]
+          .sort((a, b) => environmentReadingPriority(a.kind) - environmentReadingPriority(b.kind))
+          .flatMap((device) => {
+            const reading = deviceEnvironmentReading(device);
+            return reading ? [reading] : [];
+          }),
+        ...(Object.keys(deviceFacets).length > 0 ? { deviceFacets } : {}),
+      },
+      safetyDevices,
+      ...(Object.keys(safetyDeviceFacets).length > 0 ? { safetyDeviceFacets } : {}),
+      hiddenIndexedDevices: prunePlan?.hiddenIndexedDevices ?? [],
+      prunePlan,
     };
   }
 }
@@ -1515,6 +1600,10 @@ export class HomeAssistantClient {
     },
   ) {}
   async snapshot(): Promise<SynthesizedHome> {
+    return (await this.snapshotWithPrune(null)).home;
+  }
+  /** One round of registries plus states, split by the host device-type selection (P3b-W). */
+  async snapshotWithPrune(prune: HaTypePruneOptions | null): Promise<HASynthesizedResult> {
     const lease = acquireHaTransportLease(this.baseURL, { token: this.token });
     if (!lease) {
       throw new HaBlockedRequestError(haConnectionScope(this.baseURL) ?? "ha:");
@@ -1528,7 +1617,7 @@ export class HomeAssistantClient {
         throw new HaBlockedRequestError(lease.scope ?? "ha:");
       }
       this.lastRawSnapshot = raw;
-      return HomeAssistantSynthesizer.synthesize(raw);
+      return HomeAssistantSynthesizer.synthesizeWithPrune(raw, prune === null ? null : { prune });
     } finally {
       lease.release();
     }

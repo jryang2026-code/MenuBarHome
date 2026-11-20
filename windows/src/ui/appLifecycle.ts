@@ -19,7 +19,9 @@ import { normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import {
   assistantEndpointIdentity,
   inferAssistantPreset,
+  isProactiveSuggestionsEnabled,
 } from "../core/assistant.js";
+import { applyFreshInstallFeatureSwitches } from "../core/freshInstallDefaults.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue } from "../core/models.js";
@@ -284,7 +286,12 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       hydratingHosts.delete(host);
       host.timerCredentialsReady = true;
       if (!host.identityMigrationDiagnostic && !host.loadedSettings.settingsReadError) {
-        resolveHostMiSelectionState(host);
+        const selection = resolveHostMiSelectionState(host);
+        // P5b-W: a brand-new install takes the switches the shared manifest asks for. P4a-W's
+        // install mode decides that — an upgrade (`legacyPreserved`/`explicit`) and an uncertain
+        // identity read keep the values they already have. The resolved values stay in memory: no
+        // extra settings write, so the fresh-install evidence is not consumed by this feature.
+        applyFreshInstallFeatureSwitches(host.settings, selection);
       }
       if (pendingPersistDuringHydration.has(host)) {
         pendingPersistDuringHydration.delete(host);
@@ -1315,7 +1322,7 @@ export function startTimerLoop(
       host.render();
     }
 
-    if (proactiveHasConsumer(host)) {
+    if (isProactiveSuggestionsEnabled(host.settings) && proactiveHasConsumer(host)) {
       host.maybeRefreshProactiveInBackground();
     }
 

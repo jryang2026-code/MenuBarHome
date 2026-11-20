@@ -13,6 +13,19 @@ export function isAiAssistantEnabled(settings: { readonly aiAssistantEnabled?: b
   return settings.aiAssistantEnabled !== false;
 }
 
+/**
+ * 主动建议 (`proactive-suggestions`) on its own switch (P5b-W).
+ *
+ * Missing field means enabled, because `Shared/capability-manifest.json` marks the capability
+ * `defaultOnFreshInstall: true`; upgrades keep the suggestions they had before the switch existed.
+ * When off, the shared tick never reaches the suggestion branch, `currentProactiveSuggestions`
+ * returns nothing without computing a signature or ranking habits, and no prompt or count is
+ * produced — safety alerts, undo and scheduled commands keep their own cadence.
+ */
+export function isProactiveSuggestionsEnabled(settings: { readonly proactiveSuggestionsEnabled?: boolean }): boolean {
+  return settings.proactiveSuggestionsEnabled !== false;
+}
+
 /** Settings fields that describe the active provider; mirrors `PersistedSettings`. */
 export interface AssistantRemovalSettings {
   assistantBaseURL: string;

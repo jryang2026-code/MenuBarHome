@@ -129,6 +129,12 @@ export interface PersistedSettings {
    * keep working, and the provider config plus key slots are preserved for re-enabling.
    */
   aiAssistantEnabled?: boolean;
+  /**
+   * 主动建议 (P5b-W); missing means on, matching the manifest's `defaultOnFreshInstall` for
+   * `proactive-suggestions`. When off, the shared tick never enters the suggestion branch and
+   * nothing suggestion-specific is read, computed, prompted or counted.
+   */
+  proactiveSuggestionsEnabled?: boolean;
   /** Exports `%LOCALAPPDATA%\MenuBarMijia\raycast-snapshot.json` and issues a local `bridgeToken`. */
   enableRaycastIntegration: boolean;
   /** Runs `menumijia://` links without the external-link confirmation prompt when on. */

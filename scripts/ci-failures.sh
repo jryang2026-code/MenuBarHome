@@ -15,7 +15,8 @@
 #   - process crash markers,
 #   - snapshot cases whose pixels did not match.
 # Every failing case is then matched against the open issues (title or body containing the case
-# name or its file name) and tagged `[已知间歇 #N]`.
+# name or its file name). A case-name hit is tagged `[已知间歇 #N]`; a file-only hit gets the weaker
+# `[同文件 issue #N，需核对]`.
 #
 # A run that failed and was later rerun green (`gh run rerun --failed`) keeps both attempts: the
 # newest failing attempt is the one reported here.
@@ -251,24 +252,30 @@ for issue in issues:
 
 
 def issue_for(name, file_name=""):
-    """Open issue whose title or body names this case, or failing that its file."""
+    """(number, by_name) of the open issue naming this case, or failing that its file."""
     lowered = (name or "").strip().lower()
     if lowered:
         for number, haystack in haystacks:
             if lowered in haystack:
-                return number
+                return number, True
     if file_name:
         lowered_file = os.path.basename(file_name).lower()
         for number, haystack in haystacks:
             if lowered_file in haystack:
-                return number
-    return None
+                return number, False
+    return None, False
 
 
 def tagged(text, name, file_name=""):
-    """Match on the raw case name, then annotate the formatted row."""
-    number = issue_for(name, file_name)
-    return f"{text} [已知间歇 #{number}]" if number else text
+    """Match on the raw case name, then annotate the formatted row.
+
+    Only a case-name hit is a known flaky case. A file-name hit only says some open issue mentions
+    the file (a refactor ticket, say), so it gets a weaker tag the reader has to check.
+    """
+    number, by_name = issue_for(name, file_name)
+    if not number:
+        return text
+    return f"{text} [已知间歇 #{number}]" if by_name else f"{text} [同文件 issue #{number}，需核对]"
 
 
 # --- summary -----------------------------------------------------------------------------

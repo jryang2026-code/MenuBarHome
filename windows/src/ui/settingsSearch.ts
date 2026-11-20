@@ -27,6 +27,7 @@ export type SettingsAnchor =
   | "miAccount"
   | ConnectionsDiagAnchorId
   | "assistantProvider"
+  | "proactiveSuggestions"
   | "assistantBaseURL"
   | "assistantModel"
   | "assistantAPIKey"
@@ -161,6 +162,7 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "copyDiagnostics":
       return "connection";
     case "assistantProvider":
+    case "proactiveSuggestions":
     case "assistantBaseURL":
     case "assistantModel":
     case "assistantAPIKey":
@@ -350,6 +352,12 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
     section: SEC_ASSISTANT,
     title: ["AI 服务商预设", "AI 服務商預設", "AI Provider Preset"],
     synonyms: ["服务商", "預設", "预设", "大模型", "自定义", "openrouter", "jev", "deepseek", "qwen", "千问", "glm", "智谱", "kimi", "openai", "gemini", "groq", "ollama", "custom", "provider", "preset"],
+  },
+  {
+    anchor: "proactiveSuggestions",
+    section: SEC_ASSISTANT,
+    title: ["主动建议", "主動建議", "Proactive Suggestions"],
+    synonyms: ["主动建议", "主動建議", "猜你想控", "建议", "建議", "推荐", "推薦", "后台推断", "proactive", "suggestions", "suggestion", "recommend", "recommendations", "for you", "zhudongjianyi"],
   },
   {
     anchor: "assistantBaseURL",

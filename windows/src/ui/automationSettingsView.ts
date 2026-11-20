@@ -48,7 +48,7 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { buildHostCapabilityContext, getHostMiAccountsState, isDualSourceEnabled, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, getHostMiAccountsState, isDualSourceEnabled, safetyRetainedHADevices, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
 import { evaluateAutomationRuleWriteGate } from "../core/miAccountControl.js";
 import {
   MAX_RECENT_AUTOMATION_RUNS,
@@ -1578,8 +1578,8 @@ export function bindAutomationSettingsEvents(host: AutoSafetySettingsHost): void
     if (center) {
       // A retained device has no card, so the long-run rule's plug/climate lookup must still find
       // it: filtering against the cards alone would read it as a climate rule and survive a plug
-      // switch that is off (P3a-W).
-      const safetyDevices = host.safetyRetainedDevices ?? [];
+      // switch that is off (P3a-W, P3b-W).
+      const safetyDevices = [...(host.safetyRetainedDevices ?? []), ...safetyRetainedHADevices(host)];
       pruneDisabledSafetyAlertsFromCenter(center, [...aliasedDevices, ...safetyDevices], saved);
     }
     host.render();
