@@ -2383,11 +2383,12 @@ describe("Smart camera support and live view (#97)", () => {
     });
     await waitFor(() => bridgeCount === 1);
     await click("#btn-reload-camera-live");
+    assert.equal(live.bridgeCalls.length, 0, "the new bridge must wait for the old HLS registration");
+    releaseBridge("");
     await waitFor(() => live.bridgeCalls.length === 1);
     await waitFor(() => document.querySelector("#cc-camera-live-img") !== null);
     const picture = element("#cc-camera-live-img");
     const stopsBefore = live.p2pStops.count;
-    releaseBridge("");
     await setImmediate();
     await setImmediate();
     assert.equal(live.p2pStops.count, stopsBefore, "the expired HLS fallback must not send stop-stream to the new session");

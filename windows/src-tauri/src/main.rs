@@ -283,6 +283,9 @@ fn main() {
             bridge_hls_camera_stream,
             stop_xiaomi_camera_bridge,
             go2rtc_endpoint,
+            cancel_camera_preparation,
+            stop_camera_runtime,
+            resume_camera_runtime,
             go2rtc_jpeg_frame
         ])
         .setup(move |app| {
@@ -1747,8 +1750,9 @@ mod tests {
             cam_discovery_sock
                 .set_read_timeout(Some(Duration::from_millis(500)))
                 .expect("discovery timeout");
-            let (relay_port, stop) =
+            let relay =
                 spawn_cs2_udp_relay(std::net::Ipv4Addr::LOCALHOST).expect("spawn relay");
+            let relay_port = relay.port;
             let go2rtc_sock = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind go2rtc mock");
             go2rtc_sock
                 .set_read_timeout(Some(Duration::from_millis(500)))
@@ -1801,7 +1805,8 @@ mod tests {
                 &[0xF1, 0xD1, 0x00, 0x06, 0xD1, 0x00, 0x00, 0x01, 0x00, 0x06]
             );
 
-            stop.store(true, Ordering::SeqCst);
+            drop(relay);
+            assert!(std::net::UdpSocket::bind(("127.0.0.1", relay_port)).is_ok());
         }
     }
 

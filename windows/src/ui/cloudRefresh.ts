@@ -72,6 +72,7 @@ import type { HaTypePruneOptions } from "../core/haTypePruning.js";
 import { safetySignalsForPrefs } from "../core/safetySignalPolicy.js";
 import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
 import { loadSafetyGuardPrefs } from "./automationSettingsView.js";
+import { buildIndexedCapabilityDevices } from "../core/miAccountControl.js";
 import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
 import {
   getHaScopeLifecyclePhase,
@@ -404,14 +405,14 @@ export function collectHostKnownScenes(
 }
 
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly unprunedCameraDevices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   const hidden = hiddenTypeDevices(host);
-  return {
+  const context: HostCapabilityContextInput = {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(hidden.length ? { hiddenDevices: hidden } : {}),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
@@ -420,6 +421,11 @@ export function buildHostCapabilityContext(
     connectionMode: (host.settings.connectionMode as HomeBackend | undefined) ?? "demo",
     dualSourceEnabled: dualEnabled, ...(host.settings.allOffOverrides ? { allOffOverrides: host.settings.allOffOverrides } : {}),
   };
+  const cameras = host.unprunedCameraDevices ?? [];
+  if (cameras.length === 0) return context;
+  const { indexedDevices } = buildIndexedCapabilityDevices({ ...context, devices: cameras, hiddenDevices: [] });
+  const cameraIds = new Set(cameras.map((device) => device.id));
+  return { ...context, hiddenDevices: [...hidden, ...indexedDevices.filter((device) => cameraIds.has(device.id))] };
 }
 
 function completePendingMiRevalidation(

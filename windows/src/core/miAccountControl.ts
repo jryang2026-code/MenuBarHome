@@ -233,7 +233,9 @@ export function resolveMiAccountSelectionState(options: ResolveMiAccountSelectio
         enabledConnections: enabledConns,
         enabledConnectionScopes: configuredScopes.filter((s) => !disabledSet.has(s) && !disabledHaSet.has(s)),
         enabledFeatures: [...FEATURE_IDS],
-        enabledCategories: [...DEVICE_CATEGORY_IDS],
+        enabledCategories: Array.isArray(stored.parsed.extraFields.enabledCategories)
+          ? DEVICE_CATEGORY_IDS.filter((id) => (stored.parsed?.extraFields.enabledCategories as unknown[]).includes(id))
+          : [...DEVICE_CATEGORY_IDS],
       }
     : null;
   const failure = options.identityReadFailure?.trim() || (stored.readError ? "capability_selection_read_error" : stored.corruptRaw !== null ? "corrupt_capability_selection_storage" : "");

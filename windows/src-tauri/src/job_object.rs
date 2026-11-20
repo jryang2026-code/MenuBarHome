@@ -6,7 +6,6 @@
 mod imp {
     use core::ffi::c_void;
     use std::os::windows::io::AsRawHandle;
-    use std::sync::OnceLock;
 
     const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS: i32 = 9;
     const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x0000_2000;
@@ -60,10 +59,6 @@ mod imp {
         fn CloseHandle(handle: isize) -> i32;
     }
 
-    /// Cached like the previous `OnceLock<Option<_>>`, but the failure reason is kept so every
-    /// later spawn fails closed with a diagnostic instead of continuing without the guarantee.
-    static KILL_ON_CLOSE_JOB: OnceLock<Result<isize, String>> = OnceLock::new();
-
     /// `GetLastError` code of the Win32 call that just failed.
     fn last_error_code() -> Option<i32> {
         std::io::Error::last_os_error().raw_os_error()
@@ -77,12 +72,6 @@ mod imp {
             ),
             None => "无法读取 Win32 错误码".to_string(),
         }
-    }
-
-    pub(crate) fn ensure_kill_on_close_job() -> Result<isize, String> {
-        KILL_ON_CLOSE_JOB
-            .get_or_init(create_kill_on_close_job)
-            .clone()
     }
 
     fn create_kill_on_close_job() -> Result<isize, String> {
@@ -111,14 +100,22 @@ mod imp {
         }
     }
 
-    pub(crate) fn bind_child(child: &std::process::Child) -> Result<(), String> {
-        let job = ensure_kill_on_close_job()?;
-        let assigned = unsafe { AssignProcessToJobObject(job, child.as_raw_handle() as isize) };
+    pub(super) fn bind_child(child: &std::process::Child) -> Result<Job, String> {
+        let job = Job(create_kill_on_close_job()?);
+        let assigned = unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as isize) };
         if assigned == 0 {
             // Read `GetLastError` before another Win32 call could overwrite it.
             return Err(assign_failure_message(last_error_code()));
         }
-        Ok(())
+        Ok(job)
+    }
+
+    pub(crate) struct Job(isize);
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            unsafe { CloseHandle(self.0) };
+        }
     }
 
     /// Pure mapping so the fail-closed error path is unit-testable without a live child process.
@@ -135,7 +132,7 @@ mod imp {
 
         #[test]
         fn kill_on_close_job_initializes_on_windows() {
-            assert!(ensure_kill_on_close_job().is_ok());
+            assert!(create_kill_on_close_job().map(Job).is_ok());
         }
 
         #[test]
@@ -149,16 +146,37 @@ mod imp {
     }
 }
 
-/// Binding failure must reach the caller: without the job the "app exit kills go2rtc" guarantee is
-/// gone, so the caller terminates the just-spawned child instead of running without it.
-pub(crate) fn bind_child_to_kill_on_close_job(child: &std::process::Child) -> Result<(), String> {
+pub(crate) struct ManagedCameraProcess {
+    pub(crate) child: std::process::Child,
     #[cfg(windows)]
-    {
-        imp::bind_child(child)
+    job: Option<imp::Job>,
+}
+
+impl ManagedCameraProcess {
+    pub(crate) fn bind(child: std::process::Child) -> Result<Self, String> {
+        #[cfg(windows)]
+        let job = match imp::bind_child(&child) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                let mut child = child;
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            child,
+            #[cfg(windows)]
+            job,
+        })
     }
-    #[cfg(not(windows))]
-    {
-        let _ = child;
-        Ok(())
+}
+
+impl Drop for ManagedCameraProcess {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        drop(self.job.take());
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
