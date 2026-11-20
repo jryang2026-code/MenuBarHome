@@ -1,4 +1,5 @@
 import Testing
+import StateTestSupport
 import Foundation
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
@@ -232,18 +233,13 @@ struct SettingsSearchTests {
         #expect(focus.highlight == nil)
     }
 
-    @Test("The highlight expires on its own instead of looping")
+    @Test("The highlight expires on its own instead of looping", .timeLimit(.minutes(1)))
     func highlightExpires() async throws {
         let focus = SettingsSearchFocus()
         focus.jump(to: .privacyNotes)
         #expect(focus.highlight == .privacyNotes)
 
-        // The window dims the row for ~1.6 s; waiting for it to end proves it does not persist.
-        // Poll instead of a fixed sleep so a busy CI runner cannot report a spurious failure.
-        let deadline = ContinuousClock.now.advanced(by: .seconds(6))
-        while focus.highlight != nil && ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        try await awaitState { focus.highlight == nil }
         #expect(focus.highlight == nil)
     }
 
