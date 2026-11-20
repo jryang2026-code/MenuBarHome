@@ -57,8 +57,15 @@ final class AutomationEngine {
     private let environment: AutomationEnvironmentProbe
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "Automation")
     private weak var store: HomeStore?
-    private var tokens: [any NSObjectProtocol] = []
-    private var lastExternalDisplayCount: Int
+    private var tokens: [(NotificationCenter, any NSObjectProtocol)] = []
+    private var observesSystem = false
+    private var observationGeneration: UInt64 = 0
+    private var contextObservationID: UUID?
+    private var wasEnabled = true
+    private var resumedAt: Date?
+    private let now: () -> Date
+    var isObservingSystem: Bool { !tokens.isEmpty }
+    private var lastExternalDisplayCount = 0
     private var activeContextProvider: (any MacContextProviding)?
     private var lastContext: MacContextSnapshot?
     /// Away/back notifications drive this so a locked or sleeping Mac does not count as “still
@@ -96,14 +103,15 @@ final class AutomationEngine {
         defaults: UserDefaults = .standard,
         contextProvider: (any MacContextProviding)? = nil,
         calendar: Calendar = .autoupdatingCurrent,
-        environment: AutomationEnvironmentProbe = .live
+        environment: AutomationEnvironmentProbe = .live,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.ruleStore = AutomationRuleStore(defaults: defaults)
         self.deduper = AutomationTriggerDeduper(defaults: defaults)
         self.injectedContextProvider = contextProvider
         self.calendar = calendar
         self.environment = environment
-        self.lastExternalDisplayCount = Self.activeExternalDisplayCount()
+        self.now = now
         self.isUserPresent = !environment.isScreenLocked()
     }
 
@@ -113,7 +121,13 @@ final class AutomationEngine {
 
     func start(with store: HomeStore) {
         attach(store: store)
-        guard tokens.isEmpty else { return }
+        observesSystem = true
+        rulesDidChange()
+    }
+
+    private func startSystemObservation() {
+        guard observesSystem, tokens.isEmpty else { return }
+        lastExternalDisplayCount = Self.activeExternalDisplayCount()
         isUserPresent = !environment.isScreenLocked()
         let workspace = NSWorkspace.shared.notificationCenter
         observe(workspace, NSWorkspace.willSleepNotification, .away)
@@ -133,18 +147,18 @@ final class AutomationEngine {
 
         // AppKit has no public “display connected” notification; enumerating active displays is the
         // documented substitute. Resolution-only changes keep the same count and are ignored.
+        let generation = observationGeneration
         let screenToken = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated {
-                self?.screenConfigurationChanged()
+                guard let self, self.observationGeneration == generation else { return }
+                self.screenConfigurationChanged()
             }
         }
-        tokens.append(screenToken)
-
-        startContextObservation()
+        tokens.append((.default, screenToken))
     }
 
     /// Test seam: binds the store without subscribing to system notifications, so `handle(trigger:)`
@@ -152,6 +166,7 @@ final class AutomationEngine {
     /// tests).
     func attach(store: HomeStore) {
         self.store = store
+        wasEnabled = store.eventAutomationEnabled
         store.onAutomationRulesChanged = { [weak self] in
             self?.rulesDidChange()
         }
@@ -182,20 +197,21 @@ final class AutomationEngine {
     /// Test seam: starts the injected context provider (or the real observer when enabled rules
     /// need it) without subscribing to NSWorkspace/distributed notifications.
     func startContextObservation() {
-        guard activeContextProvider == nil else { return }
+        guard store?.eventAutomationEnabled == true, activeContextProvider == nil else { return }
         let provider: any MacContextProviding
         if let injectedContextProvider {
             provider = injectedContextProvider
         } else {
             let rules = ruleStore.load()
             guard Self.needsContextPolling(rules) else { return }
-            // Only rules the user already enabled can prompt; starting the app alone never does.
-            MacContextPermissionRequester.requestPermissions(for: rules)
             provider = MacContextObserver()
         }
         activeContextProvider = provider
+        let id = UUID()
+        contextObservationID = id
         provider.start { [weak self] snapshot, now in
-            await self?.handle(context: snapshot, at: now)
+            guard let self, self.contextObservationID == id else { return }
+            await self.handle(context: snapshot, at: now)
         }
     }
 
@@ -203,21 +219,48 @@ final class AutomationEngine {
     /// calendar or Wi-Fi rule can request its permission immediately and start or stop the 10 s
     /// context poller as needed.
     func rulesDidChange() {
-        let rules = ruleStore.load()
-        MacContextPermissionRequester.requestPermissions(for: rules)
-        guard injectedContextProvider == nil else { return }
-        if Self.needsContextPolling(rules) {
-            startContextObservation()
-        } else if let provider = activeContextProvider {
-            provider.stop()
-            activeContextProvider = nil
-            lastContext = nil
+        guard let store else { return }
+        let enabled = store.eventAutomationEnabled
+        if enabled && !wasEnabled { resumedAt = now() }
+        wasEnabled = enabled
+
+        let rules = enabled ? ruleStore.load() : []
+        guard rules.contains(where: \.isEnabled) else {
+            if !tokens.isEmpty || activeContextProvider != nil || !enabled {
+                observationGeneration &+= 1
+            }
+            for (center, token) in tokens { center.removeObserver(token) }
+            tokens.removeAll()
+            stopContextObservation()
+            arbitrationTask?.cancel()
+            arbitrationTask = nil
+            arbitrator = AwayArbitrator()
+            lockTimeWiFi = nil
+            lastKnownWiFi = nil
+            return
         }
+        startSystemObservation()
+        if Self.needsContextPolling(rules) {
+            if injectedContextProvider == nil { MacContextPermissionRequester.requestPermissions(for: rules) }
+            startContextObservation()
+        } else {
+            stopContextObservation()
+        }
+    }
+
+    private func stopContextObservation() {
+        contextObservationID = nil
+        activeContextProvider?.stop()
+        activeContextProvider = nil
+        lastContext = nil
+        lastKnownWiFi = nil
     }
 
     /// Test seam: notifying systems cannot post in unit tests, so the mapping is exercised by
     /// calling this directly. Observers above do exactly the same thing.
     func handle(trigger: AutomationTrigger, at now: Date = Date()) async {
+        guard let store, store.eventAutomationEnabled else { return }
+        let generation = observationGeneration
         switch trigger {
         case .away, .screenLocked, .lidClosedSleep, .systemSleep:
             isUserPresent = false
@@ -226,7 +269,6 @@ final class AutomationEngine {
         default:
             break
         }
-        guard let store else { return }
         let rules = AutomationMatcher.rules(for: trigger, in: ruleStore.load())
         // An empty list must not burn the cooldown; the user may add a rule a moment later.
         guard !rules.isEmpty else { return }
@@ -273,6 +315,8 @@ final class AutomationEngine {
             return
         }
         for rule in eligible {
+            guard generation == observationGeneration, store.eventAutomationEnabled else { break }
+            guard ruleStore.load().contains(rule) else { continue }
             await execute(rule, store: store)
         }
     }
@@ -281,6 +325,9 @@ final class AutomationEngine {
     /// switch decides which signal changed; this method only applies the per-rule cooldown and
     /// executes.
     func handle(context: MacContextSnapshot, at now: Date = Date()) async {
+        guard let store, store.eventAutomationEnabled else { return }
+        let generation = observationGeneration
+        let contextID = contextObservationID
         var effective = context
         effective.isUserPresent = isUserPresent && context.isUserPresent
         // Keep the most recent poll result as the last-resort SSID source for a sleep that arrives
@@ -292,8 +339,10 @@ final class AutomationEngine {
         )
         let previous = lastContext
         lastContext = effective
-        guard let store else { return }
         for rule in ruleStore.load() where rule.isEnabled {
+            guard generation == observationGeneration, contextID == contextObservationID,
+                  store.eventAutomationEnabled else { break }
+            guard ruleStore.load().contains(rule) else { continue }
             // Same time-window gate as `handle(trigger:)`, also checked before the cooldown is consumed.
             guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else { continue }
             // Same Wi-Fi condition `handle(trigger:)` applies, checked before the cooldown is
@@ -315,8 +364,14 @@ final class AutomationEngine {
             )
             // Calendar rules return every eligible meeting; skip an already-fired event and let a
             // later meeting in the same lead window fire instead of being masked by it.
+            let alreadyEligibleAtResume = resumedAt.map {
+                Set(MacContextAutomation.events(
+                    for: rule, previous: nil, current: effective, at: $0, calendar: calendar
+                ).map(\.dedupeKey))
+            } ?? []
             guard events.contains(where: {
-                deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
+                !alreadyEligibleAtResume.contains($0.dedupeKey)
+                    && deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
             }) else { continue }
             await execute(rule, store: store)
         }
@@ -327,15 +382,17 @@ final class AutomationEngine {
         _ name: Notification.Name,
         _ trigger: AutomationTrigger
     ) {
+        let generation = observationGeneration
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 Task { @MainActor in
+                    guard self.observationGeneration == generation else { return }
                     await self.handle(trigger: trigger)
                 }
             }
         }
-        tokens.append(token)
+        tokens.append((center, token))
     }
 
     // MARK: - Away arbitration
@@ -345,20 +402,23 @@ final class AutomationEngine {
         _ name: Notification.Name,
         _ signal: AwaySignal
     ) {
+        let generation = observationGeneration
         let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 Task { @MainActor in
+                    guard self.observationGeneration == generation else { return }
                     await self.ingestAway(signal)
                 }
             }
         }
-        tokens.append(token)
+        tokens.append((center, token))
     }
 
     /// Feeds one system notification through the arbiter and runs whatever it settles on.
     /// Also the test seam: the notifying systems cannot post inside a unit test.
     func ingestAway(_ signal: AwaySignal, at now: Date = Date()) async {
+        guard store?.eventAutomationEnabled == true else { return }
         switch signal {
         case .screenLocked, .willSleep, .displayDidSleep:
             isUserPresent = false
@@ -397,6 +457,7 @@ final class AutomationEngine {
     /// instant, one debounce earlier, so a flush that lands at 22:00:01 still sees a 21:59:59
     /// lock as outside a 22:00 window. A late wake must not move that verdict.
     func flushArbitration(at now: Date = Date()) async {
+        guard store?.eventAutomationEnabled == true else { return }
         let lockInstant = arbitrator.pendingDeadline?.addingTimeInterval(-AwayArbitrator.lockDebounce)
         guard let outcome = arbitrator.flush(at: now) else { return }
         logger.notice("away-flush outcome=\(String(describing: outcome), privacy: .public)")
@@ -415,9 +476,10 @@ final class AutomationEngine {
     }
 
     private func dispatchAway(_ outcome: AwayOutcome, at now: Date) async {
+        let reading = lockTimeWiFi
+        let generation = observationGeneration
         await handle(trigger: outcome.trigger, at: now)
-        // The lock-time snapshot served its purpose; the next event takes a fresh reading.
-        lockTimeWiFi = nil
+        if generation == observationGeneration, reading == lockTimeWiFi { lockTimeWiFi = nil }
     }
 
     private func captureWiFi(at now: Date) -> WiFiReading {
@@ -458,7 +520,9 @@ final class AutomationEngine {
         let trigger: AutomationTrigger = count > lastExternalDisplayCount
             ? .externalDisplayConnected
             : .externalDisplayDisconnected
+        let generation = observationGeneration
         Task { @MainActor in
+            guard observationGeneration == generation else { return }
             await handle(trigger: trigger)
         }
     }
@@ -480,6 +544,7 @@ final class AutomationEngine {
             if let idx = stored.firstIndex(where: { $0.id == rule.id }) {
                 stored[idx].isEnabled = false
                 ruleStore.save(stored)
+                rulesDidChange()
             }
             store.showToast(
                 L10n.tr("高风险自动化规则需在设置中重新确认启用", "High-risk automation rule requires re-confirmation in Settings"),
@@ -492,7 +557,7 @@ final class AutomationEngine {
         // banner; the longer automation window keeps the banner usable after unlocking (#59).
         case .quickAction(let action):
             // Automation is not a user action, so it never trains habits (#34/#113).
-            store.executeQuickAction(action, undoBannerDuration: AutomationPolicy.undoWindow, recordsHabits: false, respectScreenLock: false)
+            _ = await store.runAutomationQuickAction(action)?.value
         case .devices, .scene:
             let intents = rule.action.intents()
             guard !intents.isEmpty else { return }
@@ -502,6 +567,7 @@ final class AutomationEngine {
                 intents: intents,
                 title: title
             )
+            if outcome.attemptedCount == 0 { return }
             if outcome.succeededCount == 0 {
                 let message = outcome.errorMessage ?? L10n.tr("控制执行失败", "Execution failed")
                 store.showToast(message, isError: true)

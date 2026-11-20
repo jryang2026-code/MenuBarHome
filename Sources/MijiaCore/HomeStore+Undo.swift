@@ -143,6 +143,19 @@ extension HomeStore {
         recordsHabits: Bool = true,
         respectScreenLock: Bool = true
     ) -> Task<BulkWriteOutcome, Never>? {
+        executeQuickAction(
+            action, undoBannerDuration: undoBannerDuration, recordsHabits: recordsHabits,
+            respectScreenLock: respectScreenLock, automationGeneration: nil
+        )
+    }
+
+    func executeQuickAction(
+        _ action: QuickAction,
+        undoBannerDuration: TimeInterval?,
+        recordsHabits: Bool,
+        respectScreenLock: Bool,
+        automationGeneration: UInt64?
+    ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
         if pausedQuickActionIDs.contains(action.rawValue) {
             showToast(
@@ -284,14 +297,33 @@ extension HomeStore {
         let task = Task { () -> BulkWriteOutcome in
             // Every exit drops the registration, so a later undo never waits on a finished batch.
             defer { runningBatches[bannerId] = nil }
-            guard let outcome = await runBatchCommands(commands, context: context, batchId: bannerId, writes: writes) else { return .partial }
+            guard let outcome = await runBatchCommands(commands, context: context, batchId: bannerId, writes: writes, automationGeneration: automationGeneration) else { return .partial }
             // Undo needs this report after this task ends: a device a newer write took before its
             // send keeps its own state and must not receive a restore command.
             if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
             let failedDeviceIds = outcome.failedDeviceIds
-            let refusedDeviceIds = failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }
+            let unsentDeviceIds = outcome.automationStopped
+                ? affectedDeviceIds.subtracting(outcome.attemptedDeviceIds).subtracting(outcome.takenOverDeviceIds)
+                : []
+            let refusedDeviceIds = Set(failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }).union(unsentDeviceIds)
             let droppedDeviceIds = refusedDeviceIds.union(outcome.takenOverDeviceIds)
-            if !droppedDeviceIds.isEmpty {
+            var undoCommands = restoreCommands
+            if outcome.automationStopped, action == .softNightLight {
+                // Brightness may already have landed while the second command (color temperature)
+                // was still pending. Keep only the state and undo for the part that reached the light.
+                let sent = outcome.acceptedByDevice.filter { $0.value == 1 }
+                for id in sent.keys {
+                    guard let write = writes[id],
+                          let brightness = Self.assistantEffect(of: .brightness(15), on: write.previous) else { continue }
+                    revert(write, restoring: brightness.updated)
+                }
+                undoCommands.removeAll { entry in
+                    guard sent[entry.deviceId] != nil else { return false }
+                    if case .setLightColorTemp = entry.command { return true }
+                    return false
+                }
+            }
+            if !droppedDeviceIds.isEmpty || undoCommands.count != restoreCommands.count {
                 // A device with no accepted command keeps nothing on screen: its row goes back and
                 // its restore commands leave this action's banner. A device that accepted an earlier
                 // command stays as shown (undo still turns it back), and is reported separately. A
@@ -300,7 +332,7 @@ extension HomeStore {
                 trimUndoBanner(
                     bannerId,
                     droppedDeviceIds: droppedDeviceIds,
-                    restoreCommands: restoreCommands,
+                    restoreCommands: undoCommands,
                     remainingDeviceCount: affectedDeviceIds.subtracting(droppedDeviceIds).count,
                     title: bannerTitle
                 )
@@ -333,7 +365,7 @@ extension HomeStore {
                 undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
             }
             if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
-            if !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            if outcome.automationStopped || !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
             return .completed
         }
         // A main-actor task only starts once this synchronous section yields, so the entry is in
@@ -687,6 +719,7 @@ extension HomeStore {
 
     /// What a bulk action's commands did, split by device.
     struct BatchCommandOutcome {
+        var automationStopped = false
         /// Commands each device accepted; a device missing here accepted none.
         var acceptedByDevice: [String: Int] = [:]
         /// Devices with at least one failed command.
@@ -733,12 +766,17 @@ extension HomeStore {
         _ commands: [(deviceId: String, command: DeviceCommand)],
         context: UUID,
         batchId: UUID,
-        writes: [String: OptimisticWrite]
+        writes: [String: OptimisticWrite],
+        automationGeneration: UInt64? = nil
     ) async -> BatchCommandOutcome? {
         var outcome = BatchCommandOutcome()
         for item in commands {
             guard context == controlContextID,
                   let batch = runningBatches[batchId], !batch.isStopped else { return nil }
+            if let automationGeneration, !automationCanWrite(generation: automationGeneration) {
+                outcome.automationStopped = true
+                break
+            }
             if outcome.failedDeviceIds.contains(item.deviceId) { continue }
             // The batch's own write sets the revision once and nothing bumps it before a send, so
             // this only fires for a newer write (the user, another action, an undo). A device's own

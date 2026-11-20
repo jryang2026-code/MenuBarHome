@@ -217,6 +217,43 @@ struct ProactiveSuggestionsToggleTests {
         #expect(store.assistantState == .idle, "no prompt")
     }
 
+    @Test("Automation off preserves safety alerts, undo, scheduled commands and the lock guard")
+    func automationOffLeavesIndependentConsumersRunning() async throws {
+        let (store, mock, _, _) = try await makeStore()
+        let write = await store.runAutomation(
+            intents: [.init(targetId: Self.desk.id, operation: .power(true))], title: "开灯"
+        )
+        #expect(write.succeededCount == 1)
+        store.pauseUndoBannerCountdown()
+        #expect(store.setEventAutomationEnabled(false))
+
+        var alerts: [SafetyAlert] = []
+        store.onSafetyAlert = { alerts.append($0) }
+        await mock.updateSnapshot(Self.home(temperature: 24, leakAlarming: true))
+        try await awaitState { store.environmentReadings.first?.temperature == 24 }
+        #expect(alerts.count == 1)
+
+        let desk = try #require(store.devices.first { $0.id == Self.desk.id })
+        store.setScreenLocked(true)
+        #expect(store.togglePrimary(desk) == nil)
+        #expect(store.toastNotice?.message == store.screenLockBlockedMessage)
+        #expect(store.undoTurnAllOff() == nil)
+        #expect(store.undoBanner != nil)
+        store.setScreenLocked(false)
+        let undo = try #require(store.undoTurnAllOff())
+        await undo.value
+        #expect(await mock.executedCommands.contains(.setLightPower(entityId: "light.desk", isOn: false)))
+
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantSleep = { _ in await gate.sleep() }
+        _ = await store.runAssistantCommand("10分钟后打开书房台灯")
+        #expect(store.scheduledCommands.count == 1)
+        try await awaitState { gate.waiting == 1 }
+        gate.release()
+        try await awaitState { store.scheduledCommands.isEmpty }
+        try await awaitState { store.devices.first { $0.id == Self.desk.id }?.isActiveOn == true }
+    }
+
     @Test("Off: safety alerts, undo expiry and saved timers still run on the same cadence")
     func offKeepsSafetyUndoAndTimers() async throws {
         let (store, mock, transport, _) = try await makeStore()
