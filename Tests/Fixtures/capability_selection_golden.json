@@ -1149,5 +1149,258 @@
       },
       "expectedDisposition": "partitionForeign"
     }
-  ]
+  ],
+  "deviceTypeMapping": {
+    "notes": "P3c-W。一张卡只按形状（卡片类型、控制寻址的实体、模型与名字提示）映射成清单里的一个 DeviceCategoryID，输入不含实时值，空快照与下一帧分类一致。cardCases 固定共享映射表（camera 也在此映射，停用与回收属 P3c-CW）；mixedTypeCases 保证同一物理设备仍是一张卡、副服务留在更多设置；splitCardCases 保证每个分键/每轨各自成卡；leakCases 与 zeroWriteCases 是双端固定断言：关闭传感器类型后水浸仍读取并告警，隐藏目标拒绝且零写入。用例的 selection.preset 指向 presets 里的 id，两端都从那里取类型集合。",
+    "presets": [
+      {
+        "id": "allSupportedTypes",
+        "categories": ["appliance", "camera", "climate", "cover", "fan", "fridge", "generic", "light", "plug", "sensor", "speaker", "tv", "vacuum", "valve"]
+      },
+      { "id": "lightAndSwitch", "categories": ["light", "plug"] }
+    ],
+    "cardCases": [
+      { "id": "miot_light_card", "card": {"kind": "light", "entityId": "miot:101:2", "model": "miot.light.hyz05", "name": "书房台灯"}, "expectedCategory": "light" },
+      { "id": "ha_plug_card", "card": {"kind": "plug", "entityId": "switch.heater", "model": "lumi.plug.aq1", "name": "取暖器插座"}, "expectedCategory": "plug" },
+      {
+        "id": "wall_switch_as_room_light_stays_a_plug_card",
+        "card": { "kind": "plug", "entityId": "switch.entry_lamp", "model": "090615.switch.09dh1", "name": "玄关壁灯" },
+        "expectedCategory": "plug",
+        "note": "壁灯开关画插座位卡，由「只用灯和开关」预设同时覆盖；macOS 的 DeviceKind.plug 同样归 plug。"
+      },
+      { "id": "ha_climate_card", "card": {"kind": "climate", "entityId": "climate.living", "model": "090615.airc.a07s", "name": "客厅空调"}, "expectedCategory": "climate" },
+      {
+        "id": "heater_climate_card_stays_climate",
+        "card": { "kind": "climate", "entityId": "climate.bedroom", "model": "air.heater.wda14", "name": "主卧电暖器" },
+        "expectedCategory": "climate",
+        "note": "加热卡仍是 climate（CODING_STANDARDS §5）；heater 只是意图类别，不是清单里的类型。"
+      },
+      { "id": "miot_fan_card", "card": {"kind": "fan", "entityId": "miot:301:2", "model": "123888.fan.1121", "name": "客厅风扇"}, "expectedCategory": "fan" },
+      {
+        "id": "humidifier_card_is_drawn_as_a_fan",
+        "card": { "kind": "humidifier", "entityId": "humidifier.bedroom", "model": "als1.humidifier.js03", "name": "卧室加湿器" },
+        "expectedCategory": "fan"
+      },
+      {
+        "id": "humidifier_service_appliance_is_drawn_as_a_fan",
+        "card": { "kind": "appliance", "entityId": "humidifier.guest", "model": "custom.humidifier.x1", "name": "客房加湿器", "symbolName": "humidity.fill" },
+        "expectedCategory": "fan"
+      },
+      { "id": "ha_cover_card", "card": {"kind": "cover", "entityId": "cover.study", "model": "090615.curtain.1mcu01", "name": "书房窗帘"}, "expectedCategory": "cover" },
+      {
+        "id": "ha_water_heater_appliance_card",
+        "card": { "kind": "appliance", "entityId": "water_heater.tank", "model": "aden.waterheater.ash200", "name": "热水器", "heats": true },
+        "expectedCategory": "appliance",
+        "note": "带加热的家电仍是 appliance，不是 climate；高风险确认由 heats 决定，不由类型决定。"
+      },
+      { "id": "ha_fridge_card", "card": {"kind": "fridge", "entityId": "fridge.kitchen", "model": "xiaomi.fridge.1", "name": "厨房冰箱"}, "expectedCategory": "fridge" },
+      { "id": "miot_vacuum_card", "card": {"kind": "vacuum", "entityId": "360sdj.vacuum.s", "model": "360sdj.vacuum.s", "name": "扫地机"}, "expectedCategory": "vacuum" },
+      { "id": "miot_speaker_card", "card": {"kind": "speaker", "entityId": "miot:401:2", "model": "090615.wifispeaker.x6bj", "name": "客厅音箱"}, "expectedCategory": "speaker" },
+      { "id": "miot_tv_card", "card": {"kind": "tv", "entityId": "miot:501:2", "model": "123888.tv.xhzn11", "name": "客厅电视"}, "expectedCategory": "tv" },
+      {
+        "id": "lg_lan_tv_card_is_still_a_tv",
+        "card": { "kind": "tv", "entityId": "lg:oled:power", "model": "lg.webos", "name": "客厅 LG 电视" },
+        "expectedCategory": "tv",
+        "note": "LG 走自己的局域网后端和 lg: 作用域，类型仍是 tv。"
+      },
+      {
+        "id": "ha_camera_card",
+        "card": { "kind": "camera", "entityId": "camera.entry", "model": "miot.camera.1", "name": "玄关摄像机" },
+        "expectedCategory": "camera",
+        "note": "摄像机在这里照常映射；停用与回收属于 P3c-CW。"
+      },
+      {
+        "id": "ha_leak_sensor_card",
+        "card": { "kind": "sensor", "entityId": "binary_sensor.kitchen_leak", "model": "lumi.sensor_wleak.aq1", "name": "厨房水浸传感器" },
+        "expectedCategory": "sensor"
+      },
+      {
+        "id": "ha_valve_appliance_card",
+        "card": { "kind": "appliance", "entityId": "valve.water_main", "model": "tuya.valve", "name": "总水阀", "temperatureWritable": false },
+        "expectedCategory": "valve"
+      },
+      {
+        "id": "valve_named_appliance_card_without_temperature_or_modes",
+        "card": { "kind": "appliance", "entityId": "miot:601:2", "model": "custom.shutoff.x1", "name": "燃气阀", "temperatureWritable": false, "availableModes": [] },
+        "expectedCategory": "valve",
+        "note": "既无目标温度也无模式的水阀/气阀按名字归 valve，与 macOS 的 DeviceKind.valve 一致。"
+      },
+      {
+        "id": "miot_generic_card",
+        "card": { "kind": "generic", "entityId": "209754.fishbowl.tank01", "model": "209754.fishbowl.tank01", "name": "鱼缸" },
+        "expectedCategory": "generic"
+      }
+    ],
+    "mixedTypeCases": [
+      {
+        "id": "miot_fan_with_light_service_keeps_one_fan_card",
+        "source": "xiaomi-cloud",
+        "primaryModel": "123888.fan.1121",
+        "secondaryModel": "miot.light.hyz05",
+        "name": "客厅风扇灯",
+        "expectedCards": 1,
+        "expectedCategory": "fan",
+        "expectedSecondaryCategory": "light",
+        "note": "同一台带灯风扇只画一张风扇卡，灯服务留在更多设置；类型跟主服务，不跟副服务。"
+      },
+      {
+        "id": "miot_speaker_with_light_curtain_and_climate_services_keeps_one_speaker_card",
+        "source": "xiaomi-cloud",
+        "model": "090615.wifispeaker.x6bj",
+        "name": "客厅智能音箱",
+        "expectedCards": 1,
+        "expectedCategory": "speaker",
+        "expectedSecondaryCategories": ["cover", "light"],
+        "note": "一台音箱同时声明灯、窗帘和空调服务；只有主服务决定卡片类型，副服务仍是更多设置。"
+      },
+      {
+        "id": "ha_fan_with_light_entity_keeps_one_card",
+        "source": "home-assistant",
+        "entities": ["fan.bedroom", "light.bedroom_lamp"],
+        "expectedCards": 1,
+        "expectedCategory": "light",
+        "expectedSecondaryCategory": "fan",
+        "note": "HA 注册表把同一 device 的实体合成一张卡；灯优先的既有顺序不变，风扇落在更多设置。"
+      }
+    ],
+    "splitCardCases": [
+      {
+        "id": "multi_key_wall_switch_keeps_one_plug_card_per_key",
+        "source": "xiaomi-cloud",
+        "model": "lumi.switch.b1nacn02",
+        "parentDid": "1001",
+        "keys": [{ "did": "1001.s2", "siid": 2 }, { "did": "1001.s3", "siid": 2 }],
+        "expectedCategory": "plug",
+        "note": "多键开关按 splitParentDid 拆成独立按键卡，父设备自身不画卡；每键仍是 plug。"
+      },
+      { "id": "dual_track_curtain_keeps_one_cover_card_per_track", "source": "xiaomi-cloud", "model": "090615.curtain.1mcu01", "expectedCategory": "cover" },
+      { "id": "ha_double_cover_device_keeps_one_cover_card_per_track", "source": "home-assistant", "entities": ["cover.left", "cover.right"], "expectedCategory": "cover" }
+    ],
+    "devices": [
+      {
+        "id": "light.study_desk",
+        "name": "书房台灯",
+        "category": "light",
+        "connection": "xiaomi-cloud",
+        "sourceScope": "mi:acctA",
+        "isSourceAvailable": true,
+        "upstreamHiddenOrDisabled": false,
+        "participatesInAllOff": true,
+        "safetySignals": [],
+        "readKeys": ["101.2.1"],
+        "safetyReadKeys": []
+      },
+      {
+        "id": "sensor.kitchen_leak",
+        "name": "厨房水浸传感器",
+        "category": "sensor",
+        "connection": "xiaomi-cloud",
+        "sourceScope": "mi:acctA",
+        "isSourceAvailable": true,
+        "upstreamHiddenOrDisabled": false,
+        "participatesInAllOff": false,
+        "safetySignals": ["leak"],
+        "readKeys": ["105.2.1", "105.3.1"],
+        "safetyReadKeys": ["105.2.1"]
+      },
+      {
+        "id": "valve.gas_main",
+        "name": "燃气阀",
+        "category": "valve",
+        "connection": "home-assistant",
+        "sourceScope": "ha:http://home.local:8123",
+        "isSourceAvailable": true,
+        "upstreamHiddenOrDisabled": false,
+        "participatesInAllOff": false,
+        "safetySignals": [],
+        "readKeys": ["valve.gas_main"],
+        "safetyReadKeys": []
+      }
+    ],
+    "leakCases": [
+      {
+        "id": "leak_alert_keeps_the_sensor_read_while_the_sensor_type_is_closed",
+        "selection": {
+          "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+          "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+          "enabledFeatures": [],
+          "preset": "lightAndSwitch"
+        },
+        "safetySignals": ["leak"],
+        "expectedAvailableDeviceIds": ["light.study_desk"],
+        "expectedHiddenSafetyRetainedDeviceIds": ["sensor.kitchen_leak"],
+        "expectedSafetyEvaluationDeviceIds": ["light.study_desk", "sensor.kitchen_leak"],
+        "expectedReadPlanKeys": ["101.2.1", "105.2.1"],
+        "expectLeakAlertWhenSensorTriggers": true
+      },
+      {
+        "id": "closing_the_leak_alert_stops_the_retained_read",
+        "selection": {
+          "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+          "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+          "enabledFeatures": [],
+          "preset": "lightAndSwitch"
+        },
+        "safetySignals": [],
+        "expectedAvailableDeviceIds": ["light.study_desk"],
+        "expectedHiddenSafetyRetainedDeviceIds": [],
+        "expectedSafetyEvaluationDeviceIds": ["light.study_desk"],
+        "expectedReadPlanKeys": ["101.2.1"],
+        "expectLeakAlertWhenSensorTriggers": false
+      }
+    ],
+    "zeroWriteCases": [
+      {
+        "id": "closed_sensor_type_rejects_its_hidden_target_with_zero_writes",
+        "targetKind": "device",
+        "targetId": "sensor.kitchen_leak",
+        "candidateIds": [],
+        "selection": {
+          "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+          "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+          "enabledFeatures": [],
+          "preset": "lightAndSwitch"
+        },
+        "safetySignals": ["leak"],
+        "expectedMappedCategory": "sensor",
+        "expectedAllowed": false,
+        "expectedWriteCount": 0,
+        "expectedRejectionCode": "categoryDisabled"
+      },
+      {
+        "id": "closed_valve_type_rejects_its_hidden_target_with_zero_writes",
+        "targetKind": "device",
+        "targetId": "valve.gas_main",
+        "candidateIds": [],
+        "selection": {
+          "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+          "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+          "enabledFeatures": [],
+          "preset": "lightAndSwitch"
+        },
+        "safetySignals": [],
+        "expectedMappedCategory": "valve",
+        "expectedAllowed": false,
+        "expectedWriteCount": 0,
+        "expectedRejectionCode": "categoryDisabled"
+      },
+      {
+        "id": "unknown_id_is_not_found_and_writes_nothing",
+        "targetKind": "device",
+        "targetId": "sensor.gone",
+        "candidateIds": [],
+        "selection": {
+          "enabledConnections": ["xiaomi-cloud", "home-assistant"],
+          "enabledConnectionScopes": ["ha:http://home.local:8123", "mi:acctA"],
+          "enabledFeatures": [],
+          "preset": "lightAndSwitch"
+        },
+        "safetySignals": [],
+        "expectedMappedCategory": null,
+        "expectedAllowed": false,
+        "expectedWriteCount": 0,
+        "expectedRejectionCode": "deviceNotFound"
+      }
+    ]
+  }
 }

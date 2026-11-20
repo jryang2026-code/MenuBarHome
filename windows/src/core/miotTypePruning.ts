@@ -1,4 +1,4 @@
-import { deviceCategoryForDevice, DEVICE_CATEGORY_IDS, type DeviceCategoryID } from "./capabilityManifest.js";
+import { deviceCategoryForCardShape, DEVICE_CATEGORY_IDS, type DeviceCategoryID } from "./capabilityManifest.js";
 import {
   partitionCapabilityDevices, SAFETY_SIGNAL_KINDS, SENSOR_ALERT_TO_SAFETY_SIGNAL,
   type CapabilityIndexedDevice, type CapabilitySelection, type DeviceSetPartition, type SafetySignalKind,
@@ -10,6 +10,7 @@ import {
   safetySignalsForPrefs, safetySignalsForSensorPolicy, type SafetySignalPrefs,
 } from "./safetySignalPolicy.js";
 import { inferSensorAlertKindsFromMetadata, stripLockNeutralTokens } from "./safetyAndHealth.js";
+import { deviceCardShapeForKind } from "./models.js";
 
 /**
  * Alerts a closed type still keeps reading for, from the host's safety switches. The mapping itself
@@ -197,15 +198,14 @@ function classifyRecord(
   isStarredDeviceId: (planId: string) => boolean,
 ): ClassifiedPlan[] {
   return MiotSynthesizer.planReadKeys(record, spec).map((plan) => {
-    // `deviceCategoryForDevice` also splits valves and humidifiers out of `appliance`, so it needs a
-    // device shape; the value-free builder already produced the card kind for it. No builder at all
-    // means the facet layer draws a generic card, which is also the type the user sees.
+    // The value-free builder already produced the card kind, so classify that card shape instead of
+    // a stand-in `SmartDevice`: the same call the HA plan makes, and no invented room or id. No
+    // builder at all means the facet layer draws a generic card, which is also the type the user sees.
     const category = plan.kind === null
       ? "generic" as const
-      : deviceCategoryForDevice({
-          id: plan.planId, name: plan.name, roomId: "other", roomName: "",
-          model: record.model, isOnline: record.isOnline, kind: plan.kind,
-        });
+      : deviceCategoryForCardShape(
+          deviceCardShapeForKind(plan.kind, { id: plan.planId, model: record.model, name: plan.name }),
+        );
     const heats = plan.kind !== null && plan.kind.kind === "appliance" && plan.kind.heats;
     const starredOffline = isStarredDeviceId(plan.planId);
     return {
