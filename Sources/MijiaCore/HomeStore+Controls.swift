@@ -2344,6 +2344,11 @@ extension HomeStore {
 
     public func stopCameraStream(for deviceId: String) async {
         guard let device = devices.first(where: { $0.id == deviceId }) else { return }
+        await stopCameraStream(device: device)
+    }
+
+    /// Releases a stream for a card that may already have left `devices` (a closed camera type).
+    public func stopCameraStream(device: SmartDevice) async {
         await provider.stopCameraStream(for: device)
     }
 }
