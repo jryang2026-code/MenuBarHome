@@ -316,7 +316,7 @@ main() {
     trap 'for f in $ALL_PID_FILES; do rm -f "$f" "$f.tmp"; done' EXIT
     local retry_enabled first_log
     retry_enabled="$(swift_test_retry_enabled)"
-    first_log="$(mktemp -t swift-test)"
+    first_log="$(mktemp "${TMPDIR:-/tmp}/swift-test.XXXXXX")"
     run_with_watchdog "$first_log" "$@"
     local first_exit="$RUN_EXIT" first_stalled="$RUN_STALLED" first_pids="$RUN_PIDS" first_started="$RUN_STARTED"
     echo "=== swift test process exit: ${first_exit} (stalled=${first_stalled})"

@@ -315,7 +315,7 @@ retry_failed_cases() { # first_log retry_enabled stalled repo_root [swift test a
         fi
         return 1
     fi
-    rows_file="$(mktemp -t swift-test-cases)"
+    rows_file="$(mktemp "${TMPDIR:-/tmp}/swift-test-cases.XXXXXX")"
     failed_test_cases "$first_log" >"$rows_file"
     while IFS= read -r filter_value; do
         [ -n "$filter_value" ] || continue
@@ -331,7 +331,7 @@ EOF
         return 1
     fi
     echo "=== flaky check: rerunning ${filter_count} failing case(s) with --filter"
-    retry_log="$(mktemp -t swift-test-retry)"
+    retry_log="$(mktemp "${TMPDIR:-/tmp}/swift-test-retry.XXXXXX")"
     swift_test_run_attempt "$retry_log" "$@" "${filter_args[@]}"
     echo "=== retry process exit: ${RUN_EXIT} (stalled=${RUN_STALLED})"
     retry_state="$(retry_verdict "$rows_file" "$retry_log")"
@@ -358,7 +358,7 @@ run_with_watchdog() { # log_file swift_test_arguments...
     local tick=10 pid_poll_step=1
     local pids_file test_pid tail_pid stalled=0 last_size=-1 stall_detected=0
     local since_size_check=0 step_elapsed size exit_code
-    pids_file="$(mktemp -t swift-test-pids)"
+    pids_file="$(mktemp "${TMPDIR:-/tmp}/swift-test-pids.XXXXXX")"
     ALL_PID_FILES="${ALL_PID_FILES:-} ${pids_file}"
     echo "swift test log: $log"
     RUN_STARTED="$(date +%s)"

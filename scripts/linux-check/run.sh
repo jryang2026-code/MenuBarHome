@@ -3,7 +3,7 @@
 # 做法：把 Sources/MijiaCore 和测试复制到 .work/，只注入 FoundationNetworking 导入、去掉 Linux 没有的 waitsForConnectivity。
 set -euo pipefail
 L="$(cd "$(dirname "$0")" && pwd)"; R="$(cd "$L/../.." && pwd)"
-W="$L/.work"; S="$(mktemp -d)"; trap 'rm -rf "$S"' EXIT
+W="$L/.work"; S="$(mktemp -d "${TMPDIR:-/tmp}/linux-check-src.XXXXXX")"; trap 'rm -rf "$S"' EXIT
 cp -r "$R/Sources/MijiaCore" "$S/MijiaCore"; cp -r "$R/Tests/MijiaCoreTests" "$S/MijiaCoreTests"; cp -r "$R/Tests/KeychainTestSupport" "$S/KeychainTestSupport"
 cp -r "$R/Tests/PreferencesTestSupport" "$S/PreferencesTestSupport"
 cp -r "$R/Tests/StateTestSupport" "$S/StateTestSupport"
@@ -33,7 +33,8 @@ done
 . "$R/scripts/lib/swift_test_retry.sh"
 # util-linux 的 script 要写成 `script -q -c "cmd" /dev/null`（BSD 是 `script -q /dev/null cmd`），
 # 这里干脆不用 pty：stdbuf 就能让 stdout 保持行缓冲，看门狗与流式日志都够用。
-if command -v stdbuf >/dev/null 2>&1; then
+# 顺带跑一次 stdbuf，确认 libstdbuf 真的能用：装了但跑不起来时直接回退到块缓冲，不卡死整步。
+if command -v stdbuf >/dev/null 2>&1 && stdbuf -oL true 2>/dev/null; then
   SWIFT_TEST_LAUNCH_CMD="stdbuf -oL -eL"
 else
   SWIFT_TEST_LAUNCH_CMD=""
@@ -49,7 +50,7 @@ sample_stalled_linux_processes() {
 }
 
 retry_enabled="$(swift_test_retry_enabled)"
-first_log="$(mktemp -t linux-check-test)"
+first_log="$(mktemp "${TMPDIR:-/tmp}/linux-check-test.XXXXXX")"
 cd "$L"
 TZ="${TZ:-Asia/Shanghai}"; export TZ
 # RUN_EXIT / RUN_STALLED 才是这次运行的结论；函数本身的退出码没有意义（set -e 下要挡住）。

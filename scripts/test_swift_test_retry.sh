@@ -178,6 +178,12 @@ else
     printf 'SKIP macOS 入口接线自测（只在 Darwin 上跑：pty 前缀与看门狗是 macOS 专属）\n'
 fi
 
+# --- mktemp 写法：GNU（Linux CI）不接受没有 X 的 `-t` 模板，BSD（macOS）会自动补 -----------------
+# 两个入口都在 CI 的 Ubuntu 容器里跑，所以只能用两平台都成立的 "$TMPDIR/名字.XXXXXX"。
+unportable="$(grep -nE 'mktemp[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-t' \
+    scripts/lib/swift_test_retry.sh scripts/ci_swift_test.sh scripts/linux-check/run.sh || true)"
+expect_eq "mktemp 都用带 XXXXXX 的模板（GNU 不接受裸 -t）" "" "$unportable"
+
 if [ "$failures" -ne 0 ]; then
     printf '❌ %d 项测试入口接线自测失败\n' "$failures" >&2
     exit 1
