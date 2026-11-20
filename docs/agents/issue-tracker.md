@@ -15,7 +15,7 @@ Canonical GitHub issue triage labels in this repository:
 
 ## Repo helper scripts
 
-CI 失败先看 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。盘点未合并分支和工作树用 `bash scripts/pending-work.sh`。挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
+CI 失败先跑 `bash scripts/ci-failures.sh <run-id|pr>` 看摘要：失败 job、Swift Testing / node 失败用例、编译错误首行、进程崩溃、快照不匹配，命中 open 票的用例标 `[已知间歇 #N]`。要看完整失败日志用 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。盘点未合并分支和工作树用 `bash scripts/pending-work.sh`。挑票用 `bash scripts/issue-frontier.sh`（一次列出所有 `ready-for-agent` 票能不能做：blocker、assignee、`claimed:*` 标签、关联的 open PR 和分支；`--doable` 只输出可做编号）。
 
 ## Migrated issue numbers
 
@@ -30,6 +30,7 @@ Some migrated bodies hold a broken `## Blocked by` section with `#$(cat n9)` pla
 ## Pull requests & skill hooks
 
 - **Checks**: `gh pr checks <n>`. `.github/workflows/ci.yml` runs on GitHub-hosted Linux, macOS and Windows machines. UI snapshot pixels are compared by `macos-test` on `macos-26-intel`. Failed job logs: `bash scripts/ci_errors.sh <run-id>`.
+- **Push discipline**: a subagent runs `git merge origin/main` only for a conflict or a check that demands it. Batch one round of fixes into one push — never "merge main, push, fix, push again": every push cancels the running macOS jobs (1213 macOS minutes lost on 2026-11-19). Triage a red run with `bash scripts/ci-failures.sh <run-id|pr>` first, before reading logs.
 - **Merge**: `bash scripts/merge-pr.sh <n> <head-sha>` (squash + watch the main CI run; with a plain `gh pr merge <n> --squash --delete-branch` you must watch main yourself).
 - **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `triage` reads this flag.)_
 - **When a skill says "publish to the issue tracker"**: create a GitHub issue with `gh issue create --label ready-for-agent`.

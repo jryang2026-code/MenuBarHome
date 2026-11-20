@@ -1,0 +1,7 @@
+◇ Test run started.
+◇ Test "Fold layout picks the first card" started.
+◇ Test case passing 1 argument value → 1 to "Fold layout picks the first card" started.
+✘ Test "Fold layout picks the first card" recorded an issue with 1 argument value → 1 at ParamFixtureTests.swift:6:9: Expectation failed: value == 0
+✘ Test "Fold layout picks the first card" with 2 test cases failed after 0.001 seconds with 2 issues.
+✘ Suite ParamFixtureTests failed after 0.001 seconds with 2 issues.
+✘ Test run with 1 test in 1 suite failed after 0.01 seconds with 2 issues.

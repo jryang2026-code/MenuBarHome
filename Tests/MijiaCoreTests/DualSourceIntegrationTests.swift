@@ -1,8 +1,9 @@
 import Foundation
 import Testing
+import StateTestSupport
 @testable import MijiaCore
 
-@Suite(.serialized)
+@Suite(.serialized, .timeLimit(.minutes(1)))
 struct DualSourceIntegrationTests {
     private let did = "1234567890"
     private let haID = "ha-registry-1"
@@ -95,13 +96,18 @@ struct DualSourceIntegrationTests {
 
         let haMock = MockHomeProvider(snapshot: haHome)
         let miMock = MockHomeProvider(snapshot: miHome)
+        await miMock.holdSnapshots()
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
             defaultsSuiteName: suite
         )
         defer { store.stop() }
 
-        await waitUntil {
+        let now = Date()
+        store.optimisticNow = { now }
+        try await awaitState { store.connectedBackends == [.homeAssistant] && store.devices.count == 1 }
+        await miMock.emitSnapshot()
+        try await awaitState {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.devices.count == 1
                 && store.deviceBackend(for: haID) == .homeAssistant
@@ -109,7 +115,7 @@ struct DualSourceIntegrationTests {
         let canonical = try #require(store.devices.first?.id)
         #expect(canonical == haID)
         #expect(store.connectedBackends == Set([.homeAssistant, .xiaomiCloud]))
-        let persisted = suiteDefaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String]
+        let persisted = store.userDefaults.dictionary(forKey: ViewPreferenceKeys.canonicalDeviceIds) as? [String: String]
         #expect(persisted?.values.contains(canonical) == true)
 
         store.favoriteDeviceIds = []
@@ -127,12 +133,12 @@ struct DualSourceIntegrationTests {
         // The fallback grace (#25) holds the HA route through a brief blip; the outage that
         // outlasts the window adopts the Mi Cloud handoff. The drop must be observed before the
         // seam rewinds it, or the seam races the still-in-flight status event.
-        await waitUntil {
+        try await awaitState {
             if case .disconnected = store.sourceStatuses[.homeAssistant] ?? .connecting { return true }
             return false
         }
         await (store.provider as? DualSourceHomeProvider)?.expireFallbackGraceForTesting()
-        await waitUntil {
+        try await awaitState {
             store.devices.count == 1 && store.deviceBackend(for: canonical) == .xiaomiCloud
         }
         #expect(store.devices.first?.id == canonical)
@@ -154,7 +160,7 @@ struct DualSourceIntegrationTests {
         #expect((await haMock.executedCommands).count == haCommands.count)
 
         await haMock.updateSnapshot(haHome)
-        await waitUntil {
+        try await awaitState {
             store.connectedBackends == Set([.homeAssistant, .xiaomiCloud])
                 && store.deviceBackend(for: canonical) == .homeAssistant
         }
