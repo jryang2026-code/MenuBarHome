@@ -109,6 +109,16 @@ expect_eq "只跑了一半用例 → unverified（不算通过）" "unverified" 
 
 expect_eq "汇总行判 pass" "pass" "$(swift_test_summary_verdict "$fixtures/second-pass.log")"
 expect_eq "汇总行判 fail" "fail" "$(swift_test_summary_verdict "$fixtures/first.log")"
+
+# --- Linux 的汇总行没有 `in N suites`（Swift 6.1）-----------------------------------------
+# 夹具抄自真实的 linux-core 日志：`✔ Test run with 1597 tests passed ...`。
+expect_eq "Linux 汇总行（没有 in N suites）判 pass" "pass" "$(swift_test_summary_verdict "$fixtures/linux-pass.log")"
+expect_eq "Linux 汇总行判 fail" "fail" "$(swift_test_summary_verdict "$fixtures/linux-fail.log")"
+expect_eq "Linux 失败日志可重跑" "retry" "$(retry_plan "$fixtures/linux-fail.log" 1 0)"
+lrows="$workdir/linux_rows.tsv"
+failed_test_cases "$fixtures/linux-fail.log" >"$lrows"
+expect_eq "Linux 日志仍能解析出用例位置" "1" "$(wc -l <"$lrows" | tr -d ' ')"
+expect_eq "Linux 重跑日志判 pass" "pass" "$(retry_verdict "$lrows" "$fixtures/linux-retry-pass.log")"
 if log_has_crash "$fixtures/crash.log"; then
     pass "进程崩溃能被识别"
 else

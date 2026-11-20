@@ -35,13 +35,17 @@ log_has_crash() {
 
 # Swift Testing's own verdict: every target summary passed, no issue was recorded in any target,
 # and no later target (`Test run started.`) hung before printing its own summary.
+#
+# The summary wording depends on the toolchain: macOS 6.4 prints `Test run with 367 tests in 41
+# suites passed`, Linux 6.1 prints `Test run with 1597 tests passed` (no suite clause). Match the
+# part both have and let the `passed` suffix decide.
 swift_test_summary_verdict() {
     awk '
         /(^|◇ )Test run started\./ { pending_target = 1; next }
-        /Test run with [0-9]+ tests? in [0-9]+ suites?/ {
+        /Test run with [0-9]+ tests?/ {
             summaries++
             pending_target = 0
-            if ($0 !~ /Test run with [0-9]+ tests? in [0-9]+ suites? passed/) {
+            if ($0 !~ /Test run with [0-9]+ tests?( in [0-9]+ suites?)? passed/) {
                 failed = 1
             }
             next
