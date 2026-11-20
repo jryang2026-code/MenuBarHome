@@ -100,6 +100,65 @@ export interface CameraLiveHost {
 }
 
 export class CameraLiveController {
+  private categoryEnabled = true;
+  private nativeOperation: Promise<unknown> | null = null;
+  private negotiationAbort: AbortController | null = null;
+  private readonly negotiations = new Set<Promise<void>>();
+  private categoryRelease: Promise<void> | null = null;
+  private lastDisabledToken = -1;
+
+  public get cameraCategoryEnabled(): boolean {
+    return this.categoryEnabled;
+  }
+
+  public setCameraCategoryEnabled(enabled: boolean): void {
+    if (this.categoryEnabled === enabled) return;
+    this.categoryEnabled = enabled;
+    if (enabled) {
+      void this.runNativeCameraOperation("resume_camera_runtime");
+      return;
+    }
+
+    const cancellation = window.__TAURI_INTERNALS__?.invoke("cancel_camera_preparation")
+      .catch((error: unknown) => console.error("[tauri] cancel_camera_preparation failed", error));
+    this.ownedStreamOrigin = null;
+    const closing = this.activeLiveCameraId !== null;
+    this.closeCameraLiveView(false);
+    this.lastDisabledToken = this.liveCameraToken;
+    this.cameraBridgeBindings.clear();
+    const release = Promise.allSettled([...this.negotiations, ...this.pendingCameraReleases.values()])
+      .then(() => Promise.allSettled([...this.pendingCameraReleases.values()]))
+      .then(() => {});
+    this.categoryRelease = release;
+    void release.then(() => {
+      if (this.categoryRelease === release) this.categoryRelease = null;
+    });
+    void this.runNativeCameraOperation("stop_camera_runtime", undefined, undefined, cancellation);
+    if (closing) this.host.render();
+  }
+
+  private runNativeCameraOperation<T>(
+    command: string,
+    payload?: Record<string, unknown>,
+    token?: number,
+    after?: Promise<unknown>,
+  ): Promise<T | undefined> {
+    const run = async () => {
+      if (after) await after;
+      if (token !== undefined && (!this.categoryEnabled || token !== this.liveCameraToken)) return;
+      return window.__TAURI_INTERNALS__?.invoke<T>(command, payload);
+    };
+    const result = this.nativeOperation ? this.nativeOperation.then(run, run) : run();
+    const settled = result.catch((error: unknown) => {
+      console.error(`[tauri] ${command} failed`, error);
+    });
+    this.nativeOperation = settled;
+    void settled.then(() => {
+      if (this.nativeOperation === settled) this.nativeOperation = null;
+    });
+    return token === undefined ? settled.then(() => undefined) : result;
+  }
+
   public static readonly CAMERA_CHANNELS_STORAGE_KEY = "menubarmijia.cameraChannels";
   public static readonly CAMERA_ROTATIONS_STORAGE_KEY = "menubarmijia.cameraRotations";
   public static readonly CAMERA_LOCAL_IPS_STORAGE_KEY = "menubarmijia.cameraLocalIPs";
@@ -294,6 +353,18 @@ export class CameraLiveController {
     deviceId: string,
     options?: { readonly alreadyCountedLockBlock?: boolean },
   ): void {
+    if (!this.categoryEnabled) {
+      this.host.replyBanner = {
+        text: controlTargetRejectionMessage(
+          { code: "categoryDisabled", disabledCategory: "camera" },
+          this.host.settings.interfaceLanguage,
+        ),
+        source: t("控制失败"),
+        isError: true,
+      };
+      this.host.render();
+      return;
+    }
     const dev = this.host.devices.find((d) => d.id === deviceId);
     if (!dev) {
       const state = resolveHostMiSelectionState(this.host);
@@ -432,12 +503,14 @@ export class CameraLiveController {
     this.syncModalEscapeListener();
     invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
     this.clearCameraKeepAlive();
-    this.liveCameraKeepAliveTimer = window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
+      if (this.liveCameraKeepAliveTimer !== timer) return;
       this.liveCameraKeepAliveTimer = null;
       // Nobody came back within the keep-alive window: release the camera's
       // single P2P session so the phone app (or the next open) can use it.
       if (this.liveCameraHidden) this.closeCameraLiveView();
     }, this.cameraKeepAliveMs);
+    this.liveCameraKeepAliveTimer = timer;
     this.host.render();
     this.host.pipeline?.cameraStandby.enterWarmStandby(this.host.root);
   }
@@ -450,7 +523,7 @@ export class CameraLiveController {
     }
   }
 
-  public closeCameraLiveView(): void {
+  public closeCameraLiveView(render = true): void {
     this.host.pipeline?.cameraStandby.cancel();
     const closingId = this.activeLiveCameraId;
     const closingDev = closingId
@@ -464,6 +537,7 @@ export class CameraLiveController {
     this.reconnectingP2PSessionId = null;
     this.clearCameraKeepAlive();
     this.liveCameraHidden = false;
+    const wasNegotiating = this.negotiationAbort !== null;
     this.stopLiveTransport();
     this.activeLiveCameraId = null;
     this.activeLiveCameraSnapshot = null;
@@ -478,10 +552,15 @@ export class CameraLiveController {
     this.liveCameraLocalIpError = null;
     this.liveCameraDraftIp = null;
     if (closingId && closingIsXiaomi && closingDev) {
-      void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
+      const retained = this.cloudStreamSessions.get(closingId);
+      if (this.categoryEnabled) {
+        void this.releaseCameraP2PSession(closingDev, this.liveCameraToken);
+      } else if (!wasNegotiating && retained) {
+        void this.releaseCameraP2PSession(closingDev, this.liveCameraToken, false, retained.session, retained, true);
+      }
     }
     invokeTauriVoid("set_pin_popover", { pin: this.host.shouldKeepPopoverPinned() });
-    this.host.render();
+    if (render) this.host.render();
   }
 
   public activeLiveCameraUsesXiaomiCloud(accountId?: string): boolean {
@@ -628,6 +707,7 @@ export class CameraLiveController {
     allowActiveCamera = false,
     sessionOverride?: MiSession | null,
     retainedLease?: RetainedCloudStream,
+    categoryTeardown = false,
   ): Promise<void> {
     const { backend, sourceDev, miSession } = this.resolveCameraSource(dev);
     const dropLease = retainedLease ?? this.cloudStreamSessions.get(dev.id) ?? null;
@@ -648,7 +728,7 @@ export class CameraLiveController {
           isOnline: sourceDev.isOnline,
           specType: null,
         });
-        if (this.liveCameraToken !== releaseToken || (!allowActiveCamera && this.activeLiveCameraId === dev.id)) return;
+        if (!categoryTeardown && (this.liveCameraToken !== releaseToken || (!allowActiveCamera && this.activeLiveCameraId === dev.id))) return;
         const p2pSvc = spec.services.find((s) => s.actions.some((a) => a.type.includes("stop-stream")));
         const stopAct = p2pSvc?.actions.find((a) => a.type.includes("stop-stream"));
         if (!p2pSvc || !stopAct) return;
@@ -701,6 +781,8 @@ export class CameraLiveController {
   /** Drops the MJPEG image, any pending negotiation, and the backend stream bridge/reader. */
   public stopLiveTransport(): void {
     this.liveCameraToken += 1;
+    this.negotiationAbort?.abort();
+    this.negotiationAbort = null;
     this.liveCameraAbort?.abort();
     this.liveCameraAbort = null;
     this.liveCameraImgEl?.remove();
@@ -719,7 +801,7 @@ export class CameraLiveController {
     if (this.activeLiveCameraId) {
       const stopPayload = this.buildStopBridgePayload(this.activeLiveCameraId);
       this.cameraBridgeBindings.delete(this.activeLiveCameraId);
-      invokeTauriVoid("stop_xiaomi_camera_bridge", stopPayload);
+      if (this.categoryEnabled) void this.runNativeCameraOperation("stop_xiaomi_camera_bridge", stopPayload);
     }
   }
 
@@ -823,13 +905,14 @@ export class CameraLiveController {
   }
 
   public async refreshOwnedGo2rtcOrigin(): Promise<void> {
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (!invoke) return;
+    const token = this.liveCameraToken;
     try {
-      const endpoint = await invoke<{ origin: string }>("go2rtc_endpoint");
-      this.ownedStreamOrigin = this.ownedGo2rtcOrigin(endpoint.origin) ? endpoint.origin : null;
+      const endpoint = await this.runNativeCameraOperation<{ origin: string }>("go2rtc_endpoint", undefined, token);
+      if (token === this.liveCameraToken) {
+        this.ownedStreamOrigin = endpoint && this.ownedGo2rtcOrigin(endpoint.origin) ? endpoint.origin : null;
+      }
     } catch {
-      this.ownedStreamOrigin = null;
+      if (token === this.liveCameraToken) this.ownedStreamOrigin = null;
     }
   }
 
@@ -1011,7 +1094,7 @@ export class CameraLiveController {
   }
 
   public async bridgeHlsStreamToMjpeg(did: string, hlsUrl: string): Promise<boolean> {
-    if (!window.__TAURI_INTERNALS__?.invoke) return false;
+    if (!this.categoryEnabled || !window.__TAURI_INTERNALS__?.invoke) return false;
     const token = this.liveCameraToken;
     this.liveCameraLoading = true;
     this.host.render();
@@ -1023,14 +1106,14 @@ export class CameraLiveController {
         await this.host.endpointSubmission;
         if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) return false;
       }
-      const mjpegName = await window.__TAURI_INTERNALS__.invoke<string>("bridge_hls_camera_stream", {
+      const mjpegName = await this.runNativeCameraOperation<string>("bridge_hls_camera_stream", {
         did,
         hlsUrl,
-      });
+      }, token);
       if (this.liveCameraToken !== token || this.activeLiveCameraId !== did) {
         // stopLiveTransport can run before this registration; stop the stream this call just created.
-        if (mjpegName && this.activeLiveCameraId !== did) {
-          invokeTauriVoid("stop_xiaomi_camera_bridge", { did });
+        if (token >= this.lastDisabledToken && mjpegName && this.activeLiveCameraId !== did) {
+          void this.runNativeCameraOperation("stop_xiaomi_camera_bridge", { did });
         }
         return false;
       }
@@ -1144,7 +1227,19 @@ export class CameraLiveController {
     this.host.render();
   }
 
-  public async resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
+  public resolveCloudCameraStream(dev: SmartDevice): Promise<void> {
+    const token = this.liveCameraToken;
+    const prepare = async () => {
+      if (this.categoryRelease) await this.categoryRelease;
+      if (!this.categoryEnabled || token !== this.liveCameraToken) return;
+      await this.negotiateCloudCameraStream(dev);
+    };
+    const pending = prepare().finally(() => this.negotiations.delete(pending));
+    this.negotiations.add(pending);
+    return pending;
+  }
+
+  private async negotiateCloudCameraStream(dev: SmartDevice): Promise<void> {
     const { backend, sourceDev, miSession: session } = this.resolveCameraSource(dev);
     if (dev.kind.kind !== "camera" || backend !== "xiaomiCloud" || !session || !isHostMiSessionEnabled(this.host, session)) return;
     if (CameraHubCatalog.isHub(sourceDev.model)) {
@@ -1170,14 +1265,17 @@ export class CameraLiveController {
     // Closing/hiding bumps liveCameraToken via stopLiveTransport or full teardown;
     // a negotiation that outlives its modal must not start a bridge afterwards.
     const token = this.liveCameraToken;
+    const negotiation = new AbortController();
+    this.negotiationAbort = negotiation;
     const hasCustomUrl = () => Boolean(this.cameraStreamURLs[dev.id]);
     const stale = () =>
       this.liveCameraToken !== token ||
       this.activeLiveCameraId !== dev.id ||
       hasCustomUrl() ||
       !isHostMiSessionEnabled(this.host, session);
+    const wasDisabled = () => token < this.lastDisabledToken;
     const shouldReleaseStaleCloudSession = () =>
-      this.activeLiveCameraId !== dev.id || hasCustomUrl();
+      wasDisabled() || this.activeLiveCameraId !== dev.id || hasCustomUrl();
     let startedP2PSession = false;
     let startedCloudStream = false;
     let streamRemainsOpen = false;
@@ -1188,7 +1286,7 @@ export class CameraLiveController {
       startedP2PSession = false;
       startedCloudStream = false;
       releaseArmed = true;
-      void this.releaseCameraP2PSession(dev, releaseToken, true, session, retained);
+      void this.releaseCameraP2PSession(dev, releaseToken, true, session, retained, wasDisabled());
     };
     const abandonIfStale = (): boolean => {
       if (!stale()) return false;
@@ -1304,7 +1402,7 @@ export class CameraLiveController {
           .catch(() => false);
         if (abandonIfStale()) return;
         if (released && needsSameSessionCooldown && this.cameraSameSessionCooldownMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, this.cameraSameSessionCooldownMs));
+          await waitForCameraFrameGap(negotiation.signal, this.cameraSameSessionCooldownMs);
           if (abandonIfStale()) return;
         }
       }
@@ -1352,6 +1450,7 @@ export class CameraLiveController {
             const clientPublic = Array.from(spki.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
             const clientPrivate = Array.from(pkcs8.slice(-32)).map((b) => b.toString(16).padStart(2, "0")).join("");
 
+            if (abandonIfStale()) return;
             const vendorRes = (await client.request("v2/device/miss_get_vendor", {
               did: bridgeDid,
               app_pubkey: clientPublic,
@@ -1375,7 +1474,7 @@ export class CameraLiveController {
                 return;
               }
               this.liveCameraQualityApplies = true;
-              const bridge = await window.__TAURI_INTERNALS__.invoke<string>("start_xiaomi_camera_bridge", {
+              const bridge = await this.runNativeCameraOperation<string>("start_xiaomi_camera_bridge", {
                 did: bridgeDid,
                 model: bridgeModel,
                 localIp: effectiveLocalIp,
@@ -1388,14 +1487,14 @@ export class CameraLiveController {
                 quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
                 ...(channel > 0 ? { channel } : {}),
                 ...(subdid ? { subdid } : {}),
-              });
+              }, token);
               if (stale()) {
                 // The close path already tore down once; this late start re-created a
                 // relay and stream registrations that nothing else will reclaim. Undo
                 // them — unless the same camera was re-opened, in which case the new
                 // negotiation's own stop_bridge replaces them and must not be killed.
                 if (shouldReleaseStaleCloudSession()) {
-                  invokeTauriVoid("stop_xiaomi_camera_bridge", {
+                  if (!wasDisabled()) void this.runNativeCameraOperation("stop_xiaomi_camera_bridge", {
                     did: bridgeDid,
                     ...(channel > 0 ? { channel } : {}),
                     ...(subdid ? { subdid } : {}),
@@ -1447,6 +1546,7 @@ export class CameraLiveController {
         this.liveCameraError = err instanceof Error ? err.message : String(err);
       }
     } finally {
+      if (this.negotiationAbort === negotiation) this.negotiationAbort = null;
       if (!streamRemainsOpen && !releaseArmed) this.dropRetainedCloudStream(dev.id, retained);
     }
     if (stale()) return;

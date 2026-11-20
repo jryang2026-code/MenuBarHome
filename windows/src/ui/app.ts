@@ -1,3 +1,4 @@
+import type { DeviceCategoryID } from "../core/capabilityManifest.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
@@ -125,9 +126,9 @@ import { bindPersistentUndoEvents, undoTrackerFor } from "./undoTracker.js";
 import { getHostApplyCommand, getUnsupportedLightEffects, markCloudValuesFresh, markCloudValuesStale, pruneUnsupportedLightEffectsOnHost, setCustomApplyCommand } from "./commandDispatch.js";
 import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
-import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, hiddenTypeDevices, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices } from "./cloudRefresh.js";
+import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
-import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin } from "../core/miAccountControl.js";
+import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
@@ -223,7 +224,9 @@ export class MenuMijiaWindowsApp {
   public lockProbeInFlight = false;
   public lastSessionFingerprint: string | null = null;
   public get devices(): SmartDevice[] {
-    return this._devices;
+    return this.cameraLive?.cameraCategoryEnabled === false
+      ? this._devices.filter((device) => device.kind.kind !== "camera")
+      : this._devices;
   }
   public set devices(next: SmartDevice[]) {
     this._devices = next;
@@ -269,7 +272,25 @@ export class MenuMijiaWindowsApp {
    * belongs to an endpoint or account the host has since left.
    */
   public get hiddenDevices(): readonly CapabilityIndexedDevice[] {
-    return hiddenTypeDevices(this);
+    return buildHostCapabilityContext(this).hiddenDevices ?? [];
+  }
+
+  public get unprunedCameraDevices(): readonly SmartDevice[] {
+    return this.cameraLive?.cameraCategoryEnabled === false
+      ? this._devices.filter((device) => device.kind.kind === "camera")
+      : [];
+  }
+
+  public setEnabledDeviceCategories(categories: readonly DeviceCategoryID[]): boolean {
+    if (!writeMiAccountSelectionMutation({
+      mutate: (previous) => ({
+        ...previous,
+        extraFields: { ...previous.extraFields, enabledCategories: [...categories] },
+      }),
+    })) return false;
+    this.cameraLive.setCameraCategoryEnabled(categories.includes("camera"));
+    this.render();
+    return true;
   }
 
   public scenes: HomeScene[];
@@ -511,6 +532,10 @@ export class MenuMijiaWindowsApp {
       this.settings.cachedModelTypes,
     );
     this.cameraLive = new CameraLiveController(this);
+    const initialSelection = resolveHostMiSelectionState(this);
+    if (initialSelection.mode !== "freshInstall") {
+      this.cameraLive.setCameraCategoryEnabled(initialSelection.selection.enabledCategories.includes("camera"));
+    }
 
     this.applyInterfaceLanguage();
     this.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");

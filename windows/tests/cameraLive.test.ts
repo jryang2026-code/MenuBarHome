@@ -11,6 +11,8 @@ import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { CameraLiveController } from "../src/ui/cameraLive.js";
 
+import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
+
 let dom: Window;
 
 function element<T extends HTMLElement = HTMLElement>(selector: string): T {
@@ -102,6 +104,7 @@ async function mountCloudCameraApp(options: {
   const frameSrcs: string[] = [];
   const p2pStartsByDid = new Map<string, number>();
   const p2pStopsByDid = new Map<string, number>();
+  let runtimeStops = 0;
   let deviceListCalls = 0;
   let homeRoomCalls = 0;
 
@@ -120,6 +123,10 @@ async function mountCloudCameraApp(options: {
       const key = sub ? `${did}_${sub}` : did;
       const ch = typeof args["channel"] === "number" && args["channel"] > 0 ? `_c${args["channel"]}` : "";
       return `cam_h264_${key}${ch}|cam_mjpeg_${key}${ch}`;
+    }
+    if (name === "stop_camera_runtime") {
+      runtimeStops += 1;
+      return undefined;
     }
     if (name === "stop_xiaomi_camera_bridge") {
       stopBridgeCalls.push(args);
@@ -293,6 +300,7 @@ async function mountCloudCameraApp(options: {
     frameSrcs,
     p2pStartsByDid,
     p2pStopsByDid,
+    getRuntimeStops: () => runtimeStops,
     getDeviceListCalls: () => deviceListCalls,
     getHomeRoomCalls: () => homeRoomCalls,
   };
@@ -311,6 +319,70 @@ afterEach(async () => {
 });
 
 describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-camera HUD", () => {
+  it("cancels camera standby and serializes a rapid disable and reopen with a pending bridge", async (test) => {
+    let finishStart!: (result: string) => void;
+    const firstStart = new Promise<string>((resolve) => { finishStart = resolve; });
+    let starts = 0;
+    const ctx = await mountCloudCameraApp({
+      devices: [{
+        did: "cam-disable",
+        name: "客厅摄像机",
+        model: "isa.camera.500dh",
+        localip: "192.168.1.50",
+      }],
+      bridgeResult: () => {
+        starts += 1;
+        if (starts === 1) return firstStart;
+        assert.equal(ctx.getRuntimeStops(), 1);
+        return "cam_h264_camdisable|cam_mjpeg_camdisable";
+      },
+    });
+    const id = "cam-disable";
+    const live = ctx.app.cameraLive;
+    ctx.app.settings.interfaceLanguage = "zh-Hans";
+    await waitFor(() => ctx.app.devices.some((device) => device.id === id));
+    live.cameraSameSessionCooldownMs = 0;
+    live.openCameraLiveView(id);
+    await waitFor(() => starts === 1);
+    const originalSetTimeout = window.setTimeout.bind(window);
+    let expiredStandby: (() => void) | undefined;
+    const timerMock = test.mock.method(window, "setTimeout", (callback: () => void, delay?: number) => {
+      if (delay === 120_000) expiredStandby = callback;
+      return originalSetTimeout(callback, delay);
+    });
+    live.hideCameraLiveView();
+    timerMock.mock.restore();
+    assert.ok(expiredStandby);
+    const keepWarm = live.liveCameraKeepAliveTimer;
+    assert.notEqual(keepWarm, null);
+
+    const withoutCamera = DEVICE_CATEGORY_IDS.filter((category) => category !== "camera");
+    assert.equal(ctx.app.setEnabledDeviceCategories(withoutCamera), true);
+    assert.equal(live.liveCameraKeepAliveTimer, null);
+    assert.equal(live.activeLiveCameraId, null);
+    assert.equal(live.liveCameraImgEl, null);
+    assert.equal(ctx.getRuntimeStops(), 0);
+    assert.equal(ctx.app.devices.some((device) => device.id === id), false);
+    assert.equal(ctx.app.hiddenDevices.some((device) => device.id === id && device.category === "camera"), true);
+
+    live.openCameraLiveView(id);
+    assert.equal(ctx.app.replyBanner?.text, "该设备类型已关闭");
+    expiredStandby();
+    assert.equal(starts, 1);
+    assert.equal(ctx.frameSrcs.length, 0);
+    assert.equal(ctx.app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS), true);
+    live.openCameraLiveView(id);
+    assert.equal(starts, 1);
+
+    finishStart("cam_h264_camdisable|cam_mjpeg_camdisable");
+    await waitFor(() => ctx.frameSrcs.includes("cam_mjpeg_camdisable"));
+    assert.equal(starts, 2);
+    assert.equal(ctx.getRuntimeStops(), 1);
+    assert.equal(live.activeLiveCameraId, id);
+    assert.equal(live.liveCameraKeepAliveTimer, null);
+    live.closeCameraLiveView();
+  });
+
   it("renders dual-lens pills, persists channel per camera, and switches channels cleanly", async () => {
     const ctx = await mountCloudCameraApp({
       devices: [
@@ -549,11 +621,11 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     await click('[data-cameralens="cam-race"][data-cameralens-channel="1"]');
     await waitFor(() => releaseChannel1Bridge !== null);
     await click('[data-cameralens="cam-race"][data-cameralens-channel="0"]');
-    await waitFor(() => ctx.bridgeCalls.length === 3);
+    assert.equal(ctx.bridgeCalls.length, 2);
 
     ctx.frameSrcs.length = 0;
     releaseChannel1Bridge!("cam_h264_camrace_c1|cam_mjpeg_camrace_c1");
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    await waitFor(() => ctx.bridgeCalls.length === 3 && ctx.frameSrcs.includes("cam_mjpeg_camrace"));
 
     assert.equal(ctx.frameSrcs.includes("cam_mjpeg_camrace_c1"), false);
     assert.equal(ctx.app.cameraLive.liveCameraStreamURL, "cam_mjpeg_camrace");
@@ -792,10 +864,10 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     await waitFor(() => ctx.bridgeCalls.length === 1);
 
     await click("#btn-reload-camera-live");
+    assert.equal(ctx.bridgeCalls.length, 1);
+    rejectFirstBridge(new Error("late bridge failure"));
     await waitFor(() => ctx.bridgeCalls.length === 2 && !ctx.app.cameraLive.liveCameraLoading);
     const stopsAfterSecondConnect = ctx.p2pStopsByDid.get("cam-reconnect") ?? 0;
-
-    rejectFirstBridge(new Error("late bridge failure"));
     await setImmediate();
     await setImmediate();
 

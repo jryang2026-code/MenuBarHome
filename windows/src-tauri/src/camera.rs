@@ -1,4 +1,5 @@
 use super::*;
+use tokio_util::sync::CancellationToken;
 
 #[path = "camera_stream.rs"]
 pub(crate) mod camera_stream;
@@ -44,6 +45,9 @@ pub(crate) async fn start_xiaomi_camera_bridge(
     // and the second open work.
     stop_bridge(&http, Some(&session), &stream_key, &stale_refs).await;
 
+    if camera_preparation()?.is_cancelled() {
+        return Err("该设备类型已关闭".to_string());
+    }
     let relay_port = camera_relay_port(&stream_key, cam_ip)?;
     let xiaomi_url = build_xiaomi_camera_url(
         relay_port,
@@ -131,7 +135,7 @@ pub(crate) async fn stop_xiaomi_camera_bridge_with_opts(
     let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
     let stream_key = camera_stream_key(&did, subdid.as_deref());
     if stream_key.is_empty() {
-        stop_all_mjpeg_streams();
+        drop(stop_all_mjpeg_streams());
     }
     let http = reqwest::Client::builder()
         .no_proxy()
@@ -159,9 +163,10 @@ pub(crate) async fn put_stream(
             urlencoding_simple(src)
         ),
     );
-    let resp = authed(http.put(&url), session)
-        .send()
+    let resp = camera_preparation()?
+        .run_until_cancelled(authed(http.put(&url), session).send())
         .await
+        .ok_or("该设备类型已关闭")?
         .map_err(|e| e.to_string())?;
     if resp.status().is_success() {
         Ok(())
@@ -177,18 +182,20 @@ pub(crate) async fn stop_bridge(
     names: &[&str],
 ) {
     stop_mjpeg_streams(names);
-    if let Some(session) = session {
+    if let (Some(session), Ok(preparation)) = (session, camera_preparation()) {
         for name in names {
             let url = api_url(
                 session,
                 &format!("/api/streams?src={}", urlencoding_simple(name)),
             );
-            let _ = authed(http.delete(&url), session).send().await;
+            if preparation.run_until_cancelled(authed(http.delete(&url), session).send()).await.is_none() {
+                break;
+            }
         }
     }
     let no_active_relays = if let Ok(mut relays) = CAMERA_RELAYS.lock() {
         if let Some(relay) = relays.remove(clean_did) {
-            relay.stop.store(true, Ordering::SeqCst);
+            drop(relay);
         }
         relays.is_empty()
     } else {
@@ -199,9 +206,19 @@ pub(crate) async fn stop_bridge(
     }
 }
 
-struct CameraRelay {
-    port: u16,
+pub(crate) struct CameraRelay {
+    pub(crate) port: u16,
     stop: std::sync::Arc<AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for CameraRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 static CAMERA_RELAYS: LazyLock<std::sync::Mutex<HashMap<String, CameraRelay>>> =
@@ -209,7 +226,7 @@ static CAMERA_RELAYS: LazyLock<std::sync::Mutex<HashMap<String, CameraRelay>>> =
 
 /// Tracks the go2rtc child process spawned by this application instance so we never
 /// terminate user-started `go2rtc.exe` processes by image name (#97).
-static GO2RTC_PROCESS: LazyLock<std::sync::Mutex<Option<std::process::Child>>> =
+static GO2RTC_PROCESS: LazyLock<std::sync::Mutex<Option<crate::job_object::ManagedCameraProcess>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 static GO2RTC_SESSION: LazyLock<std::sync::Mutex<Option<Go2RtcOwnerRecord>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
@@ -257,23 +274,68 @@ pub(crate) fn scrub_stale_camera_config_on_startup() {
     });
 }
 
+static CAMERA_PREPARATION: LazyLock<std::sync::Mutex<CancellationToken>> =
+    LazyLock::new(|| std::sync::Mutex::new(CancellationToken::new()));
+
+fn camera_preparation() -> Result<CancellationToken, String> {
+    CAMERA_PREPARATION.lock().map(|token| token.clone())
+        .map_err(|_| "摄像机运行状态不可用".to_string())
+}
+
+#[tauri::command]
+pub(crate) fn cancel_camera_preparation() {
+    if let Ok(preparation) = CAMERA_PREPARATION.lock() {
+        preparation.cancel();
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn resume_camera_runtime() {
+    let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
+    if let Ok(mut preparation) = CAMERA_PREPARATION.lock() {
+        *preparation = CancellationToken::new();
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn stop_camera_runtime() {
+    let _bridge_order = CAMERA_BRIDGE_LOCK.lock().await;
+    cancel_camera_preparation();
+    if let Some(record) = existing_owned_record().filter(|_| running_child_pid().is_none()) {
+        if let Ok(http) = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(800))
+            .build()
+        {
+            let probe = probe_owned(&http, &record.session).await;
+            if probe.authenticated && probe.nonce_matches {
+                stop_owned_process(&http, &record).await;
+            }
+        }
+    }
+    let readers = shutdown_camera_resources();
+    for reader in readers {
+        let _ = reader.await;
+    }
+}
+
 pub(crate) fn shutdown_camera_daemons() {
-    stop_all_mjpeg_streams();
-    if let Ok(mut relays) = CAMERA_RELAYS.lock() {
-        for (_, relay) in relays.drain() {
-            relay.stop.store(true, Ordering::SeqCst);
-        }
-    }
-    if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+    drop(shutdown_camera_resources());
+}
+
+fn shutdown_camera_resources() -> Vec<tauri::async_runtime::JoinHandle<()>> {
     if let Ok(mut guard) = GO2RTC_SESSION.lock() {
         *guard = None;
     }
+    let readers = stop_all_mjpeg_streams();
+    if let Ok(mut relays) = CAMERA_RELAYS.lock() {
+        relays.clear();
+    }
+    if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
+        drop(guard.take());
+    }
     scrub_persisted_streams_from_config();
+    readers
 }
 
 /// The app-owned part of go2rtc.yaml, without the `streams:` section go2rtc appends.
@@ -360,8 +422,9 @@ pub(crate) fn camera_relay_port(clean_did: &str, cam_ip: std::net::Ipv4Addr) -> 
         }
     }
     relays.remove(clean_did);
-    let (port, stop) = spawn_cs2_udp_relay(cam_ip)?;
-    relays.insert(clean_did.to_string(), CameraRelay { port, stop });
+    let relay = spawn_cs2_udp_relay(cam_ip)?;
+    let port = relay.port;
+    relays.insert(clean_did.to_string(), relay);
     Ok(port)
 }
 
@@ -668,8 +731,8 @@ fn stage_go2rtc_exe(
 pub(crate) fn running_child_pid() -> Option<u32> {
     let mut guard = GO2RTC_PROCESS.lock().ok()?;
     let child = guard.as_mut()?;
-    match child.try_wait() {
-        Ok(None) => Some(child.id()),
+    match child.child.try_wait() {
+        Ok(None) => Some(child.child.id()),
         _ => {
             *guard = None;
             None
@@ -1055,10 +1118,7 @@ pub(crate) async fn stop_owned_process(http: &reqwest::Client, record: &Go2RtcOw
     let child_pid = running_child_pid();
     if child_pid == Some(record.pid) {
         if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            drop(guard.take());
         }
     }
     for _ in 0..20 {
@@ -1097,6 +1157,7 @@ pub(crate) async fn spawn_fresh_go2rtc(
     http: &reqwest::Client,
     bin_dir: &std::path::Path,
     ffmpeg_bin: &str,
+    preparation: &CancellationToken,
 ) -> Result<(), String> {
     let exe_path = bin_dir.join("go2rtc.exe");
     let app_for_component = app.clone();
@@ -1107,35 +1168,33 @@ pub(crate) async fn spawn_fresh_go2rtc(
     .await
     .map_err(|e| format!("检查 go2rtc 组件失败：{e}"))??;
     if !has_go2rtc {
-        download_go2rtc_win64(bin_dir, &exe_path).await?;
+        preparation.run_until_cancelled(download_go2rtc_win64(bin_dir, &exe_path))
+            .await.ok_or("该设备类型已关闭")??;
     }
     let cfg_path = bin_dir.join("go2rtc.yaml");
     let owner_path = bin_dir.join("go2rtc.owner");
     for _ in 0..4 {
+        if preparation.is_cancelled() {
+            return Err("该设备类型已关闭".to_string());
+        }
         let session = make_ephemeral_go2rtc_session()?;
         let desired = desired_go2rtc_config(&session, ffmpeg_bin);
         let cfg_for_write = cfg_path.clone();
         tauri::async_runtime::spawn_blocking(move || write_secret_file(&cfg_for_write, &desired))
             .await
             .map_err(|e| format!("写入 go2rtc 配置失败：{e}"))??;
+        if preparation.is_cancelled() {
+            return Err("该设备类型已关闭".to_string());
+        }
         let mut command = std::process::Command::new(&exe_path);
         command.arg("-c").arg(&cfg_path).current_dir(bin_dir);
         #[cfg(windows)]
         {
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let mut child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
-        if let Err(error) = crate::job_object::bind_child_to_kill_on_close_job(&child) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!(
-                "go2rtc 已启动但无法绑定退出时一并结束的 Job Object，已结束该进程：{error}"
-            ));
-        }
-        let pid = child.id();
-        if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
-            *guard = Some(child);
-        }
+        let child = command.spawn().map_err(|e| format!("启动 go2rtc 失败：{e}"))?;
+        let process = crate::job_object::ManagedCameraProcess::bind(child)?;
+        let pid = process.child.id();
         let record = Go2RtcOwnerRecord { pid, session: session.clone() };
         let owner_for_write = owner_path.clone();
         let serialized_owner = serialize_owner(&record);
@@ -1144,15 +1203,13 @@ pub(crate) async fn spawn_fresh_go2rtc(
         })
         .await
         .map_err(|e| format!("写入 go2rtc 属主记录失败：{e}"))??;
+        *GO2RTC_PROCESS.lock().map_err(|_| "摄像机进程状态不可用")? = Some(process);
         store_go2rtc_session(record);
-        if wait_for_owned_api(http, &session).await {
+        if preparation.run_until_cancelled(wait_for_owned_api(http, &session)).await == Some(true) {
             return Ok(());
         }
         if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
-            if let Some(mut child) = guard.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+            drop(guard.take());
         }
         if let Ok(mut guard) = GO2RTC_SESSION.lock() {
             *guard = None;
@@ -1162,6 +1219,10 @@ pub(crate) async fn spawn_fresh_go2rtc(
 }
 
 pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String> {
+    let preparation = camera_preparation()?;
+    if preparation.is_cancelled() {
+        return Err("该设备类型已关闭".to_string());
+    }
     let bin_dir = bin_directory()?;
     std::fs::create_dir_all(&bin_dir).map_err(|e| format!("创建组件目录失败：{e}"))?;
     let http = reqwest::Client::builder()
@@ -1192,6 +1253,9 @@ pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String>
         });
         match action {
             Go2RtcAction::ReuseOwned => {
+                if preparation.is_cancelled() {
+                    return Err("该设备类型已关闭".to_string());
+                }
                 store_go2rtc_session(record);
                 return Ok(());
             }
@@ -1201,10 +1265,7 @@ pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String>
             Go2RtcAction::SpawnFresh => {
                 if running_child_pid() == Some(record.pid) {
                     if let Ok(mut guard) = GO2RTC_PROCESS.lock() {
-                        if let Some(mut child) = guard.take() {
-                            let _ = child.kill();
-                            let _ = child.wait();
-                        }
+                        drop(guard.take());
                     }
                     if let Ok(mut guard) = GO2RTC_SESSION.lock() {
                         *guard = None;
@@ -1214,7 +1275,7 @@ pub(crate) async fn ensure_go2rtc_running(app: &AppHandle) -> Result<(), String>
         }
     }
 
-    spawn_fresh_go2rtc(app, &http, &bin_dir, &ffmpeg_bin).await
+    spawn_fresh_go2rtc(app, &http, &bin_dir, &ffmpeg_bin, &preparation).await
 }
 
 #[derive(Serialize)]
@@ -1518,18 +1579,16 @@ pub(crate) fn stop_mjpeg_streams(names: &[&str]) {
     if let Ok(mut streams) = CAMERA_MJPEG_STREAMS.lock() {
         for name in names {
             if let Some(reader) = streams.remove(*name) {
-                reader.shutdown();
+                drop(reader.shutdown());
             }
         }
     }
 }
 
-pub(crate) fn stop_all_mjpeg_streams() {
-    if let Ok(mut streams) = CAMERA_MJPEG_STREAMS.lock() {
-        for (_, reader) in streams.drain() {
-            reader.shutdown();
-        }
-    }
+pub(crate) fn stop_all_mjpeg_streams() -> Vec<tauri::async_runtime::JoinHandle<()>> {
+    CAMERA_MJPEG_STREAMS.lock().map(|mut streams| {
+        streams.drain().filter_map(|(_, reader)| reader.shutdown()).collect()
+    }).unwrap_or_default()
 }
 
 impl MjpegStreamReader {
@@ -1686,7 +1745,7 @@ impl MjpegStreamReader {
         reader
     }
 
-    fn shutdown(&self) {
+    fn shutdown(&self) -> Option<tauri::async_runtime::JoinHandle<()>> {
         self.stop.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.state.lock() {
             guard.closed = true;
@@ -1694,11 +1753,9 @@ impl MjpegStreamReader {
                 guard.error = Some("摄像机流已停止".to_string());
             }
         }
-        if let Ok(mut task_guard) = self.task.lock() {
-            if let Some(handle) = task_guard.take() {
-                handle.abort();
-            }
-        }
+        let handle = self.task.lock().ok()?.take()?;
+        handle.abort();
+        Some(handle)
     }
 
     fn matches(&self, url: &str, session: &Go2RtcSession) -> bool {
@@ -1778,22 +1835,26 @@ impl MjpegStreamReader {
     }
 }
 
-pub(crate) async fn fetch_mjpeg_stream_frame(
+async fn read_mjpeg_stream_frame(
     session: &Go2RtcSession,
     src: &str,
     timeout: Duration,
     concealment_grace: Duration,
+    require_current_session: bool,
 ) -> Result<std::sync::Arc<Vec<u8>>, String> {
     let url = go2rtc_mjpeg_stream_url(session, src)?;
     let reader = {
         let mut streams = CAMERA_MJPEG_STREAMS
             .lock()
             .map_err(|_| "摄像机流列表不可用".to_string())?;
+        if require_current_session && current_go2rtc_session()?.nonce != session.nonce {
+            return Err("摄像机流已停止".to_string());
+        }
         if let Some(existing) = streams.get(src) {
             if existing.matches(&url, session) {
                 std::sync::Arc::clone(existing)
             } else {
-                existing.shutdown();
+                drop(existing.shutdown());
                 let fresh = MjpegStreamReader::spawn(session, url, concealment_grace);
                 streams.insert(src.to_string(), std::sync::Arc::clone(&fresh));
                 fresh
@@ -1808,7 +1869,7 @@ pub(crate) async fn fetch_mjpeg_stream_frame(
     match reader.next_frame_jpeg(timeout, concealment_grace).await {
         Ok(frame) => Ok(frame),
         Err(error) => {
-            reader.shutdown();
+            drop(reader.shutdown());
             if let Ok(mut streams) = CAMERA_MJPEG_STREAMS.lock() {
                 if streams
                     .get(src)
@@ -1822,14 +1883,28 @@ pub(crate) async fn fetch_mjpeg_stream_frame(
     }
 }
 
+#[cfg(test)]
+pub(crate) async fn fetch_mjpeg_stream_frame(
+    session: &Go2RtcSession,
+    src: &str,
+    timeout: Duration,
+    concealment_grace: Duration,
+) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    read_mjpeg_stream_frame(session, src, timeout, concealment_grace, false).await
+}
+
 #[tauri::command]
 pub(crate) async fn go2rtc_jpeg_frame(src: String) -> Result<String, String> {
+    if camera_preparation()?.is_cancelled() {
+        return Err("该设备类型已关闭".to_string());
+    }
     let session = current_go2rtc_session()?;
-    let bytes = fetch_mjpeg_stream_frame(
+    let bytes = read_mjpeg_stream_frame(
         &session,
         &src,
         MJPEG_FRAME_WAIT_TIMEOUT,
         MJPEG_CONCEALMENT_GRACE,
+        true,
     )
     .await?;
     if bytes.len() > MAX_JPEG_FRAME_BYTES {
@@ -1988,7 +2063,7 @@ fn wait_for_udp_relay_readable(
 
 pub(crate) fn spawn_cs2_udp_relay(
     cam_ip: std::net::Ipv4Addr,
-) -> Result<(u16, std::sync::Arc<AtomicBool>), String> {
+) -> Result<CameraRelay, String> {
     use std::net::{SocketAddrV4, UdpSocket};
     use std::sync::Arc;
 
@@ -2022,7 +2097,7 @@ pub(crate) fn spawn_cs2_udp_relay(
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_for_thread = Arc::clone(&stop);
-    std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         let mut go2rtc_client: Option<(std::net::SocketAddr, std::time::Instant)> = None;
         let mut cam_dynamic_port: u16 = 32108;
         let mut cmd_gate = Cs2CommandChannelGate::new();
@@ -2031,7 +2106,7 @@ pub(crate) fn spawn_cs2_udp_relay(
         while !stop_for_thread.load(Ordering::SeqCst) {
             let mut transferred = false;
 
-            loop {
+            while !stop_for_thread.load(Ordering::SeqCst) {
                 match local_relay.recv_from(&mut buf) {
                     Ok((n, src)) => {
                         transferred = true;
@@ -2056,7 +2131,7 @@ pub(crate) fn spawn_cs2_udp_relay(
                 }
             }
 
-            loop {
+            while !stop_for_thread.load(Ordering::SeqCst) {
                 match lan_sock.recv_from(&mut buf) {
                     Ok((n, src)) => {
                         transferred = true;
@@ -2086,5 +2161,33 @@ pub(crate) fn spawn_cs2_udp_relay(
         }
     });
 
-    Ok((relay_port, stop))
+    Ok(CameraRelay { port: relay_port, stop, worker: Some(worker) })
+}
+
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+
+    #[test]
+    fn dropping_relay_releases_the_port_before_returning() {
+        let relay = spawn_cs2_udp_relay(std::net::Ipv4Addr::LOCALHOST).expect("start relay");
+        let address = ("127.0.0.1", relay.port);
+        drop(relay);
+        std::net::UdpSocket::bind(address).expect("rebind released relay port");
+    }
+
+    #[test]
+    fn stale_session_cannot_register_a_new_frame_reader() {
+        let stale = make_ephemeral_go2rtc_session().expect("create stale session");
+        let result = tauri::async_runtime::block_on(read_mjpeg_stream_frame(
+            &stale,
+            "cam_mjpeg_closed",
+            Duration::ZERO,
+            Duration::ZERO,
+            true,
+        ));
+        assert!(result.is_err());
+        assert!(!CAMERA_MJPEG_STREAMS.lock().unwrap().contains_key("cam_mjpeg_closed"));
+    }
 }
