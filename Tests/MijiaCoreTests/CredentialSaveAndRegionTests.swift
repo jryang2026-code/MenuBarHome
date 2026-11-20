@@ -302,7 +302,7 @@ struct CredentialSaveResultTests {
         await client.shutdown()
     }
 
-    @Test("resetLGWebOSTrustAndPair refusal preserves the pinned TLS certificate, pairing key, and active client connection")
+    @Test("resetLGWebOSTrustAndPair refusal preserves the pinned TLS certificate, pairing key, and active client connection", .timeLimit(.minutes(1)))
     @MainActor
     func lgResetTrustRefusalPreservesCertificateKeyAndConnection() async throws {
         let storage = MemoryVaultStorage()
@@ -319,7 +319,17 @@ struct CredentialSaveResultTests {
         store.toastAutoDismissInterval = nil
 
         let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
-        #expect(store.updateLGWebOSConfig(initial))
+        let (connectionStarted, started) = AsyncStream<Void>.makeStream()
+        let (connectionLifetime, lifetime) = AsyncStream<Void>.makeStream()
+        defer { lifetime.finish() }
+        LGWebOSClient.$connectionOverrideForTesting.withValue({
+            started.yield(())
+            started.finish()
+            for await _ in connectionLifetime {}
+            try Task.checkCancellation()
+        }) {
+            #expect(store.updateLGWebOSConfig(initial))
+        }
         let client = try #require(store.lgWebOSClient)
 
         let originalCert = Data("original-lg-tv-certificate".utf8)
@@ -327,10 +337,8 @@ struct CredentialSaveResultTests {
         let trust = LGCertificateTrust(vault: vault)
         #expect(trust.accepts(certificate: originalCert, host: "192.0.2.10"))
 
-        let loopDeadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while await !client.hasConnectionLoopForTesting, ContinuousClock.now < loopDeadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
+        var connection = connectionStarted.makeAsyncIterator()
+        _ = try #require(await connection.next())
         await client.simulateRegisteredForTesting(clientKey: "saved-key")
         let baselineStops = await client.stopCallCountForTesting
         #expect(await client.hasConnectionLoopForTesting)
@@ -354,6 +362,7 @@ struct CredentialSaveResultTests {
                 "failed trust reset must keep the connection loop running")
         #expect(await client.stopCallCountForTesting == baselineStops,
                 "failed trust reset must not stop or tear down the live client")
+        #expect(await client.isConnectedForTesting)
         let notice = try #require(store.toastNotice)
         #expect(notice.isError)
         #expect(!notice.message.contains("旧电视身份已清除"))

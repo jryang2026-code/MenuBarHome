@@ -760,7 +760,13 @@ public actor LGWebOSClient {
         }
     }
 
+    @TaskLocal static var connectionOverrideForTesting: (@Sendable () async throws -> Void)?
+
     private func connectAndListen() async throws {
+        if let override = Self.connectionOverrideForTesting {
+            try await override()
+            return
+        }
         guard !isShutDown else { return }
         guard let url = URL(string: "wss://\(config.host):3001/") else { return }
         guard let currentSession = replaceSession() else { return }

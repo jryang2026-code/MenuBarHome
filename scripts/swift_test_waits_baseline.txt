@@ -1,0 +1,14 @@
+Tests/MenuBarMijiaAppTests/IdlePanelCPUTests.swift 1 0
+Tests/MenuBarMijiaAppTests/MenuBarPanelControllerTests.swift 4 2
+Tests/MenuBarMijiaAppTests/SnapshotWait.swift 1 1
+Tests/MijiaCoreTests/BulkWriteRollbackTests.swift 4 0
+Tests/MijiaCoreTests/CoverLockWait.swift 1 0
+Tests/MijiaCoreTests/CoverMovingStateTests.swift 3 0
+Tests/MijiaCoreTests/CredentialSaveAndRegionTests.swift 4 0
+Tests/MijiaCoreTests/DualSourceDoorbellTests.swift 1 0
+Tests/MijiaCoreTests/HADomainCardsTests.swift 1 0
+Tests/MijiaCoreTests/HAWebSocketRequestIdTests.swift 0 1
+Tests/MijiaCoreTests/LGWebOSTests.swift 2 0
+Tests/MijiaCoreTests/PanelActivityFeedTests.swift 1 0
+Tests/MijiaCoreTests/SnapshotWait.swift 1 1
+Tests/MijiaCoreTests/UpdateProgressAndRecoveryTests.swift 1 1

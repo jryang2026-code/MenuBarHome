@@ -51,6 +51,8 @@ Isolate `.glassEffect(` and `GlassEffectContainer` inside `Sources/MenuBarMijiaA
 
 ## §9. Tight Non-Racing Swift Tests & Snapshots
 
+- Use [`StateTestSupport.awaitState`](Tests/StateTestSupport/AwaitState.swift) for observable state transitions and set a suite time limit. The lint baseline freezes existing polling deadlines and `waitUntil` helpers.
+
 - Never sleep against product timers (`Task.sleep(for: .milliseconds(...))` or fixed `Task.yield` loops); freeze timers (`pauseUndoBannerCountdown`, `toastAutoDismissInterval = nil`, `assistantNow`, `controlDebounceInterval`) or gate intermediate state deterministically (`AsyncStream` hooks, `SleepGate.waiting`, `FakePTZClient.recordedStops`).
 - Snapshots compare with `SnapshotAssertion.Tolerance` (3 of 255 per channel, 96 pixels free), not byte for byte. The budget covers glyph-edge rounding on the reference renderer. Never loosen it to hide a different OS, Xcode, or a real layout change. Re-record instead. Any text or clock that reads the real date (`Text(date, style: .relative)`) must be pinned in the test (`activityTimestampOverride`), because tolerance cannot absorb a changing string.
 - Use `L10n.$overrideLanguage.withValue` (never global `L10n.currentLanguage =`). Call `waitForTestSnapshot()` after `startListening()`. Serialize `hdiutil attach` tests on `UpdateCheckerTests.HdiutilGate` (retry once on `Resource temporarily unavailable`). Wait for camera diagnostics `streamSource != nil` with a 30s `ContinuousClock` deadline.
