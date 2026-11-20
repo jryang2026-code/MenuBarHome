@@ -1030,6 +1030,12 @@ private struct GeneralSettingsTab: View {
                 }
             }
 
+            if store.homeBackend != .demo {
+                SettingsSection(title: L10n.tr("设备类型", "Device Types")) {
+                    DeviceTypeSelectionView(store: store)
+                }
+            }
+
             SettingsSection(title: L10n.tr("高级显示", "Advanced Display")) {
                 DisclosureGroup(isExpanded: $advancedDisplay.isExpanded) {
                     VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {

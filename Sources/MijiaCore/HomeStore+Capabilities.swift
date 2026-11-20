@@ -301,7 +301,7 @@ extension HomeStore {
 
     /// Commit order for a disable: the selection must be writable before any reference is paused, or
     /// a refused write would leave paused timers and rules behind for an account that stays enabled (M2).
-    private func canPersistCapabilitySelection() -> Bool {
+    func canPersistCapabilitySelection() -> Bool {
         CapabilitySelectionStore.canPersist(defaults: userDefaults)
     }
 
@@ -566,7 +566,7 @@ extension HomeStore {
         if rulesChanged { ruleStore.save(rules); onAutomationRulesChanged?() }
     }
 
-    private func blockedSelectionVerdict(proposed: CapabilitySelection, storeKey: String) -> CapabilityDeactivationVerdict {
+    func blockedSelectionVerdict(proposed: CapabilitySelection, storeKey: String) -> CapabilityDeactivationVerdict {
         allowedDeactivationVerdict(for: proposed).withBlockingReason(
             CapabilityBlockingReason(kind: .corruptedReferenceStore, referenceId: storeKey, detail: storeKey)
         )
@@ -1460,7 +1460,7 @@ extension HomeStore {
         return indexedDevicesById[deviceId].map(materializeIndexedDevice)
     }
 
-    private func currentIndexedDevicesList() -> [CapabilityIndexedDevice] {
+    func currentIndexedDevicesList() -> [CapabilityIndexedDevice] {
         var map = indexedDevicesById.mapValues(materializeIndexedDevice)
         for live in devices { map[live.id] = makeIndexedDevice(from: live) }
         return map.values.sorted { $0.id < $1.id }
@@ -1561,13 +1561,17 @@ extension HomeStore {
         case .plug: signals.formUnion([.longRunningPlug, .highPower])
         case .climate: signals.insert(.longRunningClimate)
         case .camera: signals.insert(.doorbell)
-        case .sensor(let spec) where spec.battery != nil: signals.insert(.lowBattery)
+        case .sensor(let spec):
+            if spec.battery != nil { signals.insert(.lowBattery) }
+            // Same rule as `DeviceSynthesizer.haSafetySignals`: without the observations a closed
+            // sensor type would preview as hidden even though its leak alert keeps reading it.
+            for observation in spec.observations { signals.insert(SafetySignalKind(sensorAlertKind: observation.kind)) }
         default: break
         }
         return signals
     }
 
-    private func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
+    func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
         guard enableSafetyAlerts else { return SafetyRetentionPolicy() }
         var enabled: Set<SafetySignalKind> = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
         // `isSensorAlertEnabled` applies each alert's own default: contact and motion ship off, so a
@@ -1687,7 +1691,7 @@ extension HomeStore {
         return nil
     }
 
-    private func evaluateCapabilityDeactivation(
+    func evaluateCapabilityDeactivation(
         proposed: CapabilitySelection,
         expectedGeneration: Int?
     ) -> CapabilityDeactivationVerdict {
@@ -1812,7 +1816,7 @@ extension HomeStore {
 
     // MARK: - Pause & Re-Enable Revalidation
 
-    private func pauseAffectedReferences(
+    func pauseAffectedReferences(
         _ items: [AffectedReferenceItem],
         fallbackCapabilities: [CapabilityID] = [.connection(.xiaomiCloud)]
     ) {
