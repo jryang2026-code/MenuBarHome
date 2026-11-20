@@ -110,6 +110,14 @@ struct AssistantUndoEntry: Equatable, Sendable {
     }
 }
 
+/// Work only the 主动建议 branch does (P5b-M): ambient signatures, habit rankings and reads of
+/// the AI suggestion cache.
+struct ProactiveWorkCounters: Equatable {
+    var signatures = 0
+    var rankings = 0
+    var cacheReads = 0
+}
+
 @Observable
 @MainActor
 public final class HomeStore {
@@ -1683,6 +1691,12 @@ public final class HomeStore {
     /// late result can neither drive a device nor claim the suggestion cache — the macOS mirror
     /// of Windows' `assistantEpoch`.
     @ObservationIgnored public internal(set) var assistantEpoch: Int = 0
+    /// Generation of the 主动建议 branch alone (P5b-M). Bumped when the suggestions switch flips,
+    /// so a closed switch drops in-flight suggestion runs without touching `assistantEpoch` and
+    /// therefore without cancelling a command the user started.
+    @ObservationIgnored var proactiveEpoch: Int = 0
+    /// Suggestion-only work done so far (P5b-M test seam): with the switch off every count stays 0.
+    @ObservationIgnored var proactiveWorkCounters = ProactiveWorkCounters()
     /// Test seam replacing the on-device resolver built by `localCommandResolver(for:)`.
     var localAssistantResolverOverride: (any AssistantCommandResolving)?
     /// Test seam overriding whether Apple's on-device model is usable on this machine.

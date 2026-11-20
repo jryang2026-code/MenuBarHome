@@ -82,6 +82,65 @@ extension HomeStore {
         return true
     }
 
+    /// Whether 主动建议 is enabled (P5b-M). Fresh installs start with it on (the
+    /// `proactive-suggestions` manifest entry), upgraded users keep it on, and an uncertain
+    /// identity read preserves whatever was read last. Independent of `aiAssistantEnabled`:
+    /// with AI off the suggestions still rank locally.
+    public var proactiveSuggestionsEnabled: Bool {
+        capabilitySelection.enabledFeatures.contains(.proactiveSuggestions)
+    }
+
+    /// Turns 主动建议 on or off (P5b-M). Off means the shared snapshot cadence never enters the
+    /// suggestion branch: no ambient signature, habit ranking, cache read, chip or background
+    /// request. Safety alerts, undo expiry and saved timers keep their own schedule. Only the
+    /// suggestion generation advances, so a command the user started is never cancelled.
+    /// Returns false and keeps the current value when the write is refused.
+    @discardableResult
+    public func setProactiveSuggestionsEnabled(_ enabled: Bool) -> Bool {
+        guard enabled != proactiveSuggestionsEnabled else { return true }
+        guard !isIdentityUncertain else {
+            showToast(
+                L10n.tr(
+                    "仍无法读取历史配置或凭据，请检查钥匙串授权后重试",
+                    "Still unable to read settings or credentials; check Keychain access and try again"
+                ),
+                isError: true
+            )
+            return false
+        }
+        let previous = capabilitySelection
+        var next = capabilitySelection
+        if enabled {
+            next.enabledFeatures.insert(.proactiveSuggestions)
+        } else {
+            next.enabledFeatures.remove(.proactiveSuggestions)
+        }
+        capabilitySelection = next.normalized(with: .shared)
+        // Supersede in-flight suggestion runs before persisting: none may claim the cache later.
+        proactiveEpoch &+= 1
+        proactiveRefreshTask?.cancel()
+        proactiveRefreshTask = nil
+        if !enabled {
+            aiProactiveSuggestions = nil
+            lastProactiveRefreshSignature = nil
+            proactiveRetryEarliest = nil
+            // Choices a command is waiting on are not suggestions; keep them.
+            if case .awaitingChoice = assistantState {} else {
+                assistantSuggestions = []
+            }
+            isGrokBallStageExpanded = false
+        }
+        guard persistCapabilitySelection() else {
+            capabilitySelection = previous
+            showToast(
+                L10n.tr("无法保存主动建议开关状态，请重试", "Could not save the suggestions switch; try again"),
+                isError: true
+            )
+            return false
+        }
+        return true
+    }
+
     /// Persists an AI configuration and reports whether the Keychain accepted the key (#7). The Settings
     /// and onboarding forms use this instead of the silent setter so a refused write never looks saved.
     @discardableResult
@@ -114,22 +173,31 @@ extension HomeStore {
     /// Zero delay: re-ranks the cache locally from habits, favorites, environment, and running
     /// devices when it is empty or stale, then lets a configured model refresh it in the background (#113).
     public func refreshProactiveSuggestionCacheIfStale() {
+        guard proactiveSuggestionsEnabled else { return }
         if !assistantState.isUserActive,
            assistantSuggestions.isEmpty || proactiveRefreshSignature() != lastProactiveRefreshSignature {
-            if proactiveRefreshSignature() == lastProactiveRefreshSignature,
-               let ai = aiProactiveSuggestions, !ai.isEmpty {
-                assistantSuggestions = ai
-            } else {
-                assistantSuggestions = localTopSuggestions()
-            }
+            assistantSuggestions = proactiveDisplaySuggestions()
         }
         maybeRefreshProactiveSuggestionsInBackground()
     }
 
-    /// The local zero-delay Top 4 (#113).
+    /// The suggestions to show when nothing else claims the chips: the AI cache while it still
+    /// matches the ambient context, otherwise the local Top 4. Empty while 主动建议 is off (P5b-M).
+    func proactiveDisplaySuggestions() -> [AssistantSuggestion] {
+        guard proactiveSuggestionsEnabled else { return [] }
+        if proactiveRefreshSignature() == lastProactiveRefreshSignature {
+            proactiveWorkCounters.cacheReads += 1
+            if let ai = aiProactiveSuggestions, !ai.isEmpty { return ai }
+        }
+        return localTopSuggestions()
+    }
+
+    /// The local zero-delay Top 4 (#113). Empty while 主动建议 is off: no habit ranking runs (P5b-M).
     func localTopSuggestions() -> [AssistantSuggestion] {
-        userHabitMemory.topSuggestions(
-            for: Date(),
+        guard proactiveSuggestionsEnabled else { return [] }
+        proactiveWorkCounters.rankings += 1
+        return userHabitMemory.topSuggestions(
+            for: assistantNow(),
             devices: devices,
             scenes: scenes,
             favoriteIds: favoriteOrder,
@@ -139,7 +207,9 @@ extension HomeStore {
 
     /// Time bucket + per-room temperature (1 °C steps) and humidity (5 % steps): the ambient
     /// signature that decides when the suggestion cache is stale (#113).
-    func proactiveRefreshSignature(now: Date = Date()) -> String {
+    func proactiveRefreshSignature(now: Date? = nil) -> String {
+        proactiveWorkCounters.signatures += 1
+        let now = now ?? assistantNow()
         let bucket = UserHabitMemory.TimeBucket.from(date: now)
         let readings = environmentReadings.map { reading -> String in
             let temperature = reading.temperature.map { String(($0 / 1.0).rounded()) } ?? "-"
@@ -155,10 +225,11 @@ extension HomeStore {
     /// attempt retries after `proactiveRetryCooldown` instead of being swallowed (Codex #116 review).
     @discardableResult
     public func maybeRefreshProactiveSuggestionsInBackground() -> Task<Void, Never>? {
-        guard aiAssistantEnabled else { return nil }
+        // 主动建议 off (P5b-M): checked before anything else, so the snapshot cadence pays nothing.
+        guard proactiveSuggestionsEnabled, aiAssistantEnabled else { return nil }
         let signature = proactiveRefreshSignature()
         guard signature != lastProactiveRefreshSignature else { return nil }
-        if let retryAfter = proactiveRetryEarliest, Date() < retryAfter { return nil }
+        if let retryAfter = proactiveRetryEarliest, assistantNow() < retryAfter { return nil }
         guard homeBackend != .demo,
               !assistantState.isUserActive else { return nil }
         let config = assistantConfig
@@ -174,15 +245,16 @@ extension HomeStore {
     public func refreshProactiveSuggestionsCache(signature: String? = nil) async {
         guard !isProactiveRecommending, homeBackend != .demo, !assistantState.isUserActive else { return }
         let config = assistantConfig
-        guard aiAssistantEnabled,
+        guard proactiveSuggestionsEnabled, aiAssistantEnabled,
               !shouldRejectMissingAPIKey(for: config),
               cloudConsentNeeded(for: config, utterance: nil) == nil else { return }
         let epoch = assistantEpoch
+        let suggestionEpoch = proactiveEpoch
         let attemptedSignature = signature ?? proactiveRefreshSignature()
         let context = controlContextID
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
-        let resolver = makeAssistantResolver(config: config, epoch: epoch)
+        let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let assistantContext = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -194,6 +266,7 @@ extension HomeStore {
             // signature (a superseded signature would never retry) or feed the cache (P5a-M).
             guard context == controlContextID,
                   epoch == assistantEpoch,
+                  suggestionEpoch == proactiveEpoch, proactiveSuggestionsEnabled,
                   aiAssistantEnabled, !assistantState.isUserActive else { return }
             // The context counts as served only once a usable result landed (Codex #116 review);
             // an empty result is a valid "home is ideal" answer and falls back to the local
@@ -202,7 +275,12 @@ extension HomeStore {
             aiProactiveSuggestions = inferred
             assistantSuggestions = inferred.isEmpty ? localTopSuggestions() : inferred
         } catch {
-            proactiveRetryEarliest = Date().addingTimeInterval(proactiveRetryCooldown)
+            // A discarded run (AI or suggestions switched off, provider changed, task cancelled)
+            // is not a failure: a cooldown would delay the first refresh after re-enabling (#322).
+            guard !isAssistantRunSuperseded(error, epoch: epoch),
+                  suggestionEpoch == proactiveEpoch, proactiveSuggestionsEnabled,
+                  !Task.isCancelled else { return }
+            proactiveRetryEarliest = assistantNow().addingTimeInterval(proactiveRetryCooldown)
         }
     }
 
@@ -274,7 +352,7 @@ extension HomeStore {
     /// Uses the configured AI model (Jev System One or OpenAI-compatible Chat) to infer personalized proactive suggestions
     /// from current room temp/humidity, time of day, active devices, and the user's learned habit memory.
     public func requestProactiveJevSuggestions() async {
-        guard !isProactiveRecommending else { return }
+        guard proactiveSuggestionsEnabled, !isProactiveRecommending else { return }
         guard homeBackend != .demo else {
             // 演示模式完全离线（#47）：只给基于本地习惯记忆的建议。
             assistantSuggestions = localTopSuggestions()
@@ -299,13 +377,14 @@ extension HomeStore {
             return
         }
         let epoch = assistantEpoch
+        let suggestionEpoch = proactiveEpoch
         isProactiveRecommending = true
         defer { isProactiveRecommending = false }
 
         let controlContext = controlContextID
         let snapshotDevices = devices
         let snapshotScenes = scenes
-        let resolver = makeAssistantResolver(config: config, epoch: epoch)
+        let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let context = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
@@ -313,7 +392,8 @@ extension HomeStore {
                 scenes: snapshotScenes,
                 context: context
             )
-            guard controlContext == controlContextID, epoch == assistantEpoch else { return }
+            guard controlContext == controlContextID, epoch == assistantEpoch,
+                  suggestionEpoch == proactiveEpoch else { return }
             if !inferred.isEmpty {
                 assistantSuggestions = inferred
                 let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
@@ -327,7 +407,7 @@ extension HomeStore {
             guard controlContext == controlContextID else { return }
             // Superseded runs keep the previous suggestions; showing a fake failure would
             // describe a request the user already cancelled (P5a-M).
-            if error as? AssistantError == .superseded { return }
+            if error as? AssistantError == .superseded || suggestionEpoch != proactiveEpoch { return }
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
         }
     }
@@ -511,13 +591,15 @@ extension HomeStore {
     /// Builds the model resolver with a transport gate: every attempt — the initial call and
     /// the in-resolver temperature-400 retry alike — re-checks the AI switch and the captured
     /// epoch before a byte leaves (P5a-M acceptance #1/#3, mirroring P5a-W).
-    private func makeAssistantResolver(config: AssistantConfig, epoch: Int) -> ModelIntentResolver {
+    /// A suggestion run also passes `proactiveEpoch`, so closing 主动建议 refuses its retries (P5b-M).
+    private func makeAssistantResolver(config: AssistantConfig, epoch: Int, proactiveEpoch: Int? = nil) -> ModelIntentResolver {
         if let override = assistantResolverOverride { return override }
         let base = assistantTransportOverride ?? ModelIntentResolver.defaultTransport(for: config)
         let gate: ModelIntentResolver.Transport = { [weak self] request in
             guard let self else { throw AssistantError.superseded }
             let allowed = await MainActor.run {
                 self.assistantEpoch == epoch && self.aiAssistantEnabled
+                    && (proactiveEpoch.map { $0 == self.proactiveEpoch && self.proactiveSuggestionsEnabled } ?? true)
             }
             guard allowed else { throw AssistantError.superseded }
             return try await base(request)
@@ -1703,14 +1785,7 @@ extension HomeStore {
                 : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
             setAssistantState(.failed(reason))
         } else {
-            if !plan.suggestions.isEmpty {
-                assistantSuggestions = plan.suggestions
-            } else if proactiveRefreshSignature() == lastProactiveRefreshSignature,
-                      let ai = aiProactiveSuggestions, !ai.isEmpty {
-                assistantSuggestions = ai
-            } else {
-                assistantSuggestions = localTopSuggestions()
-            }
+            assistantSuggestions = plan.suggestions.isEmpty ? proactiveDisplaySuggestions() : plan.suggestions
             let receipt = receiptStartedAt.map { start in
                 AssistantExecutionReceipt(
                     route: plan.source == .local ? .localRule : .aiModel,

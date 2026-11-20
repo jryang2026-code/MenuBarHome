@@ -843,37 +843,39 @@ struct AssistantSuggestionsRow: View {
         let isJev = ModelIntentResolver.isSystemOneModel(store.assistantConfig.model)
         return ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                Button {
-                    Task { await store.requestProactiveJevSuggestions() }
-                } label: {
-                    HStack(spacing: 3.5) {
-                        if store.isProactiveRecommending {
-                            if isPanelVisible {
-                                ProgressView()
-                                    .controlSize(.mini)
-                                    .scaleEffect(0.65)
+                if store.proactiveSuggestionsEnabled {
+                    Button {
+                        Task { await store.requestProactiveJevSuggestions() }
+                    } label: {
+                        HStack(spacing: 3.5) {
+                            if store.isProactiveRecommending {
+                                if isPanelVisible {
+                                    ProgressView()
+                                        .controlSize(.mini)
+                                        .scaleEffect(0.65)
+                                } else {
+                                    Color.clear
+                                        .frame(width: 11, height: 11)
+                                }
                             } else {
-                                Color.clear
-                                    .frame(width: 11, height: 11)
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                             }
-                        } else {
-                            Image(systemName: "wand.and.stars")
+                            Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
                                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                         }
-                        Text(isJev ? L10n.tr("Jev 猜你想做", "Jev Suggests") : L10n.tr("AI 猜你想做", "AI Suggests"))
-                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3.5)
+                        .background(Color.accentColor.opacity(0.12), in: Capsule())
                     }
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3.5)
-                    .background(Color.accentColor.opacity(0.12), in: Capsule())
+                    .buttonStyle(.plain)
+                    .disabled(store.isProactiveRecommending)
+                    .help(L10n.tr(
+                        "结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作",
+                        "Infer your most likely device actions based on room temperature, time of day, and habits"
+                    ))
                 }
-                .buttonStyle(.plain)
-                .disabled(store.isProactiveRecommending)
-                .help(L10n.tr(
-                    "结合当前室温、时间段与你的个人习惯，实时推演最可能执行的设备操作",
-                    "Infer your most likely device actions based on room temperature, time of day, and habits"
-                ))
 
                 ForEach(store.assistantSuggestions) { suggestion in
                     Button {
@@ -983,6 +985,18 @@ enum AssistantSettingsCopy {
     }
 
     static var removeProvider: String { L10n.tr("移除此服务商", "Remove this provider") }
+
+    /// 主动建议 on its own switch (P5b-M); independent of the AI switch above.
+    static var proactiveTitle: String {
+        L10n.tr("主动建议（猜你想做）", "Proactive suggestions")
+    }
+
+    static var proactiveHint: String {
+        L10n.tr(
+            "关闭后，面板不再显示建议，也不再为建议做后台推断；安全提醒、撤销和定时照常运行。",
+            "When off, the panel shows no suggestions and makes no background inference for them; safety alerts, undo and timers keep running."
+        )
+    }
 
     static var removeProviderConfirm: String { L10n.tr("再点一次确认移除", "Click again to confirm removal") }
 
@@ -1296,6 +1310,24 @@ struct AssistantSettingsSection: View {
                     .textFieldStyle(.roundedBorder)
             }
             .settingsRow(anchor: .assistantAPIKey)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Toggle(isOn: Binding(
+                    get: { store.proactiveSuggestionsEnabled },
+                    set: { newValue in _ = store.setProactiveSuggestionsEnabled(newValue) }
+                )) {
+                    Text(AssistantSettingsCopy.proactiveTitle)
+                        .font(.system(size: DesignTokens.TypeSize.body, weight: .medium))
+                }
+                .toggleStyle(.glass)
+                .controlSize(.regular)
+
+                Text(AssistantSettingsCopy.proactiveHint)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .settingsRow(anchor: .proactiveSuggestions)
 
             privacySection(habitItems: habitItems, habitCount: habitCount)
                 .settingsRow(anchor: .habitMemory)
