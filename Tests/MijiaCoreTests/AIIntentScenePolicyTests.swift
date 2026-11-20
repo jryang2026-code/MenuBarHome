@@ -96,6 +96,7 @@ struct AIIntentScenePolicyTests {
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
 
         let capture = PromptCaptureBox()
         store.assistantResolverOverride = ModelIntentResolver(
@@ -262,6 +263,7 @@ struct AIIntentScenePolicyTests {
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
 
         store.assistantResolverOverride = ModelIntentResolver(
             config: AssistantConfig(baseURL: "http://127.0.0.1:11434/v1", model: "~typesafe/jev-latest"),

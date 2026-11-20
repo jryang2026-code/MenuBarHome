@@ -66,6 +66,7 @@ struct AssistantConsentTests {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: AssistantTests.devices, scenes: AssistantTests.scenes))
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         let log = CallLog()
         store.assistantTransportOverride = { request in
             await log.record()

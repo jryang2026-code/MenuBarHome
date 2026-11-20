@@ -45,7 +45,9 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     // AI 助手
     case askWhenUnsure
     case confidenceThreshold
+    case assistantEnable
     case assistantProvider
+    case assistantRemoveProvider
     case assistantAPIKey
     case assistantTest
     case habitMemory
@@ -91,8 +93,8 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
         case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
              .miMultiAccounts, .dualSourceFusion:
             return .connection
-        case .askWhenUnsure, .confidenceThreshold, .assistantProvider, .assistantAPIKey,
-             .assistantTest, .habitMemory:
+        case .askWhenUnsure, .confidenceThreshold, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
+             .assistantAPIKey, .assistantTest, .habitMemory:
             return .assistant
         case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
              .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
@@ -358,10 +360,16 @@ enum SettingsSearch {
             entry(.confidenceThreshold, section: assistantSection, zhTitle: "把握度阈值",
                   enTitle: "Confidence Threshold",
                   synonyms: ["阈值", "把握度", "高级", "threshold", "confidence", "advanced"]),
+            entry(.assistantEnable, section: assistantSection, zhTitle: "启用 AI 一句话控制",
+                  enTitle: "Enable AI Command Control",
+                  synonyms: ["开关", "启用", "关闭", "AI", "enable", "disable", "toggle", "assistant"]),
             entry(.assistantProvider, section: assistantSection, zhTitle: "AI 服务商与模型",
                   enTitle: "AI Provider & Model",
                   synonyms: ["模型", "服务商", "提供商", "provider", "model", "openrouter", "endpoint",
                              "assistant", "助手"]),
+            entry(.assistantRemoveProvider, section: assistantSection, zhTitle: "移除 AI 服务商",
+                  enTitle: "Remove AI Provider",
+                  synonyms: ["移除", "删除", "服务商", "密钥", "清除", "remove", "delete", "provider", "revoke"]),
             entry(.assistantAPIKey, section: assistantSection, zhTitle: "AI 密钥", enTitle: "AI API Key",
                   synonyms: ["密钥", "令牌", "api key", "apikey", "token", "key", "credential", "secret"]),
             entry(.assistantTest, section: assistantSection, zhTitle: "测试 AI 连接",

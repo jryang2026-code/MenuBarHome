@@ -55,6 +55,7 @@ struct ProactiveSuggestionRefreshTests {
         let mock = MockHomeProvider(snapshot: snapshot)
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.proactive.refresh.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         return (store, mock)
     }
 

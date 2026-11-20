@@ -133,6 +133,7 @@ struct AuditWave2Tests {
     @MainActor
     func aiAutomaticExecutionIsNotLearned() async throws {
         let (store, _) = try await makeStore(devices: [Self.studyCeiling])
+        store.setAIAssistantEnabled(true)
         let content = #"{"actions":[{"device":"d1","op":"power","value":true}],"reply":"已打开书房吸顶灯"}"#
         store.assistantResolverOverride = ModelIntentResolver(
             config: AssistantConfig(model: "glm-5.1"),
@@ -513,6 +514,7 @@ struct AuditWave2Tests {
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
         let store = HomeStore(defaultsSuiteName: suite)
         try await waitForDevices(store, count: 10)
+        store.setAIAssistantEnabled(true)
         store.assistantConfig = AssistantConfig(
             baseURL: "https://openrouter.ai/api/v1", model: "~typesafe/jev-latest", apiKey: "test-key"
         )

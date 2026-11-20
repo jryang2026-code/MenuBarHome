@@ -452,6 +452,7 @@ struct AssistantTests {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.assistant.\(UUID().uuidString)")
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
         return (store, mock)
     }
 
@@ -748,6 +749,7 @@ struct AssistantTests {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
         try await store.waitForTestSnapshot()
+        store.setAIAssistantEnabled(true)
 
         for customURL in ["http://127.0.0.1:3425/v1", "http://localhost:3425/v1"] {
             var observedURLs: [String] = []

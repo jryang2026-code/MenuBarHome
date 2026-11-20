@@ -8,6 +8,9 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
     case malformedResponse
     /// Plain http to a public host: the key and the user's words would travel unencrypted.
     case insecureEndpoint(String)
+    /// The AI switch was turned off or the provider changed while this request was in flight;
+    /// the result is discarded and never shown or acted on (P5a-M).
+    case superseded
 
     public var errorDescription: String? {
         switch self {
@@ -25,6 +28,11 @@ public enum AssistantError: LocalizedError, Equatable, Sendable {
             return L10n.tr(
                 "AI 服务地址不是 https：\(url)。为保护 API Key，只有本机或局域网地址可以用 http",
                 "AI service URL is not https: \(url). To protect your API key, plain http is only allowed for this Mac or the local network."
+            )
+        case .superseded:
+            return L10n.tr(
+                "AI 已关闭或服务商已切换，操作已中止",
+                "AI was disabled or the provider changed; the action was aborted."
             )
         }
     }
@@ -105,7 +113,14 @@ public struct ModelIntentResolver: Sendable, AssistantCommandResolving {
 
     public init(config: AssistantConfig, transport: Transport? = nil) {
         self.config = config
-        self.transport = transport ?? { request in
+        self.transport = transport ?? Self.defaultTransport(for: config)
+    }
+
+    /// The plain URLSession transport: refuses to send without a key unless the endpoint is
+    /// local. Exposed so callers can wrap it in an enable/epoch gate without re-implementing
+    /// the missing-key rule (P5a-M).
+    static func defaultTransport(for config: AssistantConfig) -> Transport {
+        return { request in
             guard config.hasAPIKey || config.isLoopbackEndpoint else {
                 throw AssistantError.missingAPIKey
             }
