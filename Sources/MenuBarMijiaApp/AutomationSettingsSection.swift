@@ -2,6 +2,27 @@ import AppKit
 import SwiftUI
 import MijiaCore
 
+/// Localized copy for the companion integration block (Raycast / CLI / MCP, P6a-M).
+enum CompanionSettingsCopy {
+    static var toggleTitle: String { L10n.tr("外部快捷工具与伴生集成（Raycast / CLI / MCP）", "External Tools & Companion Integration (Raycast / CLI / MCP)") }
+    static var statusEnabled: String { L10n.tr("已开启 · 仅本机可访问（0600 本地快照，不共享家居连接凭据）", "Enabled · Local access only (0600 snapshot, no home connection credentials shared)") }
+    static var statusDisabled: String { L10n.tr("已关闭 · 停止快照导出并拒绝伴生命令（普通外部链接仍按安全与提醒设置执行）", "Off · Snapshot export stopped and companion commands rejected (ordinary links still follow Safety & Alerts)") }
+    static var scopeHint: String {
+        L10n.tr(
+            "开启后只在本机导出当前已启用连接与设备类型的快照文件，供 Raycast、本地 CLI 与 MCP 协作；高风险设备与锁屏保护仍在应用内执行。本功能不会自动修改任何外部应用配置。",
+            "Exports a local snapshot of enabled connections and device types for Raycast, local CLI, and MCP. High-risk confirmations and screen-lock protection still run inside the app. External app configs are never modified automatically."
+        )
+    }
+    static var copyConfigButton: String { L10n.tr("复制配置", "Copy Config") }
+    static var checkButton: String { L10n.tr("检测", "Check") }
+    static var disconnectButton: String { L10n.tr("断开", "Disconnect") }
+    static var copyConfigHelp: String { L10n.tr("复制 MCP 与本地快照配置片段（不含令牌或家居凭据）", "Copy the MCP and local snapshot config snippet (contains no token or home credentials)") }
+    static var checkHelp: String { L10n.tr("只读检查本地快照、令牌和权限状态", "Read-only check of local snapshot, token, and file permissions") }
+    static var disconnectHelp: String { L10n.tr("立即关闭伴生集成、作废旧令牌并删除本地快照", "Turn off companion integration, revoke old tokens, and delete the local snapshot") }
+    static var copiedToast: String { L10n.tr("已复制伴生配置，不会自动修改外部应用配置", "Copied companion config; external app configs are never modified automatically") }
+    static func snapshotPathLine(_ path: String) -> String { L10n.format("快照路径：%@", "Snapshot path: %@", path) }
+}
+
 /// Settings → 通用 → 自动化与外部控制 (#57, #59).
 ///
 /// Rules are stored in `UserDefaults` and start empty. `AutomationEngine` reads the same store on
@@ -10,11 +31,16 @@ struct AutomationSettingsSection: View {
     let store: HomeStore
 
     @Environment(\.settingsSearchFocus) private var searchFocus
-    @AppStorage(RaycastSnapshotExporter.integrationEnabledKey) private var raycastEnabled = false
+    @State private var companionCheckReport: CompanionCheckReport?
     /// Loaded in `onAppear`; a `@State` initializer would re-decode `UserDefaults` on every render.
     @State private var rules: [AutomationRule] = []
     /// Mirrors the Location authorization so the conditions editor can explain a silent rule.
     @State private var locationAuthorized = MacHardwareProbe.isWiFiAuthorized
+
+    init(store: HomeStore, initialCompanionCheckReport: CompanionCheckReport? = nil) {
+        self.store = store
+        self._companionCheckReport = State(initialValue: initialCompanionCheckReport)
+    }
 
     @State private var newTrigger: AutomationTrigger = .away
     @State private var newActionKind: AutomationActionKind = .quickAction
@@ -148,21 +174,72 @@ struct AutomationSettingsSection: View {
 
             Divider().overlay(Color.primary.opacity(0.06))
 
-            SettingsToggleRow(
-                title: L10n.tr("Raycast 集成", "Raycast integration"),
-                isOn: $raycastEnabled
-            )
-            .onChange(of: raycastEnabled) { _, enabled in
-                store.setRaycastIntegration(enabled: enabled)
+            VStack(alignment: .leading, spacing: 8) {
+                SettingsToggleRow(
+                    title: CompanionSettingsCopy.toggleTitle,
+                    isOn: Binding(
+                        get: { store.companionIntegrationEnabled },
+                        set: { if store.setCompanionIntegrationEnabled($0) { companionCheckReport = nil } }
+                    )
+                )
+                .disabled(store.identityMigrationDiagnostic != nil)
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(store.companionIntegrationEnabled ? Color.green : DesignTokens.secondaryText.opacity(0.45))
+                        .frame(width: 7, height: 7)
+                    Text(store.companionIntegrationEnabled ? CompanionSettingsCopy.statusEnabled : CompanionSettingsCopy.statusDisabled)
+                        .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        .foregroundStyle(store.companionIntegrationEnabled ? Color.primary : DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text(CompanionSettingsCopy.scopeHint)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(store.companionMCPConfigurationJSON(), forType: .string)
+                        store.showToast(CompanionSettingsCopy.copiedToast)
+                    } label: { Label(CompanionSettingsCopy.copyConfigButton, systemImage: "doc.on.doc").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)) }
+                        .buttonStyle(PillActionButtonStyle()).help(CompanionSettingsCopy.copyConfigHelp)
+
+                    Button { companionCheckReport = store.checkCompanionIntegrationStatus() } label: {
+                        Label(CompanionSettingsCopy.checkButton, systemImage: "checkmark.shield").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                    }
+                    .buttonStyle(PillActionButtonStyle()).help(CompanionSettingsCopy.checkHelp)
+
+                    Button {
+                        if store.disconnectCompanionIntegration() { companionCheckReport = store.checkCompanionIntegrationStatus() }
+                    } label: { Label(CompanionSettingsCopy.disconnectButton, systemImage: "link.badge.minus").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)) }
+                        .buttonStyle(PillActionButtonStyle())
+                        .disabled(!store.companionIntegrationEnabled || store.identityMigrationDiagnostic != nil)
+                        .help(CompanionSettingsCopy.disconnectHelp)
+                }
+
+                if let report = companionCheckReport {
+                    let (symbol, color): (String, Color) = switch report.status {
+                    case .ready: ("checkmark.circle.fill", .green)
+                    case .needsAttention: ("exclamationmark.triangle.fill", .orange)
+                    case .disabled: ("minus.circle", DesignTokens.secondaryText)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Image(systemName: symbol).font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold)).foregroundStyle(color)
+                            Text(report.summary).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(Color.primary).fixedSize(horizontal: false, vertical: true)
+                        }
+                        Text(CompanionSettingsCopy.snapshotPathLine(report.snapshotPath))
+                            .font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(DesignTokens.secondaryText)
+                            .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.vertical, 6).padding(.horizontal, 8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                }
             }
             .settingsRow(anchor: .raycast)
-            Text(L10n.tr(
-                "开启后把设备与场景列表写到本机一个只有你能读的文件，供 Raycast 扩展搜索；扩展发来的链接带本机令牌，不再弹确认，高风险设备仍会确认。关闭即删除该文件并作废令牌。",
-                "Writes your device and scene list to a file only you can read, for the Raycast extension to search. Links from the extension carry a local token and skip confirmation; high-risk devices still ask. Turning this off deletes the file and revokes the token."
-            ))
-            .font(.system(size: DesignTokens.TypeSize.caption))
-            .foregroundStyle(DesignTokens.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
         }
         .onAppear {
             rules = store.automationRuleStore.load()

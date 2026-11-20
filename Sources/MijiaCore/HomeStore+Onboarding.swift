@@ -119,6 +119,8 @@ extension HomeStore {
             || defaults.object(forKey: Self.onboardingMilestonesKey) != nil
             || defaults.object(forKey: "home_name") != nil
             || defaults.object(forKey: ConnectionRemovalStore.storageKey) != nil
+            || defaults.object(forKey: RaycastSnapshotExporter.integrationEnabledKey) != nil
+            || defaults.object(forKey: URLDirectControl.allowDirectControlKey) != nil
             || lgHasConfiguredHost
         let hasLocalData = !DevicePreferenceIndex.referencedIDs(defaults: defaults).isEmpty
             || defaults.object(forKey: ScheduledCommand.storageKey) != nil

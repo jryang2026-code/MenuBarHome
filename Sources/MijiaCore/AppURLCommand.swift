@@ -286,6 +286,13 @@ public enum URLDirectControl {
         return diff == 0
     }
 
+    /// True when a link presents a companion `token=` that does not match the active local token.
+    /// Revoked or stale tokens must be rejected rather than downgraded to ordinary links (P6a-M).
+    public static func isRejectedCompanionToken(_ providedToken: String?, expectedToken: String?) -> Bool {
+        guard let providedToken else { return false }
+        return !isValidBridgeToken(providedToken, expectedToken: expectedToken)
+    }
+
     public static func requiresConfirmation(allowDirectControl: Bool) -> Bool {
         !allowDirectControl
     }
