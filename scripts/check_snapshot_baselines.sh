@@ -84,8 +84,10 @@ printf '%s\n' "$SOURCES" | sed 's/^/  - /' >&2
 cat >&2 <<'MSG'
 
 重录（基准是 GitHub 托管机 macos-26-intel，Xcode 26.6，zh_CN。本机 Mac 只作预览）：
-  Actions → Record snapshots，Branch 填本仓库已有的功能分支（不能是默认分支）。
-  工作流提交变化的 PNG，再 workflow_dispatch 启动 CI。GITHUB_TOKEN 推送本身不会触发工作流。
+  首选：推送到 PR 分支后，macos-test 比对失败时会在同机重录并上传 snapshot-baselines-<head-sha>；
+        在本机对应 head 提交上运行 bash scripts/adopt_snapshot_artifact.sh <pr>，再 git push 触发 PR CI。
+  备用：Actions → Record snapshots，Branch 填本仓库已有的功能分支（不能是默认分支）。
+        工作流提交变化的 PNG，再 workflow_dispatch 启动 CI。GITHUB_TOKEN 推送本身不会触发工作流。
   更换该镜像或 Xcode 后必须重录。不要放宽 SnapshotAssertion 的容差。
 本机预览（结果会和基准不同）：
   bash scripts/record_snapshots.sh --dry-run

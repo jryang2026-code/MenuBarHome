@@ -411,6 +411,242 @@ test_branch_advance_rejected() {
 }
 test_branch_advance_rejected
 
+test_adopt_snapshot_artifact() {
+    local root fake_bin repo rel head_sha other_sha src_good src_bad_nonpng src_bad_link
+    root="$(physical_tmp)"
+    fake_bin="$root/bin"
+    repo="$root/repo"
+    rel="Tests/MenuBarMijiaAppTests/__Snapshots__/SnapshotTests"
+    mkdir -p "$fake_bin" "$repo/$rel"
+
+    cat >"$fake_bin/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+cmd="$1"
+shift
+case "$cmd" in
+    repo)
+        echo "jryang2026-code/MenuBarHome"
+        ;;
+    pr)
+        printf '%s\n' "${FAKE_ADOPT_PR_JSON:?}"
+        ;;
+    api)
+        printf '%s\n' "${FAKE_ADOPT_ARTIFACTS_JSON:?}"
+        ;;
+    run)
+        sub="$1"
+        shift
+        case "$sub" in
+            list)
+                printf '%s\n' "${FAKE_ADOPT_RUNS_JSON:?}"
+                ;;
+            download)
+                dir=""
+                while [ "$#" -gt 0 ]; do
+                    if [ "$1" = "--dir" ]; then
+                        dir="$2"
+                        shift 2
+                    else
+                        shift
+                    fi
+                done
+                cp -R "${FAKE_ADOPT_DOWNLOAD_SRC:?}/." "$dir/"
+                ;;
+            *)
+                exit 3
+                ;;
+        esac
+        ;;
+    *)
+        exit 3
+        ;;
+esac
+GH
+    chmod +x "$fake_bin/gh"
+
+    git init -q -b feat/ui "$repo"
+    git -C "$repo" config user.email "jryang2026-code@users.noreply.github.com"
+    git -C "$repo" config user.name "jryang2026-code"
+    tiny_png "$repo/$rel/panel.png"
+    tiny_png "$repo/$rel/stale.png"
+    git -C "$repo" add "$rel/panel.png" "$rel/stale.png"
+    git -C "$repo" commit -q -m "feat: initial ui"
+    head_sha="$(git -C "$repo" rev-parse HEAD)"
+    other_sha="1111111111111111111111111111111111111111"
+    [ "$head_sha" = "$other_sha" ] && other_sha="2222222222222222222222222222222222222222"
+
+    src_good="$root/src-good"
+    mkdir -p "$src_good"
+    # Produce a distinct valid PNG by appending an innocuous tEXt chunk before IEND.
+    python3 - "$src_good/panel.png" <<'PY'
+import struct, sys, zlib
+sig = b"\x89PNG\r\n\x1a\n"
+ihdr = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
+def chunk(tag, data):
+    crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+raw = b"\x00\xff\x00\x00\x00\xff\x00\x00\x00\x00\xff\x00\x00\xff"
+blob = sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+open(sys.argv[1], "wb").write(blob)
+PY
+    tiny_png "$src_good/added.png"
+
+    src_bad_nonpng="$root/src-bad-nonpng"
+    mkdir -p "$src_bad_nonpng"
+    tiny_png "$src_bad_nonpng/panel.png"
+    printf 'not a png\n' >"$src_bad_nonpng/evil.txt"
+
+    src_bad_link="$root/src-bad-link"
+    mkdir -p "$src_bad_link"
+    ln -s "$src_good/panel.png" "$src_bad_link/panel.png"
+
+    local script_path="$PWD/scripts/adopt_snapshot_artifact.sh"
+
+    # 1. Usage validation
+    expect_status "adopt rejects missing PR arg" 2 bash "$script_path"
+    expect_status "adopt rejects non-numeric PR arg" 2 bash "$script_path" abc
+
+    # 2. Reject local HEAD != PR head
+    if (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${other_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[]" \
+        FAKE_ADOPT_ARTIFACTS_JSON='{"artifacts":[]}' \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_good" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt should reject mismatched local HEAD\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -q '不一致' /tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt mismatched local HEAD missing hint\n' >&2
+        cat /tmp/snapshot-ci-test.err >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS adopt rejects mismatched local HEAD\n'
+    fi
+
+    # 3. Reject CI run with mismatched headSha
+    if (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9000,\"workflowName\":\"CI\",\"headSha\":\"${other_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${other_sha}\",\"expired\":false}]}" \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_good" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt should reject mismatched CI run headSha\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -q 'headSha' /tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt mismatched run headSha missing hint\n' >&2
+        cat /tmp/snapshot-ci-test.err >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS adopt rejects mismatched CI run headSha\n'
+    fi
+
+    # 4. Reject artifact whose name has a different SHA
+    if (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${other_sha}\",\"expired\":false}]}" \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_good" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt should reject artifact name SHA mismatch\n' >&2
+        failures=$((failures + 1))
+    elif ! grep -q '快照产物名' /tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt artifact name mismatch missing hint\n' >&2
+        cat /tmp/snapshot-ci-test.err >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS adopt rejects artifact name SHA mismatch\n'
+    fi
+
+    # 5. Reject invalid artifact (non-PNG) without touching repo
+    if (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${head_sha}\",\"expired\":false}]}" \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_bad_nonpng" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt should reject non-png artifact\n' >&2
+        failures=$((failures + 1))
+    elif [ "$(git -C "$repo" rev-parse HEAD)" != "$head_sha" ] || [ -n "$(git -C "$repo" status --porcelain)" ]; then
+        printf 'FAIL adopt left repo dirty after rejecting non-png artifact\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS adopt rejects invalid non-png artifact cleanly\n'
+    fi
+
+    # 6. Reject invalid artifact (symlink) without touching repo
+    if (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${head_sha}\",\"expired\":false}]}" \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_bad_link" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt should reject symlink artifact\n' >&2
+        failures=$((failures + 1))
+    elif [ "$(git -C "$repo" rev-parse HEAD)" != "$head_sha" ] || [ -n "$(git -C "$repo" status --porcelain)" ]; then
+        printf 'FAIL adopt left repo dirty after rejecting symlink artifact\n' >&2
+        failures=$((failures + 1))
+    else
+        printf 'PASS adopt rejects symlink artifact cleanly\n'
+    fi
+
+    # 7. Happy path: validates, installs, commits locally without pushing
+    if ! (
+        cd "$repo"
+        PATH="$fake_bin:$PATH" \
+        FAKE_ADOPT_PR_JSON="{\"state\":\"OPEN\",\"headRefOid\":\"${head_sha}\",\"headRefName\":\"feat/ui\"}" \
+        FAKE_ADOPT_RUNS_JSON="[{\"databaseId\":9001,\"workflowName\":\"CI\",\"headSha\":\"${head_sha}\",\"status\":\"completed\",\"conclusion\":\"failure\",\"createdAt\":\"2026-11-20T01:00:00Z\",\"event\":\"pull_request\"}]" \
+        FAKE_ADOPT_ARTIFACTS_JSON="{\"artifacts\":[{\"name\":\"snapshot-baselines-${head_sha}\",\"expired\":false}]}" \
+        FAKE_ADOPT_DOWNLOAD_SRC="$src_good" \
+            bash "$script_path" 42
+    ) >/tmp/snapshot-ci-test.out 2>/tmp/snapshot-ci-test.err; then
+        printf 'FAIL adopt happy path failed\n' >&2
+        cat /tmp/snapshot-ci-test.err >&2
+        failures=$((failures + 1))
+    else
+        local new_head subject committed_files
+        new_head="$(git -C "$repo" rev-parse HEAD)"
+        subject="$(git -C "$repo" log -1 --format=%s)"
+        committed_files="$(git -C "$repo" show --name-only --format= HEAD | sed '/^$/d' | sort)"
+        if [ "$new_head" = "$head_sha" ]; then
+            printf 'FAIL adopt happy path did not create a commit\n' >&2
+            failures=$((failures + 1))
+        elif [ "$subject" != "test(snapshots): re-record UI baselines on macos-26-intel" ]; then
+            printf 'FAIL adopt commit subject unexpected: %s\n' "$subject" >&2
+            failures=$((failures + 1))
+        elif [ ! -f "$repo/$rel/added.png" ] || [ -f "$repo/$rel/stale.png" ] || ! cmp -s "$src_good/panel.png" "$repo/$rel/panel.png"; then
+            printf 'FAIL adopt did not install/prune baseline PNGs properly\n' >&2
+            failures=$((failures + 1))
+        elif [ -n "$(git -C "$repo" status --porcelain)" ]; then
+            printf 'FAIL adopt left working tree dirty after commit\n' >&2
+            failures=$((failures + 1))
+        elif ! printf '%s\n' "$committed_files" | grep -Fxq "$rel/panel.png"; then
+            printf 'FAIL adopt commit missing panel.png\n' >&2
+            failures=$((failures + 1))
+        else
+            printf 'PASS adopt happy path validates, installs, and commits locally\n'
+        fi
+    fi
+
+    rm -rf "$root"
+}
+test_adopt_snapshot_artifact
+
 if [ "$failures" -ne 0 ]; then
     printf '❌ %d 项 snapshot CI 脚本自测失败\n' "$failures" >&2
     exit 1

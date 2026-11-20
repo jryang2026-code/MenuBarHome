@@ -21,14 +21,9 @@ ActionlintMode = Literal["auto", "required", "off"]
 CANONICAL_MACOS_RUNNER = "macos-26-intel"
 CANONICAL_XCODE_VERSION = "26.6"
 CANONICAL_CAMERA_WORKFLOW = "./.github/workflows/camera-bin.yml"
-REFERENCE_JOB_IDS = frozenset({"macos-snapshots", "record-snapshots"})
+REFERENCE_JOB_IDS = frozenset({"macos-test", "record-snapshots"})
 REFERENCE_LOCALE_RUN = "bash scripts/ci_snapshot_locale.sh --require-xcode 26.6"
-ALLOWED_MACOS_RUNS_ON: frozenset[str] = frozenset(
-    {
-        CANONICAL_MACOS_RUNNER,
-        "${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON(vars.MACOS_CI_RUNNER || '\"macos-26-intel\"') || 'macos-26-intel' }}",
-    }
-)
+ALLOWED_MACOS_RUNS_ON: frozenset[str] = frozenset({CANONICAL_MACOS_RUNNER})
 
 _JOB_HEADER_RE = re.compile(r"""^(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+)):\s*(?:#.*)?$""")
 _STALE_MACOS_COMMENT_RE = re.compile(r"\bmacos-26(?!-intel)\b")
@@ -333,7 +328,7 @@ def _check_job(spec: WorkflowSpec, job: WorkflowJob, diags: list[WorkflowDiagnos
             err(
                 job.runs_on[0],
                 f"W1: job '{job.job_id}' uses disallowed macOS runner {bad!r} "
-                f"(expected '{CANONICAL_MACOS_RUNNER}' or MACOS_CI_RUNNER fallback to '{CANONICAL_MACOS_RUNNER}')",
+                f"(expected '{CANONICAL_MACOS_RUNNER}')",
             )
         setup_xcode = [r for r in job.step_uses if r.target.startswith("maxim-lobanov/setup-xcode@")]
         if not setup_xcode:

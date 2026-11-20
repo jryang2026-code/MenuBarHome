@@ -1,4 +1,6 @@
-# 本机隔离的 macOS CI
+# 本机隔离的 macOS CI（已停用，保留文档备查）
+
+> **状态：已停用，保留文档备查。** macOS CI 已全部留在 GitHub 托管的 `macos-26-intel` 上，不再读取 `MACOS_CI_RUNNER`，原本拆分的 `macos-test` 与 `macos-snapshots` 已合并为单个 `macos-test` job。**如果未来重新启用本地 VM，必须先把 Swift 单元测试（`--skip SnapshotTests`）拆回独立 job**，因为本地 ARM64 VM 不是 UI 快照像素基准（基准固定为 GitHub 托管 `macos-26-intel` + Xcode 26.6 + `zh_CN`），不能承载像素比对与基线录制。
 
 宿主机只运行 Tart 和控制脚本，不运行仓库里的构建代码。每个 GitHub job 使用独立的虚拟机副本，完成、失败或超时后销毁。签名发布流程不接入此 runner。
 
@@ -8,7 +10,7 @@
 - Softnet 阻断虚拟机主动访问宿主、其他虚拟机和私有网络；DNS 由 VM 内的回环服务转发到公共 HTTPS 解析器，不开放宿主 DNS 端口。
 - GitHub 管理凭据留在宿主，只有用于单个 job 的 JIT 配置传入虚拟机。
 - 控制脚本固定运行宿主安装目录中的副本，不从 PR 或 job 的 checkout 加载代码。
-- macOS 虚拟机不是 UI 快照基准。像素比对在 `macos-snapshots`，固定 GitHub 托管的 `macos-26-intel`。`macos-test` 排到本机时继续跳过 `SnapshotTests`。
+- macOS 虚拟机不是 UI 快照基准。重新启用时须把像素比对留在固定 GitHub 托管 `macos-26-intel` 的独立 job，排到本机 VM 的单测 job 必须继续跳过 `SnapshotTests`。
 
 这些措施用于限制公开仓库 PR 中的任意代码。工作流中的条件和 runner 标签不是安全隔离措施。
 
@@ -47,15 +49,20 @@ launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.menubarhome.ci.plist
 launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.menubarhome.ci.plist
 ```
 
-## 切换 CI 执行位置
+## 切换 CI 执行位置（已停用）
 
-`MACOS_CI_RUNNER` 是仓库 Actions 变量，内容是 JSON。设置为以下值后，新的非 fork CI 运行会把 `macos-test` 排到本机（跨仓库 fork PR 始终回退到 `macos-26-intel` 托管机）。`macos-release`、`macos-appintents` 和 `macos-snapshots` 固定在 GitHub 的 `macos-26-intel` 托管机，不读这个变量。`macos-snapshots` 是像素基准，不占这台 VM。`macos-release` 和 `macos-appintents` 留在托管机，是为了避免和 `macos-test` 一起排到单台 VM（那样一次运行约 20 分钟，后面的 PR 只能排队）。
+当前 `.github/workflows/ci.yml` 已移除对 `MACOS_CI_RUNNER` 的读取，全部 macOS job 固定在 GitHub 托管的 `macos-26-intel` 上运行。以下记录仅保留供未来重新启用本机 VM 时参考：
+
+- 重新启用前，须先把 `ci.yml` 中合并后的 `macos-test` 拆回「只跑 `--skip SnapshotTests` 的单测 job（可按 `MACOS_CI_RUNNER` 路由到非 fork 的本机 VM）」和「固定 `macos-26-intel` 跑 `--filter SnapshotTests` 的快照基准 job」，避免非基准 VM 参与像素比对或基线录制。
+- `macos-release`、`macos-appintents` 与快照基准 job 须继续留在 GitHub 托管机，避免与单测一起排到单台串行 VM。
+
+历史上通过仓库 Actions 变量切换路由的命令：
 
 ```bash
 gh variable set MACOS_CI_RUNNER --repo jryang2026-code/MenuBarHome --body '["self-hosted","macOS","ARM64","menubarhome-vm"]'
 ```
 
-删除变量后，新的 CI 运行恢复 GitHub 的 `macos-26-intel` 托管机：
+删除变量恢复托管机：
 
 ```bash
 gh variable delete MACOS_CI_RUNNER --repo jryang2026-code/MenuBarHome
