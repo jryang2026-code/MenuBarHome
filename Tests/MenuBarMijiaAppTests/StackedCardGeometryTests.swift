@@ -29,4 +29,18 @@ struct StackedCardGeometryTests {
         #expect(StackedCardGeometry.shouldDismiss(translation: 10, predictedTranslation: 10, velocity: 900, width: 350))
         #expect(!StackedCardGeometry.shouldDismiss(translation: 100, predictedTranslation: 120, velocity: 100, width: 350))
     }
+
+    @Test func transientStackExpansionAndCountdownPause() {
+        #expect(!TransientStackExpansion.isExpanded(isHovered: true, cardCount: 1))
+        #expect(TransientStackExpansion.isExpanded(isHovered: true, cardCount: 2))
+        #expect([2, 1, 2].map { TransientStackExpansion.isExpanded(isHovered: true, cardCount: $0) } == [true, false, true])
+        #expect(!TransientStackExpansion.isExpanded(isHovered: false, cardCount: 2))
+        #expect(TransientStackExpansion.isExpanded(isHovered: false, isManuallyExpanded: true, cardCount: 2))
+        #expect(!TransientStackExpansion.isExpanded(isHovered: false, isManuallyExpanded: true, cardCount: 1))
+        #expect(TransientStackExpansion.sanitizedManualExpansion(isManuallyExpanded: true, cardCount: 2))
+        #expect(!TransientStackExpansion.sanitizedManualExpansion(isManuallyExpanded: true, cardCount: 1))
+        #expect(TransientStackExpansion.pausesUndoCountdown(isHovered: false, isManuallyExpanded: true, cardCount: 2))
+        #expect(!TransientStackExpansion.pausesUndoCountdown(isHovered: false, isManuallyExpanded: true, cardCount: 1))
+        #expect(TransientStackExpansion.pausesUndoCountdown(isHovered: true, isManuallyExpanded: false, cardCount: 1))
+    }
 }

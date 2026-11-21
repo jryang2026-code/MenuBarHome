@@ -29,13 +29,11 @@ struct SettingsSearchTests {
 
     @Test("A query in the other interface language still matches")
     func crossLanguageQuery() {
-        // The index carries both languages' words, so an English query works in a Chinese window
-        // and a Chinese query works in an English one. `L10n` is not consulted for synonyms.
-        try L10n.$overrideLanguage.withValue(.en) {
+        L10n.$overrideLanguage.withValue(.en) {
             let chinese = SettingsSearch.search("周报")
             #expect(chinese.first?.anchor == .weeklyReport)
         }
-        try L10n.$overrideLanguage.withValue(.zhHans) {
+        L10n.$overrideLanguage.withValue(.zhHans) {
             let english = SettingsSearch.search("raycast")
             #expect(english.first?.anchor == .raycast)
         }
