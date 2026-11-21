@@ -13,6 +13,7 @@ extension CapabilityManifest {
     /// which `scripts/build_app.sh` rejects (#275).
     static func bundledData() -> Data? {
         var urls: [URL] = []
+        #if !os(macOS)
         if let url = Bundle.module.url(forResource: "capability-manifest", withExtension: "json", subdirectory: "Resources") {
             urls.append(url)
         }
@@ -23,6 +24,7 @@ extension CapabilityManifest {
             urls.append(root.appendingPathComponent("Resources/capability-manifest.json"))
             urls.append(root.appendingPathComponent("capability-manifest.json"))
         }
+        #endif
         for base in L10n.translationSearchBases {
             urls.append(base.appendingPathComponent("Resources/capability-manifest.json"))
             urls.append(base.appendingPathComponent("capability-manifest.json"))
@@ -31,6 +33,7 @@ extension CapabilityManifest {
                 urls.append(bundle.appendingPathComponent("Resources/capability-manifest.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/capability-manifest.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/capability-manifest.json"))
+                urls.append(bundle.appendingPathComponent("capability-manifest.json"))
             }
         }
         for url in urls {

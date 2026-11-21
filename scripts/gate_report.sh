@@ -96,18 +96,7 @@ cmd_suite_state() {
 }
 
 cmd_hook_success() {
-    awk '
-        /^(✅|⚠️)|^(✔|✘) Test run with|^部分通过/ {
-            print
-            keep_body = ($0 ~ /单文件行数告警/) ? 1 : 0
-            next
-        }
-        keep_body && /^[[:space:]]+[0-9]+[[:space:]]+/ {
-            print
-            next
-        }
-        { keep_body = 0 }
-    ' "$1"
+    grep -E '^(✅|⚠️)|^(✔|✘) Test run with|^部分通过' "$1" || true
 }
 
 cmd_failing_tests() {

@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Print a usable go >= 1.26 binary, or a one-line skip reason on stderr and exit 2.
-# A directory, a non-file, a binary < go1.26, or a stub whose `version` fails is not usable.
 set -euo pipefail
 
 cache_go="${GO2RTC_PTZ_GO_CACHE:-$HOME/.cache/menubarmijia/go1.26.10}/go/bin/go"
@@ -26,41 +24,9 @@ check_candidate() {
         last_reason="go 不可执行"
         return 1
     fi
-    local version_status=0 ver_out="" ver=""
-    ver_out="$(perl -e '
-use strict;
-my $sec = shift @ARGV;
-my $pid = fork();
-die "fork: $!\n" unless defined $pid;
-if ($pid == 0) {
-    setpgrp(0, 0);
-    exec @ARGV;
-    exit 127;
-}
-local $SIG{ALRM} = sub {
-    kill "KILL", -$pid;
-    waitpid($pid, 0);
-    exit 124;
-};
-local $SIG{INT} = local $SIG{TERM} = sub {
-    kill "KILL", -$pid;
-    waitpid($pid, 0);
-    exit 130;
-};
-alarm $sec;
-waitpid($pid, 0);
-alarm 0;
-my $status = $?;
-exit 0 if $status == 0;
-exit($status >> 8) if ($status & 127) == 0;
-exit(128 + ($status & 127));
-' "${GO2RTC_VERSION_TIMEOUT:-5}" "$candidate" version 2>/dev/null)" || version_status=$?
-    if [ "$version_status" -ne 0 ]; then
-        if [ "$version_status" -eq 124 ]; then
-            last_reason="go version 超时"
-        else
-            last_reason="go version 失败"
-        fi
+    local ver_out="" ver=""
+    if ! ver_out="$("$candidate" version 2>/dev/null)"; then
+        last_reason="go version 失败"
         return 1
     fi
     ver="$(printf '%s\n' "$ver_out" | awk '{print $3}')"

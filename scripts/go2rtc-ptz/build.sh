@@ -72,8 +72,26 @@ ensure_go_126() {
     rmdir "$cache_root/go.staging.$$" 2>/dev/null || true
     export PATH="$cache_root/go/bin:$PATH"
 }
+GO_ONLY=0
+MACOS_ONLY=0
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --go-only|--ensure-go-only)
+            GO_ONLY=1
+            shift
+            ;;
+        --macos-only)
+            MACOS_ONLY=1
+            shift
+            ;;
+        *)
+            echo "❌ 未知参数：$1（可用：--go-only --macos-only）" >&2
+            exit 2
+            ;;
+    esac
+done
 ensure_go_126
-if [ "${1:-}" = "--go-only" ] || [ "${1:-}" = "--ensure-go-only" ]; then
+if [ "$GO_ONLY" = "1" ]; then
     echo "✅ Go 工具链已就绪：$(go version)"
     exit 0
 fi
@@ -108,9 +126,11 @@ else
     echo "ℹ️ 当前环境未提供 lipo，跳过合成 macOS 通用二进制 go2rtc-universal"
 fi
 
-echo "▶ 构建 windows/amd64（不参与 macOS 打包，供后续验证）"
-(cd "$WORK/go2rtc" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-    go build -trimpath -ldflags "-s -w" -o "$OUT_DIR/go2rtc-windows-amd64.exe" .)
+if [ "$MACOS_ONLY" != "1" ]; then
+    echo "▶ 构建 windows/amd64（不参与 macOS 打包，供后续验证）"
+    (cd "$WORK/go2rtc" && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+        go build -trimpath -ldflags "-s -w" -o "$OUT_DIR/go2rtc-windows-amd64.exe" .)
+fi
 
 PATCH_SHA="$(sha256_file "$PATCH_FILE")"
 printf 'patch_sha256=%s\nheader_version=v1\n' "$PATCH_SHA" > "$OUT_DIR/go2rtc-ptz.manifest"

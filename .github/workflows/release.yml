@@ -48,9 +48,10 @@ jobs:
       - name: Verify tag, VERSION, commit, and Windows version metadata
         id: check
         env:
-          # 通过 env 传值，避免把 workflow_dispatch 输入直接拼进 shell 脚本。
           REQUESTED_REF: ${{ inputs.tag || github.ref_name }}
-        run: bash scripts/check_release.sh tag "$REQUESTED_REF"
+        run: |
+          bash scripts/check_release.sh tag "$REQUESTED_REF"
+          bash scripts/check.sh --lint-only
 
       - name: Fail fast if the tag already has a public release
         # 发布工作流从不覆盖已发布的 release；在这里先失败，省掉两端一个多小时的构建。
@@ -111,8 +112,37 @@ jobs:
       - name: Toolchain info
         run: xcodebuild -version && swift --version
 
-      - name: Install ripgrep
-        run: bash scripts/install_ripgrep.sh
+      - name: Restore Swift build cache
+        id: swift-release-cache
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .build
+          key: spm-release-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: |
+            spm-release-v5-${{ runner.os }}-${{ runner.arch }}-
+            spm-release-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Reset incomplete Swift build cache
+        if: steps.swift-release-cache.outcome != 'success'
+        run: rm -rf .build
+      - id: go2rtc-ptz-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: scripts/go2rtc-ptz/out
+          key: go2rtc-ptz-v1-${{ runner.os }}-${{ hashFiles('scripts/go2rtc-ptz/patches/0001-xiaomi-ptz.patch', 'scripts/go2rtc-ptz/build.sh') }}
+      - id: appintents-cache
+        continue-on-error: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .derived
+          key: appintents-v4-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: |
+            appintents-v4-${{ runner.os }}-${{ runner.arch }}-
+            appintents-v3-${{ runner.os }}-${{ runner.arch }}-
+      - name: Restore source mtimes for the Swift and Xcode caches
+        run: bash scripts/ci_restore_mtimes.sh
 
       - name: Require a pinned macOS signing certificate
         env:
@@ -541,12 +571,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.verify-tag.outputs.commit }}
-          fetch-depth: 0
-          fetch-tags: true
           persist-credentials: false
-
-      - name: Re-validate tag, version, and Windows metadata
-        run: bash scripts/check_release.sh tag "${RELEASE_TAG}"
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:

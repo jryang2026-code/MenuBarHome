@@ -62,15 +62,37 @@ if [ -n "$MACOS_CERT_SHA1" ] && ! printf '%s' "$MACOS_CERT_SHA1" | grep -Eq '^[0
 fi
 
 if [ "${APP_INTENTS_ONLY:-0}" != "1" ]; then
-echo "▶ 正在编译 MenuBarMijiaApp $VERSION (Release Universal: arm64 + x86_64)..."
-swift build -c release --product MenuBarMijiaApp --arch arm64 --arch x86_64
+REQUESTED_ARCHS="${ARCHS:-universal}"
+case "$REQUESTED_ARCHS" in
+    universal|"arm64 x86_64"|"x86_64 arm64")
+        TARGET_ARCHS=(arm64 x86_64)
+        ;;
+    native)
+        TARGET_ARCHS=("$(uname -m)")
+        ;;
+    arm64|x86_64)
+        TARGET_ARCHS=("$REQUESTED_ARCHS")
+        ;;
+    *)
+        echo "❌ ARCHS 只能是 universal、native、arm64 或 x86_64（当前：$REQUESTED_ARCHS）" >&2
+        exit 1
+        ;;
+esac
+SWIFT_ARCH_ARGS=()
+for arch in "${TARGET_ARCHS[@]}"; do
+    SWIFT_ARCH_ARGS+=(--arch "$arch")
+done
+echo "▶ 正在编译 MenuBarMijiaApp $VERSION (Release: ${TARGET_ARCHS[*]})..."
+swift build -c release --product MenuBarMijiaApp "${SWIFT_ARCH_ARGS[@]}"
 
-BIN_PATH="$(swift build -c release --product MenuBarMijiaApp --arch arm64 --arch x86_64 --show-bin-path)/MenuBarMijiaApp"
-ARCHS="$(lipo -archs "$BIN_PATH" 2>/dev/null || true)"
-if ! printf '%s' "$ARCHS" | grep -qw "arm64" || ! printf '%s' "$ARCHS" | grep -qw "x86_64"; then
-    echo "❌ MenuBarMijiaApp 未包含完整通用二进制架构（当前：${ARCHS:-<未知>}，期望：arm64 + x86_64）" >&2
-    exit 1
-fi
+BIN_PATH="$(swift build -c release --product MenuBarMijiaApp "${SWIFT_ARCH_ARGS[@]}" --show-bin-path)/MenuBarMijiaApp"
+BUILT_ARCHS="$(lipo -archs "$BIN_PATH" 2>/dev/null || true)"
+for arch in "${TARGET_ARCHS[@]}"; do
+    if ! printf '%s' "$BUILT_ARCHS" | grep -qw "$arch"; then
+        echo "❌ MenuBarMijiaApp 未包含期望二进制架构（当前：${BUILT_ARCHS:-<未知>}，期望：${TARGET_ARCHS[*]}）" >&2
+        exit 1
+    fi
+done
 APP_DIR="$ROOT/MenuBarHome.app"
 rm -rf "$ROOT/米家控制中心.app" "$ROOT/MenuMijia.app"  # 清理旧名字产物
 
@@ -105,7 +127,7 @@ if [ "${PTZ_BRIDGE:-1}" = "1" ]; then
     if [ ! -x "$PATCHED_GO2RTC" ] || [ "$MANIFEST_SHA" != "$PATCH_SHA" ]; then
         echo "▶ PTZ_BRIDGE=1：构建或更新带云台补丁的 go2rtc（patch ${PATCH_SHA}）"
         rm -f "$PATCHED_GO2RTC"
-        bash "$ROOT/scripts/go2rtc-ptz/build.sh" || {
+        bash "$ROOT/scripts/go2rtc-ptz/build.sh" --macos-only || {
             echo "❌ PTZ_BRIDGE=1 但补丁桥构建失败，拒绝打出没有云台能力的包" >&2
             exit 1
         }
@@ -167,10 +189,14 @@ fi
 cp "$BIN_PATH" "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
 chmod +x "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
 strip -S -x "$APP_DIR/Contents/MacOS/MenuBarMijiaApp"
-if ! SYMBOL_TABLE="$(nm -arch arm64 -ap "$APP_DIR/Contents/MacOS/MenuBarMijiaApp" && nm -arch x86_64 -ap "$APP_DIR/Contents/MacOS/MenuBarMijiaApp")"; then
-    echo "❌ 无法读取 MenuBarMijiaApp 符号表，不能确认发布包是否泄露本机路径。" >&2
-    exit 1
-fi
+SYMBOL_TABLE=""
+for arch in "${TARGET_ARCHS[@]}"; do
+    if ! arch_syms="$(nm -arch "$arch" -ap "$APP_DIR/Contents/MacOS/MenuBarMijiaApp")"; then
+        echo "❌ 无法读取 MenuBarMijiaApp ($arch) 符号表，不能确认发布包是否泄露本机路径。" >&2
+        exit 1
+    fi
+    SYMBOL_TABLE="${SYMBOL_TABLE}${arch_syms}"$'\n'
+done
 LEAKED_SYMBOLS="$(printf '%s\n' "$SYMBOL_TABLE" | grep "/Users/" || true)"
 if [ -n "$LEAKED_SYMBOLS" ]; then
     echo "❌ MenuBarMijiaApp 符号表中仍残留本地编译路径 (/Users/)！"

@@ -153,6 +153,7 @@ public struct DeviceProfiles: Codable, Equatable, Sendable {
     /// Bytes of the bundled document, so a test can prove it matches the Windows file.
     static func bundledData() -> Data? {
         var urls: [URL] = []
+        #if !os(macOS)
         if let url = Bundle.module.url(forResource: "deviceProfiles", withExtension: "json", subdirectory: "Resources") {
             urls.append(url)
         }
@@ -163,6 +164,7 @@ public struct DeviceProfiles: Codable, Equatable, Sendable {
             urls.append(root.appendingPathComponent("Resources/deviceProfiles.json"))
             urls.append(root.appendingPathComponent("deviceProfiles.json"))
         }
+        #endif
         for base in L10n.translationSearchBases {
             urls.append(base.appendingPathComponent("Resources/deviceProfiles.json"))
             urls.append(base.appendingPathComponent("deviceProfiles.json"))
@@ -171,6 +173,7 @@ public struct DeviceProfiles: Codable, Equatable, Sendable {
                 urls.append(bundle.appendingPathComponent("Resources/deviceProfiles.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/deviceProfiles.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/deviceProfiles.json"))
+                urls.append(bundle.appendingPathComponent("deviceProfiles.json"))
             }
         }
         for url in urls {

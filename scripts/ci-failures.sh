@@ -25,7 +25,7 @@
 # `^[[0m` text (and as raw ESC bytes with `--allow-escape-sequences`). Both forms are stripped,
 # so this works on any gh version.
 #
-# Needs `gh` logged in to the repository. Offline self-test: bash scripts/test_ci_failures.sh
+# Needs `gh` logged in to the repository.
 set -euo pipefail
 
 usage() {

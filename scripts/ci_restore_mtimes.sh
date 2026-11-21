@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# Stamp each tracked file with the commit time of its last change.
-# A git checkout sets every mtime to "now", so a restored Swift/Xcode build
-# cache treats every input as dirty. The build database records these stamps;
-# the next run that stamps the same unchanged files can skip them.
-# Requires a non-shallow checkout (fetch-depth: 0); a depth-1 clone reports
-# every file as introduced by HEAD.
-# `-m` lists the files a merge commit changed. Without it a merge keeps the
-# older stamp of a file it brought in, so a cached object from before the merge
-# looks current and the link fails on the new symbols it never built.
 set -euo pipefail
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null || true)" = "true" ]; then
+    echo "❌ ci_restore_mtimes.sh requires a non-shallow git checkout (fetch-depth: 0)" >&2
+    exit 1
+fi
 python3 - << 'PY'
 import os
 import subprocess

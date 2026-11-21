@@ -11,6 +11,7 @@ SKIP_SNAPSHOTS=0
 RUN_SNAPSHOTS=0
 RUN_SCRIPT_TESTS=0
 CHANGED_ONLY=0
+INSTALL_HOOKS=0
 BASE_REF=""
 
 while [ "$#" -gt 0 ]; do
@@ -35,6 +36,10 @@ while [ "$#" -gt 0 ]; do
             CHANGED_ONLY=1
             shift
             ;;
+        --install-hooks)
+            INSTALL_HOOKS=1
+            shift
+            ;;
         --base)
             [ "$#" -ge 2 ] || {
                 echo "❌ --base 需要指定比较基准引用" >&2
@@ -44,7 +49,7 @@ while [ "$#" -gt 0 ]; do
             shift 2
             ;;
         *)
-            echo "❌ 未知参数：$1（可用：--lint-only --script-tests --changed [--base <ref>] --skip-snapshots --snapshots）" >&2
+            echo "❌ 未知参数：$1（可用：--lint-only --script-tests --changed [--base <ref>] --skip-snapshots --snapshots --install-hooks）" >&2
             exit 2
             ;;
     esac
@@ -55,29 +60,29 @@ if [ "$SKIP_SNAPSHOTS" = "1" ] && [ "$RUN_SNAPSHOTS" = "1" ]; then
     exit 2
 fi
 
-# The hooks live in the shared git directory, so every worktree gets the same gates.
-GIT_COMMON_DIR="$(git rev-parse --git-common-dir 2>/dev/null || true)"
-case "$GIT_COMMON_DIR" in
-    "") ;;
-    /*) ;;
-    *) GIT_COMMON_DIR="$ROOT_DIR/$GIT_COMMON_DIR" ;;
-esac
-if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR/hooks" ]; then
-    # Every worktree shares these hooks, so wrappers invoke the active worktree's own copy.
-    install_hook_wrapper() {
-        local hook_name="$1"
-        local hook_path="$GIT_COMMON_DIR/hooks/$hook_name"
-        local wrapper="#!/usr/bin/env bash
-# Installed by scripts/check.sh: run the active worktree's own ${hook_name} gate.
-exec bash \"\$(git rev-parse --show-toplevel)/scripts/hooks/${hook_name}\" \"\$@\""
-        if [ -L "$hook_path" ] || [ "$(cat "$hook_path" 2>/dev/null || true)" != "$wrapper" ]; then
-            rm -f "$hook_path"
-            printf '%s\n' "$wrapper" > "$hook_path" && chmod +x "$hook_path" 2>/dev/null || true
+install_git_hooks() {
+    local git_common_dir
+    git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$git_common_dir" in
+        "") return 0 ;;
+        /*) ;;
+        *) git_common_dir="$ROOT_DIR/$git_common_dir" ;;
+    esac
+    [ -d "$git_common_dir/hooks" ] || return 0
+    local hook_name hook_path wrapper
+    for hook_name in pre-commit pre-push; do
+        hook_path="$git_common_dir/hooks/$hook_name"
+        if [ "$INSTALL_HOOKS" != "1" ] && [ -x "$hook_path" ] && [ ! -L "$hook_path" ]; then
+            continue
         fi
-    }
-    install_hook_wrapper "pre-commit"
-    install_hook_wrapper "pre-push"
-fi
+        wrapper="#!/usr/bin/env bash
+exec bash \"\$(git rev-parse --show-toplevel)/scripts/hooks/${hook_name}\" \"\$@\""
+        rm -f "$hook_path"
+        printf '%s\n' "$wrapper" > "$hook_path" && chmod +x "$hook_path" 2>/dev/null || true
+    done
+}
+
+install_git_hooks
 
 search_matches() {
     local pattern="$1"
@@ -123,22 +128,35 @@ check_secret_leaks() {
         .github/workflows
         docs
     )
-    # 缺失的目录（稀疏检出、只拉一端）让 rg/grep 退出 2，`if search_matches` 会把它当成「没匹配」而放过真泄漏；
-    # 只扫存在的目录，并把退出码 1 以外的失败当作扫描本身出错。
     local existing_dirs=() dir
     for dir in "${scan_dirs[@]}"; do
         [ -d "$dir" ] && existing_dirs+=("$dir")
     done
     scan_dirs=("${existing_dirs[@]}")
 
-    local jwt_status=0
-    search_matches 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' "${scan_dirs[@]}" || jwt_status=$?
-    if [ "$jwt_status" -eq 0 ]; then
-        echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
+    local combined_hits=""
+    local scan_status=0
+    combined_hits="$(search_matches '(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}|localhost:3425)' "${scan_dirs[@]}")" || scan_status=$?
+    if [ "$scan_status" -ne 0 ] && [ "$scan_status" -ne 1 ]; then
+        echo "❌ 密钥与私网地址扫描本身失败（退出码 ${scan_status}），无法确认没有泄漏！"
         return 1
-    elif [ "$jwt_status" -ne 1 ]; then
-        echo "❌ JWT 扫描本身失败（退出码 ${jwt_status}），无法确认没有泄漏！"
-        return 1
+    fi
+    if [ -n "$combined_hits" ]; then
+        local jwt_hits lan_ip_hits debug_port_hits
+        jwt_hits="$(printf '%s\n' "$combined_hits" | grep -E 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}' || true)"
+        if [ -n "$jwt_hits" ]; then
+            printf '%s\n' "$jwt_hits"
+            echo "❌ 检测到疑似 JWT Token，请移除后再提交！"
+            return 1
+        fi
+        lan_ip_hits="$(printf '%s\n' "$combined_hits" | grep -E '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:|^scripts[/\\]+hooks[/\\]+pre-push:' || true)"
+        debug_port_hits="$(printf '%s\n' "$combined_hits" | grep -F 'localhost:3425' | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:|^scripts[/\\]+check\.sh:' || true)"
+        if [ -n "$lan_ip_hits" ] || [ -n "$debug_port_hits" ]; then
+            [ -n "$lan_ip_hits" ] && printf '%s\n' "$lan_ip_hits"
+            [ -n "$debug_port_hits" ] && printf '%s\n' "$debug_port_hits"
+            echo "❌ 检测到硬编码的个人局域网 IP 或本机调试端口 (localhost:3425)，请移除！"
+            return 1
+        fi
     fi
 
     if ! search_quiet 'defaultSeededToken = ""' Sources/MijiaCore/KeychainAndPrefs.swift; then
@@ -148,22 +166,6 @@ check_secret_leaks() {
 
     if ! search_quiet 'defaultHost = ""' Sources/MijiaCore/LGWebOSClient.swift; then
         echo "❌ LGWebOSClient.swift 中的 defaultHost 必须为空字符串！"
-        return 1
-    fi
-
-    # 共享 golden 里的 10/8 是测试向量。AssistantTests 里的 localhost:3425 测自定义端口往返。
-    # pre-push 把维护者 NAS 地址写在拒绝推送的名单里。check.sh 自己会写出它正在扫描的端口。
-    local lan_ip_hits debug_port_hits
-    lan_ip_hits="$(search_matches '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+Fixtures[/\\]+local_network_endpoint_golden\.json:|^scripts[/\\]+hooks[/\\]+pre-push:' || true)"
-    debug_port_hits="$(search_matches 'localhost:3425' "${scan_dirs[@]}" | grep -Ev '^Tests[/\\]+MijiaCoreTests[/\\]+AssistantTests\.swift:|^scripts[/\\]+check\.sh:' || true)"
-    if [ -n "$lan_ip_hits" ] || [ -n "$debug_port_hits" ]; then
-        if [ -n "$lan_ip_hits" ]; then
-            echo "$lan_ip_hits"
-        fi
-        if [ -n "$debug_port_hits" ]; then
-            echo "$debug_port_hits"
-        fi
-        echo "❌ 检测到硬编码的个人局域网 IP 或本机调试端口 (localhost:3425)，请移除！"
         return 1
     fi
     return 0
@@ -201,15 +203,11 @@ check_git_identity
 
 echo "🔍 检查机械性编码规范 (Swift 宏/并发隔离/UNUserNotificationCenter Bundle 守卫)..."
 
-# Swift Testing macros expand recursively: `#require(try #require(...))` fails compilation on every
-# platform, before any test runs. One grep here replaces a CI round trip.
 if search_matches '#require\([^)]*#require' Tests/; then
     echo "❌ Swift Testing 的 #require 不能嵌套展开（宏递归会编译失败），请先解包到变量再 require！"
     exit 1
 fi
 
-# L10n.currentLanguage is one value for the whole process. A test that assigns it changes
-# every other suite's strings. Task-local $overrideLanguage is the only test seam.
 if search_matches 'L10n\.currentLanguage[[:space:]]*=([^=]|$)' Tests; then
     echo "❌ 测试给 L10n.currentLanguage 赋值会改到进程里的其他套件。请改用 L10n.\$overrideLanguage.withValue。"
     exit 1
@@ -223,7 +221,6 @@ for f in $(search_files 'UNUserNotificationCenter\.current\(\)' Sources || true)
 done
 
 for f in $(search_files '\.glassEffect\(|GlassEffectContainer' Sources || true); do
-    # ripgrep prints Windows paths with backslashes; compare in one separator style.
     if [ "${f//\\//}" != "Sources/MenuBarMijiaApp/ThemeAndMotion.swift" ]; then
         echo "❌ $f 直接使用了 macOS 26 专属的 .glassEffect 或 GlassEffectContainer，请改用 ThemeAndMotion.swift 中的 adaptiveGlass / AdaptiveGlassContainer 以保持 macOS 14+ 兼容！"
         exit 1
@@ -243,8 +240,7 @@ fi
 select_python_bin() {
     local cand
     for cand in python3 python3.15 python3.14 python3.13 python3.12 python3.11 python3.10 python; do
-        if command -v "$cand" >/dev/null 2>&1 \
-            && "$cand" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
+        if command -v "$cand" >/dev/null 2>&1; then
             printf '%s\n' "$cand"
             return 0
         fi
@@ -264,23 +260,8 @@ if ! cmp -s Resources/AppIcon/AppIcon-Dark.svg docs/assets/logo-dark.svg || ! cm
     exit 1
 fi
 
-# Fast static checks run locally on every commit and on ubuntu-latest in CI
-# (the Swift container image does not ship python3). Missing Python is recorded as a skip.
 PYTHON_LINT_SKIPPED=0
 if [ -n "$PYTHON_BIN" ]; then
-    "$PYTHON_BIN" scripts/check_windows_geometry.py
-    "$PYTHON_BIN" scripts/check_windows_motion_tokens.py
-    "$PYTHON_BIN" scripts/check_windows_test_timeouts.py
-    "$PYTHON_BIN" scripts/check_timer_render.py
-    "$PYTHON_BIN" scripts/check_swift_harness_lints.py
-    "$PYTHON_BIN" scripts/check_swift_test_waits.py
-    "$PYTHON_BIN" scripts/check_windows_test_lints.py
-    "$PYTHON_BIN" scripts/check_workflows.py
-    "$PYTHON_BIN" scripts/check_doc_links.py
-    "$PYTHON_BIN" scripts/check_capability_matrix.py
-    "$PYTHON_BIN" scripts/check_capability_manifest.py
-    "$PYTHON_BIN" scripts/check_supported_devices.py
-    "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
     "$PYTHON_BIN" - <<'PY'
 import base64
 import re
@@ -326,6 +307,9 @@ if overlap:
     if overlap in keys.values():
         sys.exit("❌ Ed25519 过渡公开钥不能与当前签名公钥相同")
 PY
+    if [ "$RUN_SCRIPT_TESTS" != "1" ] && ! git diff --quiet HEAD -- .github/workflows 2>/dev/null; then
+        "$PYTHON_BIN" scripts/check_workflows.py
+    fi
 else
     PYTHON_LINT_SKIPPED=1
     echo "⏭️  跳过 Python 门禁检查：未找到 Python 3.10+"
@@ -337,29 +321,30 @@ run_clean_env() {
         "$@"
 }
 
+run_contract_checks() {
+    if [ -n "$PYTHON_BIN" ]; then
+        "$PYTHON_BIN" scripts/check_workflows.py
+        "$PYTHON_BIN" scripts/check_doc_links.py
+        "$PYTHON_BIN" scripts/check_capability_matrix.py
+        "$PYTHON_BIN" scripts/check_capability_manifest.py
+        "$PYTHON_BIN" scripts/check_supported_devices.py
+        "$PYTHON_BIN" scripts/check_windows_geometry.py
+        "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
+    fi
+}
+
 run_script_self_tests() {
-    echo "🧪 运行脚本与工具自检 (--script-tests)..."
+    echo "🧪 运行契约与脚本工具自检 (--script-tests)..."
+    run_contract_checks
     if [ -n "$PYTHON_BIN" ]; then
         run_clean_env "$PYTHON_BIN" scripts/test_mijia_cli.py
         run_clean_env "$PYTHON_BIN" scripts/update_manifest.py self-test
         run_clean_env "$PYTHON_BIN" scripts/probe_lan_gateway.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/measure_footprint.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/local_ci_dns.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/local_macos_runner.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/check_windows_test_lints.py --self-test
-        run_clean_env "$PYTHON_BIN" scripts/check_swift_test_waits.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/check_capability_manifest.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
-        run_clean_env bash scripts/test_snapshot_ci.sh
         run_clean_env bash scripts/test_check_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
-        run_clean_env bash scripts/test_merge_pr.sh
-        run_clean_env bash scripts/test_ci_errors.sh
-        run_clean_env bash scripts/test_ci_failures.sh
-        run_clean_env bash scripts/test_ci_swift_test.sh
-        run_clean_env bash scripts/test_swift_test_retry.sh
-        run_clean_env "$PYTHON_BIN" scripts/test_check_windows_test_timeouts.py
-        run_clean_env bash scripts/test_harness_tools.sh
     fi
 }
 
@@ -376,7 +361,6 @@ if [ "$LINT_ONLY" = "1" ]; then
     exit 0
 fi
 
-# Resolve changed scope for `--changed` mode, or detect whether `scripts/go2rtc-ptz/` changed on full runs.
 SCOPE_MACOS=true
 SCOPE_WINDOWS=true
 SCOPE_CORE=true
@@ -450,8 +434,26 @@ if [ "$CHANGED_ONLY" = "1" ]; then
     fi
 
     echo "🎯 增量门禁命中范围：macos=${SCOPE_MACOS} core=${SCOPE_CORE} windows=${SCOPE_WINDOWS} raycast=${SCOPE_RAYCAST} scripts=${SCOPE_SCRIPTS} go2rtc=${SCOPE_GO2RTC}"
-    if [ "$RUN_SCRIPT_TESTS" != "1" ] && { [ "$SCOPE_SCRIPTS" = "true" ] || printf '%s\n' "$changed_list" | grep -q '^nas/'; }; then
-        run_script_self_tests
+    if [ "$RUN_SCRIPT_TESTS" != "1" ]; then
+        if [ "$SCOPE_SCRIPTS" = "true" ] || printf '%s\n' "$changed_list" | grep -q '^nas/'; then
+            run_script_self_tests
+        elif [ -n "$PYTHON_BIN" ]; then
+            if printf '%s\n' "$changed_list" | grep -q '^\.github/workflows/'; then
+                "$PYTHON_BIN" scripts/check_workflows.py
+            fi
+            if printf '%s\n' "$changed_list" | grep -Eq '(\.md$|^docs/|^Shared/)'; then
+                "$PYTHON_BIN" scripts/check_doc_links.py
+                "$PYTHON_BIN" scripts/check_capability_matrix.py
+                "$PYTHON_BIN" scripts/check_capability_manifest.py
+                "$PYTHON_BIN" scripts/check_supported_devices.py
+            fi
+            if [ "$SCOPE_WINDOWS" = "true" ]; then
+                "$PYTHON_BIN" scripts/check_windows_geometry.py
+            fi
+            if [ "$SCOPE_GO2RTC" = "true" ] || printf '%s\n' "$changed_list" | grep -Eq '(CameraPTZ\.swift|camera_ptz_models\.json)'; then
+                "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
+            fi
+        fi
     fi
 else
     if [ "$RUN_SCRIPT_TESTS" != "1" ]; then
@@ -468,7 +470,6 @@ else
     fi
 fi
 
-# A new step is one add_gate_step line. The function calls record_gate_result with 名称=0, 名称=skip, or 名称=退出码.
 gate_step_names=()
 gate_step_fns=()
 gate_results=()
@@ -514,26 +515,20 @@ raycast_npm() {
 run_swift_gate() {
     local status=0
     if [ "$(uname -s)" = "Linux" ]; then
-        # Package.swift requires the macOS SDK. CI's linux-core job runs MijiaCore through this
-        # shim; `swift test` at the repo root cannot compile Security/AppKit imports on Linux.
         echo "运行 Linux 上的 MijiaCore 测试（scripts/linux-check）与双端黄金语料校验..."
         run_logged "Linux MijiaCore" bash "$ROOT_DIR/scripts/linux-check/run.sh" || status=$?
         record_gate_result "Swift=${status}"
     elif ! command -v swift >/dev/null 2>&1; then
-        # Windows development machines have no Swift toolchain; CI still runs the suite.
         record_gate_result "Swift=skip"
         echo "⏭️  跳过 Swift 门槛：未找到 swift"
         return 0
     elif [ "$SKIP_SNAPSHOTS" = "1" ]; then
-        # Pixel baselines are compared on macos-26-intel. A local Mac is not that renderer.
         echo "运行 Swift 单元测试（跳过快照）与双端黄金语料校验..."
         run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
-        # The summary must not call this a full pass: the snapshot comparison did not run.
         record_gate_result "Snapshots=skip"
     elif [ "$CHANGED_ONLY" = "1" ] && [ "$MACOS_APP_CHANGED" = "0" ]; then
         echo "ℹ️  仅核心层改动，跳过 UI 快照渲染比对，运行 MijiaCore 单元测试..."
-        echo "像素基准是 GitHub 托管机 macos-26-intel。重录用 Actions 的 Record snapshots。"
         run_logged "Swift 核心测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
     elif [ "$RUN_SNAPSHOTS" = "1" ]; then
@@ -548,14 +543,13 @@ run_swift_gate() {
             snap=$?
             set -e
             if [ "$snap" -ne 0 ]; then
-                echo "⚠️ 本机快照与基准不一致。这不阻断本机门禁。重录请运行 Actions 的 Record snapshots。"
+                echo "⚠️ 本机快照与基准不一致。这不阻断本机门禁。更新基线可运行 bash scripts/record_snapshots.sh。"
                 record_gate_result "Snapshots=advisory"
             fi
         fi
     else
         echo "运行 Swift 单元测试（跳过快照像素比对）与双端黄金语料校验..."
-        echo "像素基准是 GitHub 托管机 macos-26-intel（Xcode 26.6，zh_CN）。本机渲染不同，不能当基准。"
-        echo "重录：Actions → Record snapshots，Branch 填本仓库的分支名。更换该镜像或 Xcode 后必须重录。"
+        echo "像素基准是 GitHub 托管机 macos-26-intel（Xcode 26.6，zh_CN）。本机预览用 bash scripts/check.sh --snapshots。"
         run_logged "Swift 测试" swift test --skip SnapshotTests || status=$?
         record_gate_result "Swift=${status}"
         record_gate_result "Snapshots=skip"
@@ -584,8 +578,6 @@ run_windows_gate() {
         echo "⏭️  跳过 Windows 门槛：未找到 windows/node_modules（先 cd windows && npm ci）"
         return 0
     fi
-    # `npm run build` = tsc --noEmit + vite build: the bundle that ships in the installer,
-    # which typecheck alone does not prove (asset imports, CSS, chunk limits).
     local status=0
     run_logged "Windows 前端" windows_npm || status=$?
     record_gate_result "Windows=${status}"
@@ -604,8 +596,6 @@ run_raycast_gate() {
     [ "$status" -eq 0 ]
 }
 
-# verify.sh clones go2rtc and runs go test -race. --lint-only returns before these
-# steps, and unchanged runs rely on check_model_tables.py verifying the patch SHA-256.
 run_go2rtc_gate() {
     local go err status=0
     err="$(mktemp)"

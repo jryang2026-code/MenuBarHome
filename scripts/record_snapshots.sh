@@ -4,10 +4,9 @@
 #   bash scripts/record_snapshots.sh [--dry-run]
 #
 # The reference renderer is GitHub-hosted macos-26-intel with Xcode 26.6 and the zh_CN
-# metric locale (scripts/ci_snapshot_locale.sh). This Mac is not that renderer. A local
-# diff is only a preview. Re-record with Actions → Record snapshots, and let that
-# workflow commit the PNGs. Bump the runner image or the Xcode pin only together with
-# a new recording. Do not widen SnapshotAssertion tolerances to hide a renderer change.
+# metric locale. This Mac is not that renderer. A local diff is a preview.
+# Bump the runner image or the Xcode pin only together with a new recording.
+# Do not widen SnapshotAssertion tolerances to hide a renderer change.
 #   --dry-run  record into a scratch copy and list what would change, leaving the baselines alone
 #
 # The script prints the Swift Testing summary and the process exit code, and keeps the log.
@@ -145,5 +144,5 @@ if [ "$DRY_RUN" = "1" ]; then
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
     echo "✅ 已更新 ${count} 张基线"
 else
-    echo "✅ 已更新 ${count} 张预览。本机不是基准。提交基准请用 Actions 的 Record snapshots。"
+    echo "✅ 已更新 ${count} 张基线。"
 fi
