@@ -14,7 +14,7 @@ ENTRY_KEYS = frozenset({"id", "kind", "dependsOn", "defaultOnFreshInstall", "sta
 EXPECTED_DEFAULTS: dict[str, bool] = {
     "xiaomi-cloud": False, "home-assistant": False,
     "voice-input": False, "ai-assistant": False, "proactive-suggestions": True, "companion-integration": False,
-    "event-automation": True, "grokball": False, "sensor-history": True, "plug-energy": True, "camera-live": True,
+    "event-automation": True, "sensor-history": True, "plug-energy": True, "camera-live": True,
     "light": True, "plug": True, "climate": True, "fan": True, "cover": True, "appliance": True, "fridge": True,
     "vacuum": True, "speaker": True, "tv": True, "camera": True, "sensor": True, "valve": True, "generic": True,
 }

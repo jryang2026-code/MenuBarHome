@@ -17,7 +17,7 @@ export const CONNECTION_CAPABILITY_IDS = ["xiaomi-cloud", "home-assistant"] as c
 export type ConnectionCapabilityID = (typeof CONNECTION_CAPABILITY_IDS)[number];
 export const FEATURE_IDS = [
   "voice-input", "ai-assistant", "proactive-suggestions", "companion-integration",
-  "event-automation", "grokball", "sensor-history", "plug-energy", "camera-live",
+  "event-automation", "sensor-history", "plug-energy", "camera-live",
 ] as const;
 export type FeatureID = (typeof FEATURE_IDS)[number];
 export const DEVICE_CATEGORY_IDS = [
@@ -33,7 +33,7 @@ export const BASELINE_UNLISTED_DEVICE_CATEGORIES: ReadonlySet<DeviceCategoryID> 
 export const CAPABILITY_EXPECTED_KIND = {
   "xiaomi-cloud": "connection", "home-assistant": "connection",
   "voice-input": "feature", "ai-assistant": "feature", "proactive-suggestions": "feature",
-  "companion-integration": "feature", "event-automation": "feature", grokball: "feature",
+  "companion-integration": "feature", "event-automation": "feature",
   "sensor-history": "feature", "plug-energy": "feature", "camera-live": "feature",
   light: "deviceCategory", plug: "deviceCategory", climate: "deviceCategory", fan: "deviceCategory",
   cover: "deviceCategory", appliance: "deviceCategory", fridge: "deviceCategory", vacuum: "deviceCategory",

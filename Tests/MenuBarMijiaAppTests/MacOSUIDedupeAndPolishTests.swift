@@ -64,25 +64,6 @@ struct MacOSUIDedupeAndPolishTests {
         #expect(DeviceFacetSection.selectedOptionValue(for: control) == 2)
     }
 
-    @Test("GrokBallAnimator starts in target emotion pose on first mount instead of blending from 02")
-    func grokBallStartsDirectlyInInitialEmotion() throws {
-        let defaultBase = try #require(GrokBallData.emotions["02"]).base
-        let distinct = try #require(GrokBallData.emotions.first { key, emo in
-            let start = emo.frames.first?.pose ?? emo.base
-            return key != "02" && emo.transition > 0 && start.body.color.r != defaultBase.body.color.r
-        })
-        let expectedR = (distinct.value.frames.first?.pose ?? distinct.value.base).body.color.r
-        let t0 = Date(timeIntervalSinceReferenceDate: 10)
-        let fresh = GrokBallAnimator()
-        fresh.sample(at: t0, emotionId: distinct.key, pointer: .zero, reduceMotion: false)
-        #expect(fresh.pose.body.color.r == expectedR)
-
-        let switched = GrokBallAnimator()
-        switched.sample(at: t0, emotionId: "02", pointer: .zero, reduceMotion: false)
-        switched.sample(at: t0, emotionId: distinct.key, pointer: .zero, reduceMotion: false)
-        #expect(switched.pose.body.color.r == defaultBase.body.color.r)
-    }
-
     @Test("MenuBarPanelController idles label timer when closed and ignores unrelated UserDefaults")
     func menuBarControllerTimerIdlesAndFiltersUserDefaults() async throws {
         let suite = "test.menubar.idle.\(UUID().uuidString)"
@@ -99,7 +80,7 @@ struct MacOSUIDedupeAndPolishTests {
 
         #expect(!controller.isLabelTimerRunning)
         controller.showPanel()
-        #expect(controller.isLabelTimerRunning)
+        #expect(!controller.isLabelTimerRunning)
         controller.hidePanel(animated: false)
         #expect(!controller.isLabelTimerRunning)
 

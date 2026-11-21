@@ -20,7 +20,6 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case hideOfflineDevices
     case hideGroupedLights
     case quickScenesBar
-    case grokBall
     case voiceInput
     case soundFeedback
     case launchAtLogin
@@ -87,7 +86,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     var tab: SettingsTab {
         switch self {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .compactGrid,
-             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .grokBall, .voiceInput,
+             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .voiceInput,
              .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
              .scheduledCommands, .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
@@ -292,9 +291,6 @@ enum SettingsSearch {
             entry(.voiceInput, section: generalSection, zhTitle: "语音输入", enTitle: "Voice Input",
                   synonyms: ["语音", "麦克风", "说话", "听写", "长按说话", "录音", "voice", "mic",
                              "microphone", "speech", "dictation", "hold to talk"]),
-            entry(.grokBall, section: generalSection, zhTitle: "启用侧边情绪智能球",
-                  enTitle: "Enable Sidecar Grok Ball",
-                  synonyms: ["情绪球", "智能球", "侧边球", "grok", "ball", "sidecar", "emotion"]),
             entry(.soundFeedback, section: generalSection, zhTitle: "操作声音反馈", enTitle: "Play Feedback Sounds",
                   synonyms: ["声音", "提示音", "音效", "sound", "audio", "chime", "beep"]),
             entry(.launchAtLogin, section: generalSection, zhTitle: "登录 Mac 时自动启动",

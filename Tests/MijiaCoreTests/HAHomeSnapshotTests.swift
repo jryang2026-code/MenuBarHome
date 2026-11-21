@@ -145,6 +145,48 @@ struct HAHomeSnapshotTests {
         } else { Issue.record("Expected dev_airp_1") }
         #expect(regressionHome.deviceFacets["dev_airp_1"] == nil)
     }
+
+    @Test("HAHomeSnapshot skips irrelevant domains, unconsumed sensors, and no-op state_changed events")
+    func incrementalStateChangedFiltering() throws {
+        var projection = HAHomeSnapshot()
+        _ = try projection.receive(Self.reply(1, .array([.object(["area_id": .string("office"), "name": .string("Office")])])))
+        _ = try projection.receive(Self.reply(2, .array([])))
+        _ = try projection.receive(Self.reply(3, .array([
+            .object(["entity_id": .string("light.visible"), "area_id": .string("office")]),
+            .object(["entity_id": .string("sensor.cpu_load"), "area_id": .string("office")]),
+        ])))
+        let initial = try #require(try projection.receive(Self.reply(4, .array([
+            .object(["entity_id": .string("light.visible"), "state": .string("on"), "attributes": .object(["friendly_name": .string("Desk light")])]),
+            .object(["entity_id": .string("sensor.cpu_load"), "state": .string("12.0"), "attributes": .object(["unit_of_measurement": .string("%")])]),
+        ]))))
+        #expect(initial.devices.map(\.id) == ["light.visible"])
+
+        func stateChanged(_ entityId: String, _ state: String, attributes: [String: JSONValue] = [:]) -> [String: JSONValue] {
+            [
+                "type": .string("event"),
+                "event": .object([
+                    "event_type": .string("state_changed"),
+                    "data": .object([
+                        "entity_id": .string(entityId),
+                        "new_state": .object([
+                            "entity_id": .string(entityId),
+                            "state": .string(state),
+                            "attributes": .object(attributes),
+                        ]),
+                    ]),
+                ]),
+            ]
+        }
+
+        for irrelevant in ["sun.sun", "weather.home", "person.alice", "device_tracker.phone", "automation.morning", "update.core"] {
+            #expect(try projection.receive(stateChanged(irrelevant, "active")) == nil)
+        }
+        #expect(try projection.receive(stateChanged("sensor.cpu_load", "15.5", attributes: ["unit_of_measurement": .string("%")])) == nil)
+        #expect(try projection.receive(stateChanged("light.visible", "on", attributes: ["friendly_name": .string("Desk light")])) == nil)
+
+        let updated = try #require(try projection.receive(stateChanged("light.visible", "off", attributes: ["friendly_name": .string("Desk light")])))
+        #expect(updated.devices.first?.isActiveOn == false)
+    }
 }
 
 /// Deterministic fuzz pass over Home Assistant WebSocket frames (#186). A frame is untrusted

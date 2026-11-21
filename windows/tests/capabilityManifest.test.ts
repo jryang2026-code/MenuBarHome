@@ -24,7 +24,6 @@ describe("Shared capability manifest (P1a)", () => {
     assert.equal(manifest.entryFor("xiaomi-cloud").defaultOnFreshInstall, false);
     assert.equal(manifest.entryFor("home-assistant").defaultOnFreshInstall, false);
     assert.equal(manifest.entryFor("voice-input").platforms.windows, "partial");
-    assert.equal(manifest.entryFor("grokball").platforms.windows, "unsupported");
     assert.equal(manifest.entryFor("light").defaultOnFreshInstall, true);
 
     const covered = new Set<string>(manifest.hostCoreCapabilityMatrixIds);

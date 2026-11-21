@@ -25,6 +25,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var localFlagsMonitor: Any?
     private var windowBecomeKeyObserver: NSObjectProtocol?
     private var applicationBecomeActiveObserver: NSObjectProtocol?
+    private var defaultsChangeObserver: NSObjectProtocol?
     private var safetyTimerTask: Task<Void, Never>?
     /// The alert and the connection scope it was delivered in. Home Assistant entity ids repeat across
     /// servers (`light.heater`), so the device id alone does not identify the home the alert was about.
@@ -78,7 +79,19 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         MenuBarPanelController.shared.install(with: store)
         setupLocalKeyboardMonitors()
         setupNotificationsIfBundled()
-        startSafetyTimer()
+        if let defaultsChangeObserver {
+            NotificationCenter.default.removeObserver(defaultsChangeObserver)
+        }
+        defaultsChangeObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: store.userDefaults,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.syncSafetyTimer()
+            }
+        }
+        syncSafetyTimer()
         // The status item exists as soon as `install` returns, but the first launch has no window to
         // host yet; give SwiftUI one run-loop turn before an onboarding panel is requested.
         Task { @MainActor [weak self] in
@@ -458,7 +471,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isShowingMiReauth: store.isShowingMiReauth,
             isAllOffHoldActive: transient.isAllOffHoldActive,
             hasPendingConfirmation: store.pendingCloudConsent != nil,
-            isGrokBallStageExpanded: store.isGrokBallStageExpanded,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
             hasActivePrompt: LayoutUIState.shared.hasActivePrompt,
@@ -497,8 +509,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             PanelTransientUIState.shared.cancelAllOffHold()
         case .cancelPendingConfirmation:
             store.declinePendingCloudRequest()
-        case .dismissGrokBallStage:
-            store.dismissGrokBallStage()
         case .dismissConnectionDetail:
             PanelConnectionDetailState.shared.dismiss(restoreFocus: true)
         case .focusConnectionStatus:
@@ -717,12 +727,32 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
+    private func shouldRunSafetyTimer(store: HomeStore) -> Bool {
+        store.enableSafetyAlerts
+            || store.enableWeeklyHealthReport
+            || store.automaticallyChecksForUpdates
+    }
+
+    private func syncSafetyTimer() {
+        guard let store, shouldRunSafetyTimer(store: store) else {
+            safetyTimerTask?.cancel()
+            safetyTimerTask = nil
+            return
+        }
+        guard safetyTimerTask == nil else { return }
+        startSafetyTimer()
+    }
+
     private func startSafetyTimer() {
         safetyTimerTask?.cancel()
         safetyTimerTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled, let self, let store = self.store else { break }
+                guard self.shouldRunSafetyTimer(store: store) else {
+                    self.safetyTimerTask = nil
+                    break
+                }
                 if store.enableSafetyAlerts {
                     for alert in store.evaluateSafetyAlerts(now: Date()) {
                         self.deliverNotification(for: alert)

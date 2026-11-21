@@ -861,7 +861,7 @@ struct DeviceTypeMappingTests {
         #expect(store.devices.map(\.id) == ["101"])
         #expect(store.typeHiddenSafetyDevices.map(\.id) == ["105"])
         #expect(store.menuBarShowsHazard)
-        #expect(store.evaluateSafetyAlerts(now: Date(timeIntervalSince1970: 1_700_000_000)).contains { $0.deviceId == "105" })
+        #expect(store.recentSafetyAlerts.contains { $0.alert.deviceId == "105" })
 
         // Host write gate blocks hidden sensor and hidden gas valve with zero writes.
         await #expect(throws: CapabilityControlBlockedError(reason: .categoryDisabled(.sensor))) {

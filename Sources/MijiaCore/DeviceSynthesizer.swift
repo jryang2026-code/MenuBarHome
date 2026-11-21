@@ -1471,7 +1471,7 @@ public enum DeviceSynthesizer {
                   entity.entity_category != "config", entity.entity_category != "diagnostic" else { return false }
             if states[entity.entity_id]?.attributes["device_class"]?.stringValue == "outlet" { return true }
             let objectId = entity.entity_id.dropFirst("switch.".count)
-            return objectId.firstMatch(of: #/(?:^|_)(?:physical_controls_locked|child_lock|indicator|mute|sleep_mode)(?:_|$)/#) == nil
+            return !Self.containsUnderscoreBoundedToken(objectId, anyOf: Self.excludedSwitchTokens)
         }
         let outletSwitch = primarySwitches.first {
             states[$0.entity_id]?.attributes["device_class"]?.stringValue == "outlet"
@@ -1679,7 +1679,7 @@ public enum DeviceSynthesizer {
                 return false
             }
             let objectId = entity.entity_id.dropFirst("button.".count)
-            return objectId.firstMatch(of: #/(?:^|_)(?:reboot|restart|reset|identify|calibrate)(?:_|$)/#) == nil
+            return !Self.containsUnderscoreBoundedToken(objectId, anyOf: Self.excludedButtonTokens)
         }
         if let btn = primaryButtons.first(where: { $0.entity_id.contains("wake_on_lan") }) ?? primaryButtons.first,
            let st = states[btn.entity_id] {
@@ -1919,6 +1919,41 @@ public enum DeviceSynthesizer {
 
     private static func kindPriority(_ kind: DeviceKind) -> Int {
         kind.tag.rank
+    }
+
+    private static let excludedSwitchTokens: [String] = [
+        "physical_controls_locked",
+        "child_lock",
+        "indicator",
+        "mute",
+        "sleep_mode",
+    ]
+
+    private static let excludedButtonTokens: [String] = [
+        "reboot",
+        "restart",
+        "reset",
+        "identify",
+        "calibrate",
+    ]
+
+    static func containsUnderscoreBoundedToken(_ text: Substring, anyOf tokens: [String]) -> Bool {
+        guard !text.isEmpty else { return false }
+        for token in tokens {
+            var searchStart = text.startIndex
+            while let range = text[searchStart...].range(of: token) {
+                let validStart = range.lowerBound == text.startIndex
+                    || text[text.index(before: range.lowerBound)] == "_"
+                let validEnd = range.upperBound == text.endIndex
+                    || text[range.upperBound] == "_"
+                if validStart && validEnd {
+                    return true
+                }
+                guard range.lowerBound < text.endIndex else { break }
+                searchStart = text.index(after: range.lowerBound)
+            }
+        }
+        return false
     }
 }
 

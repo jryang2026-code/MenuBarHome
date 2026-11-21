@@ -10,8 +10,8 @@ public final class OfflineHistory {
 
     private let defaults: UserDefaults
     private let calendar: Calendar
-    /// Device id → start-of-day dates the device was seen offline.
     private var days: [String: Set<Date>]
+    private var lastTrimmedDay: Date?
 
     public init(defaults: UserDefaults = .standard, calendar: Calendar = .current) {
         self.defaults = defaults
@@ -22,14 +22,17 @@ public final class OfflineHistory {
 
     public func record(devices: [SmartDevice], now: Date) {
         let today = calendar.startOfDay(for: now)
-        var changed = trim(now: now)
+        var changed = false
+        if lastTrimmedDay != today {
+            lastTrimmedDay = today
+            changed = trim(today: today)
+        }
         for dev in devices where !dev.isOnline && !dev.telemetryStale {
             if days[dev.id, default: []].insert(today).inserted { changed = true }
         }
         if changed { persist() }
     }
 
-    /// Offline-day counts for the window ending today, only for devices with at least one.
     public func offlineDays(dayCount: Int = 7, now: Date) -> [String: Int] {
         let today = calendar.startOfDay(for: now)
         guard let first = calendar.date(byAdding: .day, value: -(min(max(dayCount, 1), Self.retentionDays) - 1), to: today) else {
@@ -43,11 +46,12 @@ public final class OfflineHistory {
 
     public func clear() {
         days = [:]
+        lastTrimmedDay = nil
         defaults.removeObject(forKey: Self.storageKey)
     }
 
-    private func trim(now: Date) -> Bool {
-        guard let cutoff = calendar.date(byAdding: .day, value: -(Self.retentionDays - 1), to: calendar.startOfDay(for: now)) else {
+    private func trim(today: Date) -> Bool {
+        guard let cutoff = calendar.date(byAdding: .day, value: -(Self.retentionDays - 1), to: today) else {
             return false
         }
         let before = days

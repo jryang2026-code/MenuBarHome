@@ -154,17 +154,6 @@ CODE_ANCHORS = (
         },
     },
     {
-        "id": "grokball",
-        "macos": {
-            "path": "Sources/MenuBarMijiaApp/GrokBallRenderer.swift",
-            "symbol": "GrokBallRenderer",
-        },
-        "windows": {
-            "roots": ("windows/src", "windows/src-tauri/src"),
-            "symbol": "GrokBallView",
-        },
-    },
-    {
         "id": "quick-actions",
         "macos": {
             "path": "Sources/MijiaCore/Models.swift",

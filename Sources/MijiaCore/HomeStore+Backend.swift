@@ -81,8 +81,12 @@ extension HomeStore {
         }
         self.lgWebOSClient = client
         self.lgWebOSClientID = clientID
+        let currentPollingContext = pollingContext
         if !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
-            Task { await client.start() }
+            Task {
+                await client.setPollingContext(currentPollingContext)
+                await client.start()
+            }
         }
     }
 
@@ -256,10 +260,12 @@ extension HomeStore {
     private func pushPollingContext() {
         let previous = pollingContextSync
         let target = provider
+        let lgClient = lgWebOSClient
         let context = pollingContext
         pollingContextSync = Task {
             await previous?.value
             await target.setPollingContext(context)
+            await lgClient?.setPollingContext(context)
         }
     }
 
@@ -722,9 +728,9 @@ extension HomeStore {
             let facetsChanged = deviceFacets != nextFacets
             if facetsChanged { deviceFacets = nextFacets }
 
-            // Compare the displayed names so aliases do not cause two observable writes per snapshot.
             let nextDevices = devicesWithAliases(merged)
-            if devices != nextDevices {
+            let devicesChanged = devices != nextDevices
+            if devicesChanged {
                 devices = nextDevices
             } else if backendsChanged || pairedChanged || facetsChanged {
                 syncIndexedDevices(from: devices)
@@ -744,9 +750,16 @@ extension HomeStore {
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
             scheduleRaycastSnapshotExport()
-            energyHistory.record(devices: devices, deviceBackends: deviceBackends, now: sampleNow)
-            sensorHistory.record(devices: devices, now: sampleNow)
-            offlineHistory.record(devices: devices, now: sampleNow)
+            let shouldRecordHistory = devicesChanged
+                || backendsChanged
+                || lastHistoryRecordAt == nil
+                || sampleNow.timeIntervalSince(lastHistoryRecordAt!) >= 30
+            if shouldRecordHistory {
+                lastHistoryRecordAt = sampleNow
+                energyHistory.record(devices: devices, deviceBackends: deviceBackends, now: sampleNow)
+                sensorHistory.record(devices: devices, now: sampleNow)
+                offlineHistory.record(devices: devices, now: sampleNow)
+            }
 
             if enableSafetyAlerts {
                 // `evaluateSafetyAlerts` records into the activity stack whether or not the app

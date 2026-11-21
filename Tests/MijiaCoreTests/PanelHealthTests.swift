@@ -302,14 +302,13 @@ struct PanelHealthTests {
             #expect(await provider.executedCommands.isEmpty)
             #expect(store.devices.first { $0.id == LGWebOSProtocol.deviceId }?.isActiveOn == true)
 
-            // The drawer's own LAN controls pass the same gate (`controllableDevice`).
-            store.grokBallCelebrationUntil = nil
             store.toggleTVMute(LGWebOSProtocol.deviceId)
             for _ in 0..<500 {
-                if store.grokBallCelebrationUntil != nil { break }
+                if case .tv(let spec)? = store.devices.first(where: { $0.id == LGWebOSProtocol.deviceId })?.kind, spec.isMuted {
+                    break
+                }
                 await Task.yield()
             }
-            #expect(store.grokBallCelebrationUntil != nil)
             #expect(store.toastNotice == nil)
             if case .tv(let spec)? = store.devices.first(where: { $0.id == LGWebOSProtocol.deviceId })?.kind {
                 #expect(spec.isMuted)

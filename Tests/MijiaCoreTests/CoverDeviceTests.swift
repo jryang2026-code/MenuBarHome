@@ -47,18 +47,11 @@ struct CoverDeviceTests {
         #expect(store.menuBarText == "1开")
     }
 
-    @Test("Assistant and GrokBall active summaries follow the ActiveDevice rule")
+    @Test("Assistant active summary follows the ActiveDevice rule")
     @MainActor
     func activeSummariesIgnoreOpenCover() async throws {
         let (store, _) = try await makeStore([Self.openCover])
         #expect(store.buildAssistantContext(mention: .none).activeDevicesSummary == "全屋设备均关闭")
-
-        let lateNight = try #require(Calendar.current.date(
-            bySettingHour: 23, minute: 30, second: 0, of: Date()
-        ))
-        #expect(store.grokBallEmotionId(
-            speechListening: false, isPointerTracking: false, now: lateNight
-        ) == GrokBallEmotionResolver.sleeping)
     }
 
     @Test("全关 leaves an open cover alone")

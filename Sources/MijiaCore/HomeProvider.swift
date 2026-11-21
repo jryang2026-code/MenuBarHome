@@ -203,6 +203,12 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private var snapshot = HAHomeSnapshot()
+    private var pollingContext = PollingContext()
+    private var lastEmittedHome: SynthesizedHome?
+    private var coalesceTask: Task<Void, Never>?
+    private var hasPendingCoalescedSynthesis = false
+    private var lastLiveSynthesisAt: ContinuousClock.Instant?
+    var liveEventCoalesceWindowOverride: Duration?
     /// Read for every frame, so a type the user closes stops re-synthesizing on the next one (P3b-M).
     private let typePrunePolicyLoader: @Sendable () -> HATypePrunePolicy
     /// Told about another Home Assistant address found after repeated disconnects. The provider never
@@ -326,8 +332,21 @@ public actor HAWebSocketProvider: HomeProvider {
         restartLoop()
     }
 
+    public func setPollingContext(_ context: PollingContext) async {
+        guard !isShutDown else { return }
+        let becameVisible = context.panelVisible && !pollingContext.panelVisible
+        let becameActive = context.systemActive && !pollingContext.systemActive
+        pollingContext = context
+        if (becameVisible || becameActive), hasPendingCoalescedSynthesis {
+            flushPendingCoalescedSynthesis()
+        }
+    }
+
     public func shutdown() async {
         isShutDown = true
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        hasPendingCoalescedSynthesis = false
         loopTask?.cancel()
         loopTask = nil
         pingTask?.cancel()
@@ -399,6 +418,9 @@ public actor HAWebSocketProvider: HomeProvider {
 
     private func restartLoop() {
         guard !isShutDown else { return }
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        hasPendingCoalescedSynthesis = false
         loopTask?.cancel()
         pingTask?.cancel()
         pingTask = nil
@@ -560,6 +582,9 @@ public actor HAWebSocketProvider: HomeProvider {
         var localPingTask: Task<Void, Never>?
         var localReceiveTask: Task<Void, Error>?
         defer {
+            coalesceTask?.cancel()
+            coalesceTask = nil
+            hasPendingCoalescedSynthesis = false
             localPingTask?.cancel()
             localReceiveTask?.cancel()
             if let localPingTask, self.pingTask == localPingTask {
@@ -599,6 +624,11 @@ public actor HAWebSocketProvider: HomeProvider {
         self.activeWebSocket = ws
         onAuthenticated()
         snapshot = HAHomeSnapshot()
+        lastEmittedHome = nil
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        hasPendingCoalescedSynthesis = false
+        lastLiveSynthesisAt = nil
         nextWebSocketMessageId = 5
         pendingRefreshStateIds.removeAll()
         resetStartupReplyState()
@@ -672,8 +702,21 @@ public actor HAWebSocketProvider: HomeProvider {
                         continue
                     }
                     if let home = try snapshot.receive(msg, isRefreshStatesResult: isRefresh, typePrunePolicy: typePrunePolicyLoader()) {
-                        publish(home)
+                        coalesceTask?.cancel()
+                        coalesceTask = nil
+                        hasPendingCoalescedSynthesis = false
+                        lastLiveSynthesisAt = ContinuousClock.now
+                        publish(home, force: isRefresh || lastEmittedHome == nil)
                     }
+                } else if msg["type"]?.stringValue == "event" {
+                    let shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: typePrunePolicyLoader())
+                    for ring in snapshot.takeDoorbellRings() {
+                        continuation?.yield(.doorbellRang(ring))
+                    }
+                    if shouldSynthesize {
+                        scheduleOrRunLiveSynthesis()
+                    }
+                    continue
                 } else if let home = try snapshot.receive(msg, typePrunePolicy: typePrunePolicyLoader()) {
                     publish(home)
                 }
@@ -687,12 +730,53 @@ public actor HAWebSocketProvider: HomeProvider {
         }
     }
 
-    /// The pruning report goes first, so the host already knows a card is closed rather than gone
-    /// when the snapshot without it lands.
-    private func publish(_ home: SynthesizedHome) {
-        if let report = snapshot.takeTypePruneReport() {
+    private var effectiveCoalesceWindow: Duration {
+        if let liveEventCoalesceWindowOverride {
+            return liveEventCoalesceWindowOverride
+        }
+        if webSocketFactoryOverride != nil {
+            return .zero
+        }
+        return pollingContext.panelVisible ? .milliseconds(100) : .milliseconds(500)
+    }
+
+    private func scheduleOrRunLiveSynthesis() {
+        let window = effectiveCoalesceWindow
+        let now = ContinuousClock.now
+        if window <= .zero || lastLiveSynthesisAt == nil || (now - lastLiveSynthesisAt!) >= window {
+            flushPendingCoalescedSynthesis(now: now)
+            return
+        }
+        hasPendingCoalescedSynthesis = true
+        guard coalesceTask == nil else { return }
+        let elapsed = now - lastLiveSynthesisAt!
+        let remaining = max(.milliseconds(1), window - elapsed)
+        coalesceTask = Task { [weak self] in
+            try? await Task.sleep(for: remaining)
+            guard !Task.isCancelled else { return }
+            await self?.flushPendingCoalescedSynthesis()
+        }
+    }
+
+    private func flushPendingCoalescedSynthesis(now: ContinuousClock.Instant = ContinuousClock.now) {
+        coalesceTask?.cancel()
+        coalesceTask = nil
+        hasPendingCoalescedSynthesis = false
+        lastLiveSynthesisAt = now
+        if let home = snapshot.synthesizeCurrent(typePrunePolicy: typePrunePolicyLoader()) {
+            publish(home, force: false)
+        }
+    }
+
+    private func publish(_ home: SynthesizedHome, force: Bool = false) {
+        let report = snapshot.takeTypePruneReport()
+        if let report {
             continuation?.yield(.haTypePruneChanged(report))
         }
+        if !force, report == nil, home == lastEmittedHome {
+            return
+        }
+        lastEmittedHome = home
         continuation?.yield(.snapshotUpdated(home))
     }
 

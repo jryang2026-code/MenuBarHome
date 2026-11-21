@@ -443,6 +443,8 @@ public actor LGWebOSClient {
     private let onSecurityFailure: @Sendable (String) -> Void
 
     private var loopTask: Task<Void, Never>?
+    private var sleepTask: Task<Void, Never>?
+    private var pollingContext = PollingContext()
     private var activeWebSocket: URLSessionWebSocketTask?
     private var sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
     private var nextRequestId: Int = 1
@@ -546,9 +548,22 @@ public actor LGWebOSClient {
         }
     }
 
+    public func setPollingContext(_ context: PollingContext) {
+        guard !isShutDown else { return }
+        let shouldWake = (context.systemActive && !pollingContext.systemActive)
+            || (context.panelVisible && !pollingContext.panelVisible)
+        pollingContext = context
+        if shouldWake {
+            sleepTask?.cancel()
+            sleepTask = nil
+        }
+    }
+
     public func start() {
         guard !isShutDown, config.isEnabled, config.hasConfiguredHost else { return }
         emitCurrentDevice()
+        sleepTask?.cancel()
+        sleepTask = nil
         loopTask?.cancel()
         loopTask = Task { [weak self] in
             await self?.runConnectionLoop()
@@ -557,6 +572,8 @@ public actor LGWebOSClient {
 
     public func stop() {
         stopCallCountForTesting += 1
+        sleepTask?.cancel()
+        sleepTask = nil
         loopTask?.cancel()
         loopTask = nil
         activeWebSocket?.cancel(with: .goingAway, reason: nil)
@@ -742,21 +759,52 @@ public actor LGWebOSClient {
 
     // MARK: - Connection & Subscription Loop
 
+    private static let activeBackoffSteps: [Double] = [6, 12, 30, 60]
+
+    private func sleep(seconds: Double) async {
+        let waitTask = Task<Void, Never> {
+            try? await Task.sleep(for: .seconds(seconds))
+        }
+        sleepTask = waitTask
+        await waitTask.value
+        if sleepTask == waitTask { sleepTask = nil }
+    }
+
     private func runConnectionLoop() async {
+        var consecutiveFailures = 0
+        var hasEmittedDisconnectedState = false
         while !Task.isCancelled && !isShutDown && config.isEnabled && config.hasConfiguredHost {
+            if !pollingContext.systemActive {
+                await sleep(seconds: 60)
+                continue
+            }
             do {
                 try await connectAndListen()
+                consecutiveFailures = 0
+                hasEmittedDisconnectedState = false
             } catch {
                 guard !Task.isCancelled && !isShutDown else { return }
+                let stateChanged = isConnected || isWaitingForPairing || !hasEmittedDisconnectedState
                 isConnected = false
                 isWaitingForPairing = false
-                emitCurrentDevice()
+                hasEmittedDisconnectedState = true
+                if stateChanged {
+                    emitCurrentDevice()
+                }
                 if let failure = trustStore.failure(for: config.host) {
                     onSecurityFailure(failure.localizedDescription)
                     return
                 }
+                consecutiveFailures += 1
             }
-            try? await Task.sleep(for: .seconds(6))
+            let delaySeconds: Double
+            if !pollingContext.panelVisible {
+                delaySeconds = 60
+            } else {
+                let idx = min(max(consecutiveFailures - 1, 0), Self.activeBackoffSteps.count - 1)
+                delaySeconds = Self.activeBackoffSteps[idx]
+            }
+            await sleep(seconds: delaySeconds)
         }
     }
 

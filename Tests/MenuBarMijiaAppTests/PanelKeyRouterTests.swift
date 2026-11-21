@@ -19,14 +19,9 @@ struct PanelKeyRouterTests {
 
     @Test("The re-auth modal owns the keyboard: Esc dismisses, everything else passes through")
     func reauthModal() {
-        let modal = Context(isShowingMiReauth: true, isGrokBallStageExpanded: true)
+        let modal = Context(isShowingMiReauth: true, isShowingConnectionDetail: true)
         #expect(route(Key(code: kVK_Escape), modal) == .dismissMiReauth)
         #expect(route(Key(code: kVK_Space), modal) == .passThrough)
-    }
-
-    @Test("Esc closes the GrokBall stage before anything below it")
-    func grokStage() {
-        #expect(route(Key(code: kVK_Escape), Context(isGrokBallStageExpanded: true, hasExpandedDevice: true)) == .dismissGrokBallStage)
     }
 
     @Test("An open prompt takes Esc and lets Return and arrows reach its field")
@@ -181,24 +176,19 @@ struct PanelKeyRouterTests {
         #expect(route(esc, onboarding) == .hidePanel)
     }
 
-    @Test("An IME composition keeps Esc: tier-2 surfaces and the GrokBall stage wait for the marked text to commit")
+    @Test("An IME composition keeps Esc: tier-2 surfaces wait for the marked text to commit")
     func imeCompositionKeepsEscape() {
         let esc = Key(code: kVK_Escape)
         let composing = Context(
-            isGrokBallStageExpanded: true,
             isTextFieldFocused: true,
             isComposingText: true,
             hasExpandedDevice: true
         )
-        // Neither the GrokBall stage nor the device drawer may collapse while Pinyin/Kana marked text is live.
         #expect(PanelKeyRouter.beforeSearch(esc, composing) == nil)
         #expect(route(esc, composing) == .leaveTextField(dismissAssistant: false))
 
-        // The same context without marked text hands Esc back to the panel.
         var committed = composing
         committed.isComposingText = false
-        #expect(route(esc, committed) == .dismissGrokBallStage)
-        committed.isGrokBallStageExpanded = false
         #expect(route(esc, committed) == .collapseExpandedDevice)
     }
 

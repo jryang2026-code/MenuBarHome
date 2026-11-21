@@ -620,22 +620,20 @@ struct FirstRunOnboardingTests {
         #expect(!storeA.isMiAccountEnabled(acctA.id))
         #expect(storeA.capabilityStoreRevision == baseRev + 1)
 
-        // Writer B (still at baseRev!) toggles an unrelated feature (.grokball) and persists.
-        storeB.capabilitySelection.enabledFeatures.remove(.grokball)
+        storeB.capabilitySelection.enabledFeatures.remove(.sensorHistory)
         #expect(storeB.persistCapabilitySelection())
 
-        // Both A's account disable AND B's feature disable must be preserved on disk AND synced into B's memory.
         let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
         let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
         let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
         let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
         #expect(diskDisabledScopes.contains(acctA.id), "A's account disable must survive B's stale feature write")
-        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue), "B's feature disable must be persisted")
+        #expect(!diskEnabledFeatures.contains(FeatureID.sensorHistory.rawValue), "B's feature disable must be persisted")
         #expect(diskEnabledFeatures.contains(FeatureID.voiceInput.rawValue), "untouched features must stay enabled")
 
         #expect(!storeB.isMiAccountEnabled(acctA.id), "storeB memory must sync A's disabled account after conflict merge")
         #expect(storeB.explicitlyDisabledScopes.contains(acctA.id))
-        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.grokball))
+        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.sensorHistory))
         #expect(storeB.capabilityStoreRevision == baseRev + 2)
         #expect(storeB.capabilityMergeConflictCount == 1)
 
@@ -663,7 +661,7 @@ struct FirstRunOnboardingTests {
         #expect(!storeD.isHAConnectionEnabled, "C's HA connection disable must survive D's stale feature write")
         #expect(storeD.explicitlyDisabledConnections.contains(.homeAssistant))
         #expect(!storeD.capabilitySelection.enabledFeatures.contains(.voiceInput))
-        #expect(!storeD.capabilitySelection.enabledFeatures.contains(.grokball))
+        #expect(!storeD.capabilitySelection.enabledFeatures.contains(.sensorHistory))
     }
 
     @Test("P1-4: Concurrent in-process CapabilitySelectionStore writes serialize cleanly without losing disables or features")
@@ -704,12 +702,12 @@ struct FirstRunOnboardingTests {
             group.addTask {
                 let taskDefaults = try #require(UserDefaults(suiteName: suite))
                 var sel = baseSelection
-                sel.enabledFeatures.remove(.grokball)
+                sel.enabledFeatures.remove(.sensorHistory)
                 return CapabilitySelectionStore.saveMergingConflicts(
                     selection: sel,
                     configuredScopes: baseSelection.enabledConnectionScopes,
                     explicitlyDisabledConnections: [],
-                    patch: CapabilitySelectionPatch(removedFeatures: [.grokball]),
+                    patch: CapabilitySelectionPatch(removedFeatures: [.sensorHistory]),
                     expectedRevision: baseRev,
                     defaults: taskDefaults
                 )
@@ -743,7 +741,7 @@ struct FirstRunOnboardingTests {
         let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
         let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
         #expect(diskDisabledScopes.contains("mi:cn:1"))
-        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue))
+        #expect(!diskEnabledFeatures.contains(FeatureID.sensorHistory.rawValue))
         #expect(!diskEnabledFeatures.contains(FeatureID.voiceInput.rawValue))
     }
 
@@ -1161,33 +1159,29 @@ struct FirstRunOnboardingTests {
         #expect(storeA.isMiAccountEnabled(acctA.id))
         #expect(storeB.isMiAccountEnabled(acctA.id))
 
-        // Store A disables account A (and toggles off an unrelated feature).
         let verdict = storeA.setMiAccountEnabled(false, id: acctA.id, pauseConfirmed: true)
         #expect(verdict.disposition == .allowed)
         #expect(!storeA.isMiAccountEnabled(acctA.id))
-        storeA.capabilitySelection.enabledFeatures.remove(.grokball)
+        storeA.capabilitySelection.enabledFeatures.remove(.sensorHistory)
         #expect(storeA.persistCapabilitySelection())
 
-        // Store B (still at baseRev, where acctA was already enabled in its baseline) re-signs in account A.
         let refreshedSessionA = MiSession(
             userId: "88101", cUserId: "c1", ssecurity: "s1-new", serviceToken: "tok1-new",
             expiresAt: Date(timeIntervalSince1970: 4_100_000_000)
         )
         storeB.completeMiLogin(refreshedSessionA)
 
-        // Account A must be explicitly re-enabled despite matching B's old baseline, while A's unrelated feature toggle survives.
         #expect(storeB.isMiAccountEnabled(acctA.id), "explicit re-login must re-enable account A across revision conflict")
         #expect(!storeB.explicitlyDisabledScopes.contains(acctA.id))
-        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.grokball), "unrelated feature edit from store A must survive merge")
+        #expect(!storeB.capabilitySelection.enabledFeatures.contains(.sensorHistory), "unrelated feature edit from store A must survive merge")
 
         let raw = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
         let persisted = try #require(try JSONSerialization.jsonObject(with: raw) as? [String: Any])
         let diskDisabledScopes = Set(persisted["disabledConnectionScopes"] as? [String] ?? [])
         let diskEnabledFeatures = Set(persisted["enabledFeatures"] as? [String] ?? [])
         #expect(!diskDisabledScopes.contains(acctA.id), "disk state must not keep account A disabled after explicit re-login")
-        #expect(!diskEnabledFeatures.contains(FeatureID.grokball.rawValue))
+        #expect(!diskEnabledFeatures.contains(FeatureID.sensorHistory.rawValue))
 
-        // A freshly opened store confirms account A is enabled on disk.
         let reloaded = HomeStore(
             provider: MockHomeProvider(),
             defaultsSuiteName: suite,
@@ -1196,7 +1190,7 @@ struct FirstRunOnboardingTests {
             haProviderFactory: Self.stubHAFactory
         )
         #expect(reloaded.isMiAccountEnabled(acctA.id))
-        #expect(!reloaded.capabilitySelection.enabledFeatures.contains(.grokball))
+        #expect(!reloaded.capabilitySelection.enabledFeatures.contains(.sensorHistory))
         await storeA.shutdown()
         await storeB.shutdown()
         await reloaded.shutdown()

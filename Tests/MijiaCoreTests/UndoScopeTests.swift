@@ -126,7 +126,6 @@ struct UndoScopeTests {
         #expect(await task.value == false)
         #expect(store.userHabitMemory == habits)
         #expect(store.toastNotice?.message == toast)
-        #expect(store.grokBallCelebrationUntil == nil)
     }
 
     @Test("A queued bulk action cannot dispatch into a replacement backend")

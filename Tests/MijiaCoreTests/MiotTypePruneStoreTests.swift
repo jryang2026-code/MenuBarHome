@@ -101,7 +101,7 @@ struct MiotTypePruneStoreTests {
         #expect(!store.devices.contains { $0.id == Self.leakSensor.id }, "the card stays hidden")
         #expect(store.typeHiddenSafetyDevices.map(\.id) == [Self.leakSensor.id])
         #expect(store.menuBarShowsHazard, "a retained hazard still colours the menu bar")
-        #expect(store.evaluateSafetyAlerts(now: Date()).contains { $0.deviceId == Self.leakSensor.id })
+        #expect(store.recentSafetyAlerts.contains { $0.alert.deviceId == Self.leakSensor.id })
     }
 
     @Test("The doorbell is its own switch: a closed camera keeps ringing with safety alerts off")
@@ -124,7 +124,7 @@ struct MiotTypePruneStoreTests {
         let (store, _) = try await makeStore()
         enableMiScope([.sensor], in: store)
         store.applyMiotTypePruneReport(report([Self.leakSensor], safety: [Self.leakSensor]))
-        #expect(store.evaluateSafetyAlerts(now: Date()).contains { $0.deviceId == Self.leakSensor.id })
+        #expect(store.recentSafetyAlerts.contains { $0.alert.deviceId == Self.leakSensor.id })
         #expect(store.panelActivities.contains { activity in
             if case .safety(let recorded) = activity.kind { recorded.alert.deviceId == Self.leakSensor.id }
             else { false }

@@ -93,6 +93,10 @@ final class PanelTransientUIState {
         store?.expandedDeviceId = nil
         collapseReminders()
         collapseOfflineDrawer()
+        hasExpandedReminders = false
+        hasExpandedOfflineDrawer = false
+        collapseRemindersHandler = nil
+        collapseOfflineDrawerHandler = nil
     }
 
     func resetForTesting() {
@@ -107,13 +111,6 @@ final class PanelTransientUIState {
     }
 }
 
-/// Who owns a key press in the panel, decided without touching AppKit or any singleton.
-///
-/// Escape walks a strict three-tier priority (`ui.md` §4 `键盘`):
-/// 1. Active confirmations or an in-progress 0.6 s All-Off hold (`reauth`, `allOffHold`, cloud consent, prompt);
-/// 2. Expanded transient surfaces (`GrokBall` stage, connection detail, assistant bar, device drawer,
-///    ordinary reminder list, offline drawer);
-/// 3. Active search query / focused form field / edit mode / device focus, then hiding the panel.
 enum PanelKeyRouter {
     struct Key: Equatable {
         var code: Int
@@ -132,7 +129,6 @@ enum PanelKeyRouter {
         var isShowingMiReauth = false
         var isAllOffHoldActive = false
         var hasPendingConfirmation = false
-        var isGrokBallStageExpanded = false
         var isShowingConnectionDetail = false
         var isConnectionStatusFocused = false
         var hasActivePrompt = false
@@ -163,7 +159,6 @@ enum PanelKeyRouter {
         case dismissMiReauth
         case cancelAllOffHold
         case cancelPendingConfirmation
-        case dismissGrokBallStage
         case dismissConnectionDetail
         case focusConnectionStatus
         case clearConnectionStatusFocus
@@ -214,7 +209,6 @@ enum PanelKeyRouter {
         // The IME owns Esc while it has marked text, so a Chinese/Japanese composition can be abandoned
         // without a panel-level surface collapsing behind it.
         if key.code == kVK_Escape, context.isPanelWindow, !context.isFormFieldFocused, !context.isComposingText {
-            if context.isGrokBallStageExpanded { return .dismissGrokBallStage }
             if context.isShowingConnectionDetail { return .dismissConnectionDetail }
             if !context.isTextFieldFocused, context.isShowingAssistantBar { return .dismissAssistantBar }
             if context.editMode == .none, !context.isShowingAssistantBar {

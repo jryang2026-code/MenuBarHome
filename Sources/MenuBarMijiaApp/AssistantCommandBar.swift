@@ -585,7 +585,6 @@ public final class SpeechInputController {
 struct AssistantResponseArea: View {
     let store: HomeStore
 
-    @Environment(\.isPanelVisible) private var isPanelVisible
     @Bindable private var speech = SpeechInputController.shared
     /// Asked once when the first timer is scheduled (#55).
     @State private var asksForTimerNotifications = false
@@ -764,11 +763,9 @@ struct AssistantResponseArea: View {
                         .foregroundStyle(.primary.opacity(0.85))
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    if isPanelVisible {
-                        Text(entry.fireDate, style: .timer)
-                            .monospacedDigit()
-                            .foregroundStyle(DesignTokens.secondaryText)
-                    }
+                    Text(entry.fireDate, style: .timer)
+                        .monospacedDigit()
+                        .foregroundStyle(DesignTokens.secondaryText)
                     Button {
                         store.cancelScheduledCommands(id: entry.id)
                     } label: {
@@ -836,7 +833,6 @@ struct AssistantResponseArea: View {
 
 /// "Jev suggests" plus the habit/AI suggestion chips. Shown while the panel's input is focused.
 struct AssistantSuggestionsRow: View {
-    @Environment(\.isPanelVisible) private var isPanelVisible
     let store: HomeStore
 
     var body: some View {
@@ -849,14 +845,9 @@ struct AssistantSuggestionsRow: View {
                     } label: {
                         HStack(spacing: 3.5) {
                             if store.isProactiveRecommending {
-                                if isPanelVisible {
-                                    ProgressView()
-                                        .controlSize(.mini)
-                                        .scaleEffect(0.65)
-                                } else {
-                                    Color.clear
-                                        .frame(width: 11, height: 11)
-                                }
+                                ProgressView()
+                                    .controlSize(.mini)
+                                    .scaleEffect(0.65)
                             } else {
                                 Image(systemName: "wand.and.stars")
                                     .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))

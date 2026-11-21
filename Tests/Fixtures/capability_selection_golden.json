@@ -6,7 +6,7 @@
   ],
   "allFeatures": [
     "ai-assistant", "camera-live", "companion-integration", "event-automation",
-    "grokball", "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
+    "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
   ],
   "catalog": {
     "devices": [
@@ -155,7 +155,7 @@
         "hasLegacySettingsOrOnboarding": true,
         "configuredConnectionScopes": ["mi:acctA", "ha:http://home.local:8123"],
         "hasPersistedLocalData": true,
-        "legacyFeatureFlags": { "grokball": false }
+        "legacyFeatureFlags": {}
       },
       "expectedMode": "legacyPreserved",
       "expectedPersistMigrationComplete": true,
@@ -190,7 +190,7 @@
         "enabledConnectionScopes": ["mi:acctA"],
         "enabledFeatures": [
           "ai-assistant", "camera-live", "companion-integration", "event-automation",
-          "grokball", "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
+          "plug-energy", "proactive-suggestions", "sensor-history", "voice-input"
         ],
         "enabledCategories": [
           "appliance", "camera", "climate", "cover", "fan", "fridge", "generic",

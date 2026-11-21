@@ -637,18 +637,6 @@ public struct OnboardingGuideView: View {
                 advancedAIModelCard
 
                 advancedPointerRow(
-                    icon: "sparkles",
-                    title: L10n.tr("GrokBall 情绪球", "GrokBall Sidecar"),
-                    detail: L10n.tr(
-                        "设置 → 通用 → 启用侧边情绪智能球，点一下看推荐、拖到顺手的位置。",
-                        "Settings → General → Enable Sidecar Grok Ball. Click for suggestions, drag it where it fits."
-                    ),
-                    actionTitle: L10n.tr("打开设置", "Open Settings")
-                ) {
-                    SettingsWindowOpener.shared.show(tab: .general)
-                }
-
-                advancedPointerRow(
                     icon: "video",
                     title: L10n.tr("摄像机直播", "Camera Live View"),
                     detail: L10n.tr(
@@ -681,8 +669,8 @@ public struct OnboardingGuideView: View {
                     Text(L10n.tr("进阶功能（用到再看）", "Advanced (Only When Needed)"))
                         .font(.system(size: 11.5, weight: .semibold))
                     Text(L10n.tr(
-                        "AI 指令、GrokBall、摄像机、自动化与 URL 直控",
-                        "AI commands, GrokBall, cameras, automation and URL control"
+                        "AI 指令、摄像机、自动化与 URL 直控",
+                        "AI commands, cameras, automation and URL control"
                     ))
                     .font(.system(size: 11))
                     .foregroundStyle(DesignTokens.secondaryText)

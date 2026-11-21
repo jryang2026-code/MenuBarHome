@@ -5,7 +5,6 @@ import MijiaCore
 
 public struct ClassicControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
@@ -115,7 +114,7 @@ public struct ClassicControlCenterPanel: View {
                 registerTransientUIHandlers()
             }
             .onAppear { handlePanelAppear() }
-            // The panel tree survives a close, so a half-typed query would come back on the next open.
+            .onDisappear { handlePanelDidHide() }
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
                 activitiesExpanded = false
@@ -178,10 +177,10 @@ public struct ClassicControlCenterPanel: View {
             }
         }
         .onChange(of: activitiesExpanded) { _, expanded in
-            if isPanelVisible { PanelTransientUIState.shared.hasExpandedReminders = expanded }
+            PanelTransientUIState.shared.hasExpandedReminders = expanded
         }
         .onChange(of: isOfflineDrawerStateActive) { _, expanded in
-            if isPanelVisible { PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded }
+            PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded
         }
         .onChange(of: store.favoriteOrder) { _, favOrder in
             guard !favOrder.isEmpty else { return }
@@ -263,7 +262,6 @@ public struct ClassicControlCenterPanel: View {
     }
 
     private func registerTransientUIHandlers() {
-        guard isPanelVisible else { return }
         PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
         PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerStateActive
         PanelTransientUIState.shared.collapseRemindersHandler = {
@@ -684,11 +682,12 @@ public struct ClassicControlCenterPanel: View {
         let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.card, style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 4) {
-            OmnibarLeadingSymbol(
-                listening: listening,
-                isThinking: store.assistantState == .thinking
-            )
-            .padding(.trailing, 3)
+            Image(systemName: listening ? "waveform" : "magnifyingglass")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(listening ? Color.red : Color.secondary)
+                .symbolEffect(.variableColor.iterative, isActive: listening)
+                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+                .padding(.trailing, 3)
 
             TextField(
                 omnibarPlaceholder,
@@ -725,15 +724,10 @@ public struct ClassicControlCenterPanel: View {
             }
 
             if store.assistantState == .thinking {
-                if isPanelVisible {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                } else {
-                    Color.clear
-                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                }
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
             } else if store.enableVoiceInput {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {

@@ -16,10 +16,6 @@ private struct ReduceTransparencyOverrideKey: EnvironmentKey {
     static let defaultValue: Bool? = nil
 }
 
-private struct PanelVisibleKey: EnvironmentKey {
-    static let defaultValue = true
-}
-
 public extension EnvironmentValues {
     var reduceMotionOverride: Bool? {
         get { self[ReduceMotionOverrideKey.self] }
@@ -37,16 +33,6 @@ public extension EnvironmentValues {
 
     var effectiveReduceTransparency: Bool {
         reduceTransparencyOverride ?? accessibilityReduceTransparency
-    }
-
-    /// True while the control-center window is on screen.
-    ///
-    /// Defaults to `true` so standalone previews, unit views, and `SnapshotTests` render live
-    /// chrome; `MenuBarPanelController` flips it to `false` once `panel.orderOut(nil)` hides the
-    /// kept-alive hosting tree.
-    var isPanelVisible: Bool {
-        get { self[PanelVisibleKey.self] }
-        set { self[PanelVisibleKey.self] = newValue }
     }
 
     var panelAdaptiveHeightProbe: PanelAdaptiveHeightProbe? {
@@ -126,12 +112,11 @@ public final class PanelAdaptiveHeightProbe: @unchecked Sendable {
 
 private struct AdaptiveSliceWriter: View {
     @Environment(\.panelAdaptiveHeightProbe) private var probe
-    @Environment(\.isPanelVisible) private var isPanelVisible
     let slice: PanelAdaptiveHeightProbe.Slice
     let clearOnDisappear: Bool
 
     var body: some View {
-        if let probe, isPanelVisible {
+        if let probe {
             GeometryReader { geo in
                 let height = geo.size.height
                 let _ = probe.recordDuringLayout(slice: slice, height: height)
@@ -520,9 +505,9 @@ public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
             // the view's own fill sits in front of the system glass slab and blocks both desktop
             // refraction and System Settings (Tinted / Clear) adaptation.
             if let tint {
-                content.glassEffect(.regular.interactive().tint(tint), in: shape)
+                content.glassEffect(.regular.tint(tint), in: shape)
             } else {
-                content.glassEffect(.regular.interactive(), in: shape)
+                content.glassEffect(.regular, in: shape)
             }
         } else {
             content

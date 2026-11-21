@@ -25,10 +25,43 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     /// Called on the main actor when the first frame of a connection reaches the renderer.
     var onFirstFrame: (@MainActor @Sendable () -> Void)?
-    var onFrameDecoded: (@MainActor @Sendable (Int) -> Void)?
     var onPlaybackPauseChanged: (@MainActor @Sendable (Bool) -> Void)?
     var playOverride: (@MainActor @Sendable (URL, CameraLiveVideoPlayer) async -> Outcome)?
     var stopOverride: (@MainActor @Sendable (String?) -> Void)?
+
+    struct DecodedFrameTimestamps: Sendable {
+        var firstFrameUptimeNs: UInt64 = 0
+        var lastFrameUptimeNs: UInt64 = 0
+    }
+
+    private let frameTimestampsLock = OSAllocatedUnfairLock(initialState: DecodedFrameTimestamps())
+
+    func resetFrameTimestamps() {
+        frameTimestampsLock.withLock { $0 = DecodedFrameTimestamps() }
+    }
+
+    func recordDecodedFrameTimestamp(_ uptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        let safeNs = max(uptimeNs, 1)
+        frameTimestampsLock.withLock { state in
+            if state.firstFrameUptimeNs == 0 {
+                state.firstFrameUptimeNs = safeNs
+            }
+            state.lastFrameUptimeNs = safeNs
+        }
+    }
+
+    func touchLastFrameTimestamp(_ uptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds) {
+        let safeNs = max(uptimeNs, 1)
+        frameTimestampsLock.withLock { state in
+            if state.lastFrameUptimeNs != 0 {
+                state.lastFrameUptimeNs = safeNs
+            }
+        }
+    }
+
+    func decodedFrameTimestamps() -> DecodedFrameTimestamps {
+        frameTimestampsLock.withLock { $0 }
+    }
 
     private final class PlayToken: @unchecked Sendable {
         private let lock = NSLock()
@@ -128,10 +161,10 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
 
     @MainActor
     func notifyDecodedFrame(_ count: Int) {
+        recordDecodedFrameTimestamp()
         if count == 1 {
             onFirstFrame?()
         }
-        onFrameDecoded?(count)
     }
 
     func setPlaybackPaused(_ paused: Bool) {
@@ -175,6 +208,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         activeParameterSets = []
         waitingForKeyframe = true
         framesDecoded = 0
+        resetFrameTimestamps()
         failure = nil
         statsWindowStart = Date()
         statsWindowFrames = 0
@@ -313,13 +347,10 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         renderer.enqueue(sampleBuffer)
         framesDecoded += 1
         statsWindowFrames += 1
-        let decodedCount = framesDecoded
-        let firstFrameCallback = decodedCount == 1 ? onFirstFrame : nil
-        let frameCallback = onFrameDecoded
-        if firstFrameCallback != nil || frameCallback != nil {
+        recordDecodedFrameTimestamp()
+        if framesDecoded == 1, let firstFrameCallback = onFirstFrame {
             Task { @MainActor in
-                firstFrameCallback?()
-                frameCallback?(decodedCount)
+                firstFrameCallback()
             }
         }
         let elapsed = Date().timeIntervalSince(statsWindowStart)
@@ -805,7 +836,8 @@ final class CameraPictureInPicture: NSObject {
 
 extension CameraPictureInPicture: AVPictureInPictureControllerDelegate {
     nonisolated func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        onMain {
+        onMain { [weak self] in
+            guard let self else { return }
             self.wantsStart = false
             self.setActive(true)
             self.syncPictureInPictureLayerBounds()

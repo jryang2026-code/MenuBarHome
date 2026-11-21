@@ -5,7 +5,6 @@ import MijiaCore
 
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.panelAdaptiveHeightProbe) private var panelAdaptiveHeightProbe
     @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
@@ -106,7 +105,7 @@ public struct ControlCenterPanel: View {
                 syncAdaptiveMaximumHeight(notify: true)
             }
             .onAppear { handlePanelAppear() }
-            // The panel tree survives a close, so a half-typed query would come back on the next open.
+            .onDisappear { handlePanelDidHide() }
             .onReceive(NotificationCenter.default.publisher(for: MenuBarPanelController.didHideNotification)) { _ in
                 handlePanelDidHide()
                 activitiesExpanded = false
@@ -173,7 +172,7 @@ public struct ControlCenterPanel: View {
             }
         }
         .onChange(of: usesMaximumAdaptiveHeight) { _, _ in
-            syncAdaptiveMaximumHeight(notify: isPanelVisible)
+            syncAdaptiveMaximumHeight(notify: true)
         }
         .onChange(of: store.favoriteOrder) { _, favOrder in
             guard !favOrder.isEmpty else { return }
@@ -263,7 +262,6 @@ public struct ControlCenterPanel: View {
     }
 
     private func registerTransientUIHandlers() {
-        guard isPanelVisible else { return }
         PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
         PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerExpanded
         PanelTransientUIState.shared.collapseRemindersHandler = {
@@ -450,10 +448,10 @@ public struct ControlCenterPanel: View {
         .onChange(of: store.focusedDeviceId) { _, id in openStack(containing: id) }
         .onChange(of: store.expandedDeviceId) { _, id in openStack(containing: id) }
         .onChange(of: activitiesExpanded) { _, expanded in
-            if isPanelVisible { PanelTransientUIState.shared.hasExpandedReminders = expanded }
+            PanelTransientUIState.shared.hasExpandedReminders = expanded
         }
         .onChange(of: isOfflineDrawerExpanded) { _, expanded in
-            if isPanelVisible { PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded }
+            PanelTransientUIState.shared.hasExpandedOfflineDrawer = expanded
         }
     }
 
@@ -628,11 +626,12 @@ public struct ControlCenterPanel: View {
         let shape = Capsule(style: .continuous)
         let listening = speech.isListening
         return HStack(spacing: 4) {
-            OmnibarLeadingSymbol(
-                listening: listening,
-                isThinking: store.assistantState == .thinking
-            )
-            .padding(.trailing, 3)
+            Image(systemName: listening ? "waveform" : "magnifyingglass")
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(listening ? Color.red : Color.secondary)
+                .symbolEffect(.variableColor.iterative, isActive: listening)
+                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+                .padding(.trailing, 3)
 
             TextField(
                 omnibarPlaceholder,
@@ -669,15 +668,10 @@ public struct ControlCenterPanel: View {
             }
 
             if store.assistantState == .thinking {
-                if isPanelVisible {
-                    ProgressView()
-                        .controlSize(.small)
-                        .scaleEffect(0.7)
-                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                } else {
-                    Color.clear
-                        .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
-                }
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.7)
+                    .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
             } else if store.enableVoiceInput {
                 Button {
                     withAnimation(AppleMotion.snappySpring) {
@@ -702,7 +696,7 @@ public struct ControlCenterPanel: View {
         .padding(.leading, 12)
         .padding(.trailing, 4)
         .frame(height: 32)
-        .adaptiveGlass(in: shape, interactive: true)
+        .adaptiveGlass(in: shape)
         .overlay(
             shape.strokeBorder(
                 listening ? Color.red.opacity(0.65) : (isSearchFieldFocused ? Color.accentColor.opacity(0.65) : Color.clear),

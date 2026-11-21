@@ -1106,11 +1106,6 @@ extension ClassicControlCenterPanel {
         }
     }
 
-    var statusDotAnimates: Bool {
-        guard store.pollingContext.panelVisible else { return false }
-        return PanelConnectionStatusPresentation.resolve(store: store).badge == .online
-    }
-
     var statusDotColor: Color {
         PanelConnectionStatusPresentation.resolve(store: store).color
     }

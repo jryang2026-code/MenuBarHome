@@ -12,8 +12,7 @@ import MijiaCore
 /// Status-item gestures, context menus, mouse monitors and observer registration stay in
 /// `MenuBarPanelController.swift`; this file handles presentation, including the frame/theme
 /// reaction to a preference change. The controller's content builders (`ensurePanelWindow`,
-/// `prepareSidecar`, `refreshPanelContent`, `dropPanelContent`) live beside the stored state they
-/// mutate.
+/// `refreshPanelContent`, `dropPanelContent`) live beside the stored state they mutate.
 extension MenuBarPanelController {
     // MARK: - Presentation Metrics
 
@@ -33,11 +32,8 @@ extension MenuBarPanelController {
         guard let store else { return }
         let theme = currentPanelTheme
         let panel = ensurePanelWindow(theme: theme)
-        prepareSidecar(for: panel)
         panel.appearance = Self.preferredAppearance(from: userDefaults)
-        panelHostingVisibility.setVisible(true)
         refreshPanelContent(theme: theme)
-        syncPanelRootVisibility()
 
         let wasVisible = panel.isVisible && !isClosing
         let wasOnScreen = panel.isVisible
@@ -56,10 +52,12 @@ extension MenuBarPanelController {
 
         let target = columnFrame(for: theme)
         isClosing = false
-        isEntranceAnimating = false
-        hasPendingGeometryPass = false
         clearImplicitDismissalStateOnShow()
-        if !wasVisible { presentationGeneration &+= 1 }
+        if !wasVisible {
+            isEntranceAnimating = false
+            hasPendingGeometryPass = false
+            presentationGeneration &+= 1
+        }
         let generation = presentationGeneration
         panel.ignoresMouseEvents = false
         installMouseMonitors()
@@ -77,16 +75,13 @@ extension MenuBarPanelController {
                     NSApp.activate()
                 }
             case .liquidGlass:
-                if !wasVisible {
-                    grokBallSidecar?.setPresentationSuspended(true)
-                    if !wasOnScreen {
-                        let reduced = shouldReduceMotion()
-                        panel.setFrame(
-                            reduced ? target : target.offsetBy(dx: target.width + Self.rightInset, dy: 0),
-                            display: true
-                        )
-                        panel.alphaValue = reduced ? 0 : 1
-                    }
+                if !wasVisible, !wasOnScreen {
+                    let reduced = shouldReduceMotion()
+                    panel.setFrame(
+                        reduced ? target : target.offsetBy(dx: target.width + Self.rightInset, dy: 0),
+                        display: true
+                    )
+                    panel.alphaValue = reduced ? 0 : 1
                 }
                 panel.hasShadow = false
                 presentBackdropShadow(around: panel.frame, under: panel)
@@ -102,17 +97,10 @@ extension MenuBarPanelController {
         }
         setStatusItemHighlighted(true)
         updateLabelTimer()
-        if theme == .classic {
-            // A Liquid Glass session suspends the ball while its column slides; resuming also
-            // repositions it, which is the `synchronize()` the classic panel used to do.
-            grokBallSidecar?.setPresentationSuspended(false)
-        } else {
-            grokBallSidecar?.synchronize()
-        }
         // Re-showing an already visible panel (hotkey while open, URL scheme, intent) must not replay
         // the entrance animation.
         guard !wasVisible else {
-            if theme == .liquidGlass {
+            if theme == .liquidGlass, !isEntranceAnimating {
                 applySerialPanelGeometry()
             }
             return
@@ -132,17 +120,13 @@ extension MenuBarPanelController {
                     self.isEntranceAnimating = false
                 }
                 guard generation == self.presentationGeneration, !self.isClosing else { return }
-                self.grokBallSidecar?.setPresentationSuspended(false)
                 self.applySerialPanelGeometry()
             }
         } else if theme == .liquidGlass {
-            grokBallSidecar?.setPresentationSuspended(false)
             applySerialPanelGeometry()
         }
     }
 
-    /// `animated` is false for a theme switch, which closes the panel in place before the hosting
-    /// tree is rebuilt for the other theme.
     func hidePanel(animated: Bool = true) {
         guard let panel = panelWindow, panel.isVisible, !isClosing else { return }
         isEntranceAnimating = false
@@ -152,15 +136,9 @@ extension MenuBarPanelController {
         // 必须在这里提交草稿，而不是依赖视图的 `onDisappear`——拖动中 `DragGesture.onEnded` 不保证执行。
         LayoutUIState.shared.commitRoomOrderIfNeeded()
         PanelTransientUIState.shared.resetOnPanelHide(store: store)
-        if hostedPanelTheme == .classic {
-            grokBallSidecar?.hide()
-        } else {
-            grokBallSidecar?.setPresentationSuspended(true)
-        }
-        store?.dismissGrokBallStage()
         store?.setPanelVisible(false)
+        NotificationCenter.default.post(name: Self.didHideNotification, object: panel)
         if presentsActively, animated, hostedPanelTheme == .liquidGlass {
-            // Hide logically now; order out only after the window and its shadow leave the screen.
             isClosing = true
             panel.ignoresMouseEvents = true
             let generation = presentationGeneration
@@ -179,24 +157,18 @@ extension MenuBarPanelController {
         }
         restoreStatusItemHighlight()
         updateLabelTimer()
-        // The SwiftUI tree stays alive, exactly like a `.window`-style `MenuBarExtra`: scroll
-        // position, the search field text and layout-editing state survive a close/reopen. A theme
-        // switch drops it explicitly so the next open builds the other root view.
-        NotificationCenter.default.post(name: Self.didHideNotification, object: panel)
     }
 
-    /// Tears down hidden-panel animations, clocks, and any active text-field caret in one
-    /// synchronous layout pass right before `orderOut` disconnects the window from display cycles.
     private func finishOrderingPanelOut(_ panel: NSPanel) {
         PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
         PanelConnectionDetailState.shared.clearStatusControlFocus()
+        PanelSearchState.shared.end()
         if panel.firstResponder !== panel.contentView {
             _ = panel.makeFirstResponder(panel.contentView)
         }
-        panelHostingVisibility.setVisible(false)
-        syncPanelRootVisibility()
-        panel.contentView?.layoutSubtreeIfNeeded()
+        removeMouseMonitors()
         panel.orderOut(nil)
+        dropPanelContent()
     }
 
     /// Retarget the current window position, keeping the full shadow in the same animation group.
@@ -247,7 +219,6 @@ extension MenuBarPanelController {
         if panel.frame != target {
             panel.setFrame(target, display: true)
         }
-        grokBallSidecar?.synchronize()
     }
 
     private var currentPanelTheme: PanelTheme {
@@ -262,7 +233,6 @@ extension MenuBarPanelController {
             if panel.frame != target {
                 panel.setFrame(target, display: true)
             }
-            grokBallSidecar?.synchronize()
         case .liquidGlass:
             scheduleAdaptiveGeometryPass()
         }
@@ -273,7 +243,6 @@ extension MenuBarPanelController {
         lastSeenPreferences = WatchedPreferences(from: userDefaults)
         syncStatusItem()
         panelWindow?.appearance = Self.preferredAppearance(from: userDefaults)
-        grokBallSidecarWindow?.appearance = Self.preferredAppearance(from: userDefaults)
         let theme = currentPanelTheme
         if let built = hostedPanelTheme, built != theme {
             // A theme switch only takes effect on the next open: close the panel in place, drop the
@@ -357,10 +326,6 @@ extension MenuBarPanelController {
         }
     }
 
-    /// Serially applies size measurement, screen clamping, backdrop shadow, and GrokBall synchronization
-    /// so room switches, drawer toggles, and display changes never re-enter competitively or jitter.
-    /// Only call this from outside a SwiftUI update; scheduled paths go through
-    /// `scheduleAdaptiveGeometryPass()`, which hops to the next runloop turn first.
     func applySerialPanelGeometry() {
         guard !isApplyingPanelGeometry else {
             hasPendingGeometryPass = true
@@ -374,8 +339,7 @@ extension MenuBarPanelController {
             hasPendingGeometryPass = false
             iterations &+= 1
             guard isPanelVisible,
-                  let panel = panelWindow,
-                  grokBallSidecar?.isPresentationSuspended != true else { break }
+                  let panel = panelWindow else { break }
             let theme = hostedPanelTheme ?? currentPanelTheme
             let target = columnFrame(for: theme)
             if panel.frame != target {
@@ -385,7 +349,6 @@ extension MenuBarPanelController {
             if presentsActively, theme == .liquidGlass {
                 presentBackdropShadow(around: target, under: panel)
             }
-            grokBallSidecar?.synchronize()
         } while hasPendingGeometryPass && iterations < 4
     }
 
@@ -531,35 +494,6 @@ final class MenuBarPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Observable bridge feeding `\.isPanelVisible` into the kept-alive SwiftUI root without
-/// recreating `NSHostingView.rootView` across close/reopen cycles.
-@Observable
-@MainActor
-final class PanelHostingVisibility {
-    private(set) var isVisible = false
-
-    func setVisible(_ visible: Bool) {
-        guard isVisible != visible else { return }
-        isVisible = visible
-    }
-}
-
-/// Hosting view subclass that counts `layout()` passes — the exact hook `ViewGraph` drives on each
-/// display-cycle update — so tests can verify the hidden tree goes completely quiescent.
-final class PanelHostingView<Content: View>: NSHostingView<Content> {
-    private(set) var layoutPassCount = 0
-
-    override func layout() {
-        layoutPassCount &+= 1
-        super.layout()
-    }
-
-    func resetLayoutPassCount() {
-        layoutPassCount = 0
-    }
-}
-
-/// A soft, panel-local shadow maintains text readability over light and dark wallpaper.
 private struct ControlCenterReadabilityBackdrop: View {
     @Environment(\.colorScheme) private var colorScheme
 

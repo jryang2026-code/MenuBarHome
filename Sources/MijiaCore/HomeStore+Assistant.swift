@@ -128,7 +128,6 @@ extension HomeStore {
             if case .awaitingChoice = assistantState {} else {
                 assistantSuggestions = []
             }
-            isGrokBallStageExpanded = false
         }
         guard persistCapabilitySelection() else {
             capabilitySelection = previous
@@ -754,7 +753,6 @@ extension HomeStore {
         }
     }
 
-    /// Runs a tapped suggestion. `offersUndoBanner` shows the 撤销 banner even for one device (GrokBall pills, #114).
     public func applyAssistantSuggestion(_ suggestion: AssistantSuggestion, offersUndoBanner: Bool = false) async {
         let contextBeforeModal = controlContextID
         assistantSuggestions.removeAll { $0.id == suggestion.id }
@@ -1866,9 +1864,6 @@ extension HomeStore {
                 at: Date(),
                 habitReceipt: habitReceipt
             )
-            // Automation rules always offer undo, even for one device, and keep the banner long enough
-            // to survive a lock/sleep round trip (#59). GrokBall pills promise undo too (#114).
-            // The panel keeps its 2+ device rule (#53).
             if appliedDeviceIds.count > 1 || origin == .automation || offersUndoBanner || timerInterrupted {
                 scheduleUndoBanner(
                     actionId: actionId,
