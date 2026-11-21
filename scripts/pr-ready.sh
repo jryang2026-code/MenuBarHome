@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # One screen for a pull request: head and merge state, failing or pending checks,
-# the latest Codex review state for this head, and Codex inline comments on this head.
+# the latest Codex review state for this head, Codex inline comments on this head, and
+# whether the base branch moved on files this PR also touches (green CI on a stale base).
 #
 # Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] <pr>
 # Needs `gh` logged in to the repository. Review comments are read past the first 100.
@@ -101,7 +102,7 @@ inspect_once() {
         handle_gh_failure "repo view"
         return $?
     fi
-    if ! gh pr view "$n" --json headRefOid,mergeStateStatus >"$tmp/meta.json" 2>"$tmp/gh.err"; then
+    if ! gh pr view "$n" --json headRefOid,mergeStateStatus,baseRefName,files >"$tmp/meta.json" 2>"$tmp/gh.err"; then
         handle_gh_failure "pr view"
         return $?
     fi
@@ -121,6 +122,12 @@ inspect_once() {
         handle_gh_failure "review comments"
         return $?
     fi
+
+    local base_ref head_oid
+    base_ref="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["baseRefName"])' "$tmp/meta.json")"
+    head_oid="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["headRefOid"])' "$tmp/meta.json")"
+    # Commits on the base since the merge base, and the files they changed. Best effort: an error only skips the stale-base check.
+    gh api "repos/${repo}/compare/${head_oid}...${base_ref}" --jq '{ahead_by: .ahead_by, files: [.files[]?.filename]}' >"$tmp/stale.json" 2>/dev/null || echo '{}' >"$tmp/stale.json"
 
     local verdict_status=0
     "$python_bin" -I - "$tmp" "$wait_flag" "$max_codex_rounds" <<'PY' || verdict_status=$?
@@ -211,6 +218,20 @@ def parse_checks(raw):
 
 
 print(f"head {head} {merge}")
+
+try:
+    stale = json.loads((tmp / "stale.json").read_text(encoding="utf-8") or "{}")
+except json.JSONDecodeError:
+    stale = {}
+behind_by = int(stale.get("ahead_by") or 0)
+pr_files = {f.get("path") for f in meta.get("files") or [] if isinstance(f, dict)}
+stale_overlap = sorted(pr_files & set(stale.get("files") or []))
+if behind_by:
+    line = f"base: behind {meta.get('baseRefName')} by {behind_by} commits"
+    if stale_overlap:
+        shown = ", ".join(stale_overlap[:5]) + (" ..." if len(stale_overlap) > 5 else "")
+        line += f"; {len(stale_overlap)} overlapping files ({shown}) -> git merge origin/{meta.get('baseRefName')} and retest"
+    print(line)
 
 parsed, non_pass_buckets = parse_checks(checks_raw)
 checks_error = False
