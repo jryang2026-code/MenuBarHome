@@ -13,7 +13,7 @@ usage() {
 }
 
 wait_mode=0
-timeout_sec=600
+timeout_sec=1800
 interval_sec=20
 max_codex_rounds=0
 pr_number=""

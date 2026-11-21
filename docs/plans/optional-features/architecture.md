@@ -49,6 +49,17 @@
 
 **升级路径。** 优先读取已存在的设置和引导标记，区分原始键缺失、默认值和用户明确选择。凭据、账号、配对及本地数据只作辅助。先判断身份，再应用新装默认。旧用户沿用原解析结果和行为，含双源、主连接、演示、米家多账号、HA 明文同意、LG、历史功能开关及旧版默认可用能力。仅确认无持久痕迹时进入新装分支。身份读取失败或不确定时走旧启动逻辑，记录可重试原因，保持旧配置且不写迁移成功标记。依据 `Sources/MijiaCore/HomeStore.swift:985–999`、`Sources/MijiaCore/HomeStore+Onboarding.swift:13–25`、`windows/src/ui/settings.ts:133`。
 
+- **旧版功能默认值（按平台逐项，委派说明直接引用本表，勿转述）。** 升级用户的功能初值只看下表，表外功能一律按「开」沿用旧行为（`evidence.legacyFeatureFlags[$0] ?? true`）。新增带旧开关的功能时，同一 PR 补本表与 `legacyFeatureFlags` 映射。
+
+  | 功能 | macOS 旧键（旧默认） | Windows 旧键（旧默认） |
+  | --- | --- | --- |
+  | 语音输入 `voice-input` | `enable_voice_input`（开） | 无（开） |
+  | 悬浮球 `grokball` | `enable_grok_ball`（关） | 无（开） |
+  | 伴生集成 `companion-integration` | `raycast_integration_enabled`（关） | 无（开，旧版常开） |
+  | 其余功能 | 无（开） | 无（开） |
+
+  依据 `Sources/MijiaCore/HomePreferences.swift:73,76`、`Sources/MijiaCore/RaycastSnapshot.swift:376`、`Sources/MijiaCore/HomeStore+Onboarding.swift:138–143`、`windows/src/core/miAccountControl.ts:249`（Windows 未传 `legacyFeatureFlags`）。
+
 - 新版记录先完整校验再提交，版本化、幂等，保留未知字段和已明确的选择，凭据槽、来源戳和定时存储沿用现有契约。提交中断可重试。降级兼容须验证旧版本无法执行新版暂停项，未验证前不承诺降级后仍能识别暂停。凭据槽见 `CODING_STANDARDS.md:33–37`，定时见 `CODING_STANDARDS.md:41–46`。
 - macOS 双实例不作为支持场景。迁移和移除按短临界区读取最新记录、按字段及所有者版本合并、写回，后写者重读，记录脱敏的冲突/重试诊断。两个新版实例之间以本机存储写入互斥保护该区间，撤销完成等待放在锁外，返回后核对版本。并发修改同一对象时保留已提交结果并重新预检，禁止用旧缓存覆盖。移除中的实例保留停止标记，旧清理任务遇到所有者版本变化时停止，不能删除重绑的新槽。
 

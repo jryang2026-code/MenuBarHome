@@ -33,6 +33,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
 - 非机械编码/并发/UI/测试规范见 [`CODING_STANDARDS.md`](CODING_STANDARDS.md)。
 - 专项 Runbook（仅命中对应任务时读取）：
   - Issue/PR 编号、老号映射与协同脚本：[`docs/agents/issue-tracker.md`](docs/agents/issue-tracker.md)
+  - 派活给其他模型时的固定说明行：[`docs/agents/delegation-brief.md`](docs/agents/delegation-brief.md)
   - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
   - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
   - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
