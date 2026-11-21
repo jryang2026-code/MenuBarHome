@@ -17,17 +17,7 @@ struct HAHomeSnapshotTests {
     }
 
     static var responseOrders: [[Int]] {
-        var result: [[Int]] = []
-        for a in 1...4 {
-            for b in 1...4 where b != a {
-                for c in 1...4 where c != a && c != b {
-                    for d in 1...4 where d != a && d != b && d != c {
-                        result.append([a, b, c, d])
-                    }
-                }
-            }
-        }
-        return result
+        [[1, 2, 3, 4], [4, 3, 2, 1], [1, 4, 2, 3], [3, 1, 4, 2]]
     }
 
     private static func initialReply(_ id: Int) -> [String: JSONValue] {
@@ -107,6 +97,8 @@ struct HAHomeSnapshotTests {
         ])
         let ignoredWithoutFlag = try projection.receive(Self.reply(100_002, offStates))
         #expect(ignoredWithoutFlag == nil)
+        let ignoredLateServiceResult = try projection.receive(Self.reply(1_005, .object([:])), isRefreshStatesResult: false)
+        #expect(ignoredLateServiceResult == nil)
 
         let refreshed = try #require(try projection.receive(Self.reply(500_005, offStates), isRefreshStatesResult: true))
         #expect(refreshed.devices.first?.isActiveOn == false)

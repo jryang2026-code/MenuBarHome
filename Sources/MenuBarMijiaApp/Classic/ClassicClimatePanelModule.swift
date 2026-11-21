@@ -68,11 +68,12 @@ struct ClassicClimatePanelModule: View {
                         }
                     }
                     if !facets.isEmpty || hasTransportDiagnostics {
-                        ClassicDeviceFacetSection(
+                        DeviceFacetSection(
                             device: device,
                             store: store,
                             accent: accent,
-                            statusColor: muted
+                            statusColor: muted,
+                            theme: .classic
                         )
                     }
                 }

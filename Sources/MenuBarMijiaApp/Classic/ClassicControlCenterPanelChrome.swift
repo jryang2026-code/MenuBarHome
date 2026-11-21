@@ -1066,10 +1066,11 @@ extension ClassicControlCenterPanel {
     /// Undo and toast share one floating surface instead of taking turns (spec §2.2). The stack
     /// measures itself, so the device list reserves the real height rather than a guess.
     var overlayNotifications: some View {
-        ClassicTransientStackView(
+        TransientStackView(
             store: store,
             toast: visibleToast,
             initialExpanded: initialTransientExpanded,
+            theme: .classic,
             onHeightChange: { transientStackHeight = $0 }
         )
     }

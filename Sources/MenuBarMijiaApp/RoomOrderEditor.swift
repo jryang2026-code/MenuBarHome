@@ -51,20 +51,8 @@ enum RoomOrderMetrics {
 
 // MARK: - Backing scroll view
 
-/// Hands the list its backing `NSScrollView`. SwiftUI's `ScrollView` publishes neither the offset
-/// nor a way to drive it per frame, which is what edge auto-scroll and "keep the focused row in
-/// view" need; the repo already bridges the same way for horizontal wheel scrolling (#146 §5.4).
-final class RoomOrderScrollProbe: NSView {
+private final class RoomOrderScrollProbe: NSView {
     var onScrollView: ((NSScrollView) -> Void)?
-
-    #if DEBUG
-    /// Test hook. Edge auto-scroll and the pointer-to-row mapping both depend on this probe finding
-    /// the backing `NSScrollView`; when it was attached outside the scrolling content it silently
-    /// resolved to `nil` and the whole drag worked in stale coordinates. The panel snapshot test
-    /// asserts this is non-nil, mirroring how `LayoutUIState.cardGlobalFrames` exposes geometry to
-    /// UI tests.
-    private(set) static var lastResolvedScrollView: NSScrollView?
-    #endif
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -83,9 +71,6 @@ final class RoomOrderScrollProbe: NSView {
 
     private func publish() {
         guard let scrollView = enclosingScrollView else { return }
-        #if DEBUG
-        Self.lastResolvedScrollView = scrollView
-        #endif
         onScrollView?(scrollView)
     }
 

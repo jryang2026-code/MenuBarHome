@@ -531,9 +531,7 @@ extension HomeStore {
         guard AssistantConfig.clearSecret(for: preset, defaults: userDefaults, vault: credentialVault) else {
             return false
         }
-        let prunedConsent = removeAssistantProviderBindings(preset: preset)
-        // A pending consent prompt for the removed service must not re-grant it on 允许 — even
-        // when the list had already been revoked and the prompt was still hanging around.
+        _ = removeAssistantProviderBindings(preset: preset)
         if let pending = pendingCloudConsent,
            AssistantProviderPreset.infer(baseURL: "https://\(pending.endpoint)") == preset {
             pendingCloudConsent = nil

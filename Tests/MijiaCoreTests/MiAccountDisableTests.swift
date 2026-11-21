@@ -1,36 +1,19 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
-/// P2a-M: Xiaomi account connection disablement on macOS.
-///
-/// Covers persisted selection & migration safety, effective backend derivation, multi-account
-/// teardown (zero post-disable cloud/LAN/camera/timer/write activity including in-flight and late
-/// results), P1b reference verdicts (preview, pause confirmation, re-enable revalidation), and
-/// host control write gating with distinct rejection copy.
 @MainActor
 struct MiAccountDisableTests {
     private static let cnSession = MiSession(
-        userId: "10010001",
-        cUserId: "c-cn",
-        ssecurity: "ssec-cn",
-        serviceToken: "tok-cn",
-        region: "cn"
+        userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
     )
     private static let deSession = MiSession(
-        userId: "20020002",
-        cUserId: "c-de",
-        ssecurity: "ssec-de",
-        serviceToken: "tok-de",
-        region: "de"
+        userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
     )
     private static let cn = MiAccount(session: cnSession)
     private static let de = MiAccount(session: deSession)
-
-    private static func makeSuite() -> String {
-        "com.jryang1997.MenuBarMijia.mi-disable.\(UUID().uuidString)"
-    }
 
     private actor AsyncGate {
         private var entered = false
@@ -46,23 +29,15 @@ struct MiAccountDisableTests {
                 for waiter in waiters { waiter.resume() }
             }
             if released { return }
-            await withCheckedContinuation { continuation in
-                if released {
-                    continuation.resume()
-                } else {
-                    releaseWaiters.append(continuation)
-                }
+            await withCheckedContinuation { cont in
+                if released { cont.resume() } else { releaseWaiters.append(cont) }
             }
         }
 
         func waitUntilEntered() async {
             if entered { return }
-            await withCheckedContinuation { continuation in
-                if entered {
-                    continuation.resume()
-                } else {
-                    enteredWaiters.append(continuation)
-                }
+            await withCheckedContinuation { cont in
+                if entered { cont.resume() } else { enteredWaiters.append(cont) }
             }
         }
 
@@ -75,10 +50,42 @@ struct MiAccountDisableTests {
         }
     }
 
-    // MARK: - 1. Persistence, Legacy Migration, Idempotency & Read-Failure Fallback
+    private static func makeSeededStore(
+        accounts: [MiAccount] = [cn, de],
+        provider: (any HomeProvider)? = nil
+    ) -> (HomeStore, InMemoryUserDefaults, CredentialVault, MemoryVaultStorage) {
+        let defaults = InMemoryUserDefaults()
+        let mem = MemoryVaultStorage()
+        let vault = CredentialVault(storage: mem.storage)
+        if !accounts.isEmpty {
+            MiSessionStore.saveAccounts(accounts, defaults: defaults, vault: vault)
+            defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        }
+        let store = HomeStore(provider: provider ?? MockHomeProvider(), credentialVault: vault, defaults: defaults)
+        return (store, defaults, vault, mem)
+    }
 
-    @Test("Bundled capability manifest matches Shared/capability-manifest.json byte for byte")
-    func bundledManifestMatchesSharedManifest() throws {
+    private static func indexedLight(id: String, name: String, accountId: String?) -> SmartDevice {
+        SmartDevice(
+            id: id, name: name, roomId: "\(Self.cn.id)/r", roomName: "客厅",
+            model: "yeelink.light.ceiling22", isOnline: true,
+            kind: .light(LightSpec(entityId: "miot:\(id):2", isOn: true)),
+            accountId: accountId, accountLabel: accountId == nil ? nil : "米家账号"
+        )
+    }
+
+    private static func timer(id: String, scope: String, scopes: [String]? = nil, offset: TimeInterval = 600, now: Date = Date()) -> ScheduledCommand {
+        ScheduledCommand(
+            reply: "关闭 \(id)",
+            fireDate: now.addingTimeInterval(offset),
+            plan: IntentPlan(intents: [DeviceIntent(targetId: id, operation: .power(false))], reply: "关闭 \(id)", source: .local),
+            sourceScope: scope,
+            sourceScopes: scopes ?? [scope]
+        )
+    }
+
+    @Test("Bundled capability manifest matches Shared/capability-manifest.json and legacy migration preserves unknown fields and fallback disables")
+    func manifestParityLegacyMigrationAndFallback() throws {
         var dir = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
         var foundRoot: URL?
         for _ in 0..<8 {
@@ -91,27 +98,13 @@ struct MiAccountDisableTests {
         let repoRoot = try #require(foundRoot)
         let sharedData = try Data(contentsOf: repoRoot.appendingPathComponent("Shared/capability-manifest.json"))
         let bundledData = try Data(contentsOf: repoRoot.appendingPathComponent("Sources/MijiaCore/Resources/capability-manifest.json"))
-        #expect(sharedData == bundledData)
-        #expect(CapabilityManifest.shared.schemaVersion == 1)
-    }
+        #expect(sharedData == bundledData && CapabilityManifest.shared.schemaVersion == 1)
 
-    @Test("Legacy upgrade keeps all configured Xiaomi accounts enabled and migrates idempotently")
-    func legacyUpgradeKeepsAllAccountsEnabledAndPreservesUnknownFields() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let first = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
-        #expect(first.isMiAccountEnabled(Self.cn.id))
-        #expect(first.isMiAccountEnabled(Self.de.id))
+        let (first, defaults, vault, mem) = Self.makeSeededStore()
+        #expect(first.isMiAccountEnabled(Self.cn.id) && first.isMiAccountEnabled(Self.de.id))
         #expect(first.enabledMiAccounts.map(\.id) == [Self.cn.id, Self.de.id])
         #expect(CapabilitySelectionStore.hasCompletedMigration(defaults: defaults))
 
-        // Inject unknown future JSON keys and unknown capability strings to prove read-merge-write preserves them.
         let rawData = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
         var json = try #require(try JSONSerialization.jsonObject(with: rawData) as? [String: Any])
         json["futureTopLevelFlag"] = "keep-me"
@@ -120,115 +113,89 @@ struct MiAccountDisableTests {
         json["enabledFeatures"] = enabledFeatures
         defaults.set(try JSONSerialization.data(withJSONObject: json), forKey: CapabilitySelectionStore.storageKey)
 
-        let verdict = first.setMiAccountEnabled(false, id: Self.cn.id)
-        #expect(verdict.disposition == .allowed)
-        #expect(!first.isMiAccountEnabled(Self.cn.id))
-        #expect(first.isMiAccountEnabled(Self.de.id))
+        #expect(first.setMiAccountEnabled(false, id: Self.cn.id).disposition == .allowed)
+        #expect(!first.isMiAccountEnabled(Self.cn.id) && first.isMiAccountEnabled(Self.de.id))
 
-        let updatedData = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
-        let updatedJSON = try #require(try JSONSerialization.jsonObject(with: updatedData) as? [String: Any])
+        let rawUpdated = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let updatedJSON = try #require(try JSONSerialization.jsonObject(with: rawUpdated) as? [String: Any])
         #expect(updatedJSON["futureTopLevelFlag"] as? String == "keep-me")
         #expect((updatedJSON["enabledFeatures"] as? [String])?.contains("future.feature.alpha") == true)
 
-        // Reopening is idempotent and preserves explicit account disablement.
-        let second = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
-        #expect(!second.isMiAccountEnabled(Self.cn.id))
-        #expect(second.isMiAccountEnabled(Self.de.id))
-        #expect(second.enabledMiAccounts.map(\.id) == [Self.de.id])
-    }
+        let second = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
+        #expect(!second.isMiAccountEnabled(Self.cn.id) && second.isMiAccountEnabled(Self.de.id))
 
-    @Test("Vault or selection read failure falls back to legacy behavior without writing migration-complete")
-    func readFailureFallsBackWithoutSealingMigration() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        // Simulate temporarily unavailable Keychain during launch before migration has ever succeeded.
         mem.readResult = .unavailable
-        let unavailableVault = CredentialVault(storage: mem.storage)
-        let fallbackStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: unavailableVault)
-        #expect(!CapabilitySelectionStore.hasCompletedMigration(defaults: defaults))
-        #expect(defaults.data(forKey: CapabilitySelectionStore.storageKey) == nil)
-        #expect(fallbackStore.capabilityResolutionMode == .uncertainFallback)
+        let fallbackAfterDisable = HomeStore(
+            provider: nil, credentialVault: CredentialVault(storage: mem.storage),
+            miAccountsProviderFactory: { MiAccountsProvider(accounts: $0, specSource: StubSpecSource(), pollInterval: .seconds(60)) },
+            defaults: defaults
+        )
+        defer { fallbackAfterDisable.logoutMiAccount() }
+        #expect(fallbackAfterDisable.capabilityResolutionMode == .uncertainFallback)
+        fallbackAfterDisable.miAccounts = [Self.cn, Self.de]
+        #expect(!fallbackAfterDisable.isMiAccountEnabled(Self.cn.id) && fallbackAfterDisable.isMiAccountEnabled(Self.de.id))
 
-        // Once Keychain recovers, next launch completes migration cleanly with Self.cn enabled.
-        mem.readResult = nil
-        let recoveredVault = CredentialVault(storage: mem.storage)
-        let recoveredStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: recoveredVault)
-        #expect(CapabilitySelectionStore.hasCompletedMigration(defaults: defaults))
-        #expect(recoveredStore.isMiAccountEnabled(Self.cn.id))
+        let freshDefaults = InMemoryUserDefaults()
+        let freshMem = MemoryVaultStorage()
+        MiSessionStore.saveAccounts([Self.cn], defaults: freshDefaults, vault: CredentialVault(storage: freshMem.storage))
+        freshDefaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
+        freshMem.readResult = .unavailable
+        let fallbackBeforeMigration = HomeStore(provider: MockHomeProvider(), credentialVault: CredentialVault(storage: freshMem.storage), defaults: freshDefaults)
+        #expect(!CapabilitySelectionStore.hasCompletedMigration(defaults: freshDefaults) && fallbackBeforeMigration.capabilityResolutionMode == .uncertainFallback)
 
-        // Corrupting the selection envelope also triggers uncertainFallback and does not overwrite the blob.
+        freshMem.readResult = nil
+        let recoveredStore = HomeStore(provider: MockHomeProvider(), credentialVault: CredentialVault(storage: freshMem.storage), defaults: freshDefaults)
+        #expect(CapabilitySelectionStore.hasCompletedMigration(defaults: freshDefaults) && recoveredStore.isMiAccountEnabled(Self.cn.id))
+
         let corruptBytes = Data("{not-valid-json".utf8)
-        defaults.set(corruptBytes, forKey: CapabilitySelectionStore.storageKey)
-        let corruptStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage))
-        #expect(corruptStore.capabilityResolutionMode == .uncertainFallback)
-        #expect(corruptStore.isMiAccountEnabled(Self.cn.id))
-        #expect(defaults.data(forKey: CapabilitySelectionStore.storageKey) == corruptBytes)
+        freshDefaults.set(corruptBytes, forKey: CapabilitySelectionStore.storageKey)
+        let corruptStore = HomeStore(provider: MockHomeProvider(), credentialVault: CredentialVault(storage: freshMem.storage), defaults: freshDefaults)
+        #expect(corruptStore.capabilityResolutionMode == .uncertainFallback && freshDefaults.data(forKey: CapabilitySelectionStore.storageKey) == corruptBytes)
     }
 
-    // MARK: - 2. Effective Backends & Multi-Account Scope Aggregation
+    @Test("Active backends, panel health, HA address changes, and per-account session expiry reflect account enablement")
+    func activeBackendsPanelHealthHAAddressAndSessionExpiry() throws {
+        #expect(HomeBackendDescriptor.activeBackends(homeBackend: .xiaomiCloud, hasHASource: false, hasMiSource: true, isHAEnabled: true, isMiEnabled: false).isEmpty)
+        #expect(HomeBackendDescriptor.activeBackends(homeBackend: .xiaomiCloud, hasHASource: true, hasMiSource: true, isHAEnabled: true, isMiEnabled: false) == [.homeAssistant])
 
-    @Test("Active backends reflect per-account Xiaomi enablement without disturbing Home Assistant or other accounts")
-    func activeBackendsReflectAccountEnablement() throws {
-        #expect(
-            HomeBackendDescriptor.activeBackends(
-                homeBackend: .xiaomiCloud,
-                hasHASource: false,
-                hasMiSource: true,
-                isHAEnabled: true,
-                isMiEnabled: false
-            ).isEmpty
-        )
-        #expect(
-            HomeBackendDescriptor.activeBackends(
-                homeBackend: .xiaomiCloud,
-                hasHASource: true,
-                hasMiSource: true,
-                isHAEnabled: true,
-                isMiEnabled: false
-            ) == [.homeAssistant]
-        )
-
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
-        #expect(store.activeBackends == [.xiaomiCloud])
-        #expect(store.activeConnectionScopes == [Self.cn.id, Self.de.id])
-
+        let (store, defaults, _, _) = Self.makeSeededStore()
+        #expect(store.activeBackends == [.xiaomiCloud] && store.activeConnectionScopes == [Self.cn.id, Self.de.id])
         store.setMiAccountEnabled(false, id: Self.cn.id)
-        #expect(store.hasMiSource)
-        #expect(store.hasEnabledMiSource)
-        #expect(store.activeBackends == [.xiaomiCloud])
-        #expect(store.activeConnectionScopes == [Self.de.id])
-
+        #expect(store.hasMiSource && store.hasEnabledMiSource && store.activeConnectionScopes == [Self.de.id])
         store.setMiAccountEnabled(false, id: Self.de.id)
-        #expect(store.hasMiSource)
-        #expect(!store.hasEnabledMiSource)
-        #expect(store.activeBackends.isEmpty)
-        #expect(store.activeConnectionScopes.isEmpty)
-        #expect(!store.isShowingMiReauth)
-    }
+        #expect(store.hasMiSource && !store.hasEnabledMiSource && store.activeBackends.isEmpty && !store.isShowingMiReauth)
+        #expect(store.panelHealth != .notConfigured)
+        if case .blocked = store.panelHealth {} else { Issue.record("expected .blocked") }
 
-    // MARK: - 3. Runtime Teardown, Zero Post-Disable Activity, In-Flight & Late Results
+        store.hasHASource = true
+        store.serverURLString = "http://192.168.1.10:8123"
+        #expect(store.isHAConnectionEnabled)
+        store.serverURLString = "http://192.168.1.20:8123"
+        #expect(store.isHAConnectionEnabled && store.activeConnectionScopes.contains("ha:http://192.168.1.20:8123"))
+        _ = store.setHAConnectionEnabled(false)
+        store.serverURLString = "http://192.168.1.30:8123"
+        store.registerNewlyConfiguredScope(Self.de.id, connection: .xiaomiCloud)
+        let rawScopeData = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+        let json = try #require(try JSONSerialization.jsonObject(with: rawScopeData) as? [String: Any])
+        #expect(!(Set(json["disabledConnectionScopes"] as? [String] ?? [])).contains("ha:http://192.168.1.30:8123"))
+
+        let now = Date()
+        let expiredCN = MiAccount(session: MiSession(userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn", expiresAt: now.addingTimeInterval(-3600)))
+        let validDE = MiAccount(session: MiSession(userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de", expiresAt: now.addingTimeInterval(86_400 * 10)))
+        let (expStore, _, _, _) = Self.makeSeededStore(accounts: [expiredCN, validDE])
+        expStore.miAccountStatuses = [expiredCN.id: .disconnected("401 expired"), validDE.id: .connected]
+        #expect(expStore.miSessionShowsExpired && !expStore.miSessionBlocksControl)
+        #expect(expStore.setMiAccountEnabled(false, id: expiredCN.id).disposition == .allowed)
+        #expect(expStore.miAccountStatuses[expiredCN.id] == nil && !expStore.miSessionShowsExpired && !expStore.miSessionBlocksControl)
+        #expect(expStore.setMiAccountEnabled(true, id: expiredCN.id).disposition == .allowed)
+        #expect(expStore.setMiAccountEnabled(false, id: validDE.id).disposition == .allowed)
+        #expect(expStore.miSessionShowsExpired && expStore.miSessionBlocksControl)
+    }
 
     @Test("Disabling one Xiaomi account stops its cloud, camera, follow-up, and write activity while keeping the other online")
     func disablingOneAccountProducesZeroPostDisableActivityAndHandlesInFlightRequests() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
+        let defaults = InMemoryUserDefaults()
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
 
@@ -239,10 +206,7 @@ struct MiAccountDisableTests {
         let cnApi = StubMiCloudAPI(
             devices: [cnLight, cnCam],
             rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light", "cn-cam"], homeId: "home-cn", homeName: "国内家")],
-            values: [
-                MiotFixtures.key("cn-light", 2, 1): .bool(true),
-                MiotFixtures.key("cn-light", 2, 2): .number(80),
-            ]
+            values: [MiotFixtures.key("cn-light", 2, 1): .bool(true), MiotFixtures.key("cn-light", 2, 2): .number(80)]
         )
         let deApi = StubMiCloudAPI(
             devices: [dePlug],
@@ -254,7 +218,6 @@ struct MiAccountDisableTests {
 
         let store = HomeStore(
             provider: nil,
-            defaultsSuiteName: suite,
             credentialVault: vault,
             miAccountsProviderFactory: { accounts in
                 MiAccountsProvider(
@@ -265,53 +228,31 @@ struct MiAccountDisableTests {
                     pollInterval: .seconds(60),
                     followUpDelay: .seconds(30)
                 )
-            }
+            },
+            defaults: defaults
         )
         defer { store.logoutMiAccount() }
 
         var disabledCallbacks: [(String, Set<String>)] = []
-        store.onMiAccountDisabled = { accountId, deviceIds in
-            disabledCallbacks.append((accountId, deviceIds))
-        }
+        store.onMiAccountDisabled = { disabledCallbacks.append(($0, $1)) }
+        await waitUntil { Set(store.devices.map(\.id)) == ["cn-light", "cn-cam", "de-plug"] }
 
-        await waitUntil {
-            let ids = Set(store.devices.map(\.id))
-            return ids == ["cn-light", "cn-cam", "de-plug"]
-        }
-
-        // Open a camera stream on cn-cam before disable, then hold an in-flight getProps poll on cnApi.
         _ = try await store.resolveCameraStream(for: "cn-cam")
         #expect(await cnBridge.startCalls.count == 1)
 
         let inFlightGate = AsyncGate()
-        await cnApi.setGetPropsHook {
-            await inFlightGate.enterAndWait()
-        }
-
-        // Trigger a manual refresh so cnApi enters an in-flight getProps call.
+        await cnApi.setGetPropsHook { await inFlightGate.enterAndWait() }
         store.refreshNow()
         await inFlightGate.waitUntilEntered()
 
         let cnLightSnapshot = try #require(store.devices.first { $0.id == "cn-light" })
-
-        // Disable cn while cnApi.getProps is in flight! Since cn-light is the only light in the home,
-        // built-in light quick actions require pause confirmation before teardown proceeds.
-        let unconfirmedDisable = store.setMiAccountEnabled(false, id: Self.cn.id)
-        #expect(unconfirmedDisable.disposition == .requiresPauseConfirmation)
+        #expect(store.setMiAccountEnabled(false, id: Self.cn.id).disposition == .requiresPauseConfirmation)
         #expect(disabledCallbacks.isEmpty)
 
-        let disableVerdict = store.setMiAccountEnabled(
-            false,
-            id: Self.cn.id,
-            pauseConfirmed: true,
-            expectedGeneration: store.capabilityGeneration
-        )
-        #expect(disableVerdict.disposition == .requiresPauseConfirmation)
-        #expect(disabledCallbacks.count == 1)
-        #expect(disabledCallbacks.first?.0 == Self.cn.id)
-        #expect(disabledCallbacks.first?.1 == ["cn-light", "cn-cam"])
+        let disableVerdict = store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        #expect(disableVerdict.disposition == .requiresPauseConfirmation && disabledCallbacks.count == 1)
+        #expect(disabledCallbacks.first?.0 == Self.cn.id && disabledCallbacks.first?.1 == ["cn-light", "cn-cam"])
 
-        // Release the single already-entered getProps call and wait for provider shutdown task to finish.
         await cnApi.setGetPropsHook(nil)
         await inFlightGate.release()
         await store.providerShutdownTask?.value
@@ -321,19 +262,10 @@ struct MiAccountDisableTests {
         let postDisableSetPropsCalls = await cnApi.setPropsCalls.count
         let postDisableCameraStarts = await cnBridge.startCalls.count
 
-        // Late results must not re-add cn's devices, rooms, homes, or statuses.
-        #expect(store.devices.map(\.id) == ["de-plug"])
-        #expect(store.rooms.map(\.id) == [Self.de.id + "/shu_fang"])
-        #expect(store.homes.map(\.id) == [Self.de.id + "/home-de"])
-        #expect(store.miAccountStatuses[Self.cn.id] == nil)
-
+        #expect(store.devices.map(\.id) == ["de-plug"] && store.miAccountStatuses[Self.cn.id] == nil)
         store.manualControlConfirmationHandler = { _ in true }
-
-        // Attempting control, camera start, or refresh after disable produces 0 new cn requests/tasks/timers/writes.
         _ = store.togglePrimary(cnLightSnapshot)
-        await #expect(throws: Error.self) {
-            _ = try await store.resolveCameraStream(for: "cn-cam")
-        }
+        await #expect(throws: Error.self) { _ = try await store.resolveCameraStream(for: "cn-cam") }
         store.refreshNow()
         await waitUntil { await deApi.deviceListCalls >= 2 }
 
@@ -341,1581 +273,215 @@ struct MiAccountDisableTests {
         #expect(await cnApi.getPropsCalls.count == postDisableGetPropsCalls)
         #expect(await cnApi.setPropsCalls.count == postDisableSetPropsCalls)
         #expect(await cnBridge.startCalls.count == postDisableCameraStarts)
-        #expect(store.scheduledTasks.isEmpty)
 
-        // Meanwhile Account B (de) remains online and controllable.
         let dePlugDevice = try #require(store.devices.first { $0.id == "de-plug" })
         _ = await store.togglePrimary(dePlugDevice)?.value
         await waitUntil { await deApi.setPropsCalls.count == 1 }
         #expect(await cnApi.setPropsCalls.count == postDisableSetPropsCalls)
     }
 
-    // MARK: - 4. Reference Verdict Preview, Pause Confirmation & Re-Enable Revalidation
+    @Test("Reference verdict previews affected items, pauses/extends on confirm, guards M2/M3/M4/M6, and revalidates only on connected authoritative snapshots")
+    func referenceVerdictPauseAndAuthoritativeRevalidation() async throws {
+        let (store, defaults, vault, _) = Self.makeSeededStore()
+        let fixedNow = Date(timeIntervalSince1970: 1_760_000_000)
+        store.assistantNow = { fixedNow }
 
-    @Test("Disabling an account previews affected timers, automations, and quick actions, pauses on confirm, and revalidates on re-enable")
-    func referencePreviewPauseAndReenableRevalidation() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let cnLight = MiDeviceRecord(did: "cn-light", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)
-        let cnVanished = MiDeviceRecord(did: "cn-vanished", name: "阳台灯", model: "yeelink.light.ceiling22", isOnline: true)
-        let dePlug = MiDeviceRecord(did: "de-plug", name: "书房插座", model: "cuco.plug.v3", isOnline: true)
-
-        let cnApi = StubMiCloudAPI(
-            devices: [cnLight, cnVanished],
-            rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["cn-light", "cn-vanished"], homeId: "home-cn", homeName: "国内家")],
-            values: [
-                MiotFixtures.key("cn-light", 2, 1): .bool(true),
-                MiotFixtures.key("cn-vanished", 2, 1): .bool(true),
-            ]
-        )
-        let deApi = StubMiCloudAPI(
-            devices: [dePlug],
-            rooms: [MiRoom(id: "r-de", name: "书房", dids: ["de-plug"], homeId: "home-de", homeName: "海外家")],
-            values: [MiotFixtures.key("de-plug", 2, 1): .bool(false)]
-        )
-
-        final class ClockBox: @unchecked Sendable {
-            var now = Date(timeIntervalSince1970: 1_760_000_000)
-        }
-        let clock = ClockBox()
-        let store = HomeStore(
-            provider: nil,
-            defaultsSuiteName: suite,
-            credentialVault: vault,
-            miAccountsProviderFactory: { accounts in
-                MiAccountsProvider(
-                    accounts: accounts,
-                    apiFactory: { session in session.region == "de" ? deApi : cnApi },
-                    specSource: StubSpecSource(),
-                    pollInterval: .seconds(60),
-                    followUpDelay: .seconds(30)
-                )
-            }
-        )
-        defer { store.logoutMiAccount() }
-        store.assistantNow = { clock.now }
-
-        await waitUntil {
-            Set(store.devices.map(\.id)) == ["cn-light", "cn-vanished", "de-plug"]
-        }
-
-        // Seed 3 waiting timers on cn: future (+600s), expiring (+60s), and deleted-target (+600s).
-        let futureTimer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: clock.now.addingTimeInterval(600),
-            plan: IntentPlan(intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))], reply: "关闭客厅灯", source: .local),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, Self.de.id]
-        )
-        let expiringTimer = ScheduledCommand(
-            reply: "1 分钟后关闭客厅灯",
-            fireDate: clock.now.addingTimeInterval(60),
-            plan: IntentPlan(intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))], reply: "关闭客厅灯", source: .local),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, Self.de.id]
-        )
-        let deletedTargetTimer = ScheduledCommand(
-            reply: "10 分钟后关闭阳台灯",
-            fireDate: clock.now.addingTimeInterval(600),
-            plan: IntentPlan(intents: [DeviceIntent(targetId: "cn-vanished", operation: .power(false))], reply: "关闭阳台灯", source: .local),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, Self.de.id]
-        )
-        ScheduledCommand.save([futureTimer, expiringTimer, deletedTargetTimer], to: defaults)
-        store.restoreScheduledCommands()
-        #expect(store.scheduledCommands.count == 3)
-        #expect(store.scheduledTasks.count == 3)
-
-        // Seed enabled automation rules (one valid on cn-light, one on cn-vanished) and a custom device group.
-        let validRule = AutomationRule(trigger: .away, action: .devices(ids: ["cn-light"], isOn: false), isEnabled: true)
-        let deletedRule = AutomationRule(trigger: .back, action: .devices(ids: ["cn-vanished"], isOn: true), isEnabled: true)
-        let ruleStore = AutomationRuleStore(defaults: defaults)
-        ruleStore.save([validRule, deletedRule])
-
+        let cnLight = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
+        let deLight = Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id)
+        store.devices = [cnLight, deLight]
         defaults.set("[{\"id\":\"grp-living\",\"name\":\"客厅灯组\"}]", forKey: "device_groups")
         defaults.set("{\"cn-light\":\"grp-living\"}", forKey: ViewPreferenceKeys.groupMap)
 
-        let previewGen = store.capabilityGeneration
-        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
-        #expect(preview.disposition == .requiresPauseConfirmation)
-        let kinds = Set(preview.itemsToPause.map(\.kind))
-        #expect(kinds.contains(.waitingTimer))
-        #expect(kinds.contains(.automationRule))
-        #expect(kinds.contains(.quickAction))
-
-        // Without confirmation, disabling is refused and nothing is paused or torn down.
-        let unconfirmed = store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: false)
-        #expect(unconfirmed.disposition == .requiresPauseConfirmation)
-        #expect(store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.scheduledTasks.count == 3)
-
-        // Stale generation is blocked.
-        let stale = store.setMiAccountEnabled(
-            false,
-            id: Self.cn.id,
-            pauseConfirmed: true,
-            expectedGeneration: previewGen - 1
+        let futureTimer = Self.timer(id: "cn-light", scope: Self.cn.id, scopes: [Self.cn.id, Self.de.id], offset: 600, now: fixedNow)
+        let multiTimer = ScheduledCommand(
+            reply: "关闭两盏灯", fireDate: fixedNow.addingTimeInterval(600),
+            plan: IntentPlan(intents: [DeviceIntent(targetId: "cn-light", operation: .power(false)), DeviceIntent(targetId: "de-light", operation: .power(false))], reply: "关闭两盏灯", source: .local),
+            sourceScope: Self.cn.id, sourceScopes: [Self.cn.id, Self.de.id]
         )
-        #expect(stale.disposition == .blocked)
-        #expect(store.isMiAccountEnabled(Self.cn.id))
-
-        // Confirmed deactivation pauses timers (canceling Tasks, storing outside active key), rules, and quick actions.
-        let confirmed = store.setMiAccountEnabled(
-            false,
-            id: Self.cn.id,
-            pauseConfirmed: true,
-            expectedGeneration: store.capabilityGeneration
-        )
-        #expect(confirmed.disposition == .requiresPauseConfirmation)
-        #expect(!store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.scheduledCommands.isEmpty)
-        #expect(store.scheduledTasks.isEmpty)
-        #expect(ScheduledCommand.load(from: defaults).isEmpty)
-
-        let pausedRules = ruleStore.load()
-        #expect(pausedRules.allSatisfy { !$0.isEnabled })
-
-        // Before re-enabling: advance clock by +120s (so expiringTimer is past due) and remove cn-vanished upstream.
-        clock.now = clock.now.addingTimeInterval(120)
-        await cnApi.replaceDevices([cnLight])
-
-        let reenabled = store.setMiAccountEnabled(true, id: Self.cn.id)
-        #expect(reenabled.disposition == .allowed)
-
-        await waitUntil {
-            Set(store.devices.map(\.id)) == ["cn-light", "de-plug"]
-                && store.scheduledCommands.map(\.id) == [futureTimer.id]
-        }
-
-        #expect(store.scheduledTasks[futureTimer.id] != nil)
-        #expect(Set(store.missedScheduledCommands.map(\.id)) == Set([expiringTimer.id, deletedTargetTimer.id]))
-
-        let resumedRules = Dictionary(uniqueKeysWithValues: ruleStore.load().map { ($0.id, $0) })
-        #expect(resumedRules[validRule.id]?.isEnabled == true)
-        #expect(resumedRules[deletedRule.id]?.isEnabled == false)
-    }
-
-    // MARK: - 5. Control Write Gate & Distinct Rejection Copy
-
-    @Test("Control write gate rejects disabled account targets before confirmation with zero writes and distinct copy")
-    func controlWriteGateDistinguishesDisabledAccountFromMissingDevice() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let mock = MockHomeProvider()
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
-        var confirmationCalls = 0
-        store.manualControlConfirmationHandler = { _ in
-            confirmationCalls += 1
-            return true
-        }
-
-        let cnLock = SmartDevice(
-            id: "cn-lock",
-            name: "入户门锁",
-            roomId: Self.cn.id + "/r-cn",
-            roomName: "玄关",
-            model: "xiaomi.lock.pro",
-            isOnline: true,
-            kind: .plug(PlugSpec(switchEntityId: "miot:cn-lock:2", isOn: true)),
-            accountId: Self.cn.id,
-            accountLabel: Self.cn.maskedUserId
-        )
-        let dePlug = SmartDevice(
-            id: "de-plug",
-            name: "书房插座",
-            roomId: Self.de.id + "/r-de",
-            roomName: "书房",
-            model: "cuco.plug.v3",
-            isOnline: true,
-            kind: .plug(PlugSpec(switchEntityId: "miot:de-plug:2", isOn: false)),
-            accountId: Self.de.id,
-            accountLabel: Self.de.maskedUserId
-        )
-        let cnSplitSwitch = SmartDevice(
-            id: "\(Self.cn.id)/wall-panel.s2",
-            name: "走廊二键开关",
-            roomId: Self.cn.id + "/r-cn",
-            roomName: "玄关",
-            model: "lumi.switch.b2lacn02",
-            isOnline: true,
-            kind: .plug(PlugSpec(switchEntityId: "miot:\(Self.cn.id)/wall-panel:2", isOn: true)),
-            accountId: Self.cn.id,
-            accountLabel: Self.cn.maskedUserId
-        )
-        store.devices = [cnLock, cnSplitSwitch, dePlug]
-
-        store.setMiAccountEnabled(false, id: Self.cn.id)
-        let commandsBefore = await mock.executedCommands.count
-
-        // Direct gate verdicts distinguish disabled account vs unknown device.
-        let disabledGate = store.evaluateDeviceControlGate(deviceId: "cn-lock")
-        #expect(!disabledGate.allowed)
-        #expect(disabledGate.writeCount == 0)
-        #expect(disabledGate.rejectionReason?.userMessage == "该米家账号已停用")
-
-        let missingGate = store.evaluateDeviceControlGate(deviceId: "never-existed")
-        #expect(!missingGate.allowed)
-        #expect(missingGate.writeCount == 0)
-        #expect(missingGate.rejectionReason?.userMessage == "设备不存在")
-
-        // Stale device handle, direct command, split-key command, miot-action, and Raycast entry all reject before confirmation with 0 writes.
-        _ = store.togglePrimary(cnLock)
-        #expect(confirmationCalls == 0)
-        #expect(store.toastNotice?.message == "该米家账号已停用")
-
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.setSwitch(entityId: "miot:cn-lock:2", isOn: false))
-        }
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.setSwitch(entityId: "miot:\(Self.cn.id)/wall-panel:2", isOn: false))
-        }
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.pressButton(entityId: "miot-action:cn-lock:2:1"))
-        }
-
-        let raycastDisabled = await store.executeRaycastPower(deviceId: "cn-lock", isOn: false)
-        #expect(raycastDisabled.isError)
-        #expect(raycastDisabled.message == "该米家账号已停用")
-
-        let raycastMissing = await store.executeRaycastPower(deviceId: "never-existed", isOn: false)
-        #expect(raycastMissing.isError)
-        #expect(raycastMissing.message == "设备不存在")
-
-        #expect(confirmationCalls == 0)
-        #expect(await mock.executedCommands.count == commandsBefore)
-    }
-}
-
-// MARK: - 6. Review follow-ups: scope migration, revalidation durability, authority & UI contracts
-
-@MainActor
-struct MiAccountDisableTestsReview {
-    private static let cn = MiAccountDisableFixture.cn
-    private static let de = MiAccountDisableFixture.de
-
-    private static func makeSuite() -> String {
-        "com.jryang1997.MenuBarMijia.mi-disable-review.\(UUID().uuidString)"
-    }
-
-    private static func makeStore(
-        suite: String, vault: CredentialVault, provider: (any HomeProvider)? = nil
-    ) -> HomeStore {
-        HomeStore(provider: provider ?? MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
-    }
-
-    private static func seedAccounts(_ defaults: UserDefaults, _ vault: CredentialVault) {
-        MiSessionStore.saveAccounts([cn, de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-    }
-
-    private static func selectionJSON(_ defaults: UserDefaults) throws -> [String: Any] {
-        let data = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
-        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
-    }
-
-    private static func indexedLight(id: String, name: String, accountId: String?) -> SmartDevice {
-        SmartDevice(
-            id: id,
-            name: name,
-            roomId: "\(Self.cn.id)/r",
-            roomName: "客厅",
-            model: "yeelink.light.ceiling22",
-            isOnline: true,
-            kind: .light(LightSpec(entityId: "miot:\(id):2", isOn: true)),
-            accountId: accountId,
-            accountLabel: accountId == nil ? nil : "米家账号"
-        )
-    }
-
-    // MARK: H1 – Home Assistant address migration
-
-    @Test("Accepting a new Home Assistant address keeps Home Assistant enabled")
-    func haAddressChangeKeepsConnectionEnabled() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        let store = Self.makeStore(suite: suite, vault: vault)
-
-        store.hasHASource = true
-        store.serverURLString = "http://192.168.1.10:8123"
-        #expect(store.isHAConnectionEnabled)
-
-        store.serverURLString = "http://192.168.1.20:8123"
-        #expect(store.isHAConnectionEnabled)
-        #expect(store.activeConnectionScopes.contains("ha:http://192.168.1.20:8123"))
-        #expect(!store.activeConnectionScopes.contains("ha:http://192.168.1.10:8123"))
-
-        let json = try Self.selectionJSON(defaults)
-        let disabledScopes = Set(json["disabledConnectionScopes"] as? [String] ?? [])
-        #expect(!disabledScopes.contains("ha:http://192.168.1.20:8123"))
-        #expect(!disabledScopes.contains("ha:http://192.168.1.10:8123"))
-    }
-
-    @Test("A disabled Home Assistant connection never records its new address as an explicitly disabled scope")
-    func haAddressChangeDoesNotRecordDisabledScope() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        Self.seedAccounts(defaults, vault)
-        CapabilitySelectionStore.save(
-            selection: CapabilitySelection(
-                enabledConnections: [.xiaomiCloud],
-                enabledConnectionScopes: [Self.cn.id, Self.de.id],
-                enabledFeatures: Set(FeatureID.allCases),
-                enabledCategories: Set(DeviceCategoryID.allCases)
-            ),
-            configuredScopes: [Self.cn.id, Self.de.id],
-            explicitlyDisabledConnections: [.homeAssistant],
-            defaults: defaults
-        )
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.hasHASource = true
-        store.serverURLString = "http://192.168.1.10:8123"
-        store.serverURLString = "http://192.168.1.20:8123"
-        // Any unrelated write (a newly configured account) must not turn the new address into a
-        // disabled-scope marker: the connection-level decision already covers it.
-        store.registerNewlyConfiguredScope(Self.de.id, connection: .xiaomiCloud)
-
-        let disabledScopes = Set(try Self.selectionJSON(defaults)["disabledConnectionScopes"] as? [String] ?? [])
-        #expect(!disabledScopes.contains("ha:http://192.168.1.20:8123"))
-    }
-
-    // MARK: H2 – Revalidation survives re-login, removal and relaunch
-
-    @Test("A QR login that re-enables a disabled account queues the paused references for revalidation")
-    func reloginQueuesRevalidation() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        defer { store.logoutMiAccount() }
-
-        #expect(store.setMiAccountEnabled(false, id: Self.cn.id).disposition == .allowed)
-        #expect(!store.isMiAccountEnabled(Self.cn.id))
-
-        store.completeMiLogin(MiAccountDisableFixture.cnSession)
-
-        #expect(store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
-    }
-
-    @Test("Removing an account releases the timers it paused instead of leaving them paused forever")
-    func removingAccountReleasesPausedTimers() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-
-        let deLight = Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id)
-        store.devices = [deLight]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭书房灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "de-light", operation: .power(false))],
-                reply: "关闭书房灯", source: .local
-            ),
-            sourceScope: Self.de.id,
-            sourceScopes: [Self.de.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
+        let lgTimer = Self.timer(id: LGWebOSProtocol.deviceId, scope: Self.cn.id, offset: 600, now: fixedNow)
+        ScheduledCommand.save([futureTimer, multiTimer, lgTimer], to: defaults)
         store.restoreScheduledCommands()
-        #expect(store.scheduledCommands.count == 1)
-
-        let disabled = store.setMiAccountEnabled(
-            false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-        #expect(disabled.disposition == .requiresPauseConfirmation)
-        #expect(store.pausedScheduledCommands.count == 1)
-
-        store.logoutMiAccount(id: Self.de.id)
-        #expect(store.pausedScheduledCommands.isEmpty)
-    }
-
-    @Test("A relaunch rebuilds pending revalidation from the persisted pause markers and resumes after a fresh snapshot")
-    func relaunchRevalidatesPausedItems() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let light = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [light]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
-        store.restoreScheduledCommands()
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(store.pausedScheduledCommands.count == 1)
-
-        // The account was re-enabled but the app quit before the fresh snapshot arrived.
-        var selection = store.capabilitySelection
-        selection.enabledConnections.insert(.xiaomiCloud)
-        selection.enabledConnectionScopes.insert(Self.cn.id)
-        CapabilitySelectionStore.save(
-            selection: selection, configuredScopes: [Self.cn.id],
-            explicitlyDisabledConnections: [], removingScopes: [], defaults: defaults
-        )
-
-        let relaunched = Self.makeStore(suite: suite, vault: vault)
-        #expect(relaunched.isMiAccountEnabled(Self.cn.id))
-        #expect(relaunched.pausedScheduledCommands.count == 1)
-        #expect(relaunched.pendingRevalidationScopes.contains(Self.cn.id))
-
-        var snapshot = SynthesizedHome(rooms: [], devices: [light], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        snapshot.freshAccountIds = [Self.cn.id]
-        snapshot.miAccountsEpoch = relaunched.miAccountsConfigEpoch
-        snapshot.accountStatuses = [Self.cn.id: .connected]
-        relaunched.reconcileReenabledScopesAfterSnapshot(snapshot)
-
-        #expect(relaunched.pendingRevalidationScopes.isEmpty)
-        #expect(relaunched.pausedScheduledCommands.isEmpty)
-        #expect(relaunched.scheduledCommands.map(\.id) == [timer.id])
-    }
-
-    @Test("A queued Home Assistant scope completes on its first complete snapshot")
-    func haScopeRevalidationCompletes() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.hasHASource = true
-        store.serverURLString = "http://192.168.1.10:8123"
-        store.pendingRevalidationScopes = [store.homeAssistantScopeIdentifier]
-
-        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        // A Mi provider is present, so Mi freshness stamps exist; the HA scope must not wait on them.
-        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
-
-        #expect(store.pendingRevalidationScopes.isEmpty)
-    }
-
-    // MARK: H3 – Only a connected, authoritative snapshot may resolve a pause
-
-    @Test("Reconciliation ignores a scope whose account is still disconnected")
-    func reconciliationRequiresConnectedScope() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let light = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [light]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        store.pausedScheduledCommands = [PausedScheduledCommand(
-            command: timer, originalPartition: .waiting, pausedCapabilities: [.connection(.xiaomiCloud)]
-        )]
-        store.pendingRevalidationScopes = [Self.cn.id]
-
-        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        snapshot.freshAccountIds = [Self.cn.id]
-        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
-        snapshot.accountStatuses = [Self.cn.id: .disconnected("登录已过期")]
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
-
-        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
-        #expect(store.pausedScheduledCommands.count == 1)
-        #expect(store.scheduledCommands.isEmpty)
-    }
-
-    @Test("A paused timer waits for its own account to be fresh again")
-    func pausedTimerWaitsForItsOwnAccount() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        let deLight = Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id)
-        store.devices = [deLight]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭书房灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "de-light", operation: .power(false))],
-                reply: "关闭书房灯", source: .local
-            ),
-            sourceScope: Self.de.id,
-            sourceScopes: [Self.de.id]
-        )
-        store.pausedScheduledCommands = [PausedScheduledCommand(
-            command: timer, originalPartition: .waiting, pausedCapabilities: [.connection(.xiaomiCloud)]
-        )]
-
-        // A still-disabled account keeps its timer paused instead of partitioning it away as foreign.
-        store.setMiAccountEnabled(
-            false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-        #expect(!store.isMiAccountEnabled(Self.de.id))
-        store.pendingRevalidationScopes = []
-        store.revalidatePausedItems()
-        #expect(store.pausedScheduledCommands.count == 1)
-        #expect(store.foreignScheduledCommands.isEmpty)
-
-        // Re-enabled but not fresh yet: a fresh snapshot from the other account must not move it.
-        var selection = store.capabilitySelection
-        selection.enabledConnectionScopes.insert(Self.de.id)
-        store.capabilitySelection = selection
-        store.pendingRevalidationScopes = [Self.cn.id, Self.de.id]
-
-        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
-        snapshot.freshAccountIds = [Self.cn.id]
-        snapshot.accountStatuses = [Self.cn.id: .connected, Self.de.id: .disconnected("登录已过期")]
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
-
-        #expect(store.pendingRevalidationScopes == [Self.de.id])
-        #expect(store.pausedScheduledCommands.count == 1)
-        #expect(store.scheduledCommands.isEmpty)
-        #expect(store.foreignScheduledCommands.isEmpty)
-    }
-
-    @Test("A timer paused for a visible account resumes while another account is only hidden by the selected home")
-    func hiddenAccountDoesNotFreezeVisibleTimers() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-
-        // Timers stamp every source connected at creation; only the scope that was actually lost
-        // belongs in the pause marker.
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, Self.de.id]
-        )
-        store.pausedScheduledCommands = [PausedScheduledCommand(
-            command: timer, originalPartition: .waiting,
-            pausedCapabilities: [.connection(.xiaomiCloud)], pausedScopes: [Self.cn.id]
-        )]
-        store.selectedMiHomeId = Self.cn.id + "/home-cn"
-        store.pendingRevalidationScopes = [Self.de.id]
-
-        store.revalidatePausedItems()
-
-        #expect(store.pausedScheduledCommands.isEmpty)
-        #expect(store.scheduledCommands.map(\.id) == [timer.id])
-        // The hidden account keeps its own pending work for when its devices are visible again.
-        #expect(store.pendingRevalidationScopes == [Self.de.id])
-    }
-
-    @Test("A paused quick action waits only for the scopes it lost")
-    func pausedQuickActionWaitsForItsOwnScopes() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-        store.selectedMiHomeId = Self.de.id + "/home-de"
-
-        // Paused for the visible account while the other account is only hidden and pending: resume.
-        store.pausedQuickActionIDs = ["lightsOff"]
-        store.pausedQuickActionScopes = ["lightsOff": [Self.cn.id]]
-        store.pendingRevalidationScopes = [Self.de.id]
-        store.revalidatePausedItems()
-        #expect(!store.pausedQuickActionIDs.contains("lightsOff"))
-        #expect(!store.pausedQuickActionScopes.keys.contains("lightsOff"))
-
-        // Paused for the hidden account: no fresh, visible snapshot can prove its lights are back.
-        store.pausedQuickActionIDs = ["lightsOff"]
-        store.pausedQuickActionScopes = ["lightsOff": [Self.de.id]]
-        store.revalidatePausedItems()
-        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
-        #expect(store.pausedQuickActionScopes["lightsOff"] == [Self.de.id])
-    }
-
-    @Test("Another account's selected home delays revalidation instead of pruning the hidden account")
-    func selectedHomeDelaysRevalidation() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-        store.selectedMiHomeId = Self.de.id + "/home-de"
-        store.pendingRevalidationScopes = [Self.cn.id]
-
-        var snapshot = SynthesizedHome(rooms: [], devices: [], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
-        snapshot.freshAccountIds = [Self.cn.id]
-        snapshot.accountStatuses = [Self.cn.id: .connected]
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
-
-        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
-        #expect(store.indexedDevicesById["cn-light"] != nil)
-
-        // The account's own selected home filters out its other homes too: still not an inventory.
-        store.selectedMiHomeId = Self.cn.id + "/home-cn"
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
-        #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
-        #expect(store.indexedDevicesById["cn-light"] != nil)
-    }
-
-    @Test("A non-authoritative snapshot never clears a paused rule's markers")
-    func nonAuthoritativeSnapshotKeepsPausedRuleMarkers() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
 
         let ruleStore = AutomationRuleStore(defaults: defaults)
-        let rule = AutomationRule(trigger: .away, action: .devices(ids: ["cn-light"], isOn: false), isEnabled: false)
-        ruleStore.save([rule])
-        var paused = try #require(ruleStore.load().first)
-        paused.pausedCapabilities = [.connection(.xiaomiCloud)]
-        paused.pausedScopes = [Self.cn.id]
-        ruleStore.save([paused])
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.hasReceivedInitialSnapshot = true
-        store.miAccountStatuses = [Self.cn.id: .disconnected("登录已过期")]
-
-        store.revalidatePausedItems()
-        let stillPaused = try #require(ruleStore.load().first)
-        #expect(!stillPaused.pausedCapabilities.isEmpty)
-        #expect(stillPaused.pausedScopes == [Self.cn.id])
-
-        // The same state with a connected account is authoritative: the target really is gone. A
-        // launch-rebuilt pending scope is cleared by the snapshot reconciliation itself.
-        store.miAccountStatuses = [Self.cn.id: .connected]
-        store.pendingRevalidationScopes = []
-        store.revalidatePausedItems()
-        let resolved = try #require(ruleStore.load().first)
-        #expect(!resolved.isEnabled)
-        #expect(resolved.pausedCapabilities.isEmpty)
-    }
-
-    // MARK: H4 – Credential fallback keeps the explicit disables
-
-    @Test("An unreadable credential slot in fallback mode still keeps a disabled account off")
-    func fallbackKeepsExplicitAccountDisable() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let mem = MemoryVaultStorage()
-        let vault = CredentialVault(storage: mem.storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-        CapabilitySelectionStore.save(
-            selection: CapabilitySelection(
-                enabledConnections: [.xiaomiCloud],
-                enabledConnectionScopes: [Self.de.id],
-                enabledFeatures: Set(FeatureID.allCases),
-                enabledCategories: Set(DeviceCategoryID.allCases)
-            ),
-            configuredScopes: [Self.cn.id, Self.de.id],
-            explicitlyDisabledConnections: [],
-            defaults: defaults
-        )
-
-        mem.readResult = .unavailable
-        let unavailableVault = CredentialVault(storage: mem.storage)
-        let store = HomeStore(
-            provider: nil, defaultsSuiteName: suite, credentialVault: unavailableVault,
-            miAccountsProviderFactory: { accounts in
-                MiAccountsProvider(accounts: accounts, specSource: StubSpecSource(), pollInterval: .seconds(60))
-            }
-        )
-        defer { store.logoutMiAccount() }
-
-        #expect(store.capabilityResolutionMode == .uncertainFallback)
-        // The vault becomes readable later in the same session; loading the accounts must honour the
-        // disable the user stored, not re-enable A because the resolver fell back.
-        store.miAccounts = [Self.cn, Self.de]
-        #expect(!store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.isMiAccountEnabled(Self.de.id))
-    }
-
-    // MARK: M1 – Paused timers are visible and cancellable
-
-    @Test("Cancelling every timer includes the paused ones")
-    func cancelAllIncludesPausedTimers() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
-        store.restoreScheduledCommands()
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(store.pausedScheduledCommands.count == 1)
-
-        #expect(store.cancelScheduledCommands() == 1)
-        #expect(store.pausedScheduledCommands.isEmpty)
-        #expect(PausedScheduledCommand.load(from: defaults).isEmpty)
-    }
-
-    // MARK: M2 – Atomic commit
-
-    @Test("A refused selection write leaves nothing paused")
-    func refusedSelectionWriteLeavesNothingPaused() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
-        store.restoreScheduledCommands()
-        #expect(store.scheduledTasks.count == 1)
-
-        defaults.set(Data("{not-valid-json".utf8), forKey: CapabilitySelectionStore.storageKey)
-        let verdict = store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-
-        #expect(verdict.disposition == .blocked)
-        #expect(store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.pausedScheduledCommands.isEmpty)
-        #expect(store.scheduledCommands.count == 1)
-        #expect(store.scheduledTasks.count == 1)
-    }
-
-    // MARK: M3 – Confirmation must match the previewed list
-
-    @Test("A confirmation whose pause list changed re-previews instead of pausing a different set")
-    func changedPauseListRepreviews() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
-        #expect(preview.disposition == .requiresPauseConfirmation)
-        let confirmedKeys = Set(preview.itemsToPause.map(\.pauseKey))
-        #expect(!confirmedKeys.isEmpty)
-
-        // A new timer appears after the preview was shown, without changing the capability generation.
-        let late = ScheduledCommand(
-            reply: "5 分钟后关闭客厅灯",
-            fireDate: Date().addingTimeInterval(300),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: "cn-light", operation: .power(false))],
-                reply: "关闭客厅灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([late], to: defaults)
-        store.scheduledCommands = [late]
-
-        let verdict = store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true,
-            expectedGeneration: store.capabilityGeneration, expectedPauseItemKeys: confirmedKeys
-        )
-        #expect(verdict.disposition == .requiresPauseConfirmation)
-        #expect(store.isMiAccountEnabled(Self.cn.id))
-        #expect(store.pausedScheduledCommands.isEmpty)
-    }
-
-    // MARK: M4 – Custom groups are not quick actions
-
-    @Test("Custom layout groups are not quick actions and damaged group data never blocks a disable")
-    func customGroupsAreNotQuickActions() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [
-            Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id),
-            Self.indexedLight(id: "cn-light-2", name: "阳台灯", accountId: Self.cn.id),
-        ]
-        defaults.set("[{\"id\":\"grp-living\",\"name\":\"客厅灯组\"}]", forKey: "device_groups")
-        defaults.set("{\"cn-light\":\"grp-living\",\"cn-light-2\":\"grp-living\"}", forKey: ViewPreferenceKeys.groupMap)
-
-        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
-        #expect(!preview.itemsToPause.contains { $0.id.hasPrefix("group:") })
-
-        defaults.set("{broken", forKey: "device_groups")
-        defaults.set("not-json", forKey: ViewPreferenceKeys.groupMap)
-        let withBrokenGroups = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
-        #expect(withBrokenGroups.disposition != .blocked)
-    }
-
-    // MARK: M5 – A paused rule waits for its own scope
-
-    @Test("A rule paused for one account is not resumed by re-enabling a different account")
-    func pausedRuleWaitsForItsOwnScope() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        let cnLight = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
-        let dePlug = SmartDevice(
-            id: "de-plug", name: "书房插座", roomId: "\(Self.de.id)/r", roomName: "书房",
-            model: "cuco.plug.v3", isOnline: true,
-            kind: .plug(PlugSpec(switchEntityId: "miot:de-plug:2", isOn: false)),
-            accountId: Self.de.id, accountLabel: "米家账号"
-        )
-        store.devices = [cnLight, dePlug]
-
-        let ruleStore = AutomationRuleStore(defaults: defaults)
-        ruleStore.save([AutomationRule(trigger: .away, action: .devices(ids: ["cn-light"], isOn: false))])
-
-        let paused = store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-        #expect(paused.disposition == .requiresPauseConfirmation)
-        let afterPause = try #require(ruleStore.load().first)
-        #expect(!afterPause.isEnabled)
-        #expect(afterPause.pausedScopes == [Self.cn.id])
-
-        // B is disabled and re-enabled while the rule's own account stays off.
-        store.setMiAccountEnabled(false, id: Self.de.id)
-        store.setMiAccountEnabled(true, id: Self.de.id)
-        #expect(try #require(ruleStore.load().first).isEnabled == false)
-        #expect(try #require(ruleStore.load().first).pausedScopes == [Self.cn.id])
-
-        store.setMiAccountEnabled(true, id: Self.cn.id)
-        #expect(try #require(ruleStore.load().first).isEnabled == true)
-    }
-
-    @Test("Pausing a valid rule keeps an automation entry that no longer decodes")
-    func pausingRulesPreservesUndecodableEntries() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)]
-
-        let valid = AutomationRule(trigger: .away, action: .devices(ids: ["cn-light"], isOn: false))
-        let validJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(valid)) as? [String: Any])
+        let validRule = AutomationRule(trigger: .away, action: .devices(ids: ["cn-light"], isOn: false), isEnabled: true)
+        let multiRule = AutomationRule(trigger: .back, action: .devices(ids: ["cn-light", "de-light"], isOn: false), isEnabled: true)
+        let validJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(validRule)) as? [String: Any])
+        let multiJSON = try #require(try JSONSerialization.jsonObject(with: JSONEncoder().encode(multiRule)) as? [String: Any])
         let unreadable: [String: Any] = ["id": UUID().uuidString, "trigger": "renamed-trigger", "action": [:]]
-        defaults.set(
-            try JSONSerialization.data(withJSONObject: [validJSON, unreadable]),
-            forKey: AutomationRuleStore.storageKey
-        )
-        #expect(AutomationRuleStore(defaults: defaults).load().count == 1)
+        defaults.set(try JSONSerialization.data(withJSONObject: [validJSON, multiJSON, unreadable]), forKey: AutomationRuleStore.storageKey)
 
-        let verdict = store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-        #expect(verdict.disposition == .requiresPauseConfirmation)
-
-        let storedData = try #require(defaults.data(forKey: AutomationRuleStore.storageKey))
-        let raw = try #require(try JSONSerialization.jsonObject(with: storedData) as? [Any])
-        #expect(raw.count == 2)
-        #expect(raw.contains { ($0 as? [String: Any])?["trigger"] as? String == "renamed-trigger" })
-    }
-
-    // MARK: M6 – Pure LG timers are exempt
-
-    @Test("A timer whose targets are all LG LAN cards survives disabling the last Xiaomi account")
-    func pureLGTimerSurvivesLastAccountDisable() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭电视",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: LGWebOSProtocol.deviceId, operation: .power(false))],
-                reply: "关闭电视", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
-        store.restoreScheduledCommands()
-        #expect(store.scheduledCommands.count == 1)
-
-        store.setMiAccountEnabled(false, id: Self.cn.id)
-
-        #expect(store.scheduledCommands.map(\.id) == [timer.id])
-        #expect(store.foreignScheduledCommands.isEmpty)
-    }
-
-    @Test("A missed LG-only timer still runs after the last Xiaomi account is turned off")
-    func missedLGTimerRunsAfterDisable() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let mock = MockHomeProvider()
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
-        let tv = SmartDevice(
-            id: LGWebOSProtocol.deviceId, name: "LG 电视", roomId: "ke_ting", roomName: "客厅",
-            model: "lg.webos", isOnline: true,
-            kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
-        )
-        store.devices = [tv]
-        let missed = ScheduledCommand(
-            reply: "关闭电视",
-            fireDate: Date().addingTimeInterval(-60),
-            plan: IntentPlan(
-                intents: [DeviceIntent(targetId: LGWebOSProtocol.deviceId, operation: .power(false))],
-                reply: "关闭电视", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id]
-        )
-        ScheduledCommand.save([missed], to: defaults)
-        store.restoreScheduledCommands()
-        #expect(store.missedScheduledCommands.map(\.id) == [missed.id])
-
-        store.setMiAccountEnabled(false, id: Self.cn.id)
-        #expect(store.missedScheduledCommands.map(\.id) == [missed.id])
-
-        let ran = await store.runMissedScheduledCommand(id: missed.id)
-        #expect(ran != nil)
-        #expect(store.missedScheduledCommands.isEmpty)
-        #expect(!(await mock.executedCommands.isEmpty))
-    }
-
-    @Test("Disabling a Xiaomi account keeps the cards Home Assistant drives")
-    func disableKeepsHAPairedCards() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-
-        let paired = Self.indexedLight(id: "paired-light", name: "走廊灯", accountId: Self.cn.id)
-        var home = SynthesizedHome(rooms: [], devices: [paired], environmentReadings: [], scenes: [])
-        home.deviceBackends = ["paired-light": .homeAssistant]
-        let mock = MockHomeProvider(snapshot: home)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
-        // A Home Assistant-winning card only exists while Home Assistant is configured.
-        store.hasHASource = true
-        store.serverURLString = "http://192.168.1.10:8123"
-        try await store.waitForTestSnapshot()
-        #expect(store.deviceBackends["paired-light"] == .homeAssistant)
-
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(store.devices.map(\.id) == ["paired-light"])
-
-        // Later snapshots keep the Home Assistant row even though its copied account id is off.
-        await mock.updateSnapshot(home)
-        await waitUntil { store.devices.map(\.id) == ["paired-light"] }
-        #expect(store.devices.map(\.id) == ["paired-light"])
-    }
-
-    @Test("Disabling a second account extends the pause markers of an already paused rule")
-    func secondDisableExtendsPausedScopes() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [
-            Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id),
-            Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id),
-        ]
-        let ruleStore = AutomationRuleStore(defaults: defaults)
-        ruleStore.save([AutomationRule(trigger: .away, action: .devices(ids: ["cn-light", "de-light"], isOn: false))])
-
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(try #require(ruleStore.load().first).pausedScopes == [Self.cn.id])
-
-        // The second account takes away the rule's remaining targets; its pause markers must grow.
-        let preview = store.previewSetMiAccountEnabled(false, id: Self.de.id)
+        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
         #expect(preview.disposition == .requiresPauseConfirmation)
-        #expect(preview.itemsToPause.contains { $0.kind == .automationRule })
-        store.setMiAccountEnabled(false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(try #require(ruleStore.load().first).pausedScopes == [Self.cn.id, Self.de.id].sorted())
+        #expect(!preview.itemsToPause.contains { $0.id.hasPrefix("group:") })
+        let confirmedKeys = Set(preview.itemsToPause.map(\.pauseKey))
 
-        store.setMiAccountEnabled(true, id: Self.cn.id)
-        #expect(try #require(ruleStore.load().first).isEnabled == false)
+        #expect(store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration, expectedPauseItemKeys: ["stale-key"]).disposition == .requiresPauseConfirmation)
+        #expect(store.isMiAccountEnabled(Self.cn.id))
 
-        store.setMiAccountEnabled(true, id: Self.de.id)
-        #expect(try #require(ruleStore.load().first).isEnabled == true)
-    }
-
-    @Test("Disabling a second account extends the pause markers of an already paused timer")
-    func secondDisableExtendsPausedTimers() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.devices = [
-            Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id),
-            Self.indexedLight(id: "de-light", name: "书房灯", accountId: Self.de.id),
-        ]
-        let timer = ScheduledCommand(
-            reply: "10 分钟后关闭两盏灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(
-                intents: [
-                    DeviceIntent(targetId: "cn-light", operation: .power(false)),
-                    DeviceIntent(targetId: "de-light", operation: .power(false)),
-                ],
-                reply: "关闭两盏灯", source: .local
-            ),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, Self.de.id]
-        )
-        ScheduledCommand.save([timer], to: defaults)
-        store.restoreScheduledCommands()
-
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        let afterFirst = try #require(store.pausedScheduledCommands.first)
-        #expect(afterFirst.pausedScopes == [Self.cn.id])
-
-        // The second disable must grow the marker instead of leaving it pinned to the first account.
-        store.setMiAccountEnabled(false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        let afterSecond = try #require(store.pausedScheduledCommands.first)
-        #expect(afterSecond.pausedScopes == [Self.cn.id, Self.de.id].sorted())
-
-        store.setMiAccountEnabled(true, id: Self.cn.id)
-        #expect(store.pausedScheduledCommands.count == 1)
-        #expect(store.scheduledCommands.isEmpty)
-
-        store.setMiAccountEnabled(true, id: Self.de.id)
+        let savedBlob = defaults.data(forKey: CapabilitySelectionStore.storageKey)
+        defaults.set(Data("{not-valid-json".utf8), forKey: CapabilitySelectionStore.storageKey)
+        #expect(store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration).disposition == .blocked)
         #expect(store.pausedScheduledCommands.isEmpty)
-    }
+        defaults.set(savedBlob, forKey: CapabilitySelectionStore.storageKey)
 
-    @Test("Re-adding an account revalidates the paused quick actions it left behind")
-    func readdedAccountRevalidatesQuickActions() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-        let store = Self.makeStore(suite: suite, vault: vault)
-        let light = Self.indexedLight(id: "cn-light", name: "客厅灯", accountId: Self.cn.id)
-        store.devices = [light]
+        let confirmed = store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration, expectedPauseItemKeys: confirmedKeys)
+        #expect(confirmed.disposition == .requiresPauseConfirmation && !store.isMiAccountEnabled(Self.cn.id))
+        #expect(store.scheduledCommands.map(\.id) == [lgTimer.id])
+        #expect(store.pausedScheduledCommands.count == 2)
+        let rawRulesData = try #require(defaults.data(forKey: AutomationRuleStore.storageKey))
+        let rawRules = try #require(try JSONSerialization.jsonObject(with: rawRulesData) as? [Any])
+        #expect(rawRules.count == 3)
 
-        store.setMiAccountEnabled(false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
-        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
-        store.logoutMiAccount(id: Self.cn.id)
-        #expect(store.pausedQuickActionIDs.contains("lightsOff"))
+        store.setMiAccountEnabled(false, id: Self.de.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration)
+        let multiPaused = try #require(store.pausedScheduledCommands.first { $0.command.id == multiTimer.id })
+        #expect(multiPaused.pausedScopes == [Self.cn.id, Self.de.id].sorted())
+        #expect(ruleStore.load().first { $0.id == multiRule.id }?.pausedScopes == [Self.cn.id, Self.de.id].sorted())
 
-        _ = MiSessionStore.upsert(MiAccountDisableFixture.cnSession, defaults: defaults, vault: vault)
-        store.miAccounts = MiSessionStore.loadAccounts(defaults: defaults, vault: vault)
-        store.registerNewlyConfiguredScope(Self.cn.id, connection: .xiaomiCloud)
+        store.completeMiLogin(Self.cnSession)
+        #expect(store.isMiAccountEnabled(Self.cn.id) && store.pendingRevalidationScopes.contains(Self.cn.id))
+        var disconnectedSnap = SynthesizedHome(devices: [cnLight])
+        disconnectedSnap.isInitialLoadComplete = true
+        disconnectedSnap.freshAccountIds = [Self.cn.id]
+        disconnectedSnap.miAccountsEpoch = store.miAccountsConfigEpoch
+        disconnectedSnap.accountStatuses = [Self.cn.id: .disconnected("401")]
+        store.reconcileReenabledScopesAfterSnapshot(disconnectedSnap)
+        #expect(store.pendingRevalidationScopes.contains(Self.cn.id) && store.pausedScheduledCommands.count == 2)
+
+        store.selectedMiHomeId = Self.cn.id + "/home-cn"
+        var connectedSnap = disconnectedSnap
+        connectedSnap.accountStatuses = [Self.cn.id: .connected]
+        store.reconcileReenabledScopesAfterSnapshot(connectedSnap)
         #expect(store.pendingRevalidationScopes.contains(Self.cn.id))
 
-        store.devices = [light]
-        var snapshot = SynthesizedHome(rooms: [], devices: [light], environmentReadings: [], scenes: [])
-        snapshot.isInitialLoadComplete = true
-        snapshot.freshAccountIds = [Self.cn.id]
-        snapshot.miAccountsEpoch = store.miAccountsConfigEpoch
-        snapshot.accountStatuses = [Self.cn.id: .connected]
-        store.reconcileReenabledScopesAfterSnapshot(snapshot)
+        store.selectedMiHomeId = nil
+        store.devices = [cnLight]
+        store.reconcileReenabledScopesAfterSnapshot(connectedSnap)
+        #expect(!store.pendingRevalidationScopes.contains(Self.cn.id))
+        #expect(store.scheduledCommands.map(\.id).contains(futureTimer.id))
+        #expect(store.pausedScheduledCommands.map(\.command.id) == [multiTimer.id])
+        #expect(ruleStore.load().first { $0.id == validRule.id }?.isEnabled == true)
+        #expect(ruleStore.load().first { $0.id == multiRule.id }?.isEnabled == false)
 
-        #expect(!store.pausedQuickActionIDs.contains("lightsOff"))
+        let relaunched = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
+        #expect(relaunched.pausedScheduledCommands.count == 1)
+        relaunched.logoutMiAccount()
+        #expect(relaunched.pausedScheduledCommands.isEmpty)
+        #expect(store.cancelScheduledCommands() >= 1 && store.pausedScheduledCommands.isEmpty)
     }
 
-    @Test("A row naming an account this Mac does not have is not blocked by the capability gate")
-    func unknownAccountRowStaysControllable() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        #expect(MiSessionStore.loadAccounts(defaults: defaults, vault: vault).isEmpty)
-
-        let mock = MockHomeProvider()
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
-        let stale = SmartDevice(
-            id: "stale-light", name: "旧账号灯", roomId: "r", roomName: "客厅",
-            model: "yeelink.light.ceiling22", isOnline: true,
-            kind: .light(LightSpec(entityId: "miot:stale-light:2", isOn: true)),
-            accountId: "acc-not-on-this-mac"
-        )
-        store.devices = [stale]
-
-        let task = try #require(store.togglePrimary(stale), "an unconfigured account is not a capability the host turned off")
-        _ = await task.value
-        #expect(await mock.executedCommands.count == 1)
-    }
-
-    // MARK: L1 – All accounts turned off is not "not configured"
-
-    @Test("Turning off the only Xiaomi account reports a turned-off connection, not an unconfigured home")
-    func allAccountsOffIsNotUnconfigured() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.setMiAccountEnabled(false, id: Self.cn.id)
-
-        #expect(store.panelHealth != .notConfigured)
-        if case .blocked = store.panelHealth {} else {
-            Issue.record("expected a blocked health verdict, got \(store.panelHealth)")
-        }
-    }
-
-    // MARK: Review comments – backend, suppression and write gate
-
-    @Test("A paired device resolves through the backend that actually drives it")
-    func pairedDeviceUsesWinningBackend() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let store = Self.makeStore(suite: suite, vault: vault)
-
-        store.hasHASource = true
-        let paired = Self.indexedLight(id: "paired-light", name: "走廊灯", accountId: Self.cn.id)
-        store.devices = [paired]
-        store.deviceBackends = ["paired-light": .homeAssistant]
-
-        let (connection, scope) = store.inferSource(for: paired)
-        #expect(connection == .homeAssistant)
-        #expect(scope == store.homeAssistantScopeIdentifier)
-    }
-
-    @Test("Disabling an account drops its rows even when they carry no account id")
-    func disableDropsRowsWithoutAccountId() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        // Its owner is only known through the index (the first enabled account).
-        let anonymous = Self.indexedLight(id: "cn-anon", name: "玄关门厅灯", accountId: nil)
-        store.deviceBackends = ["cn-anon": .xiaomiCloud]
-        store.devices = [anonymous]
-        #expect(store.indexedDevicesById["cn-anon"]?.sourceScope == Self.cn.id)
-
-        store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-
-        #expect(!store.devices.contains { $0.id == "cn-anon" })
-    }
-
-    @Test("The write gate blocks a live row whose persisted index entry is missing")
-    func writeGateCoversLiveRowWithoutIndexEntry() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-        let mock = MockHomeProvider()
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
-
-        let lock = SmartDevice(
-            id: "cn-lock", name: "入户门锁", roomId: "\(Self.cn.id)/r", roomName: "玄关",
+    @Test("Control write gate blocks disabled account targets, split/merged facets, and unknown MIoT dids while keeping HA-paired and unknown-account rows controllable")
+    func controlWriteGateAndDualSourcePairingInvariants() async throws {
+        let cnLock = SmartDevice(
+            id: "cn-lock", name: "入户门锁", roomId: Self.cn.id + "/r-cn", roomName: "玄关",
             model: "xiaomi.lock.pro", isOnline: true,
             kind: .plug(PlugSpec(switchEntityId: "miot:cn-lock:2", isOn: true)),
-            accountId: Self.cn.id, accountLabel: "米家账号"
-        )
-        store.devices = [lock]
-        store.indexedDevicesById.removeValue(forKey: "cn-lock")
-        var selection = store.capabilitySelection
-        selection.enabledConnectionScopes.remove(Self.cn.id)
-        store.capabilitySelection = selection
-
-        await #expect(throws: CapabilityControlBlockedError.self) {
-            try await store.executeDeviceCommand(.setSwitch(entityId: "miot:cn-lock:2", isOn: false))
-        }
-        #expect(await mock.executedCommands.isEmpty)
-    }
-
-    // MARK: Cross-family review fixes – P1-1, P1-2, P2-3
-
-    @Test("Cold-start and failover HA-backed paired cards survive Xiaomi account disable without pausing HA-served timers or automations")
-    func pairedCardsSurviveXiaomiDisableOnColdStartAndFailoverWithoutPausingHAReferences() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-
-        // 1. Cold start with cn already disabled before the first snapshot (`self.deviceBackends` empty):
-        // an HA-winning paired card must NOT be suppressed even if it carries cn's accountId.
-        var initialSelection = CapabilitySelection(
-            enabledConnections: [.xiaomiCloud, .homeAssistant],
-            enabledConnectionScopes: [Self.de.id, "ha:http://192.168.1.10:8123"],
-            enabledFeatures: Set(FeatureID.allCases),
-            enabledCategories: Set(DeviceCategoryID.allCases)
-        )
-        CapabilitySelectionStore.save(
-            selection: initialSelection,
-            configuredScopes: [Self.cn.id, Self.de.id, "ha:http://192.168.1.10:8123"],
-            explicitlyDisabledConnections: [],
-            defaults: defaults
-        )
-        let coldStore = Self.makeStore(suite: suite, vault: vault)
-        coldStore.hasHASource = true
-        coldStore.serverURLString = "http://192.168.1.10:8123"
-        #expect(!coldStore.isMiAccountEnabled(Self.cn.id))
-        #expect(coldStore.deviceBackends.isEmpty)
-
-        let haWinningPaired = SmartDevice(
-            id: "ha-paired-light", name: "客厅主灯", roomId: "ha-living", roomName: "客厅",
-            model: "yeelink.light.ceiling22", isOnline: true,
-            kind: .light(LightSpec(entityId: "light.living_main", isOn: true)),
-            accountId: Self.cn.id
-        )
-        var coldSnapshot = SynthesizedHome(devices: [haWinningPaired])
-        coldSnapshot.isInitialLoadComplete = true
-        coldSnapshot.deviceBackends = ["ha-paired-light": .homeAssistant]
-        coldSnapshot.pairedDeviceIDs = ["ha-paired-light"]
-        coldStore.handleProviderEvent(.snapshotUpdated(coldSnapshot))
-
-        #expect(coldStore.devices.map(\.id) == ["ha-paired-light"])
-        #expect(coldStore.indexedDevicesById["ha-paired-light"]?.connection == .homeAssistant)
-
-        // 2. Live failover: a paired card whose canonical ID was previously won by Xiaomi (`accountId = cn.id`,
-        // `deviceBackends[id] = .xiaomiCloud`) must NOT pause timers/automations/quick actions when HA is
-        // enabled, must survive disable, and must update its index scope to HA when HA takes over (`accountId == nil`).
-        initialSelection.enabledConnectionScopes.insert(Self.cn.id)
-        let failoverSuite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: failoverSuite) }
-        let failoverDefaults = try #require(UserDefaults(suiteName: failoverSuite))
-        let failoverVault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(failoverDefaults, failoverVault)
-
-        let store = Self.makeStore(suite: failoverSuite, vault: failoverVault)
-        store.hasHASource = true
-        store.serverURLString = "http://192.168.1.10:8123"
-
-        let canonicalId = "123456789"
-        let miWinningPaired = SmartDevice(
-            id: canonicalId, name: "卧室吸顶灯", roomId: "\(Self.cn.id)/bed", roomName: "卧室",
-            model: "yeelink.light.ceiling22", isOnline: true,
-            kind: .light(LightSpec(entityId: "miot:\(canonicalId):2", isOn: true)),
             accountId: Self.cn.id, accountLabel: Self.cn.maskedUserId
         )
-        var preDisableSnapshot = SynthesizedHome(devices: [miWinningPaired])
-        preDisableSnapshot.isInitialLoadComplete = true
-        preDisableSnapshot.deviceBackends = [canonicalId: .xiaomiCloud]
-        preDisableSnapshot.pairedDeviceIDs = [canonicalId]
-        store.handleProviderEvent(.snapshotUpdated(preDisableSnapshot))
-        #expect(store.indexedDevicesById[canonicalId]?.sourceScope == Self.cn.id)
-
-        let pairedTimer = ScheduledCommand(
-            reply: "10 分钟后关闭卧室吸顶灯",
-            fireDate: Date().addingTimeInterval(600),
-            plan: IntentPlan(intents: [DeviceIntent(targetId: canonicalId, operation: .power(false))], reply: "关闭卧室吸顶灯", source: .local),
-            sourceScope: Self.cn.id,
-            sourceScopes: [Self.cn.id, store.homeAssistantScopeIdentifier]
-        )
-        ScheduledCommand.save([pairedTimer], to: failoverDefaults)
-        store.restoreScheduledCommands()
-        let ruleStore = AutomationRuleStore(defaults: failoverDefaults)
-        ruleStore.save([AutomationRule(trigger: .away, action: .devices(ids: [canonicalId], isOn: false), isEnabled: true)])
-
-        let preview = store.previewSetMiAccountEnabled(false, id: Self.cn.id)
-        #expect(preview.disposition == .allowed)
-        #expect(preview.itemsToPause.isEmpty)
-
-        let verdict = store.setMiAccountEnabled(false, id: Self.cn.id)
-        #expect(verdict.disposition == .allowed)
-        #expect(store.scheduledCommands.count == 1)
-        #expect(store.pausedScheduledCommands.isEmpty)
-        #expect(ruleStore.load().allSatisfy { $0.isEnabled })
-        #expect(store.pausedQuickActionIDs.isEmpty)
-        #expect(store.devices.map(\.id) == [canonicalId])
-
-        // HA now emits the takeover snapshot under the preserved canonical ID with `accountId == nil`.
-        let haTakeoverPaired = SmartDevice(
-            id: canonicalId, name: "卧室吸顶灯", roomId: "ha-bed", roomName: "卧室",
-            model: "yeelink.light.ceiling22", isOnline: true,
-            kind: .light(LightSpec(entityId: "light.bedroom_ceiling", isOn: true)),
-            accountId: nil
-        )
-        var haTakeoverSnapshot = SynthesizedHome(devices: [haTakeoverPaired])
-        haTakeoverSnapshot.isInitialLoadComplete = true
-        haTakeoverSnapshot.deviceBackends = [canonicalId: .homeAssistant]
-        haTakeoverSnapshot.pairedDeviceIDs = [canonicalId]
-        store.handleProviderEvent(.snapshotUpdated(haTakeoverSnapshot))
-
-        #expect(store.devices.map(\.id) == [canonicalId])
-        #expect(store.indexedDevicesById[canonicalId]?.connection == .homeAssistant)
-        #expect(store.indexedDevicesById[canonicalId]?.sourceScope == store.homeAssistantScopeIdentifier)
-
-        // 3. Changing `deviceBackends` while `devices == nextDevices` still re-syncs `indexedDevicesById`.
-        var backendFlipOnly = haTakeoverSnapshot
-        backendFlipOnly.deviceBackends = [canonicalId: .xiaomiCloud]
-        store.setMiAccountEnabled(true, id: Self.cn.id)
-        store.handleProviderEvent(.snapshotUpdated(backendFlipOnly))
-        #expect(store.indexedDevicesById[canonicalId]?.connection == .xiaomiCloud)
-    }
-
-    @Test("Unified write gate and pressDeviceButton fail closed for split-channel drawer facets, merged HA+MIoT facets, and unknown MIoT dids")
-    func unifiedWriteGateFailsClosedForDrawerFacetsMergedFacetsAndUnknownDids() async throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        Self.seedAccounts(defaults, vault)
-
-        // 1. Split-channel row `<did>.s2` with a cross-siid drawer facet on `siid = 5`.
         let splitSwitch = SmartDevice(
             id: "wall-hub.s2", name: "玄关二键开关", roomId: "\(Self.cn.id)/hall", roomName: "玄关",
             model: "lumi.switch.b2lacn02", isOnline: true,
             kind: .plug(PlugSpec(switchEntityId: "miot:wall-hub:2:1", isOn: true)),
             accountId: Self.cn.id, accountLabel: Self.cn.maskedUserId
         )
-        // 2. Dual-source HA-winning card `climate.bedroom` with a Xiaomi-merged facet `miot:mi-ac-did:7:1`.
         let haPairedAC = SmartDevice(
             id: "climate.bedroom", name: "主卧空调", roomId: "ha-bed", roomName: "主卧",
             model: "xiaomi.aircondition.mc5", isOnline: true,
-            kind: .climate(ClimateSpec(
-                entityId: "climate.bedroom", isOn: true, hvacMode: "cool",
-                availableModes: ["cool", "heat"], targetTemperature: 25
-            )),
+            kind: .climate(ClimateSpec(entityId: "climate.bedroom", isOn: true, hvacMode: "cool", availableModes: ["cool", "heat"], targetTemperature: 25)),
             accountId: Self.cn.id
         )
         let splitFacet = FacetControl(
             id: "5.1", kind: .toggle, name: "indicator-light", title: "背光指示灯",
-            serviceName: "indicator-light", value: .bool(true),
-            isWritable: true, writesByDefault: true, isHighValue: false,
+            serviceName: "indicator-light", value: .bool(true), isWritable: true, writesByDefault: true, isHighValue: false,
             target: .property(entityId: "miot:wall-hub:5", piid: 1)
         )
         let mergedMiFacet = FacetControl(
             id: "7.1", kind: .toggle, name: "alarm", title: "提示音",
-            serviceName: "alarm", value: .bool(true),
-            isWritable: true, writesByDefault: true, isHighValue: false,
+            serviceName: "alarm", value: .bool(true), isWritable: true, writesByDefault: true, isHighValue: false,
             target: .property(entityId: "miot:mi-ac-did:7", piid: 1)
         )
         let mergedMiActionFacet = FacetControl(
             id: "7.a2", kind: .button, name: "self-clean", title: "自清洁",
-            serviceName: "maintenance",
-            isWritable: true, writesByDefault: true, isHighValue: false,
+            serviceName: "maintenance", isWritable: true, writesByDefault: true, isHighValue: false,
             target: .action(entityId: "miot-action:mi-ac-did:7:2")
         )
         let haNativeFacet = FacetControl(
             id: "ha.eco", kind: .toggle, name: "eco", title: "节能模式",
-            serviceName: "climate", value: .bool(false),
-            isWritable: true, writesByDefault: true, isHighValue: false,
+            serviceName: "climate", value: .bool(false), isWritable: true, writesByDefault: true, isHighValue: false,
             target: .haProperty(entityId: "switch.bedroom_ac_eco")
         )
 
-        var snapshot = SynthesizedHome(devices: [splitSwitch, haPairedAC])
+        var snapshot = SynthesizedHome(devices: [cnLock, splitSwitch, haPairedAC])
         snapshot.isInitialLoadComplete = true
-        snapshot.deviceBackends = ["wall-hub.s2": .xiaomiCloud, "climate.bedroom": .homeAssistant]
+        snapshot.deviceBackends = ["cn-lock": .xiaomiCloud, "wall-hub.s2": .xiaomiCloud, "climate.bedroom": .homeAssistant]
         snapshot.pairedDeviceIDs = ["climate.bedroom"]
         snapshot.deviceFacets = [
             "wall-hub.s2": [splitFacet],
             "climate.bedroom": [mergedMiFacet, mergedMiActionFacet, haNativeFacet],
         ]
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let (store, defaults, vault, _) = Self.makeSeededStore(provider: mock)
+        var confirmationCalls = 0
+        store.manualControlConfirmationHandler = { _ in confirmationCalls += 1; return true }
         store.hasHASource = true
         store.serverURLString = "http://192.168.1.10:8123"
         try await store.waitForTestSnapshot()
+        #expect(store.inferSource(for: haPairedAC) == (.homeAssistant, store.homeAssistantScopeIdentifier))
 
-        #expect(store.miotDidToAccountScopes["wall-hub"] == [Self.cn.id])
-        #expect(store.miotDidToAccountScopes["mi-ac-did"] == [Self.cn.id])
+        let pairedTimer = Self.timer(id: "climate.bedroom", scope: Self.cn.id, scopes: [Self.cn.id, store.homeAssistantScopeIdentifier])
+        ScheduledCommand.save([pairedTimer], to: defaults)
+        store.restoreScheduledCommands()
+        #expect(store.previewSetMiAccountEnabled(false, id: Self.cn.id).disposition == .allowed)
+        #expect(store.setMiAccountEnabled(false, id: Self.cn.id).disposition == .allowed)
+        #expect(store.scheduledCommands.count == 1 && store.pausedScheduledCommands.isEmpty)
 
-        // Disable cn while de and HA stay enabled.
-        _ = store.setMiAccountEnabled(
-            false, id: Self.cn.id, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration
-        )
-
-        // Merged Xiaomi facets on the surviving HA card are stripped immediately while native HA facets stay.
         #expect(store.devices.map(\.id) == ["climate.bedroom"])
         #expect(store.deviceFacets["climate.bedroom"]?.map(\.id) == ["ha.eco"])
 
-        // Stale drawer facet write on split-channel `siid = 5` is blocked with zero writes.
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.setMiotProperty(entityId: "miot:wall-hub:5", piid: 1, value: .bool(false)))
-        }
-        // Stale merged Xiaomi facet write on `climate.bedroom` is blocked even though `climate.bedroom` itself is HA-enabled!
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.setMiotProperty(entityId: "miot:mi-ac-did:7", piid: 1, value: .bool(false)))
-        }
-        // Unknown MIoT `did` fails closed while `cn` is disabled and `de` is enabled.
-        await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
-            try await store.executeDeviceCommand(.setSwitch(entityId: "miot:unindexed-did:9:1", isOn: false))
+        let disabledGate = store.evaluateDeviceControlGate(deviceId: "cn-lock")
+        #expect(!disabledGate.allowed && disabledGate.rejectionReason?.userMessage == "该米家账号已停用")
+        let missingGate = store.evaluateDeviceControlGate(deviceId: "never-existed")
+        #expect(!missingGate.allowed && missingGate.rejectionReason?.userMessage == "设备不存在")
+
+        _ = store.togglePrimary(cnLock)
+        #expect(confirmationCalls == 0 && store.toastNotice?.message == "该米家账号已停用")
+
+        for blockedCmd in [
+            DeviceCommand.setSwitch(entityId: "miot:cn-lock:2", isOn: false),
+            .setMiotProperty(entityId: "miot:wall-hub:5", piid: 1, value: .bool(false)),
+            .setMiotProperty(entityId: "miot:mi-ac-did:7", piid: 1, value: .bool(false)),
+            .setSwitch(entityId: "miot:unindexed-did:9:1", isOn: false),
+            .pressButton(entityId: "miot-action:cn-lock:2:1"),
+        ] {
+            await #expect(throws: CapabilityControlBlockedError(reason: .connectionScopeDisabled(.xiaomiCloud, scope: Self.cn.id))) {
+                try await store.executeDeviceCommand(blockedCmd)
+            }
         }
 
-        // `pressDeviceButton`, `setFacetValue`, and `runFacetAction` reject upfront with error toast and zero writes.
+        let raycastDisabled = await store.executeRaycastPower(deviceId: "cn-lock", isOn: false)
+        #expect(raycastDisabled.isError && raycastDisabled.message == "该米家账号已停用")
+        let raycastMissing = await store.executeRaycastPower(deviceId: "never-existed", isOn: false)
+        #expect(raycastMissing.isError && raycastMissing.message == "设备不存在")
+
+        store.deviceFacets["climate.bedroom"] = [mergedMiFacet, mergedMiActionFacet, haNativeFacet]
         store.dismissToast()
         store.pressDeviceButton("miot-action:mi-ac-did:7:2", label: "自清洁")
-        #expect(store.toastNotice?.isError == true)
         #expect(store.toastNotice?.message == "该米家账号已停用")
-
-        // Even if an open drawer still held stale Xiaomi facet descriptors, `setFacetValue` and `runFacetAction` block them upfront.
-        store.deviceFacets["climate.bedroom"] = [mergedMiFacet, mergedMiActionFacet, haNativeFacet]
         store.dismissToast()
         store.setFacetValue("climate.bedroom", controlId: "7.1", value: .bool(false))
         #expect(store.toastNotice?.message == "该米家账号已停用")
-
         store.dismissToast()
         store.runFacetAction("climate.bedroom", controlId: "7.a2")
         #expect(store.toastNotice?.message == "该米家账号已停用")
-
         #expect(await mock.executedCommands.isEmpty)
 
-        // Meanwhile HA commands on `climate.bedroom` continue to work normally.
         try await store.executeDeviceCommand(.setSwitch(entityId: "switch.bedroom_ac_eco", isOn: true))
         #expect(await mock.executedCommands.count == 1)
+
+        let (unconfiguredStore, _, _, _) = Self.makeSeededStore(accounts: [], provider: mock)
+        let foreignRow = Self.indexedLight(id: "stale-light", name: "旧账号灯", accountId: "acc-not-on-this-mac")
+        unconfiguredStore.devices = [foreignRow]
+        _ = try await #require(unconfiguredStore.togglePrimary(foreignRow)).value
+        #expect(await mock.executedCommands.count == 2)
+        _ = vault
     }
-
-    @Test("Disabling one Xiaomi account immediately purges its miAccountStatuses entry and scopes miSessionShowsExpired to enabled accounts")
-    func disablingAccountPurgesStatusAndScopesSessionExpiryToEnabledAccounts() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-
-        let now = Date()
-        let expiredCN = MiAccount(session: MiSession(
-            userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn",
-            region: "cn", expiresAt: now.addingTimeInterval(-3600)
-        ))
-        let validDE = MiAccount(session: MiSession(
-            userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de",
-            region: "de", expiresAt: now.addingTimeInterval(86_400 * 10)
-        ))
-        MiSessionStore.saveAccounts([expiredCN, validDE], defaults: defaults, vault: vault)
-        defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-
-        let store = Self.makeStore(suite: suite, vault: vault)
-        store.miAccountStatuses = [
-            expiredCN.id: .disconnected("401 expired"),
-            validDE.id: .connected,
-        ]
-        #expect(store.miSessionShowsExpired)
-        #expect(!store.miSessionBlocksControl)
-
-        // Disabling the expired account while validDE stays enabled purges expiredCN's status and clears expired banner state.
-        #expect(store.setMiAccountEnabled(false, id: expiredCN.id).disposition == .allowed)
-        #expect(store.miAccountStatuses[expiredCN.id] == nil)
-        #expect(store.miAccountStatuses[validDE.id] == .connected)
-        #expect(!store.miSessionShowsExpired)
-        #expect(!store.miSessionBlocksControl)
-
-        // Conversely, enabling expiredCN and disabling validDE exposes expiredCN's expiry and blocks Xiaomi control.
-        #expect(store.setMiAccountEnabled(true, id: expiredCN.id).disposition == .allowed)
-        #expect(store.setMiAccountEnabled(false, id: validDE.id).disposition == .allowed)
-        #expect(store.miAccountStatuses[validDE.id] == nil)
-        #expect(store.miSessionShowsExpired)
-        #expect(store.miSessionBlocksControl)
-    }
-}
-
-/// Shared fixture values so the review tests can reuse the primary test suite's sessions.
-@MainActor
-enum MiAccountDisableFixture {
-    static let cnSession = MiSession(
-        userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
-    )
-    static let deSession = MiSession(
-        userId: "20020002", cUserId: "c-de", ssecurity: "ssec-de", serviceToken: "tok-de", region: "de"
-    )
-    static let cn = MiAccount(session: cnSession)
-    static let de = MiAccount(session: deSession)
 }

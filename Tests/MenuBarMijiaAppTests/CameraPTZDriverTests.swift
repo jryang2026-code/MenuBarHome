@@ -3,6 +3,49 @@ import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
+extension CameraLivePanelController {
+    func configurePTZPreview(
+        store: HomeStore? = nil,
+        deviceId: String?,
+        binding: CameraPTZBinding?,
+        stream: CameraStreamSource?,
+        notice: String?,
+        ready: Bool,
+        client: (any CameraPTZControlling)? = nil,
+        hasFrame: Bool = true,
+        isLoading: Bool = false,
+        errorText: String? = nil
+    ) {
+        ptzBeginAttemptID = nil
+        ptzBeginTask = nil
+        ptzHeartbeatTask?.cancel()
+        ptzHeartbeatTask = nil
+        ptzNoticeTask?.cancel()
+        ptzNoticeTask = nil
+        ptzQueue.reset()
+        ptzDragID = nil
+        ptzToken = nil
+        ptzDeviceId = nil
+        ptzUnresolvedStops = []
+        ptzStopRetryHold = nil
+        ptzManualStopBatchDidFinish = nil
+        ptzManualStopInFlight = false
+        ptzClient = client
+        if let store {
+            self.store = store
+        }
+        activeDeviceId = deviceId
+        streamSource = stream
+        hasLiveVideoFrame = hasFrame && stream != nil
+        setViewportPreview(isLoading: isLoading, errorText: errorText)
+        ptzBinding = binding
+        ptzClientReady = ready
+        ptzNotice = notice
+        ptzLifecycleID = UUID()
+        demoTimestampOverride = deviceId == nil ? nil : Date(timeIntervalSince1970: 1_700_000_000)
+    }
+}
+
 private actor FakePTZClient: CameraPTZControlling {
     private struct StopWaiter {
         var minimum: Int

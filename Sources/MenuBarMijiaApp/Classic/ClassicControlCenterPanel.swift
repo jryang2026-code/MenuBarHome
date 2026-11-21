@@ -5,7 +5,6 @@ import MijiaCore
 
 public struct ClassicControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
     @State var activeResize: ActiveTileResize?
@@ -377,17 +376,13 @@ public struct ClassicControlCenterPanel: View {
             if !store.panelActivities.isEmpty || !store.missedScheduledCommands.isEmpty {
                 activityStack
                     .layoutPriority(activitiesExpanded ? 1 : 0)
-                    .foldOrigin { $0.systemNoticeMinY = $1 }
                     .accessibilityIdentifier("panel-system-notice")
                     .padding(.horizontal, 14)
                     .padding(.bottom, 8)
             }
 
-            // One input for search and assistant commands, always on screen (#60). Reordering wants
-            // the height for the list instead.
             if !isRoomOrdering {
                 omnibar
-                    .foldOrigin { $0.omnibarMinY = $1 }
                     .padding(.horizontal, 14)
                     .padding(.bottom, 4)
 
@@ -431,9 +426,7 @@ public struct ClassicControlCenterPanel: View {
                 .overlay(Color.primary.opacity(0.07))
 
             if isRoomOrdering {
-                // The order list replaces the whole scrolling dashboard: one vertical scroll only,
-                // and no tile frames or tile drag gesture mounted underneath (§5.1).
-                ClassicRoomOrderEditor(store: store)
+                RoomOrderEditor(store: store, theme: .classic)
                     .frame(maxHeight: .infinity)
             } else {
                 deviceGrid
@@ -447,7 +440,6 @@ public struct ClassicControlCenterPanel: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
         }
-        .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
         .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
         .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
@@ -506,7 +498,6 @@ public struct ClassicControlCenterPanel: View {
             roomFilterBar
             if showsKindChips {
                 kindFilterBar
-                    .foldOrigin { $0.kindRowMinY = $1 }
             }
         }
     }
@@ -514,8 +505,7 @@ public struct ClassicControlCenterPanel: View {
     @ViewBuilder
     private var scrollPreface: some View {
         if showsLessonRow {
-            ClassicOnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
-                .foldOrigin { $0.lessonRowMinY = $1 }
+            OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() }, theme: .classic)
         }
     }
 
@@ -612,9 +602,6 @@ public struct ClassicControlCenterPanel: View {
                         .simultaneousGesture(tileDragGesture)
                         .onPreferenceChange(TileFramesKey.self) { frames in
                             if frames != tileFrames { tileFrames = frames }
-                        }
-                        .onPreferenceChange(CardGlobalTopKey.self) { tops in
-                            panelFoldRecord?.cardTops = tops
                         }
                     }
                     .padding(.horizontal, 13)
@@ -882,33 +869,5 @@ public struct ClassicControlCenterPanel: View {
         }
     }
 
-}
-
-// MARK: - Fold Test Hooks
-
-/// Writes one element's global top edge into the test-injected `PanelFoldRecord`. The record is the
-/// shared one, so the fold layout tests read the classic panel with the same hook as the glass one.
-private struct ClassicFoldOriginWriter: View {
-    @Environment(\.panelFoldRecord) private var record
-    var assign: (PanelFoldRecord, CGFloat) -> Void
-
-    var body: some View {
-        GeometryReader { geo in
-            let y = geo.frame(in: .global).minY
-            Color.clear
-                .onAppear {
-                    if let record { assign(record, y) }
-                }
-                .onChange(of: y) { _, newY in
-                    if let record { assign(record, newY) }
-                }
-        }
-    }
-}
-
-private extension View {
-    func foldOrigin(_ assign: @escaping (PanelFoldRecord, CGFloat) -> Void) -> some View {
-        background { ClassicFoldOriginWriter(assign: assign) }
-    }
 }
 

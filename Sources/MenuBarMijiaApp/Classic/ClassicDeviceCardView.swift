@@ -419,18 +419,19 @@ public struct ClassicDeviceCardView: View {
             if device.hasDetailDrawer {
                 detailControls
             } else if case .generic(let spec) = device.kind, !spec.alerts.isEmpty {
-                ClassicGenericDetailDrawer(
+                GenericDetailDrawer(
                     device: device,
                     store: store,
                     spec: spec,
                     statusColor: statusColor
                 )
             }
-            ClassicDeviceFacetSection(
+            DeviceFacetSection(
                 device: device,
                 store: store,
                 accent: accent,
-                statusColor: statusColor
+                statusColor: statusColor,
+                theme: .classic
             )
         }
     }
@@ -459,23 +460,25 @@ public struct ClassicDeviceCardView: View {
         case .sensor:
             EmptyView()
         case .cover(let spec):
-            ClassicCoverDetailDrawer(
+            CoverDetailDrawer(
                 device: device,
                 spec: spec,
                 store: store,
                 accent: accent,
-                statusColor: statusColor
+                statusColor: statusColor,
+                theme: .classic
             )
         case .appliance(let spec):
-            ClassicApplianceDetailDrawer(
+            ApplianceDetailDrawer(
                 device: device,
                 spec: spec,
                 store: store,
                 accent: accent,
-                statusColor: statusColor
+                statusColor: statusColor,
+                theme: .classic
             )
         case .generic(let spec):
-            ClassicGenericDetailDrawer(
+            GenericDetailDrawer(
                 device: device,
                 store: store,
                 spec: spec,
@@ -538,7 +541,7 @@ public struct ClassicDeviceCardView: View {
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 8)
-                    ClassicDetailValueText(text: "\(current)%", color: statusColor)
+                    DetailValueText(text: "\(current)%", color: statusColor)
                 }
                 .padding(.horizontal, 8)
             }

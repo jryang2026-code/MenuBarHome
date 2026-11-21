@@ -6,7 +6,6 @@ import MijiaCore
 public struct ControlCenterPanel: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.panelAdaptiveHeightProbe) private var panelAdaptiveHeightProbe
-    @Environment(\.panelFoldRecord) var panelFoldRecord
     @AppStorage(PanelPrefs.climatePanelKey) var climatePanelModule: Bool = true
     @State var draggingId: String?
     @State var activeResize: ActiveTileResize?
@@ -370,11 +369,9 @@ public struct ControlCenterPanel: View {
                     .padding(.top, 4)
                     .padding(.bottom, 10)
 
-                // One input for search and assistant commands (#60), folded behind the magnifier.
                 if showsOmnibar, !isRoomOrdering {
                     VStack(alignment: .leading, spacing: 8) {
                         omnibar
-                            .foldOrigin { $0.omnibarMinY = $1 }
                         if showsInputDrawer {
                             inputDrawer
                                 .transition(AppleMotion.drawerTransition)
@@ -430,7 +427,6 @@ public struct ControlCenterPanel: View {
                 .adaptiveHeightSlice(.bottomChrome, clearOnDisappear: true)
             }
         }
-        .foldOrigin { $0.panelMinY = $1 }
         .animation(AppleMotion.reveal, value: store.expandedDeviceId)
         .animation(AppleMotion.reveal, value: store.listCut)
         .animation(AppleMotion.reveal, value: store.isCompactGridMode)
@@ -512,12 +508,10 @@ public struct ControlCenterPanel: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if !store.panelActivities.isEmpty || !store.missedScheduledCommands.isEmpty {
                         activityStack
-                            .foldOrigin { $0.systemNoticeMinY = $1 }
                             .accessibilityIdentifier("panel-system-notice")
                     }
                     if showsLessonRow {
                         OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
-                            .foldOrigin { $0.lessonRowMinY = $1 }
                     }
                     if search.isSearching {
                         searchResultsList(results: searchResults)
@@ -567,9 +561,6 @@ public struct ControlCenterPanel: View {
                 .simultaneousGesture(tileDragGesture)
                 .onPreferenceChange(TileFramesKey.self) { frames in
                     if frames != tileFrames { tileFrames = frames }
-                }
-                .onPreferenceChange(CardGlobalTopKey.self) { tops in
-                    panelFoldRecord?.cardTops = tops
                 }
                 .padding(.horizontal, Self.columnInset)
                 .padding(.top, 2)
@@ -1042,58 +1033,5 @@ enum PanelSearchKeyboard {
         Task { @MainActor in
             await store.runAssistantCommand(utterance)
         }
-    }
-}
-
-/// Per-panel measurements for the fold test. Absent unless a test injects one, so other UI
-/// suites do not share this storage.
-final class PanelFoldRecord: @unchecked Sendable {
-    var panelMinY: CGFloat?
-    var systemNoticeMinY: CGFloat?
-    var omnibarMinY: CGFloat?
-    var lessonRowMinY: CGFloat?
-    var kindRowMinY: CGFloat?
-    var cardTops: [String: CGFloat] = [:]
-}
-
-private struct PanelFoldRecordKey: EnvironmentKey {
-    static let defaultValue: PanelFoldRecord? = nil
-}
-
-extension EnvironmentValues {
-    var panelFoldRecord: PanelFoldRecord? {
-        get { self[PanelFoldRecordKey.self] }
-        set { self[PanelFoldRecordKey.self] = newValue }
-    }
-}
-
-struct CardGlobalTopKey: PreferenceKey {
-    static let defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue()) { _, new in new }
-    }
-}
-
-private struct FoldOriginWriter: View {
-    @Environment(\.panelFoldRecord) private var record
-    var assign: (PanelFoldRecord, CGFloat) -> Void
-
-    var body: some View {
-        GeometryReader { geo in
-            let y = geo.frame(in: .global).minY
-            Color.clear
-                .onAppear {
-                    if let record { assign(record, y) }
-                }
-                .onChange(of: y) { _, newY in
-                    if let record { assign(record, newY) }
-                }
-        }
-    }
-}
-
-private extension View {
-    func foldOrigin(_ assign: @escaping (PanelFoldRecord, CGFloat) -> Void) -> some View {
-        background { FoldOriginWriter(assign: assign) }
     }
 }
