@@ -15,8 +15,8 @@ Cloud agents run on Linux. `scripts/build_app.sh`, `scripts/install_local_app.sh
 ### Linux gates
 
 - `bash scripts/check.sh --skip-snapshots` — full Linux gate: secret scan, mechanical lints, `scripts/linux-check/run.sh` (`MijiaCoreTests`, matching CI's `linux-core` job), Windows frontend unit tests + `tsc && vite build`, and Raycast extension tests + typecheck.
-- `bash scripts/check.sh --lint-only` (add `--script-tests` when touching `scripts/`) — secret scan and mechanical lints (~4s).
-- `actionlint .github/workflows/ci.yml .github/workflows/snapshot-guard.yml .github/workflows/record-snapshots.yml` — GitHub Actions workflow validation. UI snapshot baselines are recorded on GitHub-hosted `macos-26-intel` (Xcode 26.6, zh_CN) by the Record snapshots workflow. A local Mac diff is advisory.
+- `bash scripts/check.sh --lint-only` (add `--script-tests` when touching `scripts/`) — secret scan and mechanical lints (<0.5s).
+- `actionlint .github/workflows/*.yml` — GitHub Actions workflow validation. UI snapshot baselines are compared on GitHub-hosted `macos-26-intel` (Xcode 26.6, zh_CN) in `ci.yml:macos-test`. A local Mac diff is advisory.
 - `bash scripts/test_nas_setup.sh` — NAS packaging safety (stubs network commands; no NAS host required).
 
 `npm run dev --prefix windows` serves the tray UI at port 1420 (`strictPort`). First launch shows onboarding; “Preview the demo” / “先看演示预览” opens the offline demo home, and clicking a device card toggles it. Mi Cloud QR login and Home Assistant need a real account and are not part of cloud setup.

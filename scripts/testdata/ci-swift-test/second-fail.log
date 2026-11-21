@@ -1,7 +1,0 @@
-◇ Test run started.
-◇ Test "Flaky cover case" started.
-◇ Test "Flaky scene case" started.
-✔ Test "Flaky cover case" passed after 0.402 seconds.
-✘ Test "Flaky scene case" recorded an issue at FixtureTests.swift:11:9: Expectation failed: (scene → nil) != nil
-✘ Test "Flaky scene case" failed after 0.418 seconds with 1 issue.
-✘ Test run with 2 tests in 1 suite failed after 0.5 seconds with 1 issue.

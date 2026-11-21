@@ -2,7 +2,7 @@
 
 审阅与编码规范总纲。引用证据时以 `path:symbol` 标注决定性符号并摘出关键行（如 `HomeStore+ControlWrite.swift:lockOptimistic`）。
 
-> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`UNUserNotificationCenter` `.app` 守卫、Windows Fluent 2 曲线变量与退场幽灵类同步、Windows 飞出面板几何与阴影留白预算、`.glassEffect` 隔离、定时器回调裸 `render()`、`Task.yield` 固定循环、`#expect(...allSatisfy(\.))`、`withAnimation` 丢弃 `Task` 返回值、`L10n.currentLanguage =`、`#require` 嵌套、PTZ 型号表与补丁 SHA-256、能力矩阵同步。
+> **机械检查已由 `scripts/check.sh` 自动拦截（不在此赘述）**：密钥与私网扫描、Git 提交账号与镜像远端推送、`UNUserNotificationCenter` `.app` 守卫、`.glassEffect` 隔离、`L10n.currentLanguage =`、`#require` 嵌套、元组内联 `await`、双端 Ed25519 公钥一致性，以及按需/全量的工作流 `actionlint`、Windows 面板几何、PTZ 型号表与能力矩阵同步。
 
 ---
 
@@ -52,15 +52,12 @@ Isolate `.glassEffect(` and `GlassEffectContainer` inside `Sources/MenuBarMijiaA
 
 ## §9. Tight Non-Racing Swift Tests & Snapshots
 
-- Use [`StateTestSupport.awaitState`](Tests/StateTestSupport/AwaitState.swift) for observable state transitions and set a suite time limit. The lint baseline freezes existing polling deadlines and `waitUntil` helpers.
-
+- Use [`StateTestSupport.awaitState`](Tests/StateTestSupport/AwaitState.swift) for observable state transitions and set a suite time limit.
 - Never sleep against product timers (`Task.sleep(for: .milliseconds(...))` or fixed `Task.yield` loops); freeze timers (`pauseUndoBannerCountdown`, `toastAutoDismissInterval = nil`, `assistantNow`, `controlDebounceInterval`) or gate intermediate state deterministically (`AsyncStream` hooks, `SleepGate.waiting`, `FakePTZClient.recordedStops`).
 - Snapshots compare with `SnapshotAssertion.Tolerance` (3 of 255 per channel, 96 pixels free), not byte for byte. The budget covers glyph-edge rounding on the reference renderer. Never loosen it to hide a different OS, Xcode, or a real layout change. Re-record instead. Any text or clock that reads the real date (`Text(date, style: .relative)`) must be pinned in the test (`activityTimestampOverride`), because tolerance cannot absorb a changing string.
 - Use `L10n.$overrideLanguage.withValue` (never global `L10n.currentLanguage =`). Call `waitForTestSnapshot()` after `startListening()`. Serialize `hdiutil attach` tests on `UpdateCheckerTests.HdiutilGate` (retry once on `Resource temporarily unavailable`). Wait for camera diagnostics `streamSource != nil` with a 30s `ContinuousClock` deadline.
-- The reference renderer is GitHub-hosted `macos-26-intel` with Xcode 26.6 and the zh_CN metric locale (`scripts/ci_snapshot_locale.sh --require-xcode 26.6`). `macos-test` runs both unit tests (`--skip SnapshotTests`) and pixel comparisons (`--filter SnapshotTests`) in one hosted job without `MACOS_CI_RUNNER`.
-- **Preferred baseline update flow**: push the UI change on a same-repo PR branch; when `macos-test` fails pixel comparison, the same job (running under `permissions: contents: read`, gated to same-repo `pull_request` or non-`main` `workflow_dispatch`) immediately re-records the full baseline PNG set in that reference environment, validates it with `scripts/ci_snapshot_artifact.sh validate`, and uploads `snapshot-baselines-<head-sha>` (while keeping `snapshot-failures`). Locally on that exact head commit, run `bash scripts/adopt_snapshot_artifact.sh [--run <id>] <pr>` to verify PR/workflow/repo provenance, download by artifact ID with size/decode/completeness checks, install, and commit the baselines, then `git push` to trigger PR CI. Snapshot Guard (`snapshot-baselines`) is unchanged: commits created by `adopt_snapshot_artifact.sh` satisfy the "UI changes ship with baselines" check.
-- **Fallback re-record workflow**: `Actions → Record snapshots` (set Branch to an existing non-default branch in this repository) remains available as a backup — for example, when refreshing all baselines after bumping the `macos-26-intel` image or Xcode pin, or without waiting for a PR mismatch. One machine renders and uploads PNGs; a separate Ubuntu job validates every file, commits them, and dispatches `CI` (with PR-branch path filtering, so `macos-release` and `macos-appintents` only run when their own paths changed) plus `Snapshot Guard`.
-- `bash scripts/record_snapshots.sh` (`--dry-run` lists changes) is a local preview. It differs from the runner. `bash scripts/check.sh` skips the pixel compare. `bash scripts/check.sh --snapshots` runs it and does not fail the gate. `SnapshotFixture` defaults `has_completed_onboarding = true`. Reproduce an unexpected CI mismatch on the parent commit before recording.
+- The reference renderer is GitHub-hosted `macos-26-intel` with Xcode 26.6 and the `zh_CN` metric locale. `macos-test` in `.github/workflows/ci.yml` runs both unit tests (`--skip SnapshotTests`) and pixel comparisons (`--filter SnapshotTests`) in one hosted job and uploads `snapshot-failures` on mismatch.
+- `bash scripts/record_snapshots.sh` (`--dry-run` lists changes) records snapshot baselines. `bash scripts/check.sh` skips the pixel compare locally; `bash scripts/check.sh --snapshots` runs it as an advisory check. `SnapshotFixture` defaults `has_completed_onboarding = true`.
 
 ## §10. Overlay Geometry Has One Owner
 
@@ -70,9 +67,9 @@ Share pill sizes and spacing from content metrics (`GrokBallSuggestionMetrics`);
 
 Sanitized contract recordings in `Tests/Fixtures/contracts/` use synthetic IDs and TEST-NET `192.0.2.0/24` IPs (update fixture + assertions together when upstream changes; never weaken assertions). Fuzz tests use `SeededFuzzGenerator` (millisecond budget, print `seed=`, `iteration=`, `input=`). Production parsers never trap on external numbers (`Int(exactly:)` / `roundedInt` / `.magnitude`).
 
-## §12. Conditional Views Ship With Snapshots
+## §12. Core Main-Screen Snapshots Policy
 
-Any state-gated banner, prompt, empty state, or error state under `Sources/MenuBarMijiaApp/` must add a snapshot case rendering that state; reserve `no-snapshot-change` PR label strictly for non-visual changes.
+Keep `SnapshotTests` focused on ~20 core main-screen layouts (control center panel, primary device drawers, onboarding, and settings tabs). Do not add dedicated PNG snapshot baselines for every transient toast, conditional banner, or edge-case prompt; test transient state transitions via deterministic unit assertions.
 
 ## §13. Pending UI State Ends on Every Transition
 
@@ -90,10 +87,10 @@ Pair every pending UI field, toast, consent banner, activity row, hover/expansio
 
 ## §16. Windows Panel Interaction & Camera Packaging Guardrails
 
-- Background refreshes defer via `MenuMijiaWindowsApp.queueBackgroundRender` during gestures (`hasBlockingPanelInteraction()`); proactive results render only when idle and **drop** (never defer) during gestures (`proactive.ts`). `startTimerLoop` in `appLifecycle.ts` is the sole allowlisted direct `render()` exception when scheduled commands ran.
+- Background refreshes defer via `MenuMijiaWindowsApp.queueBackgroundRender` during gestures (`hasBlockingPanelInteraction()`); proactive results render only when idle and **drop** (never defer) during gestures (`proactive.ts`).
 - Destructive holds (`bindAllOffControl`) must abort if unfocused; restoring unsaved Settings drafts reconciles `#settings-api-key` via `syncKeyFieldWithEndpoint`; `mountTestWindow()` fails unstubbed `fetch` in 1 ms.
-- **Win11 Split-Pill & `.is-subpage` Visibility (`deviceViews.ts`, `panelKeyboard.ts`, `app.ts`)**: split-pill left half (`[data-toggle-device]`) toggles power directly (except read-only kinds) while the right chevron (`[data-expand-device]`, gated by `hasDetailDrawer`) opens the in-place Bottom Island `.cc-tile.is-subpage`. Because CSS `:has(.cc-tile.is-subpage)` hides `#command-input`, `[data-room]`, `.win-slider-deck`, and sibling `.cc-tile` nodes via `display: none !important` without unmounting them (and `happy-dom` does not compute CSS layout), keyboard shortcuts (`Escape` stack pop before search clear, `1` to `9` room jumps, arrow navigation, `Ctrl+F` and `/` search focus) and cross-island `[data-expand-device]` or `[data-reveal-device]` actions must explicitly guard on `expandedDeviceId` / subpage state and active room, kind, and search cuts. `PANEL_HEIGHTS` (`580`, `680`, `780`) defines outer Tauri HWND logical heights including `2 * PANEL_PADDING` (`16px` `#app` shadow inset).
-- **Keyed DOM Reconciler & UI Contracts (`reconciler.ts`, `bindEvents.ts`)**: `PanelRenderPipeline.commitRender` reconciles keyed controls in place; bind panel events once on the root via delegation or `RenderEventScope` (`scope.on`), never raw `addEventListener` on reconciled child nodes. Guard WAAPI `el.animate(...)?.finished` because `happy-dom` stubs return `{}`; keep `[data-high-risk-confirm]` mounted inside collapsed heater tiles; pair capsule inline `style="width:${pct}%"` with `--fill-scale`; cycle rooms on `Tab` only when focus is at body/panel root; preserve local `open` state on `details.cc-conn-secondary` across renders; keep inactive Settings connection tabs mounted behind `[hidden]`.
+- **Subpage & Keyboard Routing (`deviceViews.ts`, `panelKeyboard.ts`, `app.ts`)**: split-pill left half (`[data-toggle-device]`) toggles power directly while the right chevron (`[data-expand-device]`) opens the in-place subpage. Keyboard shortcuts (`Escape` stack pop before search clear, `1`–`9` room jumps, arrow navigation, `Ctrl+F`/`/` search focus) must check `expandedDeviceId` / subpage state and active room/kind/search filters. `PANEL_HEIGHTS` (`580`, `680`, `780`) defines outer Tauri HWND logical heights including `2 * PANEL_PADDING` (`16px` `#app` shadow inset).
+- **Keyed DOM Reconciler (`reconciler.ts`, `bindEvents.ts`)**: `PanelRenderPipeline.commitRender` reconciles keyed controls in place; bind panel events once on the root via delegation or `RenderEventScope` (`scope.on`), never raw `addEventListener` on reconciled child nodes.
 - **Windows Camera (`docs/agents/windows-camera.md`)**: enforce 1-minute P2P cooldown (`cameraKeepAliveMs` 120s — hide modal/`<img>` rather than tearing down bridge immediately), serialize `start/stop_xiaomi_camera_bridge` via `CAMERA_BRIDGE_LOCK` + `liveCameraToken`, keep `.255:32108` UDP relay, MJPEG `<img>` without `#width=` (`error` log level), bundled `camera-bin/README.md`, and MSVC `windows/build-win.bat` (GNU `tar` on MSYS2 uses `cygpath -u` + `--force-local`).
 
 ---
