@@ -1,27 +1,10 @@
 name: Homebrew tap
 
-# 把「已正式发布的 DMG」同步成 jryang2026-code/homebrew-tap 里的 cask（issue #61）。
-#
-# 触发路径：
-#   release: published —— 人工在网页/CLI 上用**自己的**凭据发布 release 时触发。
-#   workflow_run       —— 本仓库的「Release」或「Finalize Release」工作流结束后触发。这是自动路径：
-#                         release.yml 只建草稿，finalize.yml 用 GITHUB_TOKEN 把草稿转正式发布，
-#                         而 GITHUB_TOKEN 引发的事件不会再生成新的 workflow run（GitHub 递归保护）。
-#                         发版工作流本身是人工启动的，它结束后 workflow_run 会正常触发；本工作流随后
-#                         用 API 权威判定「这次运行真的产出了一个新的正式 release 吗」，没有就明确跳过。
-#   workflow_dispatch  —— 手动指定版本；默认 dry_run=true，只产出可 review 的 cask artifact。
-#
-# 无论走哪条路径，写入 tap 前都要：读 release 元数据 → 下载 DMG → 独立校验 SHA-256 →
-# 渲染 cask → 与「已发布版本」逐字节比对（--check 语义）→ 只提交一个文件。
-#
-# 本工作流不创建 homebrew-tap 仓库、不改任何 secret、不发 release，也不做任何签名/公证。
-# 缺少 HOMEBREW_TAP_TOKEN 或 tap 仓库时，publish job 会以明确的失败结束，而不是假装成功。
 on:
   release:
     types: [published]
   workflow_run:
-    # 只听本仓库这两个工作流（见上方注释）。改它们的 name 会断开自动同步。
-    workflows: [Release, Finalize Release]
+    workflows: [Finalize Release]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -34,7 +17,6 @@ on:
         required: false
         type: boolean
         default: true
-  # PR / main 推送只跑离线自检：不联网、不需要凭据、也不触碰 tap。
   pull_request:
     paths:
       - packaging/homebrew/**
@@ -45,20 +27,16 @@ on:
       - packaging/homebrew/**
       - .github/workflows/homebrew-tap.yml
 
-# 权限：默认只读。跨仓库写入只用 HOMEBREW_TAP_TOKEN，publish job 不需要 contents: write。
 permissions:
   contents: read
 
 concurrency:
-  # 同一事件源只保留最新一次运行；真正的跨仓库写入在 publish job 内再串行一层。
-  # main 上的每一次推送都要跑完（包括发版后的 tap 同步），不取消进行中的运行。
   group: homebrew-tap-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.release.tag_name || github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   self-test:
-    # 离线自检：只用本地合成 fixture，验证生成器的正常路径与全部拒绝路径。
-    # 这是没有凭据的环境里唯一能跑的验证，渲染与写入都以它为前提。
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -70,10 +48,8 @@ jobs:
         run: bash packaging/homebrew/self_test.sh
 
   resolve:
-    # 把各条触发路径统一成一个 (version, proceed) 判断，并把「是否真的已发布」交给 API 权威判定。
-    # PR / main 推送不进入这里：那时只有离线自检在跑。
     needs: self-test
-    if: github.event_name != 'pull_request' && github.event_name != 'push'
+    if: github.event_name != 'pull_request' && github.event_name != 'push' && (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -90,7 +66,6 @@ jobs:
           RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
           RUN_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
           RUN_CREATED_AT: ${{ github.event.workflow_run.created_at }}
-          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           DISPATCH_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
@@ -143,19 +118,13 @@ jobs:
               raw="${RELEASE_TAG:-}"
               ;;
             workflow_run)
-              # Release 工作流刚结束：用它本身确定「这一次运行发布了哪个版本」。
-              # 不用 head_branch 猜（workflow_dispatch 触发的发版 head_branch 是分支名），
-              # 而是取最近发布、且发布时间落在本次运行开始时间之后的那一个 release。
               if [ "${RUN_REPO:-}" != "${GITHUB_REPOSITORY}" ]; then
-                skip "workflow_run 来自 ${RUN_REPO:-<未知仓库>}，不是本仓库的 Release 工作流。"
+                skip "workflow_run 来自 ${RUN_REPO:-<未知仓库>}，不是本仓库的 Finalize Release 工作流。"
                 exit 0
               fi
               if [ -z "${RUN_CREATED_AT:-}" ]; then
                 echo "❌ workflow_run 载荷缺少 created_at，无法判断本次发布了什么" >&2
                 exit 1
-              fi
-              if [ "${RUN_CONCLUSION:-}" != "success" ]; then
-                echo "::warning::Release 工作流结论为 '${RUN_CONCLUSION:-unknown}'；下面按 release 的实际状态判断。"
               fi
               releases_list="$RUNNER_TEMP/releases.txt"
               api_with_retry "repos/${GITHUB_REPOSITORY}/releases?per_page=50" \
@@ -164,7 +133,6 @@ jobs:
                   echo "❌ 读取 release 列表失败（不是 404，按失败处理）：$API_ERR" >&2
                   exit 1
                 }
-              # published_at 与 created_at 都是 RFC3339 UTC（...Z），同格式下字符串比较即时间先后。
               published=""
               newest=""
               while read -r published_at tag; do
@@ -175,7 +143,7 @@ jobs:
                 fi
               done < "$releases_list"
               if [ -z "$published" ]; then
-                skip "本次 Release 运行没有产出新的正式 release（失败、只剩草稿，或没有发布动作），tap 保持不动。"
+                skip "本次 Finalize Release 运行没有产出新的正式 release，tap 保持不动。"
                 exit 0
               fi
               raw="$published"

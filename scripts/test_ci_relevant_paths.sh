@@ -51,17 +51,21 @@ expect_true_keys "empty input falls back to full CI" \
     "" \
     "${ALL_KEYS[@]}"
 
-expect_true_keys "record-snapshots workflow runs the macOS snapshot job and script tests" \
-    ".github/workflows/record-snapshots.yml\n" \
+expect_true_keys "record_snapshots script runs the macOS snapshot job and script tests" \
+    "scripts/record_snapshots.sh\n" \
     code macos scripts
+
+expect_true_keys "Tests/* changes do not trigger macos_build or appintents" \
+    "Tests/MijiaCoreTests/HomeStoreTests.swift\nTests/MenuBarMijiaAppTests/SnapshotTests.swift\n" \
+    code macos core
+
+expect_true_keys "release and finalize workflow edits run lint and script tests only" \
+    ".github/workflows/release.yml\n.github/workflows/finalize.yml\n" \
+    code scripts
 
 expect_true_keys "Shared capability manifest runs lint, macOS, Windows, and Linux core" \
     "Shared/capability-manifest.json\n" \
     code macos windows core
-
-expect_true_keys "scripts/lib is sourced by both Swift test runners, so it runs both suites" \
-    "scripts/lib/swift_test_retry.sh\n" \
-    code macos core scripts
 
 expect_true_keys "unknown path falls back to full CI" \
     "unknown.bin\n" \

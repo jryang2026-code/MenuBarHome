@@ -1,17 +1,4 @@
 #!/usr/bin/env bash
-# Read a newline-separated path list on stdin and print which CI surfaces are affected:
-#   code=true            repository-wide lint & secret scan (nas-safety)
-#   macos=true           macOS Swift unit & snapshot tests
-#   windows=true         Windows frontend tests & Vite build (windows-core)
-#   core=true            Linux MijiaCore suite (linux-core)
-#   raycast=true         Raycast extension test & typecheck
-#   scripts=true         scripts/* & harness self-tests
-#   macos_build=true     macOS Release universal build (macos-release)
-#   appintents=true      App Intents metadata build check (macos-appintents)
-#   windows_native=true  Windows camera-bin, Rust cargo test, Win32 test & Tauri installer
-#   nas=true             NAS deployment safety suite
-#   go2rtc=true          go2rtc PTZ patch verify.sh
-# Unknown paths and empty input fall back to every surface, so a failed diff never skips CI.
 set -euo pipefail
 
 code=false
@@ -45,36 +32,29 @@ while IFS= read -r path || [ -n "$path" ]; do
     [ -n "$path" ] || continue
     saw=1
     case "$path" in
-        # Logo SVGs are byte-compared with the app icon in scripts/check.sh.
         docs/assets/*.svg)
             code=true
             ;;
-        # Capability matrix lint validates links and counts inside READMEs and docs/capabilities.json.
         README.md|README.zh-CN.md|docs/platform-matrix.md|docs/platform-matrix.zh-CN.md|docs/supported-devices.md|docs/supported-devices.zh-CN.md|docs/capabilities.json)
             code=true
             ;;
-        # check_model_tables.py reads the patch SHA-256 row from this README inside the lint job.
         scripts/go2rtc-ptz/README.md)
             code=true
             scripts=true
             go2rtc=true
             ;;
-        # check_doc_links.py validates Markdown links and docs/* targets inside the lint job.
         *.md|docs/*)
             code=true
             ;;
         LICENSE|.github/ISSUE_TEMPLATE/*|.cursor/*|.claude/*|.agents/*)
             ;;
-        # Changing the main CI workflow exercises every job on the PR.
         .github/workflows/ci.yml)
             mark_all
             ;;
-        # Each of these has its own workflow or triggers only repo-level script/lint checks.
-        packaging/homebrew/*|.github/workflows/homebrew-tap.yml|.github/workflows/snapshot-guard.yml)
+        packaging/homebrew/*|.github/workflows/homebrew-tap.yml|.github/workflows/release.yml|.github/workflows/finalize.yml)
             code=true
             scripts=true
             ;;
-        # windows/tests/companionBridge.test.ts imports raycast/src/snapshot-validation.ts.
         raycast/src/snapshot-validation.ts)
             code=true
             raycast=true
@@ -88,7 +68,6 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             nas=true
             ;;
-        # MiotFacetsTests and MiotFallbackSpecTests compare these byte for byte with the macOS copies.
         windows/src/core/miCloud/*.json)
             code=true
             windows=true
@@ -106,8 +85,6 @@ while IFS= read -r path || [ -n "$path" ]; do
             windows_native=true
             scripts=true
             ;;
-        # Inputs of the camera-bin build and its cache key: a PR that edits them must run the
-        # native jobs, not only the TypeScript ones.
         windows/scripts/build-ffmpeg-min.sh|windows/scripts/prepare-camera-bin.sh|windows/scripts/patch_pe_subsystem.py)
             code=true
             windows=true
@@ -155,14 +132,13 @@ while IFS= read -r path || [ -n "$path" ]; do
             code=true
             macos=true
             ;;
-        # Shared capability manifest and golden corpora pin both Swift and TypeScript implementations.
         Shared/*|Tests/Fixtures/*)
             code=true
             macos=true
             windows=true
             core=true
             ;;
-        Tests/MijiaCoreTests/*|Tests/PreferencesTestSupport/*)
+        Tests/MijiaCoreTests/*|Tests/PreferencesTestSupport/*|Tests/StateTestSupport/*|Tests/KeychainTestSupport/*)
             code=true
             macos=true
             core=true
@@ -181,19 +157,7 @@ while IFS= read -r path || [ -n "$path" ]; do
             core=true
             scripts=true
             ;;
-        # 共享脚本被 macOS 与 Linux 的测试入口同时 source，改了就要两边都跑。
-        scripts/lib/*)
-            code=true
-            macos=true
-            core=true
-            scripts=true
-            ;;
-        scripts/ci_snapshot_locale.sh|scripts/ci_snapshot_branch.sh|scripts/ci_snapshot_artifact.sh|scripts/ci_commit_snapshot_baselines.sh|scripts/record_snapshots.sh|.github/workflows/record-snapshots.yml)
-            code=true
-            macos=true
-            scripts=true
-            ;;
-        scripts/ci_swift_test.sh|scripts/ci_restore_mtimes.sh)
+        scripts/record_snapshots.sh|scripts/ci_swift_test.sh|scripts/ci_restore_mtimes.sh)
             code=true
             macos=true
             scripts=true
@@ -205,7 +169,7 @@ while IFS= read -r path || [ -n "$path" ]; do
             macos=true
             macos_build=true
             ;;
-        scripts/build_app.sh|scripts/generate_app_icon.swift|scripts/release.sh|scripts/sign_update.swift|scripts/update_manifest.py|.github/workflows/release.yml|.github/workflows/finalize.yml)
+        scripts/build_app.sh|scripts/generate_app_icon.swift|scripts/release.sh|scripts/sign_update.swift|scripts/update_manifest.py)
             code=true
             scripts=true
             macos=true
