@@ -16,11 +16,11 @@ export const ALL_SENSOR_METRICS: readonly SensorMetricKind[] = [
 ];
 
 export const SENSOR_HISTORY_STORAGE_KEY = "menumijia.sensorHistory.v1";
-export const SENSOR_RETENTION_HOURS = 48;
-export const SENSOR_RETENTION_DAYS = 14;
-export const SENSOR_CLOUD_FETCH_COOLDOWN_MS = 5 * 60 * 1000;
+const SENSOR_RETENTION_HOURS = 48;
+const SENSOR_RETENTION_DAYS = 14;
+const SENSOR_CLOUD_FETCH_COOLDOWN_MS = 5 * 60 * 1000;
 
-export function windowBucketCount(window: SensorHistoryWindow): number {
+function windowBucketCount(window: SensorHistoryWindow): number {
   return window === "24h" ? 24 : 7;
 }
 
@@ -115,17 +115,12 @@ class MemoryStorage implements StorageLike {
   }
 }
 
+import { defaultStorage as defaultBrowserStorage } from "./pollingPolicy.js";
+
 const fallbackMemoryStorage = new MemoryStorage();
 
 function defaultStorage(): StorageLike {
-  try {
-    if (typeof globalThis.localStorage !== "undefined" && globalThis.localStorage !== null) {
-      return globalThis.localStorage;
-    }
-  } catch {
-    return fallbackMemoryStorage;
-  }
-  return fallbackMemoryStorage;
+  return defaultBrowserStorage() ?? fallbackMemoryStorage;
 }
 
 function round1(value: number): number {
@@ -139,7 +134,7 @@ const METRIC_BOUNDS: Readonly<Record<SensorMetricKind, readonly [number, number]
   illuminance: [0, 200_000],
 };
 
-export function sanitizeMetricValue(metric: SensorMetricKind, value: unknown): number | null {
+function sanitizeMetricValue(metric: SensorMetricKind, value: unknown): number | null {
   const [lo, hi] = METRIC_BOUNDS[metric];
   if (typeof value !== "number" || !Number.isFinite(value) || value < lo || value > hi) {
     return null;
@@ -1140,7 +1135,7 @@ function candidateKeysForDeviceData(miotKey: string | null | undefined, metric: 
   return [...new Set([...base, ...DATA_EXTRA_KEYS[metric]])];
 }
 
-export function combineMetricSampleSeries(
+function combineMetricSampleSeries(
   seriesByMetric: Partial<Record<SensorMetricKind, readonly MetricSamplePoint[]>>,
 ): SensorHistorySample[] {
   const samples: SensorHistorySample[] = [];

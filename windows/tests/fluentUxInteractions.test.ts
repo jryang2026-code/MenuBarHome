@@ -7,7 +7,7 @@ import { setLanguage } from "../src/core/i18n.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { shouldKeepPopoverPinned } from "../src/ui/speechGuard.js";
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 
 let dom: Window;
 
@@ -19,12 +19,6 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<voi
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-}
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  assert.ok(found, `Missing element ${selector}`);
-  return found;
 }
 
 function startDemoApp(overrides: Record<string, unknown> = {}): MenuMijiaWindowsApp {

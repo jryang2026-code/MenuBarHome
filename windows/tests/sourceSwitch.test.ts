@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { setLanguage } from "../src/core/i18n.js";
@@ -13,12 +13,6 @@ import { clearCachedXiaomiTopology } from "../src/core/pollingPolicy.js";
 import type { HttpResponse, MiSession, MiotDeviceSpec } from "../src/core/miCloudClient.js";
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing element ${selector}`);
-  return found;
-}
 
 async function flushAsync(rounds = 4): Promise<void> {
   for (let i = 0; i < rounds; i += 1) await setImmediate();

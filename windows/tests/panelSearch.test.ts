@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { panelQueryKind, PanelSearchIndex, searchEntries, searchMatches } from "../src/core/panelSearch.js";
 import type { SmartDevice } from "../src/core/models.js";
@@ -49,11 +49,6 @@ describe("Cross-platform panel search corpus", () => {
 
 let dom: Window;
 let app: MenuMijiaWindowsApp;
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const result = document.querySelector<T>(selector);
-  assert.ok(result, `Missing ${selector}`);
-  return result;
-}
 function input(text: string): HTMLInputElement {
   const field = element<HTMLInputElement>("#command-input");
   field.focus(); field.value = text;

@@ -2,6 +2,7 @@ import { acquireHaTransportLease, invokeHaWithLease, isHaBlockedRequestError } f
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import { currentLanguage,
   resolveLanguage,
+  tr3,
   type AppLanguage,
   type LanguagePreference,
 } from "./i18n.js";
@@ -23,27 +24,7 @@ import { MiCloudClient,
   type MiotDeviceSpec,
 } from "./miCloudClient.js";
 import type { HomeBackend, SmartDevice, SynthesizedHome } from "./models.js";
-import { getXiaomiBackoffUntilMs, isXiaomiRateLimitError } from "./pollingPolicy.js";
-
-function tr3(zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Readonly<Record<string, string | number>>,
-  preference?: LanguagePreference,
-): string { const lang: AppLanguage = preference !== undefined
-      ? resolveLanguage(preference, globalThis.navigator?.languages ?? [])
-      : resolveLanguage(currentLanguage(), []);
-  const template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
-  );
-}
-
-function defaultStorage(): Storage | null { try { return typeof localStorage !== "undefined" ? localStorage : null;
-  } catch { return null;
-  }
-}
+import { defaultStorage, getXiaomiBackoffUntilMs, isXiaomiRateLimitError } from "./pollingPolicy.js";
 
 export const GITHUB_UNSUPPORTED_DEVICE_ISSUE_URL =
   "https://github.com/jryang2026-code/MenuBarHome/issues/new";

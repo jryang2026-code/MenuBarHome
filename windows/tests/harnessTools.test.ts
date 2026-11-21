@@ -7,12 +7,6 @@ import { partitionTestFileArgs } from "../scripts/test-file.mjs";
 
 const scriptPath = fileURLToPath(new URL("../scripts/test-file.mjs", import.meta.url));
 
-// Unit coverage for the argument partitioning. The real "--test-name-pattern
-// only runs matching tests" subprocess check lives in
-// scripts/test_harness_tools.sh instead of here: this suite runs inside a
-// `node --test` process, and a nested inner runner inherits
-// NODE_TEST_CONTEXT=child-v8, switches to event serialization, and neither
-// prints reporter output nor propagates test failures through its exit code.
 describe("partitionTestFileArgs", () => {
   it("regroups runner flags written after the test file", () => {
     const { runnerArgs, testFiles } = partitionTestFileArgs([

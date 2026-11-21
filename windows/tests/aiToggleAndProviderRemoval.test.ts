@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import {
   assistantEndpointIdentity,
   isAiAssistantEnabled,
@@ -34,12 +34,6 @@ import { runScheduledCommand } from "../src/ui/naturalCommand.js";
 import { maybeRefreshProactiveInBackground, proactiveHasConsumer } from "../src/ui/proactive.js";
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing element: ${selector}`);
-  return found;
-}
 
 function mountDemoApp(): MenuMijiaWindowsApp {
   localStorage.setItem(

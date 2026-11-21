@@ -10,19 +10,13 @@ import {
   type DeviceCategorySelectionMode, type DeviceTypeSelectionPreview,
 } from "../core/deviceTypeSelection.js";
 import { capabilitySoftNoticeMessage, type AffectedReferenceItem } from "../core/capabilityReferenceVerdict.js";
-import { currentLanguage, type AppLanguage } from "../core/i18n.js";
+import { currentLanguage, tr3, type AppLanguage } from "../core/i18n.js";
 import { applyPauseItemsFromVerdict, previewDeviceCategorySelection, writeMiAccountSelectionMutation, revalidateAfterMiAccountReenable } from "../core/miAccountControl.js";
 import type { SmartDevice } from "../core/models.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../core/scheduledCommands.js";
 import { buildHostCapabilityContext, hostMiotTypePruneOptions, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { SettingsEventsHost } from "./settingsEvents.js";
-
-function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
 
 /** The host seams the device-type picker needs; every production host is the app class. */
 export interface DeviceTypeSelectionHost extends SettingsEventsHost {

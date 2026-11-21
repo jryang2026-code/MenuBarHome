@@ -17,11 +17,14 @@ import {
   bindLifecycleRecovery,
   disposeAppLifecycle,
   startTimerLoop,
+  syncAutomationLifecycle,
   type LifecycleEventTarget,
   type LifecycleScheduler,
   type ResumeRecoveryHost,
 } from "../src/ui/appLifecycle.js";
-import { CLOUD_REFRESH_VISIBLE_MS } from "../src/core/models.js";
+import { saveSafetyGuardPrefs } from "../src/ui/automationSettingsView.js";
+import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
+import { CLOUD_REFRESH_HIDDEN_MS, CLOUD_REFRESH_VISIBLE_MS } from "../src/core/models.js";
 import { setLanguage } from "../src/core/i18n.js";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -627,6 +630,174 @@ describe("bindLifecycleRecovery, startTimerLoop & idempotent teardown", () => {
     assert.equal(win.listenerCount("blur"), 0);
     assert.equal(win.listenerCount("keydown"), 0);
   });
+
+  it("pauses the 1Hz interval when hidden, survives async isSyncingCloud refreshes, auto-reschedules on undo/timer mutations, and wakes on 10s/60s background cadences", async () => {
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    const win = new FakeEventTarget();
+    const doc = new FakeEventTarget();
+    const refreshControl: { resolve?: () => void } = {};
+    const host = Object.assign(
+      createMockHost({
+        lastCloudRefreshAt: 10_000,
+        panelVisible: true,
+        async refreshDevices(silent = false) {
+          host.refreshCalls.push(silent);
+          host.isSyncingCloud = true;
+          await new Promise<void>((resolve) => {
+            refreshControl.resolve = resolve;
+          });
+          host.isSyncingCloud = false;
+          host.lastCloudRefreshAt = scheduler.now();
+        },
+      }),
+      {
+        devices: [],
+        scenes: [],
+        scheduledCommands: [] as Array<{ id: string; command: string; reply: string; delaySeconds: number; fireTimestampMs: number; intents: [] }>,
+        missedScheduledCommands: [],
+        scheduledCommandStore: {
+          hasFeaturePause: () => false,
+          hasWaitingTimers: () => false,
+          takeDue: () => [],
+        },
+      },
+    );
+
+    startTimerLoop(host as unknown as MenuMijiaWindowsApp, { scheduler, intervalMs: 1000 });
+    bindLifecycleRecovery(host, {
+      window: win,
+      document: doc,
+      scheduler,
+      isDocumentVisible: () => host.panelVisible,
+      isWindowFocused: () => host.panelVisible,
+    });
+    assert.equal(scheduler.activeIntervalCount, 1);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    host.panelVisible = false;
+    doc.dispatch("visibilitychange");
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    scheduler.advanceBy(CLOUD_REFRESH_HIDDEN_MS - 1);
+    assert.equal(host.refreshCalls.length, 0);
+
+    scheduler.advanceBy(1);
+    assert.deepEqual(host.refreshCalls, [true]);
+    assert.equal(host.isSyncingCloud, true);
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    scheduler.advanceBy(50);
+    refreshControl.resolve?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(host.isSyncingCloud, false);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    scheduler.advanceBy(CLOUD_REFRESH_HIDDEN_MS);
+    assert.deepEqual(host.refreshCalls, [true, true]);
+    refreshControl.resolve?.();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    host.lastUndoAction = { expiresAtMs: scheduler.now() + 2_000 };
+    assert.equal(scheduler.activeIntervalCount, 1);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    scheduler.advanceBy(2_000);
+    assert.equal(host.lastUndoAction, null);
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    host.scheduledCommands = [{
+      id: "sub-min-1",
+      command: "30秒后关灯",
+      reply: "好",
+      delaySeconds: 30,
+      fireTimestampMs: scheduler.now() + 30_000,
+      intents: [],
+    }];
+    assert.equal(scheduler.activeIntervalCount, 1);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    host.scheduledCommands = [{
+      id: "long-timer-1",
+      command: "10分钟后关灯",
+      reply: "好",
+      delaySeconds: 600,
+      fireTimestampMs: scheduler.now() + 120_000,
+      intents: [],
+    }];
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+    host.scheduledCommands = [];
+
+    host.settings.connectionMode = "demo";
+    host.settings.miSession = null;
+    syncAutomationLifecycle(host);
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    const ruleStore = new AutomationRuleStore(localStorage);
+    ruleStore.save([
+      createAutomationRule({
+        id: "r_lock_hidden",
+        isEnabled: true,
+        trigger: "screenLocked",
+        action: { kind: "quickAction", quickAction: "lightsOff" },
+      }),
+    ]);
+    (host.settings as Record<string, unknown>).enableEventAutomation = true;
+    syncAutomationLifecycle(host);
+    assert.equal(scheduler.activeIntervalCount, 0);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    scheduler.advanceBy(10_000);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    ruleStore.save([]);
+    syncAutomationLifecycle(host);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    host.settings.connectionMode = "xiaomiCloud";
+    host.devices = [{
+      id: "plug-live-1",
+      name: "客厅插座",
+      roomId: "r1",
+      roomName: "客厅",
+      model: "chuangmi.plug.v3",
+      isOnline: true,
+      kind: { kind: "plug", switchEntityId: "plug-live-1", isOn: true, powerWatts: 100, energyKwh: 1, childLockEntityId: null, isChildLocked: false },
+    }] as never;
+    saveSafetyGuardPrefs({
+      enableSafetyAlerts: true,
+      longRunningPlug: true,
+      longRunningClimate: false,
+      lowBattery: false,
+      favoriteOffline: false,
+      enableWeeklyHealthReport: false,
+    }, localStorage);
+    syncAutomationLifecycle(host);
+    assert.equal(scheduler.activeTimeoutCount, 1);
+
+    saveSafetyGuardPrefs({
+      enableSafetyAlerts: false,
+      longRunningPlug: false,
+      longRunningClimate: false,
+      lowBattery: false,
+      favoriteOffline: false,
+      enableWeeklyHealthReport: false,
+    }, localStorage);
+    syncAutomationLifecycle(host);
+    assert.equal(scheduler.activeTimeoutCount, 0);
+
+    host.panelVisible = true;
+    win.dispatch("focus");
+    assert.equal(scheduler.activeIntervalCount, 1);
+
+    disposeAppLifecycle(host);
+  });
 });
 
 describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
@@ -737,10 +908,32 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
       assert.equal(haSnapshots, 1, "debounced visibility+focus burst triggers one HA recovery");
 
+      Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+      document.dispatchEvent(new window.Event("visibilitychange"));
+      assert.equal(intervals.some((i) => !i.cleared), false);
+
+      app.lastUndoAction = { summary: "撤销", steps: [], expiresAtMs: nowMs + 5_000 };
+      assert.equal(intervals.some((i) => !i.cleared), true);
+
+      app.lastUndoAction = null;
+      assert.equal(intervals.some((i) => !i.cleared), false);
+
+      app.scheduledCommands = [{
+        id: "t_submin_app",
+        command: "20秒后关灯",
+        reply: "好",
+        delaySeconds: 20,
+        fireTimestampMs: nowMs + 20_000,
+        intents: [],
+      }];
+      assert.equal(intervals.some((i) => !i.cleared), true);
+      app.scheduledCommands = [];
+      assert.equal(intervals.some((i) => !i.cleared), false);
+
       // Idempotent dispose clears the timer loop and suppresses subsequent events.
       app.dispose();
       app.dispose();
-      assert.equal(intervals[0]!.cleared, true);
+      assert.equal(intervals.every((i) => i.cleared), true);
 
       nowMs += 60_000;
       window.dispatchEvent(new window.Event("online"));

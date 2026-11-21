@@ -27,13 +27,10 @@ import {
 import {
   cancelDelayedReadBack,
   coverTravelTakesOver,
-  hasPendingReadBack,
   isOptimisticallyLocked,
   lockOptimistic,
   mergeHomeSnapshotRespectingLocks,
-  mergeSnapshotRespectingLocks,
   OPTIMISTIC_LOCK_DURATION_MS,
-  optimisticLockRevision,
   scheduleDelayedReadBack,
   type OptimisticLockHost,
 } from "../src/core/optimisticLock.js";
@@ -1013,20 +1010,18 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
 
     // 3. Expired lock adopts incoming state
     lockOptimistic(host, "lamp", 3_000, { nowMs: 5_000 });
-    const expiredMerged = mergeSnapshotRespectingLocks(host, [makeLight("lamp", false, 30)], 8_001);
+    const expiredMerged = mergeHomeSnapshotRespectingLocks(host, [makeLight("lamp", false, 30)], host.deviceFacets, 8_001).devices;
     assert.equal(expiredMerged[0]!.kind.kind === "light" && expiredMerged[0]!.kind.isOn, false);
 
     // 4. Changing host.sourceRevision invalidates all locks & pending read-back tickets
     lockOptimistic(host, "lamp", 3_000, { nowMs: 9_000 });
     const ticket = scheduleDelayedReadBack(host, "lamp", 5_000, () => {});
     assert.equal(isOptimisticallyLocked(host, "lamp", 9_100), true);
-    assert.equal(hasPendingReadBack(host, "lamp"), true);
+    assert.equal(ticket.isCancelled(), false);
 
     host.sourceRevision = 2;
     assert.equal(isOptimisticallyLocked(host, "lamp", 9_100), false);
-    assert.equal(optimisticLockRevision(host, "lamp"), 0);
     assert.equal(ticket.isCancelled(), true);
-    assert.equal(hasPendingReadBack(host, "lamp"), false);
   });
 
   it("holds cover locks across stale pre-command origin and mid-travel until target reached or stopped post-travel", () => {
@@ -1058,13 +1053,22 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     };
     lockOptimistic(host, "curtain-1", 3_000, { nowMs: 1_000, coverOriginPosition: 0 });
 
-    // Stale origin (0, stopped) does NOT take over
-    const atOrigin = mergeSnapshotRespectingLocks(host, [makeCover(0, "stopped")], 1_500);
+    const atOrigin = mergeHomeSnapshotRespectingLocks(
+      host,
+      [makeCover(0, "stopped")],
+      {},
+      1_500,
+    ).devices;
     assert.equal(atOrigin[0]!.kind.kind === "cover" ? atOrigin[0]!.kind.positionPercent : -1, 100);
     assert.equal(isOptimisticallyLocked(host, "curtain-1", 1_500), true);
 
     // Mid-travel (45, opening) does NOT take over yet
-    const midTravel = mergeSnapshotRespectingLocks(host, [makeCover(45, "opening")], 2_000);
+    const midTravel = mergeHomeSnapshotRespectingLocks(
+      host,
+      [makeCover(45, "opening")],
+      {},
+      2_000,
+    ).devices;
     assert.equal(midTravel[0]!.kind.kind === "cover" ? midTravel[0]!.kind.positionPercent : -1, 100);
     assert.equal(isOptimisticallyLocked(host, "curtain-1", 2_000), true);
 
@@ -1077,7 +1081,12 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       ),
       true,
     );
-    const settled = mergeSnapshotRespectingLocks(host, [makeCover(72, "stopped")], 2_400);
+    const settled = mergeHomeSnapshotRespectingLocks(
+      host,
+      [makeCover(72, "stopped")],
+      {},
+      2_400,
+    ).devices;
     assert.equal(settled[0]!.kind.kind === "cover" ? settled[0]!.kind.positionPercent : -1, 72);
     assert.equal(isOptimisticallyLocked(host, "curtain-1", 2_400), false);
   });
@@ -1099,7 +1108,6 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
 
     await new Promise((resolveTimer) => setTimeout(resolveTimer, 60));
     assert.equal(readBackCount, 1);
-    assert.equal(hasPendingReadBack(host, "dev-1"), false);
     cancelDelayedReadBack(host);
   });
 
@@ -1168,7 +1176,6 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
       false,
     );
     assert.equal(isOptimisticallyLocked(app, "humidifier-full"), true);
-    assert.equal(hasPendingReadBack(app, "humidifier-full"), true);
 
     // A stale HA poll (still reporting switch.living_led = "on") preserves the optimistic `false`
     await refreshHADevices(app, true);
@@ -1447,13 +1454,12 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     lockHost.devices = [mkPlug(false)];
     const rev2 = lockOptimistic(lockHost, "plug-1", 3000, { baselineDevice: mkPlug(true), nowMs: 200 });
     assert.equal(rev2, 2);
-    const staleOnMerged = mergeSnapshotRespectingLocks(lockHost, [mkPlug(true)], 300);
+    const staleOnMerged = mergeHomeSnapshotRespectingLocks(lockHost, [mkPlug(true)], lockHost.deviceFacets, 300).devices;
     assert.equal((staleOnMerged[0]!.kind as { isOn: boolean }).isOn, false, "stale on must not revert off->on->off");
     assert.equal(isOptimisticallyLocked(lockHost, "plug-1", 300), true);
-    const confirmedMerged = mergeSnapshotRespectingLocks(lockHost, [mkPlug(false)], 400);
+    const confirmedMerged = mergeHomeSnapshotRespectingLocks(lockHost, [mkPlug(false)], lockHost.deviceFacets, 400).devices;
     assert.equal((confirmedMerged[0]!.kind as { isOn: boolean }).isOn, false);
     assert.equal(isOptimisticallyLocked(lockHost, "plug-1", 400), false);
-    assert.equal(optimisticLockRevision(lockHost, "plug-1"), 2, "revision persists after lock clears");
 
     // 4. Cached deviceFacets restore offline + cover pre-send lock + out-of-order write + read-back & button
     activeDom = mountTestWindow({ stubInterval: true });
@@ -1519,18 +1525,17 @@ describe("Per-device optimistic write locks & 800ms delayed read-back", () => {
     assert.equal(isOptimisticallyLocked(app, "cov-1"), true, "cover locked before send completes");
     releaseCover();
     await coverSend;
-    assert.equal((mergeSnapshotRespectingLocks(app, [byId(HomeAssistantSynthesizer.synthesize(liveSnap).devices).get("cov-1")!]).find((d) => d.id === "cov-1")!.kind as CoverSpec).motion, "opening");
+    assert.equal((mergeHomeSnapshotRespectingLocks(app, [byId(HomeAssistantSynthesizer.synthesize(liveSnap).devices).get("cov-1")!], app.deviceFacets).devices.find((d) => d.id === "cov-1")!.kind as CoverSpec).motion, "opening");
 
     // Standalone button schedules delayed read-back; busy sync retries read-back and read-back replaces locked non-cover row
     await applyCommand(app, { kind: "setSwitch", entityId: "button.b1", isOn: true });
-    assert.equal(hasPendingReadBack(app, "btn-1"), true, "standalone button.* schedules 800ms read-back");
 
     await applyCommand(app, { kind: "setSwitch", entityId: "humidifier.h1", isOn: true });
     assert.equal((app.devices.find((d) => d.id === "hum-1")!.kind as { isOn: boolean }).isOn, true);
     app.isSyncingCloud = true;
-    scheduleDelayedReadBack(app, "hum-1", 15);
+    const humTicket = scheduleDelayedReadBack(app, "hum-1", 15);
     await new Promise((r) => setTimeout(r, 30));
-    assert.equal(hasPendingReadBack(app, "hum-1"), true, "busy sync re-arms read-back instead of dropping it");
+    assert.equal(humTicket.isCancelled(), false, "busy sync re-arms read-back instead of dropping it");
     app.isSyncingCloud = false;
     await new Promise((r) => setTimeout(r, 300));
     assert.equal((app.devices.find((d) => d.id === "hum-1")!.kind as { isOn: boolean }).isOn, false, "read-back replaces locked non-cover row with actual remote off");

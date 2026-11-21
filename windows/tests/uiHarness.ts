@@ -1,5 +1,12 @@
+import assert from "node:assert/strict";
 import { Window } from "happy-dom";
 import { installWindow } from "./dom.js";
+
+export function element<T extends Element = HTMLElement>(selector: string): T {
+  const found = document.querySelector<T>(selector);
+  assert.ok(found, `Missing control ${selector}`);
+  return found;
+}
 
 let previousGlobalFetch: typeof globalThis.fetch | undefined;
 
@@ -26,7 +33,7 @@ export function mountTestWindow(options?: { stubInterval?: boolean; allowNetwork
   Object.defineProperty(dom.navigator, "languages", { value: ["zh-CN", "zh"], configurable: true });
   Object.defineProperty(dom.navigator, "language", { value: "zh-CN", configurable: true });
   document.body.innerHTML = '<div id="app"></div>';
-  if (options?.stubInterval) {
+  if (options?.stubInterval !== false) {
     Object.defineProperty(dom, "setInterval", { value: () => 0, configurable: true });
   }
   setWindowFocused(true);
@@ -34,6 +41,12 @@ export function mountTestWindow(options?: { stubInterval?: boolean; allowNetwork
 }
 
 export async function closeTestWindow(dom: Window): Promise<void> {
+  try {
+    dom.dispatchEvent(new dom.Event("pagehide"));
+    dom.document.body.innerHTML = "";
+    dom.document.head.innerHTML = "";
+  } catch {
+  }
   await dom.happyDOM.abort();
   dom.close();
   if (previousGlobalFetch !== undefined) {

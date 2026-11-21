@@ -3,19 +3,13 @@ import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { scopedKey } from "../src/ui/panelPrefs.js";
 import { handlePanelKey } from "../src/ui/panelKeyboard.js";
 
 let dom: Window;
 let app: MenuMijiaWindowsApp | null = null;
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const result = document.querySelector<T>(selector);
-  assert.ok(result, `Missing ${selector}`);
-  return result;
-}
 
 beforeEach(() => {
   dom = mountTestWindow();

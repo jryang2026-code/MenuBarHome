@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudError, type HttpTransport, type MiSession } from "../src/core/miCloud/session.js";
 import { parseMiotDeviceSpec, type MiotDeviceSpec } from "../src/core/miCloud/spec.js";
@@ -94,12 +94,6 @@ function encodeMiResponse(_body: string, payload: unknown): string {
 }
 
 let dom: Window | null = null;
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  assert.ok(found, `Missing element: ${selector}`);
-  return found;
-}
 
 beforeEach(() => {
   setLanguage("zh-Hans");

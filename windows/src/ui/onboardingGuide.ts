@@ -10,7 +10,7 @@ import {
 } from "../core/assistant.js";
 import { DUAL_SOURCE_ENABLED_STORAGE_KEY, type DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
-import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 import { hasSecondaryMiAccountsInIndex } from "../core/miAccountsStore.js";
 import { MI_CLOUD_REGIONS, maskedMiUserId, normalizeMiCloudRegion } from "../core/miCloudClient.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -206,12 +206,6 @@ export function resolveAssistantDraftForSave(
     apiKey: state.apiKey.trim(),
     presetId: inferred.id,
   };
-}
-
-function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
 }
 
 interface OnboardingSessionState {

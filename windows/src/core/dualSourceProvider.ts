@@ -7,8 +7,7 @@ import {
 } from "./haTransportGate.js";
 import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
 import type { ExecuteOptions, HomeProvider } from "./homeProvider.js";
-import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference,
-} from "./i18n.js";
+import { tr3, type LanguagePreference } from "./i18n.js";
 import { MiAccountScope, type AccountScopedHomeOption, type AccountScopedSmartDevice,
 } from "./miAccountsStore.js";
 import { miAccountScope } from "./miAccountControl.js";
@@ -20,20 +19,7 @@ import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionSt
 } from "./models.js";
 import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
 import type { HaTypePruneOptions } from "./haTypePruning.js";
-
-function tr3(zhHans: string, zhHant: string, en: string, params?: Readonly<Record<string, string | number>>,
-  preference?: LanguagePreference): string { const lang: AppLanguage = preference !== undefined
-      ? resolveLanguage(preference, globalThis.navigator?.languages ?? [])
-      : resolveLanguage(currentLanguage(), []);
-  const template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans; if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole);
-}
-
-function defaultStorage(): Storage | null { try { return typeof localStorage !== "undefined" ? localStorage : null;
-  } catch { return null;
-  }
-}
+import { defaultStorage } from "./pollingPolicy.js";
 
 export const PINNED_DEVICE_SOURCES_STORAGE_KEY = "menumijia.windows.pinnedDeviceSources.v1";
 export const CANONICAL_DEVICE_REGISTRY_STORAGE_KEY = "menumijia.windows.canonicalDeviceIds.v1";

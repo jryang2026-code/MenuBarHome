@@ -6,8 +6,6 @@
   --r-control: 4px;
   --r-pill: 999px;
 
-  --dur-instant: 0ms;
-  --dur-ultra-fast: 50ms;
   --dur-faster: 83ms;
   --dur-exit-short: 150ms;
   --dur-fast: 167ms;
@@ -16,7 +14,6 @@
   --dur-slow: 333ms;
 
   --ease-decelerate: cubic-bezier(0, 0, 0, 1);
-  --ease-decelerate-max: cubic-bezier(0.1, 0.9, 0.2, 1);
   --ease-accelerate: cubic-bezier(1, 0, 1, 1);
   --ease-point-to-point: cubic-bezier(0.55, 0.55, 0, 1);
   --ease-standard: cubic-bezier(0.33, 0, 0.67, 1);
@@ -46,8 +43,6 @@
   --win-caution-stroke: rgba(252, 225, 0, 0.45);
   --win-caution-on-fill: #1c1c1e;
   --win-light-fill-inactive: rgba(255, 255, 255, 0.14);
-  --win-light-fill-active: rgba(255, 255, 255, 0.22);
-  --win-elevation-border: linear-gradient(180deg, rgba(255, 255, 255, 0.09) 0%, rgba(255, 255, 255, 0.05) 67%);
 
   --win-card-bg: rgba(255, 255, 255, 0.051);
   --win-card-secondary: rgba(255, 255, 255, 0.033);
@@ -247,8 +242,6 @@ body {
   --win-caution-stroke: rgba(157, 93, 0, 0.42);
   --win-caution-on-fill: #ffffff;
   --win-light-fill-inactive: rgba(0, 95, 184, 0.16);
-  --win-light-fill-active: rgba(255, 255, 255, 0.26);
-  --win-elevation-border: linear-gradient(180deg, rgba(0, 0, 0, 0.06) 33%, rgba(0, 0, 0, 0.16) 100%);
 
   --win-card-bg: rgba(255, 255, 255, 0.72);
   --win-card-secondary: rgba(246, 246, 246, 0.72);
@@ -4738,7 +4731,6 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
 
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --dur-ultra-fast: 0ms;
     --dur-faster: 0ms;
     --dur-fast: 0ms;
     --dur-normal: 0ms;
@@ -5266,7 +5258,6 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
 #app[data-panel-theme="classic"] .cc-popover.is-unified-popover {
   --theme-accent: #007aff;
   --theme-divider: rgba(255, 255, 255, 0.10);
-  --r-island: 22px;
   --r-card: 18px;
   --r-control: 12px;
   width: min(100%, 440px);
@@ -5357,7 +5348,6 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
 .cc-feedback-badge { display: inline-flex; align-items: center; gap: 4px; }
 .cc-feedback-badge svg, .cc-activity-stack-header svg { width: 12px; height: 12px; flex-shrink: 0; }
 #app[data-panel-theme="classic"] {
-  --spring-snappy: linear(0, 0.0688, 0.2131, 0.3739, 0.5226, 0.6478, 0.7471, 0.8227, 0.8784, 0.9184, 0.9463, 0.9655, 0.9783, 0.9867, 0.9922, 0.9956, 1);
   --spring-control: linear(0, 0.0807, 0.2486, 0.4322, 0.5968, 0.7292, 0.828, 0.8975, 0.9438, 0.9728, 0.9899, 0.9991, 1.0034, 1.0049, 1.0049, 1.0042, 1);
   --spring-reveal: linear(0, 0.0749, 0.2332, 0.4097, 0.5712, 0.7042, 0.8061, 0.8798, 0.9304, 0.9635, 0.9839, 0.9956, 1.0017, 1.0044, 1.005, 1.0047, 1);
   --spring-lens: linear(0, 0.0725, 0.2257, 0.397, 0.5547, 0.6857, 0.7874, 0.8623, 0.9151, 0.9506, 0.9736, 0.9878, 0.996, 1.0003, 1.0023, 1.0029, 1);
@@ -5790,7 +5780,7 @@ input[type="checkbox"]:checked:active:not(:disabled)::after {
 
 @media (prefers-reduced-motion: reduce) {
   #app[data-panel-theme="classic"] {
-    --spring-snappy: var(--ease-linear); --spring-control: var(--ease-linear); --spring-reveal: var(--ease-linear);
+    --spring-control: var(--ease-linear); --spring-reveal: var(--ease-linear);
     --spring-lens: var(--ease-linear); --spring-stack: var(--ease-linear); --spring-bounce: var(--ease-linear);
   }
   #app[data-panel-theme="classic"] .cc-tile.is-popped .cc-tile-orb { animation: none !important; }

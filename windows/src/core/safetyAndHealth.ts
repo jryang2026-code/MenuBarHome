@@ -1,6 +1,9 @@
-import { currentLanguage, resolveLanguage, type AppLanguage, type LanguagePreference } from "./i18n.js";
+import { currentLanguage, resolveLanguage, tr3, type AppLanguage, type LanguagePreference } from "./i18n.js";
 import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "./models.js";
+import { defaultStorage } from "./pollingPolicy.js";
 import { formatTemperature } from "./temperature.js";
+
+export { tr3 };
 
 export interface KeyValueStorageLike {
   getItem(key: string): string | null;
@@ -18,34 +21,7 @@ class MemoryStorage implements KeyValueStorageLike {
 const fallbackStorage = new MemoryStorage();
 
 export function defaultSafetyStorage(): KeyValueStorageLike {
-  try {
-    if (typeof globalThis.localStorage !== "undefined" && globalThis.localStorage !== null) {
-      return globalThis.localStorage;
-    }
-  } catch {}
-  return fallbackStorage;
-}
-
-function fillTemplate(template: string, params?: Readonly<Record<string, string | number>>): string {
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
-  );
-}
-
-export function tr3(
-  zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Readonly<Record<string, string | number>>,
-  preference?: LanguagePreference,
-): string {
-  const lang: AppLanguage =
-    preference !== undefined
-      ? resolveLanguage(preference, globalThis.navigator?.languages ?? [])
-      : currentLanguage();
-  const chosen = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  return fillTemplate(chosen, params);
+  return defaultStorage() ?? fallbackStorage;
 }
 
 export type SensorAlertKind = "smoke" | "gas" | "leak" | "contact" | "motion" | "vibration" | "lock";

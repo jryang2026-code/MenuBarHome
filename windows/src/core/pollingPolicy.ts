@@ -292,7 +292,7 @@ export const MI_ACCOUNTS_EXPIRED_STORAGE_KEY = "menumijia.windows.miAccountsExpi
  */
 export const MI_SESSION_REJECTED_STORAGE_PREFIX = "menumijia.windows.miSessionRejected.v2.";
 
-function defaultStorage(): Storage | null {
+export function defaultStorage(): Storage | null {
   try {
     return typeof localStorage !== "undefined" ? localStorage : null;
   } catch {

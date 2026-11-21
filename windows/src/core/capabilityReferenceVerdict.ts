@@ -140,10 +140,10 @@ export function parseCapabilityIndexedDevice(raw: unknown): CapabilityIndexedDev
   return raw;
 }
 
-export const connectionCapabilityForScope = (scope: string): ConnectionCapabilityID | null =>
+const connectionCapabilityForScope = (scope: string): ConnectionCapabilityID | null =>
   scope.startsWith("mi:") ? "xiaomi-cloud" : scope.startsWith("ha:") ? "home-assistant" : null;
 
-export function timerScopesMatch(stampedScopes: readonly string[], activeConnectionScopes: ReadonlySet<string>): boolean {
+function timerScopesMatch(stampedScopes: readonly string[], activeConnectionScopes: ReadonlySet<string>): boolean {
   if (!stampedScopes.some((s) => activeConnectionScopes.has(s))) return false;
   const stamped = new Set(stampedScopes);
   return ![...activeConnectionScopes].some((s) => s.startsWith("ha:") && !stamped.has(s));
@@ -472,5 +472,3 @@ export function revalidatePausedTimer(options: {
   }
   return options.fireAtEpochSeconds <= options.nowEpochSeconds ? "moveToMissed" : "armWaiting";
 }
-
-export const CONNECTION_CAPABILITIES_USED = CONNECTION_CAPABILITY_IDS;

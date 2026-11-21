@@ -1,5 +1,5 @@
 import { haRoundedInt } from "../core/haDomains.js";
-import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
+import { currentLanguage, t, tr3 } from "../core/i18n.js";
 import {
   lockedControlIdForAlert,
   showsAdvancedViewOnlyCopy,
@@ -1050,22 +1050,6 @@ function bindCollapsedInlineSliders(
         }
       });
     });
-}
-
-function tr3(
-  zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Record<string, string | number>,
-): string {
-  const lang = resolveLanguage(currentLanguage(), []);
-  let template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  if (params) {
-    for (const [key, val] of Object.entries(params)) {
-      template = template.replaceAll(`{${key}}`, String(val));
-    }
-  }
-  return template;
 }
 
 function cssEscape(raw: string): string {

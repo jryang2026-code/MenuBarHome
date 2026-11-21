@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { assertMissing } from "./dom.js";
 import {
   ASSISTANT_PROVIDER_PRESETS,
@@ -43,12 +43,6 @@ import {
 } from "../src/ui/settingsSearch.js";
 
 let dom: Window;
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  assert.ok(found, `Missing element: ${selector}`);
-  return found;
-}
 
 function field(selector: string): HTMLInputElement {
   return element<HTMLInputElement>(selector);

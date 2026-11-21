@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { startTimerLoop, type LifecycleScheduler } from "../src/ui/appLifecycle.js";
@@ -41,12 +41,6 @@ import type { HttpRequest } from "../src/core/miCloudClient.js";
 import type { HttpResponse } from "../src/core/miCloud/session.js";
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing element: ${selector}`);
-  return found;
-}
 
 function mountApp(persisted: Record<string, unknown> | null): MenuMijiaWindowsApp {
   if (persisted) localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted));

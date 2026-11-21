@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import { assertMissing } from "./dom.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { setLanguage } from "../src/core/i18n.js";
@@ -12,12 +12,6 @@ import { STORAGE_KEY } from "../src/ui/appConstants.js";
 const SETTINGS_KEY = STORAGE_KEY;
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing control ${selector}`);
-  return found;
-}
 
 function field(selector: string): HTMLInputElement {
   return element(selector) as HTMLInputElement;
@@ -705,6 +699,59 @@ describe("WP3d · Windows 常规与家居连接导航整理", () => {
     const quitBtn = element("#btn-settings-quit");
     assert.equal(quitBtn.dataset.settingsAnchor, "quitApp");
     assert.match(quitBtn.getAttribute("title") ?? "", /完全退出后，托盘图标和快捷键都会停止/);
+  });
+
+  it("prompts on Escape when URL, token, or API key drafts are unsaved and toggles the confirm bar on repeated Escape", async () => {
+    const pressEscape = () => {
+      window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    };
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-settings-tab="connection"]');
+    type("#settings-ha-url", "http://unsaved-ha.local:8123");
+
+    pressEscape();
+    assert.equal(app.activeSheet, "settings");
+    assert.equal(element("#settings-unsaved-confirm").hidden, false);
+    assert.equal(field("#settings-ha-url").value, "http://unsaved-ha.local:8123");
+    assert.equal(app.settings.haBaseURL, "");
+
+    pressEscape();
+    assert.equal(app.activeSheet, "settings");
+    assert.equal(element("#settings-unsaved-confirm").hidden, true);
+    assert.equal(field("#settings-ha-url").value, "http://unsaved-ha.local:8123");
+
+    type("#settings-ha-url", "");
+    type("#settings-ha-token", "draft-ha-token");
+    await click("#btn-close-settings");
+    assert.equal(element("#settings-unsaved-confirm").hidden, false);
+    pressEscape();
+    assert.equal(element("#settings-unsaved-confirm").hidden, true);
+    assert.equal(field("#settings-ha-token").value, "draft-ha-token");
+
+    type("#settings-ha-token", "");
+    await click('[data-settings-tab="assistant"]');
+    type("#settings-api-key", "sk-draft-key");
+    pressEscape();
+    assert.equal(app.activeSheet, "settings");
+    assert.equal(element("#settings-unsaved-confirm").hidden, false);
+    assert.equal(field("#settings-api-key").value, "sk-draft-key");
+  });
+
+  it("closes clean Settings and onboarding sheets on Escape", async () => {
+    const pressEscape = () => {
+      window.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    };
+    const app = startDemo();
+    await click("#btn-settings");
+    pressEscape();
+    assert.equal(app.activeSheet, "none");
+
+    await click("#btn-settings");
+    await click("#btn-reopen-onboarding");
+    assert.equal(app.activeSheet, "onboarding");
+    pressEscape();
+    assert.equal(app.activeSheet, "none");
   });
 });
 

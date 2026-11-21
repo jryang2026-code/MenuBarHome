@@ -14,7 +14,7 @@
  */
 
 import { haConnectionScope } from "./haTransportGate.js";
-import { miAccountId } from "./pollingPolicy.js";
+import { defaultStorage, miAccountId } from "./pollingPolicy.js";
 import {
   miAccountSessionCredentialName,
   normalizeMiCredentialSlotId,
@@ -95,14 +95,6 @@ const cleanText = (raw: unknown, limit = 240): string | null => {
   const trimmed = raw.trim();
   return trimmed === "" ? null : trimmed.slice(0, limit);
 };
-
-function defaultStorage(): ConnectionRemovalReadStorage | null {
-  try {
-    return typeof localStorage !== "undefined" ? localStorage : null;
-  } catch {
-    return null;
-  }
-}
 
 export function miConnectionRemovalScope(accountId: string): string {
   const trimmed = accountId.trim();

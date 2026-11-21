@@ -118,7 +118,7 @@ import {
   syncSensorHistoryHost,
   type SensorHistoryUiState,
 } from "./sensorHistoryView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncTimerLoopSchedule } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
@@ -492,6 +492,7 @@ export class MenuMijiaWindowsApp {
   }
   public set scheduledCommands(items: ScheduledCommand[]) {
     this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).scheduledCommands = items;
+    syncTimerLoopSchedule(this);
   }
   public get missedScheduledCommands(): ScheduledCommand[] {
     return this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).missedScheduledCommands;
@@ -499,7 +500,14 @@ export class MenuMijiaWindowsApp {
   public set missedScheduledCommands(items: ScheduledCommand[]) {
     this.scheduledCommandStore.queue(scheduledCommandIdentity(this.settings)).missedScheduledCommands = items;
   }
-  public lastUndoAction: UndoAction | null = null;
+  private _lastUndoAction: UndoAction | null = null;
+  public get lastUndoAction(): UndoAction | null {
+    return this._lastUndoAction;
+  }
+  public set lastUndoAction(next: UndoAction | null) {
+    this._lastUndoAction = next;
+    syncTimerLoopSchedule(this);
+  }
   /** Last light explicitly switched on or adjusted by the user; fallback target for `softNightLight` (#36). */
   public lastManuallyUsedLightId: string | null = null;
   /** Set when a Xiaomi refresh fails because the login itself is dead. */
@@ -775,6 +783,7 @@ export class MenuMijiaWindowsApp {
   public queueBackgroundRender(): void {
     if (this.hasBlockingPanelInteraction()) {
       this.pendingCloudRender = true;
+      syncTimerLoopSchedule(this);
       return;
     }
     this.render();
@@ -846,11 +855,19 @@ export class MenuMijiaWindowsApp {
 
 
   public async refreshDevices(silent = false): Promise<void> {
-    return refreshDevices(this, silent);
+    try {
+      await refreshDevices(this, silent);
+    } finally {
+      syncTimerLoopSchedule(this);
+    }
   }
 
   public async refreshHADevices(silent = false): Promise<void> {
-    return refreshHADevices(this, silent);
+    try {
+      await refreshHADevices(this, silent);
+    } finally {
+      syncTimerLoopSchedule(this);
+    }
   }
 
 
@@ -1564,6 +1581,7 @@ export class MenuMijiaWindowsApp {
     }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
+    syncTimerLoopSchedule(this);
   }
 
   public renderEnvironmentStrip(): string {
