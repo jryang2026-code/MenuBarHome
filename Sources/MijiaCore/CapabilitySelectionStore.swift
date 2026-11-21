@@ -33,6 +33,7 @@ extension CapabilityManifest {
                 urls.append(bundle.appendingPathComponent("Resources/capability-manifest.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/capability-manifest.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/capability-manifest.json"))
+                urls.append(bundle.appendingPathComponent("capability-manifest.json"))
             }
         }
         for url in urls {

@@ -173,6 +173,7 @@ public struct DeviceProfiles: Codable, Equatable, Sendable {
                 urls.append(bundle.appendingPathComponent("Resources/deviceProfiles.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/deviceProfiles.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/deviceProfiles.json"))
+                urls.append(bundle.appendingPathComponent("deviceProfiles.json"))
             }
         }
         for url in urls {

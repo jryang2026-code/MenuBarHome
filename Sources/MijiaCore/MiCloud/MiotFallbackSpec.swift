@@ -52,6 +52,7 @@ public enum MiotFallbackSpec {
                 urls.append(bundle.appendingPathComponent("Resources/fallbackSpecs.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/Resources/fallbackSpecs.json"))
                 urls.append(bundle.appendingPathComponent("Contents/Resources/fallbackSpecs.json"))
+                urls.append(bundle.appendingPathComponent("fallbackSpecs.json"))
             }
         }
         for url in urls {
