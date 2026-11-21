@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import {
   IntentValidator,
   ModelIntentResolver,
@@ -29,12 +29,6 @@ import type { SpeechRecognitionInstance } from "../src/ui/appTypes.js";
 import { assertMissing } from "./dom.js";
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing element: ${selector}`);
-  return found;
-}
 
 async function click(selector: string): Promise<void> {
   element(selector).click();

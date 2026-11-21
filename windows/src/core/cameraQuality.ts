@@ -14,20 +14,6 @@ export const CAMERA_STREAM_QUALITIES: readonly CameraStreamQuality[] = ["auto", 
 /** Matches the macOS storage default (`XiaomiCameraStreamQuality.storageDefault`): the compatible `sd` stream. */
 export const DEFAULT_CAMERA_STREAM_QUALITY: CameraStreamQuality = "sd";
 
-/** go2rtc query value for a stored quality. `auto` lets the camera pick. */
-export function cameraStreamSubtype(quality: CameraStreamQuality): string {
-  switch (quality) {
-    case "auto":
-      return "auto";
-    case "sd":
-      return "sd";
-    case "hd":
-      return "hd";
-    case "max":
-      return "3";
-  }
-}
-
 /** Unknown or corrupt persisted values fall back to the default instead of failing startup. */
 export function normalizeCameraStreamQuality(raw: unknown): CameraStreamQuality {
   return typeof raw === "string" && (CAMERA_STREAM_QUALITIES as readonly string[]).includes(raw)

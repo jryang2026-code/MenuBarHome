@@ -217,7 +217,7 @@ export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice
  * Device-type pruning inputs for one Home Assistant round (P3b-W). The selection is the host's own —
  * the same one the Mi refresh uses — because a turned-off type is turned off on both sources.
  */
-export function hostHaTypePruneOptions(
+function hostHaTypePruneOptions(
   host: MiSelectionHost & {
     readonly layout?: { readonly pinnedDeviceIds?: readonly string[] } | null;
     readonly settings: DualSourceInspectableHost["settings"] & {
@@ -1413,7 +1413,7 @@ function applySynthesizedSnapshotToHost(
   ).sort((a, b) => (readingPriorityById.get(a.id) ?? 0) - (readingPriorityById.get(b.id) ?? 0));
 }
 
-export async function refreshMultiAccountXiaomiDevices(
+async function refreshMultiAccountXiaomiDevices(
   host: MenuMijiaWindowsApp,
   silent = false,
 ): Promise<void> {
@@ -1695,7 +1695,7 @@ function applyDualSourceMergeToHost(host: MenuMijiaWindowsApp, merged: DeviceMer
   }
 }
 
-export async function refreshDualSourceDevices(
+async function refreshDualSourceDevices(
   host: MenuMijiaWindowsApp,
   silent = false,
 ): Promise<void> {

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import type { Window } from "happy-dom";
 
 import "./dom.js";
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
@@ -50,12 +50,6 @@ afterEach(async () => {
 async function flush(): Promise<void> {
   await setImmediate();
   await setImmediate();
-}
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Expected selector to exist: ${selector}`);
-  return found;
 }
 
 function makeLight(): SmartDevice {

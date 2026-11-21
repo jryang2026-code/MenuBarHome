@@ -44,10 +44,6 @@ export function sampleSpringProgress(spec: SpringSpec, steps = 17): readonly num
   return samples;
 }
 
-export function formatSpringCssLinear(spec: SpringSpec, steps = 17): string {
-  return `linear(${sampleSpringProgress(spec, steps).join(", ")})`;
-}
-
 export function buildSpringTranslateKeyframes(fromDx: number, fromDy: number, spec: SpringSpec, steps = 17): Keyframe[] {
   const progress = sampleSpringProgress(spec, steps), last = progress.length - 1;
   return progress.map((p, idx) =>

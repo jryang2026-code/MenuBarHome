@@ -8,7 +8,7 @@ import {
   parseAssistantEndpoint,
   type HabitSequenceEntry,
 } from "../core/assistant.js";
-import { currentLanguage, speechLocale, t, type AppLanguage } from "../core/i18n.js";
+import { speechLocale, t, tr3 } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
 import { trText } from "../core/quickActions.js";
 import {
@@ -54,12 +54,6 @@ import {
 } from "./connectionsAndDiagView.js";
 import { renderEnergySettingsSection, type HostEnergySession } from "./energySettingsView.js";
 import { readAskWhenUnsure } from "./settings.js";
-
-function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
 
 /** The four Settings categories (#78). The value is stored so a re-render keeps the open tab. */
 export type SettingsTab = "general" | "connection" | "assistant" | "system";

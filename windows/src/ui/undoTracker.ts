@@ -1,13 +1,9 @@
-import {
-  currentLanguage,
-  resolveLanguage,
-  t,
-  type AppLanguage,
-  type LanguagePreference,
-} from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import { isUndoHoverPaused } from "./speechGuard.js";
+
+export { tr3 };
 
 export const UNDO_AVAILABILITY_WINDOW_MS = 10 * 60 * 1000;
 
@@ -17,31 +13,6 @@ export function undoBannerMs(deviceCount: number): number {
 
 export function undoDeviceCount(steps: readonly { readonly deviceId: string }[]): number {
   return new Set(steps.map((step) => step.deviceId)).size;
-}
-
-function fillParams(
-  template: string,
-  params?: Readonly<Record<string, string | number>>,
-): string {
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
-  );
-}
-
-export function tr3(
-  zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Readonly<Record<string, string | number>>,
-  preference?: LanguagePreference,
-): string {
-  const lang: AppLanguage =
-    preference !== undefined
-      ? resolveLanguage(preference, globalThis.navigator?.languages ?? [])
-      : currentLanguage();
-  const chosen = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  return fillParams(chosen, params);
 }
 
 export interface UndoAvailabilitySnapshot {

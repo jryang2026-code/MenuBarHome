@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, installCssEscape, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow } from "./uiHarness.js";
 import {
   AUTOMATION_POLICY,
   AUTOMATION_TRIGGERS,
@@ -92,12 +92,6 @@ class FakeTimeoutScheduler implements DoorbellCoordinatorScheduler {
 }
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Expected selector to exist: ${selector}`);
-  return found;
-}
 
 async function click(selector: string): Promise<void> {
   element(selector).click();

@@ -1106,3 +1106,20 @@ export function t(template: string, params?: Readonly<Record<string, string | nu
         : (entry ? entry[0] : template);
   return params ? fill(text, params) : text;
 }
+
+export function tr3(
+  zhHans: string,
+  zhHant: string,
+  en: string,
+  paramsOrLang?: Readonly<Record<string, string | number>> | LanguagePreference,
+  preference?: LanguagePreference,
+): string {
+  const pref = typeof paramsOrLang === "string" ? paramsOrLang : preference;
+  const params = typeof paramsOrLang === "object" && paramsOrLang !== null ? paramsOrLang : undefined;
+  const lang: AppLanguage =
+    pref !== undefined
+      ? resolveLanguage(pref, globalThis.navigator?.languages ?? [])
+      : current;
+  const template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
+  return params ? fill(template, params) : template;
+}

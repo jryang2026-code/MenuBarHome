@@ -1,4 +1,4 @@
-import { currentLanguage, type AppLanguage } from "../core/i18n.js";
+import { currentLanguage, tr3, type AppLanguage } from "../core/i18n.js";
 import { CONNECTIONS_DIAG_SEARCH_ANCHORS, type ConnectionsDiagAnchorId } from "./connectionsAndDiagView.js";
 import type { SettingsTab } from "./settingsViews.js";
 
@@ -107,12 +107,6 @@ const QUALITY_PREFIX = 70;
 const QUALITY_WORD_START = 60;
 const QUALITY_CONTAINS = 45;
 
-function tr3(lang: AppLanguage, zhHans: string, zhHant: string, en: string): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
-
 export function blockReasonExplanation(
   reason: SettingsSearchBlockReason,
   lang: AppLanguage = currentLanguage(),
@@ -120,10 +114,10 @@ export function blockReasonExplanation(
   switch (reason) {
     case "noCloudConsent":
       return tr3(
-        lang,
         "当前还没有已授权的云端 AI 服务",
         "目前還沒有已授權的雲端 AI 服務",
         "No cloud AI endpoints have been authorized yet",
+        lang,
       );
   }
 }
@@ -685,8 +679,8 @@ export function settingsSearchEntries(
     return {
       anchor: spec.anchor,
       tab: resolveSettingsAnchorTab(spec.anchor, availability.hasAvailableUpdate),
-      section: tr3(lang, zhHansSec, zhHantSec, enSec),
-      title: tr3(lang, zhHansTitle, zhHantTitle, enTitle),
+      section: tr3(zhHansSec, zhHantSec, enSec, lang),
+      title: tr3(zhHansTitle, zhHantTitle, enTitle, lang),
       synonyms: mergedSynonyms,
     };
   });

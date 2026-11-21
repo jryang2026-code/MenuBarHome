@@ -1,7 +1,7 @@
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import type { HabitRecordingReceipt } from "../core/assistant.js";
-import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 import {
   classifyControlFailure,
   controlFailureUserMessage,
@@ -117,22 +117,6 @@ export function getHostApplyCommand(
     }
     return promise;
   };
-}
-
-function tr3(
-  zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Record<string, string | number>,
-): string {
-  const lang = resolveLanguage(currentLanguage(), []);
-  let template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  if (params) {
-    for (const [key, val] of Object.entries(params)) {
-      template = template.replaceAll(`{${key}}`, String(val));
-    }
-  }
-  return template;
 }
 
 function renderHostImmediate(host: MenuMijiaWindowsApp): void {

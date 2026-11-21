@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { deviceSvgIcon } from "../src/ui/deviceViews.js";
 import { homeAssistantIdentity } from "../src/core/homeAssistant.js";
@@ -102,12 +102,6 @@ function makeApplianceSpec(overrides: Partial<ApplianceSpec> = {}): ApplianceSpe
     heats: false,
     ...overrides,
   };
-}
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  assert.ok(found, `Missing element ${selector}`);
-  return found;
 }
 
 interface MountedHA {

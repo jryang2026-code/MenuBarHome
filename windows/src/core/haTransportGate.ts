@@ -1,3 +1,5 @@
+import { defaultStorage } from "./pollingPolicy.js";
+
 export type HaConnectionLifecyclePhase = "enabled" | "stopping" | "stop_timeout" | "disabled";
 
 export interface HaGateStorageLike {
@@ -35,17 +37,9 @@ export function isHaBlockedRequestError(error: unknown): error is HaBlockedReque
 
 export const CAPABILITY_SELECTION_STORAGE_KEY = "menumijia.windows.capabilitySelection.v1";
 
-export const HA_NATIVE_CANCEL_READY = true;
+const HA_NATIVE_CANCEL_READY = true;
 
-export const DEFAULT_HA_STOP_DRAIN_TIMEOUT_MS = 8_000;
-
-function defaultStorage(): HaGateStorageLike | null {
-  try {
-    return typeof localStorage !== "undefined" ? localStorage : null;
-  } catch {
-    return null;
-  }
-}
+const DEFAULT_HA_STOP_DRAIN_TIMEOUT_MS = 8_000;
 
 export function normalizeHomeAssistantScopeUrl(baseURL?: string | null): string | null {
   try {
@@ -254,7 +248,7 @@ export function setHaNativeCancelReadyForTests(ready: boolean | null): void {
   }
 }
 
-export function getHaStopDrainTimeoutMs(): number {
+function getHaStopDrainTimeoutMs(): number {
   const override = stopDrainTimeoutMsOverrideByEnv.get(currentEnvKey());
   return override !== undefined ? override : DEFAULT_HA_STOP_DRAIN_TIMEOUT_MS;
 }
@@ -386,18 +380,6 @@ export function isHaDrainTimerRefedForTests(scope: string | null | undefined): b
   if (!timer) return null;
   const handle = timer as unknown as { hasRef?: () => boolean };
   return typeof handle.hasRef === "function" ? handle.hasRef() : true;
-}
-
-export function getHaScopeGeneration(scope: string | null | undefined): number {
-  const normalized = haConnectionScope(scope);
-  if (!normalized) return 0;
-  return ensureEntry(normalized).generation;
-}
-
-export function getHaScopeSignal(scope: string | null | undefined): AbortSignal {
-  const normalized = haConnectionScope(scope);
-  if (!normalized) return new AbortController().signal;
-  return ensureEntry(normalized).controller.signal;
 }
 
 export function getHaScopeInFlightCount(scope: string | null | undefined): number {

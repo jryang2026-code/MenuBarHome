@@ -4,7 +4,7 @@ import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
 import { assertMissing } from "./dom.js";
-import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
+import { closeTestWindow, element, mountTestWindow } from "./uiHarness.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { MiCloudCrypto } from "../src/core/miCloudCrypto.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
@@ -20,12 +20,6 @@ import {
 } from "../src/ui/undoTracker.js";
 
 let dom: Window;
-
-function element<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  assert.ok(found, `Missing control ${selector}`);
-  return found;
-}
 
 async function click(selector: string): Promise<void> {
   element(selector).click();

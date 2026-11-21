@@ -1,4 +1,4 @@
-import { currentLanguage, resolveLanguage, type AppLanguage } from "../core/i18n.js";
+import { tr3 } from "../core/i18n.js";
 import {
   ENERGY_TOP_DEVICE_LIMIT,
   formatCurrencyCost,
@@ -14,21 +14,6 @@ import type { ReplyBannerState } from "./appTypes.js";
 import { getHostDualSourceState, getHostMiAccountsState, isDualSourceEnabled, settingsHaCacheIfEnabled } from "./cloudRefresh.js";
 import { withAliases, type LayoutPrefs } from "./panelPrefs.js";
 import type { SettingsTab, SettingsViewContext } from "./settingsViews.js";
-
-function activeLanguage(): AppLanguage {
-  return resolveLanguage(currentLanguage(), []);
-}
-
-function tr3(
-  zhHans: string,
-  zhHant: string,
-  en: string,
-  lang: AppLanguage = activeLanguage(),
-): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
 
 export interface EnergyTrackableSettings extends EnergyScopeSource {
   readonly cachedXiaomiDevices?: readonly SmartDevice[];

@@ -12,7 +12,6 @@ import {
 import { setLanguage } from "../src/core/i18n.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
 import {
-  cameraStreamSubtype,
   normalizeCameraStreamQuality,
   normalizeCameraStreamQualityMap,
 } from "../src/core/cameraQuality.js";
@@ -5443,11 +5442,7 @@ describe("Partial undo sequence context preservation", () => {
 });
 
 describe("Xiaomi camera quality (#97)", () => {
-  it("maps stored qualities to go2rtc subtypes and drops corrupt values", () => {
-    assert.equal(cameraStreamSubtype("auto"), "auto");
-    assert.equal(cameraStreamSubtype("sd"), "sd");
-    assert.equal(cameraStreamSubtype("hd"), "hd");
-    assert.equal(cameraStreamSubtype("max"), "3");
+  it("normalizes stored qualities and drops corrupt values", () => {
     assert.equal(normalizeCameraStreamQuality("max"), "max");
     assert.equal(normalizeCameraStreamQuality("4k"), "sd");
     assert.equal(normalizeCameraStreamQuality(null), "sd");

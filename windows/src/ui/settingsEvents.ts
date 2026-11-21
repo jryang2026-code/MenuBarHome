@@ -1,4 +1,4 @@
-import { currentLanguage, t, type AppLanguage } from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 import { syncSlidingTabIndicators } from "./reconciler.js";
 import { trText } from "../core/quickActions.js";
 import {
@@ -78,12 +78,6 @@ import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
 import type { SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
-
-function tr3(zhHans: string, zhHant: string, en: string, lang: AppLanguage = currentLanguage()): string {
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
 
 export interface SettingsEventsHost extends SourceSwitchHost {
   readonly root: HTMLElement;

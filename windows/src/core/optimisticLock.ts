@@ -562,15 +562,6 @@ export function isOptimisticallyLocked(
 }
 
 /**
- * The revision of the send that owns `deviceId`. Adopting a reported row clears the lock but keeps
- * this value, so a later answer from an earlier send is still recognised as stale (§14).
- */
-export function optimisticLockRevision(host: OptimisticLockHost, deviceId: string): number {
-  const state = ensureHostState(host);
-  return state.revisions.get(deviceId) ?? 0;
-}
-
-/**
  * Mirrors macOS `HomeStore.coverTravelTakesOver`: a cover stays locked across intermediate travel
  * and stale pre-command parked snapshots until the reported position reaches the commanded target
  * or stops at a new post-travel position.
@@ -766,14 +757,6 @@ export function mergeHomeSnapshotRespectingLocks(
   return { devices: mergedDevices, deviceFacets: mergedFacets };
 }
 
-export function mergeSnapshotRespectingLocks(
-  host: OptimisticLockHost,
-  incomingDevices: readonly SmartDevice[],
-  nowMs = Date.now(),
-): SmartDevice[] {
-  return mergeHomeSnapshotRespectingLocks(host, incomingDevices, host.deviceFacets, nowMs).devices;
-}
-
 /**
  * Schedules a non-blocking delayed read-back verification (`ReadBackTicket`).
  * Supersedes any earlier ticket for `deviceId` and cancels automatically on `sourceRevision` change.
@@ -895,11 +878,6 @@ export function cancelDelayedReadBack(host: OptimisticLockHost, deviceId?: strin
     entry.cancel();
   }
   state.activeTickets.clear();
-}
-
-export function hasPendingReadBack(host: OptimisticLockHost, deviceId: string): boolean {
-  const state = ensureHostState(host);
-  return state.activeTickets.has(deviceId);
 }
 
 /**

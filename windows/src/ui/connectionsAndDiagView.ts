@@ -1,6 +1,6 @@
 import { AutomationRuleStore } from "../core/automationEngine.js";
 import type { CapabilityDeactivationVerdict } from "../core/capabilityReferenceVerdict.js";
-import { currentLanguage, resolveLanguage, t, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
+import { currentLanguage, resolveLanguage, t, tr3 as coreTr3, type AppLanguage, type LanguagePreference } from "../core/i18n.js";
 import {
   MI_ACCOUNT_CAPABILITY_STORAGE_KEY,
   applyPauseItemsFromVerdict,
@@ -92,7 +92,7 @@ export function tr3(
   en: string,
   lang: AppLanguage = activeLanguage(),
 ): string {
-  return lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
+  return coreTr3(zhHans, zhHant, en, lang);
 }
 
 function escapeFallback(value: string): string {
@@ -355,7 +355,7 @@ export interface ConnectionsAndDiagHost extends SourceSwitchHost {
   connDiagSession?: HostConnDiagSession;
 }
 
-export function isHostHaDisableUiEnabled(host?: ConnectionsAndDiagHost): boolean {
+function isHostHaDisableUiEnabled(host?: ConnectionsAndDiagHost): boolean {
   return host?.haDisableUiEnabled !== undefined ? host.haDisableUiEnabled : isHaNativeCancelReady();
 }
 

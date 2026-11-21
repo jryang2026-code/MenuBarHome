@@ -1,11 +1,7 @@
 import { discoverMiHome } from "./miCloud/discovery.js";
 import { PowerReadBackError, type ExecuteOptions, type HomeProvider } from "./homeProvider.js";
 import { readMiotPower } from "./models.js";
-import { currentLanguage,
-  resolveLanguage,
-  type AppLanguage,
-  type LanguagePreference,
-} from "./i18n.js";
+import { tr3, type LanguagePreference } from "./i18n.js";
 import { MI_SESSION_WARNING_LEAD_MS,
   miSessionExpiryState,
 } from "./miCloud/session.js";
@@ -42,6 +38,7 @@ import { buildMiotTypePrunePlan } from "./miotTypePruning.js";
 import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import { clearPersistedMiSessionExpired,
   clearPersistedMiSessionExpiredFor,
+  defaultStorage,
   isXiaomiRateLimitError,
   MI_ACCOUNTS_EXPIRED_STORAGE_KEY,
   miAccountId,
@@ -58,26 +55,6 @@ import { CredentialVault,
   serializeMiSession,
   sessionWithoutPassToken,
 } from "./secureStore.js";
-
-function tr3(zhHans: string,
-  zhHant: string,
-  en: string,
-  params?: Readonly<Record<string, string | number>>,
-  preference?: LanguagePreference,
-): string { const lang: AppLanguage = preference !== undefined
-      ? resolveLanguage(preference, globalThis.navigator?.languages ?? [])
-      : resolveLanguage(currentLanguage(), []);
-  const template = lang === "en" ? en : lang === "zh-Hant" ? zhHant : zhHans;
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
-    Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
-  );
-}
-
-function defaultStorage(): Storage | null { try { return typeof localStorage !== "undefined" ? localStorage : null;
-  } catch { return null;
-  }
-}
 
 export const MI_ACCOUNTS_INDEX_STORAGE_KEY = "menumijia.windows.miAccountsIndex.v1";
 // Re-exported for existing imports; the rejection store itself lives in `pollingPolicy.ts`.

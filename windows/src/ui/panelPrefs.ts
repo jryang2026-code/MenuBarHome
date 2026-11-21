@@ -1,13 +1,8 @@
 import type { MiRoom } from "../core/miCloudClient.js";
 import type { SmartDevice } from "../core/models.js";
-import { currentLanguage, resolveLanguage, t } from "../core/i18n.js";
+import { t, tr3 } from "../core/i18n.js";
 
-export function tr3(zhHans: string, zhHant: string, en: string): string {
-  const lang = resolveLanguage(currentLanguage(), []);
-  if (lang === "en") return en;
-  if (lang === "zh-Hant") return zhHant;
-  return zhHans;
-}
+export { tr3 };
 
 // Panel personalisation shared with the macOS app: per-page card sizes, custom order,
 // user groups and local device names. Pure functions only, so they can be unit tested.
