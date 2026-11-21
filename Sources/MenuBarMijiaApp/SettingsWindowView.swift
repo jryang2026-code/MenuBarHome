@@ -879,15 +879,6 @@ private struct GeneralSettingsTab: View {
                 .font(.system(size: DesignTokens.TypeSize.caption))
                 .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
-
-                SettingsToggleRow(
-                    title: L10n.tr("启用侧边情绪智能球", "Enable Sidecar Grok Ball"),
-                    isOn: Binding(
-                        get: { store.enableGrokBall },
-                        set: { store.enableGrokBall = $0 }
-                    )
-                )
-                .settingsRow(anchor: .grokBall)
             }
 
             SettingsSection(title: L10n.tr("启动与快捷键", "Startup & Shortcuts")) {

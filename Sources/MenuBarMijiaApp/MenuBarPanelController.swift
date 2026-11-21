@@ -79,9 +79,6 @@ final class MenuBarPanelController: NSObject {
     private(set) var hostedPanelTheme: PanelTheme?
     /// Owned by the readability-shadow code; the presentation extension reads it while animating.
     private(set) var backdropWindow: NSPanel?
-    /// Created on the first open; the presentation extension only drives the existing sidecar.
-    private(set) var grokBallSidecar: GrokBallSidecarController?
-    var grokBallSidecarWindow: NSPanel? { grokBallSidecar?.panelWindow }
 
     /// Tests switch this off so `swift test` shows the window without stealing key status or focus
     /// from the terminal; the app keeps it on, which is what makes the panel key like the extra was.
@@ -305,9 +302,6 @@ final class MenuBarPanelController: NSObject {
             NotificationCenter.default.removeObserver(observer)
         }
         observers.removeAll()
-        grokBallSidecar?.tearDown()
-        grokBallSidecar = nil
-        store?.dismissGrokBallStage()
         if let store, let voiceInputObserverID {
             store.removeVoiceInputPreferenceObserver(voiceInputObserverID)
         }
@@ -897,19 +891,8 @@ final class MenuBarPanelController: NSObject {
         if let panelWindow { return panelWindow }
         let panel = Self.makePanel(theme: theme)
         panelWindow = panel
-        return panel
-    }
-
-    /// One Grok ball per panel; it is created with the first open and reused for the window's life.
-    func prepareSidecar(for panel: NSPanel) {
-        guard grokBallSidecar == nil, let store else { return }
-        grokBallSidecar = GrokBallSidecarController(
-            store: store, parent: panel,
-            beginVoice: { [weak self] in self?.beginHoldToTalk() },
-            endVoice: { [weak self] in self?.endHoldToTalk() },
-            closePanel: { [weak self] in self?.hidePanel() }
-        )
         installPanelGeometryObservers(for: panel)
+        return panel
     }
 
     /// Installs the theme's root view. Same theme → keeps the live tree, so scroll position, search
@@ -1375,13 +1358,6 @@ final class MenuBarPanelController: NSObject {
     // MARK: - Outside Click, Screens & Preferences
 
     private func installPanelGeometryObservers(for panel: NSPanel) {
-        for name in [NSWindow.didMoveNotification, NSWindow.didResizeNotification] {
-            observers.append(NotificationCenter.default.addObserver(
-                forName: name, object: panel, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated { self?.grokBallSidecar?.synchronize() }
-            })
-        }
         observers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification, object: panel, queue: .main
         ) { [weak self] _ in
@@ -1568,20 +1544,15 @@ final class MenuBarPanelController: NSObject {
             }
         }
         guard isPanelVisible, let panel = panelWindow else { return }
-        if let sidecar = grokBallSidecar, window === sidecar.panelWindow {
-            if sidecar.containsScreenPoint(screenPoint) { return }
-        } else {
-            guard !isPanelWindow(window) else { return }
-        }
+        guard !isPanelWindow(window) else { return }
         if let cameraWindow = CameraLivePanelController.shared.panelWindow,
            cameraWindow.isVisible,
            window === cameraWindow || cameraWindow.frame.contains(screenPoint) {
             return
         }
         if panel.frame.contains(screenPoint) { return }
-        if let sidecar = grokBallSidecar, sidecar.containsScreenPoint(screenPoint) { return }
         if let children = panel.childWindows,
-           children.contains(where: { $0 !== grokBallSidecar?.panelWindow && $0.isVisible && $0.frame.contains(screenPoint) }) { return }
+           children.contains(where: { $0.isVisible && $0.frame.contains(screenPoint) }) { return }
         if SpeechInputController.shared.isListening
             || SpeechInputController.shared.isHoldToTalk
             || pressTriggered

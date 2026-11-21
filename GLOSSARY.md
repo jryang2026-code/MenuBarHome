@@ -192,10 +192,6 @@ _Avoid_: Static shortcut（静态快捷方式）、Random tip（随机提示）
 Windows 命令栏内等待用户点击执行的计划/确认芯片（`bare:on`/`off`、`confirm:*`），与 `aiProactiveSuggestions` 分离。
 _Avoid_: ProactiveSuggestion（猜你想控）、assistantSuggestions（macOS 命令栏）
 
-**GrokBall（AI 情绪表情球）**：
-随连接、语音与执行状态切换表情的自由拖动球面组件（macOS 支持按方位外扩胶囊；Windows 侧挂纵向推荐）。
-_Avoid_: Static icon（静态图标）、Chatbot avatar（聊天头像）
-
 **LightGroupFold（米家灯组折叠）**：
 启用 `hideGroupedLights` 时在展示层隐藏已归属 `group.*` 灯组的单灯，搜索、场景与全关仍计入成员灯。
 _Avoid_: DeviceGroup（本地自定义分组）、Room grouping（房间分组）

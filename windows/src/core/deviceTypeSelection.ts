@@ -146,7 +146,6 @@ export const FEATURE_LABELS = {
   "proactive-suggestions": ["主动建议", "主動建議", "Proactive suggestions"],
   "companion-integration": ["外部快捷工具联动", "外部捷徑工具聯動", "Companion integration"],
   "event-automation": ["电脑状态自动化", "電腦狀態自動化", "Context automation"],
-  grokball: ["桌面智能陪伴球", "桌面智慧陪伴球", "GrokBall"],
   "sensor-history": ["温湿度历史", "溫濕度歷史", "Sensor history"],
   "plug-energy": ["插座用电", "插座用電", "Plug energy"],
   "camera-live": ["摄像机实况", "攝影機實況", "Camera live view"],

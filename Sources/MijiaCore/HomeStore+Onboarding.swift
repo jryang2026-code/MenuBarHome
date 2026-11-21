@@ -104,7 +104,6 @@ extension HomeStore {
         isTestEnvironment: Bool,
         checkHATokenVault: Bool,
         legacyVoiceInput: Bool,
-        legacyGrokBall: Bool,
         pendingMiRemovalScopes: Set<String> = [],
         connectionRemovalReadError: Bool = false
     ) -> CapabilityInstallResolution {
@@ -137,7 +136,6 @@ extension HomeStore {
             hasPersistedLocalData: hasLocalData,
             legacyFeatureFlags: [
                 .voiceInput: legacyVoiceInput,
-                .grokball: legacyGrokBall,
                 // macOS shipped Raycast integration off by default; upgrades keep the old switch.
                 .companionIntegration: defaults.bool(forKey: RaycastSnapshotExporter.integrationEnabledKey),
             ],
@@ -180,7 +178,6 @@ extension HomeStore {
             isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsHAToken,
             legacyVoiceInput: enableVoiceInput,
-            legacyGrokBall: enableGrokBall,
             pendingMiRemovalScopes: pendingMi,
             connectionRemovalReadError: hasCorruptConnectionRemovalState
         )

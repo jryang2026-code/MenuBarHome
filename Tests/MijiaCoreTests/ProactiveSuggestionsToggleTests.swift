@@ -196,12 +196,8 @@ struct ProactiveSuggestionsToggleTests {
         let settledRequests = transport.count
         store.proactiveWorkCounters = ProactiveWorkCounters()
 
-        // Every entry point: the bar, the panel focus hook, GrokBall, the manual button and the
-        // background refresh.
         store.presentAssistantBar()
         store.refreshProactiveSuggestionCacheIfStale()
-        store.presentGrokBallStage()
-        #expect(store.grokBallRadialSuggestions.isEmpty)
         #expect(store.maybeRefreshProactiveSuggestionsInBackground() == nil)
         await store.refreshProactiveSuggestionsCache()
         await store.requestProactiveJevSuggestions()

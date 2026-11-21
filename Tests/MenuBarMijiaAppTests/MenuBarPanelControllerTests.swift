@@ -862,7 +862,6 @@ struct MenuBarPanelControllerTests {
         defer { themeScope.restore() }
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
         let controller = makeController(store: store)
         defer { controller.uninstall() }
         controller.presentsActively = true
@@ -890,7 +889,7 @@ struct MenuBarPanelControllerTests {
         }
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
-        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        #expect(await waitUntil { !controller.isEntranceAnimating })
         let settled = panel.frame
         controller.hidePanel()
         controller.hidePanel()
@@ -901,7 +900,7 @@ struct MenuBarPanelControllerTests {
         controller.showPanel()
         controller.showPanel()
         #expect(abs(panel.frame.minX - interrupted.minX) <= 1, "reopening starts at the current position")
-        #expect(await waitUntil { controller.grokBallSidecarWindow?.isVisible == true })
+        #expect(await waitUntil { !controller.isEntranceAnimating })
         #expect(panel.isVisible)
         #expect(controller.isPanelVisible)
         #expect(panel.frame == settled)
@@ -1298,7 +1297,6 @@ struct MenuBarPanelControllerTests {
         defer { themeScope.restore() }
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1308,7 +1306,6 @@ struct MenuBarPanelControllerTests {
         let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
         #expect(controller.hostedPanelTheme == .classic)
         #expect(abs(panel.frame.height - min(PanelHeight.standard.points, visible.height - 24)) <= 1)
-        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball shows with the classic panel")
 
         // The user picks liquid glass while the panel is open: it closes first.
         UserDefaults.standard.set(PanelTheme.liquidGlass.rawValue, forKey: PanelTheme.storageKey)
@@ -1331,7 +1328,6 @@ struct MenuBarPanelControllerTests {
         #expect(panel.frame.height >= minLiquidHeight - 1 && panel.frame.height <= maxLiquidHeight + 1)
         #expect(panel.frame.minY >= liquidVisible.minY + 8 - 1)
         #expect(abs(panel.frame.maxX - (liquidVisible.maxX - 16)) <= 0.5)
-        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball returns with the liquid panel")
 
         // Switching back while open closes it again and the next show restores the classic frame.
         UserDefaults.standard.set(PanelTheme.classic.rawValue, forKey: PanelTheme.storageKey)
@@ -1344,255 +1340,6 @@ struct MenuBarPanelControllerTests {
         controller.showPanel()
         #expect(controller.hostedPanelTheme == .classic)
         #expect(abs(panel.frame.height - min(PanelHeight.standard.points, visible.height - 24)) <= 1)
-        #expect(controller.grokBallSidecarWindow?.isVisible == true, "the ball is not left suspended by the switch")
-    }
-
-    @Test("GrokBall sidecar stays outside the 376 pt panel and expands without changing it")
-    func grokBallSidecarKeepsPanelWidthStable() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-
-        #expect(store.enableGrokBall == false)
-        controller.showPanel()
-        #expect(controller.grokBallSidecarWindow?.isVisible == false)
-
-        store.enableGrokBall = true
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        #expect(sidecar.alphaValue == 0)
-        #expect(abs(panel.frame.width - 376) < 1)
-        #expect(abs(sidecar.frame.width - GrokBallSidecarPlacement.collapsedWidth) < 1)
-        #expect(sidecar.frame.minX >= panel.frame.maxX || sidecar.frame.maxX <= panel.frame.minX)
-        #expect(controller.isPanelWindow(sidecar))
-
-        let initialFrame = panel.frame
-        store.toggleGrokBallStage()
-        controller.showPanel()
-        #expect(abs(panel.frame.width - 376) < 1)
-        #expect(panel.frame == initialFrame)
-        #expect(abs(sidecar.frame.width - GrokBallSidecarPlacement.expandedWidth) < 1)
-        #expect(sidecar.frame.height >= GrokBallSidecarPlacement.expandedHeight - 1)
-
-        controller.hidePanel()
-        #expect(sidecar.isVisible == false)
-        #expect(store.isGrokBallStageExpanded == false)
-    }
-
-    @Test("Expanded sidecar chooses the far edge and flips when the right side cannot fit")
-    func grokBallSidecarFlipsAtScreenEdge() {
-        let visible = NSRect(x: 0, y: 0, width: 1_000, height: 800)
-        let rightParent = NSRect(x: 300, y: 300, width: 376, height: 420)
-        let right = GrokBallSidecarPlacement.resolve(parent: rightParent, visible: visible, expanded: true)
-        #expect(right.side == .right)
-        #expect(right.frame.minX >= rightParent.maxX)
-
-        let edgeParent = NSRect(x: 600, y: 300, width: 376, height: 420)
-        let left = GrokBallSidecarPlacement.resolve(parent: edgeParent, visible: visible, expanded: true)
-        #expect(left.side == .left)
-        #expect(left.frame.maxX <= edgeParent.minX)
-
-        for parent in [rightParent, edgeParent] {
-            let collapsed = GrokBallSidecarPlacement.resolve(parent: parent, visible: visible, expanded: false)
-            let expanded = GrokBallSidecarPlacement.resolve(parent: parent, visible: visible, expanded: true)
-            #expect(collapsed.side == expanded.side)
-            #expect(collapsed.frame.maxY == expanded.frame.maxY)
-            let collapsedBallX = collapsed.side == .right ? collapsed.frame.minX + 42 : collapsed.frame.maxX - 42
-            let expandedBallX = expanded.side == .right ? expanded.frame.minX + 42 : expanded.frame.maxX - 42
-            #expect(collapsedBallX == expandedBallX)
-            #expect(expanded.frame.minX >= visible.minX)
-            #expect(expanded.frame.maxX <= visible.maxX)
-            #expect(expanded.frame.minY >= visible.minY)
-        }
-    }
-
-    @Test("Sidecar key status and clicks belong to the dashboard; an outside click closes both")
-    func grokBallSidecarOutsideClickAndKeyOwnership() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-        controller.showPanel()
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        controller.handleOtherWindowBecameKey(sidecar)
-        #expect(controller.isPanelVisible)
-        let center = NSPoint(x: sidecar.frame.midX, y: sidecar.frame.midY)
-        controller.handleMouseDown(in: sidecar, at: center)
-        controller.handleMouseDown(in: nil, at: center)
-        #expect(controller.isPanelVisible)
-        controller.handleMouseDown(in: nil, at: NSPoint(x: -10_000, y: -10_000))
-        #expect(controller.isPanelVisible == false)
-        #expect(sidecar.isVisible == false)
-    }
-
-    @Test("Escape in the sidecar collapses suggestions first, then closes the dashboard")
-    func grokBallSidecarEscapeClosesInOrder() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-        controller.showPanel()
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        store.toggleGrokBallStage()
-        sidecar.cancelOperation(nil)
-        #expect(store.isGrokBallStageExpanded == false)
-        #expect(controller.isPanelVisible)
-        sidecar.cancelOperation(nil)
-        #expect(controller.isPanelVisible == false)
-        #expect(sidecar.isVisible == false)
-
-        controller.uninstall()
-        #expect(controller.grokBallSidecarWindow == nil)
-        #expect(sidecar.parent == nil)
-        #expect(sidecar.contentView == nil)
-    }
-
-    @Test("Moving and resizing the parent keeps the side attachment aligned")
-    func grokBallSidecarFollowsParentGeometry() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        let visible = try #require(panel.screen?.visibleFrame)
-        store.toggleGrokBallStage()
-        let movedFrame = NSRect(x: visible.minX + 20, y: visible.minY + 20, width: 376, height: 320)
-        panel.setFrame(movedFrame, display: true)
-        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: panel)
-        NotificationCenter.default.post(name: NSWindow.didResizeNotification, object: panel)
-        let expected = GrokBallSidecarPlacement.resolve(parent: panel.frame, visible: visible, expanded: true)
-        #expect(sidecar.frame == expected.frame)
-        #expect(panel.frame.width == 376)
-    }
-
-    @Test("The English empty-state message fits the shallow recommendation row")
-    func grokBallEnglishEmptyStateFitsShallowRow() throws {
-        _ = NSApplication.shared
-        let suite = "test.empty.ball.\(UUID().uuidString)"
-        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite)
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        try #require(store.grokBallRadialSuggestions.isEmpty)
-        L10n.$overrideLanguage.withValue(.en) {
-            let hosting = NSHostingView(rootView: GrokBallSuggestions(store: store, columnCount: 4).body)
-            hosting.frame = NSRect(x: 0, y: 0, width: 558, height: 44)
-            hosting.layoutSubtreeIfNeeded()
-            #expect(hosting.fittingSize.height <= 44)
-        }
-    }
-
-    @Test("A shallow bottom gap keeps all four suggestions below the ball when a row fits")
-    func grokBallUsesShallowBottomSpace() throws {
-        let parent = NSRect(x: 312, y: 200, width: 376, height: 420)
-        let visible = NSRect(x: 0, y: 0, width: 1000, height: 800)
-        let center = NSPoint(x: 500, y: 135)
-        let placement = GrokBallSidecarPlacement.resolve(parent: parent, visible: visible, expanded: true, ballCenter: center)
-        let pills = try #require(placement.suggestionsFrame)
-        #expect(placement.side == .below)
-        #expect(pills.maxY < center.y - 36)
-        #expect(visible.contains(placement.frame))
-        #expect(!pills.intersects(parent))
-    }
-
-    @Test("Recommendations follow the ball outward on all four sides without moving its anchor")
-    func grokBallSuggestionsFollowFreePlacement() throws {
-        let parent = NSRect(x: 650, y: 600, width: 376, height: 420)
-        let visible = NSRect(x: 0, y: 0, width: 2000, height: 1800)
-        let cases: [(NSPoint, GrokBallSidecarPlacement.Side)] = [
-            (NSPoint(x: 540, y: 810), .left), (NSPoint(x: 1130, y: 810), .right),
-            (NSPoint(x: 838, y: 500), .below), (NSPoint(x: 838, y: 1120), .above),
-        ]
-        for (center, direction) in cases {
-            let closed = GrokBallSidecarPlacement.resolve(parent: parent, visible: visible, expanded: false, ballCenter: center)
-            let open = GrokBallSidecarPlacement.resolve(parent: parent, visible: visible, expanded: true, ballCenter: center)
-            let pills = try #require(open.suggestionsFrame)
-            #expect(open.side == direction)
-            #expect(open.ballCenter == closed.ballCenter)
-            #expect(visible.contains(open.frame))
-            #expect(!pills.intersects(parent))
-            switch direction {
-            case .left: #expect(pills.maxX < center.x - 36)
-            case .right: #expect(pills.minX > center.x + 36)
-            case .above: #expect(pills.minY > center.y + 36)
-            case .below: #expect(pills.maxY < center.y - 36)
-            }
-        }
-    }
-
-    @Test("Dragging the ball moves it freely without clicking or starting voice, and pills follow its side")
-    func grokBallDragsWithoutActivating() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
-        let controller = makeController(store: store)
-        defer { controller.uninstall() }
-        controller.showPanel()
-        let panel = try #require(controller.panelWindow)
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        let visible = try #require(panel.screen?.visibleFrame)
-        panel.setFrame(NSRect(x: visible.midX - 188, y: visible.minY + 240, width: 376, height: 320), display: true)
-        NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: panel)
-        let mainFrame = panel.frame
-        store.isShowingAssistantBar = false
-        var origin = NSPoint(x: sidecar.frame.midX, y: sidecar.frame.midY)
-        let left = NSPoint(x: mainFrame.minX - 70, y: mainFrame.midY)
-        sendBallMouse(.leftMouseDown, at: origin, window: sidecar)
-        sendBallMouse(.leftMouseDragged, at: left, window: sidecar)
-        sendBallMouse(.leftMouseUp, at: left, window: sidecar)
-        #expect(abs(sidecar.frame.midX - left.x) < 1)
-        #expect(abs(sidecar.frame.midY - left.y) < 1)
-        #expect(!store.isGrokBallStageExpanded)
-        #expect(!store.isShowingAssistantBar)
-        sendBallMouse(.leftMouseDown, at: left, window: sidecar)
-        sendBallMouse(.leftMouseUp, at: left, window: sidecar)
-        #expect(store.isGrokBallStageExpanded)
-        #expect(sidecar.frame.maxX < mainFrame.minX)
-        origin = left
-        let below = NSPoint(x: mainFrame.midX, y: mainFrame.minY - 65)
-        sendBallMouse(.leftMouseDown, at: origin, window: sidecar)
-        sendBallMouse(.leftMouseDragged, at: below, window: sidecar)
-        sendBallMouse(.leftMouseUp, at: below, window: sidecar)
-        sendBallMouse(.leftMouseDown, at: below, window: sidecar)
-        sendBallMouse(.leftMouseUp, at: below, window: sidecar)
-        #expect(store.isGrokBallStageExpanded)
-        #expect(sidecar.frame.maxY < mainFrame.minY)
-        #expect(panel.frame == mainFrame)
-    }
-
-    @Test("Holding the ball enters voice without also toggling suggestions")
-    func grokBallHoldStartsVoiceOnly() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        store.enableGrokBall = true
-        let speech = SpeechInputController.shared
-        let controller = makeController(store: store)
-        defer { speech.stop(andSubmit: false, store: nil); controller.uninstall() }
-        controller.showPanel()
-        let sidecar = try #require(controller.grokBallSidecarWindow)
-        let point = NSPoint(x: sidecar.frame.midX, y: sidecar.frame.midY)
-        store.isShowingAssistantBar = false
-        sendBallMouse(.leftMouseDown, at: point, window: sidecar)
-        for _ in 0..<250 where !store.isShowingAssistantBar { try await Task.sleep(for: .milliseconds(5)) }
-        #expect(store.isShowingAssistantBar)
-        #expect(speech.isHoldToTalk)
-        #expect(!store.isGrokBallStageExpanded)
-        sendBallMouse(.leftMouseUp, at: point, window: sidecar)
-        for _ in 0..<250 where speech.isHoldToTalk { try await Task.sleep(for: .milliseconds(5)) }
-        #expect(!speech.isHoldToTalk)
-        #expect(!store.isGrokBallStageExpanded)
-    }
-
-    private func sendBallMouse(_ type: NSEvent.EventType, at point: NSPoint, window: NSWindow) {
-        guard let event = NSEvent.mouseEvent(with: type, location: window.convertPoint(fromScreen: point), modifierFlags: [],
-                                            timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                                            context: nil, eventNumber: 0, clickCount: 1, pressure: 1) else { return }
-        NSApp.sendEvent(event)
     }
 
     @Test("Another window taking key status closes the panel; the panel and its own children do not")
@@ -2516,7 +2263,7 @@ struct MenuBarPanelControllerTests {
     }
     #endif
 
-    @Test("Disabling voice input blocks panel, status-item, hotkey, and GrokBall voice entry points with zero recognition tasks, audio taps, timers, or command submissions while preserving ordinary click and hotkey panel toggle")
+    @Test("Disabling voice input blocks panel, status-item, and hotkey voice entry points with zero recognition tasks, audio taps, timers, or command submissions while preserving ordinary click and hotkey panel toggle")
     func voiceInputDisabledBlocksAllEntryPointsWhileKeepingClickAndHotkeyToggle() async throws {
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
@@ -2555,7 +2302,6 @@ struct MenuBarPanelControllerTests {
         let sharedController = MenuBarPanelController.shared
         let prevPresentsActively = sharedController.presentsActively
         sharedController.presentsActively = false
-        store.enableGrokBall = true
         store.enableVoiceInput = false
         sharedController.install(with: store)
         HotkeyAndNotificationManager.shared.attachStoreForTesting(store)
@@ -2619,17 +2365,6 @@ struct MenuBarPanelControllerTests {
         HotkeyAndNotificationManager.shared.handleGlobalHotKeyReleased()
         #expect(sharedController.isPanelVisible == true)
         #expect(store.isShowingAssistantBar == false)
-
-        // Holding the GrokBall sidecar while voice input is off must not start voice; releasing toggles suggestions.
-        let sidecar = try #require(sharedController.grokBallSidecarWindow)
-        let ballPoint = NSPoint(x: sidecar.frame.midX, y: sidecar.frame.midY)
-        sendBallMouse(.leftMouseDown, at: ballPoint, window: sidecar)
-        try await Task.sleep(for: .milliseconds(550))
-        #expect(speech.isHoldToTalk == false)
-        #expect(speech.recognitionTasksStartedCount == 0)
-        #expect(speech.audioTapsInstalledCount == 0)
-        sendBallMouse(.leftMouseUp, at: ballPoint, window: sidecar)
-        #expect(store.isGrokBallStageExpanded == true)
         #expect(speech.submittedCommandsCount == 0)
     }
 
@@ -3116,38 +2851,6 @@ struct MenuBarPanelControllerTests {
         let nextPress = transient.beginAllOffHold { }
         #expect(transient.consumeConfirmedHold(session: shortPress) == false)
         #expect(transient.consumeConfirmedHold(session: nextPress))
-    }
-
-    @Test("WP2d: GrokBall keeps a top-anchored ball in place across 280->560 pt adaptive growth")
-    func grokBallTopAnchorAndAdaptiveEdgeRecalibration() {
-        let visible = NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        // Right-aligned 380 pt adaptive column growing downward from 280 pt to 560 pt (fixed maxY = 870).
-        let compactParent = NSRect(x: 1_044, y: 590, width: 380, height: 280)
-        let tallParent = NSRect(x: 1_044, y: 310, width: 380, height: 560)
-
-        // The anchor is the panel's top edge, so a bottom-edge height change keeps it fixed.
-        #expect(GrokBallSidecarPlacement.anchorOrigin(for: compactParent) == GrokBallSidecarPlacement.anchorOrigin(for: tallParent))
-
-        // A dragged ball stores its offset against that anchor: the same offset lands on the same
-        // screen point at 280 pt and at 560 pt, instead of sliding by half the height delta.
-        let dragged = NSPoint(x: compactParent.minX - 50, y: -86)
-        let compactAnchor = GrokBallSidecarPlacement.anchorOrigin(for: compactParent)
-        let tallAnchor = GrokBallSidecarPlacement.anchorOrigin(for: tallParent)
-        #expect(NSPoint(x: compactAnchor.x + dragged.x, y: compactAnchor.y + dragged.y)
-                == NSPoint(x: tallAnchor.x + dragged.x, y: tallAnchor.y + dragged.y))
-
-        // The default placement is top-anchored too, so neither the ball nor its side moves.
-        for expanded in [false, true] {
-            let compactPlacement = GrokBallSidecarPlacement.resolve(parent: compactParent, visible: visible, expanded: expanded)
-            let tallPlacement = GrokBallSidecarPlacement.resolve(parent: tallParent, visible: visible, expanded: expanded)
-            #expect(compactPlacement.side == .left)
-            #expect(tallPlacement.side == .left)
-            #expect(compactPlacement.ballCenter == tallPlacement.ballCenter, "bottom-edge growth never shifts a top-anchored ball")
-            #expect(compactPlacement.frame.intersects(compactParent) == false)
-            if let suggestions = tallPlacement.suggestionsFrame {
-                #expect(visible.contains(suggestions))
-            }
-        }
     }
 
     private static func waitUntilCondition(_ predicate: () -> Bool) async -> Bool {

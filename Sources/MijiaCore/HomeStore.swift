@@ -300,10 +300,6 @@ public final class HomeStore {
         didSet { HomePreferences.showQuickActionsBar.save(showQuickActionsBar, to: userDefaults) }
     }
 
-    public var enableGrokBall: Bool {
-        didSet { HomePreferences.enableGrokBall.save(enableGrokBall, to: userDefaults) }
-    }
-
     public var favoriteDeviceIds: Set<String> {
         didSet {
             HomePreferences.favoriteDeviceIds.save(favoriteDeviceIds, to: userDefaults)
@@ -1408,7 +1404,6 @@ public final class HomeStore {
         self.awayGap = MacAwayGap(includesAway: ud.bool(forKey: MacAwayGap.storageKey))
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
-        self.enableGrokBall = HomePreferences.enableGrokBall.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
         self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)
         self.safetyMonitor = SafetyMonitor(defaults: ud)
@@ -1444,7 +1439,6 @@ public final class HomeStore {
             isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsInitialHAToken,
             legacyVoiceInput: HomePreferences.enableVoiceInput.load(from: ud),
-            legacyGrokBall: HomePreferences.enableGrokBall.load(from: ud),
             pendingMiRemovalScopes: pendingMiScopesAtLaunch,
             connectionRemovalReadError: initialRemovalState.readError
         )
@@ -1708,11 +1702,6 @@ public final class HomeStore {
     var proactiveRetryCooldown: TimeInterval = 300
     /// The running silent refresh, exposed so tests can await it.
     var proactiveRefreshTask: Task<Void, Never>?
-    /// Whether the GrokBall star stage with its 4 radial suggestions is open (#114).
-    public internal(set) var isGrokBallStageExpanded: Bool = false
-    /// GrokBall shows `33` (confetti) until this moment after a successful control (#114).
-    public internal(set) var grokBallCelebrationUntil: Date?
-    var grokBallCelebrationTask: Task<Void, Never>?
     var assistantResetTask: Task<Void, Never>?
     /// Test seam replacing the network resolver built from `assistantConfig`.
     var assistantResolverOverride: ModelIntentResolver?

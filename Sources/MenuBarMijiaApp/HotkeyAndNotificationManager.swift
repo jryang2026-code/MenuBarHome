@@ -458,7 +458,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             isShowingMiReauth: store.isShowingMiReauth,
             isAllOffHoldActive: transient.isAllOffHoldActive,
             hasPendingConfirmation: store.pendingCloudConsent != nil,
-            isGrokBallStageExpanded: store.isGrokBallStageExpanded,
             isShowingConnectionDetail: PanelConnectionDetailState.shared.isPresented,
             isConnectionStatusFocused: PanelConnectionDetailState.shared.isStatusControlFocused,
             hasActivePrompt: LayoutUIState.shared.hasActivePrompt,
@@ -497,8 +496,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             PanelTransientUIState.shared.cancelAllOffHold()
         case .cancelPendingConfirmation:
             store.declinePendingCloudRequest()
-        case .dismissGrokBallStage:
-            store.dismissGrokBallStage()
         case .dismissConnectionDetail:
             PanelConnectionDetailState.shared.dismiss(restoreFocus: true)
         case .focusConnectionStatus:

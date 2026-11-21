@@ -58,13 +58,6 @@
       "windows": "supported"
     },
     {
-      "id": "grokball",
-      "en": "GrokBall & Side Suggestions",
-      "zh": "GrokBall 情绪球与侧边推荐",
-      "macos": "supported",
-      "windows": "unsupported"
-    },
-    {
       "id": "quick-actions",
       "en": "Quick Actions & Scenes Strip",
       "zh": "顶部快捷动作与场景栏",

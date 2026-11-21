@@ -1,7 +1,5 @@
 import Foundation
 
-/// The three things a first launch teaches (#180). Everything else — AI, GrokBall, cameras,
-/// automation, URL control — stays behind the guide's "Advanced" disclosure until asked for.
 public enum OnboardingStep: String, CaseIterable, Sendable {
     case connectAccount
     case searchDevice

@@ -181,8 +181,6 @@ extension HomeStore {
         raycastExportTask = nil
         proactiveRefreshTask?.cancel()
         proactiveRefreshTask = nil
-        grokBallCelebrationTask?.cancel()
-        grokBallCelebrationTask = nil
         assistantResetTask?.cancel()
         assistantResetTask = nil
         for task in scheduledTasks.values {

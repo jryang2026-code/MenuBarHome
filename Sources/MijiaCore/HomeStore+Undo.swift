@@ -67,9 +67,6 @@ extension HomeStore {
         proactiveRefreshTask = nil
         isProactiveRecommending = false
         proactiveRetryEarliest = nil
-        isGrokBallStageExpanded = false
-        grokBallCelebrationTask?.cancel()
-        grokBallCelebrationUntil = nil
         clearOptimisticLocks()
         lastCoverPositions.removeAll()
         cancelFacetWrites(for: nil)

@@ -2,12 +2,8 @@ import Foundation
 
 // Primary toggle and detail-drawer controls backed by optimistic state (#48).
 extension HomeStore {
-    /// A manual card action was confirmed by the device: GrokBall celebrates (#114) and the action
-    /// is recorded into the habit memory for the current time bucket (#113).
-    /// Returns the receipt so an undo banner can roll the record back; nil when learning is off.
     @discardableResult
     func confirmManualControl(intents: [DeviceIntent]) -> UserHabitMemory.RecordingReceipt? {
-        celebrateGrokBall()
         guard isHabitLearningEnabled, !intents.isEmpty else { return nil }
         var memory = userHabitMemory
         let receipt = memory.record(utterance: nil, intents: intents, devices: devices, scenes: scenes)
@@ -344,7 +340,6 @@ extension HomeStore {
                     try await self.executeDeviceCommand(cmd)
                     guard self.controlContextID == context else { return false }
                     let displayName = self.devices.first(where: { $0.id == deviceId })?.name ?? current.name
-                    self.celebrateGrokBall()
                     self.showToast(L10n.tr("已触发 \(displayName)", "Triggered \(displayName)"), isError: false)
                     return true
                 } catch {

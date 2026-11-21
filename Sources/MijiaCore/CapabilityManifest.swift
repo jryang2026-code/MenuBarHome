@@ -19,7 +19,7 @@ public enum ConnectionCapabilityID: String, CaseIterable, Codable, Hashable, Sen
 public enum FeatureID: String, CaseIterable, Codable, Hashable, Sendable {
     case voiceInput = "voice-input", aiAssistant = "ai-assistant"
     case proactiveSuggestions = "proactive-suggestions", companionIntegration = "companion-integration"
-    case eventAutomation = "event-automation", grokball = "grokball"
+    case eventAutomation = "event-automation"
     case sensorHistory = "sensor-history", plugEnergy = "plug-energy", cameraLive = "camera-live"
 }
 
