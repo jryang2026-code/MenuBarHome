@@ -7,7 +7,7 @@ import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
 import { assertMissing } from "./dom.js";
-import { closeTestWindow, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
+import { closeTestWindow, element, installCssEscape, mountTestWindow, setWindowFocused } from "./uiHarness.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { switchSource } from "../src/ui/sourceSwitch.js";
 import { SF_ICONS } from "../src/ui/appConstants.js";
@@ -20,12 +20,6 @@ import type { CameraLiveController } from "../src/ui/cameraLive.js";
 import type { DeviceCommand, FacetControl, GenericSpec, SmartDevice } from "../src/core/models.js";
 
 let dom: Window;
-
-function element(selector: string): HTMLElement {
-  const found = document.querySelector<HTMLElement>(selector);
-  assert.ok(found, `Missing control ${selector}`);
-  return found;
-}
 
 async function click(selector: string): Promise<void> {
   element(selector).click();
@@ -40,12 +34,33 @@ function textOf(selector: string): string {
   return element(selector).textContent ?? "";
 }
 
-function startDemo(): void {
+let activeApp: MenuMijiaWindowsApp | null = null;
+let capturedIntervals = new Map<number, () => void>();
+let capturedTimeouts = new Map<number, { handler: () => void; realId: number; clearReal: (id: number) => void }>();
+
+function startDemo(): MenuMijiaWindowsApp {
   localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
     connectionMode: "demo",
     hasCompletedOnboarding: true,
   }));
-  new MenuMijiaWindowsApp(element("#app"));
+  activeApp = new MenuMijiaWindowsApp(element("#app"));
+  return activeApp;
+}
+
+async function flushTimerLoopTick(): Promise<void> {
+  for (const handler of [...capturedIntervals.values()]) {
+    handler();
+  }
+  await setImmediate();
+}
+
+async function flushPendingTimeouts(): Promise<void> {
+  for (const [id, entry] of [...capturedTimeouts.entries()]) {
+    capturedTimeouts.delete(id);
+    entry.clearReal(entry.realId);
+    entry.handler();
+  }
+  await setImmediate();
 }
 
 async function setRange(selector: string, value: string): Promise<void> {
@@ -65,9 +80,15 @@ async function command(text: string): Promise<void> {
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const deadline = performance.now() + timeoutMs;
+  let attempts = 0;
   while (!predicate()) {
     if (performance.now() >= deadline) assert.fail("Timed out waiting for UI state");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    attempts += 1;
+    if (attempts <= 3) {
+      await setImmediate();
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, 4));
+    }
   }
 }
 
@@ -102,13 +123,76 @@ async function drainAsyncQueue(): Promise<void> {
 }
 
 beforeEach(() => {
-  dom = mountTestWindow();
+  dom = mountTestWindow({ stubInterval: true });
+  activeApp = null;
+  capturedIntervals = new Map();
+  capturedTimeouts = new Map();
+  let nextIntervalId = 1;
+  const realSetTimeout = dom.setTimeout.bind(dom) as unknown as (
+    handler: (...args: unknown[]) => void,
+    timeout?: number,
+    ...args: unknown[]
+  ) => number;
+  const realClearTimeout = dom.clearTimeout.bind(dom) as unknown as (id: number) => void;
+  Object.defineProperty(dom, "setInterval", {
+    configurable: true,
+    value: (handler: TimerHandler) => {
+      const id = nextIntervalId++;
+      if (typeof handler === "function") {
+        capturedIntervals.set(id, () => {
+          handler();
+        });
+      }
+      return id;
+    },
+  });
+  Object.defineProperty(dom, "clearInterval", {
+    configurable: true,
+    value: (id: number) => {
+      capturedIntervals.delete(id);
+    },
+  });
+  Object.defineProperty(dom, "setTimeout", {
+    configurable: true,
+    value: (handler: (...args: unknown[]) => void, timeout?: number, ...args: unknown[]) => {
+      const delay = typeof timeout === "number" ? timeout : 0;
+      if (typeof handler === "function" && delay >= 150 && delay <= 1_000) {
+        const realId = realSetTimeout(() => {
+          capturedTimeouts.delete(realId);
+          handler(...args);
+        }, delay);
+        capturedTimeouts.set(realId, {
+          handler: () => {
+            handler(...args);
+          },
+          realId,
+          clearReal: (id) => realClearTimeout(id),
+        });
+        return realId;
+      }
+      return realSetTimeout(handler, timeout, ...args);
+    },
+  });
+  Object.defineProperty(dom, "clearTimeout", {
+    configurable: true,
+    value: (id: number) => {
+      capturedTimeouts.delete(id);
+      realClearTimeout(id);
+    },
+  });
   // Most UI tests do not exercise the daily GitHub check; mark it done today so the
   // startup request cannot change their request lists (#39). Update tests clear this.
   localStorage.setItem("menumijia.windows.update.v1", JSON.stringify({ lastCheckedAtMs: Date.now(), release: null }));
 });
 
 afterEach(async () => {
+  activeApp?.dispose();
+  activeApp = null;
+  for (const entry of capturedTimeouts.values()) {
+    entry.clearReal(entry.realId);
+  }
+  capturedTimeouts.clear();
+  capturedIntervals.clear();
   await closeTestWindow(dom);
 });
 
@@ -1182,7 +1266,7 @@ describe("Timers the PC slept through (#22)", () => {
     const realNow = Date.now;
     Date.now = () => realNow() + 3 * 3600 * 1000;
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await flushTimerLoopTick();
       assert.match(document.body.textContent ?? "", /已错过定时：关闭书房台灯/);
       assert.equal(tile("light.study_desk"), before);
       await click("[data-run-missed]");
@@ -1204,7 +1288,7 @@ describe("Timers the PC slept through (#22)", () => {
     const realNow = Date.now;
     Date.now = () => realNow() + 3 * 3600 * 1000;
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await flushTimerLoopTick();
       assert.match(document.body.textContent ?? "", /已错过定时：关灯/);
       await click("[data-run-missed]");
       await setImmediate();
@@ -1237,7 +1321,7 @@ describe("Timers the PC slept through (#22)", () => {
     const realNow = Date.now;
     Date.now = () => realNow() + 3 * 3600 * 1000;
     try {
-      await new Promise((resolve) => setTimeout(resolve, 1_200));
+      await flushTimerLoopTick();
       assert.match(document.body.textContent ?? "", /已错过定时：关灯/);
       await click("[data-run-missed]");
       await setImmediate();
@@ -1606,8 +1690,7 @@ describe("全关 (#23)", () => {
     assert.match(tile("light.living_ceiling"), /已开启/);
 
     button.dispatchEvent(new Event("pointerdown"));
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
     assert.match(tile("plug.entry_socket"), /供电中/);
   });
@@ -3104,6 +3187,7 @@ describe("Smart camera support and live view (#97)", () => {
     const app = new MenuMijiaWindowsApp(element("#app"));
     app.cameraLive.cameraFrameGiveUpMs = options.budgetMs;
     app.cameraLive.cameraFrameRetryMs = options.retryMs;
+    app.cameraLive.cameraActiveFrameGapMs = 10;
     await waitFor(() => document.querySelector('[data-body-device="cam-1"]') !== null);
     await click('[data-body-device="cam-1"]');
     return { bridgeCalls, stopBridgeCalls, frameSrcs, p2pStarts, p2pStops, controller: app.cameraLive };
@@ -4438,7 +4522,7 @@ describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskb
     assert.equal(root.classList.contains("is-closing"), true);
     window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge: "bottom" } }));
     assert.equal(root.classList.contains("is-closing"), false);
-    await new Promise((resolve) => setTimeout(resolve, 210));
+    await flushPendingTimeouts();
     assert.deepEqual(finishCalls, []);
 
     // Completing dismiss notifies Rust with the exact sequence number.
@@ -6032,7 +6116,6 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     let undoExpiry: (() => void) | null = null;
     const ticks: Array<() => void> = [];
     const realSetTimeout = window.setTimeout.bind(window);
-    const realSetInterval = window.setInterval.bind(window);
     Object.defineProperty(window, "setTimeout", {
       configurable: true,
       value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
@@ -6044,9 +6127,9 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     });
     Object.defineProperty(window, "setInterval", {
       configurable: true,
-      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      value: (handler: TimerHandler, timeout?: number) => {
         if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
-        return realSetInterval(handler, timeout, ...args);
+        return ticks.length;
       },
     });
     return {
@@ -6066,8 +6149,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.ok(document.querySelector("#command-input"), "search stays in the page");
     assertMissing(document.querySelector("[data-suggestion-id]"));
     element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
 
     const banner = element(".cc-live-banner");
     assert.equal(banner.getAttribute("role"), "status");
@@ -6117,8 +6199,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     assert.ok(again.classList.contains("is-holding"));
     pressHoldKey(again, " ", "keydown", true);
     assert.ok(again.classList.contains("is-holding"));
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.equal(calls, 1);
     assert.doesNotMatch(tile("light.living_ceiling"), /已开启/);
   });
@@ -6208,6 +6289,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     };
 
     element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
+    await flushPendingTimeouts();
     await waitFor(() => {
       const lampNow = app.devices.find((d) => d.id === "light.living_ceiling");
       return lampNow?.kind.kind === "light" && !lampNow.kind.isOn;
@@ -6545,8 +6627,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     button.focus();
     pressHoldKey(button, " ", "keydown");
     element("#command-input").focus();
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.equal(calls, 0);
     assert.match(tile("light.living_ceiling"), /已开启/);
 
@@ -6554,8 +6635,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     again.focus();
     pressHoldKey(again, " ", "keydown");
     app.render();
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.equal(calls, 0);
     assert.match(tile("light.living_ceiling"), /已开启/);
   });
@@ -6572,8 +6652,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     button.focus();
     pressHoldKey(button, " ", "keydown");
     window.dispatchEvent(new Event("blur"));
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.equal(calls, 0);
     assert.match(tile("light.living_ceiling"), /已开启/);
   });
@@ -6589,8 +6668,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const restoreUnfocused = setWindowFocused(false);
     try {
       element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await setImmediate();
+      await flushPendingTimeouts();
     } finally {
       restoreUnfocused();
     }
@@ -6600,8 +6678,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const restoreFocused = setWindowFocused(true);
     try {
       element("#btn-all-off").dispatchEvent(new Event("pointerdown"));
-      await new Promise((resolve) => setTimeout(resolve, 700));
-      await setImmediate();
+      await flushPendingTimeouts();
     } finally {
       restoreFocused();
     }
@@ -6656,12 +6733,11 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
 
   it("cancels All Off when a pending schedule redraws the button", async () => {
     const ticks: Array<() => void> = [];
-    const realSetInterval = window.setInterval.bind(window);
     Object.defineProperty(window, "setInterval", {
       configurable: true,
-      value: (handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+      value: (handler: TimerHandler, timeout?: number) => {
         if (timeout === 1000 && typeof handler === "function") ticks.push(() => { handler(); });
-        return realSetInterval(handler, timeout, ...args);
+        return ticks.length;
       },
     });
     const app = startDemoApp();
@@ -6681,8 +6757,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     const replaced = element("#btn-all-off");
     assert.ok(replaced !== before);
     pressHoldKey(replaced, " ", "keyup");
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    await setImmediate();
+    await flushPendingTimeouts();
     assert.equal(calls, 0);
     assert.match(tile("light.living_ceiling"), /已开启/);
     assert.match(tile("light.study_desk"), /已开启/);

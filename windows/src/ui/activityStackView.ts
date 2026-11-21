@@ -1760,6 +1760,31 @@ async function pollAndDispatchWifi(
   }
 }
 
+export function nextBackgroundActivityCadenceMs(host: unknown): number | null {
+  if (!isFullPanelHost(host)) return null;
+  const center = getHostActivityCenter(host);
+  const automationRunning = isEventAutomationEnabled(host.settings);
+  const hasEnabledRules =
+    automationRunning && center.automationEngine.store.load().some((r) => r.isEnabled);
+  const baseSensorPolicy =
+    center.sensorPolicyOverride ??
+    loadSensorAlertPolicy(center.storage, center.lastSampledLockState ?? false);
+  const needsLockSampling =
+    typeof window !== "undefined" &&
+    Boolean(window.__TAURI_INTERNALS__?.invoke) &&
+    baseSensorPolicy.onlyWhenAway;
+  if (hasEnabledRules || needsLockSampling) {
+    return 10_000;
+  }
+  if (isLiveSnapshotReadyForTelemetry(host)) {
+    const guardPrefs = loadSafetyGuardPrefs(center.storage);
+    if (guardPrefs.enableSafetyAlerts || guardPrefs.enableWeeklyHealthReport) {
+      return 60_000;
+    }
+  }
+  return null;
+}
+
 export function tickSafetyHealthAndAutomation(
   host: unknown,
   nowMs = Date.now(),
@@ -2521,8 +2546,6 @@ export function renderClassicUnifiedUpperStack(host: MenuMijiaWindowsApp, nowMs 
     : `<button type="button" class="cc-inline-pill" data-activity-toggle-expand="1" data-upper-toggle-expand="1" aria-expanded="true">${host.escapeHtml(collapseLabel)}</button>`;
   return `<section class="cc-upper-stack cc-activity-stack is-expanded" data-upper-stack data-activity-stack data-activity-count="${cards.length}" data-activity-expanded="true"><div class="cc-activity-stack-header" style="display:flex;align-items:center;justify-content:space-between;padding:2px 6px 4px;font-size:12px;opacity:0.86;"><strong style="display:inline-flex;align-items:center;gap:4px;">${SF_ICONS.sparkles}<span>${host.escapeHtml(countTitle)}</span></strong><div style="display:inline-flex;gap:6px;">${collapseControl}${anyDismissible ? `<button type="button" class="cc-inline-pill" data-activity-clear-all="1" data-upper-clear-all="1">${host.escapeHtml(clearAllText)}</button>` : ""}</div></div><div class="cc-activity-stack-list" style="display:flex;flex-direction:column;gap:6px;">${cards.map((c) => c.html).join("")}</div></section>`;
 }
-
-export const renderUnifiedUpperStack = renderClassicUnifiedUpperStack;
 
 export function dismissActivityById(host: MenuMijiaWindowsApp, activityId: string): void {
   const center = getHostActivityCenter(host);

@@ -1,7 +1,7 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
 import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
-import { ScheduledCommandStore } from "../core/scheduledCommands.js";
+import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { isHostAttachedToActiveWindow, type OptimisticLockRootLike } from "../core/optimisticLock.js";
@@ -24,7 +24,7 @@ import {
 import { applyFreshInstallFeatureSwitches, isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
-import { cloudRefreshDue } from "../core/models.js";
+import { CLOUD_REFRESH_HIDDEN_MS, cloudRefreshDue } from "../core/models.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -37,6 +37,7 @@ import {
   dispatchSystemContextEvent,
   getHostActivityCenter,
   isFullPanelHost,
+  nextBackgroundActivityCadenceMs,
   notifyDisplayPowerChanged,
   notifyPanelWakeLifecycle,
   notifySystemSleep,
@@ -1005,10 +1006,16 @@ export class ResumeRecoveryController {
   }
 }
 
+const SUB_MINUTE_SCHEDULE_WINDOW_MS = 60_000;
+
 interface HostLifecycleState {
   disposed: boolean;
   timerIntervalHandle: unknown | null;
+  timerTimeoutHandle: unknown | null;
+  timerTimeoutDueAtMs: number | null;
+  lastTimerTickAtMs: number | null;
   timerScheduler: LifecycleScheduler | null;
+  syncTimerSchedule?: () => void;
   keyDisposers: Array<() => void>;
   recoveryController: ResumeRecoveryController | null;
   recoveryDisposers: Array<() => void>;
@@ -1023,6 +1030,9 @@ function ensureLifecycleState(host: object): HostLifecycleState {
     state = {
       disposed: false,
       timerIntervalHandle: null,
+      timerTimeoutHandle: null,
+      timerTimeoutDueAtMs: null,
+      lastTimerTickAtMs: null,
       timerScheduler: null,
       keyDisposers: [],
       recoveryController: null,
@@ -1045,17 +1055,28 @@ function clearRecoveryListeners(state: HostLifecycleState): void {
 }
 
 function clearTimerInterval(state: HostLifecycleState, host?: unknown): void {
-  const hadTimer = state.timerIntervalHandle !== null;
-  if (hadTimer && state.timerScheduler) {
+  const hadTimer = state.timerIntervalHandle !== null || state.timerTimeoutHandle !== null;
+  if (state.timerIntervalHandle !== null && state.timerScheduler) {
     state.timerScheduler.clearInterval(state.timerIntervalHandle);
   }
+  if (state.timerTimeoutHandle !== null && state.timerScheduler) {
+    state.timerScheduler.clearTimeout(state.timerTimeoutHandle);
+  }
   state.timerIntervalHandle = null;
+  state.timerTimeoutHandle = null;
+  state.timerTimeoutDueAtMs = null;
+  state.lastTimerTickAtMs = null;
   state.timerScheduler = null;
+  state.syncTimerSchedule = undefined;
   if (hadTimer && isFullPanelHost(host)) {
     const center = getHostActivityCenter(host);
     center.systemSignalBaseline = null;
     center.lastSystemPollAtMs = 0;
   }
+}
+
+export function syncTimerLoopSchedule(host: object): void {
+  hostLifecycles.get(host)?.syncTimerSchedule?.();
 }
 
 /** Idempotently cancels all tracked timers, debounce tasks, and global listeners for `host`. */
@@ -1078,7 +1099,9 @@ function listen(
 }
 
 export function syncAutomationLifecycle(host: object): void {
-  hostLifecycles.get(host)?.syncAutomationListeners?.();
+  const state = hostLifecycles.get(host);
+  state?.syncAutomationListeners?.();
+  state?.syncTimerSchedule?.();
 }
 
 export function bindLifecycleRecovery(
@@ -1110,6 +1133,7 @@ export function bindLifecycleRecovery(
     } else {
       notifyPanelWakeLifecycle(host);
     }
+    state.syncTimerSchedule?.();
     controller.trigger("visibility");
   };
   const onFocus = () => {
@@ -1117,6 +1141,7 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    state.syncTimerSchedule?.();
     controller.trigger("focus");
   };
   const onOnline = () => {
@@ -1139,6 +1164,7 @@ export function bindLifecycleRecovery(
       return;
     }
     notifyPanelWakeLifecycle(host);
+    state.syncTimerSchedule?.();
     controller.trigger("resume");
   };
   const onPageHide = () => {
@@ -1214,6 +1240,7 @@ export function bindGlobalKeys(
       return;
     }
     finishPanelComposition(host);
+    state.syncTimerSchedule?.();
   };
 
   const onKeyDown = (event: Event) => {
@@ -1322,6 +1349,97 @@ export function bindGlobalKeys(
   };
 }
 
+function nextScheduledCommandDelayMs(host: MenuMijiaWindowsApp, nowMs: number): number | null {
+  if (!isScheduledCommandsEnabled(host.settings)) {
+    return host.scheduledCommandStore?.hasWaitingTimers() ? 0 : null;
+  }
+  if (host.scheduledCommandStore?.hasFeaturePause()) {
+    return 0;
+  }
+  const items = Array.isArray(host.scheduledCommands) ? host.scheduledCommands : [];
+  let minDelayMs: number | null = null;
+  for (const item of items) {
+    const delayMs = Math.max(0, item.fireTimestampMs - nowMs);
+    if (minDelayMs === null || delayMs < minDelayMs) {
+      minDelayMs = delayMs;
+    }
+  }
+  return minDelayMs;
+}
+
+function needsFastTimerInterval(host: MenuMijiaWindowsApp, nowMs: number): boolean {
+  if (host.isPanelVisible()) return true;
+  if (!isUndoHoverPaused(host) && host.lastUndoAction && host.lastUndoAction.expiresAtMs > nowMs) {
+    return true;
+  }
+  const schedDelayMs = nextScheduledCommandDelayMs(host, nowMs);
+  return schedDelayMs !== null && schedDelayMs <= SUB_MINUTE_SCHEDULE_WINDOW_MS;
+}
+
+function canScheduleBackgroundCloudRefresh(host: ResumeRecoveryHost): boolean {
+  if (!host.isSyncingCloud) return canRefreshDevicesInBackground(host);
+  return canRefreshDevicesInBackground({ ...host, isSyncingCloud: false });
+}
+
+function nextHiddenWakeTargetMs(
+  host: MenuMijiaWindowsApp,
+  state: HostLifecycleState,
+  nowMs: number,
+  intervalMs: number,
+): number | null {
+  let targetMs: number | null = null;
+  const schedDelayMs = nextScheduledCommandDelayMs(host, nowMs);
+  if (schedDelayMs !== null) {
+    targetMs = nowMs + Math.max(1, schedDelayMs);
+  }
+  if (canScheduleBackgroundCloudRefresh(host)) {
+    const anchorMs =
+      host.lastCloudRefreshAt !== null && nowMs - host.lastCloudRefreshAt < CLOUD_REFRESH_HIDDEN_MS
+        ? host.lastCloudRefreshAt
+        : state.lastTimerTickAtMs !== null && nowMs - state.lastTimerTickAtMs < CLOUD_REFRESH_HIDDEN_MS
+          ? state.lastTimerTickAtMs
+          : host.isSyncingCloud
+            ? nowMs
+            : null;
+    const pollTargetMs =
+      anchorMs !== null ? anchorMs + CLOUD_REFRESH_HIDDEN_MS : nowMs + intervalMs;
+    if (targetMs === null || pollTargetMs < targetMs) {
+      targetMs = pollTargetMs;
+    }
+  }
+  const activityCadenceMs = nextBackgroundActivityCadenceMs(host);
+  if (activityCadenceMs !== null) {
+    const activityAnchorMs =
+      state.lastTimerTickAtMs !== null && nowMs - state.lastTimerTickAtMs < activityCadenceMs
+        ? state.lastTimerTickAtMs
+        : nowMs;
+    const activityTargetMs = activityAnchorMs + activityCadenceMs;
+    if (targetMs === null || activityTargetMs < targetMs) {
+      targetMs = activityTargetMs;
+    }
+  }
+  return targetMs;
+}
+
+function instrumentHostTimerProperties(host: object, state: HostLifecycleState): void {
+  for (const key of ["lastUndoAction", "scheduledCommands"] as const) {
+    const desc = Object.getOwnPropertyDescriptor(host, key);
+    if (!desc || !desc.configurable || !desc.writable || !("value" in desc)) continue;
+    let currentValue = desc.value;
+    Object.defineProperty(host, key, {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get() {
+        return currentValue;
+      },
+      set(next) {
+        currentValue = next;
+        state.syncTimerSchedule?.();
+      },
+    });
+  }
+}
+
 export function startTimerLoop(
   host: MenuMijiaWindowsApp,
   options: { readonly scheduler?: LifecycleScheduler; readonly intervalMs?: number } = {},
@@ -1329,11 +1447,14 @@ export function startTimerLoop(
   const state = ensureLifecycleState(host);
   clearTimerInterval(state, host);
   state.disposed = false;
+  instrumentHostTimerProperties(host, state);
 
   const ownerWin = host.root.ownerDocument?.defaultView ?? window;
   const scheduler = options.scheduler ?? createWindowLifecycleScheduler(ownerWin);
+  const intervalMs = Math.max(1, options.intervalMs ?? 1000);
   state.timerScheduler = scheduler;
-  state.timerIntervalHandle = scheduler.setInterval(() => {
+
+  const runTimerTick = (): void => {
     if (state.disposed || !isLifecycleHostAttached(host)) {
       disposeAppLifecycle(host);
       return;
@@ -1348,6 +1469,7 @@ export function startTimerLoop(
     }
 
     const now = scheduler.now();
+    state.lastTimerTickAtMs = now;
     // An expired undo row is a background change: defer its paint past a gesture. Scheduled
     // commands that just ran may render at once (CODING_STANDARDS.md section 16).
     let undoExpired = false;
@@ -1368,9 +1490,63 @@ export function startTimerLoop(
       canRefreshDevicesInBackground(host) &&
       cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible())
     ) {
-      void host.refreshDevices(true);
+      void Promise.resolve(host.refreshDevices(true)).finally(() => {
+        syncTimerSchedule();
+      });
     }
-  }, options.intervalMs ?? 1000);
+
+    syncTimerSchedule();
+  };
+
+  const onWakeTimeout = (): void => {
+    state.timerTimeoutHandle = null;
+    state.timerTimeoutDueAtMs = null;
+    runTimerTick();
+  };
+
+  const syncTimerSchedule = (): void => {
+    if (state.disposed || state.timerScheduler !== scheduler) return;
+    if (!isLifecycleHostAttached(host)) {
+      disposeAppLifecycle(host);
+      return;
+    }
+    const now = scheduler.now();
+    if (needsFastTimerInterval(host, now)) {
+      if (state.timerTimeoutHandle !== null) {
+        scheduler.clearTimeout(state.timerTimeoutHandle);
+        state.timerTimeoutHandle = null;
+        state.timerTimeoutDueAtMs = null;
+      }
+      if (state.timerIntervalHandle === null) {
+        state.timerIntervalHandle = scheduler.setInterval(runTimerTick, intervalMs);
+      }
+      return;
+    }
+    if (state.timerIntervalHandle !== null) {
+      scheduler.clearInterval(state.timerIntervalHandle);
+      state.timerIntervalHandle = null;
+    }
+    const targetMs = nextHiddenWakeTargetMs(host, state, now, intervalMs);
+    if (targetMs === null) {
+      if (state.timerTimeoutHandle !== null) {
+        scheduler.clearTimeout(state.timerTimeoutHandle);
+        state.timerTimeoutHandle = null;
+        state.timerTimeoutDueAtMs = null;
+      }
+      return;
+    }
+    if (state.timerTimeoutHandle !== null && state.timerTimeoutDueAtMs === targetMs) {
+      return;
+    }
+    if (state.timerTimeoutHandle !== null) {
+      scheduler.clearTimeout(state.timerTimeoutHandle);
+    }
+    state.timerTimeoutDueAtMs = targetMs;
+    state.timerTimeoutHandle = scheduler.setTimeout(onWakeTimeout, Math.max(1, targetMs - now));
+  };
+
+  state.syncTimerSchedule = syncTimerSchedule;
+  syncTimerSchedule();
 
   return () => {
     clearTimerInterval(state, host);

@@ -345,11 +345,11 @@ export function enqueueScheduledCommand(host: MenuMijiaWindowsApp, item: Schedul
   if (!item.intents?.length) return false;
   const activeScopes = resolveHostMiSelectionState(host).selection.enabledConnectionScopes;
   const cloned = structuredClone(item);
-  host.scheduledCommands.push(
+  const nextEntry =
     cloned.sourceScopes?.length || activeScopes.length === 0
       ? cloned
-      : { ...cloned, sourceScopes: [...activeScopes] },
-  );
+      : { ...cloned, sourceScopes: [...activeScopes] };
+  host.scheduledCommands = [...host.scheduledCommands, nextEntry];
   if (host.scheduledCommandStore.persist()) return true;
   host.scheduledCommands = host.scheduledCommands.filter((entry) => entry.id !== item.id);
   timerStorageFailure(host);
