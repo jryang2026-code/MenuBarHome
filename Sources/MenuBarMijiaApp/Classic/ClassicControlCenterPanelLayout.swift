@@ -942,27 +942,14 @@ extension ClassicControlCenterPanel {
                     }
                 }
                 // Measured outside the jiggle/drag effects: those transforms would otherwise change the
-                // reported frame every animation frame and re-layout the whole panel continuously.
                 .background {
                     GeometryReader { geo in
                         let f = geo.frame(in: .named(TileSpace.name))
-                        #if DEBUG
-                        let g = geo.frame(in: .global)
-                        #else
-                        let g: CGRect? = panelFoldRecord != nil ? geo.frame(in: .global) : nil
-                        #endif
                         Color.clear
                             .preference(
                                 key: TileFramesKey.self,
                                 value: allowsLayoutEditing ? [dev.id: CGRect(x: f.minX.rounded(), y: f.minY.rounded(), width: f.width.rounded(), height: f.height.rounded())] : [:]
                             )
-                            #if DEBUG
-                            .preference(key: CardGlobalTopKey.self, value: [dev.id: g.minY])
-                            .onAppear { LayoutUIState.shared.cardGlobalFrames[dev.id] = g }
-                            .onChange(of: g) { _, newFrame in LayoutUIState.shared.cardGlobalFrames[dev.id] = newFrame }
-                            #else
-                            .preference(key: CardGlobalTopKey.self, value: g.map { [dev.id: $0.minY] } ?? [:])
-                            #endif
                     }
                 }
                 .layoutValue(key: ClassicTileSpanKey.self, value: span)

@@ -173,11 +173,11 @@ _Avoid_: Online device（在线设备）
 _Avoid_: Mini card（迷你卡片）、Widget（小组件）
 
 **ActivityStackView（通知中心）**：
-面板头部折叠展示（最多露 3 层）的系统提醒、主动守护与门铃记录（macOS `ActivityStackView` / `ClassicActivityStackView`；Windows `activityStackView.ts:renderActivityStack`）；切换后端即清空本机告警记录。
+面板头部折叠展示（最多露 3 层）的系统提醒、主动守护与门铃记录（macOS `ActivityStackView`；Windows `activityStackView.ts:renderActivityStack`）；切换后端即清空本机告警记录。
 _Avoid_: Reminder cycle（提醒轮播）、Toast（瞬时提示）
 
 **TransientStackView（瞬时横幅栈）**：
-面板底部共用的撤销与 Toast 浮层（macOS `TransientStackView` / `ClassicTransientStackView` 与 `TransientStackExpansion`），与通知中心共享 `StackedCardGeometry`，悬停展开并暂停撤销倒计时。
+面板底部共用的撤销与 Toast 浮层（macOS `TransientStackView` 与 `TransientStackExpansion`），与通知中心共享 `StackedCardGeometry`，悬停展开并暂停撤销倒计时。
 _Avoid_: Activity feed（持久提醒集合）、Single banner（互斥横幅）
 
 **SafetyAlert（主动守护提醒）**：

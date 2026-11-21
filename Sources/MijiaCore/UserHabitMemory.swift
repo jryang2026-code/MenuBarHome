@@ -264,7 +264,6 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
 
     private static let cacheLock = NSLock()
     private nonisolated(unsafe) static var decodedCache: [ObjectIdentifier: CachedMemoryEntry] = [:]
-    nonisolated(unsafe) static var decodeCountForTesting: Int = 0
 
     public private(set) var entries: [HabitEntry] = []
     public private(set) var phrases: [PhraseMemory] = []
@@ -301,7 +300,6 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             return UserHabitMemory()
         }
         cacheLock.withLock {
-            decodeCountForTesting += 1
             decodedCache[key] = CachedMemoryEntry(rawData: data, decodedMemory: decoded)
         }
         return decoded

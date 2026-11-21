@@ -49,7 +49,9 @@ enum PanelActivityCard {
     }
 
     private static func timeView(_ date: Date) -> some View {
-        ActivityTimeText(date: date)
+        Text(date, style: .relative)
+            .font(.system(size: DesignTokens.TypeSize.micro))
+            .foregroundStyle(.secondary)
     }
 
     static func label(_ activity: PanelActivity, devices: [SmartDevice]) -> String {
@@ -100,35 +102,35 @@ extension ControlCenterPanel {
     }
 }
 
-// MARK: - Time text
-
-/// Tests pin the relative time (#176-era snapshot rot). `Text(date, style: .relative)` reads the real
-/// clock, so a fixed past date rendered "2 years 11 months" one month and "3 years" the next, and the
-/// activity baselines went stale without any code change. Production leaves this nil.
-private struct ActivityTimestampOverrideKey: EnvironmentKey {
-    static let defaultValue: String? = nil
-}
-
-extension EnvironmentValues {
-    var activityTimestampOverride: String? {
-        get { self[ActivityTimestampOverrideKey.self] }
-        set { self[ActivityTimestampOverrideKey.self] = newValue }
-    }
-}
-
-private struct ActivityTimeText: View {
-    let date: Date
-    @Environment(\.activityTimestampOverride) private var override
-
-    var body: some View {
-        Group {
-            if let override {
-                Text(override)
-            } else {
-                Text(date, style: .relative)
+extension ClassicControlCenterPanel {
+    var activityStack: some View {
+        ActivityStackView(
+            activities: store.panelActivities,
+            missedTimers: store.missedScheduledCommands,
+            store: store,
+            isExpanded: $activitiesExpanded,
+            expandedViewportHeight: activityViewportHeight,
+            theme: .classic,
+            dismiss: store.dismissActivity,
+            clear: store.clearDismissibleActivities,
+            runMissedTimer: { id in Task { await store.runMissedScheduledCommand(id: id) } },
+            confirmMissedTimer: { id in Task { await store.confirmScheduledCommandSource(id: id) } },
+            dismissMissedTimer: { id in store.dismissMissedScheduledCommand(id: id) },
+            label: { PanelActivityCard.label($0, devices: store.devices) }
+        ) { activity in
+            PanelActivityCard.content(activity, store: store, theme: .classic) { kind in
+                switch kind {
+                case .miBlocked, .miExpiringSoon: miSessionExpiryBanner
+                case .haPlaintext(let prompt): haPlaintextConsentBanner(prompt)
+                case .localNetworkBlocked(let blocked):
+                    LocalNetworkPermissionBannerView(
+                        blockedFeatures: blocked,
+                        store: store,
+                        theme: .classic
+                    )
+                case .haAddress(let instance): haAddressSuggestionBanner(instance)
+                }
             }
         }
-        .font(.system(size: DesignTokens.TypeSize.micro))
-        .foregroundStyle(.secondary)
     }
 }

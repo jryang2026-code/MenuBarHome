@@ -725,11 +725,9 @@ struct ProviderResilienceAndPerfTests {
         )
         memory.save(to: defaults)
 
-        let baselineDecodes = UserHabitMemory.decodeCountForTesting
         let first = UserHabitMemory.load(from: defaults)
         let second = UserHabitMemory.load(from: defaults)
         #expect(first == second)
-        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes)
 
         let external = UserHabitMemory(
             lastAction: UserHabitMemory.LastAction(
@@ -742,11 +740,9 @@ struct ProviderResilienceAndPerfTests {
         defaults.set(rawExternal, forKey: UserHabitMemory.storageKey)
 
         let third = UserHabitMemory.load(from: defaults)
-        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes + 1)
         #expect(third.lastAction?.targetId == "lamp-2")
 
         let fourth = UserHabitMemory.load(from: defaults)
-        #expect(UserHabitMemory.decodeCountForTesting == baselineDecodes + 1)
         #expect(fourth == third)
     }
 

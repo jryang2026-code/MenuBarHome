@@ -88,24 +88,6 @@ final class UnsupportedDeviceScanner {
         }
     }
 
-    #if DEBUG
-    /// Seeds scan findings for snapshot and unit tests while recording `store`'s context so
-    /// `AboutSettingsTab.onAppear` keeps the seeded list until the context actually changes.
-    func seedForTesting(
-        devices: [UnsupportedDevice],
-        scannedAt: Date? = nil,
-        errorMessage: String? = nil,
-        for store: HomeStore
-    ) {
-        scanGeneration &+= 1
-        self.devices = devices
-        self.errorMessage = errorMessage
-        self.lastScannedAt = scannedAt
-        self.lastScanContext = ScanContext(store: store)
-        self.isScanning = false
-    }
-    #endif
-
     func scan(store: HomeStore) async {
         invalidateIfContextChanged(for: store)
         guard !isScanning else { return }

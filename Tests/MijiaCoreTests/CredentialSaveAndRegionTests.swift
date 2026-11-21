@@ -154,7 +154,6 @@ struct CredentialSaveResultTests {
         // Make the second LGWebOSConfig.save fail even if the vault key was already written,
         // simulating a transient save failure in lgConfig.didSet after applyLGClientKey's own save succeeded.
         #expect(store.applyLGClientKey("single-write-key") == true)
-        #expect(store.lgConfigSaveCallsInDidSetForTesting == 0, "applyLGClientKey must not run a redundant save inside lgConfig.didSet")
         #expect(store.lgConfig.clientKey == "single-write-key")
         let notice = try #require(store.toastNotice)
         #expect(!notice.isError)

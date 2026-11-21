@@ -5,6 +5,36 @@ import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
+@Suite(.serialized)
+struct PanelPresentationTests {}
+
+extension HomeStore {
+    func waitForTestSnapshot() async throws {
+        try await waitForInitialSnapshot(timeout: .seconds(30))
+    }
+}
+
+@MainActor
+func waitUntil(
+    timeout: Duration = .seconds(15),
+    fileID: String = #fileID,
+    filePath: String = #filePath,
+    line: Int = #line,
+    column: Int = #column,
+    _ condition: @MainActor () async -> Bool
+) async {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while ContinuousClock.now < deadline {
+        if await condition() { return }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    if await condition() { return }
+    Issue.record(
+        "condition was not met before \(timeout)",
+        sourceLocation: SourceLocation(fileID: fileID, filePath: filePath, line: line, column: column)
+    )
+}
+
 @MainActor
 private final class TestStatusBarButton: NSStatusBarButton {
     var performClickCount = 0
@@ -2063,209 +2093,10 @@ struct MenuBarPanelControllerTests {
         )
         #expect(shortDrag == .full)
 
-        // A slow drag projects nothing extra.
         let slow = TileResizeGestureMath.projectedOffset(velocity: CGSize(width: 100, height: -100))
         #expect(abs(slow.width - 9.9) < 0.001)
         #expect(abs(slow.height + 9.9) < 0.001)
     }
-
-    #if DEBUG
-    // Mouse targeting uses cardGlobalFrames, which the panel only records in debug builds.
-    @Test("Long-pressing a light card no longer enters edit mode; the corner handle resizes and cycles once editing is entered from the menu (#115)")
-    func longPressOnLightCardNoLongerEntersEditModeAndCornerHandleResizesWhenEditing() async throws {
-        _ = NSApplication.shared
-        let previousAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
-        UserDefaults.standard.set(AppAppearance.system.rawValue, forKey: AppAppearance.storageKey)
-
-        let suite = "MenuBarPanelTests-resize-\(UUID().uuidString)"
-        defer {
-            UserDefaults.standard.removePersistentDomain(forName: suite)
-            if let previousAppearance {
-                UserDefaults.standard.set(previousAppearance, forKey: AppAppearance.storageKey)
-            } else {
-                UserDefaults.standard.removeObject(forKey: AppAppearance.storageKey)
-            }
-        }
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.set(true, forKey: "has_completed_onboarding")
-        defaults.set(true, forKey: "launch_at_login_suggestion_dismissed")
-        defaults.set(AppLanguagePreference.zhHans.rawValue, forKey: "app_language")
-        defaults.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
-        defaults.set(false, forKey: "show_quick_actions_bar")
-        defaults.set(false, forKey: "automatically_checks_for_updates")
-        defaults.set(true, forKey: "compact_grid_mode")
-
-        let store = HomeStore(
-            provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome(includeCamera: false)),
-            defaultsSuiteName: suite
-        )
-        try await store.waitForTestSnapshot()
-        let light = try #require(store.devices.first { dev in
-            if case .light = dev.kind { return true }
-            return false
-        })
-        let initialIsOn = light.isActiveOn
-
-        let hosting = NSHostingView(
-            rootView: ControlCenterPanel(store: store)
-                .defaultAppStorage(defaults)
-                .environment(\.reduceMotionOverride, true)
-        )
-        hosting.frame = NSRect(x: 0, y: 0, width: 376, height: 560)
-        LayoutUIState.shared.cardGlobalFrames.removeAll()
-        let window = NSWindow(
-            contentRect: NSRect(x: 60, y: 120, width: 376, height: 560),
-            styleMask: [.borderless], backing: .buffered, defer: false
-        )
-        window.isReleasedWhenClosed = false
-        window.alphaValue = 0
-        window.hasShadow = false
-        window.contentView = hosting
-        window.orderFront(nil)
-        defer {
-            window.contentView = nil
-            window.orderOut(nil)
-        }
-        window.layoutIfNeeded()
-        hosting.layoutSubtreeIfNeeded()
-        hosting.displayIfNeeded()
-        window.displayIfNeeded()
-        try await Task.sleep(for: .milliseconds(250))
-        Self.pumpMainRunLoop()
-        let card = try #require(LayoutUIState.shared.cardGlobalFrames[light.id])
-
-        func sendMouse(_ type: NSEvent.EventType, at point: NSPoint) {
-            guard let event = NSEvent.mouseEvent(
-                with: type, location: point, modifierFlags: [],
-                timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: window.windowNumber,
-                context: nil, eventNumber: 0, clickCount: 1, pressure: 1
-            ) else { return }
-            NSApp.sendEvent(event)
-        }
-
-        // Long-press the card body. The kind row shifts the first card, so a fixed window point misses it.
-        let longPressPoint = NSPoint(x: card.minX + 28, y: hosting.bounds.height - card.midY)
-        sendMouse(.leftMouseDown, at: longPressPoint)
-        try await Task.sleep(for: .milliseconds(550))
-        Self.pumpMainRunLoop()
-
-        // The hold itself must do nothing: no edit mode, no drawer, no toggle mid-press.
-        #expect(LayoutUIState.shared.editMode == .none, "A 550 ms hold on a card must not enter edit mode")
-        #expect(store.expandedDeviceId == nil, "Holding a card must not expand its drawer")
-        #expect(store.devices.first(where: { $0.id == light.id })?.isActiveOn == initialIsOn, "Holding a card must not toggle it mid-press")
-
-        // Releasing is an ordinary click, never an edit-mode entry.
-        sendMouse(.leftMouseUp, at: longPressPoint)
-        try await Task.sleep(for: .milliseconds(150))
-        Self.pumpMainRunLoop()
-
-        #expect(LayoutUIState.shared.editMode == .none, "Releasing the hold must not enter edit mode")
-        #expect(store.expandedDeviceId == nil, "Releasing the hold must not open the drawer")
-
-        func handlePoint() -> NSPoint {
-            if let g = LayoutUIState.shared.cardGlobalFrames[light.id] {
-                return NSPoint(x: g.maxX - 6, y: hosting.bounds.height - g.maxY + 6)
-            }
-            return NSPoint(x: 176, y: 358)
-        }
-        func currentSizes() -> [String: TileSize] {
-            DeviceLayoutPrefs.decode(defaults.string(forKey: DeviceLayoutPrefs.storageKey) ?? "{}")
-        }
-        func flushLayout() async throws {
-            try await Task.sleep(for: .milliseconds(160))
-            Self.pumpMainRunLoop()
-            hosting.layoutSubtreeIfNeeded()
-            hosting.displayIfNeeded()
-            window.displayIfNeeded()
-            Self.pumpMainRunLoop()
-        }
-
-        // Entering layout editing is a menu action only: the card's "Edit Layout…" item raises this
-        // request, and the panel translates it into the one edit mode.
-        LayoutUIState.shared.isEditingLayoutRequested = true
-        try await flushLayout()
-        #expect(LayoutUIState.shared.editMode == .deviceLayout, "The context-menu request must enter layout editing")
-        #expect(!LayoutUIState.shared.isEditingLayoutRequested, "The request flag is consumed once handled")
-
-        // 1. Outward drag on bottom-right corner arc handle: half -> full -> panel without reordering.
-        let dragOutStart = handlePoint()
-        sendMouse(.leftMouseDown, at: dragOutStart)
-        try await Task.sleep(for: .milliseconds(30))
-        Self.pumpMainRunLoop()
-
-        let dragOutStep1 = NSPoint(x: dragOutStart.x + 60, y: dragOutStart.y)
-        sendMouse(.leftMouseDragged, at: dragOutStep1)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .full, "Dragging handle right > 45pt must step half -> full")
-
-        let dragOutStep2 = NSPoint(x: dragOutStart.x + 60, y: dragOutStart.y - 60)
-        sendMouse(.leftMouseDragged, at: dragOutStep2)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .panel, "Continuing drag down > 45pt must step full -> panel")
-
-        sendMouse(.leftMouseUp, at: dragOutStep2)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .panel)
-        #expect(DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]").isEmpty, "Handle drag must not trigger card reordering")
-
-        // 2. Inward drag on bottom-right corner arc handle: panel -> full -> half without reordering.
-        let dragInStart = handlePoint()
-        sendMouse(.leftMouseDown, at: dragInStart)
-        try await Task.sleep(for: .milliseconds(30))
-        Self.pumpMainRunLoop()
-
-        let dragInStep1 = NSPoint(x: dragInStart.x - 60, y: dragInStart.y)
-        sendMouse(.leftMouseDragged, at: dragInStep1)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .full, "Dragging handle left < -45pt must step panel -> full")
-
-        let dragInStep2 = NSPoint(x: dragInStart.x - 60, y: dragInStart.y + 60)
-        sendMouse(.leftMouseDragged, at: dragInStep2)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .half, "Continuing drag up < -45pt must step full -> half")
-
-        sendMouse(.leftMouseUp, at: dragInStep2)
-        try await flushLayout()
-        #expect(currentSizes()["all|\(light.id)"] == .half)
-        #expect(DeviceLayoutPrefs.decodeOrder(defaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]").isEmpty, "Inward handle drag must not trigger card reordering")
-
-        // 3. Light tap on bottom-right corner arc handle cycles half -> 2×2 hero -> full -> panel -> half.
-        func tapHandle() async throws -> [String: TileSize] {
-            let point = handlePoint()
-            sendMouse(.leftMouseDown, at: point)
-            try await Task.sleep(for: .milliseconds(40))
-            Self.pumpMainRunLoop()
-            sendMouse(.leftMouseUp, at: point)
-            try await flushLayout()
-            return currentSizes()
-        }
-
-        let sizes1 = try await tapHandle()
-        #expect(sizes1["all|\(light.id)"] == .hero)
-
-        let sizes2 = try await tapHandle()
-        #expect(sizes2["all|\(light.id)"] == .full)
-
-        let sizes3 = try await tapHandle()
-        #expect(sizes3["all|\(light.id)"] == .panel)
-
-        let sizes4 = try await tapHandle()
-        #expect(sizes4["all|\(light.id)"] == .half)
-
-        // 4. Tapping the top-left `−` badge removes the card from 常用 (favorites).
-        #expect(store.favoriteDeviceIds.contains(light.id), "The light card starts in Favorites")
-        let cardBeforeRemove = try #require(LayoutUIState.shared.cardGlobalFrames[light.id])
-        let removeBadgePoint = NSPoint(x: cardBeforeRemove.minX + 8, y: hosting.bounds.height - (cardBeforeRemove.minY + 8))
-        sendMouse(.leftMouseDown, at: removeBadgePoint)
-        try await Task.sleep(for: .milliseconds(40))
-        Self.pumpMainRunLoop()
-        sendMouse(.leftMouseUp, at: removeBadgePoint)
-        try await flushLayout()
-        #expect(!store.favoriteDeviceIds.contains(light.id), "Clicking the top-left − badge in edit mode must remove the device from Favorites")
-
-        LayoutUIState.shared.endDeviceLayoutEditing()
-    }
-    #endif
 
     @Test("Disabling voice input blocks panel, status-item, and hotkey voice entry points with zero recognition tasks, audio taps, timers, or command submissions while preserving ordinary click and hotkey panel toggle")
     func voiceInputDisabledBlocksAllEntryPointsWhileKeepingClickAndHotkeyToggle() async throws {

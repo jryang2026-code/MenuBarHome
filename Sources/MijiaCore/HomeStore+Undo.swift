@@ -742,7 +742,8 @@ extension HomeStore {
         for deviceId in refusedDeviceIds {
             guard let write = writes[deviceId] else { continue }
             let hasLock = if write.fields.isEmpty {
-                optimisticLockUntil[deviceId] != nil
+                optimisticFieldLocks.keys.contains { $0.deviceId == deviceId }
+                    || optimisticFacetLocks.keys.contains { $0.hasPrefix("\(deviceId).facet.") }
             } else {
                 write.fields.contains { optimisticFieldLocks[.field(deviceId, $0)] != nil }
             }

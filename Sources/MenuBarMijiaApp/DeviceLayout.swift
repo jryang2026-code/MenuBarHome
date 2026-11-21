@@ -631,15 +631,7 @@ final class LayoutUIState {
     var renamingDeviceId: String?
     /// Non-nil while renaming that room (local display name only).
     var renamingRoomId: String?
-    /// Raised from a card's context menu, so entering edit mode is a discovered menu action and
-    /// never a long press on a card (#41).
     var isEditingLayoutRequested = false
-    /// Latest card frames in window `.global` coordinates; lets UI tests locate the resize
-    /// handle after dynamic relayouts without hard-coding pixel positions.
-    var cardGlobalFrames: [String: CGRect] = [:]
-    /// The one edit mode the panel is in (#146 room-order redesign). Replaces the two booleans
-    /// `isEditingLayout` / `isEditingRooms` that every entry point had to clear by hand. Lives here
-    /// rather than in the panel's `@State` because the app-wide key monitor has to read it.
     var editMode: PanelEditMode = .none
     /// The reorder session's in-memory order and aliases; `nil` outside `roomOrder`. Dragging writes
     /// only here, so `@AppStorage` never republishes mid-drag.

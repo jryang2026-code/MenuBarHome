@@ -149,46 +149,6 @@ extension HomeStore {
         return String(key[range.upperBound...])
     }
 
-    func continuousInstant(from date: Date) -> ContinuousClock.Instant {
-        let delta = date.timeIntervalSince(optimisticClockAnchorDate)
-        return optimisticClockAnchorInstant.advanced(by: .nanoseconds(Int64((delta * 1_000_000_000).rounded())))
-    }
-
-    func date(from instant: ContinuousClock.Instant) -> Date {
-        let delta = optimisticClockAnchorInstant.duration(to: instant).optimisticTimeInterval
-        return optimisticClockAnchorDate.addingTimeInterval(delta)
-    }
-
-    func optimisticLockMaxDatesByDevice() -> [String: Date] {
-        var result: [String: Date] = [:]
-        for (key, entry) in optimisticFieldLocks {
-            if let existing = result[key.deviceId], existing >= entry.until { continue }
-            result[key.deviceId] = entry.until
-        }
-        for (facetKey, entry) in optimisticFacetLocks {
-            guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
-            if let existing = result[deviceId], existing >= entry.until { continue }
-            result[deviceId] = entry.until
-        }
-        return result
-    }
-
-    func optimisticLockMaxInstantsByDevice() -> [String: ContinuousClock.Instant] {
-        var result: [String: ContinuousClock.Instant] = [:]
-        for (key, entry) in optimisticFieldLocks {
-            let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
-            if let existing = result[key.deviceId], existing >= instant { continue }
-            result[key.deviceId] = instant
-        }
-        for (facetKey, entry) in optimisticFacetLocks {
-            guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
-            let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
-            if let existing = result[deviceId], existing >= instant { continue }
-            result[deviceId] = instant
-        }
-        return result
-    }
-
     func clearOptimisticLockEntries(for deviceId: String) {
         for key in optimisticFieldLocks.keys where key.deviceId == deviceId {
             optimisticFieldLocks.removeValue(forKey: key)
@@ -224,34 +184,6 @@ extension HomeStore {
         let prefix = "\(deviceId).facet."
         for key in optimisticFacetRevisions.keys where key.hasPrefix(prefix) {
             optimisticFacetRevisions.removeValue(forKey: key)
-        }
-    }
-
-    func setOptimisticLockExpiration(
-        _ until: Date,
-        untilInstant: ContinuousClock.Instant? = nil,
-        for deviceId: String
-    ) {
-        let instant = hasCustomOptimisticNow ? nil : untilInstant
-        for key in optimisticFieldLocks.keys where key.deviceId == deviceId {
-            optimisticFieldLocks[key]?.until = until
-            optimisticFieldLocks[key]?.untilInstant = instant
-        }
-        let prefix = "\(deviceId).facet."
-        for key in optimisticFacetLocks.keys where key.hasPrefix(prefix) {
-            optimisticFacetLocks[key]?.until = until
-            optimisticFacetLocks[key]?.untilInstant = instant
-        }
-        if var session = manualWriteSessions[deviceId] {
-            for field in Array(session.baseFieldLocks.keys) {
-                session.baseFieldLocks[field]?.until = until
-                session.baseFieldLocks[field]?.untilInstant = instant
-            }
-            for idx in session.patches.indices where session.patches[idx].lockEntry != nil {
-                session.patches[idx].lockEntry?.until = until
-                session.patches[idx].lockEntry?.untilInstant = instant
-            }
-            manualWriteSessions[deviceId] = session
         }
     }
 

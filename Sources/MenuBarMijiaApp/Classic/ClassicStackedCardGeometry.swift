@@ -4,8 +4,6 @@ import SwiftUI
 enum ClassicStackedCardGeometry {
     static let maxVisible = 3
     static let peekReserve: CGFloat = 15
-    static let dismissDistanceFraction: CGFloat = 0.4
-    static let dismissVelocity: CGFloat = 800
 
     static func transform(depth: Int) -> (scale: CGFloat, offsetY: CGFloat, opacity: Double) {
         switch min(max(depth, 0), maxVisible - 1) {
@@ -13,16 +11,6 @@ enum ClassicStackedCardGeometry {
         case 1: (0.94, 8, 0.78)
         default: (0.88, 15, 0.55)
         }
-    }
-
-    static func shouldDismiss(translation: CGFloat, predictedTranslation: CGFloat, velocity: CGFloat, width: CGFloat) -> Bool {
-        abs(translation) > width * dismissDistanceFraction
-            || abs(predictedTranslation) > width * dismissDistanceFraction
-            || abs(velocity) > dismissVelocity
-    }
-    static func rubberBand(_ translation: CGFloat, width: CGFloat) -> CGFloat {
-        guard width > 0 else { return 0 }
-        return translation * width * 0.55 / (width + 0.55 * abs(translation))
     }
 }
 

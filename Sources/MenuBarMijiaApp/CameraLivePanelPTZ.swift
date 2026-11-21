@@ -391,49 +391,6 @@ extension CameraLivePanelController {
         finishPTZMove()
     }
 
-    /// Snapshot/test seam: puts the panel into a PTZ state without a bridge, a stream or any
-    /// network request. Production only reaches these states through `startLiveVideo`.
-    func configurePTZPreview(
-        store: HomeStore? = nil,
-        deviceId: String?,
-        binding: CameraPTZBinding?,
-        stream: CameraStreamSource?,
-        notice: String?,
-        ready: Bool,
-        client: (any CameraPTZControlling)? = nil,
-        hasFrame: Bool = true,
-        isLoading: Bool = false,
-        errorText: String? = nil
-    ) {
-        ptzBeginAttemptID = nil
-        ptzBeginTask = nil
-        ptzHeartbeatTask?.cancel()
-        ptzHeartbeatTask = nil
-        ptzNoticeTask?.cancel()
-        ptzNoticeTask = nil
-        ptzQueue.reset()
-        ptzDragID = nil
-        ptzToken = nil
-        ptzDeviceId = nil
-        ptzUnresolvedStops = []
-        ptzStopRetryHold = nil
-        ptzManualStopBatchDidFinish = nil
-        ptzManualStopInFlight = false
-        ptzClient = client
-        if let store {
-            self.store = store
-        }
-        activeDeviceId = deviceId
-        streamSource = stream
-        hasLiveVideoFrame = hasFrame && stream != nil
-        setViewportPreview(isLoading: isLoading, errorText: errorText)
-        ptzBinding = binding
-        ptzClientReady = ready
-        ptzNotice = notice
-        ptzLifecycleID = UUID()
-        demoTimestampOverride = deviceId == nil ? nil : Date(timeIntervalSince1970: 1_700_000_000)
-    }
-
     func clearPTZ() {
         finishPTZMove(notify: false)
         ptzLifecycleID = UUID()

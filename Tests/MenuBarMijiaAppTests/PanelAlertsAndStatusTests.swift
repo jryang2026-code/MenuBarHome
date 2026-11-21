@@ -178,12 +178,13 @@ struct PanelAlertsAndStatusTests {
         ]
 
         let compactCap: CGFloat = 230
-        let heavyStack = ClassicActivityStackView(
+        let heavyStack = ActivityStackView(
             activities: pinnedAlerts,
             missedTimers: missedTimers,
             store: store,
             isExpanded: .constant(false),
             expandedViewportHeight: compactCap,
+            theme: .classic,
             dismiss: { _ in },
             clear: {},
             label: { _ in "Alert" },
@@ -200,12 +201,13 @@ struct PanelAlertsAndStatusTests {
         heavyHost.layoutSubtreeIfNeeded()
         #expect(heavyHost.fittingSize.height == compactCap)
 
-        let singleStack = ClassicActivityStackView(
+        let singleStack = ActivityStackView(
             activities: [pinnedAlerts[0]],
             missedTimers: [],
             store: store,
             isExpanded: .constant(false),
             expandedViewportHeight: compactCap,
+            theme: .classic,
             dismiss: { _ in },
             clear: {},
             label: { _ in "Alert" },

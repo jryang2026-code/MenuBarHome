@@ -954,21 +954,14 @@ public final class HomeStore {
             )
             syncLocalNetworkBlockedNoticeDismissal(from: previousEffective)
             guard !suppressNextLGConfigDidSetSave else { return }
-            lgConfigSaveCallsInDidSetForTesting += 1
             lgConfigSaveFailed = !lgConfig.save(to: userDefaults, vault: credentialVault)
             if lgConfigSaveFailed {
                 showToast(Self.lgKeychainSaveErrorMessage, isError: true)
             }
         }
     }
-    /// Set by `lgConfig.didSet` when the Keychain refused the pairing key (#7); the pairing callback
-    /// reads it to decide between "Paired" and an error, instead of claiming a pairing that was not stored.
     @ObservationIgnored var lgConfigSaveFailed = false
-    /// Prevents `lgConfig.didSet` from re-saving and potentially flipping `lgConfigSaveFailed` when the
-    /// caller (`applyLGClientKey`, `updateLGWebOSConfig`, `resetLGWebOSTrustAndPair`) already persisted `lgConfig`.
     @ObservationIgnored var suppressNextLGConfigDidSetSave = false
-    @ObservationIgnored var lgConfigSaveCallsInDidSetForTesting = 0
-    /// True while `resetLGWebOSTrustAndPair` runs; pairing-key callbacks from LG clients are dropped meanwhile (#262).
     @ObservationIgnored var lgTrustResetInFlight = false
     /// Suspends `resetLGWebOSTrustAndPair` after the trust store was cleared and before the result is
     /// committed, so tests can change LG settings exactly inside that window (#262).
@@ -1108,64 +1101,6 @@ public final class HomeStore {
     }
     @ObservationIgnored let optimisticClockAnchorInstant = ContinuousClock.now
     @ObservationIgnored let optimisticClockAnchorDate = Date()
-
-    /// Legacy device-level view backed by per-field and per-facet optimistic lock entries so
-    /// existing diagnostics and test seams keep working without freezing unrelated fields.
-    var optimisticLockUntil: [String: ContinuousClock.Instant] {
-        get {
-            var maxInstantByDevice: [String: ContinuousClock.Instant] = [:]
-            for (key, entry) in optimisticFieldLocks {
-                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
-                if let current = maxInstantByDevice[key.deviceId], current >= instant { continue }
-                maxInstantByDevice[key.deviceId] = instant
-            }
-            for (facetKey, entry) in optimisticFacetLocks {
-                guard let deviceId = Self.deviceId(fromFacetWriteKey: facetKey) else { continue }
-                let instant = entry.untilInstant ?? continuousInstant(from: entry.until)
-                if let current = maxInstantByDevice[deviceId], current >= instant { continue }
-                maxInstantByDevice[deviceId] = instant
-            }
-            return maxInstantByDevice
-        }
-        set {
-            let currentDates = optimisticLockMaxDatesByDevice()
-            let currentInstants = optimisticLockMaxInstantsByDevice()
-            for (deviceId, oldMaxDate) in currentDates {
-                guard let updatedInstant = newValue[deviceId] else {
-                    clearOptimisticLockEntries(for: deviceId)
-                    continue
-                }
-                if let oldMaxInstant = currentInstants[deviceId], oldMaxInstant == updatedInstant {
-                    continue
-                }
-                let updatedDate = date(from: updatedInstant)
-                if currentInstants[deviceId] == nil && abs(updatedDate.timeIntervalSince(oldMaxDate)) <= 1e-6 {
-                    continue
-                }
-                setOptimisticLockExpiration(updatedDate, untilInstant: updatedInstant, for: deviceId)
-            }
-            for (deviceId, instant) in newValue where currentDates[deviceId] == nil {
-                let rev = optimisticLockRevision[deviceId] ?? 1
-                let fields: Set<OptimisticField>
-                if let kind = devices.first(where: { $0.id == deviceId })?.kind {
-                    let defaults = OptimisticField.primaryPowerFields(for: kind)
-                    fields = defaults.isEmpty ? [.power] : defaults
-                } else {
-                    fields = [.power]
-                }
-                let until = date(from: instant)
-                for field in fields {
-                    optimisticFieldLocks[.field(deviceId, field)] = OptimisticLockEntry(
-                        until: until,
-                        untilInstant: hasCustomOptimisticNow ? nil : instant,
-                        revision: rev
-                    )
-                }
-            }
-        }
-    }
-    /// Position the card showed when the current cover travel started. A stopped report at that
-    /// position is the pre-command snapshot; any other stopped position is the motor's real stop.
     var coverCommandOrigins: [String: Int] = [:]
     /// The cover position hazard prompt the user answered, per debounce slot: the confirmation kind
     /// that was approved and the slot token carrying it. A direction answer and an unknown-start
