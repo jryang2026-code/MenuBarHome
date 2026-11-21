@@ -32,6 +32,7 @@ public enum MiotFallbackSpec {
     /// Bytes of the bundled table, so a test can prove it still matches the Windows file.
     static func bundledData() -> Data? {
         var urls: [URL] = []
+        #if !os(macOS)
         if let url = Bundle.module.url(forResource: "fallbackSpecs", withExtension: "json", subdirectory: "Resources") {
             urls.append(url)
         }
@@ -42,6 +43,7 @@ public enum MiotFallbackSpec {
             urls.append(root.appendingPathComponent("Resources/fallbackSpecs.json"))
             urls.append(root.appendingPathComponent("fallbackSpecs.json"))
         }
+        #endif
         for base in L10n.translationSearchBases {
             urls.append(base.appendingPathComponent("Resources/fallbackSpecs.json"))
             urls.append(base.appendingPathComponent("fallbackSpecs.json"))
