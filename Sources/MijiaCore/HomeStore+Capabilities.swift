@@ -156,8 +156,8 @@ extension HomeStore {
     /// still need evaluating. Keyed by account scope: one account's empty report never clears another.
     func applyMiotTypePruneReport(_ report: MiotTypePruneReport) {
         let key = report.scope.isEmpty ? (miSessionScopeIdentifier ?? "") : report.scope
-        // No owner means no session to attribute this to; guessing could clear a live account's set.
         guard !key.isEmpty else { return }
+        let previousSafetyDevices = miotTypePruneReports[key]?.safetyDevices ?? []
         if report.isEmpty {
             miotTypePruneReports.removeValue(forKey: key)
         } else {
@@ -169,6 +169,16 @@ extension HomeStore {
             changed = true
         }
         if changed { persistIndexedDevices() }
+        if enableSafetyAlerts,
+           !report.safetyDevices.isEmpty,
+           report.safetyDevices != previousSafetyDevices {
+            let alerts = evaluateSafetyAlerts(now: Date())
+            if let handler = onSafetyAlert {
+                for alert in alerts {
+                    handler(alert)
+                }
+            }
+        }
     }
 
     /// Drops one account's (or the Home Assistant address's) retained safety set. Its index entries

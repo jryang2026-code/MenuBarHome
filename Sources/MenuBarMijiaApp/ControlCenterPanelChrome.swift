@@ -94,7 +94,7 @@ extension ControlCenterPanel {
                     }
                 }
                 HStack(spacing: 5) {
-                    BreathingDot(color: statusDotColor, animate: statusDotAnimates)
+                    BreathingDot(color: statusDotColor)
                         .id(statusDotColor)
                     statusSubtitle
                 }
@@ -743,11 +743,6 @@ extension ControlCenterPanel {
         }
     }
 
-    var statusDotAnimates: Bool {
-        guard store.pollingContext.panelVisible else { return false }
-        return PanelConnectionStatusPresentation.resolve(store: store).badge == .online
-    }
-
     var statusDotColor: Color {
         PanelConnectionStatusPresentation.resolve(store: store).color
     }
@@ -1367,11 +1362,10 @@ struct PanelConnectionFooterBar: View {
     let presentSettingsWindow: () -> Void
 
     private var status: PanelConnectionStatusPresentation { PanelConnectionStatusPresentation.resolve(store: store) }
-    private var statusDotAnimates: Bool { store.pollingContext.panelVisible && status.badge == .online }
 
     var body: some View {
         HStack(spacing: 8) {
-            BreathingDot(color: status.color, animate: statusDotAnimates)
+            BreathingDot(color: status.color)
                 .id(status.color)
             PanelConnectionStatusControl(store: store, theme: theme)
             Spacer(minLength: 4)

@@ -69,6 +69,7 @@ extension HomeStore {
         proactiveRetryEarliest = nil
         clearOptimisticLocks()
         lastCoverPositions.removeAll()
+        lastHistoryRecordAt = nil
         cancelFacetWrites(for: nil)
         // A different home is a different suggestion context even at the same ambient signature (Codex #116 review).
         lastProactiveRefreshSignature = nil

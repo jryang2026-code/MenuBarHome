@@ -5,7 +5,6 @@ import CoreImage.CIFilterBuiltins
 import MijiaCore
 
 public struct MiAccountSection: View {
-    @Environment(\.isPanelVisible) private var isPanelVisible
     public let store: HomeStore
 
     private enum ScanPhase: Equatable {
@@ -244,10 +243,8 @@ public struct MiAccountSection: View {
 
             case .loadingTicket:
                 HStack(spacing: 8) {
-                    if isPanelVisible {
-                        ProgressView()
-                            .controlSize(.regular)
-                    }
+                    ProgressView()
+                        .controlSize(.regular)
                     Text(L10n.tr("正在获取小米登录二维码…", "Fetching Xiaomi QR code…"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
@@ -699,14 +696,12 @@ public struct MiAccountSection: View {
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .multilineTextAlignment(.center)
 
-            if isPanelVisible {
-                TimelineView(.periodic(from: .now, by: 1.0)) { context in
-                    let remaining = max(0, Int(expiresAt.timeIntervalSince(context.date).rounded()))
-                    Text(L10n.tr("二维码有效剩余 \(remaining)s", "QR code expires in \(remaining)s"))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                        .foregroundStyle(DesignTokens.secondaryText)
-                        .monospacedDigit()
-                }
+            TimelineView(.periodic(from: .now, by: 1.0)) { context in
+                let remaining = max(0, Int(expiresAt.timeIntervalSince(context.date).rounded()))
+                Text(L10n.tr("二维码有效剩余 \(remaining)s", "QR code expires in \(remaining)s"))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .monospacedDigit()
             }
 
             HStack(spacing: 8) {

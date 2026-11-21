@@ -127,7 +127,7 @@ struct HATypePruneStoreTests {
         #expect(!store.devices.contains { $0.id == Self.leakSensor.id })
         #expect(store.typeHiddenSafetyDevices.map(\.id) == [Self.leakSensor.id])
         #expect(store.menuBarShowsHazard)
-        #expect(store.evaluateSafetyAlerts(now: Date()).contains { $0.deviceId == Self.leakSensor.id })
+        #expect(store.recentSafetyAlerts.contains { $0.alert.deviceId == Self.leakSensor.id })
     }
 
     @Test("The retained set follows the connection: another address or a disabled connection keeps nothing")

@@ -329,6 +329,37 @@ struct HATypePruneProviderTests {
         await provider.shutdown()
         await collecting.value
     }
+
+    @Test("A hidden safety-retained alarm publishes both report and snapshot when visible devices are unchanged", .timeLimit(.minutes(1)))
+    func providerPublishesRetainedSafetyAlarmWhenVisibleHomeUnchanged() async throws {
+        let socket = FixtureSocket(root: HATypePruningTests.home)
+        let box = HATypePrunePolicyBox(policy: HATypePruningTests.policy(closed: [.sensor], signals: [.leak]))
+        let provider = HAWebSocketProvider(
+            baseURLString: "http://192.0.2.10:8123", token: "t",
+            rediscover: { _ in [] }, allowsToken: { _ in true },
+            typePrunePolicyLoader: { box.get() }
+        )
+        await provider.setTestSeams(connectOverride: nil, reconnectSleep: { _ in await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in } }, webSocketFactory: { _ in socket })
+        let log = PruneEventLog()
+        let collecting = Task { for await event in provider.events() { await log.append(event) } }
+
+        await log.waitForSnapshots(1)
+        await socket.push(#"{"type":"event","event":{"event_type":"state_changed","data":{"new_state":{"entity_id":"binary_sensor.kitchen_leak","state":"on","attributes":{"device_class":"moisture"}}}}}"#)
+        await log.waitForSnapshots(2)
+
+        let kinds = await log.kinds
+        #expect(kinds == ["report", "snapshot", "report", "snapshot"])
+        let reports = await log.reports
+        #expect(reports.count == 2)
+        if case .sensor(let spec) = reports.last?.safetyDevices.first?.kind {
+            #expect(spec.observations.contains { $0.kind == .leak && $0.alarming })
+        } else {
+            Issue.record("Expected alarming retained leak sensor")
+        }
+
+        await provider.shutdown()
+        await collecting.value
+    }
 }
 
 private actor PruneEventLog {

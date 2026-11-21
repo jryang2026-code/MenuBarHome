@@ -1168,16 +1168,18 @@ struct MenuBarPanelControllerTests {
         }
     }
 
-    @Test("Hiding orders the window out, keeps the SwiftUI tree and posts the hide notification")
-    func hidePanelKeepsContent() async throws {
+    @Test("Hiding orders the window out, unmounts the SwiftUI tree, removes mouse monitors, and posts the hide notification")
+    func hidePanelUnmountsContent() async throws {
         let (store, suite) = try await makeStore()
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
+        #expect(!controller.hasActiveMouseMonitors)
         controller.showPanel()
         let panel = try #require(controller.panelWindow)
-        let hosting = try #require(panel.contentView)
+        _ = try #require(panel.contentView)
+        #expect(controller.hasActiveMouseMonitors)
 
         var didHide = false
         let token = NotificationCenter.default.addObserver(
@@ -1194,7 +1196,9 @@ struct MenuBarPanelControllerTests {
         #expect(didHide)
         #expect(controller.isPanelVisible == false)
         #expect(panel.isVisible == false)
-        #expect(panel.contentView === hosting, "the SwiftUI tree survives a close")
+        #expect(panel.contentView == nil)
+        #expect(controller.hostedPanelTheme == nil)
+        #expect(!controller.hasActiveMouseMonitors)
         #expect(controller.panelWindow === panel, "the window is reused, not recreated")
     }
 

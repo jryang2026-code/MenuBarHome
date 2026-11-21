@@ -12,8 +12,6 @@ final class CameraLivePlayback {
     let player: CameraLiveVideoPlayer
 
     private(set) var hasFrame = false
-    private(set) var firstFrameAt: ContinuousClock.Instant?
-    private(set) var lastFrameAt: ContinuousClock.Instant?
     private(set) var isPaused = false
     private(set) var failure: String?
     private let url: URL
@@ -43,28 +41,21 @@ final class CameraLivePlayback {
         self.player = CameraLiveVideoPlayer()
         player.onFirstFrame = { [weak self] in
             guard let self, self.task != nil else { return }
-            let now = ContinuousClock.now
             self.hasFrame = true
-            self.firstFrameAt = now
-            self.lastFrameAt = now
             self.onFirstFrame?()
-        }
-        player.onFrameDecoded = { [weak self] _ in
-            guard let self, self.task != nil else { return }
-            let now = ContinuousClock.now
-            if self.firstFrameAt == nil {
-                self.firstFrameAt = now
-            }
-            self.lastFrameAt = now
         }
         player.onPlaybackPauseChanged = { [weak self] paused in
             guard let self, self.task != nil else { return }
             let resumed = self.isPaused && !paused
             self.isPaused = paused
             if resumed {
-                self.lastFrameAt = ContinuousClock.now
+                self.player.touchLastFrameTimestamp()
             }
         }
+    }
+
+    private static func nanosecondsToDuration(_ ns: UInt64) -> Duration {
+        .nanoseconds(Int64(clamping: ns))
     }
 
     func start() {
@@ -74,9 +65,8 @@ final class CameraLivePlayback {
             var reconnectAttempts = 0
             while !Task.isCancelled {
                 guard let self else { return }
-                let attemptStartedAt = ContinuousClock.now
-                self.firstFrameAt = nil
-                self.lastFrameAt = nil
+                let attemptStartedUptimeNs = max(DispatchTime.now().uptimeNanoseconds, 1)
+                self.player.resetFrameTimestamps()
                 self.isPaused = false
                 let stallTimeout = self.stallTimeout
                 let pollInterval = self.watchdogInterval
@@ -88,8 +78,13 @@ final class CameraLivePlayback {
                             self.onWatchdogTick?()
                             continue
                         }
-                        let reference = self.lastFrameAt ?? attemptStartedAt
-                        if ContinuousClock.now - reference >= stallTimeout {
+                        let timestamps = self.player.decodedFrameTimestamps()
+                        let referenceNs = timestamps.lastFrameUptimeNs != 0
+                            ? timestamps.lastFrameUptimeNs
+                            : attemptStartedUptimeNs
+                        let nowNs = DispatchTime.now().uptimeNanoseconds
+                        if nowNs >= referenceNs,
+                           Self.nanosecondsToDuration(nowNs - referenceNs) >= stallTimeout {
                             self.onWatchdogTick?()
                             self.player.stop(failure: "stream stalled")
                             return
@@ -101,11 +96,12 @@ final class CameraLivePlayback {
                 watchdog.cancel()
                 guard !Task.isCancelled else { return }
 
+                let timestamps = self.player.decodedFrameTimestamps()
                 let sustainedPlayback: Bool
                 if outcome.framesDecoded >= 2,
-                   let firstFrameAt = self.firstFrameAt,
-                   let lastFrameAt = self.lastFrameAt,
-                   (lastFrameAt - firstFrameAt) >= self.stablePlaybackThreshold {
+                   timestamps.firstFrameUptimeNs != 0,
+                   timestamps.lastFrameUptimeNs >= timestamps.firstFrameUptimeNs,
+                   Self.nanosecondsToDuration(timestamps.lastFrameUptimeNs - timestamps.firstFrameUptimeNs) >= self.stablePlaybackThreshold {
                     sustainedPlayback = true
                 } else {
                     sustainedPlayback = false
@@ -157,9 +153,8 @@ final class CameraLivePlayback {
         task?.cancel()
         task = nil
         player.stop()
+        player.resetFrameTimestamps()
         hasFrame = false
-        firstFrameAt = nil
-        lastFrameAt = nil
         isPaused = false
         failure = nil
     }
@@ -167,9 +162,8 @@ final class CameraLivePlayback {
     private func pauseAfterFailure(_ detail: String?) {
         task = nil
         player.stop()
+        player.resetFrameTimestamps()
         hasFrame = false
-        firstFrameAt = nil
-        lastFrameAt = nil
         isPaused = false
         failure = CameraPlaybackTerminalFailure.reason(detail: detail)
         onFailure?(detail)

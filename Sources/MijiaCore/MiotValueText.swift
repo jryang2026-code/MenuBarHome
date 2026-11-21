@@ -88,19 +88,44 @@ public enum MiotValueText {
         }
     }
 
-    /// `E3`, `FC2`, or a bare number. A word with no digits is a description, not a code.
     private static func faultCode(_ text: String) -> String? {
         guard !text.isEmpty else { return nil }
-        if text.unicodeScalars.allSatisfy(CharacterSet.decimalDigits.contains) { return text }
-        guard text.range(of: #"^[A-Za-z]{1,4}\d{1,4}$"#, options: .regularExpression) != nil else {
-            return nil
+        let scalars = text.unicodeScalars
+        if scalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }) {
+            return text
         }
-        return text
+        var letterCount = 0
+        var digitCount = 0
+        var inDigits = false
+        for scalar in scalars {
+            let v = scalar.value
+            let isLetter = (v >= 65 && v <= 90) || (v >= 97 && v <= 122)
+            let isDigit = v >= 48 && v <= 57
+            if !inDigits && isLetter {
+                letterCount += 1
+                if letterCount > 4 { return nil }
+            } else if isDigit {
+                guard letterCount >= 1 else { return nil }
+                inDigits = true
+                digitCount += 1
+                if digitCount > 4 { return nil }
+            } else {
+                return nil
+            }
+        }
+        return (letterCount >= 1 && digitCount >= 1) ? text : nil
     }
 
     private static func levelNumber(_ key: String) -> Int? {
-        guard let match = key.wholeMatch(of: /level\s*(\d+)/) else { return nil }
-        return Int(match.1)
+        guard key.hasPrefix("level") else { return nil }
+        var rest = key.dropFirst("level".count)
+        while let first = rest.first, first.isWhitespace {
+            rest = rest.dropFirst()
+        }
+        guard !rest.isEmpty, rest.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }) else {
+            return nil
+        }
+        return Int(rest)
     }
 
     private static func normalize(_ raw: String) -> String {

@@ -52,7 +52,6 @@ struct ClassicCornerArcHandleShape: Shape {
 /// resizing (`half ↔ full ↔ panel`) and tap cycling (`half → full → panel → half`).
 struct ClassicLayoutEditable: ViewModifier {
     @Environment(\.isEditingLayout) private var editing
-    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
     let deviceId: String
@@ -152,39 +151,136 @@ struct ClassicLayoutEditable: ViewModifier {
     }
 
     private var isJiggling: Bool {
-        editing && isPanelVisible && !reduceMotion && !isDragging && !isResizing
+        editing && !reduceMotion && !isDragging && !isResizing
     }
 
-    @State private var jiggleDegrees: Double = 0
-
-    /// Angle is computed from the clock each frame, so a card rebuilt mid-edit keeps jiggling
-    /// instead of freezing at the last animated angle. Keeping `TimelineView` in `.background`
-    /// preserves the card's structural identity while unmounting the clock completely when hidden.
     private func jiggling<V: View>(_ view: V) -> some View {
         view
-            .rotationEffect(.degrees(isJiggling ? jiggleDegrees : 0))
-            .transaction { transaction in
-                if !isJiggling {
-                    transaction.disablesAnimations = true
-                    transaction.animation = nil
-                }
-            }
             .background {
                 if isJiggling {
-                    TimelineView(.animation) { context in
-                        let t = context.date.timeIntervalSinceReferenceDate
-                        Color.clear
-                            .onChange(of: t, initial: true) { _, now in
-                                var transaction = Transaction()
-                                transaction.disablesAnimations = true
-                                transaction.animation = nil
-                                withTransaction(transaction) {
-                                    jiggleDegrees = sin(now * 2 * .pi * 3.6 + phase) * 1.1
-                                }
-                            }
-                    }
+                    ClassicJiggleLayerHost(phase: phase)
                 }
             }
+            .compositingGroup()
+    }
+}
+
+private struct ClassicJiggleLayerHost: NSViewRepresentable {
+    let phase: Double
+
+    func makeNSView(context: Context) -> ClassicJiggleNSView {
+        let view = ClassicJiggleNSView()
+        view.update(phase: phase)
+        return view
+    }
+
+    func updateNSView(_ nsView: ClassicJiggleNSView, context: Context) {
+        nsView.update(phase: phase)
+    }
+
+    static func dismantleNSView(_ nsView: ClassicJiggleNSView, coordinator: ()) {
+        nsView.stopJiggle()
+    }
+}
+
+private final class ClassicJiggleNSView: NSView {
+    private static let animationKey = "classic.layout.jiggle"
+    private var isJiggling = true
+    private var phase: Double = 0
+    private var animatedBoundsSize: CGSize = .zero
+    private weak var animatedLayer: CALayer?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        syncAnimation()
+    }
+
+    override func layout() {
+        super.layout()
+        syncAnimation()
+    }
+
+    func update(phase: Double) {
+        let changed = !self.isJiggling || self.phase != phase
+        self.isJiggling = true
+        self.phase = phase
+        if changed {
+            if let animatedLayer {
+                animatedLayer.removeAnimation(forKey: Self.animationKey)
+            }
+            syncAnimation()
+        }
+    }
+
+    func stopJiggle() {
+        isJiggling = false
+        animatedBoundsSize = .zero
+        if let animatedLayer {
+            animatedLayer.removeAnimation(forKey: Self.animationKey)
+            self.animatedLayer = nil
+        }
+    }
+
+    private func targetLayer() -> CALayer? {
+        superview?.superview?.layer ?? superview?.layer
+    }
+
+    private static func rotationTransform(angle: CGFloat, center: CGPoint) -> CATransform3D {
+        var transform = CATransform3DMakeTranslation(center.x, center.y, 0)
+        transform = CATransform3DRotate(transform, angle, 0, 0, 1)
+        transform = CATransform3DTranslate(transform, -center.x, -center.y, 0)
+        return transform
+    }
+
+    private func syncAnimation() {
+        guard isJiggling, let target = targetLayer() else {
+            if let animatedLayer {
+                animatedLayer.removeAnimation(forKey: Self.animationKey)
+                self.animatedLayer = nil
+            }
+            animatedBoundsSize = .zero
+            return
+        }
+        let targetBounds = target.bounds
+        guard targetBounds.width > 0, targetBounds.height > 0 else { return }
+        if animatedLayer !== target {
+            animatedLayer?.removeAnimation(forKey: Self.animationKey)
+            animatedLayer = target
+            animatedBoundsSize = .zero
+        }
+        if animatedBoundsSize != targetBounds.size {
+            target.removeAnimation(forKey: Self.animationKey)
+            animatedBoundsSize = targetBounds.size
+        }
+        guard target.animation(forKey: Self.animationKey) == nil else { return }
+        let angle = CGFloat(1.1 * .pi / 180.0)
+        let center = CGPoint(x: targetBounds.midX, y: targetBounds.midY)
+        let neg = NSValue(caTransform3D: Self.rotationTransform(angle: -angle, center: center))
+        let pos = NSValue(caTransform3D: Self.rotationTransform(angle: angle, center: center))
+        let animation = CAKeyframeAnimation(keyPath: "transform")
+        animation.values = [neg, pos, neg]
+        animation.keyTimes = [0, 0.5, 1]
+        animation.timingFunctions = [
+            CAMediaTimingFunction(name: .easeInEaseOut),
+            CAMediaTimingFunction(name: .easeInEaseOut)
+        ]
+        animation.duration = 1.0 / 3.6
+        animation.repeatCount = .infinity
+        animation.timeOffset = (phase / (2 * .pi)) * animation.duration
+        animation.isRemovedOnCompletion = false
+        target.add(animation, forKey: Self.animationKey)
     }
 }
 

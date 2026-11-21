@@ -67,7 +67,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     public static let expandedSize = NSSize(width: 640, height: 420)
     private static let frameStorageKey = "camera_live_panel_frame_v1"
     private static let maxWarmPlaybacks = 2
-    private static let warmPlaybackLifetime: Duration = .seconds(90)
+    private static let warmPlaybackLifetime: Duration = .seconds(15)
 
     public internal(set) var activeDeviceId: String?
     public internal(set) var activeLensID: String?
@@ -553,6 +553,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         warmPlaybacks.removeAll()
         isMuted = true
         panelWindow?.orderOut(nil)
+        panelWindow?.contentView = nil
 
         guard releasingStreams else {
             closeReleaseTask = nil
@@ -2294,6 +2295,7 @@ struct CameraLivePanelView: View {
         .task {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
+                guard case .demo = controller.streamSource else { break }
                 demoTick &+= 1
             }
         }

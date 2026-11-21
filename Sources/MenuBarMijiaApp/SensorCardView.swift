@@ -6,7 +6,6 @@ import MijiaCore
 /// Compact (half row) stacks temperature over a humidity bar; full row lays them out side by side.
 struct SensorCardView: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.isPanelVisible) private var isPanelVisible
     @Environment(\.isEditingLayout) private var isEditingLayout
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
     @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
@@ -445,11 +444,9 @@ struct SensorCardView: View {
 
             if isSyncingCloud {
                 HStack(spacing: 4) {
-                    if isPanelVisible {
-                        ProgressView()
-                            .controlSize(.mini)
-                            .scaleEffect(0.7)
-                    }
+                    ProgressView()
+                        .controlSize(.mini)
+                        .scaleEffect(0.7)
                     Text(L10n.tr("同步中", "Syncing"))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(muted)

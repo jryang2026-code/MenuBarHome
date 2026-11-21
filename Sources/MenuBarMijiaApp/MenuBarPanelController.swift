@@ -24,11 +24,6 @@ import MijiaCore
 ///   visible right edge, full height, sliding horizontally like Notification Center (a cross-fade
 ///   when Reduce Motion is enabled).
 ///
-/// The panel's SwiftUI tree stays alive between opens, like a `.window`-style `MenuBarExtra`, so
-/// scroll position, search text and layout state survive a close; `didShow` / `didHide` notifications
-/// let the panel replay its drop-in animation. `store.setPanelVisible` is driven from here, so the
-/// polling rhythm does not depend on SwiftUI lifecycle callbacks firing per open.
-///
 /// To watch click, long-press, and context-menu routing decisions live without rebuilding (#330)
 /// (call `/usr/bin/log` by full path because in zsh `log` can be shadowed by a shell function):
 /// ```sh
@@ -89,9 +84,6 @@ final class MenuBarPanelController: NSObject {
     var isClosing = false
     /// Bumped on every show, so stale presentation completions cannot hide a reopened panel.
     var presentationGeneration = 0
-    /// Drives `\.isPanelVisible` inside the kept-alive hosting tree; flips `false` once `orderOut`
-    /// removes the window from screen so hidden animations, spinners, and clocks tear down cleanly.
-    let panelHostingVisibility = PanelHostingVisibility()
     /// Collects slice heights inside `ControlCenterPanel` so adaptive resizing stays loop-free.
     let panelAdaptiveHeightProbe = PanelAdaptiveHeightProbe()
     var isApplyingPanelGeometry = false
@@ -241,7 +233,6 @@ final class MenuBarPanelController: NSObject {
         didInstall = true
         lastSeenPreferences = WatchedPreferences(from: userDefaults)
         createStatusItem()
-        installMouseMonitors()
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.didFinishLaunchingNotification,
             object: nil,
@@ -313,7 +304,6 @@ final class MenuBarPanelController: NSObject {
         panelWindow?.contentView = nil
         panelWindow = nil
         hostedPanelTheme = nil
-        panelHostingVisibility.setVisible(false)
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -686,7 +676,6 @@ final class MenuBarPanelController: NSObject {
 
     func shouldRunLabelTimer(now: Date = Date()) -> Bool {
         guard didInstall, let store else { return false }
-        if isPanelVisible { return true }
         let speech = SpeechInputController.shared
         if speech.isListening || speech.isHoldToTalk || isStatusItemPressActive {
             return true
@@ -895,53 +884,40 @@ final class MenuBarPanelController: NSObject {
         return panel
     }
 
-    /// Installs the theme's root view. Same theme → keeps the live tree, so scroll position, search
-    /// text and layout-editing state survive a close/reopen.
     func refreshPanelContent(theme: PanelTheme) {
         guard let panel = panelWindow, let store else { return }
         guard panel.contentView == nil || hostedPanelTheme != theme else { return }
         if hostedPanelTheme == .liquidGlass {
-            // Leaving the glass tree behind: its readability backdrop must not outlive it.
             hideBackdropShadow()
         }
         panel.contentView = nil
         panel.contentMinSize = .zero
         panel.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        let hosting = PanelHostingView(
+        let hosting = NSHostingView(
             rootView: Self.panelRoot(
                 store: store,
                 theme: theme,
-                visibility: panelHostingVisibility,
                 adaptiveProbe: theme == .liquidGlass ? panelAdaptiveHeightProbe : nil
             )
         )
-        // Neither theme delegates window sizing to AppKit's intrinsic-content constraints: `.classic`
-        // sizes explicitly via `updatePanelSize`, and `.liquidGlass` serially clamps 280–560 pt via
-        // `applySerialPanelGeometry`. Leaving `sizingOptions` at its default stamps fixed min/max
-        // content constraints onto the reused `NSPanel`.
         hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: panel.frame.size)
         hosting.autoresizingMask = [.width, .height]
         hosting.wantsLayer = true
         switch theme {
         case .classic:
-            // The card draws its own opaque surface; AppKit clips it to the rounded window.
             hosting.layer?.cornerRadius = Self.panelCornerRadius
             hosting.layer?.masksToBounds = true
         case .liquidGlass:
             hosting.layer?.cornerRadius = 0
             hosting.layer?.masksToBounds = false
         }
-        // Record the theme before the view gains its window: `onAppear` may call back into
-        // `updatePanelSize`, which only acts while a classic tree is installed.
         hostedPanelTheme = theme
         panel.contentView = hosting
         panel.initialFirstResponder = hosting
         _ = panel.makeFirstResponder(hosting)
     }
 
-    /// Drops the hosting tree so the next open builds the other theme's root view. The readability
-    /// backdrop belongs to the Liquid Glass tree, so it leaves with it — including mid-close.
     func dropPanelContent() {
         hideBackdropShadow()
         isApplyingPanelGeometry = false
@@ -949,71 +925,26 @@ final class MenuBarPanelController: NSObject {
         hasPendingGeometryPass = false
         isGeometryPassScheduled = false
         panelAdaptiveHeightProbe.resetNotificationBaseline()
-        panelHostingVisibility.setVisible(false)
         panelWindow?.contentView = nil
         panelWindow?.contentMinSize = .zero
         panelWindow?.contentMaxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         hostedPanelTheme = nil
     }
 
-    /// Pushes `panelHostingVisibility.isVisible` into `NSHostingView.rootView` synchronously so
-    /// `layoutSubtreeIfNeeded()` tears down hidden-panel `TimelineView`s and animations immediately
-    /// instead of waiting for an asynchronous `@Observable` runloop turn after `orderOut`.
-    func syncPanelRootVisibility() {
-        guard let panel = panelWindow,
-              let hosting = panel.contentView as? PanelHostingView<AnyView>,
-              let store,
-              let theme = hostedPanelTheme else { return }
-        hosting.rootView = Self.panelRoot(
-            store: store,
-            theme: theme,
-            visibility: panelHostingVisibility,
-            adaptiveProbe: theme == .liquidGlass ? panelAdaptiveHeightProbe : nil,
-            isVisible: panelHostingVisibility.isVisible
-        )
-    }
-
     private static func panelRoot(
         store: HomeStore,
         theme: PanelTheme,
-        visibility: PanelHostingVisibility,
-        adaptiveProbe: PanelAdaptiveHeightProbe? = nil,
-        isVisible: Bool? = nil
+        adaptiveProbe: PanelAdaptiveHeightProbe? = nil
     ) -> AnyView {
-        let resolvedVisible = isVisible ?? visibility.isVisible
         switch theme {
         case .classic:
-            return AnyView(
-                HostedPanelRoot(visibility: visibility, adaptiveProbe: nil, isVisible: resolvedVisible) {
-                    ClassicControlCenterPanel(store: store)
-                }
-            )
+            return AnyView(ClassicControlCenterPanel(store: store))
         case .liquidGlass:
             return AnyView(
-                HostedPanelRoot(visibility: visibility, adaptiveProbe: adaptiveProbe, isVisible: resolvedVisible) {
-                    ControlCenterPanel(store: store)
-                        .environment(\.appearsActive, true)
-                }
+                ControlCenterPanel(store: store)
+                    .environment(\.panelAdaptiveHeightProbe, adaptiveProbe)
+                    .environment(\.appearsActive, true)
             )
-        }
-    }
-    private struct HostedPanelRoot<Content: View>: View {
-        let visibility: PanelHostingVisibility
-        let adaptiveProbe: PanelAdaptiveHeightProbe?
-        let isVisible: Bool
-        @ViewBuilder let content: Content
-
-        var body: some View {
-            let visible = isVisible && visibility.isVisible
-            content
-                .environment(\.isPanelVisible, visible)
-                .environment(\.panelAdaptiveHeightProbe, adaptiveProbe)
-                .transaction { transaction in
-                    if !visible {
-                        transaction.disablesAnimations = true
-                        transaction.animation = nil
-                    }
-                }
         }
     }
 
@@ -1466,7 +1397,11 @@ final class MenuBarPanelController: NSObject {
         }
     }
 
-    private func removeMouseMonitors() {
+    var hasActiveMouseMonitors: Bool {
+        localMouseMonitor != nil || globalMouseMonitor != nil
+    }
+
+    func removeMouseMonitors() {
         if let localMouseMonitor { NSEvent.removeMonitor(localMouseMonitor) }
         if let globalMouseMonitor { NSEvent.removeMonitor(globalMouseMonitor) }
         localMouseMonitor = nil

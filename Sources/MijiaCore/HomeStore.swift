@@ -140,7 +140,6 @@ public final class HomeStore {
     /// no supported devices comes back to an empty panel with no hint that anything is there. This
     /// is the number the empty state offers to reveal (#76, #67).
     public var otherMiHomesDeviceCountWhenSelectedEmpty: Int? {
-        let _ = snapshotGeneration
         guard hasReceivedInitialSnapshot, devices.isEmpty, let selected = selectedMiHomeId else {
             return nil
         }
@@ -198,7 +197,7 @@ public final class HomeStore {
         }
     }
     /// Bumped on every snapshot so a toggle can tell a read-back from the row it already had.
-    var snapshotGeneration: UInt64 = 0
+    @ObservationIgnored var snapshotGeneration: UInt64 = 0
     /// How long to wait before a second property poll when the first read still shows the old power.
     var readBackEchoDelay: Duration = .milliseconds(800)
     struct ReadBackEchoHoldKey: Hashable {
@@ -1177,9 +1176,10 @@ public final class HomeStore {
     var confirmedCoverDragAnswers: [String: (token: UUID, approval: CoverDragApproval)] = [:]
     /// Last position each cover reported. Inferred travel survives only while this value changes,
     /// so an obstructed motor with a stale target stops showing "opening" (#298).
-    var lastCoverPositions: [String: Int] = [:]
+    @ObservationIgnored var lastCoverPositions: [String: Int] = [:]
     public static let deviceAliasesKey = ViewPreferenceKeys.deviceAliases
-    var rawDeviceNames: [String: String] = [:]
+    @ObservationIgnored var rawDeviceNames: [String: String] = [:]
+    @ObservationIgnored var lastHistoryRecordAt: Date?
 
     @ObservationIgnored var safetyMonitor: SafetyMonitor
     var awayGap = MacAwayGap(includesAway: false)

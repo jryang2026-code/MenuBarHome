@@ -80,7 +80,7 @@ struct MacOSUIDedupeAndPolishTests {
 
         #expect(!controller.isLabelTimerRunning)
         controller.showPanel()
-        #expect(controller.isLabelTimerRunning)
+        #expect(!controller.isLabelTimerRunning)
         controller.hidePanel(animated: false)
         #expect(!controller.isLabelTimerRunning)
 

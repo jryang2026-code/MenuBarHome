@@ -33,9 +33,7 @@ extension MenuBarPanelController {
         let theme = currentPanelTheme
         let panel = ensurePanelWindow(theme: theme)
         panel.appearance = Self.preferredAppearance(from: userDefaults)
-        panelHostingVisibility.setVisible(true)
         refreshPanelContent(theme: theme)
-        syncPanelRootVisibility()
 
         let wasVisible = panel.isVisible && !isClosing
         let wasOnScreen = panel.isVisible
@@ -54,10 +52,12 @@ extension MenuBarPanelController {
 
         let target = columnFrame(for: theme)
         isClosing = false
-        isEntranceAnimating = false
-        hasPendingGeometryPass = false
         clearImplicitDismissalStateOnShow()
-        if !wasVisible { presentationGeneration &+= 1 }
+        if !wasVisible {
+            isEntranceAnimating = false
+            hasPendingGeometryPass = false
+            presentationGeneration &+= 1
+        }
         let generation = presentationGeneration
         panel.ignoresMouseEvents = false
         installMouseMonitors()
@@ -100,7 +100,7 @@ extension MenuBarPanelController {
         // Re-showing an already visible panel (hotkey while open, URL scheme, intent) must not replay
         // the entrance animation.
         guard !wasVisible else {
-            if theme == .liquidGlass {
+            if theme == .liquidGlass, !isEntranceAnimating {
                 applySerialPanelGeometry()
             }
             return
@@ -127,8 +127,6 @@ extension MenuBarPanelController {
         }
     }
 
-    /// `animated` is false for a theme switch, which closes the panel in place before the hosting
-    /// tree is rebuilt for the other theme.
     func hidePanel(animated: Bool = true) {
         guard let panel = panelWindow, panel.isVisible, !isClosing else { return }
         isEntranceAnimating = false
@@ -139,8 +137,8 @@ extension MenuBarPanelController {
         LayoutUIState.shared.commitRoomOrderIfNeeded()
         PanelTransientUIState.shared.resetOnPanelHide(store: store)
         store?.setPanelVisible(false)
+        NotificationCenter.default.post(name: Self.didHideNotification, object: panel)
         if presentsActively, animated, hostedPanelTheme == .liquidGlass {
-            // Hide logically now; order out only after the window and its shadow leave the screen.
             isClosing = true
             panel.ignoresMouseEvents = true
             let generation = presentationGeneration
@@ -159,24 +157,18 @@ extension MenuBarPanelController {
         }
         restoreStatusItemHighlight()
         updateLabelTimer()
-        // The SwiftUI tree stays alive, exactly like a `.window`-style `MenuBarExtra`: scroll
-        // position, the search field text and layout-editing state survive a close/reopen. A theme
-        // switch drops it explicitly so the next open builds the other root view.
-        NotificationCenter.default.post(name: Self.didHideNotification, object: panel)
     }
 
-    /// Tears down hidden-panel animations, clocks, and any active text-field caret in one
-    /// synchronous layout pass right before `orderOut` disconnects the window from display cycles.
     private func finishOrderingPanelOut(_ panel: NSPanel) {
         PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
         PanelConnectionDetailState.shared.clearStatusControlFocus()
+        PanelSearchState.shared.end()
         if panel.firstResponder !== panel.contentView {
             _ = panel.makeFirstResponder(panel.contentView)
         }
-        panelHostingVisibility.setVisible(false)
-        syncPanelRootVisibility()
-        panel.contentView?.layoutSubtreeIfNeeded()
+        removeMouseMonitors()
         panel.orderOut(nil)
+        dropPanelContent()
     }
 
     /// Retarget the current window position, keeping the full shadow in the same animation group.
@@ -502,35 +494,6 @@ final class MenuBarPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Observable bridge feeding `\.isPanelVisible` into the kept-alive SwiftUI root without
-/// recreating `NSHostingView.rootView` across close/reopen cycles.
-@Observable
-@MainActor
-final class PanelHostingVisibility {
-    private(set) var isVisible = false
-
-    func setVisible(_ visible: Bool) {
-        guard isVisible != visible else { return }
-        isVisible = visible
-    }
-}
-
-/// Hosting view subclass that counts `layout()` passes — the exact hook `ViewGraph` drives on each
-/// display-cycle update — so tests can verify the hidden tree goes completely quiescent.
-final class PanelHostingView<Content: View>: NSHostingView<Content> {
-    private(set) var layoutPassCount = 0
-
-    override func layout() {
-        layoutPassCount &+= 1
-        super.layout()
-    }
-
-    func resetLayoutPassCount() {
-        layoutPassCount = 0
-    }
-}
-
-/// A soft, panel-local shadow maintains text readability over light and dark wallpaper.
 private struct ControlCenterReadabilityBackdrop: View {
     @Environment(\.colorScheme) private var colorScheme
 

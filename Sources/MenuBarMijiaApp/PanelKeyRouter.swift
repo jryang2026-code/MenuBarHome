@@ -93,6 +93,10 @@ final class PanelTransientUIState {
         store?.expandedDeviceId = nil
         collapseReminders()
         collapseOfflineDrawer()
+        hasExpandedReminders = false
+        hasExpandedOfflineDrawer = false
+        collapseRemindersHandler = nil
+        collapseOfflineDrawerHandler = nil
     }
 
     func resetForTesting() {

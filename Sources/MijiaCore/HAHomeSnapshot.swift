@@ -30,11 +30,21 @@ struct HAHomeSnapshot {
     private var doorbellTimestamps: [String: String] = [:]
     /// The type-pruning policy the last published round was built under (P3b-M).
     private var appliedPrunePolicy: HATypePrunePolicy?
-    /// Entities whose every card a closed type dropped with no enabled alert left to feed: a state
-    /// change on one of them has no consumer, so it neither re-synthesizes nor publishes.
-    private var unconsumedEntityIds: Set<String> = []
+    private var consumedEntityIds: Set<String> = []
     private var lastPruneReport: MiotTypePruneReport?
     private var pendingPruneReport: MiotTypePruneReport?
+
+    static let supportedSmartHomeDomains: Set<String> = [
+        "light", "switch", "climate", "cover", "fan", "humidifier",
+        "vacuum", "valve", "water_heater", "lock", "camera", "media_player",
+        "scene", "script", "button", "sensor", "binary_sensor", "select",
+        "number", "notify", "event",
+    ]
+
+    static func isSupportedSmartHomeDomain(_ entityId: String) -> Bool {
+        guard let dotIndex = entityId.firstIndex(of: ".") else { return false }
+        return supportedSmartHomeDomains.contains(String(entityId[..<dotIndex]))
+    }
 
     /// Doorbell presses seen since the last call. Initial loads and `get_states` refreshes never ring.
     mutating func takeDoorbellRings() -> [DoorbellRing] {
@@ -94,40 +104,72 @@ struct HAHomeSnapshot {
                 return nil
             }
             pendingInitialResults.remove(id)
-        } else if message["type"]?.stringValue == "event",
-                  case .object(let event) = message["event"],
-                  event["event_type"]?.stringValue == "state_changed",
-                  case .object(let data) = event["data"] {
-            if let newState = data["new_state"], let state = Self.parseState(newState) {
-                if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
-                    doorbellTimestamps[state.entityId] = timestamp
-                    if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
-                        let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
-                        rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
-                    }
-                }
-                let previous = states.updateValue(state, forKey: state.entityId)
-                // The plan classified the entity from its last state. A first state or a new device
-                // class (a gas row naming itself) can give the card an enabled alert, so re-plan.
-                if pendingInitialResults.isEmpty,
-                   appliedPrunePolicy == typePrunePolicy,
-                   unconsumedEntityIds.contains(state.entityId),
-                   let previous,
-                   previous.attributes["device_class"] == state.attributes["device_class"] {
-                    return nil
-                }
-            } else if data["new_state"] == .null {
-                let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
-                guard let entityId, states.removeValue(forKey: entityId) != nil else {
-                    return nil
-                }
-                doorbellTimestamps.removeValue(forKey: entityId)
-            } else {
+        } else if message["type"]?.stringValue == "event" {
+            guard ingestStateChangedEvent(message, typePrunePolicy: typePrunePolicy) else {
                 return nil
             }
         } else {
             return nil
         }
+        return synthesizeCurrent(typePrunePolicy: typePrunePolicy)
+    }
+
+    mutating func ingestStateChangedEvent(
+        _ message: [String: JSONValue],
+        typePrunePolicy: HATypePrunePolicy = .unpruned
+    ) -> Bool {
+        guard message["type"]?.stringValue == "event",
+              case .object(let event) = message["event"],
+              event["event_type"]?.stringValue == "state_changed",
+              case .object(let data) = event["data"] else {
+            return false
+        }
+        if let newState = data["new_state"], let state = Self.parseState(newState) {
+            guard Self.isSupportedSmartHomeDomain(state.entityId) else { return false }
+            if let timestamp = DoorbellRing.timestamp(state), timestamp != doorbellTimestamps[state.entityId] {
+                doorbellTimestamps[state.entityId] = timestamp
+                if pendingInitialResults.isEmpty, isActiveEntity(state.entityId) {
+                    let deviceId = entities.first { $0.entity_id == state.entityId }?.device_id ?? state.entityId
+                    rings.append(DoorbellRing(deviceId: deviceId, entityId: state.entityId, firedAt: timestamp))
+                }
+            }
+            let previous = states.updateValue(state, forKey: state.entityId)
+            guard pendingInitialResults.isEmpty else { return false }
+            if state.entityId.hasPrefix("event.") {
+                return false
+            }
+            if appliedPrunePolicy == typePrunePolicy, let previous {
+                if previous.state == state.state && previous.attributes == state.attributes {
+                    return false
+                }
+                if !consumedEntityIds.contains(state.entityId),
+                   previous.isAvailable == state.isAvailable,
+                   previous.attributes["device_class"] == state.attributes["device_class"],
+                   previous.attributes["unit_of_measurement"] == state.attributes["unit_of_measurement"] {
+                    return false
+                }
+            }
+            return true
+        } else if data["new_state"] == .null {
+            let entityId = data["entity_id"]?.stringValue ?? data["old_state"]?["entity_id"]?.stringValue
+            guard let entityId,
+                  Self.isSupportedSmartHomeDomain(entityId),
+                  states.removeValue(forKey: entityId) != nil else {
+                return false
+            }
+            doorbellTimestamps.removeValue(forKey: entityId)
+            guard pendingInitialResults.isEmpty else { return false }
+            if appliedPrunePolicy == typePrunePolicy, !consumedEntityIds.contains(entityId) {
+                return false
+            }
+            return true
+        }
+        return false
+    }
+
+    mutating func synthesizeCurrent(
+        typePrunePolicy: HATypePrunePolicy = .unpruned
+    ) -> SynthesizedHome? {
         guard pendingInitialResults.isEmpty else { return nil }
         let home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
         return applyTypePruning(to: home, policy: typePrunePolicy)
@@ -138,27 +180,30 @@ struct HAHomeSnapshot {
     /// (architecture.md §D, network saving counted as 0).
     private mutating func applyTypePruning(to home: SynthesizedHome, policy: HATypePrunePolicy) -> SynthesizedHome {
         appliedPrunePolicy = policy
-        let cardEntities = policy.prunesNothing
-            ? [:]
-            : DeviceSynthesizer.haCardEntities(cardIds: Set(home.devices.map(\.id)), entities: entities)
+        let cardEntities = DeviceSynthesizer.haCardEntities(cardIds: Set(home.devices.map(\.id)), entities: entities)
         guard let plan = DeviceSynthesizer.haTypePrunePlan(
             home: home, cardEntities: cardEntities, states: states, policy: policy
         ) else {
-            unconsumedEntityIds = []
-            // An empty report clears what the host kept; a provider that never ran under a host
-            // scope has nothing to clear.
+            consumedEntityIds = Self.collectConsumedEntityIds(
+                home: home,
+                cardEntities: cardEntities,
+                entities: entities,
+                states: states,
+                droppedCardIds: []
+            )
             if let scope = policy.sourceScope.isEmpty ? lastPruneReport?.scope : policy.sourceScope {
                 stagePruneReport(MiotTypePruneReport(scope: scope, hiddenIndexedDevices: [], hiddenDeviceIds: [], safetyDevices: []))
             }
             return home
         }
         let dropped = Set(plan.hiddenIndexedDevices.map(\.id)).subtracting(plan.safetyRetainedDeviceIds)
-        // An entity whose device drew no card stays consumed: its next state may create one.
-        var owners: [String: [String]] = [:]
-        for (card, rows) in cardEntities {
-            for row in rows { owners[row.entity_id, default: []].append(card) }
-        }
-        unconsumedEntityIds = Set(owners.filter { $0.value.allSatisfy(dropped.contains) }.keys)
+        consumedEntityIds = Self.collectConsumedEntityIds(
+            home: home,
+            cardEntities: cardEntities,
+            entities: entities,
+            states: states,
+            droppedCardIds: dropped
+        )
         stagePruneReport(MiotTypePruneReport(
             scope: policy.sourceScope,
             hiddenIndexedDevices: plan.hiddenIndexedDevices,
@@ -166,6 +211,39 @@ struct HAHomeSnapshot {
             safetyDevices: home.devices.filter { plan.safetyRetainedDeviceIds.contains($0.id) }
         ))
         return DeviceSynthesizer.applying(plan, to: home)
+    }
+
+    private static func collectConsumedEntityIds(
+        home: SynthesizedHome,
+        cardEntities: [String: [HAEntityEntry]],
+        entities: [HAEntityEntry],
+        states: [String: HAEntityState],
+        droppedCardIds: Set<String>
+    ) -> Set<String> {
+        var consumed: Set<String> = []
+        for device in home.devices where !droppedCardIds.contains(device.id) {
+            consumed.formUnion(device.referencedEntityIds)
+            if let rows = cardEntities[device.id] {
+                for row in rows {
+                    consumed.insert(row.entity_id)
+                }
+            }
+            if let facets = home.deviceFacets[device.id] {
+                for facet in facets {
+                    consumed.formUnion(facet.referencedEntityIds)
+                }
+            }
+        }
+        for scene in home.scenes {
+            consumed.insert(scene.entityId)
+        }
+        for entity in entities where entity.entity_id.hasPrefix("scene.") || entity.entity_id.hasPrefix("script.") {
+            consumed.insert(entity.entity_id)
+        }
+        for entityId in states.keys where entityId.hasPrefix("scene.") || entityId.hasPrefix("script.") {
+            consumed.insert(entityId)
+        }
+        return consumed
     }
 
     private mutating func stagePruneReport(_ report: MiotTypePruneReport) {

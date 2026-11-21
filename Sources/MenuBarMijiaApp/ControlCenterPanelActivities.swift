@@ -119,16 +119,13 @@ extension EnvironmentValues {
 private struct ActivityTimeText: View {
     let date: Date
     @Environment(\.activityTimestampOverride) private var override
-    @Environment(\.isPanelVisible) private var isPanelVisible
 
     var body: some View {
         Group {
             if let override {
                 Text(override)
-            } else if isPanelVisible {
-                Text(date, style: .relative)
             } else {
-                Text(verbatim: "")
+                Text(date, style: .relative)
             }
         }
         .font(.system(size: DesignTokens.TypeSize.micro))
