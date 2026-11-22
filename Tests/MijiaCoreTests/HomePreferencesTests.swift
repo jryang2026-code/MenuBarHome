@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -6,7 +7,7 @@ import Testing
 @MainActor
 struct HomePreferencesTests {
     private func fresh() -> UserDefaults {
-        UserDefaults(suiteName: "test.prefs.\(UUID().uuidString)")!
+        InMemoryUserDefaults()
     }
 
     @Test("Keys stay the ones earlier builds wrote, so saved settings survive the update")
@@ -31,11 +32,10 @@ struct HomePreferencesTests {
 
     @Test("The store loads and saves through the same table")
     func storeUsesTable() async throws {
-        let suite = "test.prefs.store.\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: suite)!
+        let d = InMemoryUserDefaults()
         d.set(false, forKey: "show_quick_actions_bar")
         d.set(true, forKey: "allow_advanced_facet_writes")
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])), defaults: d)
         #expect(store.showQuickActionsBar == false)
         #expect(store.allowAdvancedFacetWrites)
         #expect(store.enableVoiceInput == true)
@@ -47,13 +47,11 @@ struct HomePreferencesTests {
 
     @Test("Legacy defaults keep voice input enabled and preserve existing settings; toggling notifies observers and gates voice assistant requests")
     func voiceInputPreferenceMigrationAndAssistantGating() async throws {
-        let suite = "test.prefs.voice.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let d = UserDefaults(suiteName: suite)!
+        let d = InMemoryUserDefaults()
         d.set("老用户的家", forKey: "home_name")
         d.set(["living_light"], forKey: "favorite_device_ids")
 
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])), defaults: d)
         #expect(store.enableVoiceInput == true, "Legacy users without enable_voice_input must keep voice input enabled by default")
         #expect(store.homeName == "老用户的家")
         #expect(store.favoriteDeviceIds == ["living_light"])

@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -436,9 +437,7 @@ struct FacetDragConfirmationTests {
 
     @Test("Signing out another Mi account never turns leftover optimistic drag values into reported baselines")
     func signingOutAnotherMiAccountDoesNotPoisonReportedBaseline() async throws {
-        let suite = "test.facet.drag.logout.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let removedAccount = MiAccount(session: MiSession(
             userId: "10010001", cUserId: "c-rm", ssecurity: "ssec-rm", serviceToken: "tok-rm", region: "cn"
@@ -479,7 +478,7 @@ struct FacetDragConfirmationTests {
             "wh": [Self.targetTemperatureSlider(deviceId: "wh", value: .number(40))],
         ]
         let mock = MockHomeProvider(snapshot: home)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         store.homeBackend = .xiaomiCloud
         store.miAccounts = [removedAccount, keptAccount]
         store.toastAutoDismissInterval = nil

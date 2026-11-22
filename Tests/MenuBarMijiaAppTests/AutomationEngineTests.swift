@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import MijiaCore
 @testable import MenuBarMijiaApp
@@ -31,18 +32,17 @@ struct AutomationEngineTests {
         return (store, mock)
     }
 
-    private func makeDefaults() throws -> (UserDefaults, String) {
-        let suite = "test.automation.engine.defaults.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        return (defaults, suite)
+    /// One instance for the rule store and for the store: a second `UserDefaults(suiteName:)`
+    /// reads through cfprefsd and can serve a stale cache under CI load (#309).
+    private func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     @Test("System observers exist only while automation has enabled rules")
     func detachesSystemObservers() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let mock = MockHomeProvider(snapshot: .init(devices: [Self.studyLight]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         let frozen = Date(timeIntervalSince1970: 1_800_000_000)
         let contextProvider = FakeMacContextProvider()
@@ -80,8 +80,7 @@ struct AutomationEngineTests {
 
     @Test("Away rule turns the light off once per minute and leaves an undo banner")
     func awayRuleExecutesAndDedupes() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         AutomationRuleStore(defaults: defaults).save([
             AutomationRule(
                 trigger: .away,
@@ -110,8 +109,7 @@ struct AutomationEngineTests {
 
     @Test("Rules added while the cooldown clock is idle still fire immediately")
     func emptyRuleListDoesNotBurnCooldown() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let (store, mock) = try await makeStore()
         let engine = AutomationEngine(defaults: defaults)
@@ -167,8 +165,7 @@ struct AutomationEngineTests {
 
     @Test("Connecting an external display can run the configured scene")
     func displayConnectRunsScene() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         AutomationRuleStore(defaults: defaults).save([
             AutomationRule(
                 trigger: .externalDisplayConnected,
@@ -188,8 +185,7 @@ struct AutomationEngineTests {
 
     @Test("A quick-action rule uses the built-in action path and leaves an undo banner")
     func quickActionRule() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         AutomationRuleStore(defaults: defaults).save([
             AutomationRule(trigger: .away, action: .quickAction(.lightsOff))
         ])
@@ -206,8 +202,7 @@ struct AutomationEngineTests {
 
     @Test("AutomationEngine surfaces partial and repeated failures via typed execution outcomes")
     func engineSurfacesPartialAndRepeatedFailures() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let secondLight = SmartDevice(
             id: "light_corridor",
@@ -246,8 +241,7 @@ struct AutomationEngineTests {
 
     @Test("Legacy unapproved high-risk automation rules are blocked and disabled until re-confirmed")
     func legacyUnapprovedHighRiskRuleBlocked() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let heaterPlug = SmartDevice(
             id: "plug_heater",
@@ -346,8 +340,7 @@ struct AutomationEngineTests {
 
     @Test("A saved window blocks a notification outside it and leaves the cooldown unused")
     func timeWindowBlocksTriggerWithoutConsumingCooldown() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let calendar = Self.utcCalendar()
         AutomationRuleStore(defaults: defaults).save([
             AutomationRule(
@@ -379,8 +372,7 @@ struct AutomationEngineTests {
 
     @Test("A lone screen lock at 21:59:59 stays outside a 22:00 window after the debounce flush")
     func screenLockAt215959DoesNotEnterTheWindowOrTheCooldown() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let calendar = Self.utcCalendar()
         // Next year keeps the engine's debounce sleep in the future. A past deadline would
         // flush immediately at the wall clock and race this assertion.
@@ -416,8 +408,7 @@ struct AutomationEngineTests {
 
     @Test("Sleep is judged at the event instant, so 21:59:59 stays outside a 22:00 window")
     func sleepAt215959StaysOutsideTheWindow() async throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let calendar = Self.utcCalendar()
         AutomationRuleStore(defaults: defaults).save([
             AutomationRule(
@@ -452,8 +443,7 @@ struct AutomationEngineTests {
 
     @Test("Production reads the autoupdating calendar so a time-zone change moves the windows")
     func defaultCalendarIsAutoupdating() throws {
-        let (defaults, suite) = try makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let engine = AutomationEngine(defaults: defaults)
         // `Calendar.current` is the launch-time snapshot (a different value from the autoupdating
         // instance), so this catches a default that freezes the zone again. A live zone-change test

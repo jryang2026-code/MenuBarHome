@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import KeychainTestSupport
 @testable import MijiaCore
@@ -238,8 +239,7 @@ struct ManualControlSafetyTests {
     @Test("Sign out and revoke clears Mi sessions, the HA token, AI keys and cloud consent")
     @MainActor
     func revokeAllClearsCredentials() async throws {
-        let suite = "test.manualcontrol.revoke.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let session = MiSession(
             userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "token",
             expiresAt: Date().addingTimeInterval(86_400)
@@ -255,7 +255,7 @@ struct ManualControlSafetyTests {
         #expect(!AssistantConfig.load(from: defaults).apiKey.isEmpty)
 
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         #expect(store.miAccounts.count == 1)
 
         #expect(store.signOutAndRevokeAll())
@@ -270,7 +270,6 @@ struct ManualControlSafetyTests {
     @Test("A refused keychain delete reports an incomplete revocation")
     @MainActor
     func revokeAllReportsFailure() async throws {
-        let suite = "test.manualcontrol.revoke.failure.\(UUID().uuidString)"
         let seededAccounts = [MiSessionStore.keychainAccount, "ha_access_token"]
             + KeychainHelper.assistantSecretAccounts
         let seeded = try #require(CredentialVault.encode(Dictionary(
@@ -280,7 +279,7 @@ struct ManualControlSafetyTests {
         storage.writeSucceeds = false
         let vault = CredentialVault(storage: storage.storage)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         store.credentialVault = vault
 
         #expect(!store.signOutAndRevokeAll(), "A refused delete must not report success")
