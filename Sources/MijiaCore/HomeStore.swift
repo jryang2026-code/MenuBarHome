@@ -1145,7 +1145,8 @@ public final class HomeStore {
             }
             if oldValue.enabledCategories.contains(.tv) != capabilitySelection.enabledCategories.contains(.tv),
                let lgDev = latestLGDevice {
-                applyLGDeviceUpdate(lgDev)
+                // Restoring a card the type toggle hid keeps the user's favorite choice.
+                applyLGDeviceUpdate(lgDev, favoritesNewCard: false)
             }
             if oldValue.enabledCategories != capabilitySelection.enabledCategories {
                 scheduleRaycastSnapshotExport()

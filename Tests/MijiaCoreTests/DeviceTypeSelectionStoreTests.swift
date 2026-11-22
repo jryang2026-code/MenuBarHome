@@ -209,6 +209,9 @@ struct DeviceTypeSelectionStoreTests {
         store.applyLGDeviceUpdate(Self.lgTV)
         #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id })
         #expect(store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
+        #expect(store.favoriteDeviceIds.contains(Self.lgTV.id), "a newly found TV is favorited once")
+        store.toggleFavorite(Self.lgTV.id)
+        #expect(!store.favoriteDeviceIds.contains(Self.lgTV.id))
 
         #expect(store.applyDeviceCategorySelection(allTypes.subtracting([.tv])) == .applied)
         #expect(!store.devices.contains { $0.id == Self.lgTV.id })
@@ -227,6 +230,8 @@ struct DeviceTypeSelectionStoreTests {
         #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
         #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id }, "reopening TVs restores the card without a new report")
         #expect(store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
+        #expect(!store.favoriteDeviceIds.contains(Self.lgTV.id), "reopening TVs keeps the user's unfavorite")
+        #expect(!store.favoriteOrder.contains(Self.lgTV.id))
     }
 }
 

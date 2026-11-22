@@ -134,7 +134,7 @@ extension HomeStore {
         return true
     }
 
-    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil) {
+    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil, favoritesNewCard: Bool = true) {
         if let clientID {
             guard !isResumeShutdown, clientID == lgWebOSClientID else { return }
         }
@@ -172,7 +172,7 @@ extension HomeStore {
             devices[idx] = nextDev
         } else {
             devices.append(nextDev)
-            if favoriteDeviceIds.contains(dev.id) == false && favoriteOrder.count < 8 {
+            if favoritesNewCard, favoriteDeviceIds.contains(dev.id) == false, favoriteOrder.count < 8 {
                 favoriteDeviceIds.insert(dev.id)
                 favoriteOrder.insert(dev.id, at: 0)
             }
