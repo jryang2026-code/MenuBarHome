@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import StateTestSupport
 import Testing
 @testable import MijiaCore
@@ -62,10 +63,9 @@ struct AssistantToggleAndProviderRemovalTests {
     ) {
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
-        let suite = "test.assistant.toggle.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         return (store, mock, vault, mem, defaults)
     }
@@ -95,11 +95,10 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(store.aiAssistantEnabled == false, "manifest ai-assistant.defaultOnFreshInstall is false")
 
         let mem = MemoryVaultStorage()
-        let suite = "test.assistant.toggle.legacy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let legacy = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage))
+        let legacy = HomeStore(provider: mock, credentialVault: CredentialVault(storage: mem.storage), defaults: defaults)
         try await legacy.waitForTestSnapshot()
         #expect(legacy.aiAssistantEnabled == true, "pre-existing users keep the always-on behavior")
     }
@@ -452,11 +451,10 @@ struct AssistantToggleAndProviderRemovalTests {
     func toggleRefusedWhileIdentityUncertain() async throws {
         let mem = MemoryVaultStorage()
         mem.readResult = .unavailable
-        let suite = "test.assistant.toggle.uncertain.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage))
+        let store = HomeStore(provider: mock, credentialVault: CredentialVault(storage: mem.storage), defaults: defaults)
         try await store.waitForTestSnapshot()
 
         #expect(store.isIdentityUncertain)

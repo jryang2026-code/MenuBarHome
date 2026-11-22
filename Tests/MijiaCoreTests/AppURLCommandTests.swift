@@ -50,9 +50,7 @@ struct AppURLCommandTests {
 
     @Test("URL control asks for confirmation by default and only skips it after opt-in")
     func confirmationGate() throws {
-        let suite = "test.url.gate.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         #expect(URLDirectControl.requiresConfirmation(in: defaults))
         defaults.set(true, forKey: URLDirectControl.allowDirectControlKey)

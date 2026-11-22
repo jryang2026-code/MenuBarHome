@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -71,9 +72,7 @@ struct MiSessionExpiryPolicyTests {
 struct MiSessionRejectionTests {
     @Test("A rejection from a stale userId or serviceToken leaves the stored session untouched")
     func staleRejectionIsIgnored() throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-rejection.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let stored = MiSession(userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "current")
         #expect(MiSessionStore.save(stored, defaults: defaults))
@@ -87,9 +86,7 @@ struct MiSessionRejectionTests {
 
     @Test("A rejection records its time over a stored future end for the current credential")
     func rejectionOverwritesFutureEnd() throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-rejection.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let future = Date(timeIntervalSince1970: 2_000_000_000)
         let stored = MiSession(userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "tok", expiresAt: future)
@@ -231,9 +228,7 @@ struct MiSessionExpiryHomeStoreTests {
     @MainActor
     @Test("An expired stored session shows the slash icon and opens re-auth until a new login")
     func expiredStoredSessionSurfacesReauth() throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-expiry-store.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let expiredAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -246,7 +241,7 @@ struct MiSessionExpiryHomeStoreTests {
         )
         #expect(MiSessionStore.save(expired, defaults: defaults))
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(store.homeBackend == .xiaomiCloud)
         #expect(store.miSessionExpiresAt == expiredAt)
         #expect(store.miSessionExpiryState == .expired)
@@ -271,9 +266,7 @@ struct MiSessionExpiryHomeStoreTests {
     @MainActor
     @Test("One expired account among several warns without slashing the menu bar icon until all expire")
     func partialAccountExpiryDoesNotBlockControl() throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-expiry-multi.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let expiredAt = Date(timeIntervalSince1970: 1_700_000_000)
@@ -296,7 +289,7 @@ struct MiSessionExpiryHomeStoreTests {
         )
         #expect(MiSessionStore.saveAccounts([MiAccount(session: expiredCN), MiAccount(session: validDE)], defaults: defaults))
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(store.miAccounts.count == 2)
         #expect(store.miSessionShowsExpired)
         #expect(!store.miSessionBlocksControl)
@@ -315,7 +308,7 @@ struct MiSessionExpiryHomeStoreTests {
             expiresAt: expiredAt
         )
         #expect(MiSessionStore.saveAccounts([MiAccount(session: expiredCN), MiAccount(session: expiredDE)], defaults: defaults))
-        let allExpiredStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let allExpiredStore = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(allExpiredStore.miSessionShowsExpired)
         #expect(allExpiredStore.miSessionBlocksControl)
         #expect(allExpiredStore.menuBarSymbolName == "house.slash")
@@ -537,13 +530,11 @@ struct ProviderResilienceAndPerfTests {
     @Test("The store records the rejection once and rebuilds the account's child from the stored credential (#6)")
     @MainActor
     func storeRebuildsRejectedChild() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.mi-rejected-child.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(Self.session, defaults: defaults))
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         let api = StubMiCloudAPI(
             devices: [MiotFixtures.lightRecord],
             rooms: [],
@@ -712,9 +703,7 @@ struct ProviderResilienceAndPerfTests {
 
     @Test("UserHabitMemory memoizes decoded memory per UserDefaults instance and invalidates on external byte mutation (#35a)")
     func habitMemoryDecodeMemoization() throws {
-        let suite = "com.jryang1997.MenuBarMijia.habit-memo.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let memory = UserHabitMemory(
             lastAction: UserHabitMemory.LastAction(
@@ -749,15 +738,13 @@ struct ProviderResilienceAndPerfTests {
     @MainActor
     @Test("Automatic HA LAN discovery is gated by unconfigured non-Xiaomi state and session cooldown while manual scan always runs (#35b)")
     func autoHADiscoveryGatingAndCooldown() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.ha-scan-gate.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
         defaults.set("", forKey: "ha_base_url")
         defaults.set("", forKey: "ha_token")
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         var scanCalls = 0
         store.haLANDiscoverer = { @MainActor _ in
             scanCalls += 1
@@ -785,9 +772,7 @@ struct ProviderResilienceAndPerfTests {
     @MainActor
     @Test("HomeStore completeMiLogin and logoutMiAccount propagate account changes to activeMiAccountsProvider (#33b)")
     func homeStoreIncrementalAccountPropagation() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.live-mi-prop.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let firstAccountId = MiAccount(session: Self.session).id
         let secondSession = MiSession(
@@ -799,23 +784,24 @@ struct ProviderResilienceAndPerfTests {
         )
         let secondAccountId = MiAccount(session: secondSession).id
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-        let store = HomeStore(defaultsSuiteName: suite)
+        let store = HomeStore(defaults: defaults)
         store.completeMiLogin(Self.session)
         let activeProvider = try #require(store.activeMiAccountsProvider)
         await store.providerShutdownTask?.value
         #expect(store.activeMiProviderAccounts.map(\.id) == [firstAccountId])
-        #expect(await activeProvider.childProviderIdentityForTesting(accountId: firstAccountId) != nil)
+        // Child providers attach in a detached task, so the shutdown task alone does not cover them.
+        await waitUntil { await activeProvider.childProviderIdentityForTesting(accountId: firstAccountId) != nil }
 
         store.completeMiLogin(secondSession)
         await store.providerShutdownTask?.value
         #expect(store.activeMiAccountsProvider === activeProvider)
         #expect(store.activeMiProviderAccounts.count == 2)
-        #expect(await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) != nil)
+        await waitUntil { await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) != nil }
 
         store.logoutMiAccount(id: secondAccountId)
         await store.providerShutdownTask?.value
         #expect(store.activeMiProviderAccounts.map(\.id) == [firstAccountId])
-        #expect(await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) == nil)
+        await waitUntil { await activeProvider.childProviderIdentityForTesting(accountId: secondAccountId) == nil }
         #expect(await activeProvider.childProviderIdentityForTesting(accountId: firstAccountId) != nil)
         await store.shutdown()
     }

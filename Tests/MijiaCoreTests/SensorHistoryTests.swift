@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -13,9 +14,7 @@ struct SensorHistoryTests {
     @Test("Records live sensor snapshots into hourly and daily buckets and persists them")
     @MainActor
     func recordsAndPersistsSnapshots() throws {
-        let suiteName = "SensorHistoryTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let cal = Self.fixedCalendar()
         let history = SensorHistory(defaults: defaults, calendar: cal)
@@ -64,9 +63,7 @@ struct SensorHistoryTests {
     @Test("Merges cloud history samples and respects fetch cooldown")
     @MainActor
     func mergesCloudSamplesAndCooldown() throws {
-        let suiteName = "SensorHistoryTests.cloud.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let cal = Self.fixedCalendar()
         let history = SensorHistory(defaults: defaults, calendar: cal)
@@ -152,9 +149,7 @@ struct SensorHistoryTests {
     @Test("Aggregates multiple raw cloud samples in the same hour/day before replacing the bucket idempotently")
     @MainActor
     func aggregatesSameBucketCloudSamplesIdempotently() throws {
-        let suiteName = "SensorHistoryTests.rawAgg.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let cal = Self.fixedCalendar()
         let history = SensorHistory(defaults: defaults, calendar: cal)
@@ -233,20 +228,16 @@ struct SensorHistoryTests {
         #expect(sessionA.historyScopeIdentifier != sessionB.historyScopeIdentifier)
 
         // Changing the region picker in HomeStore before a new login keeps the active session's scope.
-        let storeSuite = "SensorHistoryTests.storeScope.\(UUID().uuidString)"
-        let storeDefaults = try #require(UserDefaults(suiteName: storeSuite))
-        defer { storeDefaults.removePersistentDomain(forName: storeSuite) }
+        let storeDefaults = InMemoryUserDefaults()
         MiSessionStore.upsert(sessionA, defaults: storeDefaults)
         storeDefaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
-        let store = HomeStore(provider: DemoHomeProvider(), defaultsSuiteName: storeSuite)
+        let store = HomeStore(provider: DemoHomeProvider(), defaults: storeDefaults)
         #expect(store.sensorHistory.connectionScope == sessionA.historyScopeIdentifier)
         store.miCloudRegion = .de
         #expect(store.sensorHistory.connectionScope == sessionA.historyScopeIdentifier)
 
         // Legacy unscoped entries (pre-connectionScope builds) migrate into the initial connection's namespace.
-        let migrationSuite = "SensorHistoryTests.migration.\(UUID().uuidString)"
-        let migrationDefaults = try #require(UserDefaults(suiteName: migrationSuite))
-        defer { migrationDefaults.removePersistentDomain(forName: migrationSuite) }
+        let migrationDefaults = InMemoryUserDefaults()
         let legacyHistory = SensorHistory(defaults: migrationDefaults, calendar: cal)
         legacyHistory.record(devices: [makeSensor(19.5)], now: now)
         let upgradedHistory = SensorHistory(defaults: migrationDefaults, calendar: cal)

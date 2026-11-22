@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -233,8 +234,7 @@ struct OnboardingChecklistTests {
     @Test("A blocked Mi session hides the lesson, so a hold is a real refused All Off")
     @MainActor
     func blockedSessionSkipsTheRehearsal() async throws {
-        let suite = "test.onboarding.blocked.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(false, forKey: "has_completed_onboarding")
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(
@@ -251,7 +251,7 @@ struct OnboardingChecklistTests {
             devices: [Self.livingLight, Self.studyLight],
             scenes: []
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.recordOnboardingMilestone(.searchedDevice)
         #expect(store.miSessionBlocksControl)
@@ -305,14 +305,13 @@ struct OnboardingChecklistTests {
     @Test("Skipped onboarding never rehearses from the launch-at-login reminder")
     @MainActor
     func launchAtLoginReminderDoesNotRehearse() async throws {
-        let suite = "test.onboarding.reminder.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(
             devices: [Self.livingLight, Self.studyLight],
             scenes: []
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.hasHASource = true
         store.recordOnboardingMilestone(.searchedDevice)
@@ -505,9 +504,7 @@ struct PanelNoticeTests {
     @Test("LAN blocked notice coexists with onboarding checklist and mid-hold notices never turn a rehearsed All Off into a live write")
     @MainActor
     func midHoldLocalNetworkBlockNeverCausesLiveAllOffWrite() async throws {
-        let suite = "test.onboarding.midhold.lntcc.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         defaults.set(false, forKey: "has_completed_onboarding")
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(
@@ -526,7 +523,7 @@ struct PanelNoticeTests {
             scenes: []
         )
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.recordOnboardingMilestone(.searchedDevice)
         #expect(store.showsLessonRow)
@@ -565,10 +562,9 @@ struct PanelNoticeTests {
     @Test("Leaving the demo with nothing configured reopens the connect guide on the Xiaomi path")
     @MainActor
     func leavingDemoWithoutSourceOpensConnectGuide() throws {
-        let suite = "test.onboarding.leavedemo.none.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         store.hasCompletedOnboarding = true
         store.switchBackend(.demo)
         #expect(store.homeBackend == .demo)

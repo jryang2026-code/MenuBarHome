@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -496,9 +497,7 @@ struct ManualControlPolicyTests {
 
     @Test("Switch-light marks persist per device id and join the canonical-ID preference index (#104)")
     func switchLightMarksPersistAndSurviveMerge() throws {
-        let suiteName = "test.switch-light-marks.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let wall = Self.wallSwitch(id: "canonical-wall")
         #expect(!SwitchLightMarks.isMarked(wall.id, defaults: defaults))

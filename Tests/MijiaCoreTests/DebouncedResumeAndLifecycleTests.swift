@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -433,9 +434,7 @@ struct DebouncedResumeAndLifecycleTests {
     func dualSourceShutdownParallelAndIdempotent() async throws {
         let ha = GatedShutdownProvider()
         let mi = GatedShutdownProvider()
-        let suite = "test.dual.shutdown.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let composite = HomeStore.makeComposite(
             homeAssistant: ha,

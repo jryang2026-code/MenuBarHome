@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import StateTestSupport
 @testable import MijiaCore
@@ -350,9 +351,7 @@ struct DualSourceIntegrationTests {
 
     @Test("Preference index sees every view preference key that holds a device id")
     func preferenceIndexReadsViewPreferences() throws {
-        let suite = "test.dual.prefindex.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         defaults.set(["favorite-a"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         defaults.set(["order-a"], forKey: ViewPreferenceKeys.favoriteOrder)
@@ -977,9 +976,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Dual-source remaps deviceTransportDiagnostics to canonicalID only for Xiaomi-driven cards and unmasks HA Local Network TCC block while Mi Cloud is connected")
     func dualSourceTransportDiagnosticsRemapAndHATCCUnmasking() async throws {
-        let suite = "test.dual.tcc_and_diag.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let session = MiSession(
             userId: "1001", cUserId: "c1", ssecurity: "s", serviceToken: "tok",
@@ -1015,7 +1012,7 @@ struct DualSourceIntegrationTests {
 
         let haMock = MockHomeProvider(snapshot: haHome)
         let miMock = MockHomeProvider(snapshot: miHome)
-        let store = HomeStore(dualSource: (homeAssistant: haMock, xiaomiCloud: miMock), defaultsSuiteName: suite)
+        let store = HomeStore(dualSource: (homeAssistant: haMock, xiaomiCloud: miMock), defaults: defaults)
         defer { store.stop() }
         store.hasHASource = true
 
@@ -1107,11 +1104,9 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("HomeStore wires setNetworkSatisfiedForResume into HAWebSocketProvider so offline -1009 is not misclassified as Local Network TCC block")
     func homeStoreNetworkSatisfiedGatingInHAProvider() async throws {
-        let suite = "test.ha.net_satisfied.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         defer { store.stop() }
 
         store.setNetworkSatisfiedForResume(false)
@@ -1152,11 +1147,9 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Unknown network reachability does not classify Home Assistant LAN or .local -1009 failures as Local Network TCC block until reachability is confirmed")
     func unknownNetworkReachabilityDoesNotClassifyHAFailureAsLocalNetworkBlock() async throws {
-        let suite = "test.ha.net_unknown.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         defer { store.stop() }
 
         // Notice: `store.setNetworkSatisfiedForResume(...)` has NEVER been called yet (reachability is unknown).

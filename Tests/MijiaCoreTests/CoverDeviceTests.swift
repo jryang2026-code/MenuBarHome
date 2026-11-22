@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -81,13 +82,11 @@ struct CoverDeviceTests {
                 pauseDescription: "Pause"
             ))
         )
-        let suite = "test.cover.legacy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         defaults.set([garageDoor.id: true, Self.openCover.id: true], forKey: ViewPreferenceKeys.allOffOverrides)
 
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light, garageDoor, Self.openCover]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         #expect(store.joinsAllOff(garageDoor) == false)
@@ -95,10 +94,8 @@ struct CoverDeviceTests {
         #expect(store.allOffTargets.map(\.id) == [Self.light.id])
 
         // Attempting to opt a cover in does not persist an override.
-        let cleanSuite = "test.cover.clean.\(UUID().uuidString)"
-        let cleanDefaults = try #require(UserDefaults(suiteName: cleanSuite))
-        defer { cleanDefaults.removePersistentDomain(forName: cleanSuite) }
-        let cleanStore = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light, garageDoor])), defaultsSuiteName: cleanSuite)
+        let cleanDefaults = InMemoryUserDefaults()
+        let cleanStore = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light, garageDoor])), defaults: cleanDefaults)
         try await cleanStore.waitForTestSnapshot()
         cleanStore.setJoinsAllOff(true, deviceId: garageDoor.id)
         #expect(cleanStore.allOffOverrides[garageDoor.id] == nil)
