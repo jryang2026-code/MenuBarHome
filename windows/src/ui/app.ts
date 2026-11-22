@@ -3,7 +3,7 @@ import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
-import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
+import type { CapabilityIndexedDevice, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
 import {
   MiAccountsStore,
   type MiAccount,
@@ -276,6 +276,9 @@ export class MenuMijiaWindowsApp {
    */
   public haTypePruneScope: string | null = null;
   public hiddenHADevices: readonly CapabilityIndexedDevice[] = [];
+  /** Each source's per-card alert signals from its last round, for the device-type preview. */
+  public miTypeSafetySignals: Readonly<Record<string, readonly SafetySignalKind[]>> = {};
+  public haTypeSafetySignals: Readonly<Record<string, readonly SafetySignalKind[]>> = {};
   /** Home Assistant cards a closed type keeps only so enabled alerts still read their signal. */
   public safetyRetainedHADevices: SmartDevice[] = [];
   public safetyRetainedHADeviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};

@@ -760,7 +760,7 @@ public struct ControlCenterPanel: View {
             toggleSearchResult(device)
             return
         }
-        if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+        if PanelSearch.kind(of: search.query, devices: store.categoryVisibleDevices, scenes: store.scenes) == .command {
             PanelSearchKeyboard.runCommand(search.query, store: store, state: search)
             return
         }
@@ -783,7 +783,7 @@ public struct ControlCenterPanel: View {
                 Text(L10n.tr("没有匹配的设备", "No matching devices"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(.primary)
-                if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+                if PanelSearch.kind(of: search.query, devices: store.categoryVisibleDevices, scenes: store.scenes) == .command {
                     Text(L10n.tr("回车把这句交给助手执行", "Press Return to run this as a command"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.secondary)
@@ -879,7 +879,7 @@ final class PanelSearchState {
         let order = DeviceLayoutPrefs.decodeOrder(
             store.userDefaults.string(forKey: DeviceLayoutPrefs.orderKey) ?? "[]"
         )
-        return DeviceLayoutPrefs.apply(order: order, to: store.devices)
+        return DeviceLayoutPrefs.apply(order: order, to: store.categoryVisibleDevices)
     }
 
     /// Search results for the current query: hidden and (optionally) offline devices are excluded,
@@ -973,7 +973,7 @@ enum PanelSearchKeyboard {
             hasSelection: state.selected(in: results) != nil,
             hasExplicitSelection: state.isExplicitSelection,
             queryKind: state.isSearching
-                ? PanelSearch.kind(of: state.query, devices: store.devices, scenes: store.scenes)
+                ? PanelSearch.kind(of: state.query, devices: store.categoryVisibleDevices, scenes: store.scenes)
                 : .filter
         )
 

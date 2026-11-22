@@ -30,7 +30,7 @@ struct DeviceTypeMappingTests {
     private struct MixedTypeCase: Decodable {
         let id: String; let source: String; let did: String?; let name: String?; let model: String?
         let services: [MergedServiceRef]?; let device: HADeviceSpec?; let states: [HAStateRow]?
-        let expectedCards: [ExpectedCard]; let expectedFacetSiids: [Int]?
+        let expectedCards: [ExpectedCard]; let expectedFacetSiids: [Int]?; let expectedFacetEntityIds: [String]?
     }
     private struct SplitKeyRef: Decodable { let did: String; let siid: Int }
     private struct SplitCardCase: Decodable {
@@ -198,6 +198,28 @@ struct DeviceTypeMappingTests {
         }
     }
 
+    @Test("A light card's fan toggle calls the fan service", arguments: [true, false])
+    func secondaryFanPowerService(isOn: Bool) throws {
+        let mapping = try Self.loadMapping()
+        let fixture = try #require(mapping.mixedTypeCases.first { $0.id == "ha_fan_with_light_entity_keeps_one_card" })
+        let device = try #require(fixture.device)
+        let states = try #require(fixture.states)
+        let home = Self.synthesizeHA(deviceId: "fan-lamp", device: device, states: states).home
+        let card = try #require(home.devices.first)
+        let fan = try #require(home.deviceFacets[card.id]?.first { $0.id == "fan.bedroom" })
+        #expect(fan.kind == .toggle)
+        #expect(fan.name == "on")
+        #expect(fan.serviceName == "fan")
+        #expect(fan.value == .bool(true))
+        #expect(fan.isWritable && fan.writesByDefault)
+
+        let command = try #require(HomeStore.facetCommand(for: fan, value: .bool(isOn)))
+        let service = HAWebSocketProvider.mapCommandToService(command)
+        #expect(service.domain == "fan")
+        #expect(service.service == (isOn ? "turn_on" : "turn_off"))
+        #expect(service.payload["entity_id"] as? String == "fan.bedroom")
+    }
+
     @Test("Mixed-type devices, split-key switches, and multi-track covers produce expected cards and prune plans")
     func mixedTypeAndSplitCardCases() throws {
         let mapping = try Self.loadMapping()
@@ -205,6 +227,10 @@ struct DeviceTypeMappingTests {
             if c.source == "home-assistant" {
                 let synthesized = Self.synthesizeHA(deviceId: "d-\(c.id)", device: try #require(c.device), states: try #require(c.states))
                 try Self.assertCards(synthesized.home, expected: c.expectedCards, label: c.id)
+                let facetIds = Set(synthesized.home.deviceFacets.values.flatMap { $0.map(\.id) })
+                for entityId in c.expectedFacetEntityIds ?? [] {
+                    #expect(facetIds.contains(entityId), "\(c.id): \(entityId) stays on the card")
+                }
                 continue
             }
             let did = try #require(c.did)

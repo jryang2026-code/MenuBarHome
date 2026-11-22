@@ -90,10 +90,22 @@ extension HomeStore {
         devices.filter { hiddenDeviceIds.contains($0.id) }
     }
 
+    /// A closed device type leaves the lists at once; the Mi and HA read plans only drop its cards on
+    /// the next refresh (#348). Demo mode has no type picker, so its cards always show.
+    func showsDeviceCategory(_ dev: SmartDevice) -> Bool {
+        homeBackend == .demo || capabilitySelection.enabledCategories.contains(dev.capabilityCategoryID)
+    }
+
+    /// All devices whose type is currently enabled (ignoring room/kind/hidden/offline filters),
+    /// used by search and the AI catalog before the next refresh prunes closed types (#348).
+    public var categoryVisibleDevices: [SmartDevice] {
+        devices.filter(showsDeviceCategory)
+    }
+
     private func passesVisibility(_ dev: SmartDevice) -> Bool {
         if hiddenDeviceIds.contains(dev.id) { return false }
         if hideOfflineDevices && !dev.isOnline { return false }
-        return true
+        return showsDeviceCategory(dev)
     }
 
     public var filteredDevices: [SmartDevice] {

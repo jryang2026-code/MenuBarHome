@@ -20,9 +20,12 @@ import { currentLanguage, setLanguage } from "../src/core/i18n.js";
 import type { SmartDevice } from "../src/core/models.js";
 import { makeMiAccount, mergeMiAccountSnapshots, refreshMiAccountsConcurrently, type AccountChildSnapshot } from "../src/core/miAccountsStore.js";
 import {
-  buildIndexedCapabilityDevices, evaluateDeviceEntityWriteGate, evaluateDisabledDeviceUrlGate,
+  buildIndexedCapabilityDevices, evaluateDeviceEntityWriteGate, evaluateDisabledDeviceUrlGate, previewDeviceCategorySelection,
   evaluateDisabledUtteranceGate, evaluateIntentsWriteGate, resolveMiAccountSelectionState,
 } from "../src/core/miAccountControl.js";
+import { AutomationRuleStore } from "../src/core/automationEngine.js";
+import { ScheduledCommandStore } from "../src/core/scheduledCommands.js";
+import { applyMiotTypePruneSnapshot, buildHostCapabilityContext } from "../src/ui/cloudRefresh.js";
 import { MiotSpecResolver } from "../src/core/miCloud/spec.js";
 import type { MiRoom, MiSession } from "../src/core/miCloudClient.js";
 
@@ -335,13 +338,28 @@ describe("Mi device-type pruning (P3a-W)", () => {
     };
     const account = makeMiAccount(session);
     const transport = async () => ({ status: 200, headers: {}, body: "{}" });
-    const { merged, children } = await refreshMiAccountsConcurrently({
+    const refresh = (categories: readonly DeviceCategoryID[]) => refreshMiAccountsConcurrently({
       accounts: [account],
       transport,
       specResolver: new MiotSpecResolver(transport, specs),
-      prune: { selection: selection(["light"], [account.id]), safetySignals: [...ALL_SENSOR_SIGNALS] },
+      prune: { selection: selection(categories, [account.id]), safetySignals: [...ALL_SENSOR_SIGNALS] },
       clientFactory: () => client as never,
     });
+    const { merged: allTypes } = await refresh(DEVICE_CATEGORY_IDS);
+    const host = {
+      settings: { connectionMode: "xiaomiCloud", miSession: session },
+      devices: allTypes.home.devices,
+      miTypeSafetySignals: {},
+    };
+    applyMiotTypePruneSnapshot(host, allTypes);
+    const storage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+    const preview = previewDeviceCategorySelection({
+      context: buildHostCapabilityContext(host, [account]), proposedCategories: ["light"],
+      scheduledCommandStore: new ScheduledCommandStore(storage), activeTimerIdentity: null,
+      ruleStore: new AutomationRuleStore(storage), safetyPolicy: { enabledSignals: ALL_SENSOR_SIGNALS },
+    });
+    readKeys.length = 0;
+    const { merged, children } = await refresh(["light"]);
 
     // Only the kept type is a card; the curtain is neither a card nor a read.
     assert.deepEqual(merged.home.devices.map((device) => device.id), ["light"]);
@@ -354,6 +372,8 @@ describe("Mi device-type pruning (P3a-W)", () => {
     assert.deepEqual((child.safetyDevices ?? []).map((device) => device.id).sort(), ["contact", "gas", "leak", "lock", "smoke"]);
     assert.equal(child.home.devices.some((device) => device.id === "leak"), false);
     assert.deepEqual(merged.safetyDevices?.map((device) => device.id).sort(), ["contact", "gas", "leak", "lock", "smoke"]);
+    assert.deepEqual(preview.retainedSafetyCards.map((device) => device.id).sort(), merged.safetyDevices?.map((device) => device.id).sort());
+    assert.ok(preview.retainedSafetySignals.includes("leak"));
 
     // A disconnected account's stale alert devices never reach the merged evaluation set.
     const offline = mergeMiAccountSnapshots([account], {
