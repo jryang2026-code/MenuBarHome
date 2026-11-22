@@ -285,6 +285,32 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(store.aiProactiveSuggestions == nil)
     }
 
+    @Test("A manual suggestion request failing after AI is switched off shows no stale error (#321)")
+    @MainActor
+    func lateProactiveFailureAfterToggleOffStaysQuiet() async throws {
+        let (store, _, _, _, _) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        #expect(store.setProactiveSuggestionsEnabled(true))
+        #expect(store.saveAssistantConfig(AssistantConfig(
+            baseURL: "http://127.0.0.1:11434/v1", model: "qwen2.5:7b", apiKey: ""
+        )))
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        let task = Task { await store.requestProactiveJevSuggestions() }
+        await waitUntil { transport.count == 1 }
+        #expect(store.setAIAssistantEnabled(false))
+        let failure = HTTPURLResponse(
+            url: URL(string: "http://127.0.0.1:11434/v1/chat/completions")!,
+            statusCode: 500, httpVersion: nil, headerFields: nil
+        )!
+        transport.release((Data(), failure))
+        await task.value
+        if case .failed = store.assistantState {
+            Issue.record("a request the user cancelled must not surface its failure: \(store.assistantState)")
+        }
+    }
+
     // MARK: - Acceptance 2: removing a provider clears only its own config and key
 
     @Test("Removing the active provider deletes its slot and consent, siblings survive")
@@ -310,6 +336,38 @@ struct AssistantToggleAndProviderRemovalTests {
         // Consent entries owned by the removed provider go; the sibling's stays.
         #expect(store.consentedCloudEndpoints == ["openrouter.ai"])
         #expect(defaults.string(forKey: AssistantConfig.customKeyEndpointKey) == "192.168.1.5:8000")
+    }
+
+    @Test("Removing OpenRouter deletes the legacy key slot and leaves home credentials alone (#322)")
+    @MainActor
+    func removingOpenRouterClearsLegacySlotOnly() async throws {
+        let (store, _, vault, mem, defaults) = try await makeStore()
+        let survivors = [
+            MiSessionStore.keychainAccount: "mi-session",
+            KeychainHelper.tokenAccount: "ha-token",
+            LGWebOSClient.clientKeyAccount: "lg-key",
+        ]
+        for (account, value) in survivors {
+            #expect(KeychainHelper.saveSecret(value, account: account, defaults: defaults, vault: vault))
+        }
+        #expect(KeychainHelper.saveSecret(
+            "sk-legacy", account: KeychainHelper.assistantAPIKeyAccount, defaults: defaults, vault: vault
+        ))
+        #expect(store.saveAssistantConfig(AssistantConfig(
+            baseURL: AssistantConfig.defaultBaseURL, model: AssistantConfig.defaultModel, apiKey: "sk-or"
+        )))
+
+        #expect(store.removeAssistantProvider(.openRouterJev))
+
+        let stored = try #require(mem.storedItems)
+        #expect(stored[KeychainHelper.assistantProviderAPIKeyAccount(for: .openRouterJev)] == nil)
+        #expect(stored[KeychainHelper.assistantAPIKeyAccount] == nil, "the pre-v1.0.4 slot would otherwise resurrect the key")
+        #expect(AssistantConfig.userStoredAPIKey(
+            forBaseURL: AssistantConfig.defaultBaseURL, defaults: defaults, vault: vault
+        ).isEmpty)
+        for (account, value) in survivors {
+            #expect(stored[account].flatMap { String(data: $0, encoding: .utf8) } == value, "\(account) must survive")
+        }
     }
 
     @Test("Removing a non-active provider leaves the active config untouched")
@@ -432,6 +490,32 @@ struct AssistantToggleAndProviderRemovalTests {
         transport.release(Self.chat(Self.powerOnPlan))
         #expect(await task.value == nil)
         #expect(store.assistantState == .idle, "the discarded run must not clobber the cleared state")
+    }
+
+    @Test("A discarded older command leaves a newer command's spinner up (#322)")
+    @MainActor
+    func staleCommandKeepsNewerSpinner() async throws {
+        let (store, mock, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        let stale = Task { await store.runAssistantCommand("我要睡觉了") }
+        await waitUntil { transport.count == 1 }
+        #expect(store.setAIAssistantEnabled(false))
+        #expect(store.setAIAssistantEnabled(true))
+        let current = Task { await store.runAssistantCommand("我要睡觉了") }
+        await waitUntil { transport.count == 2 }
+        #expect(store.assistantState == .thinking)
+
+        transport.release(Self.chat(Self.powerOnPlan))
+        #expect(await stale.value == nil)
+        #expect(store.assistantState == .thinking, "the newer command is still waiting for its reply")
+
+        transport.release(Self.chat(Self.powerOnPlan))
+        #expect(await current.value != nil)
+        #expect(await mock.executedCommands.count == 1, "only the newer command drives the lamp")
     }
 
     // MARK: - Toggle write failures
