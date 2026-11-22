@@ -321,14 +321,13 @@ struct CredentialSaveResultTests {
         let (connectionStarted, started) = AsyncStream<Void>.makeStream()
         let (connectionLifetime, lifetime) = AsyncStream<Void>.makeStream()
         defer { lifetime.finish() }
-        LGWebOSClient.$connectionOverrideForTesting.withValue({
+        store.lgWebOSConnectionOverrideForTesting = {
             started.yield(())
             started.finish()
             for await _ in connectionLifetime {}
             try Task.checkCancellation()
-        }) {
-            #expect(store.updateLGWebOSConfig(initial))
         }
+        #expect(store.updateLGWebOSConfig(initial))
         let client = try #require(store.lgWebOSClient)
 
         let originalCert = Data("original-lg-tv-certificate".utf8)

@@ -73,7 +73,8 @@ extension HomeStore {
                 Task { @MainActor [weak self] in
                     self?.applyLGSecurityFailure(message, fromClientID: clientID)
                 }
-            }
+            },
+            connectionOverrideForTesting: lgWebOSConnectionOverrideForTesting
         )
         let previousLG = self.lgWebOSClient
         if let previousLG {
