@@ -242,11 +242,14 @@ struct AutomationSettingsSection: View {
                 )
                 .disabled(store.identityMigrationDiagnostic != nil && !store.companionIntegrationEnabled)
 
+                let isCompanionPaused = store.companionIntegrationEnabled && store.identityMigrationDiagnostic != nil
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(store.companionIntegrationEnabled ? Color.green : DesignTokens.secondaryText.opacity(0.45))
+                        .fill(isCompanionPaused ? Color.orange : (store.companionIntegrationEnabled ? Color.green : DesignTokens.secondaryText.opacity(0.45)))
                         .frame(width: 7, height: 7)
-                    Text(store.companionIntegrationEnabled ? CompanionSettingsCopy.statusEnabled : CompanionSettingsCopy.statusDisabled)
+                    Text(isCompanionPaused
+                         ? HomeStore.companionIdentityUnavailableMessage
+                         : (store.companionIntegrationEnabled ? CompanionSettingsCopy.statusEnabled : CompanionSettingsCopy.statusDisabled))
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(store.companionIntegrationEnabled ? Color.primary : DesignTokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)

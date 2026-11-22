@@ -164,6 +164,9 @@ struct CompanionIntegrationToggleTests {
         let preferences = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
 
         store.identityMigrationDiagnostic = "Keychain unavailable"
+        let paused = store.checkCompanionIntegrationStatus()
+        #expect(paused.status == .needsAttention && paused.snapshotPresent)
+        #expect(paused.summary == HomeStore.companionIdentityUnavailableMessage)
         #expect(!store.companionCanExecute(generation: generation))
         #expect(store.disconnectCompanionIntegration())
         #expect(!store.companionIntegrationEnabled && !store.companionCanExecute(generation: generation))
@@ -212,7 +215,6 @@ struct CompanionIntegrationToggleTests {
         try await store.waitForTestSnapshot()
         #expect(store.setCompanionIntegrationEnabled(true))
         let generation = store.companionGeneration
-        await provider.holdSnapshots()
         await provider.holdNextExecute()
 
         let execution = Task {
@@ -222,6 +224,12 @@ struct CompanionIntegrationToggleTests {
         }
         await waitUntil { await provider.executeStarted == 1 }
         store.pauseUndoBannerCountdown()
+        var reported = lamps
+        reported[0].isOnline = false
+        reported[1].isOnline = false
+        await provider.updateSnapshot(.init(devices: reported))
+        try await awaitState { store.devices.count == 2 && store.devices.allSatisfy { !$0.isOnline } }
+        await provider.holdSnapshots()
         #expect(store.disconnectCompanionIntegration())
         #expect(store.setCompanionIntegrationEnabled(true))
         await provider.releaseExecute()
@@ -235,6 +243,7 @@ struct CompanionIntegrationToggleTests {
             return
         }
         #expect(commands.count == 1)
+        #expect(store.devices.allSatisfy { !$0.isOnline })
         #expect(store.devices.first { !$0.referencedEntityIds.contains(entity) }?.kind ==
             lamps.first { !$0.referencedEntityIds.contains(entity) }?.kind)
         let previousBrightness = entity == "light.living" ? 80 : 60

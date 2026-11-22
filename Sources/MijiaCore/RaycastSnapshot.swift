@@ -491,6 +491,13 @@ extension HomeStore {
         )
     }
 
+    public static var companionIdentityUnavailableMessage: String {
+        L10n.tr(
+            "暂时无法读取历史设置或凭据，伴生命令和快照导出已暂停。",
+            "Companion commands and snapshot export are paused while settings or credentials are unavailable."
+        )
+    }
+
     public static var companionInvalidTokenMessage: String {
         L10n.tr(
             "伴生令牌已失效，请重新获取最新本地快照后重试",
@@ -631,7 +638,15 @@ extension HomeStore {
     public func checkCompanionIntegrationStatus() -> CompanionCheckReport {
         let fileURL = companionSnapshotFileURL, path = fileURL.path
         let fm = FileManager.default
-        guard companionIntegrationEnabled, !isIdentityUncertain else {
+        if companionIntegrationEnabled, isIdentityUncertain {
+            return CompanionCheckReport(
+                status: .needsAttention,
+                summary: Self.companionIdentityUnavailableMessage,
+                snapshotPath: path,
+                snapshotPresent: (try? fm.attributesOfItem(atPath: path)) != nil
+            )
+        }
+        guard companionIntegrationEnabled else {
             do {
                 _ = try fm.attributesOfItem(atPath: path)
                 return CompanionCheckReport(

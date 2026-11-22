@@ -318,8 +318,11 @@ extension HomeStore {
                 // was still pending. Keep only the state and undo for the part that reached the light.
                 for id in partiallyAppliedDevices {
                     guard let write = writes[id],
-                          let brightness = Self.assistantEffect(of: .brightness(15), on: write.previous) else { continue }
-                    revert(write, restoring: brightness.updated)
+                          let current = devices.first(where: { $0.id == id }) else { continue }
+                    let restoredColor = current.mergingOptimisticFields(
+                        from: write.previous, lockedFields: [.colorTemperature, .effect]
+                    )
+                    revert(write, restoring: restoredColor)
                 }
                 undoCommands.removeAll { entry in
                     guard partiallyAppliedDevices.contains(entry.deviceId) else { return false }
