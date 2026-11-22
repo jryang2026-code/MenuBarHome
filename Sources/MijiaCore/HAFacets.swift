@@ -8,9 +8,8 @@ import Foundation
 /// low-risk set stays closed until the user allows advanced facet writes.
 public enum HAFacetEngine {
     /// `switch.*`, `select.*`, `number.*`, `button.*`, `sensor.*` and `binary_sensor.*` entities
-    /// that survived `claimed` and the registry's disabled/hidden filters, plus a `fan.*` riding
-    /// on a non-fan card as its power toggle. `text.*` and every other domain handled by a
-    /// primary card stay out.
+    /// that survived `claimed` and the registry's disabled/hidden filters, plus unclaimed
+    /// `fan.*` entities as power toggles on other device types.
     public static func controls(
         entities: [HAEntityEntry],
         states: [String: HAEntityState],
@@ -47,15 +46,8 @@ public enum HAFacetEngine {
         // fallback for YAML entities and older integrations.
         let semantic = entity.translation_key?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawName = (semantic?.isEmpty == false ? semantic! : objectId)
-        // Home Assistant files a ceiling fan and its lamp under one device: the lamp draws the
-        // card and the fan becomes its second power row. A fan card claims its own entity, so an
-        // unclaimed `fan.*` only rides along on another card and takes the name a MIoT service's
-        // power property has (`on`), the low-risk whitelist entry, as Windows does (#327).
-        let isSecondaryFan: Bool = {
-            guard domain == "fan" else { return false }
-            if case .fan = device.kind { return false }
-            return true
-        }()
+        let isSecondaryFan = if case .fan = device.kind { false } else { domain == "fan" }
+        // Use the shared low-risk power name for a secondary fan, as on Windows.
         let name = isSecondaryFan ? "on" : rawName.replacingOccurrences(of: "_", with: "-")
         let objectName = objectId.replacingOccurrences(of: "_", with: "-")
         let category = entity.entity_category?.lowercased()
