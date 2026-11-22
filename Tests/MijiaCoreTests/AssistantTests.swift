@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -212,9 +213,7 @@ struct AssistantTests {
 
     @Test("AssistantConfig defaults to OpenRouter without API key and ModelIntentResolver rejects missing key")
     func assistantDefaultConfigAndMissingKey() async throws {
-        let suite = "test.assistant.defaults.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let loaded = AssistantConfig.load(from: defaults, includeAmbientKey: false)
         #expect(loaded.baseURL == AssistantConfig.defaultBaseURL)
@@ -450,7 +449,7 @@ struct AssistantTests {
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.assistant.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         return (store, mock)
@@ -735,11 +734,9 @@ struct AssistantTests {
     @Test("Explicitly saved localhost:3425 and 127.0.0.1:3425 custom endpoints survive save/load round-trip and share effective config between Test AI and command execution")
     @MainActor
     func customPort3425RoundTripAndProviderKeyIsolation() async throws {
-        let suite = "test.assistant.port3425.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
-        // Seed an OpenRouter key in the same defaults suite to ensure custom endpoints never resolve OpenRouter's key.
+        // Seed an OpenRouter key in the same defaults to ensure custom endpoints never resolve OpenRouter's key.
         AssistantConfig(
             baseURL: "https://openrouter.ai/api/v1",
             model: "~typesafe/jev-latest",
@@ -747,7 +744,7 @@ struct AssistantTests {
         ).save(to: defaults)
 
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
 

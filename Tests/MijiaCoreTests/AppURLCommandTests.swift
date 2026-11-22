@@ -50,9 +50,7 @@ struct AppURLCommandTests {
 
     @Test("URL control asks for confirmation by default and only skips it after opt-in")
     func confirmationGate() throws {
-        let suite = "test.url.gate.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         #expect(URLDirectControl.requiresConfirmation(in: defaults))
         defaults.set(true, forKey: URLDirectControl.allowDirectControlKey)
@@ -114,12 +112,10 @@ struct AppURLCommandTests {
     @Test("Raycast integration is off by default; on, exports coalesce, skip unchanged snapshots and write feedback at once; off revokes the token")
     @MainActor
     func raycastSnapshotExportIsCoalescedAndSkipsUnchangedWrites() async throws {
-        let suite = "test.raycast.coalesce.\(UUID().uuidString)"
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("raycast-coalesce-\(UUID().uuidString)", isDirectory: true)
         let snapshotFile = tempDir.appendingPathComponent("raycast-snapshot.json", isDirectory: false)
         defer {
-            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
             try? FileManager.default.removeItem(at: tempDir)
         }
         let lamp = SmartDevice(
@@ -129,7 +125,7 @@ struct AppURLCommandTests {
         )
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [lamp])),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         try await store.waitForTestSnapshot()
         store.raycastSnapshotTestURL = snapshotFile
@@ -372,9 +368,6 @@ struct AppURLCommandTests {
     @Test("Parameterized links write exact values, clamp to the device's range, and report the result")
     @MainActor
     func parameterizedControlsWriteExactValues() async throws {
-        let suite = "test.raycast.controls.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-
         let rooms = [
             RoomArea(id: "living", name: "客厅", sortOrder: 0),
             RoomArea(id: "study", name: "书房", sortOrder: 1),
@@ -440,7 +433,7 @@ struct AppURLCommandTests {
         )
 
         let provider = MockHomeProvider(snapshot: SynthesizedHome(rooms: rooms, devices: [light, ac, fan, offlineLamp]))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         func device(_ id: String) -> SmartDevice? {
@@ -572,9 +565,6 @@ struct AppURLCommandTests {
     @Test("A power link opens or closes a travelling cover instead of pausing it")
     @MainActor
     func powerLinkDrivesCoverInTheRequestedDirection() async throws {
-        let suite = "test.raycast.cover.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-
         let openingCurtain = SmartDevice(
             id: "dev_opening_curtain",
             name: "客厅窗帘",
@@ -616,7 +606,7 @@ struct AppURLCommandTests {
             ],
             devices: [openingCurtain, closingWindow]
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         // Off while the curtain is opening closes it: the three-way tile toggle would pause it.
@@ -641,9 +631,6 @@ struct AppURLCommandTests {
     @Test("A power link keeps the high-risk confirmation gate and refuses an unconfirmed heater")
     @MainActor
     func powerLinkKeepsHazardConfirmation() async throws {
-        let suite = "test.raycast.hazard.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-
         let heater = SmartDevice(
             id: "dev_water_heater",
             name: "热水器",
@@ -663,7 +650,7 @@ struct AppURLCommandTests {
             rooms: [RoomArea(id: "bathroom", name: "卫生间", sortOrder: 0)],
             devices: [heater]
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         store.manualControlConfirmationHandler = { _ in false }
@@ -731,9 +718,6 @@ struct AppURLCommandTests {
     @Test("Direct natural-language fan preset command refuses unpublished modes and lists available ones (#21)")
     @MainActor
     func directFanPresetRefusesUnpublishedModeAndListsAvailable() async throws {
-        let suite = "test.raycast.fanpreset.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-
         let twoModeFan = SmartDevice(
             id: "dev_two_mode_fan",
             name: "卧室风扇",
@@ -771,7 +755,7 @@ struct AppURLCommandTests {
             ],
             devices: [twoModeFan, noPresetFan]
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         let missingFav = await store.executeRaycastDirectCommand("把卧室风扇设为最爱模式")
@@ -794,9 +778,6 @@ struct AppURLCommandTests {
     @Test("Direct fan preset succeeds when percentage speed is read-only but preset modes are writable (#263)")
     @MainActor
     func directFanPresetSucceedsWhenSpeedReadOnlyButPresetsWritable() async throws {
-        let suite = "test.raycast.fanpreset.readonlyspeed.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-
         let readOnlySpeedFan = SmartDevice(
             id: "dev_readonly_speed_fan",
             name: "客厅风扇",
@@ -817,7 +798,7 @@ struct AppURLCommandTests {
             rooms: [RoomArea(id: "living", name: "客厅", sortOrder: 0)],
             devices: [readOnlySpeedFan]
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         // 1. Natural language preset command works despite speedWritable == false
