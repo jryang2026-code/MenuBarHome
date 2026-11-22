@@ -851,8 +851,7 @@ export function previewDeviceCategorySelection(options: {
   readonly ruleStore: AutomationRuleStore;
   readonly safetyPolicy: SafetyRetentionPolicy;
   readonly preferences?: CapabilityReferenceGraph["preferences"];
-  readonly expectedGeneration?: number | null;
-  readonly currentGeneration?: number | null;
+  readonly expectedGeneration?: string;
   readonly languagePreference?: LanguagePreference;
 }): DeviceTypeSelectionPreview {
   const pref = effectivePref(options.languagePreference);
@@ -876,6 +875,18 @@ export function previewDeviceCategorySelection(options: {
     devById,
     sceneById,
   });
+  const rules = options.ruleStore.load();
+  const quickActions = BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({
+    id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id),
+  }));
+  const corruptedStoreReasons = options.scheduledCommandStore.hasStorageError() ? ["scheduledCommands"] : [];
+  const timerQueues = options.scheduledCommandStore.entries().filter(([, queue]) =>
+    queue.scheduledCommands.length > 0 || queue.missedScheduledCommands.length > 0 || (queue.pausedScheduledCommands?.length ?? 0) > 0);
+  // Include the full references so replacing a timer or rule under the same ID also needs review.
+  const generation = JSON.stringify([
+    current, proposedCategories, index, options.safetyPolicy, options.preferences, sceneRefs,
+    options.activeTimerIdentity, timerQueues, rules, quickActions, corruptedStoreReasons,
+  ]);
   const verdict = evaluateCapabilityDeactivation(
     current,
     { ...current, enabledCategories: proposedCategories },
@@ -884,15 +895,13 @@ export function previewDeviceCategorySelection(options: {
     options.safetyPolicy,
     {
       timers,
-      automations: options.ruleStore.load().map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
-      quickActions: BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({
-        id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id),
-      })),
+      automations: rules.map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
+      quickActions,
       scenes: sceneRefs,
       ...(options.preferences ? { preferences: options.preferences } : {}),
-      ...(options.scheduledCommandStore.hasStorageError() ? { corruptedStoreReasons: ["scheduledCommands"] } : {}),
+      corruptedStoreReasons,
       expectedGeneration: options.expectedGeneration ?? null,
-      currentGeneration: options.currentGeneration ?? null,
+      currentGeneration: generation,
     },
   );
 
@@ -914,6 +923,7 @@ export function previewDeviceCategorySelection(options: {
     retainedSafetyCards.push({ id: entry.id, name: deviceById.get(entry.id)?.name ?? entry.name, category: entry.category });
   }
   return {
+    generation,
     currentCategories: DEVICE_CATEGORY_IDS.filter((id) => current.enabledCategories.includes(id)),
     proposedCategories: DEVICE_CATEGORY_IDS.filter((id) => proposedSet.has(id)),
     hiddenCards,

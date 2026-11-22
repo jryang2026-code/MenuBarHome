@@ -931,7 +931,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const safetyDeviceIds = new Set<string>();
   const hiddenDevices: CapabilityIndexedDevice[] = [];
   const hiddenDeviceIds = new Set<string>();
-  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
+  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = Object.create(null);
 
   for (const account of accounts) { const child = children[account.id];
     if (!child) continue;

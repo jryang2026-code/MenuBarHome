@@ -1150,10 +1150,9 @@ export class HomeAssistantSynthesizer {
           auxiliarySignalsByDeviceId: auxiliarySignals,
         })
       : null;
-    const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
-    for (const item of pending) {
-      safetySignalsByDeviceId[item.card.id] = haCardSafetySignals(item.card, auxiliarySignals.get(item.card.id) ?? []);
-    }
+    const safetySignalsByDeviceId = Object.fromEntries(pending.map(({ card }) => [
+      card.id, haCardSafetySignals(card, auxiliarySignals.get(card.id) ?? []),
+    ]));
     const devices: SmartDevice[] = [];
     const deviceFacets: Record<string, FacetControl[]> = {};
     const safetyDevices: SmartDevice[] = [];

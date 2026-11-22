@@ -363,8 +363,7 @@ export function buildMiotTypePrunePlan(options: MiotTypePruneOptions): MiotTypeP
     if (key !== undefined) readKeys.push(key);
   }
   const hiddenIndexedDevices = indexed.filter((device) => !visibleIds.has(device.id));
-  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
-  for (const device of indexed) safetySignalsByDeviceId[device.id] = device.safetySignals;
+  const safetySignalsByDeviceId = Object.fromEntries(indexed.map((device) => [device.id, device.safetySignals]));
 
   return {
     partition,

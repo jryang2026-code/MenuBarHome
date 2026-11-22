@@ -79,7 +79,7 @@ export interface CapabilityReferenceGraph {
   readonly timers?: readonly TimerReference[]; readonly automations?: readonly AutomationReference[];
   readonly quickActions?: readonly QuickActionReference[]; readonly scenes?: readonly SceneReference[];
   readonly deviceGroups?: readonly DeviceGroupReference[]; readonly preferences?: PreferenceReferenceSet;
-  readonly corruptedStoreReasons?: readonly string[]; readonly expectedGeneration?: number | null; readonly currentGeneration?: number | null;
+  readonly corruptedStoreReasons?: readonly string[]; readonly expectedGeneration?: number | string | null; readonly currentGeneration?: number | string | null;
 }
 
 export type DeactivationDisposition = "allowed" | "requiresPauseConfirmation" | "blocked";
@@ -278,7 +278,9 @@ export function evaluateCapabilityDeactivation(
 
   const blocking: CapabilityBlockingReason[] = [];
   if (references.expectedGeneration != null && references.currentGeneration != null && references.expectedGeneration !== references.currentGeneration) {
-    blocking.push({ kind: "stalePreviewGeneration", referenceId: "generation", detail: `${references.expectedGeneration}!=${references.currentGeneration}` });
+    const detail = typeof references.expectedGeneration === "number" && typeof references.currentGeneration === "number"
+      ? `${references.expectedGeneration}!=${references.currentGeneration}` : "preview changed";
+    blocking.push({ kind: "stalePreviewGeneration", referenceId: "generation", detail });
   }
   for (const store of references.corruptedStoreReasons ?? []) blocking.push({ kind: "corruptedReferenceStore", referenceId: store, detail: store });
 

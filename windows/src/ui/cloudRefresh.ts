@@ -1,6 +1,7 @@
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
+import { deviceCategoryForDevice } from "../core/capabilityManifest.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
@@ -180,7 +181,7 @@ export interface HostMiotTypePruneSnapshot {
   readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
-/** The three host fields the off-panel Mi snapshot owns; every production host is wider. */
+/** The host fields the Mi prune snapshot owns. */
 export interface MiotTypePruneHostSlice {
   safetyRetainedDevices?: SmartDevice[];
   safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
@@ -202,7 +203,10 @@ export function applyMiotTypePruneSnapshot(
  * Drops one Mi account's off-panel devices right after it is disabled: until the next refresh
  * rewrites the snapshot, its retained sensors would otherwise keep evaluating (P3a-W).
  */
-export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice, accountId: string): void {
+export function dropMiotTypePruneSnapshotForAccount(
+  host: MiotTypePruneHostSlice & { readonly devices?: readonly SmartDevice[] },
+  accountId: string,
+): void {
   const scope = miAccountScope(accountId);
   const ownedByAccount = (device: { readonly id: string; readonly accountId?: string }): boolean =>
     device.accountId === accountId || device.id.startsWith(`${accountId}/`);
@@ -210,11 +214,18 @@ export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice
   const dropped = new Set(retained.filter(ownedByAccount).map((device) => device.id));
   const facets: Record<string, readonly FacetControl[]> = { ...(host.safetyRetainedDeviceFacets ?? {}) };
   for (const id of dropped) delete facets[id];
+  const droppedSignalIds = new Set([
+    ...dropped,
+    ...(host.devices ?? []).filter(ownedByAccount).map((device) => device.id),
+    ...(host.hiddenMiDevices ?? []).filter((device) => device.sourceScope === scope).map((device) => device.id),
+  ]);
   applyMiotTypePruneSnapshot(host, {
     safetyDevices: retained.filter((device) => !dropped.has(device.id)),
     safetyDeviceFacets: facets,
     hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
-    ...(host.miTypeSafetySignals ? { safetySignalsByDeviceId: host.miTypeSafetySignals } : {}),
+    safetySignalsByDeviceId: Object.fromEntries(
+      Object.entries(host.miTypeSafetySignals ?? {}).filter(([id]) => !droppedSignalIds.has(id)),
+    ),
   });
 }
 
@@ -331,14 +342,6 @@ export function hiddenTypeDevices(
   return ha.length === 0 ? mi : [...mi, ...ha];
 }
 
-/** Both sources' per-card signals; a Home Assistant map from an endpoint the app left is ignored. */
-export function typeSafetySignalsByDeviceId(
-  host: HaTypePruneHostFields & { readonly miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>> },
-): Readonly<Record<string, readonly SafetySignalKind[]>> {
-  const ha = haTypePruneSnapshotIsCurrent(host) ? host.haTypeSafetySignals ?? {} : {};
-  return { ...ha, ...(host.miTypeSafetySignals ?? {}) };
-}
-
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
   Boolean(session && isMiSessionEnabledInState(session, resolveHostMiSelectionState(host, [makeMiAccount(session)])));
 
@@ -429,7 +432,27 @@ export function buildHostCapabilityContext(
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   const hidden = hiddenTypeDevices(host);
-  const signals = typeSafetySignalsByDeviceId(host);
+  const haSignals = haTypePruneSnapshotIsCurrent(host) ? host.haTypeSafetySignals ?? {} : {};
+  const miSignals = host.settings.connectionMode === "xiaomiCloud" || dualEnabled ? host.miTypeSafetySignals ?? {} : {};
+  const signals: Record<string, readonly SafetySignalKind[]> = Object.create(null);
+  const getSignals = (id: string, isHA: boolean) => {
+    const byId = isHA ? haSignals : miSignals;
+    return Object.hasOwn(byId, id) ? byId[id] : undefined;
+  };
+  for (const device of host.devices ?? []) {
+    const route = dualRoutes?.[device.id];
+    if (route) {
+      const winnerIsHA = route.backend === "homeAssistant";
+      const winner = getSignals(route.sourceDeviceId, winnerIsHA);
+      const alternate = route.alternateDevice;
+      const other = alternate && deviceCategoryForDevice(alternate) === deviceCategoryForDevice(device)
+        ? getSignals(alternate.id, !winnerIsHA) : undefined;
+      if (winner || other) signals[device.id] = [...new Set([...(winner ?? []), ...(other ?? [])])];
+    } else {
+      const own = getSignals(device.id, device.sourceBackend === "homeAssistant" || host.settings.connectionMode === "homeAssistant");
+      if (own) signals[device.id] = own;
+    }
+  }
   const context: HostCapabilityContextInput = {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(hidden.length ? { hiddenDevices: hidden } : {}),
@@ -903,15 +926,13 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       // which cards closing a type would keep reading.
       applyHaTypePruneSnapshot(host, prune === null
         ? null
-        : synthesized.prunePlan === null
-          ? { scope: prune.connectionScope, safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId }
-          : {
-              scope: prune.connectionScope,
-              safetyDevices: synthesized.safetyDevices,
-              ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
-              hiddenDevices: synthesized.hiddenIndexedDevices,
-              safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
-            });
+        : {
+            scope: prune.connectionScope,
+            safetyDevices: synthesized.safetyDevices,
+            ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
+            hiddenDevices: synthesized.hiddenIndexedDevices,
+            safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
+          });
       host.scenes = home.scenes;
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
