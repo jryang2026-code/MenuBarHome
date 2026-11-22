@@ -313,7 +313,11 @@ extension HomeStore {
                 for id in sent.keys {
                     guard let write = writes[id],
                           let brightness = Self.assistantEffect(of: .brightness(15), on: write.previous) else { continue }
-                    revert(write, restoring: brightness.updated)
+                    let restored = devices.first(where: { $0.id == id })?.mergingOptimisticFields(
+                        from: brightness.updated,
+                        lockedFields: write.fields
+                    )
+                    revert(write, restoring: restored)
                 }
                 undoCommands.removeAll { entry in
                     guard sent[entry.deviceId] != nil else { return false }
