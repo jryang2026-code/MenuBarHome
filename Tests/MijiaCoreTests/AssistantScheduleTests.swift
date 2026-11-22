@@ -45,7 +45,7 @@ struct AssistantScheduleTests {
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider, ScheduledCommandTestSupport.SleepGate) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedule.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         let gate = ScheduledCommandTestSupport.SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
@@ -241,7 +241,7 @@ struct AssistantUndoTests {
     @MainActor
     func undoTimerDoesNotUndoDeviceAction() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.timer.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         _ = await store.runAssistantCommand("关闭书房吸顶灯")
         #expect(store.devices.first?.isActiveOn == false)
@@ -262,7 +262,7 @@ struct AssistantUndoTests {
     @MainActor
     func voiceUndo() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         _ = await store.runAssistantCommand("关闭书房吸顶灯")
         #expect(store.devices.first?.isActiveOn == false)

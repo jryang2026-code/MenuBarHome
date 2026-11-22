@@ -466,13 +466,12 @@ struct AssistantToggleAndProviderRemovalTests {
     @Test("Toggling persists across a store restart")
     @MainActor
     func togglePersistsAcrossRestart() async throws {
-        let suite = "test.assistant.toggle.persist.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         // A legacy user's explicit off must survive a restart.
         #expect(store.aiAssistantEnabled == true)
@@ -480,8 +479,8 @@ struct AssistantToggleAndProviderRemovalTests {
 
         let restarted = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         try await restarted.waitForTestSnapshot()
         #expect(restarted.aiAssistantEnabled == false)

@@ -449,7 +449,7 @@ struct AssistantTests {
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.assistant.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         return (store, mock)

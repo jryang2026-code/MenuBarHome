@@ -50,9 +50,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("HA disconnect hands the paired card to Mi Cloud with its favorite and alias intact")
     func haDisconnectKeepsPreferences() async throws {
-        let suite = "test.dual.fallback.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let suiteDefaults = try #require(UserDefaults(suiteName: suite))
+        let suiteDefaults = InMemoryUserDefaults()
         suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteDeviceIds)
         suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteOrder)
 
@@ -100,7 +98,7 @@ struct DualSourceIntegrationTests {
         await miMock.holdSnapshots()
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: suiteDefaults
         )
         defer { store.stop() }
 
@@ -174,9 +172,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Mi-first preferences choose the Mi id as the canonical id while HA drives the card")
     func miPreferencesChooseMiCanonical() async throws {
-        let suite = "test.dual.preferences.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         defaults.set([did], forKey: ViewPreferenceKeys.favoriteDeviceIds)
 
         let haDevice = light(
@@ -223,7 +219,7 @@ struct DualSourceIntegrationTests {
                 homeAssistant: MockHomeProvider(snapshot: haHome),
                 xiaomiCloud: MockHomeProvider(snapshot: miHome)
             ),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { store.stop() }
         await waitUntil {
@@ -239,9 +235,6 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Auto-seeded favorites written before the second source arrives still pick the canonical id")
     func autoSeededFavoritesChooseCanonical() async throws {
-        let suite = "test.dual.autoseed.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haDevice = light(
             id: haID,
             name: "客厅吸顶灯",
@@ -285,7 +278,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         defer { store.stop() }
 
@@ -399,9 +392,6 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Undo after source handoff retargets restore commands to the active source")
     func undoRetargetsAfterSourceSwitch() async throws {
-        let suite = "test.dual.undo.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         var haDevice = light(
             id: haID,
             name: "客厅吸顶灯",
@@ -449,7 +439,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         defer { store.stop() }
 
@@ -489,9 +479,6 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Source handoff cancels in-flight debounced slider writes from the old source")
     func sourceHandoffCancelsStaleDebouncedWrite() async throws {
-        let suite = "test.dual.debounce.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let haDevice = light(
             id: haID,
             name: "客厅吸顶灯",
@@ -535,7 +522,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         defer { store.stop() }
         store.controlDebounceInterval = .milliseconds(120)
@@ -573,8 +560,6 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Per-source statuses update after both snapshots are dropped")
     func sourceStatusesSurviveBothOffline() async throws {
-        let suite = "test.dual.statuses.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         let haDevice = light(
             id: "ha-status-light",
             name: "客厅灯",
@@ -593,7 +578,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: home([miDevice], identities: [:]))
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         defer { store.stop() }
         store.hasHASource = true
@@ -629,9 +614,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Source pin propagates in memory even when UserDefaults loses the persisted value")
     func pinPropagatesViaInMemoryBoxWhenDefaultsDropWrite() async throws {
-        let suite = "test.dual.pinbox.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let haDevice = light(
             id: haID,
@@ -664,7 +647,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { store.stop() }
 
@@ -705,9 +688,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("disconnectHomeAssistant drops HA, switches live backend to Xiaomi Cloud, or clears when Mi is absent")
     func disconnectHomeAssistantTransitionsCleanly() async throws {
-        let suite = "test.dual.disconnect_ha.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let session = MiSession(
             userId: "42", cUserId: "c", ssecurity: "s", serviceToken: "token",
@@ -718,7 +699,7 @@ struct DualSourceIntegrationTests {
 
         let storeWithMi = HomeStore(
             dualSource: (homeAssistant: MockHomeProvider(), xiaomiCloud: MockHomeProvider()),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { storeWithMi.logoutMiAccount() }
         defer { storeWithMi.stop() }
@@ -734,9 +715,7 @@ struct DualSourceIntegrationTests {
         #expect(KeychainHelper.loadToken(defaults: defaults).isEmpty)
 
         // When no Mi account exists, disconnecting HA clears the stale HA devices/scenes.
-        let suiteNoMi = "test.dual.disconnect_ha_only.\(UUID().uuidString)"
-        let defaultsNoMi = try #require(UserDefaults(suiteName: suiteNoMi))
-        defer { defaultsNoMi.removePersistentDomain(forName: suiteNoMi) }
+        let defaultsNoMi = InMemoryUserDefaults()
         #expect(KeychainHelper.saveToken("ha-token", defaults: defaultsNoMi))
         let haMock = MockHomeProvider(snapshot: home([
             light(id: haID, name: "客厅灯", roomID: "ha-living", roomName: "客厅", entityId: "light.living")
@@ -744,7 +723,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider()
         let haOnlyStore = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suiteNoMi
+            defaults: defaultsNoMi
         )
         defer { haOnlyStore.switchBackend(.demo) }
         defer { haOnlyStore.stop() }
@@ -760,9 +739,6 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Transient Xiaomi Cloud disconnect retains unpaired Mi-only cards as offline+stale with favorites and aliases intact, then recovers")
     func transientMiDisconnectRetainsUnpairedCardsAndRecovers() async throws {
-        let suite = "test.dual.retain_unpaired.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-
         let pairedHA = light(
             id: haID,
             name: "客厅吸顶灯",
@@ -806,7 +782,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         defer { store.stop() }
 
@@ -865,9 +841,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Disconnecting 1 of 2 Xiaomi accounts fails over its paired cards to Home Assistant while aggregate Mi status stays connected")
     func multiAccountSingleDisconnectFailsOverPairedCardToHA() async throws {
-        let suite = "test.dual.multi_acc_failover.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let suiteDefaults = try #require(UserDefaults(suiteName: suite))
+        let suiteDefaults = InMemoryUserDefaults()
         // Without an explicit list, a Mi snapshot arriving first seeds favorites with the Mi id and
         // makes it the paired card's canonical id.
         suiteDefaults.set([String](), forKey: ViewPreferenceKeys.favoriteDeviceIds)
@@ -932,7 +906,7 @@ struct DualSourceIntegrationTests {
         let miMock = MockHomeProvider(snapshot: miHomeBothConnected)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miMock),
-            defaultsSuiteName: suite
+            defaults: suiteDefaults
         )
         defer { store.stop() }
 
@@ -1223,9 +1197,7 @@ struct DualSourceIntegrationTests {
     @MainActor
     @Test("Expired Xiaomi account immediately switches paired cards and commands to HA while healthy accounts stay on Mi Cloud")
     func expiredXiaomiAccountSwitchesPairedCardsAndCommandsToHA() async throws {
-        let suite = "test.dual.expired_acc_handoff.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let session1 = MiSession(
             userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-1", serviceToken: "tok-cn", region: "cn"
@@ -1330,7 +1302,7 @@ struct DualSourceIntegrationTests {
         let haMock = MockHomeProvider(snapshot: haHome)
         let store = HomeStore(
             dualSource: (homeAssistant: haMock, xiaomiCloud: miAccounts),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { store.stop() }
 

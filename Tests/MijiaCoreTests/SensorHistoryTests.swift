@@ -185,9 +185,7 @@ struct SensorHistoryTests {
     @Test("Scopes sensor history by source connection so identical entity IDs on different servers stay isolated")
     @MainActor
     func isolatesHistoryAcrossConnections() throws {
-        let suiteName = "SensorHistoryTests.scope.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let cal = Self.fixedCalendar()
         let history = SensorHistory(defaults: defaults, calendar: cal, connectionScope: "ha:http://192.168.1.10:8123")
