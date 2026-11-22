@@ -123,28 +123,29 @@ struct CompanionIntegrationToggleTests {
     @Test("Disconnect reports a retained snapshot and retries removal while off")
     func reportsDeletionFailureAndRetries() async throws {
         let store = try await Self.makeStore()
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let directory = workspace.appendingPathComponent("snapshot", isDirectory: true)
+        let retainedDirectory = workspace.appendingPathComponent("retained", isDirectory: true)
         let snapshotURL = directory.appendingPathComponent("raycast-snapshot.json")
         let fm = FileManager.default
-        defer {
-            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
-            try? fm.removeItem(at: directory)
-        }
+        defer { try? fm.removeItem(at: workspace) }
         store.raycastSnapshotTestURL = snapshotURL
         #expect(store.setCompanionIntegrationEnabled(true))
-        try fm.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        try fm.moveItem(at: directory, to: retainedDirectory)
+        // A link loop makes the path inaccessible even when the CI container runs as root.
+        try fm.createSymbolicLink(atPath: directory.path, withDestinationPath: directory.lastPathComponent)
 
         #expect(!store.disconnectCompanionIntegration())
         #expect(!store.companionIntegrationEnabled && store.raycastBridgeToken == nil)
         #expect(store.toastNotice?.isError == true)
-        let report = store.checkCompanionIntegrationStatus()
-        #expect(report.status == .needsAttention && report.snapshotPresent)
-
-        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: directory.path)
         let inaccessible = store.checkCompanionIntegrationStatus()
         #expect(inaccessible.status == .needsAttention && !inaccessible.snapshotPresent)
 
-        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        try fm.removeItem(at: directory)
+        try fm.moveItem(at: retainedDirectory, to: directory)
+        let report = store.checkCompanionIntegrationStatus()
+        #expect(report.status == .needsAttention && report.snapshotPresent)
+
         #expect(store.disconnectCompanionIntegration())
         #expect(store.toastNotice?.isError == false)
         #expect(store.checkCompanionIntegrationStatus().status == .disabled)
