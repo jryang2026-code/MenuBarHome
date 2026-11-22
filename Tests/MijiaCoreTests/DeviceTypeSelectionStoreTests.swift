@@ -1,6 +1,5 @@
 import Foundation
 import KeychainTestSupport
-import os
 import PreferencesTestSupport
 import StateTestSupport
 import Testing
@@ -169,10 +168,10 @@ struct DeviceTypeSelectionStoreTests {
             provider: MockHomeProvider(snapshot: Self.homeSnapshot(devices: [Self.light, activePlug, Self.leakSensor]))
         )
         store.setAIAssistantEnabled(true)
-        let capturedBodies = OSAllocatedUnfairLock(initialState: [String]())
+        let capturedBodies = CapturedBodies()
         store.assistantResolverOverride = ModelIntentResolver(config: AssistantConfig(model: "glm-5.1"), transport: { request in
             let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
-            capturedBodies.withLock { $0.append(body) }
+            capturedBodies.append(body)
             let ok = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": #"{"actions":[],"reply":""}"#]]]])
             return (ok, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
         })
@@ -187,7 +186,7 @@ struct DeviceTypeSelectionStoreTests {
         #expect(store.filteredDevices.map(\.id).sorted() == [Self.leakSensor.id, Self.light.id].sorted())
 
         _ = await store.runAssistantCommand("我要睡觉了")
-        let closedCatalog = try #require(capturedBodies.withLock { $0.last })
+        let closedCatalog = try #require(capturedBodies.last)
         #expect(!closedCatalog.contains(Self.plug.name))
         #expect(closedCatalog.contains(Self.light.name))
         #expect(!store.buildAssistantContext(mention: .none).activeDevicesSummary.contains(Self.plug.name))
@@ -198,7 +197,7 @@ struct DeviceTypeSelectionStoreTests {
         #expect(store.raycastVisibleDevices.contains { $0.id == Self.plug.id })
 
         _ = await store.runAssistantCommand("我要睡觉了")
-        let reopenedCatalog = try #require(capturedBodies.withLock { $0.last })
+        let reopenedCatalog = try #require(capturedBodies.last)
         #expect(reopenedCatalog.contains(Self.plug.name))
     }
 
@@ -233,4 +232,11 @@ struct DeviceTypeSelectionStoreTests {
 
 private extension DeviceTypeSelectionOutcome {
     var isRefused: Bool { if case .refused = self { true } else { false } }
+}
+
+private final class CapturedBodies: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bodies: [String] = []
+    func append(_ body: String) { lock.withLock { bodies.append(body) } }
+    var last: String? { lock.withLock { bodies.last } }
 }
