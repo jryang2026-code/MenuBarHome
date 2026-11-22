@@ -642,14 +642,21 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
       "the loading state is spoken through the persistent live region",
     );
 
+    app.render();
     pendingVault.resolve?.(miSessionPayload);
     await setImmediate();
     await setImmediate();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
 
     assert.equal(app.onboardingAwaitingCredentials, false);
     assert.equal(app.activeSheet, "none", "a vault-backed Mi session must not re-show onboarding");
     assert.equal(app.settings.miSession?.userId, "10086");
     assert.equal(document.querySelector("[data-onboarding-loading]"), null);
+    assert.equal(
+      el("[data-onboarding-announcer]").textContent,
+      "",
+      "the queued loading announcement must stay cleared after the guide closes",
+    );
   });
 
   it("reveals the full guide after hydration when the credential store is empty (P2-6)", async () => {

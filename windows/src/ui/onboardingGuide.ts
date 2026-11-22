@@ -248,6 +248,7 @@ function renderGuideFocused(host: OnboardingRenderViewHost, selector: string): v
  * is mounted once beside the panel root instead, and only its `textContent` changes afterwards.
  */
 const guideAnnouncerByRoot = new WeakMap<HTMLElement, HTMLElement>();
+const guideAnnouncementTimerByNode = new WeakMap<HTMLElement, number>();
 
 function guideAnnouncer(root: HTMLElement): HTMLElement {
   const existing = guideAnnouncerByRoot.get(root);
@@ -264,14 +265,25 @@ function guideAnnouncer(root: HTMLElement): HTMLElement {
   return node;
 }
 
+function cancelGuideAnnouncementTimer(node: HTMLElement): void {
+  const timer = guideAnnouncementTimerByNode.get(node);
+  if (timer === undefined) return;
+  window.clearTimeout(timer);
+  guideAnnouncementTimerByNode.delete(node);
+}
+
 /** Writes a message into the persistent announcer; repeated text is cleared first so it re-announces. */
 function announceGuideStatus(host: OnboardingRenderViewHost, message: string): void {
+  if (host.activeSheet !== "onboarding") return;
   const node = guideAnnouncer(host.root);
+  cancelGuideAnnouncementTimer(node);
   if (node.textContent === message) {
     node.textContent = "";
-    window.setTimeout(() => {
-      if (node.isConnected) node.textContent = message;
+    const timer = window.setTimeout(() => {
+      guideAnnouncementTimerByNode.delete(node);
+      if (node.isConnected && host.activeSheet === "onboarding") node.textContent = message;
     }, 0);
+    guideAnnouncementTimerByNode.set(node, timer);
     return;
   }
   node.textContent = message;
@@ -279,7 +291,9 @@ function announceGuideStatus(host: OnboardingRenderViewHost, message: string): v
 
 function clearGuideAnnouncement(host: OnboardingRenderViewHost): void {
   const node = guideAnnouncerByRoot.get(host.root);
-  if (node) node.textContent = "";
+  if (!node) return;
+  cancelGuideAnnouncementTimer(node);
+  node.textContent = "";
 }
 
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
@@ -496,6 +510,7 @@ function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: Onbo
 export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   if (host.activeSheet !== "onboarding") {
     clearOnboardingSession(host);
+    clearGuideAnnouncement(host);
     return;
   }
   const sheet = host.root.querySelector<HTMLElement>(".cc-sheet:not(.cc-settings-sheet)");
@@ -1230,8 +1245,6 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     host.activeSheet = "none";
     invokeTauriVoid("set_pin_popover", { pin: host.shouldKeepPopoverPinned() });
     host.render();
-    // A pending/verified message belongs to the guide that just closed (CODING_STANDARDS §13).
-    clearGuideAnnouncement(host);
   };
 
   sheet.querySelector("#btn-close-onboarding")?.addEventListener("click", () => completeAndClose(true));
