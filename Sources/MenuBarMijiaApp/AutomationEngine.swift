@@ -63,6 +63,7 @@ final class AutomationEngine {
     private var contextObservationID: UUID?
     private var wasEnabled = true
     private var resumedAt: Date?
+    private var resumeSuppressionUntil: [String: Date] = [:]
     private let now: () -> Date
     var isObservingSystem: Bool { !tokens.isEmpty }
     private var lastExternalDisplayCount = 0
@@ -221,7 +222,10 @@ final class AutomationEngine {
     func rulesDidChange() {
         guard let store else { return }
         let enabled = store.eventAutomationEnabled
-        if enabled && !wasEnabled { resumedAt = now() }
+        if enabled != wasEnabled {
+            resumedAt = enabled ? now() : nil
+            resumeSuppressionUntil.removeAll()
+        }
         wasEnabled = enabled
 
         let rules = enabled ? ruleStore.load() : []
@@ -339,7 +343,20 @@ final class AutomationEngine {
         )
         let previous = lastContext
         lastContext = effective
-        for rule in ruleStore.load() where rule.isEnabled {
+        let rules = ruleStore.load()
+        if let resumedAt {
+            // Capture the baseline once so later snapshots cannot suppress newly added events.
+            for rule in rules {
+                let events = MacContextAutomation.events(
+                    for: rule, previous: nil, current: effective, at: resumedAt, calendar: calendar
+                )
+                for event in events {
+                    resumeSuppressionUntil[event.dedupeKey] = resumedAt.addingTimeInterval(event.cooldown)
+                }
+            }
+            self.resumedAt = nil
+        }
+        for rule in rules where rule.isEnabled {
             guard generation == observationGeneration, contextID == contextObservationID,
                   store.eventAutomationEnabled else { break }
             guard ruleStore.load().contains(rule) else { continue }
@@ -364,13 +381,8 @@ final class AutomationEngine {
             )
             // Calendar rules return every eligible meeting; skip an already-fired event and let a
             // later meeting in the same lead window fire instead of being masked by it.
-            let alreadyEligibleAtResume = resumedAt.map {
-                Set(MacContextAutomation.events(
-                    for: rule, previous: nil, current: effective, at: $0, calendar: calendar
-                ).map(\.dedupeKey))
-            } ?? []
             guard events.contains(where: {
-                !alreadyEligibleAtResume.contains($0.dedupeKey)
+                now >= (resumeSuppressionUntil[$0.dedupeKey] ?? .distantPast)
                     && deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
             }) else { continue }
             await execute(rule, store: store)
