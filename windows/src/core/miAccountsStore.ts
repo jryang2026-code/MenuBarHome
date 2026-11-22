@@ -724,6 +724,8 @@ export interface AccountChildSnapshot { readonly account: MiAccount;
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   /** Index entries of the cards the type selection withholds, for the host write gate. */
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** The prune plan's per-card signals, drawn or not, for the device-type preview. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
   readonly status: ConnectionStatus;
   readonly tokenStatus: MiAccountTokenStatus;
   readonly error?: unknown;
@@ -748,6 +750,8 @@ export interface MergedMiAccountsSnapshot {
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   /** Union of the children's withheld index entries, for the host write gate. */
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** First-seen union of the connected children's per-card signals. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
@@ -927,6 +931,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const safetyDeviceIds = new Set<string>();
   const hiddenDevices: CapabilityIndexedDevice[] = [];
   const hiddenDeviceIds = new Set<string>();
+  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
 
   for (const account of accounts) { const child = children[account.id];
     if (!child) continue;
@@ -952,6 +957,9 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
         if (hiddenDeviceIds.has(key)) continue;
         hiddenDeviceIds.add(key);
         hiddenDevices.push(hidden);
+      }
+      for (const [id, signals] of Object.entries(child.safetySignalsByDeviceId ?? {})) {
+        if (!(id in safetySignalsByDeviceId)) safetySignalsByDeviceId[id] = signals;
       }
     }
 
@@ -1078,6 +1086,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     safetyDevices,
     safetyDeviceFacets,
     hiddenDevices,
+    safetySignalsByDeviceId,
   };
 }
 
@@ -1353,6 +1362,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
           ? { safetyDevices: stampedSafety.home.devices, safetyDeviceFacets: stampedSafety.home.deviceFacets ?? {} }
           : {}),
         ...(prune && prune.hiddenIndexedDevices.length > 0 ? { hiddenDevices: prune.hiddenIndexedDevices } : {}),
+        ...(prune ? { safetySignalsByDeviceId: prune.safetySignalsByDeviceId } : {}),
         status: { kind: "connected" },
         tokenStatus: freshTokenStatus,
       };

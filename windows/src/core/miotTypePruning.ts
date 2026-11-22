@@ -144,6 +144,11 @@ export interface MiotTypePrunePlan {
    * and to keep the identity index unpruned (architecture.md §D).
    */
   readonly hiddenIndexedDevices: readonly CapabilityIndexedDevice[];
+  /**
+   * Every classified card's own signals, drawn or not. The device-type preview reads this so it
+   * names the same retained cards this plan would keep once a type is closed.
+   */
+  readonly safetySignalsByDeviceId: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 interface ClassifiedPlan {
@@ -358,6 +363,8 @@ export function buildMiotTypePrunePlan(options: MiotTypePruneOptions): MiotTypeP
     if (key !== undefined) readKeys.push(key);
   }
   const hiddenIndexedDevices = indexed.filter((device) => !visibleIds.has(device.id));
+  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
+  for (const device of indexed) safetySignalsByDeviceId[device.id] = device.safetySignals;
 
   return {
     partition,
@@ -369,5 +376,6 @@ export function buildMiotTypePrunePlan(options: MiotTypePruneOptions): MiotTypeP
     visibleRecords,
     safetyRecords,
     hiddenIndexedDevices,
+    safetySignalsByDeviceId,
   };
 }

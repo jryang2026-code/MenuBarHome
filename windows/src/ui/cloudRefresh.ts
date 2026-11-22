@@ -176,6 +176,8 @@ export interface HostMiotTypePruneSnapshot {
   readonly safetyDevices?: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** The plan's own per-card signals, so the device-type preview names what pruning keeps. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 /** The three host fields the off-panel Mi snapshot owns; every production host is wider. */
@@ -183,6 +185,7 @@ export interface MiotTypePruneHostSlice {
   safetyRetainedDevices?: SmartDevice[];
   safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+  miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function applyMiotTypePruneSnapshot(
@@ -192,6 +195,7 @@ export function applyMiotTypePruneSnapshot(
   host.safetyRetainedDevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
   host.safetyRetainedDeviceFacets = snapshot?.safetyDeviceFacets ?? {};
   host.hiddenMiDevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+  host.miTypeSafetySignals = snapshot?.safetySignalsByDeviceId ?? {};
 }
 
 /**
@@ -210,6 +214,7 @@ export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice
     safetyDevices: retained.filter((device) => !dropped.has(device.id)),
     safetyDeviceFacets: facets,
     hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
+    ...(host.miTypeSafetySignals ? { safetySignalsByDeviceId: host.miTypeSafetySignals } : {}),
   });
 }
 
@@ -252,6 +257,8 @@ export interface HostHaTypePruneSnapshot {
   readonly safetyDevices?: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** Every card's own signals (`haCardSafetySignals`), kept even when this round pruned nothing. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 /** The host fields the off-panel Home Assistant snapshot owns; every production host is wider. */
@@ -260,6 +267,7 @@ export interface HaTypePruneHostSlice {
   safetyRetainedHADevices?: SmartDevice[];
   safetyRetainedHADeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenHADevices?: readonly CapabilityIndexedDevice[];
+  haTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function applyHaTypePruneSnapshot(
@@ -270,6 +278,7 @@ export function applyHaTypePruneSnapshot(
   host.safetyRetainedHADevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
   host.safetyRetainedHADeviceFacets = snapshot?.safetyDeviceFacets ?? {};
   host.hiddenHADevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+  host.haTypeSafetySignals = snapshot?.safetySignalsByDeviceId ?? {};
 }
 
 /**
@@ -320,6 +329,14 @@ export function hiddenTypeDevices(
   const mi = host.hiddenMiDevices ?? [];
   const ha = haTypePruneSnapshotIsCurrent(host) ? host.hiddenHADevices ?? [] : [];
   return ha.length === 0 ? mi : [...mi, ...ha];
+}
+
+/** Both sources' per-card signals; a Home Assistant map from an endpoint the app left is ignored. */
+export function typeSafetySignalsByDeviceId(
+  host: HaTypePruneHostFields & { readonly miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>> },
+): Readonly<Record<string, readonly SafetySignalKind[]>> {
+  const ha = haTypePruneSnapshotIsCurrent(host) ? host.haTypeSafetySignals ?? {} : {};
+  return { ...ha, ...(host.miTypeSafetySignals ?? {}) };
 }
 
 export const isHostMiSessionEnabled = (host: MiSelectionHost, session: MiSession | null | undefined): boolean =>
@@ -405,16 +422,18 @@ export function collectHostKnownScenes(
 }
 
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly unprunedCameraDevices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly unprunedCameraDevices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly haTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   const hidden = hiddenTypeDevices(host);
+  const signals = typeSafetySignalsByDeviceId(host);
   const context: HostCapabilityContextInput = {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(hidden.length ? { hiddenDevices: hidden } : {}),
+    ...(Object.keys(signals).length ? { safetySignalsByDeviceId: signals } : {}),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
     ...(dualRoutes ? { dualRoutes } : {}),
     haBaseURL: host.settings.haBaseURL ?? "", haToken: host.settings.haToken ?? "",
@@ -740,6 +759,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         safetyDevices: safetyHome?.devices.map((device) => ({ ...device, accountId })),
         safetyDeviceFacets: safetyHome?.deviceFacets,
         hiddenDevices: prunePlan.hiddenIndexedDevices.filter((device) => device.sourceScope === scope),
+        safetySignalsByDeviceId: prunePlan.safetySignalsByDeviceId,
       });
       markTimerSnapshotReady(host);
       if (completePendingMiRevalidation(host, [miAccountId(session)])) {
@@ -879,14 +899,19 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       applyMiotTypePruneSnapshot(host, null);
       // A closed type contributes nothing to the panel, search, the AI directory, the companion
       // export or a control entry; only its enabled alerts still read it (architecture.md §D).
-      applyHaTypePruneSnapshot(host, synthesized.prunePlan === null || prune === null
+      // An unpruned round still records each card's signals, so the device-type preview can say
+      // which cards closing a type would keep reading.
+      applyHaTypePruneSnapshot(host, prune === null
         ? null
-        : {
-            scope: prune.connectionScope,
-            safetyDevices: synthesized.safetyDevices,
-            ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
-            hiddenDevices: synthesized.hiddenIndexedDevices,
-          });
+        : synthesized.prunePlan === null
+          ? { scope: prune.connectionScope, safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId }
+          : {
+              scope: prune.connectionScope,
+              safetyDevices: synthesized.safetyDevices,
+              ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
+              hiddenDevices: synthesized.hiddenIndexedDevices,
+              safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
+            });
       host.scenes = home.scenes;
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
         void ingestHostHASnapshotForDoorbell(host, haClient.lastRawSnapshot as HASnapshotLike);
@@ -1550,6 +1575,7 @@ async function refreshMultiAccountXiaomiDevices(
       safetyDevices: merged.safetyDevices,
       safetyDeviceFacets: merged.safetyDeviceFacets,
       hiddenDevices: merged.hiddenDevices,
+      ...(merged.safetySignalsByDeviceId ? { safetySignalsByDeviceId: merged.safetySignalsByDeviceId } : {}),
     });
     if (merged.resetSelectedHome) {
       host.settings.selectedHomeId = null;
@@ -1826,6 +1852,7 @@ async function refreshDualSourceDevices(
               home: res.home,
               identity: homeAssistantIdentity(endpoint, token),
               identities: res.identities,
+              safetySignalsByDeviceId: res.safetySignalsByDeviceId,
               ...(haPrune !== null
                 ? {
                     safetyDevices: res.safetyDevices,
@@ -1874,6 +1901,7 @@ async function refreshDualSourceDevices(
           safetyDevices: merged.safetyDevices ?? [],
           safetyDeviceFacets: merged.safetyDeviceFacets ?? {},
           hiddenDevices: merged.hiddenDevices ?? [],
+          ...(merged.safetySignalsByDeviceId ? { safetySignalsByDeviceId: merged.safetySignalsByDeviceId } : {}),
         };
       },
     });
@@ -1918,6 +1946,7 @@ async function refreshDualSourceDevices(
       safetyDevices: lastMiSnapshot?.safetyDevices,
       safetyDeviceFacets: lastMiSnapshot?.safetyDeviceFacets,
       hiddenDevices: lastMiSnapshot?.hiddenDevices,
+      ...(lastMiSnapshot?.safetySignalsByDeviceId ? { safetySignalsByDeviceId: lastMiSnapshot.safetySignalsByDeviceId } : {}),
     });
     const lastHaSnapshot = coordinator.getLastHASnapshot();
     const haPruneScope = haConnectionScope(endpoint, token);
@@ -1927,6 +1956,7 @@ async function refreshDualSourceDevices(
           safetyDevices: lastHaSnapshot.safetyDevices,
           ...(lastHaSnapshot.safetyDeviceFacets ? { safetyDeviceFacets: lastHaSnapshot.safetyDeviceFacets } : {}),
           hiddenDevices: lastHaSnapshot.hiddenDevices,
+          ...(lastHaSnapshot.safetySignalsByDeviceId ? { safetySignalsByDeviceId: lastHaSnapshot.safetySignalsByDeviceId } : {}),
         }
       : null);
     if (haEnabledAtStart && haRawSnapshot && typeof haRawSnapshot === "object") {

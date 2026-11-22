@@ -30,10 +30,10 @@ import {
   type HAState,
 } from "./haDomains.js";
 import {
-  buildHaTypePrunePlan, haAuxiliarySafetySignals, haTypePruningActive,
+  buildHaTypePrunePlan, haAuxiliarySafetySignals, haCardSafetySignals, haTypePruningActive,
   type HaTypePruneOptions, type HaTypePrunePlan,
 } from "./haTypePruning.js";
-import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
+import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import { t } from "./i18n.js";
 import { sha256 } from "./miCloudCrypto.js";
 import { normalizedKelvinBounds } from "./miCloud/synthesis.js";
@@ -876,6 +876,8 @@ export interface HASynthesizedResult {
   readonly safetyDevices: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenIndexedDevices: readonly CapabilityIndexedDevice[];
+  /** Every card's own signals (`haCardSafetySignals`, no pin), for the device-type preview. */
+  readonly safetySignalsByDeviceId: Readonly<Record<string, readonly SafetySignalKind[]>>;
   /** `null` whenever this round pruned nothing, including every pre-P3b-W caller. */
   readonly prunePlan: HaTypePrunePlan | null;
 }
@@ -1148,6 +1150,10 @@ export class HomeAssistantSynthesizer {
           auxiliarySignalsByDeviceId: auxiliarySignals,
         })
       : null;
+    const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = {};
+    for (const item of pending) {
+      safetySignalsByDeviceId[item.card.id] = haCardSafetySignals(item.card, auxiliarySignals.get(item.card.id) ?? []);
+    }
     const devices: SmartDevice[] = [];
     const deviceFacets: Record<string, FacetControl[]> = {};
     const safetyDevices: SmartDevice[] = [];
@@ -1206,6 +1212,7 @@ export class HomeAssistantSynthesizer {
       safetyDevices,
       ...(Object.keys(safetyDeviceFacets).length > 0 ? { safetyDeviceFacets } : {}),
       hiddenIndexedDevices: prunePlan?.hiddenIndexedDevices ?? [],
+      safetySignalsByDeviceId,
       prunePlan,
     };
   }
