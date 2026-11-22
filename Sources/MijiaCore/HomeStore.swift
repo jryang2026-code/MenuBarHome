@@ -1143,6 +1143,10 @@ public final class HomeStore {
                     self.automationAvailabilityDidChange()
                 }
             }
+            if oldValue.enabledCategories.contains(.tv) != capabilitySelection.enabledCategories.contains(.tv),
+               let lgDev = latestLGDevice {
+                applyLGDeviceUpdate(lgDev)
+            }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
             // The cards are still in `devices` here; the next refresh prunes them, so the stop requests

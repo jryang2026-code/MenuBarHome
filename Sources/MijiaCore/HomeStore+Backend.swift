@@ -145,6 +145,13 @@ extension HomeStore {
             devices.removeAll { $0.id == dev.id }
             return
         }
+        // A closed TV type drops the card but keeps the report, so reopening the type restores it (#342).
+        guard capabilitySelection.enabledCategories.contains(.tv) else {
+            latestLGDevice = dev
+            lastReportedDevices.removeValue(forKey: dev.id)
+            devices.removeAll { $0.id == dev.id }
+            return
+        }
         var dev = dev
         if let matchedRoom = rooms.first(where: { $0.id == dev.roomId || $0.name == dev.roomName }) {
             dev.roomId = matchedRoom.id
@@ -675,7 +682,7 @@ extension HomeStore {
                     )
                 )
             }
-            if let lgDev = latestLGDevice, lgConfig.isEnabled,
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv),
                !merged.contains(where: { $0.id == lgDev.id }) {
                 rawDeviceNames[lgDev.id] = lgDev.name
                 pruneExpiredOptimisticLocks(for: lgDev.id, at: now)
@@ -692,7 +699,8 @@ extension HomeStore {
                 snapshot.devices.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
-            if let lgDev = latestLGDevice, lgConfig.isEnabled, nextReportedDevices[lgDev.id] == nil {
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv),
+               nextReportedDevices[lgDev.id] == nil {
                 nextReportedDevices[lgDev.id] = lgDev
             }
             lastReportedDevices = nextReportedDevices

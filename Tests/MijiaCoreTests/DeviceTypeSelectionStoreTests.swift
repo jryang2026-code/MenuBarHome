@@ -32,14 +32,27 @@ struct DeviceTypeSelectionStoreTests {
     )
     static let scene = HomeScene(id: "scene.movie", name: "观影", entityId: "scene.movie")
 
-    private func makeStore(defaults: InMemoryUserDefaults = InMemoryUserDefaults()) async throws -> HomeStore {
+    static let lgTV = SmartDevice(
+        id: LGWebOSProtocol.deviceId, name: "LG电视", roomId: "living", roomName: "客厅",
+        model: "lg.webos.oled42c2pca", isOnline: true,
+        kind: .tv(TVSpec(mediaEntityId: LGWebOSProtocol.mediaEntityId, state: "on", volumePercent: 12))
+    )
+
+    static func homeSnapshot(devices: [SmartDevice] = [light, plug, leakSensor]) -> SynthesizedHome {
+        var snapshot = SynthesizedHome(devices: devices, scenes: [scene])
+        snapshot.isInitialLoadComplete = true
+        return snapshot
+    }
+
+    private func makeStore(
+        defaults: InMemoryUserDefaults = InMemoryUserDefaults(),
+        provider: MockHomeProvider = MockHomeProvider(snapshot: homeSnapshot())
+    ) async throws -> HomeStore {
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         defaults.set(Self.haURL, forKey: "ha_server_url")
         defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
         _ = KeychainHelper.saveToken("ha-token", defaults: defaults, vault: vault)
-        var snapshot = SynthesizedHome(devices: [Self.light, Self.plug, Self.leakSensor], scenes: [Self.scene])
-        snapshot.isInitialLoadComplete = true
-        let store = HomeStore(provider: MockHomeProvider(snapshot: snapshot), credentialVault: vault, defaults: defaults)
+        let store = HomeStore(provider: provider, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.toastAutoDismissInterval = nil
         store.assistantNow = { Self.frozenNow }
@@ -142,6 +155,47 @@ struct DeviceTypeSelectionStoreTests {
         #expect(uncertain.isIdentityUncertain)
         #expect(uncertain.applyDeviceCategorySelection(DeviceCategoryPreset.lightAndSwitch.categorySet).isRefused)
         #expect(uncertain.capabilitySelection.enabledCategories == allTypes)
+    }
+
+    @Test("Closing a type takes its cards off the panel and Raycast at once, before any refresh prunes them")
+    func closedTypeCardsLeaveImmediately() async throws {
+        let store = try await makeStore()
+        let picked = allTypes.subtracting([.plug])
+
+        #expect(store.applyDeviceCategorySelection(picked) == .applied)
+        #expect(!store.filteredDevices.contains { $0.id == Self.plug.id })
+        #expect(!store.visibleDevices.contains { $0.id == Self.plug.id })
+        #expect(!store.raycastVisibleDevices.contains { $0.id == Self.plug.id })
+        #expect(store.filteredDevices.map(\.id).sorted() == [Self.leakSensor.id, Self.light.id].sorted())
+
+        #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
+        #expect(store.filteredDevices.contains { $0.id == Self.plug.id }, "reopening the type brings the card back")
+        #expect(store.raycastVisibleDevices.contains { $0.id == Self.plug.id })
+    }
+
+    @Test("Closing TVs drops the LAN LG card and keeps it out across updates; reopening restores it")
+    func closingTVsDropsLGCard() async throws {
+        let provider = MockHomeProvider(snapshot: Self.homeSnapshot())
+        let store = try await makeStore(provider: provider)
+        store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
+        store.applyLGDeviceUpdate(Self.lgTV)
+        #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id })
+
+        #expect(store.applyDeviceCategorySelection(allTypes.subtracting([.tv])) == .applied)
+        #expect(!store.devices.contains { $0.id == Self.lgTV.id })
+        #expect(!store.filteredDevices.contains { $0.id == Self.lgTV.id })
+
+        store.applyLGDeviceUpdate(Self.lgTV)
+        #expect(!store.devices.contains { $0.id == Self.lgTV.id }, "a fresh TV report stays hidden while TVs are closed")
+
+        var renamedLight = Self.light
+        renamedLight.name = "主灯"
+        await provider.updateSnapshot(Self.homeSnapshot(devices: [renamedLight, Self.plug, Self.leakSensor]))
+        try await awaitState { store.devices.contains { $0.name == "主灯" } }
+        #expect(!store.devices.contains { $0.id == Self.lgTV.id }, "a provider snapshot does not re-insert the TV")
+
+        #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
+        #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id }, "reopening TVs restores the card without a new report")
     }
 }
 
