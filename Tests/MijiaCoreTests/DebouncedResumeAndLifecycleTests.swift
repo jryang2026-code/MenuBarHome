@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -178,9 +179,7 @@ struct DebouncedResumeAndLifecycleTests {
     @MainActor
     func homeStoreDebouncedResumeLifecycle() async throws {
         let provider = CountingHomeProvider()
-        let suite = "test.resume.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
 
         let clock = VirtualClock()
@@ -248,9 +247,7 @@ struct DebouncedResumeAndLifecycleTests {
     func debouncedResumeRefreshRechecksShutdownAndProviderIdentityAfterAwait() async throws {
         // 1. Shutdown during await hook skips refreshNow()
         let shutdownProvider = CountingHomeProvider()
-        let suite1 = "test.resume.hook-shutdown.\(UUID().uuidString)"
-        let store1 = HomeStore(provider: shutdownProvider, defaultsSuiteName: suite1)
-        defer { UserDefaults(suiteName: suite1)?.removePersistentDomain(forName: suite1) }
+        let store1 = HomeStore(provider: shutdownProvider, defaults: InMemoryUserDefaults())
         try await store1.waitForTestSnapshot()
         store1.resumeDebounceInterval = .zero
         var hookRan1 = false
@@ -266,9 +263,7 @@ struct DebouncedResumeAndLifecycleTests {
         // 2. Provider replacement during await hook skips refreshing old or swapped provider
         let oldProvider = CountingHomeProvider()
         let newProvider = CountingHomeProvider()
-        let suite2 = "test.resume.hook-swap.\(UUID().uuidString)"
-        let store2 = HomeStore(provider: oldProvider, defaultsSuiteName: suite2)
-        defer { UserDefaults(suiteName: suite2)?.removePersistentDomain(forName: suite2) }
+        let store2 = HomeStore(provider: oldProvider, defaults: InMemoryUserDefaults())
         try await store2.waitForTestSnapshot()
         store2.resumeDebounceInterval = .zero
         var hookRan2 = false
@@ -284,9 +279,7 @@ struct DebouncedResumeAndLifecycleTests {
 
         // 3. Provider replacement during refreshNow() skips starting LGWebOSClient
         let gatedProvider = GatedRefreshProvider()
-        let suite3 = "test.resume.refresh-swap.\(UUID().uuidString)"
-        let store3 = HomeStore(provider: gatedProvider, defaultsSuiteName: suite3)
-        defer { UserDefaults(suiteName: suite3)?.removePersistentDomain(forName: suite3) }
+        let store3 = HomeStore(provider: gatedProvider, defaults: InMemoryUserDefaults())
         try await store3.waitForTestSnapshot()
         store3.resumeDebounceInterval = .zero
         store3.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.55")
@@ -433,9 +426,7 @@ struct DebouncedResumeAndLifecycleTests {
     func dualSourceShutdownParallelAndIdempotent() async throws {
         let ha = GatedShutdownProvider()
         let mi = GatedShutdownProvider()
-        let suite = "test.dual.shutdown.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let composite = HomeStore.makeComposite(
             homeAssistant: ha,
