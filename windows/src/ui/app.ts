@@ -45,7 +45,6 @@ import {
   type HomeScene,
   type ScheduledCommand,
   type SmartDevice,
-  allOffTargets,
   computeTotalPowerWatts,
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -72,6 +71,7 @@ import {
 import { getPanelThemeProfile, normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
 import { formatTemperatureValue } from "../core/temperature.js";
 import {
+  allOffResultText,
   t,
 } from "../core/i18n.js";
 import {
@@ -133,7 +133,7 @@ import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
-import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
+import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, planWritableAllOff, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits, type ExecuteIntentsOptions } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
@@ -859,7 +859,7 @@ export class MenuMijiaWindowsApp {
       if (this.settings.enableRaycastIntegration !== prevRaycastIntegration) {
         const nextRaycast = this.settings.enableRaycastIntegration;
         this.settings.enableRaycastIntegration = prevRaycastIntegration;
-        setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
+        void setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
       }
       syncAutomationLifecycle(this);
       if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
@@ -1085,22 +1085,13 @@ export class MenuMijiaWindowsApp {
 
   /** Devices 全关 would switch off: on screen (current room), on, and taking part (#23). */
   public get allOffTargets(): SmartDevice[] {
-    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
-      return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
-    }
-    const context = buildHostCapabilityContext(this);
-    const { indexedDevices } = buildIndexedCapabilityDevices(context);
-    // A type switched off before the refresh lands would otherwise fail the whole 全关 batch (#346).
-    const enabledCategories = context.state.selection.enabledCategories;
-    const availableIds = new Set(
-      indexedDevices
-        .filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled && enabledCategories.includes(d.category))
-        .map((d) => d.id),
-    );
-    return allOffTargets(
-      this.filteredDevices.filter((d) => availableIds.has(d.id)),
-      this.settings.allOffOverrides,
-    );
+    return planWritableAllOff(this.filteredDevices, this.settings.allOffOverrides, this.allOffCapabilityContext).targets;
+  }
+
+  private get allOffCapabilityContext() {
+    return this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)
+      ? null
+      : buildHostCapabilityContext(this);
   }
 
   public renderKindBar(): string {
@@ -1224,11 +1215,12 @@ export class MenuMijiaWindowsApp {
   }
 
   private async turnAllOff(): Promise<void> {
-    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+    const context = this.allOffCapabilityContext;
+    if (context) {
       const gateMsg = evaluateQuickActionSourceWriteGate({
         actionId: "lightsOff",
         scopeDevices: [],
-        context: buildHostCapabilityContext(this),
+        context,
         languagePreference: this.settings.interfaceLanguage,
       });
       if (gateMsg !== null) {
@@ -1237,15 +1229,22 @@ export class MenuMijiaWindowsApp {
         return;
       }
     }
-    const targets = this.allOffTargets;
-    if (targets.length === 0) return;
+    const { targets, skipped } = planWritableAllOff(this.filteredDevices, this.settings.allOffOverrides, context);
+    const reply = allOffResultText(targets.length, skipped);
+    if (targets.length === 0) {
+      if (skipped > 0) {
+        this.replyBanner = { text: reply, source: t("一键全关") };
+        this.render();
+      }
+      return;
+    }
     const intents: DeviceIntent[] = targets.map((d) => ({
       targetId: d.id,
       operation: { kind: "power", isOn: false },
     }));
     await this.executeIntents(
       intents,
-      t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+      reply,
       t("一键全关"),
       { recordHabits: true },
     );

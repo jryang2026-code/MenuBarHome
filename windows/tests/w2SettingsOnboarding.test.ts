@@ -403,8 +403,9 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
           if (cmd === "secure_store_delete" && typeof args?.name === "string") {
             deletedCredentials.push(args.name);
           }
-          if (cmd === "remove_raycast_snapshot") {
-            removedSnapshot = true;
+          if (cmd === "set_companion_integration") {
+            if (args?.enabled === false) removedSnapshot = true;
+            return 1;
           }
           return undefined;
         },

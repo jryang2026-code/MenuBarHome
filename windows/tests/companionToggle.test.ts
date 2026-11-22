@@ -12,6 +12,7 @@ import {
   enqueueIncomingOpenUrl,
   getActiveRaycastBridgeTokenForHost,
   getCompanionNotice,
+  getLatestRaycastSnapshotForHost,
   hasPendingUrlConfirmation,
   setRaycastIntegrationEnabled,
 } from "../src/ui/speechGuard.js";
@@ -27,16 +28,19 @@ let dom: Window;
 let tauriCalls: TauriCall[] = [];
 let nativeGeneration = 0;
 let clipboardText: string | null = null;
+let failSnapshotDeletion = false;
 
 function installTauriStub(): void {
   tauriCalls = [];
   nativeGeneration = 0;
+  failSnapshotDeletion = false;
   (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {
     invoke: async (cmd: string, args?: Record<string, unknown>) => {
       tauriCalls.push({ cmd, args });
       if (cmd === "is_workstation_locked") return false;
       if (cmd === "drain_pending_open_urls") return [];
       if (cmd === "set_companion_integration") {
+        if (args?.enabled === false && failSnapshotDeletion) throw new Error("snapshot is in use");
         nativeGeneration += 1;
         return nativeGeneration;
       }
@@ -143,6 +147,7 @@ describe("P6a-W · companion switch-off and revocation", () => {
     assert.equal(hasPendingUrlConfirmation(app), false, "switching off withdraws the prompt");
     assert.equal(lightState(app, light.id), initialOn, "neither link from the ended run touched the device");
     assert.match(app.replyBanner?.text ?? "", /已取消之前排队的外部链接/);
+    assert.equal(getLatestRaycastSnapshotForHost(app).lastCommandFeedback, undefined);
   });
 
   it("registers each switch with the native host and stamps snapshot writes with its generation", async () => {
@@ -198,5 +203,82 @@ describe("P6a-W · companion switch-off and revocation", () => {
     assert.match(buildCompanionConfigText(null), /原始碼目錄/);
     setLanguage("en");
     assert.match(buildCompanionConfigText(SNAPSHOT_PATH), /source folder/);
+  });
+
+  it("keeps standalone Settings disconnected and offers a retry when the native snapshot deletion fails", async () => {
+    window.history.replaceState(null, "", "?window=settings&tab=safety");
+    const app = startDemoApp({ enableRaycastIntegration: true });
+    assert.equal(app.isStandaloneSettingsWindow, true);
+
+    failSnapshotDeletion = true;
+    element("#btn-companion-disconnect").click();
+    await flushAsync();
+    assert.equal(app.settings.enableRaycastIntegration, false);
+    assert.equal(getCompanionNotice(app)?.isError, true);
+    assert.match(element("#settings-companion-notice").textContent ?? "", /重试/);
+    assert.doesNotMatch(element("#settings-companion-notice").textContent ?? "", /快照已删除/);
+
+    failSnapshotDeletion = false;
+    element("#btn-companion-disconnect").click();
+    await flushAsync();
+    assert.match(element("#settings-companion-notice").textContent ?? "", /快照已删除/);
+    assert.equal(document.querySelector("#btn-companion-disconnect"), null);
+  });
+
+  it("withdraws an external link's high-risk confirmation without turning on the plug", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true });
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const index = app.devices.findIndex((d) => d.kind.kind === "plug" && d.isOnline);
+    const plug = app.devices[index]!;
+    assert.equal(plug.kind.kind, "plug");
+    app.devices[index] = { ...plug, kind: { ...plug.kind, isOn: false } };
+    await enqueueIncomingOpenUrl(app, `menumijia://power?device=${encodeURIComponent(plug.id)}&on=true&token=${token}`);
+
+    const selector = `[data-high-risk-confirm="${plug.id}"]`;
+    const confirm = element(selector);
+    await setRaycastIntegrationEnabled(app, false);
+    assert.equal(document.querySelector(selector), null);
+    confirm.click();
+    await flushAsync();
+    const current = app.devices.find((device) => device.id === plug.id)?.kind;
+    assert.equal(current?.kind === "plug" && current.isOn, false);
+  });
+
+  for (const enabledOnStartup of [false, true]) {
+    it(`keeps native integration off without a secure token (startup enabled: ${enabledOnStartup})`, async () => {
+      const originalCrypto = Object.getOwnPropertyDescriptor(globalThis, "crypto")!;
+      Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true });
+      try {
+        const app = startDemoApp({ enableRaycastIntegration: enabledOnStartup });
+        if (!enabledOnStartup) await setRaycastIntegrationEnabled(app, true);
+        await flushAsync();
+
+        const registrations = tauriCalls.filter((call) => call.cmd === "set_companion_integration");
+        assert.ok(registrations.length > 0);
+        assert.ok(registrations.every((call) => call.args?.enabled === false));
+        assert.equal(tauriCalls.some((call) => call.cmd === "write_raycast_snapshot"), false);
+        assert.equal(app.settings.enableRaycastIntegration, false);
+      } finally {
+        Object.defineProperty(globalThis, "crypto", originalCrypto);
+      }
+    });
+  }
+
+  it("clears old command feedback both when disconnecting and when reconnecting", async () => {
+    const app = startDemoApp({ enableRaycastIntegration: true });
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const light = app.devices.find((d) => d.kind.kind === "light" && d.isOnline)!;
+    const link = (id: string) => `menumijia://power?device=${encodeURIComponent(light.id)}&on=false&token=${token}&id=${id}`;
+    const lastRequest = () => getLatestRaycastSnapshotForHost(app).lastCommandFeedback?.requestId;
+
+    await enqueueIncomingOpenUrl(app, link("old-run"));
+    assert.equal(lastRequest(), "old-run");
+    await setRaycastIntegrationEnabled(app, false);
+    assert.equal(lastRequest(), undefined);
+
+    await enqueueIncomingOpenUrl(app, link("while-disabled"));
+    assert.equal(lastRequest(), "while-disabled");
+    await setRaycastIntegrationEnabled(app, true);
+    assert.equal(lastRequest(), undefined);
   });
 });

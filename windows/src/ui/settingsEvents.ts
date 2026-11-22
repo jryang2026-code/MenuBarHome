@@ -598,7 +598,7 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
   const vault = (host as unknown as Partial<MenuMijiaWindowsApp>).credentialVault;
   const revokeMultiAndDualPromise = clearHostSessionAndDualSourceState(appHost, { revokeAll: true });
 
-  setRaycastIntegrationEnabled(appHost, false, { persistSettings: false, render: false });
+  void setRaycastIntegrationEnabled(appHost, false, { persistSettings: false, render: false });
 
   const successBanner: ReplyBannerState = {
     text: tr3(
@@ -1041,7 +1041,7 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelector<HTMLInputElement>("#settings-raycast-integration")?.addEventListener("change", (event) => {
     const checked = (event.target as HTMLInputElement).checked;
     syncSettingsSaveHint(host, "auto-saved");
-    setRaycastIntegrationEnabled(host as unknown as MenuMijiaWindowsApp, checked);
+    void setRaycastIntegrationEnabled(host as unknown as MenuMijiaWindowsApp, checked);
     syncSettingsSaveHint(host, "auto-saved");
   });
 
@@ -1070,20 +1070,8 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     void detectCompanionIntegration(companionHost).finally(() => host.render());
   });
   host.root.querySelector<HTMLButtonElement>("#btn-companion-disconnect")?.addEventListener("click", () => {
-    setRaycastIntegrationEnabled(companionHost, false, { render: false });
-    setCompanionNotice(
-      companionHost,
-      [
-        tr3(
-          "已断开：快照已删除，旧令牌已吊销，之前排队的外部命令不会再执行。外部工具自己的配置未改动。",
-          "已中斷連線：快照已刪除，舊權杖已撤銷，之前排隊的外部命令不會再執行。外部工具自己的設定未改動。",
-          "Disconnected: the snapshot is deleted, the old token is revoked and earlier queued commands will not run. The tools' own config is untouched.",
-        ),
-      ],
-      false,
-    );
     syncSettingsSaveHint(host, "auto-saved");
-    host.render();
+    void setRaycastIntegrationEnabled(companionHost, false, { announceDisconnect: true });
   });
 
   host.root.querySelector<HTMLInputElement>("#settings-allow-direct-url")?.addEventListener("change", (event) => {
