@@ -11,6 +11,24 @@ extension PanelPresentationTests {
 struct PanelAlertsAndStatusTests {
     private static let fixedNow = Date(timeIntervalSince1970: 1_729_000_000)
 
+    @Test("Undo toast makes its final retry instruction visible at panel width")
+    func undoToastRendersRetryInstruction() {
+        func height(_ message: String) -> CGFloat {
+            let host = NSHostingView(rootView: NoticeToastBanner(
+                notice: ToastNotice(message: message, isError: true),
+                onAction: {},
+                onDismiss: {}
+            ).frame(width: 280))
+            return host.fittingSize.height
+        }
+
+        let summary = "Undo could not restore 1 item."
+        let guidance = "Re-enable the Home Assistant connection in Settings."
+        let retry = "Then click Undo again."
+        #expect(height([summary, guidance, retry].joined(separator: "\n")) >
+            height([summary, guidance].joined(separator: "\n")))
+    }
+
     private func makeIsolatedStore(
         backend: HomeBackend = .xiaomiCloud,
         hasMi: Bool = true,

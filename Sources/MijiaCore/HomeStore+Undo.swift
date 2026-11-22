@@ -922,7 +922,7 @@ extension HomeStore {
             sentences.append(instruction)
         }
         if canRetry { sentences.append(retry) }
-        return sentences.joined(separator: L10n.currentLanguage.isChinese ? "" : " ")
+        return sentences.joined(separator: "\n")
     }
 
     @discardableResult

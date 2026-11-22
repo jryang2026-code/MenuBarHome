@@ -171,6 +171,7 @@ struct NoticeToastBanner: View {
     var onDismiss: () -> Void
 
     var body: some View {
+        let spansParagraphs = notice.isError && notice.message.contains("\n")
         HStack(spacing: 6) {
             Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                 .foregroundStyle(notice.isError ? Color.red : Color.green)
@@ -178,7 +179,7 @@ struct NoticeToastBanner: View {
             Text(notice.message)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .multilineTextAlignment(.leading)
-                .lineLimit(notice.isError ? 2 : 1)
+                .lineLimit(spansParagraphs ? nil : (notice.isError ? 2 : 1))
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: notice.isError ? 280 : nil, alignment: .leading)
             if let action = notice.action {
