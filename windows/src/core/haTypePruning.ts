@@ -71,9 +71,16 @@ export function haAuxiliarySafetySignals(
   return SAFETY_SIGNAL_KINDS.filter((signal) => signals.has(signal));
 }
 
-/** One card's own signals, shape-based plus whatever its auxiliary entities can raise. */
-function unionSignals(a: readonly SafetySignalKind[], b: readonly SafetySignalKind[]): SafetySignalKind[] {
-  const signals = new Set<SafetySignalKind>([...a, ...b]);
+/**
+ * One card's own signals, shape-based plus whatever its auxiliary entities can raise. The prune plan
+ * and the device-type preview both call this, so the preview names the cards the plan keeps.
+ */
+export function haCardSafetySignals(
+  device: SmartDevice,
+  auxiliarySignals: readonly SafetySignalKind[],
+  starredOffline = false,
+): SafetySignalKind[] {
+  const signals = new Set<SafetySignalKind>([...haSafetySignalsForDevice(device, starredOffline), ...auxiliarySignals]);
   return SAFETY_SIGNAL_KINDS.filter((signal) => signals.has(signal));
 }
 
@@ -136,10 +143,7 @@ function indexedDevice(
     isSourceAvailable: true,
     upstreamHiddenOrDisabled: false,
     participatesInAllOff: joinsAllOff(device, options.allOffOverrides ?? {}),
-    safetySignals: unionSignals(
-      haSafetySignalsForDevice(device, starred),
-      options.auxiliarySignalsByDeviceId?.get(device.id) ?? [],
-    ),
+    safetySignals: haCardSafetySignals(device, options.auxiliarySignalsByDeviceId?.get(device.id) ?? [], starred),
     readKeys,
     safetyReadKeys: readKeys,
   };

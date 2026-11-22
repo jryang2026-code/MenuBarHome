@@ -13,7 +13,7 @@ import { normalizeDeviceCategorySelection } from "./deviceTypeSelection.js";
 import type { DeviceMergeRoute } from "./dualSourceProvider.js";
 import { pendingConnectionRemovalScopes } from "./connectionRemoval.js";
 import type { DeviceTypeSelectionCard, DeviceTypeSelectionPreview } from "./deviceTypeSelection.js";
-import { haSafetySignalsForDevice } from "./haTypePruning.js";
+import { haCardSafetySignals } from "./haTypePruning.js";
 import { CAPABILITY_SELECTION_STORAGE_KEY, haConnectionScope } from "./haTransportGate.js";
 import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
@@ -90,7 +90,9 @@ export interface MiAccountSelectionState {
 }
 export interface HostCapabilityContextInput { readonly state: MiAccountSelectionState; readonly accounts: readonly MiAccount[]; readonly devices: readonly SmartDevice[]; readonly scenes: readonly HomeScene[];
   /** Index entries of cards a device-type selection withholds; they answer the gate, never display. */
-  readonly hiddenDevices?: readonly CapabilityIndexedDevice[]; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; }
+  readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** Each card's alert signals as the last prune plan classified it, drawn or not (`safetySignalsByDeviceId`). */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>; readonly haBaseURL?: string | null; readonly haToken?: string | null; readonly connectionMode: string; readonly dualSourceEnabled: boolean; readonly dualRoutes?: Readonly<Record<string, DeviceMergeRoute>>; readonly deviceOwners?: Readonly<Record<string, readonly string[]>>; readonly allOffOverrides?: Readonly<Record<string, boolean>>; readonly deviceAliases?: Readonly<Record<string, string>>; readonly disablingAccountId?: string | null; }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const defaultStorage = (): StorageLike | null => { try { return typeof localStorage !== "undefined" ? localStorage : null; } catch { return null; } };
@@ -826,10 +828,21 @@ export function previewHaConnectionDisable(options: {
  * Device-type deactivation preview (P4b-W). Same verdict engine and reference assembly as the
  * connection previews above, so "如果关掉传感器会怎样" has one answer on both ends.
  *
- * The device index is the host's own (`buildIndexedCapabilityDevices`), enriched with the alert shape
- * each card can carry: `haSafetySignalsForDevice` reads the card both sources already synthesized, so
- * the set an enabled alert keeps reading can be named without a Mi spec round.
+ * The device index is the host's own (`buildIndexedCapabilityDevices`), enriched with the signals the
+ * last prune plan classified for each drawn card (`context.safetySignalsByDeviceId`: Mi spec metadata,
+ * Home Assistant auxiliary facets). Only a card no plan has classified yet falls back to its own shape
+ * (`haCardSafetySignals`). The pin is applied fresh, since it can change between rounds.
  */
+function previewSafetySignals(
+  device: SmartDevice,
+  planned: readonly SafetySignalKind[] | undefined,
+  starredOffline: boolean,
+): SafetySignalKind[] {
+  if (planned === undefined) return haCardSafetySignals(device, [], starredOffline);
+  return SAFETY_SIGNAL_KINDS.filter((kind) =>
+    kind === "starredOffline" ? starredOffline : planned.includes(kind));
+}
+
 export function previewDeviceCategorySelection(options: {
   readonly proposedCategories: readonly DeviceCategoryID[];
   readonly context: HostCapabilityContextInput;
@@ -838,8 +851,7 @@ export function previewDeviceCategorySelection(options: {
   readonly ruleStore: AutomationRuleStore;
   readonly safetyPolicy: SafetyRetentionPolicy;
   readonly preferences?: CapabilityReferenceGraph["preferences"];
-  readonly expectedGeneration?: number | null;
-  readonly currentGeneration?: number | null;
+  readonly expectedGeneration?: string;
   readonly languagePreference?: LanguagePreference;
 }): DeviceTypeSelectionPreview {
   const pref = effectivePref(options.languagePreference);
@@ -852,7 +864,7 @@ export function previewDeviceCategorySelection(options: {
     if (entry.safetySignals.length > 0) return entry;
     const device = deviceById.get(entry.id);
     if (!device) return entry;
-    return { ...entry, safetySignals: haSafetySignalsForDevice(device, starred.has(entry.id)) };
+    return { ...entry, safetySignals: previewSafetySignals(device, options.context.safetySignalsByDeviceId?.[entry.id], starred.has(entry.id)) };
   });
   const devById = new Map(index.map((d) => [d.id, d] as const));
   const sceneById = new Map(sceneRefs.map((s) => [s.id, s] as const));
@@ -863,6 +875,18 @@ export function previewDeviceCategorySelection(options: {
     devById,
     sceneById,
   });
+  const rules = options.ruleStore.load();
+  const quickActions = BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({
+    id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id),
+  }));
+  const corruptedStoreReasons = options.scheduledCommandStore.hasStorageError() ? ["scheduledCommands"] : [];
+  const timerQueues = options.scheduledCommandStore.entries().filter(([, queue]) =>
+    queue.scheduledCommands.length > 0 || queue.missedScheduledCommands.length > 0 || (queue.pausedScheduledCommands?.length ?? 0) > 0);
+  // Include the full references so replacing a timer or rule under the same ID also needs review.
+  const generation = JSON.stringify([
+    current, proposedCategories, index, options.safetyPolicy, options.preferences, sceneRefs,
+    options.activeTimerIdentity, timerQueues, rules, quickActions, corruptedStoreReasons,
+  ]);
   const verdict = evaluateCapabilityDeactivation(
     current,
     { ...current, enabledCategories: proposedCategories },
@@ -871,15 +895,13 @@ export function previewDeviceCategorySelection(options: {
     options.safetyPolicy,
     {
       timers,
-      automations: options.ruleStore.load().map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
-      quickActions: BUILTIN_QUICK_ACTIONS.map((id): QuickActionReference => ({
-        id, name: quickActionTitle(id, pref), kind: id, isEnabled: !options.context.state.pausedQuickActionIds.has(id),
-      })),
+      automations: rules.map((rule) => toAutomationReference(rule, options.context.devices, options.context.scenes, pref)),
+      quickActions,
       scenes: sceneRefs,
       ...(options.preferences ? { preferences: options.preferences } : {}),
-      ...(options.scheduledCommandStore.hasStorageError() ? { corruptedStoreReasons: ["scheduledCommands"] } : {}),
+      corruptedStoreReasons,
       expectedGeneration: options.expectedGeneration ?? null,
-      currentGeneration: options.currentGeneration ?? null,
+      currentGeneration: generation,
     },
   );
 
@@ -901,6 +923,7 @@ export function previewDeviceCategorySelection(options: {
     retainedSafetyCards.push({ id: entry.id, name: deviceById.get(entry.id)?.name ?? entry.name, category: entry.category });
   }
   return {
+    generation,
     currentCategories: DEVICE_CATEGORY_IDS.filter((id) => current.enabledCategories.includes(id)),
     proposedCategories: DEVICE_CATEGORY_IDS.filter((id) => proposedSet.has(id)),
     hiddenCards,
