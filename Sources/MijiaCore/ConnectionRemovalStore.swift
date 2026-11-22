@@ -1,5 +1,10 @@
 import CryptoKit
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public enum ConnectionRemovalKind: String, Codable, Equatable, Sendable { case mi, ha }
 public enum ConnectionRemovalStage: String, Codable, Equatable, Sendable { case draining, cleaning, failed }
@@ -136,15 +141,21 @@ public enum ConnectionRemovalStore {
         }
     }
 
-    /// Drops an unreadable removal payload only after a byte-identical quarantine copy is confirmed.
+    /// Drops an unreadable removal payload only after a byte-identical quarantine file is persisted.
     /// Touches no credential slot. Returns false when the payload is readable or the copy cannot be confirmed.
     @discardableResult
     public static func discardCorruptPayload(defaults: UserDefaults = .standard) -> Bool {
+        discardCorruptPayload(defaults: defaults, quarantineDirectory: nil)
+    }
+
+    static func discardCorruptPayload(defaults: UserDefaults, quarantineDirectory: URL?) -> Bool {
         storeLock.withLock {
             let read = readStateUnlocked(defaults: defaults)
             guard read.state.readError, let raw = read.state.corruptData else { return false }
             let key = storeQuarantineCopyUnlocked(raw, defaults: defaults)
-            guard defaults.data(forKey: key) == raw else { return false }
+            guard defaults.data(forKey: key) == raw,
+                  persistQuarantineFile(raw, directory: quarantineDirectory),
+                  readStateUnlocked(defaults: defaults).state.corruptData == raw else { return false }
             defaults.removeObject(forKey: storageKey)
             return defaults.object(forKey: storageKey) == nil
         }
@@ -544,6 +555,67 @@ public enum ConnectionRemovalStore {
         }
         defaults.set(raw, forKey: key)
         return key
+    }
+
+    private static func persistQuarantineFile(_ raw: Data, directory: URL?) -> Bool {
+        let destination: URL
+        if let directory {
+            destination = directory
+        } else {
+            guard let support = try? FileManager.default.url(
+                for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+            ) else { return false }
+            destination = support.resolvingSymlinksInPath()
+                .appendingPathComponent("MenuBarMijia-ConnectionRemovalQuarantine", isDirectory: true)
+        }
+
+        let parent = open(destination.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { return false }
+        defer { close(parent) }
+        let directoryName = destination.lastPathComponent
+        guard mkdirat(parent, directoryName, 0o700) == 0 || errno == EEXIST else { return false }
+        let folder = openat(parent, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard folder >= 0 else { return false }
+        defer { close(folder) }
+
+        var info = stat()
+        guard fstat(folder, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else { return false }
+        let digest = SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
+        let name = "\(unreadableKeyPrefix).\(digest).bin"
+        let flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        var file = openat(folder, name, flags)
+        if file < 0 {
+            guard errno == ENOENT, writeQuarantineFile(raw, name: name, folder: folder) else { return false }
+            file = openat(folder, name, flags)
+        }
+        guard file >= 0 else { return false }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: true)
+        defer { try? handle.close() }
+        guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600,
+              info.st_size == raw.count else { return false }
+        // Flush the file and both directory entries before removing the defaults key.
+        guard fsync(file) == 0, fsync(folder) == 0, fsync(parent) == 0 else { return false }
+        #if canImport(Darwin)
+        guard fcntl(file, F_FULLFSYNC) == 0 else { return false }
+        #endif
+        return (try? (handle.readToEnd() ?? Data())) == raw
+    }
+
+    private static func writeQuarantineFile(_ raw: Data, name: String, folder: Int32) -> Bool {
+        let temporary = ".\(UUID().uuidString).tmp"
+        let file = openat(folder, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard file >= 0 else { return false }
+        defer { _ = unlinkat(folder, temporary, 0) }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: raw)
+            guard fsync(file) == 0 else { return false }
+            try handle.close()
+            return renameat(folder, temporary, folder, name) == 0
+        } catch {
+            return false
+        }
     }
 
     private static func strictInt(_ value: JSONValue?, min: Int) -> Int? {

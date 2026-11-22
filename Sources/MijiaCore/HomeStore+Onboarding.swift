@@ -147,6 +147,10 @@ extension HomeStore {
     /// `uncertainFallback` launch. Returns true once reads succeed and migration/state are resolved.
     @discardableResult
     public func retryIdentityMigration() -> Bool {
+        retryIdentityMigration(migrateLegacyMiEnvelope: true)
+    }
+
+    func retryIdentityMigration(migrateLegacyMiEnvelope: Bool) -> Bool {
         syncPendingConnectionRemovals()
         if let vault = credentialVault {
             _ = vault.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
@@ -156,7 +160,8 @@ extension HomeStore {
         let reloadedAccountsResult = MiSessionStore.loadAccountsResult(
             defaults: userDefaults,
             vault: credentialVault,
-            retryingUnavailable: false
+            retryingUnavailable: false,
+            migrateLegacyEnvelope: migrateLegacyMiEnvelope
         )
         let pendingMi = pendingMiRemovalScopes
         let reloadedAccounts = hasCorruptConnectionRemovalState
@@ -228,7 +233,7 @@ extension HomeStore {
         syncMiotTypePrunePolicy()
         scheduleMiSessionExpiryTransition()
         if !usesInjectedProvider && homeBackend != .demo {
-            rebuildLiveProvider()
+            rebuildLiveProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             startLGWebOSIfNeeded()
         }
         showToast(L10n.tr("已恢复历史配置与凭据读取", "Restored settings and credential access"))

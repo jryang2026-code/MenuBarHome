@@ -1501,8 +1501,8 @@ public final class HomeStore {
 
     /// Re-reads the stored accounts (a login, a removal or a sign-out changed them) and rebuilds the
     /// provider around the enabled list.
-    func makeMiAccountsProvider() -> MiAccountsProvider {
-        miAccounts = loadActiveMiAccounts()
+    func makeMiAccountsProvider(migrateLegacyMiEnvelope: Bool = true) -> MiAccountsProvider {
+        miAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
         let enabled = enabledMiAccounts
         activeMiProviderAccounts = enabled
         if let factory = miAccountsProviderFactory {

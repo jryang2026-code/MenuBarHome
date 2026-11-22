@@ -17,7 +17,7 @@ import { deviceEnvironmentReading, environmentReadingPriority, type ConnectionSt
   type DeviceKind, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type RoomCategory,
   type SmartDevice, type SynthesizedHome,
 } from "./models.js";
-import type { CapabilityIndexedDevice } from "./capabilityReferenceVerdict.js";
+import type { CapabilityIndexedDevice, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import type { HaTypePruneOptions } from "./haTypePruning.js";
 import { defaultStorage } from "./pollingPolicy.js";
 
@@ -370,6 +370,8 @@ export interface DualSourceInputSnapshot { readonly home: SynthesizedHome;
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   /** Index entries of the cards the type selection withholds, for the host write gate. */
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** Every card's own alert signals from this source's prune plan, for the device-type preview. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export interface DeviceMergeRoute { readonly backend: HomeBackend;
@@ -1015,6 +1017,7 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
   readonly safetyDevices: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenIndexedDevices: readonly CapabilityIndexedDevice[];
+  readonly safetySignalsByDeviceId: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }> {
   const lease = acquireHaTransportLease(baseURL, { token: token });
   if (!lease) {
@@ -1040,6 +1043,7 @@ export async function fetchHASnapshotWithIdentities(baseURL: string, token: stri
       safetyDevices: synthesized.safetyDevices,
       ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
       hiddenIndexedDevices: synthesized.hiddenIndexedDevices,
+      safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
     };
   } finally {
     lease.release();
