@@ -447,6 +447,7 @@ public actor LGWebOSClient {
     private var pollingContext = PollingContext()
     private var activeWebSocket: URLSessionWebSocketTask?
     private var sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)?
+    private let connectionOverrideForTesting: (@Sendable () async throws -> Void)?
     private var nextRequestId: Int = 1
 
     var configForTesting: LGWebOSConfig { config }
@@ -493,6 +494,7 @@ public actor LGWebOSClient {
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
         self.sendFrameOverrideForTesting = nil
+        self.connectionOverrideForTesting = nil
     }
 
     init(
@@ -501,7 +503,8 @@ public actor LGWebOSClient {
         onDeviceUpdated: @escaping @Sendable (SmartDevice) -> Void,
         onClientKeyRegistered: @escaping @Sendable (String) -> Void,
         onSecurityFailure: @escaping @Sendable (String) -> Void,
-        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)? = nil
+        sendFrameOverrideForTesting: (@Sendable (String) async throws -> Void)? = nil,
+        connectionOverrideForTesting: (@Sendable () async throws -> Void)? = nil
     ) {
         self.config = config
         self.trustStore = trustStore
@@ -509,6 +512,7 @@ public actor LGWebOSClient {
         self.onClientKeyRegistered = onClientKeyRegistered
         self.onSecurityFailure = onSecurityFailure
         self.sendFrameOverrideForTesting = sendFrameOverrideForTesting
+        self.connectionOverrideForTesting = connectionOverrideForTesting
     }
 
     private static func makeURLSession(trustStore: LGCertificateTrust) -> URLSession {
@@ -808,10 +812,8 @@ public actor LGWebOSClient {
         }
     }
 
-    @TaskLocal static var connectionOverrideForTesting: (@Sendable () async throws -> Void)?
-
     private func connectAndListen() async throws {
-        if let override = Self.connectionOverrideForTesting {
+        if let override = connectionOverrideForTesting {
             try await override()
             return
         }

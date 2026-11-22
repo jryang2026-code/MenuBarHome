@@ -1164,6 +1164,7 @@ public final class HomeStore {
     public internal(set) var isRemovingConnectionScopes: Set<String> = []
     /// Test seam invoked right after drain completes and before credential slots are mutated.
     @ObservationIgnored var connectionRemovalBeforeSlotDeleteHook: (@MainActor (ConnectionRemovalRecord) async -> Void)?
+    @ObservationIgnored var lgWebOSConnectionOverrideForTesting: (@Sendable () async throws -> Void)?
     @ObservationIgnored var capabilityStoreRevision: Int?
     @ObservationIgnored let usesInjectedProvider: Bool
     @ObservationIgnored var preDemoBackend: HomeBackend?
