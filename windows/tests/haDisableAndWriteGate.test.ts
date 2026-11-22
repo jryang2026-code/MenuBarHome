@@ -1217,6 +1217,30 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     });
     assert.equal(h.tauriCalls.find((call) => call.cmd === "ha_http")?.args["generation"], firstRegistration.args["generation"]);
 
+    // #292 N1: `ha_http` is read-only, so a write is refused before any IPC instead of being
+    // downgraded to a GET, and an already-aborted lease never reaches the native command.
+    const haHttpCallsBefore = h.countCmd("ha_http");
+    const haLeaseSignal = new AbortController();
+    await assert.rejects(
+      createTransport()({
+        url: `${HA_URL}/api/services/light/turn_on`,
+        method: "POST",
+        body: JSON.stringify({ entity_id: "light.ha_strip" }),
+        haConnection: { baseUrl: HA_URL, generation: 7, signal: haLeaseSignal.signal },
+      }),
+      /only supports GET requests/,
+    );
+    assert.equal(h.countCmd("ha_http"), haHttpCallsBefore);
+    haLeaseSignal.abort();
+    await assert.rejects(
+      createTransport()({
+        url: `${HA_URL}/api/states`,
+        haConnection: { baseUrl: HA_URL, generation: 7, signal: haLeaseSignal.signal },
+      }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(h.countCmd("ha_http"), haHttpCallsBefore);
+
     await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
     assert.equal(getHostHaLifecyclePhase(app), "stopping");
     const stop = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === null)!;
