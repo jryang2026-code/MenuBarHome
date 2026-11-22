@@ -757,7 +757,7 @@ export function bindDetailDrawerEvents(
   host.root.querySelectorAll<HTMLElement>("[data-open-facet-settings]").forEach((btn) => {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
-      host.openSettingsSheet("system");
+      host.openSettingsSheet("safety");
       host.root.querySelector<HTMLElement>("#settings-allow-advanced-facets")?.focus();
     });
   });

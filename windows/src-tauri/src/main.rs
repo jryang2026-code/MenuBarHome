@@ -146,7 +146,9 @@ fn build_tray_menu(
     update_version: Option<&str>,
 ) -> tauri::Result<Menu<tauri::Wry>> {
     let toggle_text = tray_toggle_label(shortcut_label);
-    let mut builder = MenuBuilder::new(app).text("toggle", toggle_text);
+    let mut builder = MenuBuilder::new(app)
+        .text("toggle", toggle_text)
+        .text("settings", "设置…");
     if let Some(version) = update_version {
         builder = builder.text("update", format!("有新版本 v{version}，点击查看"));
     }
@@ -259,6 +261,9 @@ fn main() {
             panel_is_visible,
             set_panel_height,
             set_panel_geometry,
+            open_settings_window,
+            close_settings_window,
+            notify_settings_changed,
             set_pin_popover,
             panel_placement,
             set_panel_placement,
@@ -331,6 +336,12 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "toggle" => toggle_main_window(app, None, false),
+                    "settings" => {
+                        let app_handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = open_settings_window(app_handle, None).await;
+                        });
+                    }
                     "update" => {
                         if app.get_webview_window("main").is_some() {
                             PIN_POPOVER.store(true, Ordering::SeqCst);

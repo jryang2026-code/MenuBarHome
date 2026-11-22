@@ -53,7 +53,7 @@ const useIndexedSecondaryMi = (): void => {
   localStorage.setItem(MI_ACCOUNTS_INDEX_STORAGE_KEY, JSON.stringify([{ id: "acc-primary" }, { id: "acc-secondary" }]));
 };
 function startDemo(): MenuMijiaWindowsApp {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "zh-Hans" }));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "zh-Hans", panelTheme: "fluent" }));
   app = new MenuMijiaWindowsApp(el("#app"));
   app.refreshDevices = async () => {};
   app.refreshHADevices = async () => {};

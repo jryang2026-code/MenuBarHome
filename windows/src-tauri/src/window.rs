@@ -154,8 +154,8 @@ pub(crate) const PANEL_MIN_WORK_HEIGHT: f64 = 480.0;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) enum PanelTheme {
-    #[default]
     Fluent,
+    #[default]
     Classic,
 }
 
@@ -173,11 +173,12 @@ impl PanelTheme {
     }
 
     const fn from_u8(raw: u8) -> Self {
-        if raw == 1 { Self::Classic } else { Self::Fluent }
+        if raw == 0 { Self::Fluent } else { Self::Classic }
     }
 }
 
-static ACTIVE_PANEL_THEME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+static ACTIVE_PANEL_THEME: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(PanelTheme::Classic.as_u8());
 
 pub(crate) fn active_panel_theme() -> PanelTheme {
     PanelTheme::from_u8(ACTIVE_PANEL_THEME.load(Ordering::SeqCst))
@@ -510,7 +511,7 @@ pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
     // `PANEL_PADDING` (16 px) around the islands so the visible border sits 16 px off the taskbar edge.
     let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
     let left = work.x as f64 + margin as f64;
     let right = work.right() as f64 - margin as f64;
     let target_w = panel_window_width().min((right - left) / scale);
@@ -537,7 +538,7 @@ pub(crate) fn set_panel_geometry(app: AppHandle, theme: PanelTheme, height: f64)
     let margin = 0;
     let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
     let work_left = work.x + margin;
     let work_right = work.right() - margin;
     let target_w = theme.window_width().min(((work_right - work_left).max(1) as f64) / scale);
@@ -553,7 +554,7 @@ pub(crate) fn set_panel_geometry(app: AppHandle, theme: PanelTheme, height: f64)
 }
 
 pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) -> &'static str {
-    let win_size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
+    let win_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
     let win_w = win_size.width as i32;
     let win_h = win_size.height as i32;
 
@@ -677,7 +678,7 @@ pub(crate) fn note_user_move(app: &AppHandle) {
 /// Drag-to-move lands on the nearest work-area corner, and that corner becomes the preference.
 pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let Ok(position) = window.outer_position() else { return };
-    let size = window.outer_size().unwrap_or(PhysicalSize::new(412, 680));
+    let size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
     let win_w = size.width as i32;
     let win_h = size.height as i32;
     let center = (position.x + win_w / 2, position.y + win_h / 2);
@@ -790,12 +791,87 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
     });
 }
 
+pub(crate) fn sanitize_settings_tab(raw: Option<&str>) -> &'static str {
+    match raw.map(str::trim) {
+        Some("connection") => "connection",
+        Some("assistant") => "assistant",
+        Some("safety") | Some("system") => "safety",
+        Some("about") => "about",
+        _ => "general",
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) -> Result<bool, String> {
+    let sanitized = sanitize_settings_tab(tab.as_deref());
+    let has_explicit_tab = tab.as_deref().is_some_and(|raw| !raw.trim().is_empty());
+    request_hide_panel(&app);
+    if let Some(window) = app.get_webview_window("settings") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        if has_explicit_tab {
+            let script = format!(
+                "window.dispatchEvent(new CustomEvent('menumijia:select-settings-tab', {{ detail: {{ tab: '{sanitized}' }} }}))"
+            );
+            let _ = window.eval(&script);
+        }
+        return Ok(true);
+    }
+    let init_script = format!(
+        "window.__MENUMIJIA_WINDOW_MODE__ = 'settings'; window.__MENUMIJIA_SETTINGS_TAB__ = '{sanitized}';"
+    );
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        "settings",
+        tauri::WebviewUrl::App(std::path::PathBuf::from("index.html")),
+    )
+    .title("MenuBarHome 设置")
+    .inner_size(780.0, 620.0)
+    .min_inner_size(680.0, 520.0)
+    .resizable(true)
+    .decorations(true)
+    .transparent(false)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .center()
+    .initialization_script(&init_script)
+    .build()
+    .map_err(|err| format!("无法打开设置窗口：{err}"))?;
+    Ok(true)
+}
+
+#[tauri::command]
+pub(crate) fn close_settings_window(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window
+            .close()
+            .map_err(|err| format!("无法关闭设置窗口：{err}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn notify_settings_changed(app: AppHandle, source_label: Option<String>) -> Result<(), String> {
+    let target = if source_label.as_deref() == Some("settings") {
+        "main"
+    } else {
+        "settings"
+    };
+    if let Some(window) = app.get_webview_window(target) {
+        let _ = window.eval("window.dispatchEvent(new CustomEvent('menumijia:settings-sync'))");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn panel_window_geometry_preserves_outer_heights_and_work_area_clamp() {
+        assert_eq!(PanelTheme::default(), PanelTheme::Classic);
+        assert_eq!(panel_window_width(), 472.0);
         set_active_panel_theme(PanelTheme::Fluent);
         assert_eq!(panel_window_width(), 412.0);
         assert_eq!(PanelTheme::Fluent.main_width(), 380.0);
@@ -804,7 +880,6 @@ mod tests {
         assert_eq!(PanelTheme::Classic.window_width(), 472.0);
         set_active_panel_theme(PanelTheme::Classic);
         assert_eq!(panel_window_width(), 472.0);
-        set_active_panel_theme(PanelTheme::Fluent);
         assert_eq!(
             serde_json::from_str::<PanelTheme>(r#""classic""#).unwrap(),
             PanelTheme::Classic
@@ -821,5 +896,18 @@ mod tests {
         assert_eq!(clamp_outer_panel_height(0.0, 400.0), 480.0);
         assert_eq!(main_column_inset(1.0), 16);
         assert_eq!(main_column_inset(1.5), 24);
+    }
+
+    #[test]
+    fn settings_tab_slug_sanitizes_legacy_and_unknown_values() {
+        assert_eq!(sanitize_settings_tab(None), "general");
+        assert_eq!(sanitize_settings_tab(Some("")), "general");
+        assert_eq!(sanitize_settings_tab(Some("general")), "general");
+        assert_eq!(sanitize_settings_tab(Some("connection")), "connection");
+        assert_eq!(sanitize_settings_tab(Some("assistant")), "assistant");
+        assert_eq!(sanitize_settings_tab(Some("safety")), "safety");
+        assert_eq!(sanitize_settings_tab(Some("system")), "safety");
+        assert_eq!(sanitize_settings_tab(Some("about")), "about");
+        assert_eq!(sanitize_settings_tab(Some("foo'; alert(1)//")), "general");
     }
 }

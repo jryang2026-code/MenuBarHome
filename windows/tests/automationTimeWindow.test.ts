@@ -636,7 +636,7 @@ describe("automation time window settings", () => {
 
   it("saves a 22:00–07:00 window and shows it in zh-Hans, zh-Hant, and English", async () => {
     const app = createCloudApp();
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     assert.equal(element<HTMLInputElement>("#settings-auto-time-window").checked, false);
     assert.equal(document.querySelector("#settings-auto-time-start"), null);
 
@@ -666,7 +666,7 @@ describe("automation time window settings", () => {
 
   it("refuses a window whose start and end hours are the same", () => {
     const app = createCloudApp();
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     toggleCheck("#settings-auto-time-window", true);
     selectValue("#settings-auto-time-start", "8");
     selectValue("#settings-auto-time-end", "8");
@@ -685,7 +685,7 @@ describe("automation time window settings", () => {
 
   it("keeps Save gated only by the time window now that the Wi-Fi condition editor is enabled", async () => {
     const app = createCloudApp();
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     toggleCheck("#settings-auto-time-window", true);
     selectValue("#settings-auto-time-start", "8");
     selectValue("#settings-auto-time-end", "8");

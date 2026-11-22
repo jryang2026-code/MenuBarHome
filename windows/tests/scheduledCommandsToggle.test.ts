@@ -546,7 +546,7 @@ describe("Timer switch: settings entry", () => {
     assert.ok(toggle, "the switch must be reachable from Settings");
     assert.equal(toggle!.checked, true);
     assert.ok(document.querySelector('[data-settings-anchor="scheduledCommands"]'));
-    assert.equal(resolveSettingsAnchorTab("scheduledCommands", false), "system");
+    assert.equal(resolveSettingsAnchorTab("scheduledCommands", false), "safety");
     const hit = searchSettings("定时任务", UNRESTRICTED_SETTINGS_AVAILABILITY).hits.find(
       (entry) => entry.anchor === "scheduledCommands",
     );

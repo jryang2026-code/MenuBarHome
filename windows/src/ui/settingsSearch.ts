@@ -124,7 +124,7 @@ export function blockReasonExplanation(
 
 export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpdate: boolean): SettingsTab {
   if (anchor === "softwareUpdate" || anchor === "aboutVersion") {
-    return hasAvailableUpdate ? "general" : "system";
+    return hasAvailableUpdate ? "general" : "about";
   }
   switch (anchor) {
     case "appearanceMode":
@@ -182,9 +182,10 @@ export function resolveSettingsAnchorTab(anchor: SettingsAnchor, hasAvailableUpd
     case "doorbellAutoView":
     case "weeklyReport":
     case "allOffDevices":
+      return "safety";
     case "signOut":
     case "quitApp":
-      return "system";
+      return "about";
   }
 }
 
@@ -197,9 +198,10 @@ interface RawAnchorSpec {
 
 const SEC_GENERAL: readonly [string, string, string] = ["常规", "常規", "General"];
 const SEC_CONNECTION: readonly [string, string, string] = ["家居连接", "家居連線", "Connections"];
-const SEC_ASSISTANT: readonly [string, string, string] = ["AI 与习惯", "AI 與習慣", "AI & Habits"];
-const SEC_SYSTEM: readonly [string, string, string] = ["全关与更新", "全關與更新", "All Off & Updates"];
+const SEC_ASSISTANT: readonly [string, string, string] = ["AI 助手", "AI 助手", "AI Assistant"];
+const SEC_SYSTEM: readonly [string, string, string] = ["全关与能源", "全關與能源", "All Off & Energy"];
 const SEC_SECURITY: readonly [string, string, string] = ["安全与权限", "安全與權限", "Security & Permissions"];
+const SEC_ABOUT: readonly [string, string, string] = ["关于与诊断", "關於與診斷", "About & Diagnostics"];
 const SEC_AUTOMATION: readonly [string, string, string] = [
   "状态自动化与主动守护",
   "狀態自動化與主動守護",
@@ -636,25 +638,25 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   },
   {
     anchor: "signOut",
-    section: SEC_SECURITY,
+    section: SEC_ABOUT,
     title: ["退出并清除所有账号与密钥", "登出並清除所有帳號與金鑰", "Sign Out & Revoke All Credentials"],
     synonyms: ["退出所有", "清除密钥", "吊销", "注销", "清除凭据", "重置账号", "sign out", "logout", "revoke", "revoke all", "clear credentials", "wipe tokens", "zhuxiao", "diaoxiao"],
   },
   {
     anchor: "softwareUpdate",
-    section: SEC_SYSTEM,
+    section: SEC_ABOUT,
     title: ["软件更新与自动检查", "軟體更新與自動檢查", "Software Update & Auto Check"],
     synonyms: ["更新", "升级", "检查更新", "自动更新", "新版本", "下载更新", "update", "upgrade", "software update", "auto update", "check update", "release", "gengxin", "shengji"],
   },
   {
     anchor: "aboutVersion",
-    section: SEC_SYSTEM,
+    section: SEC_ABOUT,
     title: ["当前版本号", "目前版本號", "Current App Version"],
     synonyms: ["版本", "版本号", "关于", "version", "about", "build", "banben"],
   },
   {
     anchor: "quitApp",
-    section: SEC_SYSTEM,
+    section: SEC_ABOUT,
     title: ["退出 MenuBarHome", "結束 MenuBarHome", "Quit MenuBarHome"],
     synonyms: ["退出", "关闭软件", "退出应用", "结束进程", "quit", "exit", "close app", "tuichu"],
   },

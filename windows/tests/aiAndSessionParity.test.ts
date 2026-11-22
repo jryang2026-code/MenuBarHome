@@ -717,6 +717,7 @@ describe("Proactive favorites/aliases, collapsed assistant bar & missed timers (
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
       }),
     );
     const app = new MenuMijiaWindowsApp(element("#app"));

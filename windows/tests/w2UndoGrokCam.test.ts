@@ -86,6 +86,7 @@ describe("Wave 2 — A11 Persistent 10-Minute Undo Pill", () => {
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
       }),
     );
   });
@@ -219,6 +220,7 @@ describe("Wave 2 — A12 Proactive Suggestion Source Icons, Confidence Badges & 
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
       }),
     );
   });
@@ -398,6 +400,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
       }),
     );
     app = new MenuMijiaWindowsApp(element("#app"));
@@ -725,6 +728,7 @@ describe("Wave 2 — A1 Camera Adaptive Frame Pacing (>5fps), Fast Switch, HUD M
       JSON.stringify({
         connectionMode: "demo",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
       }),
     );
     app = new MenuMijiaWindowsApp(element("#app"));

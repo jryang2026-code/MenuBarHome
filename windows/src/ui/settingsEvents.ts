@@ -76,7 +76,7 @@ import { bindAutomationSettingsEvents } from "./automationSettingsView.js";
 import { bindConnectionsAndDiagEvents } from "./connectionsAndDiagView.js";
 import { bindEnergySettingsEvents } from "./energySettingsView.js";
 import { bindDeviceTypeSelectionEvents, clearDeviceTypeSelectionSession } from "./deviceTypeSelectionView.js";
-import type { SettingsTab } from "./settingsViews.js";
+import { getSettingsTabSpec, normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import type { GitHubRelease } from "../core/updateChecker.js";
 
 export interface SettingsEventsHost extends SourceSwitchHost {
@@ -103,6 +103,7 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   environmentReadings: EnvironmentReading[];
   homes: HomeOption[];
   readonly layout: LayoutPrefs;
+  readonly isStandaloneSettingsWindow?: boolean;
   activeSheet: "none" | "onboarding" | "settings";
   settingsTab: SettingsTab;
   availableUpdate: GitHubRelease | null;
@@ -659,6 +660,13 @@ export async function signOutAndRevokeAll(host: SettingsEventsHost): Promise<voi
 function closeSettingsSheetImmediate(host: SettingsEventsHost): void {
   syncSettingsSaveHint(host, "reset");
   clearSettingsHighlight(host.root);
+  const hasRealTauriWindow =
+    typeof window !== "undefined" &&
+    Boolean((window as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__?.metadata);
+  if (host.isStandaloneSettingsWindow && hasRealTauriWindow) {
+    invokeTauriVoid("close_settings_window");
+    return;
+  }
   host.activeSheet = "none";
   host.isRecordingHotkey = false;
   host.hotkeyNeedsHint = false;
@@ -1158,9 +1166,9 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     host.openUpdatePage();
   });
 
-  // A release notice lives on the general tab when one is waiting, otherwise on the system tab.
+  // A release notice lives on the general tab when one is waiting, otherwise on the about tab.
   host.root.querySelector("#btn-footer-update")?.addEventListener("click", () => {
-    host.openSettingsSheet(host.availableUpdate ? "general" : "system");
+    host.openSettingsSheet(host.availableUpdate ? "general" : "about");
   });
 
   const searchInput = host.root.querySelector<HTMLInputElement>("#settings-search-input");
@@ -1185,6 +1193,16 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
     clearSearchUI();
     highlightSettingsAnchor(host.root, anchor);
   };
+
+  host.root.querySelector("#btn-about-open-update-general")?.addEventListener("click", () => {
+    commitAnchorJump("softwareUpdate");
+  });
+  host.root.querySelector("#btn-about-jump-scanner")?.addEventListener("click", () => {
+    commitAnchorJump("scanUnsupportedDevices");
+  });
+  host.root.querySelector("#btn-about-jump-diagnostics")?.addEventListener("click", () => {
+    commitAnchorJump("copyDiagnostics");
+  });
 
   const renderSearchDropdown = () => {
     if (!searchInput || !searchResultsEl) return;
@@ -1301,8 +1319,18 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
 
   host.root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const tab = btn.dataset.settingsTab;
-      if (tab !== "general" && tab !== "connection" && tab !== "assistant" && tab !== "system") return;
+      const rawTab = btn.dataset.settingsTab;
+      if (
+        rawTab !== "general" &&
+        rawTab !== "connection" &&
+        rawTab !== "assistant" &&
+        rawTab !== "safety" &&
+        rawTab !== "about" &&
+        rawTab !== "system"
+      ) {
+        return;
+      }
+      const tab = normalizeSettingsTab(rawTab);
       clearSettingsHighlight(host.root);
       clearSearchUI();
       if (tab === host.settingsTab) return;
@@ -1799,14 +1827,25 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
  * `hidden`, so typed drafts and the scroll offset of the body survive the switch (#78).
  */
 export function showSettingsTab(root: HTMLElement, tab: SettingsTab): void {
+  const resolvedTab = normalizeSettingsTab(tab);
   root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((button) => {
-    const active = button.dataset.settingsTab === tab;
+    const active = button.dataset.settingsTab === resolvedTab;
     button.classList.toggle("is-active", active);
     button.setAttribute("aria-selected", String(active));
   });
   root.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => {
-    panel.hidden = panel.dataset.settingsPanel !== tab;
+    panel.hidden = panel.dataset.settingsPanel !== resolvedTab;
   });
+  const spec = getSettingsTabSpec(resolvedTab);
+  const paneIcon = root.querySelector<HTMLElement>("#settings-pane-icon");
+  const paneTitle = root.querySelector<HTMLElement>("#settings-pane-title");
+  const paneSubtitle = root.querySelector<HTMLElement>("#settings-pane-subtitle");
+  if (paneIcon) {
+    paneIcon.innerHTML = spec.icon;
+    paneIcon.style.setProperty("--tile-bg", spec.color);
+  }
+  if (paneTitle) paneTitle.textContent = t(spec.title);
+  if (paneSubtitle) paneSubtitle.textContent = spec.subtitle();
   const body = root.querySelector<HTMLElement>(".cc-sheet-body");
   if (body) body.scrollTop = 0;
   syncSlidingTabIndicators(root);

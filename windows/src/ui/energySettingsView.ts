@@ -613,14 +613,14 @@ export function bindEnergySettingsEvents(host: EnergyTrackableHost): void {
     session.priceFeedback = null;
     return;
   }
-  if (host.settingsTab !== "system") {
+  if (host.settingsTab !== "safety") {
     session.confirmingClear = false;
   }
 
   const clearConfirmEl = host.root.querySelector<HTMLElement>("#settings-clear-energy-confirm");
   host.root.querySelectorAll<HTMLElement>("[data-settings-tab]").forEach((tabBtn) => {
     tabBtn.addEventListener("click", () => {
-      if (tabBtn.dataset.settingsTab !== "system") {
+      if (tabBtn.dataset.settingsTab !== "safety") {
         session.confirmingClear = false;
         if (clearConfirmEl) clearConfirmEl.hidden = true;
       }

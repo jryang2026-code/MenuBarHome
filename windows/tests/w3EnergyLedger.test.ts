@@ -389,8 +389,8 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     for (const q of queries) {
       const outcome = searchSettings(q);
       assert.ok(
-        outcome.hits.some((h) => h.anchor === "energyHistory" && h.tab === "system"),
-        `Expected query "${q}" to match energyHistory on system tab`,
+        outcome.hits.some((h) => h.anchor === "energyHistory" && h.tab === "safety"),
+        `Expected query "${q}" to match energyHistory on safety tab`,
       );
     }
 
@@ -402,7 +402,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     await setImmediate();
     await click('[data-settings-search-hit="energyHistory"]');
 
-    assert.equal(element('[data-settings-tab="system"]').getAttribute("aria-selected"), "true");
+    assert.equal(element('[data-settings-tab="safety"]').getAttribute("aria-selected"), "true");
     assert.equal(
       element('[data-settings-anchor="energyHistory"]').classList.contains("is-search-highlighted"),
       true,
@@ -461,7 +461,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
 
     const app = startApp();
     app.devices = plugsAfter;
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await setImmediate();
 
     assert.equal(element("#settings-energy-today-kwh").textContent, "11.20 kWh");
@@ -500,7 +500,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     await click("#btn-clear-energy-history");
     assert.equal(element("#settings-clear-energy-confirm").hidden, false);
     await click('[data-settings-tab="general"]');
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
     assert.equal(element("#settings-clear-energy-confirm").hidden, true);
 
     await click("#btn-clear-energy-history");
@@ -544,7 +544,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     app.settings.connectionMode = "demo";
     app.cloudValuesStale = false;
     app.devices = [makePlug("xss_plug", "<img src=x onerror=alert(1)>", 5.004, { roomName: "<b>卧室</b>" })];
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await setImmediate();
 
     assert.equal(element("#settings-energy-today-kwh").textContent, "<0.01 kWh");
@@ -565,7 +565,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     const haHistory = getScopedEnergyHistory(app.settings);
     assert.equal(haHistory.recordingStartedAt, null);
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await setImmediate();
 
     setLanguage("zh-Hant");
@@ -628,7 +628,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     assert.equal(haHistory.todayKwh("ha_cached_plug"), null);
 
     app.expandedDeviceId = "ha_cached_plug";
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await setImmediate();
 
     assert.equal(element("#settings-energy-today-kwh").textContent, "—");
@@ -675,7 +675,7 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
         roomName: "原始书房",
       }),
     ];
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await setImmediate();
 
     const ranks = document.querySelectorAll("[data-energy-rank]");

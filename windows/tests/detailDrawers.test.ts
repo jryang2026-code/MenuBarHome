@@ -727,9 +727,9 @@ describe("FeedAction, MoreSettings 2-Stage Folding, and Live Slider Readouts", (
     await click('[data-more-settings-toggle="purifier_1"]');
     await click('[data-open-facet-settings="purifier_1"]');
     assert.equal(app.activeSheet, "settings");
-    assert.equal(app.settingsTab, "system");
+    assert.equal(app.settingsTab, "safety");
     assert.equal(
-      element('[data-settings-panel="system"]').hasAttribute("hidden"),
+      element('[data-settings-panel="safety"]').hasAttribute("hidden"),
       false,
     );
   });

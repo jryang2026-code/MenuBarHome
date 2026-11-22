@@ -533,6 +533,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
+        panelTheme: "fluent",
       }),
     );
 
@@ -595,6 +596,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
+        panelTheme: "fluent",
       }),
     );
     const root = document.getElementById("app")!;
@@ -793,6 +795,7 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
         connectionMode: "demo",
         hasCompletedOnboarding: true,
         autoCheckUpdates: false,
+        panelTheme: "fluent",
       }),
     );
 

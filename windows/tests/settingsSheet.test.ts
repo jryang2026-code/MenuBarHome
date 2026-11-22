@@ -81,8 +81,8 @@ afterEach(async () => {
   await closeTestWindow(dom);
 });
 
-describe("Settings sheet three-zone layout (#78)", () => {
-  it("keeps the update card on 外观与面板 when a release is waiting", async () => {
+describe("Settings sheet two-column sidebar layout (#78)", () => {
+  it("keeps the update card on 常规 when a release is waiting", async () => {
     const release = JSON.stringify({
       tag_name: "v1.2.3",
       html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.3",
@@ -106,14 +106,14 @@ describe("Settings sheet three-zone layout (#78)", () => {
     await click("#btn-footer-update");
     assert.equal(visibleTab(), "general", "the footer update pill lands where the notice is");
     assert.match(panel("general").textContent ?? "", /发现新版本 v1\.2\.3/);
-    assertMissing(panel("system").querySelector("#btn-open-update"));
+    assertMissing(panel("about").querySelector("#btn-open-update"));
   });
 
-  it("moves the update card to 全关与更新 when no release is waiting", async () => {
+  it("moves the update card to 关于与诊断 when no release is waiting", async () => {
     startDemo();
     await click("#btn-settings");
     assertMissing(panel("general").querySelector("#btn-check-update"));
-    assert.ok(panel("system").querySelector("#btn-check-update"), "the manual check lives on the last tab");
+    assert.ok(panel("about").querySelector("#btn-check-update"), "the manual check lives on the last tab");
   });
 });
 
@@ -130,8 +130,10 @@ describe("Settings tab switching (#78)", () => {
 
     await click('[data-settings-tab="assistant"]');
     assert.equal(visibleTab(), "assistant");
-    await click('[data-settings-tab="system"]');
-    assert.equal(visibleTab(), "system");
+    await click('[data-settings-tab="safety"]');
+    assert.equal(visibleTab(), "safety");
+    await click('[data-settings-tab="about"]');
+    assert.equal(visibleTab(), "about");
     await click('[data-settings-tab="general"]');
     assert.equal(visibleTab(), "general");
     assert.deepEqual(selectedTabs(), ["general"]);
@@ -256,7 +258,7 @@ describe("Settings tab switching (#78)", () => {
     startDemo();
     await click("#btn-settings");
     element(".cc-sheet-body").scrollTop = 200;
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
     assert.equal(element(".cc-sheet-body").scrollTop, 0, "a new category starts at its top");
   });
 });
@@ -322,7 +324,7 @@ describe("Settings category routing (#78)", () => {
     assert.equal(visibleTab(), "connection");
   });
 
-  it("sends the footer update pill to 全关与更新 when no release is waiting at click time", async () => {
+  it("sends the footer update pill to 关于与诊断 when no release is waiting at click time", async () => {
     const release = JSON.stringify({
       tag_name: "v1.2.3",
       html_url: "https://github.com/jryang2026-code/MenuBarHome/releases/tag/v1.2.3",
@@ -347,15 +349,15 @@ describe("Settings category routing (#78)", () => {
     // must not land on the general tab, which no longer holds the card.
     app.availableUpdate = null;
     await click("#btn-footer-update");
-    assert.equal(app.settingsTab, "system");
-    assert.equal(visibleTab(), "system");
-    assert.ok(panel("system").querySelector("#btn-check-update"));
+    assert.equal(app.settingsTab, "about");
+    assert.equal(visibleTab(), "about");
+    assert.ok(panel("about").querySelector("#btn-check-update"));
   });
 
-  it("opens 外观与面板 from the settings gear", async () => {
+  it("opens 常规 from the settings gear", async () => {
     const app = startDemo();
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
     await click("#btn-close-settings");
     assert.equal(app.activeSheet, "none");
     await click("#btn-settings");
@@ -392,7 +394,7 @@ describe("Settings save across tabs (#78)", () => {
     type("#settings-api-key", "sk-saved");
     toggle("#settings-habit", false);
 
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="about"]');
     await click("#btn-save-settings");
 
     const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as {
@@ -455,14 +457,14 @@ describe("Settings keeps its tab under a live cloud refresh (#78)", () => {
     // `null` here would leave the lookup blocked forever and hang `closeTestWindow` in afterEach.
     await waitFor(() => release !== null, "prop read never started");
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
     // A refresh landing mid-edit must not move the reader off the tab under the pointer.
     app.render();
     await setImmediate();
-    assert.equal(visibleTab(), "system");
+    assert.equal(visibleTab(), "safety");
     release!();
     await waitFor(() => !app.isSyncingCloud, "the sync never finished");
-    assert.equal(visibleTab(), "system");
+    assert.equal(visibleTab(), "safety");
   });
 });
 

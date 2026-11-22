@@ -12,7 +12,7 @@ beforeEach(() => {
   dom = mountTestWindow();
   localStorage.setItem(
     "menumijia.windows.settings.v2",
-    JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true }),
+    JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, panelTheme: "fluent" }),
   );
 });
 

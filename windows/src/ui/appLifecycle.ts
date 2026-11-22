@@ -30,7 +30,7 @@ import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
-import type { SettingsTab } from "./settingsViews.js";
+import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
@@ -489,10 +489,25 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.render();
   }
 
+function hasTauriWindowMetadata(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean(
+      (window as unknown as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__
+        ?.metadata,
+    )
+  );
+}
+
 export function saveSettings(host: MenuMijiaWindowsApp, forceSubmitEndpoints = false): void {
     writeSettingsForStorage(host.settings);
     submitServiceEndpoints(host, forceSubmitEndpoints);
     void persistCredentials(host);
+    if (hasTauriWindowMetadata()) {
+      invokeTauriVoid("notify_settings_changed", {
+        sourceLabel: host.isStandaloneSettingsWindow ? "settings" : "main",
+      });
+    }
   }
 
   /** OS-preferred languages, read from the WebView's `window.navigator` (#52). */
@@ -634,8 +649,13 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
 
 /** `tab` routes the caller to the category it needs: the QR button to sources, an update to general. */
 export function openSettingsSheet(host: MenuMijiaWindowsApp, tab: SettingsTab = "general"): void {
+    const normalized = normalizeSettingsTab(tab);
+    if (!host.isStandaloneSettingsWindow && hasTauriWindowMetadata()) {
+      invokeTauriVoid("open_settings_window", { tab: normalized });
+      return;
+    }
     host.activeSheet = "settings";
-    host.settingsTab = tab;
+    host.settingsTab = normalized;
     invokeTauriVoid("set_pin_popover", { pin: true });
     host.syncPanelPlacement();
     host.render();

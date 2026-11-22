@@ -27,6 +27,7 @@ class ShadowLayer:
 
 @dataclass(frozen=True)
 class FlyoutGeometryContract:
+    default_panel_theme: str
     tauri_width: float
     tauri_height: float
     tauri_transparent: bool
@@ -131,10 +132,11 @@ def load_contract(root: Path = ROOT) -> FlyoutGeometryContract:
     }
 
     theme_text = (root / "windows/src/ui/panelTheme.ts").read_text(encoding="utf-8")
+    default_theme_m = re.search(r'DEFAULT_PANEL_THEME(?:\s*:\s*[^=]+)?\s*=\s*"(classic|fluent)"', theme_text)
     fluent_profile_m = re.search(r'fluent:\s*\{[^}]*mainWidthPx:\s*(\d+)[^}]*windowWidthPx:\s*(\d+)', theme_text, flags=re.DOTALL)
     classic_profile_m = re.search(r'classic:\s*\{[^}]*mainWidthPx:\s*(\d+)[^}]*windowWidthPx:\s*(\d+)', theme_text, flags=re.DOTALL)
-    if not fluent_profile_m or not classic_profile_m:
-        raise ValueError("panelTheme.ts 缺少 fluent 或 classic 的几何定义")
+    if not default_theme_m or not fluent_profile_m or not classic_profile_m:
+        raise ValueError("panelTheme.ts 缺少 DEFAULT_PANEL_THEME、fluent 或 classic 的几何定义")
 
     css_text = re.sub(r"/\*.*?\*/", "", (root / "windows/src/ui/styles.css").read_text(encoding="utf-8"), flags=re.DOTALL)
     app_block = extract_css_block(css_text, r"(?<![\w-])#app", "#app")
@@ -176,6 +178,7 @@ def load_contract(root: Path = ROOT) -> FlyoutGeometryContract:
         raise ValueError("styles.css .cc-popover.scheme-light 缺少 --win-island-shadow 定义")
 
     return FlyoutGeometryContract(
+        default_panel_theme=default_theme_m.group(1),
         tauri_width=float(main_win.get("width", 0)), tauri_height=float(main_win.get("height", 0)),
         tauri_transparent=bool(main_win.get("transparent") is True), tauri_shadow=bool(main_win.get("shadow") is True),
         rust_main_width=float(main_w_m.group(1)), rust_classic_main_width=float(classic_w_m.group(1)),
@@ -205,9 +208,9 @@ def validate_contract(c: FlyoutGeometryContract) -> list[str]:
     css_outer_w = c.css_popover_width + 2.0 * c.css_panel_inset
     if c.rust_padding != c.css_panel_inset:
         errors.append(f"window.rs PANEL_PADDING ({c.rust_padding:g}px) 与 styles.css #app --panel-inset ({c.css_panel_inset:g}px) 不一致")
-    if not (c.tauri_width == rust_outer_w == css_outer_w == c.ts_fluent_window_width) or c.rust_main_width != c.ts_fluent_main_width:
+    if not (rust_outer_w == css_outer_w == c.ts_fluent_window_width) or c.rust_main_width != c.ts_fluent_main_width:
         errors.append(
-            f"Fluent 飞出面板外框宽度失配: tauri.conf.json width={c.tauri_width:g}, "
+            f"Fluent 飞出面板外框宽度失配: "
             f"window.rs PANEL_MAIN_WIDTH+2*PANEL_PADDING={rust_outer_w:g}, "
             f"styles.css .cc-popover+2*--panel-inset={css_outer_w:g}, "
             f"panelTheme.ts fluent={c.ts_fluent_main_width:g}/{c.ts_fluent_window_width:g}"
@@ -223,6 +226,13 @@ def validate_contract(c: FlyoutGeometryContract) -> list[str]:
             f"Classic 飞出面板外框宽度失配: window.rs CLASSIC_MAIN_WIDTH+2*PANEL_PADDING={rust_classic_outer_w:g}, "
             f'styles.css #app[data-panel-theme="classic"] > .cc-popover+2*--panel-inset={css_classic_outer_w:g}, '
             f"panelTheme.ts classic={c.ts_classic_main_width:g}/{c.ts_classic_window_width:g}"
+        )
+
+    expected_default_w = c.ts_classic_window_width if c.default_panel_theme == "classic" else c.ts_fluent_window_width
+    if c.tauri_width != expected_default_w:
+        errors.append(
+            f"默认主题 ({c.default_panel_theme}) 启动外框宽度失配: tauri.conf.json width={c.tauri_width:g}, "
+            f"panelTheme.ts expected={expected_default_w:g}"
         )
 
     missing = [k for k in ("compact", "standard", "tall", "max") if k not in c.panel_heights]
