@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import StateTestSupport
 import Testing
 @testable import MijiaCore
@@ -15,9 +16,8 @@ struct ConnectionRemovalCorruptRecordTests {
     }
 
     @MainActor
-    private static func seededSuite(_ name: String, vault: CredentialVault) throws -> (String, UserDefaults) {
-        let suite = "test.p2cm.corrupt.\(name).\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private static func seededDefaults(vault: CredentialVault) -> UserDefaults {
+        let defaults = InMemoryUserDefaults()
         #expect(KeychainHelper.saveToken("ha-secret-tok", defaults: defaults, vault: vault))
         #expect(MiSessionStore.saveAccounts([MiAccount(session: sessionA), MiAccount(session: sessionB)], defaults: defaults, vault: vault))
         #expect(vault.set(Data("sk-openai".utf8), for: "assistant_api_key_openai"))
@@ -25,12 +25,12 @@ struct ConnectionRemovalCorruptRecordTests {
         defaults.set(haURL, forKey: "ha_server_url")
         defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
         defaults.set(corrupt, forKey: ConnectionRemovalStore.storageKey)
-        return (suite, defaults)
+        return defaults
     }
 
     @MainActor
-    private static func makeStore(_ suite: String, _ vault: CredentialVault) -> HomeStore {
-        let store = HomeStore(defaultsSuiteName: suite, credentialVault: vault, miAccountsProviderFactory: stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() })
+    private static func makeStore(_ defaults: UserDefaults, _ vault: CredentialVault) -> HomeStore {
+        let store = HomeStore(credentialVault: vault, miAccountsProviderFactory: stubMiFactory, haProviderFactory: { _, _ in MockHomeProvider() }, defaults: defaults)
         store.toastAutoDismissInterval = nil
         return store
     }
@@ -40,15 +40,14 @@ struct ConnectionRemovalCorruptRecordTests {
     func discardRestoresAccountsWithoutTouchingSlots() async throws {
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
-        let (suite, defaults) = try Self.seededSuite("discard", vault: vault)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = Self.seededDefaults(vault: vault)
         let quarantine = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: quarantine) }
         let slotsBefore = try #require(mem.storedItems)
         #expect(slotsBefore.keys.contains(KeychainHelper.tokenAccount))
         #expect(slotsBefore.keys.contains(MiSessionStore.keychainAccount))
 
-        let store = Self.makeStore(suite, vault)
+        let store = Self.makeStore(defaults, vault)
         #expect(store.isIdentityUncertain)
         #expect(store.miAccounts.isEmpty)
         #expect(!store.hasHASource)
@@ -64,7 +63,7 @@ struct ConnectionRemovalCorruptRecordTests {
         #expect(defaults.data(forKey: ConnectionRemovalStore.unreadableKeyPrefix) == Self.corrupt)
         #expect(mem.storedItems == slotsBefore)
 
-        let relaunched = Self.makeStore(suite, CredentialVault(storage: mem.storage))
+        let relaunched = Self.makeStore(defaults, CredentialVault(storage: mem.storage))
         #expect(!relaunched.isIdentityUncertain)
         #expect(relaunched.miAccounts.count == 2)
         #expect(mem.storedItems == slotsBefore)
@@ -75,14 +74,13 @@ struct ConnectionRemovalCorruptRecordTests {
     func discardReadsNoncanonicalMiAccounts(duplicateEnvelope: Bool, reuseProvider: Bool) throws {
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
-        let (suite, defaults) = try Self.seededSuite("noncanonical", vault: vault)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = Self.seededDefaults(vault: vault)
         let quarantine = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: quarantine) }
         if reuseProvider {
             defaults.removeObject(forKey: ConnectionRemovalStore.storageKey)
         }
-        let store = Self.makeStore(suite, vault)
+        let store = Self.makeStore(defaults, vault)
         #expect((store.activeDualProvider != nil) == reuseProvider)
         if reuseProvider {
             defaults.set(Self.corrupt, forKey: ConnectionRemovalStore.storageKey)
@@ -107,7 +105,7 @@ struct ConnectionRemovalCorruptRecordTests {
         #expect(mem.storedItems?[MiSessionStore.keychainAccount] == noncanonical)
         #expect(mem.writes == writesBeforeDiscard)
 
-        let relaunched = Self.makeStore(suite, CredentialVault(storage: mem.storage))
+        let relaunched = Self.makeStore(defaults, CredentialVault(storage: mem.storage))
         #expect(relaunched.miAccounts.map(\.id) == [MiAccount(session: Self.sessionA).id])
         #expect(mem.storedItems?[MiSessionStore.keychainAccount] != noncanonical)
         #expect(mem.writes == writesBeforeDiscard + 1)
@@ -118,14 +116,13 @@ struct ConnectionRemovalCorruptRecordTests {
     func discardRequiresPersistedQuarantine() throws {
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
-        let (suite, defaults) = try Self.seededSuite("quarantine", vault: vault)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = Self.seededDefaults(vault: vault)
         let files = FileManager.default
         let root = files.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try files.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? files.removeItem(at: root) }
         let quarantine = root.appendingPathComponent("quarantine")
-        let store = Self.makeStore(suite, vault)
+        let store = Self.makeStore(defaults, vault)
 
         try files.createSymbolicLink(at: quarantine, withDestinationURL: root)
         #expect(!store.discardCorruptConnectionRemovalRecord(quarantineDirectory: quarantine))
@@ -144,7 +141,7 @@ struct ConnectionRemovalCorruptRecordTests {
         #expect(defaults.object(forKey: ConnectionRemovalStore.storageKey) == nil)
 
         defaults.set(Self.corrupt, forKey: ConnectionRemovalStore.storageKey)
-        let relaunched = Self.makeStore(suite, vault)
+        let relaunched = Self.makeStore(defaults, vault)
         let linkTarget = root.appendingPathComponent("target")
         try files.moveItem(at: copy, to: linkTarget)
         try files.createSymbolicLink(at: copy, withDestinationURL: linkTarget)
@@ -171,11 +168,10 @@ struct ConnectionRemovalCorruptRecordTests {
         // Locked vault: the launch diagnostic still names the corrupt record first, so the check must re-read the vault.
         do {
             let mem = MemoryVaultStorage()
-            let (suite, defaults) = try Self.seededSuite("locked", vault: CredentialVault(storage: mem.storage))
-            defer { defaults.removePersistentDomain(forName: suite) }
+            let defaults = Self.seededDefaults(vault: CredentialVault(storage: mem.storage))
             let slotsBefore = mem.rawBlob
             mem.readResult = .unavailable
-            let store = Self.makeStore(suite, CredentialVault(storage: mem.storage))
+            let store = Self.makeStore(defaults, CredentialVault(storage: mem.storage))
             #expect(store.identityMigrationDiagnostic == "corrupt_connection_removal")
             #expect(!store.canDiscardCorruptConnectionRemovalRecord)
             #expect(!store.discardCorruptConnectionRemovalRecord())
@@ -187,10 +183,9 @@ struct ConnectionRemovalCorruptRecordTests {
         // Corrupt capability selection takes precedence and is not something this action may clear.
         do {
             let mem = MemoryVaultStorage()
-            let (suite, defaults) = try Self.seededSuite("capability", vault: CredentialVault(storage: mem.storage))
-            defer { defaults.removePersistentDomain(forName: suite) }
+            let defaults = Self.seededDefaults(vault: CredentialVault(storage: mem.storage))
             defaults.set(Data("{broken-capability".utf8), forKey: CapabilitySelectionStore.storageKey)
-            let store = Self.makeStore(suite, CredentialVault(storage: mem.storage))
+            let store = Self.makeStore(defaults, CredentialVault(storage: mem.storage))
             #expect(store.hasCorruptConnectionRemovalState)
             #expect(store.identityMigrationDiagnostic == "corrupt_capability_selection")
             #expect(!store.canDiscardCorruptConnectionRemovalRecord)

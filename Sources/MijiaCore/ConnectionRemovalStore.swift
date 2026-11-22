@@ -565,7 +565,8 @@ public enum ConnectionRemovalStore {
             guard let support = try? FileManager.default.url(
                 for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
             ) else { return false }
-            destination = support.appendingPathComponent("MenuBarMijia-ConnectionRemovalQuarantine", isDirectory: true)
+            destination = support.resolvingSymlinksInPath()
+                .appendingPathComponent("MenuBarMijia-ConnectionRemovalQuarantine", isDirectory: true)
         }
 
         let parent = open(destination.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -595,6 +596,9 @@ public enum ConnectionRemovalStore {
               info.st_size == raw.count else { return false }
         // Flush the file and both directory entries before removing the defaults key.
         guard fsync(file) == 0, fsync(folder) == 0, fsync(parent) == 0 else { return false }
+        #if canImport(Darwin)
+        guard fcntl(file, F_FULLFSYNC) == 0 else { return false }
+        #endif
         return (try? (handle.readToEnd() ?? Data())) == raw
     }
 
