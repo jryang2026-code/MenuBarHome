@@ -636,6 +636,11 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.ok(document.querySelector("[data-onboarding-loading]"), "loading state is mounted");
     assert.equal(document.querySelector('[data-onboarding-card="homeAssistant"]'), null, "no platform cards yet");
     assert.equal(document.querySelector("#btn-skip-onboarding"), null, "no footer actions yet");
+    assert.match(
+      document.querySelector("[data-onboarding-announcer]")?.textContent ?? "",
+      /正在读取已保存的连接/,
+      "the loading state is spoken through the persistent live region",
+    );
 
     pendingVault.resolve?.(miSessionPayload);
     await setImmediate();
@@ -700,7 +705,7 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(el('[data-onboarding-mode="xiaomiCloud"]').getAttribute("aria-checked"), "true", "arrows wrap around the group");
   });
 
-  it("announces async guide status through live regions (P2-9)", async () => {
+  it("announces async guide status through one persistent live region (P2-9)", async () => {
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: { invoke: async () => null },
       configurable: true,
@@ -709,17 +714,29 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     await setImmediate();
     await setImmediate();
 
-    await click('[data-onboarding-mode="xiaomiCloud"]');
-    const qrStatus = el(".cc-qr-status");
-    assert.equal(qrStatus.getAttribute("role"), "status");
-    assert.equal(qrStatus.getAttribute("aria-live"), "polite");
-    assert.equal(document.querySelector(".cc-qr-frame img"), null, "no QR image before a ticket");
+    // The announcer lives outside the sheet, so a rebuild cannot replace it before it speaks.
+    const announcer = () => document.querySelector("[data-onboarding-announcer]");
+    const first = announcer();
+    assert.ok(first, "announcer is mounted");
+    assert.equal(first.getAttribute("role"), "status");
+    assert.equal(first.getAttribute("aria-live"), "polite");
+    assert.equal(first.getAttribute("aria-atomic"), "true");
+    assert.equal(first.closest(".cc-sheet"), null, "announcer must survive the sheet rebuild");
 
-    // The verification banner is an alert and the success line a polite status.
+    await click('[data-onboarding-mode="xiaomiCloud"]');
+    assert.equal(announcer(), first, "the same node survives a platform switch");
+    assert.equal(document.querySelector(".cc-qr-frame img"), null, "no QR image before a ticket");
+    // The QR status line is now plain text; the announcer carries the spoken copy.
+    assert.equal(el(".cc-qr-status").hasAttribute("aria-live"), false);
+
     await click('[data-onboarding-mode="homeAssistant"]');
     typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
     typeInput("#onboarding-ha-token", "ha-token");
+    const refreshGate = { release: null as (() => void) | null };
     app.refreshHADevices = async () => {
+      await new Promise<void>((resolve) => {
+        refreshGate.release = resolve;
+      });
       app.settings.cachedHAHome = {
         identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken),
         home: { devices: [], scenes: [], rooms: [], environmentReadings: [], deviceFacets: {} },
@@ -727,14 +744,16 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     };
     await click("#btn-onboarding-connect-ha");
     await setImmediate();
+    assert.match(announcer()?.textContent ?? "", /正在连接并验证 Home Assistant/, "pending state is announced");
+    refreshGate.release?.();
     await setImmediate();
-    const verified = document.querySelector("[data-onboarding-ha-verified]");
-    assert.ok(verified, "success line is rendered");
-    assert.equal(verified.getAttribute("role"), "status");
-    assert.equal(verified.getAttribute("aria-live"), "polite");
+    await setImmediate();
+    assert.ok(document.querySelector("[data-onboarding-ha-verified]"), "success line is still rendered");
+    assert.match(announcer()?.textContent ?? "", /已连接 Home Assistant · 0 台设备/, "success is announced by the persistent node");
+    assert.equal(announcer(), first, "announcements never replace the live region");
   });
 
-  it("distinguishes timeout and TLS failures from a generic unreachable address (P2-13)", async () => {
+  it("names a failed TLS/WebSocket handshake without guessing the cause or suggesting plaintext (P2-13)", async () => {
     let nextError = "Home Assistant read timed out";
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
@@ -758,12 +777,27 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     await setImmediate();
     assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /连接超时/, "a timeout is named as such");
 
+    // `client_tls` folds the TLS upgrade and the WebSocket HTTP Upgrade into one string, so the copy
+    // must cover both without claiming a certificate failure, and must never suggest plaintext.
     nextError = "Home Assistant handshake failed";
     typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
     await click("#btn-onboarding-connect-ha");
     await setImmediate();
     await setImmediate();
-    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /安全连接（TLS）/, "a TLS handshake failure is named as such");
+    const handshakeError = el("[data-onboarding-ha-error]").textContent ?? "";
+    assert.match(handshakeError, /安全连接或 WebSocket 握手未能完成/, "both possible causes are named");
+    assert.match(handshakeError, /WebSocket Upgrade/, "reverse-proxy guidance is given");
+    assert.match(handshakeError, /证书/, "certificate check is offered");
+    assert.match(handshakeError, /系统时间/, "clock check is offered");
+    assert.doesNotMatch(handshakeError, /http 局域网|改用 http/, "never advises falling back to plaintext");
+
+    // The same string over plain http is also possible (a proxy answering 404/5xx), so the copy is
+    // independent of the scheme and does not imply TLS was even attempted.
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /安全连接或 WebSocket 握手未能完成/);
 
     nextError = "Home Assistant address lookup failed";
     typeInput("#onboarding-ha-url", "http://missing.invalid:8123");
@@ -780,13 +814,59 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     await setImmediate();
     assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /无法访问此地址/);
 
-    // An auth-handshake failure over https is a protocol problem, not a certificate one.
+    // An auth-handshake failure is the protocol step after a working socket, so it stays generic.
     nextError = "Home Assistant authentication handshake failed";
     typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
     await click("#btn-onboarding-connect-ha");
     await setImmediate();
     await setImmediate();
-    assert.doesNotMatch(el("[data-onboarding-ha-error]").textContent ?? "", /TLS/);
+    const authError = el("[data-onboarding-ha-error]").textContent ?? "";
+    assert.doesNotMatch(authError, /安全连接或 WebSocket 握手/);
+    assert.match(authError, /无法访问此地址/);
+  });
+
+  it("warns about plaintext HA only for public hosts, matching the shared LAN corpus (P2-10)", async () => {
+    const corpus = JSON.parse(
+      readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/local_network_endpoint_golden.json"), "utf8"),
+    ) as { cases: readonly { host: string; isLocalNetwork: boolean }[] };
+    assert.ok(corpus.cases.length >= 50);
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    await click('[data-onboarding-mode="homeAssistant"]');
+
+    const warning = () => el<HTMLElement>("[data-onboarding-ha-http-warning]");
+    // Every host form a person actually types into the HA field: bare name, name:port, the
+    // /api/websocket suffix, and an upper-case host. The warning must follow the shared corpus in all
+    // four, so the guide can never be stricter or looser than the native origin consent.
+    for (const item of corpus.cases) {
+      const forms = item.host.includes(":")
+        ? [`http://[${item.host}]`, `http://[${item.host}]:8123`, `http://[${item.host}]/api/websocket`]
+        : [
+            `http://${item.host}`,
+            `http://${item.host}:8123`,
+            `http://${item.host}:8123/api/websocket`,
+            item.host.toUpperCase(),
+          ];
+      for (const form of forms) {
+        typeInput("#onboarding-ha-url", form);
+        assert.equal(
+          warning().hidden,
+          item.isLocalNetwork,
+          `${form}: public plaintext must warn (${!item.isLocalNetwork}), LAN must stay quiet (${item.isLocalNetwork})`,
+        );
+      }
+    }
+
+    // Scheme-less input is read as http, and https never warns regardless of host.
+    typeInput("#onboarding-ha-url", "203.0.113.5:8123");
+    assert.equal(warning().hidden, false, "scheme-less public host defaults to http and warns");
+    typeInput("#onboarding-ha-url", "https://203.0.113.5:8123");
+    assert.equal(warning().hidden, true, "https never warns");
+    typeInput("#onboarding-ha-url", "");
+    assert.equal(warning().hidden, true, "an empty draft is not a warning");
+    assert.equal(app.activeSheet, "onboarding");
   });
 
   it("fails closed when auxiliary localStorage reads throw in detectPersistedLocalData", () => {

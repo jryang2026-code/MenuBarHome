@@ -1008,9 +1008,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "连接超时。设备还未同步。请确认家庭服务器已开机并在同一网络，然后重试。",
     "The connection timed out. Devices have not synced yet. Confirm the server is running on the same network, then retry.",
   ],
-  "安全连接（TLS）建立失败。设备还未同步。请检查服务器证书是否有效、系统时间是否正确，或改用 http 局域网地址。": [
-    "安全连接（TLS）建立失败。设备还未同步。请检查服务器证书是否有效、系统时间是否正确，或改用 http 局域网地址。",
-    "The secure (TLS) connection could not be established. Devices have not synced yet. Check the server certificate and this PC's clock, or use a plain http LAN address.",
+  "安全连接或 WebSocket 握手未能完成。设备还未同步。请确认地址指向 Home Assistant 根路径（反向代理需转发 WebSocket Upgrade）、证书有效且系统时间正确。": [
+    "安全连接或 WebSocket 握手未能完成。设备还未同步。请确认地址指向 Home Assistant 根路径（反向代理需转发 WebSocket Upgrade）、证书有效且系统时间正确。",
+    "The secure connection or the WebSocket handshake did not complete. Devices have not synced yet. Confirm the address points at the Home Assistant root path (a reverse proxy must forward the WebSocket Upgrade), the certificate is valid, and this PC's clock is correct.",
   ],
   "找不到这个地址对应的主机。设备还未同步。请检查地址拼写，或改用局域网 IP 地址。": [
     "找不到这个地址对应的主机。设备还未同步。请检查地址拼写，或改用局域网 IP 地址。",
