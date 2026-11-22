@@ -1104,6 +1104,9 @@ public actor HAWebSocketProvider: HomeProvider {
             if primaryEid.hasPrefix("water_heater.") {
                 return ("water_heater", isOn ? "turn_on" : "turn_off", ["entity_id": primaryEid])
             }
+            if primaryEid.hasPrefix("fan.") {
+                return ("fan", isOn ? "turn_on" : "turn_off", ["entity_id": primaryEid])
+            }
             return ("switch", isOn ? "turn_on" : "turn_off", ["entity_id": primaryEid])
 
         case .setSelectOption(let eid, let option):

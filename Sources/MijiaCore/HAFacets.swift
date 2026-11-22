@@ -8,8 +8,9 @@ import Foundation
 /// low-risk set stays closed until the user allows advanced facet writes.
 public enum HAFacetEngine {
     /// `switch.*`, `select.*`, `number.*`, `button.*`, `sensor.*` and `binary_sensor.*` entities
-    /// that survived `claimed` and the registry's disabled/hidden filters. `text.*` and every
-    /// domain handled by a primary card stay out.
+    /// that survived `claimed` and the registry's disabled/hidden filters, plus a `fan.*` riding
+    /// on a non-fan card as its power toggle. `text.*` and every other domain handled by a
+    /// primary card stay out.
     public static func controls(
         entities: [HAEntityEntry],
         states: [String: HAEntityState],
@@ -46,7 +47,16 @@ public enum HAFacetEngine {
         // fallback for YAML entities and older integrations.
         let semantic = entity.translation_key?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawName = (semantic?.isEmpty == false ? semantic! : objectId)
-        let name = rawName.replacingOccurrences(of: "_", with: "-")
+        // Home Assistant files a ceiling fan and its lamp under one device: the lamp draws the
+        // card and the fan becomes its second power row. A fan card claims its own entity, so an
+        // unclaimed `fan.*` only rides along on another card and takes the name a MIoT service's
+        // power property has (`on`), the low-risk whitelist entry, as Windows does (#327).
+        let isSecondaryFan: Bool = {
+            guard domain == "fan" else { return false }
+            if case .fan = device.kind { return false }
+            return true
+        }()
+        let name = isSecondaryFan ? "on" : rawName.replacingOccurrences(of: "_", with: "-")
         let objectName = objectId.replacingOccurrences(of: "_", with: "-")
         let category = entity.entity_category?.lowercased()
         // Config entities are device plumbing (reboot, calibration), never drawer controls.
@@ -55,7 +65,7 @@ public enum HAFacetEngine {
               !MiotFacetEngine.matches(objectName, anyOf: profiles.noise.properties) else { return nil }
 
         let stateLower = state.state.lowercased()
-        let writable = ["switch", "select", "number", "button"].contains(domain)
+        let writable = ["switch", "select", "number", "button"].contains(domain) || isSecondaryFan
         guard writable || domain == "sensor" || domain == "binary_sensor" else { return nil }
         // A diagnostic switch or button is plumbing too; diagnostic readings such as battery or
         // signal strength remain useful.
@@ -106,7 +116,7 @@ public enum HAFacetEngine {
         }
 
         switch domain {
-        case "switch":
+        case "switch", "fan":
             let isOn: Bool
             switch stateLower {
             case "on": isOn = true

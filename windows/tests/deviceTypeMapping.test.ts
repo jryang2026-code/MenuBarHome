@@ -50,6 +50,7 @@ interface FixtureCorpus {
     readonly mixedTypeCases: readonly ({
       readonly id: string; readonly expectedCards: readonly ExpectedCard[];
       readonly expectedFacetSiids?: readonly number[];
+      readonly expectedFacetEntityIds?: readonly string[];
     } & (
       | {
           readonly source: "xiaomi-cloud"; readonly did: string; readonly name: string; readonly model?: string;
@@ -255,7 +256,12 @@ describe("Windows device-type mapping (P3c-W)", () => {
     for (const c of mapping.mixedTypeCases) {
       if (c.source === "home-assistant") {
         // The second domain folds into the one card and never reclassifies or splits it.
-        assertCards(synthesizeHA(`d-${c.id}`, c), c.expectedCards, c.id);
+        const home = synthesizeHA(`d-${c.id}`, c);
+        assertCards(home, c.expectedCards, c.id);
+        const facetIds = Object.values(home.deviceFacets ?? {}).flat().map((facet) => facet.id);
+        for (const entityId of c.expectedFacetEntityIds ?? []) {
+          assert.ok(facetIds.includes(entityId), `${c.id}: ${entityId} stays on the card, got ${facetIds.join(",")}`);
+        }
         continue;
       }
       const model = c.model ?? c.services![0]!.model;

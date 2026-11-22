@@ -30,7 +30,7 @@ struct DeviceTypeMappingTests {
     private struct MixedTypeCase: Decodable {
         let id: String; let source: String; let did: String?; let name: String?; let model: String?
         let services: [MergedServiceRef]?; let device: HADeviceSpec?; let states: [HAStateRow]?
-        let expectedCards: [ExpectedCard]; let expectedFacetSiids: [Int]?
+        let expectedCards: [ExpectedCard]; let expectedFacetSiids: [Int]?; let expectedFacetEntityIds: [String]?
     }
     private struct SplitKeyRef: Decodable { let did: String; let siid: Int }
     private struct SplitCardCase: Decodable {
@@ -205,6 +205,10 @@ struct DeviceTypeMappingTests {
             if c.source == "home-assistant" {
                 let synthesized = Self.synthesizeHA(deviceId: "d-\(c.id)", device: try #require(c.device), states: try #require(c.states))
                 try Self.assertCards(synthesized.home, expected: c.expectedCards, label: c.id)
+                let facetIds = Set(synthesized.home.deviceFacets.values.flatMap { $0.map(\.id) })
+                for entityId in c.expectedFacetEntityIds ?? [] {
+                    #expect(facetIds.contains(entityId), "\(c.id): \(entityId) stays on the card")
+                }
                 continue
             }
             let did = try #require(c.did)
