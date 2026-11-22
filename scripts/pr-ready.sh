@@ -3,13 +3,21 @@
 # the latest Codex review state for this head, Codex inline comments on this head, and
 # whether the base branch moved on files this PR also touches (green CI on a stale base).
 #
-# Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] <pr>
-# Needs `gh` logged in to the repository. Review comments are read past the first 100.
+# Exit codes in --wait mode:
+#   0   PR is CLEAN, CI checks settled with no failures, and Codex gate is satisfied
+#   1   Blocker found (failed check, unresolved Codex finding, or conflict/closed PR)
+#   3   CI passed, action needed on Codex (not triggered on subsequent push, or timed out after CI)
+#   124 Overall wait timeout exceeded
+#
+# Usage: bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>]
+#          [--max-codex-rounds <n>] [--codex-timeout <sec>] [--no-wait-codex] [--expect-head <sha>] <pr>
 set -euo pipefail
 export LC_ALL=C
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 usage() {
-    echo "用法：bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] <pr>" >&2
+    echo "用法：bash scripts/pr-ready.sh [--wait] [--timeout <sec>] [--interval <sec>] [--max-codex-rounds <n>] [--codex-timeout <sec>] [--no-wait-codex] [--expect-head <sha>] <pr>" >&2
     exit 2
 }
 
@@ -17,6 +25,9 @@ wait_mode=0
 timeout_sec=1800
 interval_sec=20
 max_codex_rounds=0
+codex_timeout_sec=480
+no_wait_codex=0
+expect_head=""
 pr_number=""
 
 while [ "$#" -gt 0 ]; do
@@ -40,6 +51,20 @@ while [ "$#" -gt 0 ]; do
             max_codex_rounds="$2"
             shift 2
             ;;
+        --codex-timeout)
+            [ "$#" -ge 2 ] || usage
+            codex_timeout_sec="$2"
+            shift 2
+            ;;
+        --no-wait-codex)
+            no_wait_codex=1
+            shift
+            ;;
+        --expect-head)
+            [ "$#" -ge 2 ] || usage
+            expect_head="$2"
+            shift 2
+            ;;
         -*)
             usage
             ;;
@@ -58,7 +83,11 @@ if [ -z "$pr_number" ] || ! printf '%s\n' "$pr_number" | grep -Eq '^[0-9]+$'; th
 fi
 if ! printf '%s\n' "$timeout_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
     || ! printf '%s\n' "$interval_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
+    || ! printf '%s\n' "$codex_timeout_sec" | grep -Eq '^[0-9]+(\.[0-9]+)?$' \
     || ! printf '%s\n' "$max_codex_rounds" | grep -Eq '^[0-9]+$'; then
+    usage
+fi
+if [ -n "$expect_head" ] && ! printf '%s\n' "$expect_head" | grep -Eq '^[0-9a-fA-F]{4,40}$'; then
     usage
 fi
 
@@ -73,6 +102,9 @@ if [ -z "$python_bin" ]; then
     echo "缺少 python3" >&2
     exit 1
 fi
+
+state_file="$(mktemp "${TMPDIR:-/tmp}/pr-ready-state.XXXXXX")"
+trap 'rm -f "$state_file"' EXIT
 
 inspect_once() {
     local n="$1"
@@ -102,7 +134,7 @@ inspect_once() {
         handle_gh_failure "repo view"
         return $?
     fi
-    if ! gh pr view "$n" --json headRefOid,mergeStateStatus,baseRefName,files >"$tmp/meta.json" 2>"$tmp/gh.err"; then
+    if ! gh pr view "$n" --json headRefOid,mergeStateStatus,baseRefName,files,commits,createdAt,isDraft >"$tmp/meta.json" 2>"$tmp/gh.err"; then
         handle_gh_failure "pr view"
         return $?
     fi
@@ -122,6 +154,10 @@ inspect_once() {
         handle_gh_failure "review comments"
         return $?
     fi
+    if ! gh api --paginate --slurp "repos/${repo}/pulls/${n}/reviews?per_page=100" >"$tmp/pr_reviews.json" 2>"$tmp/gh.err"; then
+        handle_gh_failure "pull reviews"
+        return $?
+    fi
 
     local base_ref head_oid
     base_ref="$("$python_bin" -I -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["baseRefName"])' "$tmp/meta.json")"
@@ -129,245 +165,24 @@ inspect_once() {
     # Commits on the base since the merge base, and the files they changed. Best effort: an error only skips the stale-base check.
     gh api "repos/${repo}/compare/${head_oid}...${base_ref}" --jq '{ahead_by: .ahead_by, files: [.files[]?.filename]}' >"$tmp/stale.json" 2>/dev/null || echo '{}' >"$tmp/stale.json"
 
+    local eval_args=(
+        "$tmp"
+        --max-codex-rounds "$max_codex_rounds"
+        --codex-timeout "$codex_timeout_sec"
+        --state-file "$state_file"
+    )
+    if [ "$wait_flag" = "1" ]; then
+        eval_args+=(--wait)
+    fi
+    if [ "$no_wait_codex" = "1" ]; then
+        eval_args+=(--no-wait-codex)
+    fi
+    if [ -n "$expect_head" ]; then
+        eval_args+=(--expect-head "$expect_head")
+    fi
+
     local verdict_status=0
-    "$python_bin" -I - "$tmp" "$wait_flag" "$max_codex_rounds" <<'PY' || verdict_status=$?
-import json
-import re
-import sys
-from pathlib import Path
-
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
-
-tmp = Path(sys.argv[1])
-wait_mode = sys.argv[2] == "1"
-max_codex_rounds = int(sys.argv[3])
-meta = json.loads((tmp / "meta.json").read_text(encoding="utf-8"))
-head = meta["headRefOid"]
-merge = meta["mergeStateStatus"]
-checks_status = int((tmp / "checks.status").read_text(encoding="utf-8").strip() or "0")
-checks_raw = (tmp / "checks.json").read_text(encoding="utf-8", errors="replace")
-checks_err = (tmp / "checks.err").read_text(encoding="utf-8", errors="replace").strip()
-issue_pages = json.loads((tmp / "issues.json").read_text(encoding="utf-8"))
-review_pages = json.loads((tmp / "reviews.json").read_text(encoding="utf-8"))
-
-
-def flatten_pages(payload):
-    if not isinstance(payload, list):
-        raise SystemExit("GitHub 分页结果不是数组")
-    items = []
-    for page in payload:
-        if isinstance(page, list):
-            items.extend(entry for entry in page if isinstance(entry, dict))
-        elif isinstance(page, dict):
-            items.append(page)
-    return items
-
-
-def review_states(comments):
-    found = []
-    marker = "codex-review-state:v1"
-    for comment in comments:
-        user = (comment.get("user") or {}).get("login") or ""
-        if user != "chatgpt-codex-connector[bot]":
-            continue
-        body = comment.get("body") or ""
-        idx = body.find(marker)
-        if idx < 0:
-            continue
-        start = body.find("{", idx)
-        if start < 0:
-            continue
-        try:
-            obj, _ = json.JSONDecoder().raw_decode(body[start:])
-        except json.JSONDecodeError:
-            continue
-        code = obj.get("code_review")
-        if isinstance(code, dict) and code.get("commit_sha"):
-            found.append(code)
-    return found
-
-
-def clean_body(body):
-    body = re.sub(r"<!--.*?-->", "", body or "", flags=re.S)
-    body = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", body)
-    return body.strip()
-
-
-def parse_checks(raw):
-    if not raw.strip():
-        return None, []
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return None, []
-    if not isinstance(data, list):
-        return None, []
-    rows = []
-    buckets = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        bucket = item.get("bucket") or ""
-        name = item.get("name") or ""
-        if not name or bucket in ("pass", "skipping"):
-            continue
-        rows.append(f"  {name}: {bucket}")
-        buckets.append(bucket)
-    return rows, buckets
-
-
-print(f"head {head} {merge}")
-
-try:
-    stale = json.loads((tmp / "stale.json").read_text(encoding="utf-8") or "{}")
-except json.JSONDecodeError:
-    stale = {}
-behind_by = int(stale.get("ahead_by") or 0)
-pr_files = {f.get("path") for f in meta.get("files") or [] if isinstance(f, dict)}
-stale_overlap = sorted(pr_files & set(stale.get("files") or []))
-if behind_by:
-    line = f"base: behind {meta.get('baseRefName')} by {behind_by} commits"
-    if stale_overlap:
-        shown = ", ".join(stale_overlap[:5]) + (" ..." if len(stale_overlap) > 5 else "")
-        line += f"; {len(stale_overlap)} overlapping files ({shown}) -> git merge origin/{meta.get('baseRefName')} and retest"
-    print(line)
-
-parsed, non_pass_buckets = parse_checks(checks_raw)
-checks_error = False
-checks_pending = False
-checks_failed = False
-if parsed is None:
-    if checks_status == 8:
-        print("checks: pending")
-        checks_pending = True
-    elif checks_status == 0:
-        print("checks: none")
-    else:
-        print("checks: error")
-        if checks_err:
-            print(checks_err.splitlines()[-1])
-        checks_error = True
-elif parsed:
-    print("checks:")
-    print("\n".join(parsed))
-    for bucket in non_pass_buckets:
-        if bucket in ("fail", "cancel"):
-            checks_failed = True
-        else:
-            checks_pending = True
-elif checks_status == 8:
-    print("checks: pending")
-    checks_pending = True
-else:
-    print("checks: none")
-
-def codex_unavailable_after_last_state(comments):
-    last_state_idx = -1
-    for idx, comment in enumerate(comments):
-        user = (comment.get("user") or {}).get("login") or ""
-        body = comment.get("body") or ""
-        if user == "chatgpt-codex-connector[bot]" and "codex-review-state:v1" in body:
-            last_state_idx = idx
-    for comment in comments[last_state_idx + 1:]:
-        user = (comment.get("user") or {}).get("login") or ""
-        if user != "chatgpt-codex-connector[bot]":
-            continue
-        lower = (comment.get("body") or "").lower()
-        if (
-            "usage limits for code reviews" in lower
-            or "couldn't complete this review" in lower
-            or "couldn\u2019t complete this review" in lower
-        ):
-            return True
-    return False
-
-
-issue_comments = flatten_pages(issue_pages)
-states = review_states(issue_comments)
-matched = [state for state in states if state.get("commit_sha") == head]
-latest_for_head = matched[-1] if matched else None
-codex_quota_blocked = False
-if latest_for_head is not None:
-    print("codex review: " + json.dumps(latest_for_head, separators=(",", ":"), ensure_ascii=False))
-elif codex_unavailable_after_last_state(issue_comments):
-    codex_quota_blocked = True
-    print(f"codex review: unavailable (usage limit) for {head}")
-elif states:
-    last = states[-1]
-    print(f"codex review: none for {head} (latest {last.get('commit_sha')} {last.get('status')})")
-else:
-    print(f"codex review: none for {head}")
-
-completed_rounds = len(
-    {s.get("commit_sha") for s in states if s.get("commit_sha") and s.get("status") == "completed"}
-)
-codex_cap_reached = max_codex_rounds > 0 and completed_rounds >= max_codex_rounds
-if codex_cap_reached and latest_for_head is None:
-    print(f"codex rounds: {completed_rounds}/{max_codex_rounds} (cap reached)")
-
-inlines = []
-for comment in flatten_pages(review_pages):
-    user = (comment.get("user") or {}).get("login") or ""
-    if not user.startswith("chatgpt-codex"):
-        continue
-    if comment.get("original_commit_id") != head:
-        continue
-    line_no = comment.get("line")
-    if line_no is None:
-        line_no = comment.get("original_line")
-    inlines.append((comment.get("path"), line_no, clean_body(comment.get("body"))))
-
-if not inlines:
-    print("codex inline: none")
-else:
-    print("codex inline:")
-    for index, (path, line_no, body) in enumerate(inlines):
-        if index:
-            print()
-        print(f"* {path} {line_no}")
-        if body:
-            print(body[:900])
-
-if checks_error:
-    # In --wait mode, "no checks reported" right after a push or a transient HTTP 5xx should retry until timeout.
-    if wait_mode and re.search(r"no checks reported|HTTP 5\d\d|timeout|EOF|connection reset", checks_err, re.I):
-        sys.exit(10)
-    sys.exit(1)
-
-if not wait_mode:
-    sys.exit(0)
-
-# In --wait mode: 0 = ready, 1 = terminal blocker/finding, 10 = still waiting.
-latest_failed_empty = bool(
-    latest_for_head and latest_for_head.get("status") == "failed" and not inlines
-)
-if latest_for_head and latest_for_head.get("has_unresolved_findings") is False:
-    has_findings = False
-elif latest_failed_empty:
-    has_findings = False
-else:
-    has_findings = bool(inlines) or bool(
-        latest_for_head and latest_for_head.get("has_unresolved_findings") is True
-    )
-if checks_failed or has_findings or merge in ("DIRTY", "CONFLICTING", "CLOSED"):
-    sys.exit(1)
-
-codex_done = (
-    bool(
-        latest_for_head
-        and latest_for_head.get("status") == "completed"
-        and latest_for_head.get("has_unresolved_findings") is False
-    )
-    or latest_failed_empty
-    or codex_quota_blocked
-    or (codex_cap_reached and not has_findings)
-)
-if merge == "CLEAN" and not checks_pending and codex_done:
-    sys.exit(0)
-
-sys.exit(10)
-PY
+    "$python_bin" -I "${SCRIPT_DIR}/pr_ready_eval.py" "${eval_args[@]}" || verdict_status=$?
     rm -rf "$tmp"
     return "$verdict_status"
 }
@@ -382,10 +197,6 @@ last_screen=""
 while true; do
     status=0
     last_screen="$(inspect_once "$pr_number" 1)" || status=$?
-    if [ "$status" -eq 0 ]; then
-        printf '%s\n' "$last_screen"
-        exit 0
-    fi
     if [ "$status" -ne 10 ]; then
         printf '%s\n' "$last_screen"
         exit "$status"

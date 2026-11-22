@@ -15,7 +15,7 @@ Canonical GitHub issue triage labels in this repository:
 
 ## Repo helper scripts
 
-CI 失败先跑 `bash scripts/ci-failures.sh <run-id|pr>` 看摘要：失败 job、Swift Testing / node 失败用例、编译错误首行、进程崩溃、快照不匹配，用例名命中 open 票标 `[已知间歇 #N]`，只有文件名命中标 `[同文件 issue #N，需核对]`。要看完整失败日志用 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 可静默轮询直到检查与当前 head 的 Codex 审查全部就绪，或遇到失败/审查问题立即提前返回）。
+CI 失败先跑 `bash scripts/ci-failures.sh <run-id|pr>` 看摘要：失败 job、Swift Testing / node 失败用例、编译错误首行、进程崩溃、快照不匹配，用例名命中 open 票标 `[已知间歇 #N]`，只有文件名命中标 `[同文件 issue #N，需核对]`。要看完整失败日志用 `bash scripts/ci_errors.sh <run-id>`。它打印失败日志和 check-run annotation，并把 `steps` 为空的取消任务分成「被更新的运行顶掉」和「runner 没分配」。看一个 PR 能不能合，用 `bash scripts/pr-ready.sh <pr>`（加 `--wait` 会在检查与 Codex 就绪时返回 0、发现阻断时返回 1；注意 Codex Bot 只在 PR 打开时自动评审，后续新推送若未触发 `@codex review` 或 CI 绿后超出 `--codex-timeout`（默认 480s）无回应，会立即返回退出码 3 唤醒处理，避免空转）。
 
 ## Migrated issue numbers
 

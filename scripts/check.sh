@@ -345,6 +345,7 @@ run_script_self_tests() {
         run_clean_env bash scripts/test_ci_relevant_paths.sh
         run_clean_env bash scripts/test_check_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
+        run_clean_env "$PYTHON_BIN" scripts/test_pr_ready.py
     fi
 }
 
@@ -504,7 +505,7 @@ run_logged() {
 
 windows_npm() {
     cd "$ROOT_DIR/windows"
-    npm test && npm run build
+    npm run build && npm test
 }
 
 raycast_npm() {
