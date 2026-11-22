@@ -67,7 +67,7 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
-import { buildMiotTypePrunePlan } from "../core/miotTypePruning.js";
+import { buildMiotTypePrunePlan, miotRoundClosesCategory } from "../core/miotTypePruning.js";
 import type { HaTypePruneOptions } from "../core/haTypePruning.js";
 import { safetySignalsForPrefs } from "../core/safetySignalPolicy.js";
 import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
@@ -590,12 +590,16 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
     try {
       const client = new MiCloudClient(session, host.transport);
+      // A closed `light` type draws no group card, so its membership query is a wasted request per
+      // group (P2-10). The scope is this round's own, so the same fail-closed rule as the read plan.
+      const skipLightGroupMembers = miotRoundClosesCategory(pruneOptions.selection, scope, "light");
       const cachedTopology = takeCachedXiaomiTopologyForPoll(
         host,
         session,
         sourceRevisionAtStart,
         selectedHomeAtStart ?? null,
         silent,
+        !skipLightGroupMembers,
       );
 
       let rawDevices: readonly MiDeviceRecord[];
@@ -647,7 +651,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         allDevicesForCache = allDevices;
         allRoomsForCache = allRooms;
         const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
-        const membershipPromise = groupDids.length > 0
+        // Skipped while `light` is off: no group card is drawn, so the membership read is waste.
+        const membershipPromise = groupDids.length > 0 && !skipLightGroupMembers
           ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
           : Promise.resolve(new Map<string, string[]>());
 
@@ -706,6 +711,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           rooms,
           specs,
           membersByGroup,
+          ...(skipLightGroupMembers ? { skippedLightGroupMembers: true } : {}),
         });
       }
       clearXiaomiRateLimitBackoff(host);
