@@ -471,13 +471,18 @@ extension HomeStore {
     }
 
     /// The consent request to show before the first cloud call to this service, or nil when sending is already allowed.
-    func cloudConsentNeeded(for config: AssistantConfig, utterance: String?) -> PendingCloudConsent? {
+    func cloudConsentNeeded(
+        for config: AssistantConfig, utterance: String?, companionGeneration: UInt64? = nil
+    ) -> PendingCloudConsent? {
         guard assistantResolverOverride == nil, !config.isLoopbackEndpoint,
               let endpoint = AssistantEndpoint(config.baseURL)?.identity,
               !consentedCloudEndpoints.contains(endpoint) else {
             return nil
         }
-        return PendingCloudConsent(utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle)
+        return PendingCloudConsent(
+            utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle,
+            companionGeneration: companionGeneration
+        )
     }
 
     /// Remembers the user's OK for the waiting service, then runs what was waiting.
@@ -485,6 +490,7 @@ extension HomeStore {
     public func allowPendingCloudRequest() async -> IntentPlan? {
         guard let pending = pendingCloudConsent else { return nil }
         pendingCloudConsent = nil
+        if let generation = pending.companionGeneration, !companionCanExecute(generation: generation) { return nil }
         var endpoints = consentedCloudEndpoints
         if !endpoints.contains(pending.endpoint) {
             endpoints.append(pending.endpoint)
@@ -493,6 +499,9 @@ extension HomeStore {
         guard let utterance = pending.utterance else {
             await requestProactiveJevSuggestions()
             return nil
+        }
+        if let generation = pending.companionGeneration {
+            return await withCompanionCommandGeneration(generation) { await runAssistantCommand(utterance) }
         }
         return await runAssistantCommand(utterance)
     }
@@ -783,6 +792,8 @@ extension HomeStore {
     /// Resolves a natural-language command (local parser first, model fallback) and applies it.
     @discardableResult
     public func runAssistantCommand(_ text: String) async -> IntentPlan? {
+        let companion = activeCompanionCommandGeneration
+        if let companion, !companionCanExecute(generation: companion) { return nil }
         let controlContext = controlContextID
         // A disable, provider change or removal while this command runs must discard its late
         // model result before it can reach the write gate (P5a-M acceptance #3).
@@ -841,7 +852,7 @@ extension HomeStore {
                     setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
                     return nil
                 }
-                if let consent = cloudConsentNeeded(for: config, utterance: spoken) {
+                if let consent = cloudConsentNeeded(for: config, utterance: spoken, companionGeneration: companion) {
                     pendingCloudConsent = consent
                     setAssistantState(.idle)
                     return nil
@@ -876,7 +887,7 @@ extension HomeStore {
                 return nil
             }
             // A companion command disconnected while the model was answering must not act.
-            if let companion = activeCompanionCommandGeneration, !companionCanExecute(generation: companion) {
+            if let companion, !companionCanExecute(generation: companion) {
                 clearThinkingAssistantState()
                 return nil
             }

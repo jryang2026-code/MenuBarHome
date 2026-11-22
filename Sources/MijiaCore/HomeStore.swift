@@ -1131,7 +1131,7 @@ public final class HomeStore {
         enabledCategories: Set(DeviceCategoryID.allCases)
     ) {
         didSet {
-            if !isPersistingCompanionToggle,
+            if !isPersistingCompanionToggle, !companionRevokedForSession,
                oldValue.enabledFeatures.contains(.companionIntegration) != companionIntegrationEnabled {
                 applyCompanionIntegrationTransition(enabled: companionIntegrationEnabled)
             }
@@ -1180,7 +1180,12 @@ public final class HomeStore {
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
     /// Monotonic generation for companion integration (Raycast / CLI / MCP / external links).
     public internal(set) var companionGeneration: UInt64 = 0
-    @ObservationIgnored public internal(set) var activeCompanionCommandGeneration: UInt64?
+    @TaskLocal static var companionCommandContext: (owner: ObjectIdentifier, generation: UInt64)?
+    public var activeCompanionCommandGeneration: UInt64? {
+        guard let context = Self.companionCommandContext, context.owner == ObjectIdentifier(self) else { return nil }
+        return context.generation
+    }
+    var companionRevokedForSession = false
     @ObservationIgnored var isPersistingCompanionToggle = false
     public var onCompanionIntegrationChanged: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?

@@ -224,6 +224,41 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(store.scheduledCommands.isEmpty, "nor leave a timer behind")
     }
 
+    @Test("Disconnect clears consent requested by a companion ask and keeps local consent")
+    @MainActor
+    func disconnectClearsOnlyCompanionConsent() async throws {
+        let (store, mock, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        store.revokeCloudConsent()
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        let companion = Task {
+            await store.withCompanionCommandGeneration(generation) {
+                _ = await store.runAssistantCommand("我要睡觉了")
+                await gate.sleep()
+            }
+        }
+        try await awaitState { gate.waiting == 1 }
+        #expect(store.pendingCloudConsent?.companionGeneration == generation)
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.pendingCloudConsent == nil)
+        #expect(await store.allowPendingCloudRequest() == nil)
+        #expect(store.consentedCloudEndpoints.isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+
+        #expect(store.setCompanionIntegrationEnabled(true))
+        _ = await store.runAssistantCommand("客厅现在舒服吗")
+        let local = store.pendingCloudConsent
+        #expect(local != nil && local?.companionGeneration == nil)
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.pendingCloudConsent == local)
+        gate.release()
+        await companion.value
+    }
+
     @Test("No retry may leave once AI is switched off mid-flight")
     @MainActor
     func inResolverRetryGatedAfterToggleOff() async throws {

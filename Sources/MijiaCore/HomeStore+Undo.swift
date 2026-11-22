@@ -152,7 +152,8 @@ extension HomeStore {
         undoBannerDuration: TimeInterval?,
         recordsHabits: Bool,
         respectScreenLock: Bool,
-        automationGeneration: UInt64?
+        automationGeneration: UInt64?,
+        companionGeneration: UInt64? = nil
     ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
         if pausedQuickActionIDs.contains(action.rawValue) {
@@ -295,28 +296,33 @@ extension HomeStore {
         let task = Task { () -> BulkWriteOutcome in
             // Every exit drops the registration, so a later undo never waits on a finished batch.
             defer { runningBatches[bannerId] = nil }
-            guard let outcome = await runBatchCommands(commands, context: context, batchId: bannerId, writes: writes, automationGeneration: automationGeneration) else { return .partial }
+            guard let outcome = await runBatchCommands(
+                commands, context: context, batchId: bannerId, writes: writes,
+                automationGeneration: automationGeneration, companionGeneration: companionGeneration
+            ) else { return .partial }
             // Undo needs this report after this task ends: a device a newer write took before its
             // send keeps its own state and must not receive a restore command.
             if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
             let failedDeviceIds = outcome.failedDeviceIds
-            let unsentDeviceIds = outcome.automationStopped
+            let unsentDeviceIds = outcome.generationInvalidated
                 ? affectedDeviceIds.subtracting(outcome.attemptedDeviceIds).subtracting(outcome.takenOverDeviceIds)
                 : []
             let refusedDeviceIds = Set(failedDeviceIds.filter { outcome.acceptedByDevice[$0] == nil }).union(unsentDeviceIds)
             let droppedDeviceIds = refusedDeviceIds.union(outcome.takenOverDeviceIds)
             var undoCommands = restoreCommands
-            if outcome.automationStopped, action == .softNightLight {
+            let partiallyAppliedDevices = outcome.generationInvalidated && action == .softNightLight
+                ? Set(outcome.acceptedByDevice.filter { $0.value == 1 }.keys)
+                : []
+            if !partiallyAppliedDevices.isEmpty {
                 // Brightness may already have landed while the second command (color temperature)
                 // was still pending. Keep only the state and undo for the part that reached the light.
-                let sent = outcome.acceptedByDevice.filter { $0.value == 1 }
-                for id in sent.keys {
+                for id in partiallyAppliedDevices {
                     guard let write = writes[id],
                           let brightness = Self.assistantEffect(of: .brightness(15), on: write.previous) else { continue }
                     revert(write, restoring: brightness.updated)
                 }
                 undoCommands.removeAll { entry in
-                    guard sent[entry.deviceId] != nil else { return false }
+                    guard partiallyAppliedDevices.contains(entry.deviceId) else { return false }
                     if case .setLightColorTemp = entry.command { return true }
                     return false
                 }
@@ -358,12 +364,13 @@ extension HomeStore {
                 outcome.attemptedDeviceIds.contains($0.targetId)
                     && !failedDeviceIds.contains($0.targetId)
                     && !outcome.takenOverDeviceIds.contains($0.targetId)
+                    && !partiallyAppliedDevices.contains($0.targetId)
             }
             if context == controlContextID, !succeededIntents.isEmpty, recordsHabits, undoBanner?.id == bannerId {
                 undoBanner?.habitReceipt = confirmManualControl(intents: succeededIntents)
             }
             if !outcome.sessionRefusedDeviceIds.isEmpty { return .refusedByMiSession }
-            if outcome.automationStopped || !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
+            if outcome.generationInvalidated || !failedDeviceIds.isEmpty || !outcome.takenOverDeviceIds.isEmpty { return .partial }
             return .completed
         }
         // A main-actor task only starts once this synchronous section yields, so the entry is in
@@ -717,7 +724,7 @@ extension HomeStore {
 
     /// What a bulk action's commands did, split by device.
     struct BatchCommandOutcome {
-        var automationStopped = false
+        var generationInvalidated = false
         /// Commands each device accepted; a device missing here accepted none.
         var acceptedByDevice: [String: Int] = [:]
         /// Devices with at least one failed command.
@@ -766,14 +773,16 @@ extension HomeStore {
         context: UUID,
         batchId: UUID,
         writes: [String: OptimisticWrite],
-        automationGeneration: UInt64? = nil
+        automationGeneration: UInt64? = nil,
+        companionGeneration: UInt64? = nil
     ) async -> BatchCommandOutcome? {
         var outcome = BatchCommandOutcome()
         for item in commands {
             guard context == controlContextID,
                   let batch = runningBatches[batchId], !batch.isStopped else { return nil }
-            if let automationGeneration, !automationCanWrite(generation: automationGeneration) {
-                outcome.automationStopped = true
+            if automationGeneration.map(automationCanWrite(generation:)) == false
+                || companionGeneration.map(companionCanExecute(generation:)) == false {
+                outcome.generationInvalidated = true
                 break
             }
             if outcome.failedDeviceIds.contains(item.deviceId) { continue }
@@ -802,6 +811,13 @@ extension HomeStore {
               let batch = runningBatches[batchId], !batch.isStopped else { return nil }
         outcome.attemptedDeviceIds = batch.attemptedDeviceIds
         outcome.takenOverDeviceIds = batch.takenOverDeviceIds
+        if outcome.generationInvalidated {
+            for id in outcome.attemptedDeviceIds {
+                if let write = writes[id], !ownsRow(write) {
+                    outcome.takenOverDeviceIds.insert(id)
+                }
+            }
+        }
         return outcome
     }
 

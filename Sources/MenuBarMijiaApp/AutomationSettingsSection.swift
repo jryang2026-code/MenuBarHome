@@ -19,7 +19,12 @@ enum CompanionSettingsCopy {
     static var copyConfigHelp: String { L10n.tr("复制 MCP 与本地快照配置片段（不含令牌或家居凭据）", "Copy the MCP and local snapshot config snippet (contains no token or home credentials)") }
     static var checkHelp: String { L10n.tr("只读检查本地快照、令牌和权限状态", "Read-only check of local snapshot, token, and file permissions") }
     static var disconnectHelp: String { L10n.tr("立即关闭伴生集成、作废旧令牌并删除本地快照", "Turn off companion integration, revoke old tokens, and delete the local snapshot") }
-    static var copiedToast: String { L10n.tr("已复制伴生配置，不会自动修改外部应用配置", "Copied companion config; external app configs are never modified automatically") }
+    static var copiedToast: String {
+        L10n.tr(
+            "已复制配置。请将 command 中的占位路径换成本机 scripts/mijia-mcp 的绝对路径。",
+            "Config copied. Replace the placeholder in command with the absolute path to scripts/mijia-mcp on this Mac."
+        )
+    }
     static func snapshotPathLine(_ path: String) -> String { L10n.format("快照路径：%@", "Snapshot path: %@", path) }
 }
 
@@ -229,10 +234,13 @@ struct AutomationSettingsSection: View {
                     title: CompanionSettingsCopy.toggleTitle,
                     isOn: Binding(
                         get: { store.companionIntegrationEnabled },
-                        set: { if store.setCompanionIntegrationEnabled($0) { companionCheckReport = nil } }
+                        set: {
+                            store.setCompanionIntegrationEnabled($0)
+                            companionCheckReport = nil
+                        }
                     )
                 )
-                .disabled(store.identityMigrationDiagnostic != nil)
+                .disabled(store.identityMigrationDiagnostic != nil && !store.companionIntegrationEnabled)
 
                 HStack(spacing: 6) {
                     Circle()
@@ -263,10 +271,10 @@ struct AutomationSettingsSection: View {
                     .buttonStyle(PillActionButtonStyle()).help(CompanionSettingsCopy.checkHelp)
 
                     Button {
-                        if store.disconnectCompanionIntegration() { companionCheckReport = store.checkCompanionIntegrationStatus() }
+                        store.disconnectCompanionIntegration()
+                        companionCheckReport = store.checkCompanionIntegrationStatus()
                     } label: { Label(CompanionSettingsCopy.disconnectButton, systemImage: "link.badge.minus").font(.system(size: DesignTokens.TypeSize.caption, weight: .medium)) }
                         .buttonStyle(PillActionButtonStyle())
-                        .disabled(!store.companionIntegrationEnabled || store.identityMigrationDiagnostic != nil)
                         .help(CompanionSettingsCopy.disconnectHelp)
                 }
 

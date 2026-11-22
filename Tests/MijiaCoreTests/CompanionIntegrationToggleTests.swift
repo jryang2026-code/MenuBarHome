@@ -111,10 +111,163 @@ struct CompanionIntegrationToggleTests {
         #expect(URLDirectControl.isRejectedCompanionToken(firstToken, expectedToken: store.raycastBridgeToken))
         #expect(try Data(contentsOf: externalConfigURL) == externalOriginal)
 
+        store.recordRaycastCommandFeedback(requestId: "ordinary-while-off", command: "toggle:dev_lamp", message: "ok")
         #expect(store.setCompanionIntegrationEnabled(true))
+        let reopened = try JSONDecoder().decode(RaycastSnapshot.self, from: Data(contentsOf: snapshotURL))
+        #expect(store.lastRaycastCommandFeedback == nil && reopened.lastCommandFeedback == nil)
         let secondToken = try #require(store.raycastBridgeToken)
         #expect(secondToken != firstToken && URLDirectControl.isRejectedCompanionToken(firstToken, expectedToken: secondToken))
         #expect(!URLDirectControl.isRejectedCompanionToken(nil, expectedToken: secondToken))
+    }
+
+    @Test("Disconnect reports a retained snapshot and retries removal while off")
+    func reportsDeletionFailureAndRetries() async throws {
+        let store = try await Self.makeStore()
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("raycast-snapshot.json")
+        let fm = FileManager.default
+        defer {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+            try? fm.removeItem(at: directory)
+        }
+        store.raycastSnapshotTestURL = snapshotURL
+        #expect(store.setCompanionIntegrationEnabled(true))
+        try fm.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+
+        #expect(!store.disconnectCompanionIntegration())
+        #expect(!store.companionIntegrationEnabled && store.raycastBridgeToken == nil)
+        #expect(store.toastNotice?.isError == true)
+        let report = store.checkCompanionIntegrationStatus()
+        #expect(report.status == .needsAttention && report.snapshotPresent)
+
+        try fm.setAttributes([.posixPermissions: 0o400], ofItemAtPath: directory.path)
+        let inaccessible = store.checkCompanionIntegrationStatus()
+        #expect(inaccessible.status == .needsAttention && !inaccessible.snapshotPresent)
+
+        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.toastNotice?.isError == false)
+        #expect(store.checkCompanionIntegrationStatus().status == .disabled)
+        #expect(!fm.fileExists(atPath: snapshotURL.path))
+    }
+
+    @Test("With uncertain identity, closing revokes this session without rewriting preferences")
+    func uncertainIdentityAllowsSessionRevocation() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("raycast-snapshot.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.raycastSnapshotTestURL = snapshotURL
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+        let preferences = try #require(defaults.data(forKey: CapabilitySelectionStore.storageKey))
+
+        store.identityMigrationDiagnostic = "Keychain unavailable"
+        #expect(!store.companionCanExecute(generation: generation))
+        #expect(store.disconnectCompanionIntegration())
+        #expect(!store.companionIntegrationEnabled && !store.companionCanExecute(generation: generation))
+        #expect(defaults.string(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey) == nil)
+        #expect(defaults.bool(forKey: RaycastSnapshotExporter.integrationEnabledKey))
+        #expect(defaults.data(forKey: CapabilitySelectionStore.storageKey) == preferences)
+        #expect(!FileManager.default.fileExists(atPath: snapshotURL.path))
+        #expect(!store.setCompanionIntegrationEnabled(true))
+
+        store.identityMigrationDiagnostic = nil
+        #expect(!store.companionIntegrationEnabled)
+        #expect(store.setCompanionIntegrationEnabled(true))
+        #expect(!store.companionCanExecute(generation: generation))
+    }
+
+    @Test("Check never creates a missing token even when a valid snapshot exists")
+    func checkDoesNotCreateToken() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("raycast-snapshot.json")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        store.raycastSnapshotTestURL = snapshotURL
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let initialContents = try Data(contentsOf: snapshotURL)
+        defaults.removeObject(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey)
+
+        let report = store.checkCompanionIntegrationStatus()
+        #expect(report.status == .needsAttention && report.snapshotPresent && !report.tokenMatches)
+        #expect(defaults.object(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey) == nil)
+        #expect(try Data(contentsOf: snapshotURL) == initialContents)
+    }
+
+    @Test("Disconnect during a built-in quick action skips every later write and trims undo")
+    func disconnectStopsRemainingQuickActionWrites() async throws {
+        let lamps = [
+            Self.lamp,
+            SmartDevice(
+                id: "dev_desk", name: "书房台灯", roomId: "living", roomName: "客厅",
+                model: "yeelink.light.lamp4", isOnline: true,
+                kind: .light(LightSpec(entityId: "light.desk", isOn: true, brightnessPercent: 60))
+            )
+        ]
+        let provider = MockHomeProvider(snapshot: .init(devices: lamps))
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        try await store.waitForTestSnapshot()
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+        await provider.holdSnapshots()
+        await provider.holdNextExecute()
+
+        let execution = Task {
+            await store.withCompanionCommandGeneration(generation) {
+                await store.executeBuiltInURLScene(.softNightLight)
+            }
+        }
+        await waitUntil { await provider.executeStarted == 1 }
+        store.pauseUndoBannerCountdown()
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.setCompanionIntegrationEnabled(true))
+        await provider.releaseExecute()
+
+        let result = await execution.value
+        #expect(result.isError)
+        #expect(await provider.executeStarted == 1)
+        let commands = await provider.executedCommands
+        guard case .setLightBrightness(let entity, 15) = try #require(commands.first) else {
+            Issue.record("Expected the single in-flight brightness write")
+            return
+        }
+        #expect(commands.count == 1)
+        #expect(store.devices.first { !$0.referencedEntityIds.contains(entity) }?.kind ==
+            lamps.first { !$0.referencedEntityIds.contains(entity) }?.kind)
+        let previousBrightness = entity == "light.living" ? 80 : 60
+        #expect(store.undoBanner?.restoreCommands == [.setLightBrightness(entityId: entity, percent: previousBrightness)])
+    }
+
+    @Test("Revoking a batch drops undo for a light taken over during its in-flight write")
+    func disconnectDropsTakenOverUndo() async throws {
+        let provider = MockHomeProvider(snapshot: .init(devices: [Self.lamp]))
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        try await store.waitForTestSnapshot()
+        store.controlDebounceInterval = .zero
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+        await provider.holdNextExecute()
+
+        let execution = Task {
+            await store.withCompanionCommandGeneration(generation) {
+                await store.executeBuiltInURLScene(.softNightLight)
+            }
+        }
+        await waitUntil { await provider.executeStarted == 1 }
+        store.pauseUndoBannerCountdown()
+        let userWrite = DeviceCommand.setLightBrightness(entityId: "light.living", percent: 70)
+        store.setLightBrightness(Self.lamp.id, percent: 70)
+        await waitUntil { await provider.executedCommands.contains(userWrite) }
+        #expect(store.disconnectCompanionIntegration())
+        await provider.releaseExecute()
+
+        let result = await execution.value
+        #expect(result.isError)
+        #expect(store.undoBanner == nil)
+        #expect(await provider.executedCommands == [userWrite, .setLightBrightness(entityId: "light.living", percent: 15)])
     }
 
     @Test("Stale coalesced exports and invalidated background writes never recreate a removed snapshot")
