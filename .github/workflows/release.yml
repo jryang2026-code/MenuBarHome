@@ -112,20 +112,6 @@ jobs:
       - name: Toolchain info
         run: xcodebuild -version && swift --version
 
-      - name: Restore Swift build cache
-        id: swift-release-cache
-        continue-on-error: true
-        timeout-minutes: 10
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: .build
-          key: spm-release-v5-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Package.resolved', 'Package.swift') }}
-          restore-keys: |
-            spm-release-v5-${{ runner.os }}-${{ runner.arch }}-
-            spm-release-v3-${{ runner.os }}-${{ runner.arch }}-
-      - name: Reset incomplete Swift build cache
-        if: steps.swift-release-cache.outcome != 'success'
-        run: rm -rf .build
       - id: go2rtc-ptz-cache
         continue-on-error: true
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
