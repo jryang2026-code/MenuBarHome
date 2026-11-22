@@ -2,6 +2,27 @@
 
 ## 未发布
 
+## 1.4.0
+
+### 新功能
+
+- **双端连接、功能与设备类型可按需停用、裁剪与移除**：米家账号、Home Assistant、设备类型（支持「全部 / 只用灯和开关 / 自己选」）、AI 一句话控制、主动建议、语音输入、事件自动化、定时任务及伴生集成均可独立开关。关闭前会预检并暂停受影响的定时、自动化与快捷动作，开启安全提醒时仍保留隐藏传感器、门锁、阀门等安全告警评估；关闭摄像机类型立即回收实况与后台进程，移除连接按作用域安全清理凭据。
+- **双端全新三卡首启引导与旧用户静默迁移**：新安装启动后展示「连接米家 / Home Assistant / 先逛逛（示例）」三卡引导，不再在未连接前自动扫描局域网或后台轮询，AI 等进阶功能默认按需关闭；老用户沿用既有设置与功能开关状态，凭据不确定时保持安全降级并提供重试入口。
+- **Windows 默认经典面板与独立 5 页签设置窗口对齐 macOS**：Windows 默认启用与 macOS 控制中心视觉一致的经典双列分体磁贴面板（设置中仍可切回双悬浮岛）与独立「MenuBarHome 设置」双栏 5 页签窗口（常规 / 连接 / 助手 / 安全与提醒 / 关于），并保持跨窗口状态与未保存草稿关闭保护同步；两端移除侧挂 GrokBall，隐藏或关闭后停止后台动画与定时轮询以降低待机能耗。
+- **双端面板分区排序、告警分级与本地网络诊断**：两端控制中心默认采用双列分体磁贴布局，优先排列常用与已开启设备并折叠长尾与离线抽屉；通知区按严重程度分级置顶烟雾/燃气/漏水/门铃/错过定时，页脚以平实语言提示离线平台，设置「安全与提醒 / 关于与诊断」补充本地网络权限与设备传输诊断。
+- **自动化「生效时段」、Windows 系统事件联动与墙壁开关标记为灯**：双端自动化规则支持设置每日生效时段条件，Windows 接入 Wi-Fi、电源与显示等系统事件触发及锁屏即时判定；可将照明用途的墙壁开关标记为灯以跳过高风险二次确认提示（支持繁简中英文识别），同时收紧全屋关闭排除门窗与车库门等遮挡设备。
+
+### 修复
+
+- **双源设备融合与门铃交互更稳定**（[#248](https://github.com/jryang2026-code/MenuBarHome/pull/248)，[#272](https://github.com/jryang2026-code/MenuBarHome/pull/272)，[#274](https://github.com/jryang2026-code/MenuBarHome/pull/274)）：双源门铃按铃统一映射到合并卡且同一次按铃只弹一次通知；新增双源回退磁滞窗口，短时网络抖动不再翻转配对卡或中断正在观看的实况；双源配对卡偏好合并至规范 ID，无作用域旧定时迁移后可见待确认。
+- **安全边界、米家登录与局域网自愈加固**（[#240](https://github.com/jryang2026-code/MenuBarHome/pull/240)，[#255](https://github.com/jryang2026-code/MenuBarHome/pull/255)，[#256](https://github.com/jryang2026-code/MenuBarHome/pull/256)，[#264](https://github.com/jryang2026-code/MenuBarHome/pull/264)）：校验米家初始登录重定向并收紧局域网端点边界，拒收空 `code:0` 与缺失写入确认的响应，凭据保存失败如实上报并按登录响应推断米家地区，不再对同一已拒绝凭据死循环重试；新增 miIO 广播发现与局域网端点自愈，并持久化离线拓扑以加固双源故障切换。
+- **设备控制、撤销与跨窗同步更可靠**（[#241](https://github.com/jryang2026-code/MenuBarHome/pull/241)，[#244](https://github.com/jryang2026-code/MenuBarHome/pull/244)，[#265](https://github.com/jryang2026-code/MenuBarHome/pull/265)，[#276](https://github.com/jryang2026-code/MenuBarHome/pull/276)）：宿主写入门在确认弹窗前及发送前重新校验当前可用目标与拖拽审批，防止设备类型刚关闭或状态变更后误写；车库门与危险滑块拖动、撤销操作均按实际方向二次确认并补齐锁屏拦截；修复重置 LG 电视信任期间旧快照覆盖配置的问题。
+- **应用内更新与摄像机后台资源管理加固**（[#247](https://github.com/jryang2026-code/MenuBarHome/pull/247)，[#249](https://github.com/jryang2026-code/MenuBarHome/pull/249)）：加固更新暂存生命周期、重启看门狗交接与失败恢复；双源米家退出后立即停止遗留摄像机桥接并恢复 HA 设备；限制 fMP4 采样预算、对齐系统时区并限制 DoH 查询超时。
+
+### 内部
+
+- **待机性能与测试套件瘦身**（[#354](https://github.com/jryang2026-code/MenuBarHome/pull/354)，[#355](https://github.com/jryang2026-code/MenuBarHome/pull/355)，[#356](https://github.com/jryang2026-code/MenuBarHome/pull/356)，[#357](https://github.com/jryang2026-code/MenuBarHome/pull/357)）：macOS 隐藏面板后卸载视图树并过滤未变化 HA 快照，Windows 闲置时暂停 1Hz 托盘轮询并修复前端测试内存泄漏；将 macOS 视觉快照精简至 20 张核心基线并接入 `macos-26-intel` 托管比对，新增双端共享能力清单（`Shared/capability-manifest.json`）与引用判决黄金语料测试。
+
 ## 1.3.0
 
 ### 新功能

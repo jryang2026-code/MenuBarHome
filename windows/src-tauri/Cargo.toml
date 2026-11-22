@@ -1,6 +1,6 @@
 [package]
 name = "menubarmijia-windows"
-version = "1.3.0"
+version = "1.4.0"
 description = "MenuBarHome for Windows 11 System Tray"
 authors = ["jryang1997"]
 edition = "2021"
