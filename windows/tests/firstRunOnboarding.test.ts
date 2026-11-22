@@ -18,6 +18,7 @@ import {
 import { MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../src/core/miAccountControl.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import { serializeMiSession } from "../src/core/secureStore.js";
+import { homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
@@ -595,6 +596,197 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
       assert.equal(state.selection.enabledCategories.length, 14, `${scenario.label}: preserves all device categories`);
       assert.equal(readStoredMigrationComplete(), true, `${scenario.label}: seals migrationComplete`);
     }
+  });
+
+  it("holds the guide as a loading state until credential hydration settles, then skips it for a returning user (P2-6)", async () => {
+    // Empty localStorage copy with a Mi session only in the Windows Credential Manager: exactly the
+    // returning-user shape the synchronous verdict cannot see.
+    const pendingVault = {
+      resolve: null as ((value: string | null) => void) | null,
+    };
+    const miSessionPayload = serializeMiSession({
+      userId: "10086",
+      cUserId: "c10086",
+      passToken: "pt-secret",
+      serviceToken: "st-secret",
+      ssecurity: "ss-secret",
+      region: "cn",
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string, args: Record<string, unknown> = {}) => {
+          if (name === "secure_store_get" && args.name === "mi_session") {
+            return new Promise<string | null>((resolve) => {
+              pendingVault.resolve = resolve;
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+
+    // Before hydration settles the sheet exists but shows only the loading state: no platform cards,
+    // so the user never sees the guide appear and disappear.
+    assert.equal(app.activeSheet, "onboarding");
+    assert.equal(app.onboardingAwaitingCredentials, true);
+    assert.ok(document.querySelector("[data-onboarding-loading]"), "loading state is mounted");
+    assert.equal(document.querySelector('[data-onboarding-card="homeAssistant"]'), null, "no platform cards yet");
+    assert.equal(document.querySelector("#btn-skip-onboarding"), null, "no footer actions yet");
+
+    pendingVault.resolve?.(miSessionPayload);
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.onboardingAwaitingCredentials, false);
+    assert.equal(app.activeSheet, "none", "a vault-backed Mi session must not re-show onboarding");
+    assert.equal(app.settings.miSession?.userId, "10086");
+    assert.equal(document.querySelector("[data-onboarding-loading]"), null);
+  });
+
+  it("reveals the full guide after hydration when the credential store is empty (P2-6)", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async () => null },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.onboardingAwaitingCredentials, false);
+    assert.equal(app.activeSheet, "onboarding", "a genuinely fresh install keeps the guide");
+    assert.ok(document.querySelector('[data-onboarding-card="homeAssistant"]'));
+    assert.ok(document.querySelector("#btn-finish-onboarding"));
+  });
+
+  it("keeps keyboard focus on the chosen platform radio and answers arrow keys (P2-8/P2-9)", async () => {
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.activeSheet, "onboarding");
+
+    const cards = () => Array.from(document.querySelectorAll<HTMLElement>("[data-onboarding-mode]"));
+    const miCard = el('[data-onboarding-mode="xiaomiCloud"]');
+    assert.equal(miCard.getAttribute("role"), "radio");
+    assert.equal(miCard.getAttribute("aria-checked"), "false");
+    assert.equal(miCard.hasAttribute("aria-pressed"), false, "radiogroup children must not use aria-pressed");
+
+    // A radio click rebuilds the whole sheet; focus must come back to the same radio.
+    miCard.click();
+    await setImmediate();
+    assert.equal(document.activeElement, document.querySelector('[data-onboarding-mode="xiaomiCloud"]'), "focus returns to the pressed radio");
+    assert.equal(el('[data-onboarding-mode="xiaomiCloud"]').getAttribute("aria-checked"), "true");
+    assert.equal(cards().filter((card) => card.getAttribute("tabindex") === "0").length, 1, "roving tabindex keeps one stop");
+
+    // Arrow keys move selection inside the group instead of scrolling the sheet. The sheet is rebuilt
+    // on every change, so each key goes to the freshly mounted group.
+    const pressKey = async (key: string) => {
+      el("[data-onboarding-mode-group]").dispatchEvent(
+        new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await setImmediate();
+    };
+    await pressKey("ArrowDown");
+    assert.equal(el('[data-onboarding-mode="homeAssistant"]').getAttribute("aria-checked"), "true");
+    assert.equal(document.activeElement, document.querySelector('[data-onboarding-mode="homeAssistant"]'));
+
+    await pressKey("End");
+    assert.equal(el('[data-onboarding-mode="demo"]').getAttribute("aria-checked"), "true", "End jumps to the last radio");
+    await pressKey("ArrowRight");
+    assert.equal(el('[data-onboarding-mode="xiaomiCloud"]').getAttribute("aria-checked"), "true", "arrows wrap around the group");
+  });
+
+  it("announces async guide status through live regions (P2-9)", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async () => null },
+      configurable: true,
+    });
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    await click('[data-onboarding-mode="xiaomiCloud"]');
+    const qrStatus = el(".cc-qr-status");
+    assert.equal(qrStatus.getAttribute("role"), "status");
+    assert.equal(qrStatus.getAttribute("aria-live"), "polite");
+    assert.equal(document.querySelector(".cc-qr-frame img"), null, "no QR image before a ticket");
+
+    // The verification banner is an alert and the success line a polite status.
+    await click('[data-onboarding-mode="homeAssistant"]');
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "ha-token");
+    app.refreshHADevices = async () => {
+      app.settings.cachedHAHome = {
+        identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken),
+        home: { devices: [], scenes: [], rooms: [], environmentReadings: [], deviceFacets: {} },
+      } as never;
+    };
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    const verified = document.querySelector("[data-onboarding-ha-verified]");
+    assert.ok(verified, "success line is rendered");
+    assert.equal(verified.getAttribute("role"), "status");
+    assert.equal(verified.getAttribute("aria-live"), "polite");
+  });
+
+  it("distinguishes timeout and TLS failures from a generic unreachable address (P2-13)", async () => {
+    let nextError = "Home Assistant read timed out";
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") throw new Error(nextError);
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.activeSheet, "onboarding");
+
+    await click('[data-onboarding-mode="homeAssistant"]');
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "ha-token");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /连接超时/, "a timeout is named as such");
+
+    nextError = "Home Assistant handshake failed";
+    typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /安全连接（TLS）/, "a TLS handshake failure is named as such");
+
+    nextError = "Home Assistant address lookup failed";
+    typeInput("#onboarding-ha-url", "http://missing.invalid:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /找不到这个地址对应的主机/, "a DNS failure is named as such");
+
+    // Anything else keeps the original generic copy rather than inventing a cause.
+    nextError = "Home Assistant connection failed";
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /无法访问此地址/);
+
+    // An auth-handshake failure over https is a protocol problem, not a certificate one.
+    nextError = "Home Assistant authentication handshake failed";
+    typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.doesNotMatch(el("[data-onboarding-ha-error]").textContent ?? "", /TLS/);
   });
 
   it("fails closed when auxiliary localStorage reads throw in detectPersistedLocalData", () => {

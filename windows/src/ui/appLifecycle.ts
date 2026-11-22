@@ -308,6 +308,13 @@ export async function hydrateCredentials(
     } finally {
       hydratingHosts.delete(host);
       host.timerCredentialsReady = true;
+      // P2-6 (#293): the guide was mounted as a loading state because the credential store had not
+      // been read yet. Settlement — including the no-credentials and vault-failure paths — decides
+      // now whether the full guide or the panel is shown, so nothing flashes in between.
+      if (host.onboardingAwaitingCredentials) {
+        host.onboardingAwaitingCredentials = false;
+        host.render();
+      }
       if (!host.identityMigrationDiagnostic && !host.loadedSettings.settingsReadError) {
         const selection = resolveHostMiSelectionState(host);
         // P5b-W: a brand-new install takes the switches the shared manifest asks for. P4a-W's

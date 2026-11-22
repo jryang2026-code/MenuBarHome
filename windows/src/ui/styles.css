@@ -3588,6 +3588,16 @@ button.cc-footer-label.is-action { color: var(--win-critical); text-decoration: 
   gap: 6px;
 }
 
+.cc-onboarding-scroll {
+  overflow-y: auto;
+  max-height: calc(100vh - 150px);
+  padding-right: 2px;
+}
+
+.cc-onboarding-loading .cc-sheet-desc {
+  color: var(--text-secondary);
+}
+
 .cc-onboarding-card {
   display: flex;
   flex-direction: column;
