@@ -322,6 +322,17 @@ struct AssistantToggleAndProviderRemovalTests {
             "sk-custom", account: KeychainHelper.assistantProviderAPIKeyAccount(for: .custom),
             defaults: defaults, vault: vault
         ))
+        // Home credentials and the pre-v1.0.4 OpenRouter slot live in the same vault: removing one
+        // provider must never take them with it.
+        let survivors = [
+            MiSessionStore.keychainAccount: "mi-session",
+            KeychainHelper.tokenAccount: "ha-token",
+            LGWebOSConfig.clientKeyAccount: "lg-key",
+            KeychainHelper.assistantAPIKeyAccount: "sk-legacy",
+        ]
+        for (account, value) in survivors {
+            #expect(KeychainHelper.saveSecret(value, account: account, defaults: defaults, vault: vault))
+        }
         defaults.set("192.168.1.5:8000", forKey: AssistantConfig.customKeyEndpointKey)
 
         #expect(store.removeAssistantProvider(.deepSeek))
@@ -336,6 +347,9 @@ struct AssistantToggleAndProviderRemovalTests {
         // Consent entries owned by the removed provider go; the sibling's stays.
         #expect(store.consentedCloudEndpoints == ["openrouter.ai"])
         #expect(defaults.string(forKey: AssistantConfig.customKeyEndpointKey) == "192.168.1.5:8000")
+        for (account, value) in survivors {
+            #expect(stored[account].flatMap { String(data: $0, encoding: .utf8) } == value, "\(account) must survive")
+        }
     }
 
     @Test("Removing OpenRouter deletes the legacy key slot and leaves home credentials alone (#322)")
@@ -345,7 +359,7 @@ struct AssistantToggleAndProviderRemovalTests {
         let survivors = [
             MiSessionStore.keychainAccount: "mi-session",
             KeychainHelper.tokenAccount: "ha-token",
-            LGWebOSClient.clientKeyAccount: "lg-key",
+            LGWebOSConfig.clientKeyAccount: "lg-key",
         ]
         for (account, value) in survivors {
             #expect(KeychainHelper.saveSecret(value, account: account, defaults: defaults, vault: vault))
@@ -516,6 +530,48 @@ struct AssistantToggleAndProviderRemovalTests {
         transport.release(Self.chat(Self.powerOnPlan))
         #expect(await current.value != nil)
         #expect(await mock.executedCommands.count == 1, "only the newer command drives the lamp")
+    }
+
+    // MARK: - Onboarding AI card save (#322 item 3)
+
+    @Test("The guide's Done keeps a deliberately disabled assistant off when the draft only echoes the stored config")
+    @MainActor
+    func onboardingDoneWithUnchangedDraftKeepsAssistantOff() async throws {
+        let (store, _, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        #expect(store.setAIAssistantEnabled(false))
+        // Reopening the guide prefills the saved key, so Done saves the config it just read.
+        let stored = store.assistantConfig
+
+        #expect(store.saveOnboardingAssistantConfig(stored, explicit: false))
+        #expect(store.aiAssistantEnabled == false, "a draft the user never changed must not re-enable a disabled assistant")
+    }
+
+    @Test("The guide's Done enables the assistant when the draft really changes the config")
+    @MainActor
+    func onboardingDoneWithChangedDraftEnablesAssistant() async throws {
+        let (store, _, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        #expect(store.setAIAssistantEnabled(false))
+
+        #expect(store.saveOnboardingAssistantConfig(AssistantConfig(
+            baseURL: "https://api.moonshot.cn/v1", model: "moonshot-v1-8k", apiKey: "sk-moon"
+        ), explicit: false))
+        #expect(store.aiAssistantEnabled, "picking a new provider is a new choice, so Done may turn AI on")
+    }
+
+    @Test("The AI card's Save button enables the assistant even when the draft matches the stored config")
+    @MainActor
+    func onboardingExplicitSaveEnablesAssistant() async throws {
+        let (store, _, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        #expect(store.setAIAssistantEnabled(false))
+
+        #expect(store.saveOnboardingAssistantConfig(store.assistantConfig, explicit: true))
+        #expect(store.aiAssistantEnabled, "the card's own Save is the explicit opt-in")
     }
 
     // MARK: - Toggle write failures

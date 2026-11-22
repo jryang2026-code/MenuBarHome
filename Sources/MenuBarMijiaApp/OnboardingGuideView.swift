@@ -765,7 +765,7 @@ public struct OnboardingGuideView: View {
                     .font(.system(size: 11, design: .monospaced))
 
                 Button(L10n.tr("保存", "Save")) {
-                    if saveOnboardingAssistantDraft(showErrorToast: true, enablesAssistant: true) != nil {
+                    if saveOnboardingAssistantDraft(showErrorToast: true, explicit: true) != nil {
                         store.showToast(L10n.tr("已保存 \(selectedPreset.shortTitle) 配置", "Saved \(selectedPreset.shortTitle) config"))
                     }
                 }
@@ -839,14 +839,14 @@ public struct OnboardingGuideView: View {
     }
 
     @discardableResult
-    private func saveOnboardingAssistantDraft(showErrorToast: Bool, enablesAssistant: Bool) -> AssistantConfig? {
+    private func saveOnboardingAssistantDraft(showErrorToast: Bool, explicit: Bool) -> AssistantConfig? {
         guard let cfg = AssistantSettingsDraft.configToSave(preset: selectedPreset, fields: draftFields) else {
             if showErrorToast {
                 store.showToast(AssistantSettingsCopy.customAddressRequired, isError: true)
             }
             return nil
         }
-        guard store.saveAssistantConfig(cfg) else {
+        guard store.saveOnboardingAssistantConfig(cfg, explicit: explicit) else {
             if showErrorToast {
                 store.showToast(
                     L10n.tr("无法写入钥匙串，请授权钥匙串访问后重试", "Could not save to Keychain; allow Keychain access and try again"),
@@ -854,14 +854,6 @@ public struct OnboardingGuideView: View {
                 )
             }
             return nil
-        }
-        // Only the AI card's own Save button is an explicit opt-in that turns the feature on
-        // (P5a-M Codex review). The guide's Done button also saves a non-empty draft, and the draft
-        // is prefilled with the stored key when the guide is reopened from Settings, so Done must
-        // never re-enable an assistant the user turned off (#318 review).
-        // A refused write already shows its own toast (identity uncertain / store refused).
-        if enablesAssistant, !store.aiAssistantEnabled {
-            _ = store.setAIAssistantEnabled(true)
         }
         let resolved = store.assistantConfig
         baseURLDraft = resolved.baseURL
@@ -965,7 +957,7 @@ public struct OnboardingGuideView: View {
                     || trimmedBase != store.assistantConfig.baseURL
                     || (!trimmedModel.isEmpty && trimmedModel != store.assistantConfig.model)
                 if !trimmedKey.isEmpty || draftChangesConfig {
-                    _ = saveOnboardingAssistantDraft(showErrorToast: false, enablesAssistant: draftChangesConfig)
+                    _ = saveOnboardingAssistantDraft(showErrorToast: false, explicit: false)
                 }
                 withAnimation(AppleMotion.snappySpring) {
                     store.finishOnboardingGuide()

@@ -154,6 +154,25 @@ extension HomeStore {
         return true
     }
 
+    /// Saves the onboarding AI card's draft and decides whether that also turns the assistant on.
+    /// Only the card's own Save is an explicit opt-in (P5a-M Codex review). The guide's Done button
+    /// also saves a non-empty draft, and that draft is prefilled with the stored key when the guide
+    /// is reopened from Settings, so Done may enable only when the draft really changes the config
+    /// (#318 review). A refused write leaves the switch alone.
+    @discardableResult
+    public func saveOnboardingAssistantConfig(_ config: AssistantConfig, explicit: Bool) -> Bool {
+        let previous = assistantConfig
+        guard saveAssistantConfig(config) else { return false }
+        let after = assistantConfig
+        let changed = previous.baseURL != after.baseURL
+            || previous.model != after.model
+            || previous.apiKey != after.apiKey
+        if (explicit || changed), !aiAssistantEnabled {
+            _ = setAIAssistantEnabled(true)
+        }
+        return true
+    }
+
     public var userHabitMemory: UserHabitMemory {
         get { UserHabitMemory.load(from: userDefaults) }
         set { newValue.save(to: userDefaults) }
