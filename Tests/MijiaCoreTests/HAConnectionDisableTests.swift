@@ -706,7 +706,7 @@ struct HAConnectionDisableTests {
         #expect(await mock.executedCommands.count == commandsBefore + 1)
         #expect(store.undoBanner?.restoreCommands == [mixedRestoreHA])
         #expect(store.undoBanner?.title == "还有 1 项可撤销" && store.undoBanner?.deviceCount == 1)
-        #expect(store.toastNotice?.message == "有 1 项未能撤销。\n请在设置中重新启用 Home Assistant 连接。\n然后再次点击「撤销」。")
+        #expect(store.toastNotice?.message == "有 1 项未能撤销。\n请在设置中重新启用 Home Assistant 连接。\n横幅仍在时，可再次点击「撤销」。")
 
         let voiceActionID = UUID()
         store.lastAssistantUndo = AssistantUndoEntry(
@@ -722,7 +722,7 @@ struct HAConnectionDisableTests {
         #expect(store.lastAssistantUndo?.restore == [mixedRestoreHA] && store.lastAssistantUndo?.reply == "剩余 1 项操作")
         #expect(store.undoBanner?.title == "还有 1 项可撤销" && store.undoBanner?.deviceCount == 1)
         #expect(store.assistantState == .failed("有 1 项未能撤销。\n请在设置中重新启用 Home Assistant 连接。\n然后再说或输入「撤销」。"))
-        #expect(store.toastNotice?.message == "有 1 项未能撤销。\n请在设置中重新启用 Home Assistant 连接。\n然后再次点击「撤销」。")
+        #expect(store.toastNotice?.message == "有 1 项未能撤销。\n请在设置中重新启用 Home Assistant 连接。\n横幅仍在时，可再次点击「撤销」。")
 
         let autoOutcome = await store.runAutomation(intents: [DeviceIntent(targetId: "scene.sleep", operation: .activateScene)], title: "睡眠自动化")
         #expect(autoOutcome.succeededCount == 0 && autoOutcome.errorMessage == "Home Assistant 已停用")

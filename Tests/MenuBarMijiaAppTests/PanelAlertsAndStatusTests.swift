@@ -24,7 +24,7 @@ struct PanelAlertsAndStatusTests {
 
         let summary = "Undo could not restore 1 item."
         let guidance = "Re-enable the Home Assistant connection in Settings."
-        let retry = "Then click Undo again."
+        let retry = "Click Undo again while the banner is still visible."
         #expect(height([summary, guidance, retry].joined(separator: "\n")) >
             height([summary, guidance].joined(separator: "\n")))
     }

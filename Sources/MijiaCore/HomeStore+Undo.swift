@@ -916,7 +916,7 @@ extension HomeStore {
         }
         let retry = forAssistant
             ? L10n.tr("然后再说或输入「撤销」。", "Then say or type “Undo” again.")
-            : L10n.tr("然后再次点击「撤销」。", "Then click Undo again.")
+            : L10n.tr("横幅仍在时，可再次点击「撤销」。", "Click Undo again while the banner is still visible.")
         var sentences = [summary]
         for instruction in instructions where !sentences.contains(instruction) {
             sentences.append(instruction)
