@@ -6,11 +6,14 @@ import type { Window } from "happy-dom";
 import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { SmartDevice } from "../src/core/models.js";
+import { ScheduledCommandStore } from "../src/core/scheduledCommands.js";
 import { serializeMiSession } from "../src/core/secureStore.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { openSettingsSheet, saveSettings } from "../src/ui/appLifecycle.js";
+import { patchCloudPresentation } from "../src/ui/cloudRefresh.js";
 import { DEFAULT_PANEL_THEME, PANEL_THEMES, normalizePanelTheme } from "../src/ui/panelTheme.js";
+import { scheduledCommandIdentity } from "../src/ui/scheduledCommands.js";
 import { loadSettings, writeSettingsForStorage } from "../src/ui/settings.js";
 import { resolveSettingsAnchorTab } from "../src/ui/settingsSearch.js";
 import { getSettingsTabSpec, normalizeSettingsTab } from "../src/ui/settingsViews.js";
@@ -397,5 +400,178 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     await setImmediate();
     const livingAfterEnable = app.devices.find((d) => d.id === "light.living_ceiling");
     assert.equal(livingAfterEnable?.kind.kind === "light" && livingAfterEnable.kind.isOn, false);
+  });
+
+  it("preserves main-window timers and rules when standalone settings toggles automation or schedules", () => {
+    const win = window as unknown as Record<string, unknown>;
+    const sharedStorage = localStorage;
+
+    // Seed a stored enabled automation rule under a live source while standalone Settings has no timerSnapshot.
+    const ruleStore = new AutomationRuleStore();
+    ruleStore.save([
+      createAutomationRule({
+        id: "r-live-keep",
+        trigger: "systemSleep",
+        action: { kind: "devices", deviceIds: ["light.living_ceiling"], isOn: false },
+      }),
+    ]);
+
+    const mainContainer = document.createElement("div");
+    mainContainer.id = "main-host";
+    document.body.appendChild(mainContainer);
+    seedSettings({
+      connectionMode: "homeAssistant",
+      haBaseURL: "https://ha.local:8123",
+      haToken: "ha-tok",
+      eventAutomationEnabled: false,
+      scheduledCommandsEnabled: true,
+    });
+    const mainApp = new MenuMijiaWindowsApp(mainContainer);
+    app = mainApp;
+
+    win.__MENUMIJIA_WINDOW_MODE__ = "settings";
+    const settingsContainer = document.createElement("div");
+    settingsContainer.id = "settings-host";
+    document.body.appendChild(settingsContainer);
+    const settingsApp = new MenuMijiaWindowsApp(settingsContainer);
+
+    try {
+      // Main adds a timer after Settings is already open (Settings in-memory store stays stale).
+      const futureMs = Date.now() + 60_000;
+      const demoIdentity = scheduledCommandIdentity({ ...mainApp.settings, connectionMode: "demo" });
+      const liveIdentity = scheduledCommandIdentity(mainApp.settings);
+      assert.ok(liveIdentity);
+      mainApp.scheduledCommands.push({
+        id: "timer-added-on-main",
+        command: "关闭客厅灯",
+        reply: "1分钟后关闭客厅灯",
+        delaySeconds: 60,
+        fireTimestampMs: futureMs,
+        intents: [{ targetId: "light.living_ceiling", operation: { kind: "power", isOn: false } }],
+      });
+      mainApp.scheduledCommandStore.persist();
+
+      // Switch standalone Settings to safety tab and toggle automation on + schedules off.
+      settingsContainer.querySelector<HTMLElement>('[data-settings-tab="safety"]')?.click();
+      const autoToggle = settingsContainer.querySelector<HTMLInputElement>("#settings-event-automation-enabled")!;
+      const timerToggle = settingsContainer.querySelector<HTMLInputElement>("#settings-scheduled-commands-enabled")!;
+      autoToggle.checked = true;
+      autoToggle.dispatchEvent(new window.Event("change"));
+      timerToggle.checked = false;
+      timerToggle.dispatchEvent(new window.Event("change"));
+
+      // Enabling automation in standalone Settings without a live snapshot must not wipe enabled rules.
+      const storedRulesAfter = new AutomationRuleStore().load();
+      assert.equal(storedRulesAfter.find((r) => r.id === "r-live-keep")?.isEnabled, true);
+
+      // Disabling schedules in standalone Settings must not overwrite timers added on main.
+      window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
+      const verifyStore = new ScheduledCommandStore(sharedStorage);
+      assert.ok(demoIdentity !== liveIdentity);
+      const pausedEntries = verifyStore.entries().find(([id]) => id === liveIdentity)?.[1].pausedScheduledCommands ?? [];
+      assert.deepEqual(
+        pausedEntries.map((entry) => entry.command.id),
+        ["timer-added-on-main"],
+      );
+    } finally {
+      settingsApp.dispose();
+      settingsContainer.remove();
+      mainContainer.remove();
+    }
+  });
+
+  it("invalidates main source-bound state when standalone settings changes source identity", () => {
+    seedSettings({ connectionMode: "demo" });
+    app = new MenuMijiaWindowsApp(element("#app"));
+    const revBefore = app.sourceRevision;
+    app.lastUndoAction = {
+      summary: "old",
+      steps: [],
+      expiresAtMs: Date.now() + 60_000,
+    };
+
+    writeSettingsForStorage({
+      ...app.settings,
+      connectionMode: "homeAssistant",
+      haBaseURL: "https://ha.local:8123",
+    });
+    window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
+
+    assert.equal(app.sourceRevision > revBefore, true);
+    assert.equal(app.lastUndoAction, null);
+  });
+
+  it("keeps companion registration and snapshot writes on main while forwarding settings toggles", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    const mainInvoked: string[] = [];
+    const settingsInvoked: string[] = [];
+    let currentInvoked = mainInvoked;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        metadata: { currentWindow: { label: "main" } },
+        invoke: async (cmd: string) => {
+          currentInvoked.push(cmd);
+          return cmd === "set_companion_integration" ? 1 : null;
+        },
+      },
+      configurable: true,
+    });
+
+    seedSettings({ enableRaycastIntegration: true });
+    const mainContainer = document.createElement("div");
+    document.body.appendChild(mainContainer);
+    const mainApp = new MenuMijiaWindowsApp(mainContainer);
+    app = mainApp;
+    await setImmediate();
+    await setImmediate();
+    assert.equal(mainInvoked.includes("set_companion_integration"), true);
+    assert.equal(mainInvoked.includes("write_raycast_snapshot"), true);
+
+    // Opening standalone Settings must NOT re-register companion or write its own bridgeToken snapshot.
+    currentInvoked = settingsInvoked;
+    win.__MENUMIJIA_WINDOW_MODE__ = "settings";
+    const settingsContainer = document.createElement("div");
+    document.body.appendChild(settingsContainer);
+    const settingsApp = new MenuMijiaWindowsApp(settingsContainer);
+    try {
+      await setImmediate();
+      await setImmediate();
+      assert.equal(settingsInvoked.includes("set_companion_integration"), false);
+      assert.equal(settingsInvoked.includes("write_raycast_snapshot"), false);
+
+      // Toggling Raycast off in Settings clears snapshot via main when settings-sync arrives.
+      settingsContainer.querySelector<HTMLElement>('[data-settings-tab="safety"]')?.click();
+      const raycastToggle = settingsContainer.querySelector<HTMLInputElement>("#settings-raycast-integration")!;
+      raycastToggle.checked = false;
+      raycastToggle.dispatchEvent(new window.Event("change"));
+      await setImmediate();
+      assert.equal(settingsInvoked.includes("remove_raycast_snapshot"), false);
+
+      currentInvoked = mainInvoked;
+      window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
+      await setImmediate();
+      assert.equal(mainInvoked.includes("remove_raycast_snapshot"), true);
+    } finally {
+      settingsApp.dispose();
+      settingsContainer.remove();
+      mainContainer.remove();
+    }
+  });
+
+  it("preserves classicStatusSummaryText in .cc-subtitle after incremental patchCloudPresentation", () => {
+    seedSettings({ panelTheme: "classic" });
+    app = new MenuMijiaWindowsApp(element("#app"));
+    app.devices = [activeLight("l1", "客厅主灯")];
+    app.environmentReadings = [
+      { id: "env-1", label: "温湿度计", roomName: "客厅", temperature: 24.5, humidity: 52, battery: null },
+    ];
+    app.render();
+
+    const expectedSubtitle = app.classicStatusSummaryText;
+    assert.notEqual(expectedSubtitle, app.statusSummaryText);
+    assert.equal(element(".cc-subtitle").textContent, expectedSubtitle);
+
+    patchCloudPresentation(app);
+    assert.equal(element(".cc-subtitle").textContent, expectedSubtitle);
   });
 });

@@ -149,7 +149,7 @@ import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, hasPendingMiVaultDeletion, isInsideScheduledTimerTick, isUndoHoverPaused,
-  rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
+  rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, setRaycastIntegrationEnabled, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { focusPanelOnActivate } from "./panelKeyboard.js";
@@ -164,7 +164,7 @@ import {
   type PanelPrioritySnapshot,
 } from "./panelSplitTiles.js";
 
-import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
@@ -673,7 +673,13 @@ export class MenuMijiaWindowsApp {
     };
     const onCrossWindowSettingsSync = (event?: Event) => {
       if (!this.root.isConnected) return;
-      if (event && "key" in event && (event as StorageEvent).key && (event as StorageEvent).key !== STORAGE_KEY) {
+      const storageKey = event && "key" in event ? (event as StorageEvent).key : null;
+      if (storageKey === SCHEDULED_COMMANDS_STORAGE_KEY) {
+        this.scheduledCommandStore.reloadFromStorage();
+        this.render();
+        return;
+      }
+      if (storageKey && storageKey !== STORAGE_KEY) {
         return;
       }
       this.syncFromPersistedStorage();
@@ -746,11 +752,27 @@ export class MenuMijiaWindowsApp {
     const prevHaBaseURL = this.settings.haBaseURL;
     const prevAssistantBaseURL = this.settings.assistantBaseURL;
     const prevMiSession = this.settings.miSession;
+    const prevMiUserId = prevMiSession?.userId ?? null;
+    const prevMiRegion = this.settings.miCloudRegion;
+    const prevSelectedHomeId = this.settings.selectedHomeId;
     const prevHaToken = this.settings.haToken;
     const prevOpenRouterApiKey = this.settings.openRouterApiKey;
     const prevAssistantKeysByPreset = { ...this.assistantKeysByPreset };
     const prevEventAutomation = isEventAutomationEnabled(this.settings);
     const prevScheduledCommands = isScheduledCommandsEnabled(this.settings);
+    const prevRaycastIntegration = this.settings.enableRaycastIntegration;
+    const sourceIdentityChanged =
+      prevMode !== reloaded.settings.connectionMode ||
+      prevHaBaseURL.trim() !== reloaded.settings.haBaseURL.trim() ||
+      prevMiRegion !== reloaded.settings.miCloudRegion ||
+      (prevMiUserId !== null && hasPendingMiVaultDeletion());
+    if (!this.isStandaloneSettingsWindow) {
+      if (sourceIdentityChanged) {
+        switchSource(this, "settings-sync-source-changed");
+      } else if (prevSelectedHomeId !== reloaded.settings.selectedHomeId) {
+        switchHome(this);
+      }
+    }
     this.loadedSettings = reloaded;
     this.settings = reloaded.settings;
     // `writeSettingsForStorage` strips credential secrets from localStorage, so keep live
@@ -778,9 +800,16 @@ export class MenuMijiaWindowsApp {
     if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
       this.devices = this.demoDevicesForEnabledTypes();
       this.scenes = demoScenes();
-    } else if (prevMode !== this.settings.connectionMode) {
+    } else if (
+      prevMode !== this.settings.connectionMode ||
+      prevHaBaseURL.trim() !== this.settings.haBaseURL.trim() ||
+      prevMiRegion !== this.settings.miCloudRegion
+    ) {
       if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
-        this.devices = structuredClone(this.settings.cachedXiaomiDevices);
+        this.devices =
+          prevMiRegion !== this.settings.miCloudRegion
+            ? []
+            : structuredClone(this.settings.cachedXiaomiDevices);
         if (!this.isStandaloneSettingsWindow) void this.refreshDevices(true);
       } else if (this.settings.connectionMode === "homeAssistant") {
         const haCache = haCacheIfEnabled(this, { requireIdentityMatch: true })?.home ?? null;
@@ -804,15 +833,22 @@ export class MenuMijiaWindowsApp {
       const nextEventAutomation = isEventAutomationEnabled(this.settings);
       if (nextEventAutomation !== prevEventAutomation) {
         this.settings.eventAutomationEnabled = prevEventAutomation;
-        setEventAutomationRunning(this, nextEventAutomation);
+        if (!setEventAutomationRunning(this, nextEventAutomation)) {
+          this.saveSettings();
+        }
       }
       const nextScheduledCommands = isScheduledCommandsEnabled(this.settings);
       if (nextScheduledCommands !== prevScheduledCommands) {
         this.scheduledCommandStore.reloadFromStorage();
-        if (nextScheduledCommands) {
-          this.settings.scheduledCommandsEnabled = prevScheduledCommands;
-          setScheduledCommandsRunning(this, true);
+        this.settings.scheduledCommandsEnabled = prevScheduledCommands;
+        if (!setScheduledCommandsRunning(this, nextScheduledCommands)) {
+          this.saveSettings();
         }
+      }
+      if (this.settings.enableRaycastIntegration !== prevRaycastIntegration) {
+        const nextRaycast = this.settings.enableRaycastIntegration;
+        this.settings.enableRaycastIntegration = prevRaycastIntegration;
+        setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
       }
       syncAutomationLifecycle(this);
       if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {

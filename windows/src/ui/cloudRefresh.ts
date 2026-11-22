@@ -7,7 +7,7 @@ import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../co
 import { adoptPairedDevicePreferences, applyOrder, homeOptions, scopedKey, spans, tr3 } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
-import { getPanelThemeProfile } from "./panelTheme.js";
+import { getPanelThemeProfile, normalizePanelTheme } from "./panelTheme.js";
 import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import { environmentReadingPriority, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
@@ -1289,7 +1289,13 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     }
 
     const subtitle = host.root.querySelector<HTMLElement>(".cc-subtitle");
-    if (subtitle) subtitle.textContent = host.statusSummaryText;
+    if (subtitle) {
+      subtitle.textContent = host.isEditingLayout
+        ? t("拖动卡片排序 · 点右下角圆弧手柄改大小")
+        : normalizePanelTheme(host.settings.panelTheme) === "classic"
+          ? host.classicStatusSummaryText
+          : host.statusSummaryText;
+    }
     host.root
       .querySelector<HTMLElement>(".cc-home-badge")
       ?.classList.toggle("is-active", host.activeDeviceCount > 0);

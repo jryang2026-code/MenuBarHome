@@ -1,5 +1,6 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
+import { switchSource } from "./sourceSwitch.js";
 import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -201,6 +202,8 @@ export async function hydrateCredentials(
         return;
       }
       const allowOverwrite = options.overwriteExisting === true && !pendingPersistDuringHydration.has(host);
+      const prevVaultMiUserId = host.settings.miSession?.userId ?? null;
+      const prevVaultHaToken = host.settings.haToken.trim();
       if (effectiveCredentials.assistantApiKeys) {
         host.assistantKeysByPreset = allowOverwrite
           ? { ...effectiveCredentials.assistantApiKeys }
@@ -220,6 +223,14 @@ export async function hydrateCredentials(
       const haRemovalPending = isConnectionRemovalPending(haConnectionRemovalScope(adoptedHaScope));
       if ((allowOverwrite || current.haToken === "") && effectiveCredentials.haToken !== "" && !haRemovalPending) {
         host.settings.haToken = effectiveCredentials.haToken;
+      }
+      if (
+        allowOverwrite &&
+        !host.isStandaloneSettingsWindow &&
+        ((host.settings.miSession?.userId ?? null) !== prevVaultMiUserId ||
+          host.settings.haToken.trim() !== prevVaultHaToken)
+      ) {
+        switchSource(host, "settings-sync-credential-changed");
       }
       const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
       const boundCustomEndpoint =

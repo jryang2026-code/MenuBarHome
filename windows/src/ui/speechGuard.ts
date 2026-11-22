@@ -521,8 +521,10 @@ export function reconcileUndoBannerHoverAfterRender(host: MenuMijiaWindowsApp): 
     resumeUndoHoverPause(host);
   }
   bindUrlConfirmationEventsAfterRender(host);
-  syncDynamicTrayTooltip(host);
-  scheduleRaycastSnapshotExport(host);
+  if (!host.isStandaloneSettingsWindow) {
+    syncDynamicTrayTooltip(host);
+    scheduleRaycastSnapshotExport(host);
+  }
 }
 
 function asElement(node: EventTarget | null | undefined): Element | null {
@@ -1032,6 +1034,17 @@ export function setRaycastIntegrationEnabled(
   const persistSettings = options?.persistSettings ?? true;
   const shouldRender = options?.render ?? true;
   const state = hostState(host);
+  if (host.isStandaloneSettingsWindow) {
+    host.settings.enableRaycastIntegration = enabled;
+    if (persistSettings) {
+      host.saveSettings();
+    }
+    state.companionNotice = null;
+    if (shouldRender) {
+      host.render();
+    }
+    return;
+  }
   const changed = host.settings.enableRaycastIntegration !== enabled;
   host.settings.enableRaycastIntegration = enabled;
   if (persistSettings) {
@@ -1149,7 +1162,7 @@ export async function copyCompanionConfig(host: MenuMijiaWindowsApp): Promise<bo
 export async function detectCompanionIntegration(host: MenuMijiaWindowsApp): Promise<CompanionNotice> {
   const state = hostState(host);
   const epoch = state.companionEpoch;
-  if (host.settings.enableRaycastIntegration) {
+  if (host.settings.enableRaycastIntegration && !host.isStandaloneSettingsWindow) {
     // A write still waiting on a retry would make the first check report a missing snapshot.
     await exportRaycastSnapshotNow(host, true);
   }
@@ -1554,14 +1567,6 @@ function reportStaleExternalUrl(
 
 function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
   const ownerWin = host.root.ownerDocument?.defaultView ?? window;
-  ownerWin.addEventListener("menumijia:open-url", (event: Event) => {
-    if (!host.root.isConnected) return;
-    const detail = (event as CustomEvent<unknown>).detail;
-    if (typeof detail === "string" && detail.trim() !== "") {
-      void enqueueIncomingOpenUrl(host, detail);
-    }
-  });
-
   ownerWin.addEventListener("menumijia:update-progress", (event: Event) => {
     if (!host.root.isConnected) return;
     const detail = (event as CustomEvent<unknown>).detail;
@@ -1578,6 +1583,16 @@ function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
     });
     if (host.isInstallingUpdate) {
       host.queueBackgroundRender();
+    }
+  });
+
+  if (host.isStandaloneSettingsWindow) return;
+
+  ownerWin.addEventListener("menumijia:open-url", (event: Event) => {
+    if (!host.root.isConnected) return;
+    const detail = (event as CustomEvent<unknown>).detail;
+    if (typeof detail === "string" && detail.trim() !== "") {
+      void enqueueIncomingOpenUrl(host, detail);
     }
   });
 

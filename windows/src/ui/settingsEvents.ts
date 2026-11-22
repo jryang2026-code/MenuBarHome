@@ -1607,6 +1607,13 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelector<HTMLInputElement>("#settings-event-automation-enabled")?.addEventListener("change", (event) => {
     if (!isFullPanelHost(host)) return;
     const toggle = event.target as HTMLInputElement;
+    if (host.isStandaloneSettingsWindow) {
+      host.settings.eventAutomationEnabled = toggle.checked;
+      host.saveSettings();
+      syncSettingsSaveHint(host, "auto-saved");
+      host.render();
+      return;
+    }
     if (!setEventAutomationRunning(host, toggle.checked)) {
       toggle.checked = false;
       host.replyBanner = {
@@ -1626,6 +1633,13 @@ export function bindSettingsEvents(host: SettingsEventsHost): void {
   host.root.querySelector<HTMLInputElement>("#settings-scheduled-commands-enabled")?.addEventListener("change", (event) => {
     if (!isFullPanelHost(host)) return;
     const toggle = event.target as HTMLInputElement;
+    if (host.isStandaloneSettingsWindow) {
+      host.settings.scheduledCommandsEnabled = toggle.checked;
+      host.saveSettings();
+      syncSettingsSaveHint(host, "auto-saved");
+      host.render();
+      return;
+    }
     if (!setScheduledCommandsRunning(host, toggle.checked)) {
       // The paused entries could not be written, so the switch stays on: a timer that is still
       // waiting must not look parked while it can fire.
