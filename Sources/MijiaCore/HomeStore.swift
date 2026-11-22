@@ -1084,6 +1084,7 @@ public final class HomeStore {
     /// `logoutMiAccount(id:)` (§13), so local `deviceFacets` mutations can never poison baselines.
     @ObservationIgnored var lastReportedFacets: [String: [FacetControl]] = [:]
     var undoTimerTask: Task<Void, Never>?
+    @ObservationIgnored var undoConfirmationCountdown: (bannerID: UUID, shouldResume: Bool)?
     /// Bulk actions whose commands are still being sent, keyed by the banner they created.
     /// 撤销 stops the entry here and waits on its task before restoring (`HomeStore+Undo.swift`).
     var runningBatches: [UUID: RunningBatch] = [:]
