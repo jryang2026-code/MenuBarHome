@@ -197,8 +197,14 @@ extension HomeStore {
     /// Devices a closed type keeps only for enabled alerts: evaluated for safety, never drawn, listed
     /// or controlled (architecture.md §D 安全保留集).
     public var typeHiddenSafetyDevices: [SmartDevice] {
-        guard !miotTypePruneReports.isEmpty else { return [] }
         let visible = Set(devices.map(\.id))
+        // A closed TV type hides the LAN LG card, but a favorited TV still raises its offline alert.
+        var hiddenLG: [SmartDevice] = []
+        if let lg = latestLGDevice, !visible.contains(lg.id), favoriteDeviceIds.contains(lg.id),
+           homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost {
+            hiddenLG = [lg]
+        }
+        guard !miotTypePruneReports.isEmpty else { return hiddenLG }
         var order: [String] = []
         var freshest: [String: SmartDevice] = [:]
         for scope in miotTypePruneReports.keys.sorted() {
@@ -217,7 +223,7 @@ extension HomeStore {
                 }
             }
         }
-        return order.compactMap { freshest[$0] }
+        return order.compactMap { freshest[$0] } + hiddenLG.filter { freshest[$0.id] == nil }
     }
 
     /// Lower is fresher: unverified telemetry first, then an offline card.

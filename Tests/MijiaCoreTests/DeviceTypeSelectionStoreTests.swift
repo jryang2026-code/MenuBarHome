@@ -210,10 +210,15 @@ struct DeviceTypeSelectionStoreTests {
         #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id })
         #expect(store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
         #expect(store.favoriteDeviceIds.contains(Self.lgTV.id), "a newly found TV is favorited once")
+
+        #expect(store.applyDeviceCategorySelection(allTypes.subtracting([.tv])) == .applied)
+        #expect(store.typeHiddenSafetyDevices.map(\.id) == [Self.lgTV.id], "a favorited TV keeps its offline alert")
+        #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
         store.toggleFavorite(Self.lgTV.id)
         #expect(!store.favoriteDeviceIds.contains(Self.lgTV.id))
 
         #expect(store.applyDeviceCategorySelection(allTypes.subtracting([.tv])) == .applied)
+        #expect(store.typeHiddenSafetyDevices.isEmpty, "an unfavorited TV leaves the safety set")
         #expect(!store.devices.contains { $0.id == Self.lgTV.id })
         #expect(!store.filteredDevices.contains { $0.id == Self.lgTV.id })
         #expect(!store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
