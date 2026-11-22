@@ -38,7 +38,7 @@ bash scripts/check.sh --lint-only
 # `swift test` compiles every module for testing; `swift build -c release` needs it spelled out,
 # or the `@testable import`s in the test targets fail with "not compiled for testing".
 swift build -c release --build-tests -Xswiftc -enable-testing
-bash scripts/ci_swift_test.sh -c release --skip SnapshotTests --skip-build
+bash scripts/ci_swift_test.sh -c release --no-parallel --skip SnapshotTests --skip-build
 
 # 发布包必须带上正确的 40 位证书 SHA-1。缺失或无效时应用内更新会失败关闭。
 if [ "$DEVELOPER_ID" = "-" ]; then
