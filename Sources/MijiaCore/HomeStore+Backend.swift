@@ -1035,7 +1035,7 @@ extension HomeStore {
         haPlaintextPrompt = .declined(url)
     }
 
-    func makeLiveProvider() -> any HomeProvider {
+    func makeLiveProvider(migrateLegacyMiEnvelope: Bool = true) -> any HomeProvider {
         guard !isIdentityUncertain else {
             activeHAProvider = nil
             activeHAConfig = nil
@@ -1059,7 +1059,7 @@ extension HomeStore {
         }
         activeHAProvider = ha
         activeHAConfig = wantsHA ? (url: HAWebSocketProvider.normalizeBaseURL(serverURLString), token: token) : nil
-        let mi: MiAccountsProvider? = wantsMi ? makeMiAccountsProvider() : nil
+        let mi: MiAccountsProvider? = wantsMi ? makeMiAccountsProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope) : nil
         activeMiAccountsProvider = mi
         let composite = Self.makeComposite(
             homeAssistant: ha,
@@ -1102,7 +1102,7 @@ extension HomeStore {
         )
     }
 
-    func rebuildLiveProvider(forceHAReconnect: Bool = false) {
+    func rebuildLiveProvider(forceHAReconnect: Bool = false, migrateLegacyMiEnvelope: Bool = true) {
         haPlaintextPrompt = nil
         guard !isIdentityUncertain else {
             eventTask?.cancel()
@@ -1127,7 +1127,7 @@ extension HomeStore {
             eventTask?.cancel()
             shutdownCurrentProvider()
             miAccountsConfigEpoch = 0
-            self.provider = makeLiveProvider()
+            self.provider = makeLiveProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             startListening()
             return
         }
@@ -1174,7 +1174,7 @@ extension HomeStore {
         var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revokedIDs: Set<String>)?
         var miAccountsChanged = false
         if wantsMi {
-            let latestAccounts = loadActiveMiAccounts()
+            let latestAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             miAccounts = latestAccounts
             let enabledAccounts = enabledMiAccounts
             let previousAccounts = activeMiProviderAccounts
@@ -1198,7 +1198,7 @@ extension HomeStore {
                     miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty, revokedIDs)
                 }
             } else {
-                let createdMi = makeMiAccountsProvider()
+                let createdMi = makeMiAccountsProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
                 activeMiAccountsProvider = createdMi
                 nextMiReplacement = (true, createdMi)
             }
