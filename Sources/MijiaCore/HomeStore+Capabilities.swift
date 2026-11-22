@@ -233,9 +233,11 @@ extension HomeStore {
 
     @discardableResult
     func persistCapabilitySelection(
+        proposed: CapabilitySelection? = nil,
         removingScopes: Set<String> = [],
         patch: CapabilitySelectionPatch? = nil
     ) -> Bool {
+        let selection = proposed ?? capabilitySelection
         let configured = configuredConnectionScopes()
         let effectivePatch: CapabilitySelectionPatch = if let patch {
             patch
@@ -244,7 +246,7 @@ extension HomeStore {
                 from: lastPersistedCapabilitySelection ?? capabilitySelection,
                 baseDisabledConnections: lastPersistedDisabledConnections,
                 baseDisabledScopes: lastPersistedDisabledScopes,
-                to: capabilitySelection,
+                to: selection,
                 targetDisabledConnections: explicitlyDisabledConnections,
                 targetDisabledScopes: explicitlyDisabledScopes,
                 configuredScopes: configured,
@@ -252,7 +254,7 @@ extension HomeStore {
             )
         }
         let result = CapabilitySelectionStore.saveMergingConflicts(
-            selection: capabilitySelection,
+            selection: selection,
             configuredScopes: configured,
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
@@ -265,7 +267,7 @@ extension HomeStore {
             if let persisted = result.persistedState {
                 applyPersistedCapabilityState(
                     persisted,
-                    configuredScopes: configured
+                    candidateScopes: configured.union(selection.enabledConnectionScopes)
                 )
             } else {
                 lastPersistedCapabilitySelection = capabilitySelection
@@ -285,7 +287,7 @@ extension HomeStore {
 
     private func applyPersistedCapabilityState(
         _ persisted: CapabilitySelectionPersistedState,
-        configuredScopes: Set<String>
+        candidateScopes: Set<String>
     ) {
         explicitlyDisabledConnections = persisted.disabledConnections
         explicitlyDisabledScopes = persisted.disabledScopes
@@ -293,10 +295,7 @@ extension HomeStore {
             dropMiotTypePruneReport(scope: scope)
         }
         let enabledConnections = persisted.enabledConnections.subtracting(persisted.disabledConnections)
-        let candidateScopes = configuredScopes
-            .union(capabilitySelection.enabledConnectionScopes)
-            .subtracting(persisted.disabledScopes)
-        let enabledScopes = candidateScopes.filter { scope in
+        let enabledScopes = candidateScopes.subtracting(persisted.disabledScopes).filter { scope in
             CapabilityReferenceEngine.connectionCapability(forScope: scope)
                 .map { enabledConnections.contains($0) && !persisted.disabledConnections.contains($0) } ?? true
         }
@@ -956,10 +955,20 @@ extension HomeStore {
     // MARK: - Host Control Write Gate
 
     public func evaluateDeviceControlGate(deviceId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        let indexed = resolvedIndexedDevice(for: deviceId)
+        deviceControlGate(for: resolvedIndexedDevice(for: deviceId), deviceId: deviceId, expectedGeneration: expectedGeneration)
+    }
+
+    private func deviceControlGate(
+        for indexed: CapabilityIndexedDevice?, deviceId: String, expectedGeneration: Int? = nil
+    ) -> ControlTargetGateVerdict {
+        var selection = capabilitySelection
+        if let indexed, homeBackend == .demo, provider is DemoHomeProvider,
+           indexed.sourceScope == "demo", deviceBackends[indexed.id] == .demo {
+            selection.enabledCategories.insert(indexed.category)
+        }
         return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .device, targetId: deviceId, expectedGeneration: expectedGeneration,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            currentGeneration: capabilityGeneration, selection: selection,
             devices: indexed.map { [$0] } ?? [], scenes: []
         )
     }
@@ -1022,13 +1031,7 @@ extension HomeStore {
     /// O(1) single-device write gate for hot list loops (`allOffTargets`, `controllableDevices`,
     /// `buildRaycastSnapshot`) without scanning `devices` or sorting the full device index.
     func capabilityWriteRejection(for device: SmartDevice) -> ControlTargetRejectionReason? {
-        let indexed = makeIndexedDevice(from: device)
-        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
-            targetKind: .device, targetId: device.id, expectedGeneration: nil,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: [indexed], scenes: []
-        )
-        return verdict.allowed ? nil : verdict.rejectionReason
+        deviceControlGate(for: makeIndexedDevice(from: device), deviceId: device.id).rejectionReason
     }
 
     /// Capability rejection for a command target, resolved from the live rows as well as the persisted
@@ -1036,12 +1039,7 @@ extension HomeStore {
     /// (Bugbot #275: write gate skipped without index entry).
     func capabilityWriteRejection(forDeviceId deviceId: String) -> ControlTargetRejectionReason? {
         guard let indexed = resolvedIndexedDevice(for: deviceId) else { return nil }
-        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
-            targetKind: .device, targetId: deviceId, expectedGeneration: nil,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: [indexed], scenes: []
-        )
-        return verdict.allowed ? nil : verdict.rejectionReason
+        return deviceControlGate(for: indexed, deviceId: deviceId).rejectionReason
     }
 
     /// Fail-closed write gate for Home Assistant domain entities (`light.*`, `switch.*`, `scene.*`,
@@ -1181,7 +1179,7 @@ extension HomeStore {
     func rejectDeviceWriteIfCapabilityDisabled(deviceId: String) -> ControlTargetRejectionReason? {
         guard let indexed = resolvedIndexedDevice(for: deviceId),
               indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) else { return nil }
-        let verdict = evaluateDeviceControlGate(deviceId: deviceId)
+        let verdict = deviceControlGate(for: indexed, deviceId: deviceId)
         guard !verdict.allowed, let reason = verdict.rejectionReason else { return nil }
         showToast(reason.userMessage, isError: true)
         return reason
@@ -1416,6 +1414,19 @@ extension HomeStore {
             return capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
                 && !pendingRevalidationScopes.contains(scope)
         }
+    }
+
+    func pausedQuickActionMessage(for action: QuickAction) -> String {
+        let categories = QuickActionReferenceKind(rawValue: action.rawValue)?.targetCategories ?? []
+        let hasDisabledScope = (pausedQuickActionScopes[action.rawValue] ?? []).contains { scope in
+            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope),
+                  isCapabilityScopeConfigured(connection, scope: scope) else { return false }
+            return !capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
+        }
+        if !hasDisabledScope, !categories.isSubset(of: capabilitySelection.enabledCategories) {
+            return L10n.tr("该快捷动作因设备类型关闭已暂停", "This quick action is paused while a device type is turned off")
+        }
+        return L10n.tr("该快捷动作因连接停用已暂停", "This quick action is paused while its connection is disabled")
     }
 
     private func persistPausedQuickActionScopes() {

@@ -203,6 +203,7 @@ public actor DemoHomeProvider: HomeProvider {
 
     public init() {
         self.snapshot = Self.defaultHome()
+        snapshot.deviceBackends = Dictionary(uniqueKeysWithValues: snapshot.devices.map { ($0.id, .demo) })
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {

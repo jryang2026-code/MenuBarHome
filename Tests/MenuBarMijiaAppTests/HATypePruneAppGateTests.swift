@@ -97,4 +97,45 @@ struct HATypePruneAppGateTests {
         #expect(store.applyDeviceCategorySelection(Set(DeviceCategoryID.allCases)) == .applied)
         #expect(search.results(store: store).map(\.id) == [Self.hiddenPlug.id])
     }
+
+    @Test("A background change to the pause list requires a separate review before Apply")
+    func refreshingThePickerDoesNotConfirmNewPauses() async throws {
+        let (store, _) = try await Self.makeStore()
+        store.capabilitySelection.enabledCategories.insert(.plug)
+        let picked = store.capabilitySelection.enabledCategories.subtracting([.plug])
+        let original = store.previewDeviceCategorySelection(picked)
+        #expect(original.pauseItemKeys.isEmpty)
+        var review = DeviceTypeSelectionReview(original)
+        let unaffectedLight = SmartDevice(
+            id: "dev_light", name: "客厅灯", roomId: "living", roomName: "客厅",
+            model: "ha.light", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [unaffectedLight])))
+        let moreVisibleCards = store.previewDeviceCategorySelection(picked)
+        #expect(moreVisibleCards.verdict.partition.availableDeviceIds.contains(unaffectedLight.id))
+        #expect(moreVisibleCards.verdict.partition.availableDeviceIds != original.verdict.partition.availableDeviceIds)
+        review.shown = moreVisibleCards
+        #expect(!review.needsReview)
+        #expect(review.confirm(shown: original, latest: moreVisibleCards, reviewOnly: false) == .apply)
+
+        let timer = ScheduledCommand(
+            reply: "关阳台取暖器", fireDate: .distantFuture,
+            plan: IntentPlan(intents: [.init(targetId: Self.hiddenPlug.id, operation: .power(false))], reply: "", source: .local),
+            sourceScope: store.homeAssistantScopeIdentifier, sourceScopes: [store.homeAssistantScopeIdentifier]
+        )
+        store.scheduledCommands = [timer]
+        let updated = store.previewDeviceCategorySelection(picked)
+        #expect(updated.pauseItemKeys == ["waitingTimer:\(timer.id.uuidString)"])
+        #expect(updated.generation == original.generation)
+
+        review.shown = updated
+        #expect(review.needsReview)
+        #expect(review.confirm(shown: original, latest: updated, reviewOnly: false) == .refresh)
+        #expect(review.confirm(shown: updated, latest: updated, reviewOnly: false) == .refresh)
+        #expect(review.confirm(shown: updated, latest: updated, reviewOnly: true) == .reviewed)
+        #expect(review.confirm(shown: updated, latest: updated, reviewOnly: true) == .reviewed)
+        #expect(review.confirm(shown: updated, latest: updated, reviewOnly: false) == .apply)
+        #expect(store.pausedScheduledCommands.isEmpty)
+    }
 }
