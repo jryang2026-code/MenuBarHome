@@ -527,6 +527,44 @@ describe("Wave 3 · B3 Energy Settings Panel, Plug Drawer Today Cell & Settings 
     assert.equal(history.pricePerKwh, null);
   });
 
+  it("keeps energy history cleared across re-renders while the camera category is off", async () => {
+    const now = new Date();
+    const history = getScopedEnergyHistory({ connectionMode: "demo" });
+    const plug = makePlug("plug_1", "插座1", 10);
+    const camera: SmartDevice = {
+      id: "cam_1",
+      name: "门口摄像头",
+      roomId: "living",
+      roomName: "客厅",
+      model: "chuangmi.camera.ipc021",
+      isOnline: true,
+      kind: { kind: "camera" },
+    } as SmartDevice;
+    history.record([plug], new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 1, 0, 0));
+    history.record(
+      [makePlug("plug_1", "插座1", 10.5)],
+      new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 2, 0, 0),
+    );
+
+    const app = startApp();
+    app.cameraLive.setCameraCategoryEnabled(false);
+    app.devices = [makePlug("plug_1", "插座1", 10.5), camera];
+    app.openSettingsSheet("safety");
+    await setImmediate();
+    assert.equal(element("#settings-energy-today-kwh").textContent, "0.50 kWh");
+
+    await click("#btn-clear-energy-history");
+    await click("#btn-confirm-clear-energy");
+    assert.equal(element("#settings-energy-today-kwh").textContent, "—");
+
+    app.render();
+    await setImmediate();
+    app.render();
+    await setImmediate();
+    assert.equal(element("#settings-energy-today-kwh").textContent, "—");
+    assert.equal((element<HTMLButtonElement>("#btn-clear-energy-history")).disabled, true);
+  });
+
   it("skips stale snapshots, formats <0.01 kWh, and escapes HTML in ranked device/room names", async () => {
     const history = getScopedEnergyHistory({ connectionMode: "demo" });
     const now = new Date();

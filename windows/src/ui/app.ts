@@ -204,6 +204,9 @@ export class MenuMijiaWindowsApp {
   // Assigned in the constructor, after the interface language is resolved: the demo home is
   // generated per language (#52), so a field initializer would freeze the module default.
   private _devices: SmartDevice[] = [];
+  // Reading `devices` must return the same array until `_devices` or the camera flag changes, so
+  // identity checks such as the energy-history clear marker hold while cameras are filtered (#330).
+  private filteredDevicesCache: { readonly source: SmartDevice[]; readonly devices: SmartDevice[] } | null = null;
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
   public autoSafetySession: HostAutoSafetySession = createDefaultHostAutoSafetySession();
@@ -229,9 +232,14 @@ export class MenuMijiaWindowsApp {
   public lockProbeInFlight = false;
   public lastSessionFingerprint: string | null = null;
   public get devices(): SmartDevice[] {
-    return this.cameraLive?.cameraCategoryEnabled === false
-      ? this._devices.filter((device) => device.kind.kind !== "camera")
-      : this._devices;
+    if (this.cameraLive?.cameraCategoryEnabled !== false) return this._devices;
+    if (this.filteredDevicesCache?.source !== this._devices) {
+      this.filteredDevicesCache = {
+        source: this._devices,
+        devices: this._devices.filter((device) => device.kind.kind !== "camera"),
+      };
+    }
+    return this.filteredDevicesCache.devices;
   }
   public set devices(next: SmartDevice[]) {
     this._devices = next;
