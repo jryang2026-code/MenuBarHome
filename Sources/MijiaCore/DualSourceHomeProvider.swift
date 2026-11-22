@@ -169,9 +169,8 @@ private final class DisabledBackendsGate: @unchecked Sendable {
     func enableIfGenerationMatches(_ backend: HomeBackend, expectedGeneration: UInt64?) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if let expectedGeneration, (generations[backend] ?? 0) != expectedGeneration {
-            return false
-        }
+        guard let expectedGeneration else { return !disabled.contains(backend) }
+        guard (generations[backend] ?? 0) == expectedGeneration else { return false }
         disabled.remove(backend)
         return true
     }
@@ -511,6 +510,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         return disabled
     }
 
+    /// Attaching without a generation requires the backend to still be enabled.
     public func setSourceProvider(
         _ next: (any HomeProvider)?,
         for backend: HomeBackend,
@@ -518,6 +518,10 @@ public actor DualSourceHomeProvider: HomeProvider {
     ) async {
         guard !isShutDown else {
             await next?.shutdown()
+            return
+        }
+        if let next, expectedDisableGeneration == nil, disabledBackendsGate.contains(backend) {
+            await next.shutdown()
             return
         }
         let previous: (any HomeProvider)?
@@ -559,21 +563,21 @@ public actor DualSourceHomeProvider: HomeProvider {
             return
         }
         if let next {
-            guard disabledBackendsGate.enableIfGenerationMatches(backend, expectedGeneration: expectedDisableGeneration) else {
+            if !disabledBackendsGate.enableIfGenerationMatches(backend, expectedGeneration: expectedDisableGeneration) {
                 await next.shutdown()
-                return
-            }
-            if backend == .homeAssistant {
-                homeAssistant = next
             } else {
-                xiaomiCloud = next
-            }
-            if started {
-                startForwarding(next, for: backend)
-                await next.setPollingContext(pollingContext)
+                if backend == .homeAssistant {
+                    homeAssistant = next
+                } else {
+                    xiaomiCloud = next
+                }
+                if started {
+                    startForwarding(next, for: backend)
+                    await next.setPollingContext(pollingContext)
+                }
             }
         }
-        guard started else { return }
+        guard started, !isShutDown else { return }
         emitStatus(force: true)
         emitSourceStatuses()
         emitLocalNetworkPermission()
@@ -1839,6 +1843,15 @@ public actor DualSourceHomeProvider: HomeProvider {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource {
+        try await resolveCameraStream(for: device, quality: quality, channel: channel, explicitlyDisabledBackends: [])
+    }
+
+    func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        explicitlyDisabledBackends: Set<HomeBackend>
+    ) async throws -> CameraStreamSource {
         let disabled = disabledBackendsGate.snapshot()
         let activeHA = disabled.contains(.homeAssistant) ? nil : homeAssistant
         let activeMi = disabled.contains(.xiaomiCloud) ? nil : xiaomiCloud
@@ -1877,7 +1890,9 @@ public actor DualSourceHomeProvider: HomeProvider {
                 guard let activeMi else {
                     throw HomeProviderError.serviceCallFailed(
                         501,
-                        L10n.tr("未配置数据源", "No data source is configured")
+                        explicitlyDisabledBackends.contains(.xiaomiCloud)
+                            ? L10n.tr("米家已停用", "Xiaomi Home is turned off")
+                            : HomeProviderError.backendNotConfigured(.xiaomiCloud).localizedDescription
                     )
                 }
                 let source = try await activeMi.resolveCameraStream(
@@ -1895,7 +1910,9 @@ public actor DualSourceHomeProvider: HomeProvider {
             guard let activeHA else {
                 throw HomeProviderError.serviceCallFailed(
                     501,
-                    L10n.tr("未配置数据源", "No data source is configured")
+                    explicitlyDisabledBackends.contains(.homeAssistant)
+                        ? L10n.tr("Home Assistant 已停用", "Home Assistant is turned off")
+                        : HomeProviderError.backendNotConfigured(.homeAssistant).localizedDescription
                 )
             }
             let source = try await activeHA.resolveCameraStream(
