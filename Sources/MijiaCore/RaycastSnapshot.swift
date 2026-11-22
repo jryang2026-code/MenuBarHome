@@ -629,7 +629,7 @@ extension HomeStore {
         let baseVisible = devices.filter { dev in
             if hiddenDeviceIds.contains(dev.id) { return false }
             if hideOfflineDevices && !dev.isOnline { return false }
-            return true
+            return showsDeviceCategory(dev)
         }
         guard hideGroupedLights, !lightGroupOwners.isEmpty else { return baseVisible }
         let listed = Dictionary(baseVisible.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })

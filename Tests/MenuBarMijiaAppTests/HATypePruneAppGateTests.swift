@@ -67,4 +67,34 @@ struct HATypePruneAppGateTests {
 
         #expect(await mock.executedCommands.isEmpty)
     }
+
+    @Test("Panel search excludes closed device types at once, before any refresh prunes them")
+    func panelSearchExcludesClosedTypeBeforeRefresh() async throws {
+        let defaults = InMemoryUserDefaults()
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        defaults.set("http://192.168.1.60:8123", forKey: "ha_server_url")
+        defaults.set(HomeBackend.homeAssistant.rawValue, forKey: "home_backend")
+        _ = KeychainHelper.saveToken("ha-token", defaults: defaults, vault: vault)
+        let light = SmartDevice(
+            id: "dev_light", name: "客厅灯", roomId: "living", roomName: "客厅",
+            model: "ha.light", isOnline: true,
+            kind: .light(LightSpec(entityId: "light.living", isOn: true))
+        )
+        var snapshot = SynthesizedHome(devices: [light, Self.hiddenPlug])
+        snapshot.isInitialLoadComplete = true
+        let store = HomeStore(provider: MockHomeProvider(snapshot: snapshot), credentialVault: vault, defaults: defaults)
+        try await store.waitForTestSnapshot()
+        store.toastAutoDismissInterval = nil
+
+        let search = PanelSearchState()
+        search.query = Self.hiddenPlug.name
+        #expect(search.results(store: store).map(\.id) == [Self.hiddenPlug.id])
+
+        let withoutPlug = Set(DeviceCategoryID.allCases).subtracting([.plug])
+        #expect(store.applyDeviceCategorySelection(withoutPlug) == .applied)
+        #expect(search.results(store: store).isEmpty)
+
+        #expect(store.applyDeviceCategorySelection(Set(DeviceCategoryID.allCases)) == .applied)
+        #expect(search.results(store: store).map(\.id) == [Self.hiddenPlug.id])
+    }
 }
