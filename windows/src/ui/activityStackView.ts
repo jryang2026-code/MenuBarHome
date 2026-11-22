@@ -279,9 +279,12 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
 }
 
 /**
- * A home with scenes but no device cards never passes `isLiveSnapshotReadyForTelemetry`, yet a
- * scene needs no telemetry. It still needs a snapshot fetched from the current source (no pending
- * source switch) and a reachable owning backend, so a stale scene list cannot resume its rules.
+ * A home with scenes but no device cards never passes `isLiveSnapshotReadyForTelemetry`, yet
+ * activating a scene needs no device telemetry. It still needs a scene list that belongs to the
+ * current source (`timerSnapshot` marks a snapshot of this `sourceRevision`, as the telemetry and
+ * sensor-history gates read it) and a reachable backend for the scene's own connection, so a
+ * pending source switch, a failed Home Assistant connection or a dead Xiaomi session pauses the
+ * rule instead of resuming it.
  */
 function isSceneSourceAvailable(host: MenuMijiaWindowsApp, scene: HomeScene): boolean {
   const mode = host.settings.connectionMode;
