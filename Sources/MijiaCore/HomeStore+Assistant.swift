@@ -197,7 +197,7 @@ extension HomeStore {
         proactiveWorkCounters.rankings += 1
         return userHabitMemory.topSuggestions(
             for: assistantNow(),
-            devices: devices,
+            devices: categoryVisibleDevices,
             scenes: scenes,
             favoriteIds: favoriteOrder,
             environmentReadings: environmentReadings
@@ -257,7 +257,7 @@ extension HomeStore {
         let assistantContext = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
-                devices: devices,
+                devices: categoryVisibleDevices,
                 scenes: scenes,
                 context: assistantContext
             )
@@ -322,7 +322,8 @@ extension HomeStore {
         }
         let environmentSummary = envParts.joined(separator: "，")
 
-        let activeParts = devices.filter(\.isActiveDevice).map { dev in
+        let visible = categoryVisibleDevices
+        let activeParts = visible.filter(\.isActiveDevice).map { dev in
             let name = PromptText.cleanField(dev.name, limit: PromptText.nameLimit)
             let state = PromptText.cleanField(IntentCatalog.stateSummary(dev), limit: PromptText.activeStateLimit)
             return "\(name)(\(state))"
@@ -333,7 +334,7 @@ extension HomeStore {
         let habitSummary = shareHabitSentence(
             sharing: habitSharing,
             memory: userHabitMemory,
-            devices: devices,
+            devices: visible,
             scenes: scenes,
             mention: mention,
             now: now
@@ -381,7 +382,7 @@ extension HomeStore {
         defer { isProactiveRecommending = false }
 
         let controlContext = controlContextID
-        let snapshotDevices = devices
+        let snapshotDevices = categoryVisibleDevices
         let snapshotScenes = scenes
         let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let context = buildAssistantContext(mention: .none)
@@ -398,7 +399,7 @@ extension HomeStore {
                 let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
                 setAssistantState(.done(L10n.tr("\(label) 已结合室温与习惯生成建议", "\(label) generated suggestions from room climate & habits")))
             } else {
-                let fallback = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+                let fallback = userHabitMemory.topSuggestions(devices: categoryVisibleDevices, scenes: scenes, limit: 3)
                 assistantSuggestions = fallback
                 setAssistantState(.done(L10n.tr("当前居家状态已处于理想区间", "Home environment is already in an ideal range")))
             }
@@ -818,11 +819,12 @@ extension HomeStore {
         let utterance = delayed?.remainder ?? spoken
         setAssistantState(.thinking)
 
+        let catalogDevices = categoryVisibleDevices
         var plan: IntentPlan
         var habitSummary: String?
         if let local = LocalIntentParser.parse(
             utterance,
-            devices: devices,
+            devices: catalogDevices,
             scenes: scenes,
             panelRoom: panelRoom,
             usageOrder: userHabitMemory.usageOrder()
@@ -866,7 +868,7 @@ extension HomeStore {
             do {
                 plan = try await resolver.resolve(
                     utterance,
-                    devices: devices,
+                    devices: catalogDevices,
                     scenes: scenes,
                     context: context,
                     confirmation: aiConfirmationPolicy
