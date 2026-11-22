@@ -82,28 +82,47 @@ struct AutomationExecutionTests {
         func refreshNow() async { await mock.refreshNow() }
 
         func execute(_ command: DeviceCommand) async throws {
-            if case .setLightBrightness = command { await gate.sleep() }
             try await mock.execute(command)
+            if case .setLightBrightness = command { await gate.sleep() }
         }
     }
 
-    @Test("Disabling during a quick action keeps the first step and skips its pending color write")
+    @Test(
+        "Disabling during a quick action keeps the first step and respects a manual power-off",
+        arguments: [false, true]
+    )
     @MainActor
-    func stopsRemainingQuickActionSteps() async throws {
+    func stopsRemainingQuickActionSteps(manuallyTurnOff: Bool) async throws {
         var light = Self.studyLight
         light.kind = .light(LightSpec(entityId: "light.study", isOn: true, brightnessPercent: 80, colorTempKelvin: 4000))
         let gate = ScheduledCommandTestSupport.SleepGate()
         let mock = MockHomeProvider(snapshot: .init(devices: [light]))
         let store = HomeStore(provider: HeldWriteProvider(mock: mock, gate: gate),
                               defaultsSuiteName: "test.automation.quick.\(UUID().uuidString)")
+        defer { store.stop() }
         try await store.waitForTestSnapshot()
         let task = try #require(store.runAutomationQuickAction(.softNightLight))
         store.pauseUndoBannerCountdown()
         try await awaitState { gate.waiting == 1 }
+        var expectedCommands: [DeviceCommand] = [.setLightBrightness(entityId: "light.study", percent: 15)]
+        if manuallyTurnOff {
+            let toggle = try #require(store.togglePrimary(light))
+            #expect(await toggle.value)
+            #expect(store.devices.first?.isActiveOn == false)
+            expectedCommands.append(.setLightPower(entityId: "light.study", isOn: false))
+        }
         #expect(store.setEventAutomationEnabled(false))
         gate.release()
         #expect(await task.value == .partial)
-        #expect(await mock.executedCommands == [.setLightBrightness(entityId: "light.study", percent: 15)])
+        #expect(await mock.executedCommands == expectedCommands)
+        let currentLight = try #require(store.devices.first)
+        guard case .light(let spec) = currentLight.kind else {
+            Issue.record("Expected a light device")
+            return
+        }
+        #expect(spec.isOn == !manuallyTurnOff)
+        #expect(spec.brightnessPercent == 15)
+        #expect(spec.colorTempKelvin == 4000)
         #expect(store.undoBanner?.restoreCommands == [.setLightBrightness(entityId: "light.study", percent: 80)])
     }
 

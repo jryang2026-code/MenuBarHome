@@ -29,6 +29,7 @@ interface DeviceTypeSelectionSession {
   /** What the user is looking at; `null` means "mirror the stored selection". */
   mode: DeviceCategorySelectionMode | null;
   customCategories: readonly DeviceCategoryID[] | null;
+  shownGeneration: string | null;
   error: string | null;
   status: string | null;
   /** Set when a change was written and references were paused, so the next render says so. */
@@ -44,7 +45,7 @@ export function clearDeviceTypeSelectionSession(host: object): void {
 function getSession(host: object): DeviceTypeSelectionSession {
   let session = sessionByHost.get(host);
   if (!session) {
-    session = { mode: null, customCategories: null, error: null, status: null, appliedNow: false };
+    session = { mode: null, customCategories: null, shownGeneration: null, error: null, status: null, appliedNow: false };
     sessionByHost.set(host, session);
   }
   return session;
@@ -102,6 +103,7 @@ function storeFor(host: DeviceTypeSelectionHost): ScheduledCommandStore {
 export function deviceTypeSelectionPreview(
   host: DeviceTypeSelectionHost,
   proposedCategories: readonly DeviceCategoryID[],
+  expectedGeneration?: string,
 ): DeviceTypeSelectionPreview {
   const context = buildHostCapabilityContext(host as unknown as Parameters<typeof buildHostCapabilityContext>[0]);
   const prune = hostMiotTypePruneOptions(host as unknown as Parameters<typeof hostMiotTypePruneOptions>[0]);
@@ -121,6 +123,7 @@ export function deviceTypeSelectionPreview(
     ruleStore: ruleStoreFor(host),
     safetyPolicy: { enabledSignals: prune.safetySignals, starredDeviceIds: prune.starredDeviceIds },
     preferences,
+    ...(expectedGeneration !== undefined ? { expectedGeneration } : {}),
     languagePreference: host.settings.interfaceLanguage,
   });
 }
@@ -261,6 +264,7 @@ export function renderDeviceTypeSelectionSection(
   const draft = deviceTypeSelectionDraft(host);
   const counts = countByCategory(host.devices ?? []);
   const preview = draft.isDirty ? deviceTypeSelectionPreview(host, draft.categories) : null;
+  session.shownGeneration = preview?.generation ?? null;
   const canApply = preview === null || preview.verdict.canDeactivate;
   const heading = options.heading ?? tr3("设备类型", "裝置類型", "Device Types", lang);
   const modeLabel = (mode: DeviceCategorySelectionMode): string => deviceCategorySelectionModeLabel(mode, lang);
@@ -345,6 +349,7 @@ export function renderDeviceTypeSelectionSection(
 /** Focuses the first match, and says whether it found one, so a caller can fall back. */
 /** Ends the transient state of the last action so the next one starts clean. */
 function clearTransient(session: DeviceTypeSelectionSession): void {
+  session.shownGeneration = null;
   session.error = null;
   session.status = null;
   session.appliedNow = false;
@@ -356,7 +361,7 @@ function focusAfterRender(host: DeviceTypeSelectionHost, selector: string): bool
   return target !== null;
 }
 
-export type DeviceTypeSelectionApplyStatus = "applied" | "blocked" | "saveFailed" | "pauseFailed";
+export type DeviceTypeSelectionApplyStatus = "applied" | "blocked" | "stalePreview" | "saveFailed" | "pauseFailed";
 
 export interface DeviceTypeSelectionApplyOutcome {
   readonly status: DeviceTypeSelectionApplyStatus;
@@ -393,8 +398,17 @@ export function applyDeviceTypeSelection(host: DeviceTypeSelectionHost): DeviceT
   const session = getSession(host);
   const draft = deviceTypeSelectionDraft(host);
   const previous = appliedDeviceCategories(host);
-  const preview = deviceTypeSelectionPreview(host, draft.categories);
+  const preview = deviceTypeSelectionPreview(host, draft.categories, session.shownGeneration ?? "");
   clearTransient(session);
+  if (preview.verdict.blockingReasons.some((reason) => reason.kind === "stalePreviewGeneration")) {
+    session.error = tr3(
+      "设备类型的影响刚刚发生变化，请查看更新后的预览并重新确认。",
+      "裝置類型的影響剛剛發生變化，請查看更新後的預覽並重新確認。",
+      "The impact of changing device types has changed. Review the updated preview and confirm again.",
+      lang,
+    );
+    return { status: "stalePreview", preview };
+  }
   if (!preview.verdict.canDeactivate) {
     session.error = tr3(
       "还无法更改设备类型：请先处理被阻塞的引用。",
@@ -565,7 +579,7 @@ export function bindDeviceTypeSelectionEvents(host: DeviceTypeSelectionHost): vo
   root.querySelector("[data-device-type-apply]")?.addEventListener("click", () => {
     const outcome = applyDeviceTypeSelection(host);
     host.render();
-    if (outcome.status === "saveFailed" || outcome.status === "pauseFailed" || outcome.status === "blocked") {
+    if (outcome.status !== "applied") {
       focusAfterRender(host, "[data-device-type-error]");
       return;
     }

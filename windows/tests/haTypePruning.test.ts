@@ -7,6 +7,7 @@ import {
   type CapabilityIndexedDevice, type CapabilitySelection, type SafetySignalKind,
 } from "../src/core/capabilityReferenceVerdict.js";
 import { DEVICE_CATEGORY_IDS, type DeviceCategoryID } from "../src/core/capabilityManifest.js";
+import { DualSourceCoordinator } from "../src/core/dualSourceProvider.js";
 import { HomeAssistantSynthesizer } from "../src/core/homeAssistant.js";
 import {
   buildHaTypePrunePlan, haAuxiliarySafetySignals, haSafetySignalsForDevice, haTypePruningActive,
@@ -16,10 +17,12 @@ import { safetySignalsForPrefs, safetySignalsForSensorPolicy } from "../src/core
 import { createDefaultSensorAlertPolicy } from "../src/core/safetyAndHealth.js";
 import {
   buildIndexedCapabilityDevices, evaluateDisabledDeviceUrlGate, evaluateDeviceEntityWriteGate,
-  evaluateIntentsWriteGate, resolveMiAccountSelectionState,
+  evaluateIntentsWriteGate, previewDeviceCategorySelection, resolveMiAccountSelectionState,
 } from "../src/core/miAccountControl.js";
+import { AutomationRuleStore } from "../src/core/automationEngine.js";
+import { ScheduledCommandStore } from "../src/core/scheduledCommands.js";
 import {
-  applyHaTypePruneSnapshot, haTypePruneSnapshotIsCurrent, hiddenTypeDevices,
+  applyHaTypePruneSnapshot, buildHostCapabilityContext, haTypePruneSnapshotIsCurrent, hiddenTypeDevices,
   safetyRetainedHADeviceFacets, safetyRetainedHADevices,
 } from "../src/ui/cloudRefresh.js";
 import type { SmartDevice } from "../src/core/models.js";
@@ -183,6 +186,36 @@ describe("Home Assistant device-type pruning (P3b-W)", () => {
     // Consecutive switches are independent, and with no alert on nothing is kept.
     assert.deepEqual(splitWith(["light"], ["smoke"]).safetyDevices.map((device) => device.id), ["d-smoke"]);
     assert.deepEqual(splitWith(["light"], []).safetyDevices, []);
+  });
+
+  it("previews the auxiliary gas alarm retained by the prune plan, including a merged card", async () => {
+    const host = {
+      settings: { haBaseURL: HA_URL, haToken: HA_TOKEN, connectionMode: "homeAssistant" },
+      devices: cards, haTypePruneScope: null, haTypeSafetySignals: {},
+    };
+    applyHaTypePruneSnapshot(host, { scope: SCOPE, safetySignalsByDeviceId: unpruned.safetySignalsByDeviceId });
+    const storage = memoryStorage();
+    const previewFor = (context: ReturnType<typeof buildHostCapabilityContext>) => previewDeviceCategorySelection({
+      context, proposedCategories: ["light"],
+      scheduledCommandStore: new ScheduledCommandStore(storage), activeTimerIdentity: null,
+      ruleStore: new AutomationRuleStore(storage), safetyPolicy: { enabledSignals: ["gas"] },
+    });
+    const preview = previewFor(buildHostCapabilityContext(host));
+    assert.deepEqual(preview.retainedSafetyCards.map((device) => device.id), ["d-gas"]);
+    assert.deepEqual(preview.retainedSafetyCards.map((device) => device.id), splitWith(["light"], ["gas"]).safetyDevices.map((device) => device.id));
+    assert.deepEqual(preview.retainedSafetySignals, ["gas"]);
+
+    const coordinator = new DualSourceCoordinator(null);
+    coordinator.canonical.assign("merged-gas", ["ha:d-gas"]);
+    const { merged } = await coordinator.refreshParallel({
+      fetchHA: async () => ({ home: unpruned.home }), fetchMi: async () => null,
+    });
+    const mergedPreview = previewFor(buildHostCapabilityContext({
+      ...host, devices: merged.home.devices, dualSourceCoordinator: coordinator,
+      settings: { ...host.settings, dualSourceEnabled: true, miSession: { userId: "account", region: "cn" } },
+    }, []));
+    assert.deepEqual(mergedPreview.retainedSafetyCards.map((device) => device.id), ["merged-gas"]);
+    assert.deepEqual(mergedPreview.retainedSafetySignals, ["gas"]);
   });
 
   it("reads the shared 安全与提醒 switches, with the sensor alerts outside the master switch", () => {

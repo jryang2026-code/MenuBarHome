@@ -215,6 +215,7 @@ export interface DeviceTypeSelectionCard {
 }
 
 export interface DeviceTypeSelectionPreview {
+  readonly generation: string;
   readonly currentCategories: readonly DeviceCategoryID[];
   readonly proposedCategories: readonly DeviceCategoryID[];
   /** Cards drawn today that this selection hides. */
