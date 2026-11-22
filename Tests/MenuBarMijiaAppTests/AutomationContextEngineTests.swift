@@ -438,11 +438,11 @@ struct AutomationContextEngineTests {
         let defaults = InMemoryUserDefaults()
         let rule = AutomationRule(
             trigger: .calendarMeetingStartingSoon,
-            action: .devices(ids: [Self.lightId], isOn: false),
+            action: .scene(sceneId: Self.workScene.id),
             triggerOptions: AutomationTriggerOptions(calendarLeadMinutes: 5)
         )
         AutomationRuleStore(defaults: defaults).save([rule])
-        let (store, mock) = try await makeStore()
+        let (store, mock) = try await makeStore(scenes: [Self.workScene])
         defer { store.stop() }
         let resumedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let provider = FakeMacContextProvider()
@@ -476,7 +476,15 @@ struct AutomationContextEngineTests {
             MacContextSnapshot(meetings: [dueAtResume, addedLater]),
             at: resumedAt.addingTimeInterval(60)
         )
-        #expect(await mock.executedCommands == [offCommand()])
+        let command = DeviceCommand.activateScene(entityId: Self.workScene.entityId)
+        #expect(await mock.executedCommands == [command])
+
+        let nextDay = resumedAt.addingTimeInterval(24 * 60 * 60)
+        var nextOccurrence = dueAtResume
+        nextOccurrence.startDate = nextDay.addingTimeInterval(3 * 60)
+        nextOccurrence.endDate = nextDay.addingTimeInterval(30 * 60)
+        await provider.emit(MacContextSnapshot(meetings: [nextOccurrence]), at: nextDay)
+        #expect(await mock.executedCommands == [command, command])
         withExtendedLifetime(engine) {}
     }
 
