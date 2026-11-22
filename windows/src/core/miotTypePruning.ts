@@ -264,6 +264,23 @@ function unprunedSelection(connectionScope: string): CapabilitySelection {
 }
 
 /**
+ * Whether this round draws none of one type's cards for one Mi scope. A scope that is unknown,
+ * still migrating or fully enabled prunes nothing, so every type counts as drawn there — the same
+ * fail-closed rule the read plan follows.
+ */
+export function miotRoundClosesCategory(
+  selection: CapabilitySelection,
+  connectionScope: string,
+  category: DeviceCategoryID,
+): boolean {
+  const prunes =
+    selection.enabledConnections.includes("xiaomi-cloud") &&
+    selection.enabledConnectionScopes.includes(connectionScope) &&
+    !DEVICE_CATEGORY_IDS.every((id) => selection.enabledCategories.includes(id));
+  return prunes && !selection.enabledCategories.includes(category);
+}
+
+/**
  * Splits one account's raw Mi records into the cards to synthesize, the safety signals a closed
  * category must keep, and the records to skip entirely — and returns the single read plan for the
  * round, so LAN/cloud batching, dual source and multi-account all poll the same keys.

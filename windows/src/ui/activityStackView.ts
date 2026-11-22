@@ -226,8 +226,9 @@ function safetyEvaluationDevices(host: MenuMijiaWindowsApp, cards: readonly Smar
     ...(host.safetyRetainedDevices ?? []),
     ...safetyRetainedHADevices(host),
   ].filter((device) => retainedIds.has(device.id));
+  const prefs = host.layout ?? host.settings?.layout;
   return {
-    devices: [...cards, ...retained],
+    devices: [...cards, ...(prefs ? withAliases(prefs, retained) : retained)],
     facets: {
       ...host.deviceFacets,
       ...(host.safetyRetainedDeviceFacets ?? {}),

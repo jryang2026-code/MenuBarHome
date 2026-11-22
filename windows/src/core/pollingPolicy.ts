@@ -152,6 +152,12 @@ interface CachedXiaomiTopology {
   readonly rooms: readonly MiRoom[];
   readonly specs: Readonly<Record<string, MiotDeviceSpec>>;
   readonly membersByGroup: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Set when this round skipped the light-group query because the `light` type was off, so the
+   * empty `membersByGroup` is a decision rather than a discovery. Re-enabling the type must not
+   * reuse it, or the group cards stay unfolded until the next full discovery.
+   */
+  readonly skippedLightGroupMembers?: boolean;
 }
 
 interface HostXiaomiPollState {
@@ -183,6 +189,9 @@ function ensureHostPollState(host: object): HostXiaomiPollState {
  * Returns the cached topology when a background silent poll (`silent === true`) is within rounds 1..19
  * of the last full discovery for the exact same session, source revision, and selected home.
  * Returns `null` on manual refreshes, initial load, home/session switch, or every 20th poll.
+ *
+ * `lightGroupMembersNeeded` is false while the `light` type is off: a round that skipped the group
+ * query cached empty membership, and it must not stand in once the type is back.
  */
 export function takeCachedXiaomiTopologyForPoll(
   host: object,
@@ -190,12 +199,14 @@ export function takeCachedXiaomiTopologyForPoll(
   sourceRevision: number,
   selectedHomeId: string | null,
   silent: boolean,
+  lightGroupMembersNeeded = true,
   everyPolls: number = PollingPolicy.deviceRefreshEveryPolls,
 ): CachedXiaomiTopology | null {
   if (!silent) return null;
   const state = hostPollStates.get(host);
   if (!state || !state.topology) return null;
   const cached = state.topology;
+  if (cached.skippedLightGroupMembers === true && lightGroupMembersNeeded) return null;
   if (
     cached.allDevices.length === 0 ||
     cached.rawDevices.length === 0 ||
