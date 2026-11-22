@@ -8,8 +8,8 @@ import Foundation
 /// low-risk set stays closed until the user allows advanced facet writes.
 public enum HAFacetEngine {
     /// `switch.*`, `select.*`, `number.*`, `button.*`, `sensor.*` and `binary_sensor.*` entities
-    /// that survived `claimed` and the registry's disabled/hidden filters. `text.*` and every
-    /// domain handled by a primary card stay out.
+    /// that survived `claimed` and the registry's disabled/hidden filters, plus unclaimed
+    /// `fan.*` entities as power toggles on other device types.
     public static func controls(
         entities: [HAEntityEntry],
         states: [String: HAEntityState],
@@ -46,7 +46,9 @@ public enum HAFacetEngine {
         // fallback for YAML entities and older integrations.
         let semantic = entity.translation_key?.trimmingCharacters(in: .whitespacesAndNewlines)
         let rawName = (semantic?.isEmpty == false ? semantic! : objectId)
-        let name = rawName.replacingOccurrences(of: "_", with: "-")
+        let isSecondaryFan = if case .fan = device.kind { false } else { domain == "fan" }
+        // Use the shared low-risk power name for a secondary fan, as on Windows.
+        let name = isSecondaryFan ? "on" : rawName.replacingOccurrences(of: "_", with: "-")
         let objectName = objectId.replacingOccurrences(of: "_", with: "-")
         let category = entity.entity_category?.lowercased()
         // Config entities are device plumbing (reboot, calibration), never drawer controls.
@@ -55,7 +57,7 @@ public enum HAFacetEngine {
               !MiotFacetEngine.matches(objectName, anyOf: profiles.noise.properties) else { return nil }
 
         let stateLower = state.state.lowercased()
-        let writable = ["switch", "select", "number", "button"].contains(domain)
+        let writable = ["switch", "select", "number", "button"].contains(domain) || isSecondaryFan
         guard writable || domain == "sensor" || domain == "binary_sensor" else { return nil }
         // A diagnostic switch or button is plumbing too; diagnostic readings such as battery or
         // signal strength remain useful.
@@ -106,7 +108,7 @@ public enum HAFacetEngine {
         }
 
         switch domain {
-        case "switch":
+        case "switch", "fan":
             let isOn: Bool
             switch stateLower {
             case "on": isOn = true

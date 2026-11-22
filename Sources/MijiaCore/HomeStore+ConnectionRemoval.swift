@@ -49,20 +49,28 @@ extension HomeStore {
     /// Connections the record meant to remove must be removed again by the user.
     @discardableResult
     public func discardCorruptConnectionRemovalRecord() -> Bool {
+        discardCorruptConnectionRemovalRecord(quarantineDirectory: nil)
+    }
+
+    func discardCorruptConnectionRemovalRecord(quarantineDirectory: URL?) -> Bool {
         syncPendingConnectionRemovals()
         guard canDiscardCorruptConnectionRemovalRecord else { return false }
-        guard ConnectionRemovalStore.discardCorruptPayload(defaults: userDefaults) else {
+        guard ConnectionRemovalStore.discardCorruptPayload(defaults: userDefaults, quarantineDirectory: quarantineDirectory) else {
             showToast(L10n.tr("无法放弃损坏的移除记录，请稍后重试", "Could not discard the damaged removal record; try again later"), isError: true)
             return false
         }
         syncPendingConnectionRemovals()
-        return retryIdentityMigration()
+        return retryIdentityMigration(migrateLegacyMiEnvelope: false)
     }
 
-    func loadActiveMiAccounts() -> [MiAccount] {
+    func loadActiveMiAccounts(migrateLegacyMiEnvelope: Bool = true) -> [MiAccount] {
         guard !hasCorruptConnectionRemovalState else { return [] }
         let blocked = pendingMiRemovalScopes
-        let loaded = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        let loaded = MiSessionStore.loadAccountsResult(
+            defaults: userDefaults,
+            vault: credentialVault,
+            migrateLegacyEnvelope: migrateLegacyMiEnvelope
+        ).accounts
         return blocked.isEmpty ? loaded : loaded.filter { !blocked.contains($0.id) }
     }
 

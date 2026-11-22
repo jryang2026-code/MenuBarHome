@@ -1143,6 +1143,14 @@ public final class HomeStore {
                     self.automationAvailabilityDidChange()
                 }
             }
+            if oldValue.enabledCategories.contains(.tv) != capabilitySelection.enabledCategories.contains(.tv),
+               let lgDev = latestLGDevice {
+                // Restoring a card the type toggle hid keeps the user's favorite choice.
+                applyLGDeviceUpdate(lgDev, favoritesNewCard: false)
+            }
+            if oldValue.enabledCategories != capabilitySelection.enabledCategories {
+                scheduleRaycastSnapshotExport()
+            }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
             // The cards are still in `devices` here; the next refresh prunes them, so the stop requests
@@ -1488,8 +1496,8 @@ public final class HomeStore {
 
     /// Re-reads the stored accounts (a login, a removal or a sign-out changed them) and rebuilds the
     /// provider around the enabled list.
-    func makeMiAccountsProvider() -> MiAccountsProvider {
-        miAccounts = loadActiveMiAccounts()
+    func makeMiAccountsProvider(migrateLegacyMiEnvelope: Bool = true) -> MiAccountsProvider {
+        miAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
         let enabled = enabledMiAccounts
         activeMiProviderAccounts = enabled
         if let factory = miAccountsProviderFactory {
