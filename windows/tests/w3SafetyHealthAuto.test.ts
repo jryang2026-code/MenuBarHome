@@ -625,7 +625,7 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
         turnOffCommand: { kind: "setSwitch", entityId: "switch.p.hidden", isOn: false },
       },
     ]);
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     // The alert-only device is not a card, so the plug/climate lookup must still find it; otherwise
     // its long-run alert reads as a climate rule and survives a plug switch that is now off.
     const master = element("#settings-safety-master") as HTMLInputElement;
@@ -689,6 +689,7 @@ describe("B9 Single-Owner Lifecycle, Lock-Screen Interception & Activity Stack U
 
   it("enforces single-owner lifecycle: caps at 10 deduped alerts, keeps urgent long-run cards item-by-item, wakes dismissed alerts on recurrence, cleans orphans, and clears on home/backend switch", async () => {
     const app = createCloudApp();
+    app.settings.panelTheme = "fluent";
     const devices = Array.from({ length: 12 }, (_, idx) =>
       makePlug({ id: `p.${idx}`, name: `插座${idx}`, powerWatts: 800 }),
     );

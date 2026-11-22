@@ -1,5 +1,6 @@
 import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "../core/capabilityManifest.js";
 import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
+import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
@@ -62,12 +63,14 @@ import {
   parsePanelPlacement,
   resolveAppearance,
   resolvedSize,
+  roomDisplayName,
   scopedKey,
   spans,
   withAliases,
   type HomeOption,
 } from "./panelPrefs.js";
-import { normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
+import { getPanelThemeProfile, normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
+import { formatTemperatureValue } from "../core/temperature.js";
 import {
   t,
 } from "../core/i18n.js";
@@ -82,7 +85,7 @@ import {
 } from "./listCut.js";
 
 import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
-import { SF_ICONS } from "./appConstants.js";
+import { SF_ICONS, STORAGE_KEY } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { evaluateLegacyOnboardingMigration, loadSettings } from "./settings.js";
@@ -94,6 +97,7 @@ import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
   releaseActivityWindowLifecycle,
+  setEventAutomationRunning,
   type HostActivityCenter,
 } from "./activityStackView.js";
 import {
@@ -118,7 +122,7 @@ import {
   syncSensorHistoryHost,
   type SensorHistoryUiState,
 } from "./sensorHistoryView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncTimerLoopSchedule } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncAutomationLifecycle, syncTimerLoopSchedule } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
@@ -142,10 +146,10 @@ import {
 } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.js";
-import { type SettingsTab } from "./settingsViews.js";
+import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
-  bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
-  rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
+  bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, hasPendingMiVaultDeletion, isInsideScheduledTimerTick, isUndoHoverPaused,
+  rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, setRaycastIntegrationEnabled, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
 import { focusPanelOnActivate } from "./panelKeyboard.js";
@@ -160,8 +164,8 @@ import {
   type PanelPrioritySnapshot,
 } from "./panelSplitTiles.js";
 
-import { ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { scheduledCommandIdentity } from "./scheduledCommands.js";
+import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
+import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -403,6 +407,7 @@ export class MenuMijiaWindowsApp {
       }) => boolean)
     | null = null;
   public isShowingAssistantBar = true;
+  public readonly isStandaloneSettingsWindow: boolean = false;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
   /** Open Settings category (#78); a re-render keeps it, `openSettingsSheet(tab)` routes it. */
   public settingsTab: SettingsTab = "general";
@@ -613,6 +618,24 @@ export class MenuMijiaWindowsApp {
     this.deviceFacets = this.settings.connectionMode === "homeAssistant"
       ? structuredClone(haCache?.deviceFacets ?? {})
       : {};
+    const searchParams =
+      typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
+    const tauriWinMode =
+      typeof window !== "undefined"
+        ? (window as unknown as { __MENUMIJIA_WINDOW_MODE__?: string }).__MENUMIJIA_WINDOW_MODE__
+        : undefined;
+    this.isStandaloneSettingsWindow =
+      searchParams?.get("window") === "settings" || tauriWinMode === "settings";
+    if (this.isStandaloneSettingsWindow) {
+      const rawTab =
+        searchParams?.get("tab") ??
+        (typeof window !== "undefined"
+          ? (window as unknown as { __MENUMIJIA_SETTINGS_TAB__?: string }).__MENUMIJIA_SETTINGS_TAB__
+          : undefined);
+      this.activeSheet = "settings";
+      this.settingsTab = normalizeSettingsTab(rawTab);
+      this.root.ownerDocument?.documentElement?.classList.add("is-settings-window");
+    }
     const migration = evaluateLegacyOnboardingMigration(this.loadedSettings);
     if (migration.identityReadFailure) {
       this.identityMigrationDiagnostic = migration.identityReadFailure;
@@ -621,7 +644,7 @@ export class MenuMijiaWindowsApp {
         summary: "Settings read failed during legacy identity migration; falling back without sealing.",
       });
     }
-    if (migration.shouldShowOnboarding) {
+    if (!this.isStandaloneSettingsWindow && migration.shouldShowOnboarding) {
       this.activeSheet = "onboarding";
     }
     this.initializeCredentials();
@@ -641,19 +664,53 @@ export class MenuMijiaWindowsApp {
         syncHaDisconnectRowOnHost(this);
       }
     });
+    const onSelectSettingsTab = (event: Event) => {
+      if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
+      const detail = (event as CustomEvent<{ tab?: unknown } | undefined>).detail;
+      this.activeSheet = "settings";
+      this.settingsTab = normalizeSettingsTab(detail?.tab);
+      this.render();
+    };
+    const onCrossWindowSettingsSync = (event?: Event) => {
+      if (!this.root.isConnected) return;
+      const storageKey = event && "key" in event ? (event as StorageEvent).key : null;
+      if (storageKey === SCHEDULED_COMMANDS_STORAGE_KEY) {
+        this.scheduledCommandStore.reloadFromStorage();
+        this.render();
+        return;
+      }
+      if (storageKey && storageKey !== STORAGE_KEY) {
+        return;
+      }
+      this.syncFromPersistedStorage();
+    };
+    const onRequestCloseSettings = () => {
+      if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
+      this.requestCloseSettingsSheet();
+    };
+    window.addEventListener("menumijia:select-settings-tab", onSelectSettingsTab);
+    window.addEventListener("menumijia:settings-sync", onCrossWindowSettingsSync);
+    window.addEventListener("menumijia:request-close-settings", onRequestCloseSettings);
+    window.addEventListener("storage", onCrossWindowSettingsSync);
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
+      () => window.removeEventListener("menumijia:select-settings-tab", onSelectSettingsTab),
+      () => window.removeEventListener("menumijia:settings-sync", onCrossWindowSettingsSync),
+      () => window.removeEventListener("menumijia:request-close-settings", onRequestCloseSettings),
+      () => window.removeEventListener("storage", onCrossWindowSettingsSync),
       unsubscribeHaLifecycle,
       () => undoTrackerFor(this).dispose(),
     );
     this.bindLayoutGestures();
-    this.bindPanelDrag();
-    this.bindOpenAnimation();
+    if (!this.isStandaloneSettingsWindow) {
+      this.bindPanelDrag();
+      this.bindOpenAnimation();
+    }
     const onOpenUpdate = () => {
       this.openSettingsSheet();
     };
     const onActivate = () => {
-      if (!this.root.isConnected) return;
+      if (!this.root.isConnected || this.isStandaloneSettingsWindow) return;
       focusPanelOnActivate(this);
     };
     window.addEventListener("menumijia:open-update", onOpenUpdate);
@@ -662,15 +719,22 @@ export class MenuMijiaWindowsApp {
       () => window.removeEventListener("menumijia:open-update", onOpenUpdate),
       () => window.removeEventListener("menumijia:activate", onActivate),
     );
-    this.applyPanelHeight();
-    this.syncPanelPlacement();
-    void this.applyGlobalHotkey();
+    if (!this.isStandaloneSettingsWindow) {
+      this.applyPanelHeight();
+      this.syncPanelPlacement();
+      void this.applyGlobalHotkey();
+      this.startTimerLoop();
+    }
     this.bindLifecycleRecovery();
-    this.startTimerLoop();
     this.restoreUpdateState();
     this.render();
 
-    if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession && !primaryDisabledOnly) {
+    if (
+      !this.isStandaloneSettingsWindow &&
+      this.settings.connectionMode === "xiaomiCloud" &&
+      this.settings.miSession &&
+      !primaryDisabledOnly
+    ) {
       void this.refreshDevices();
     }
     // At most one GitHub request per local day, and never before first-run onboarding finishes (#39).
@@ -679,8 +743,123 @@ export class MenuMijiaWindowsApp {
     }
   }
 
-  private initializeCredentials(): void {
-    initializeCredentials(this);
+  private syncFromPersistedStorage(): void {
+    const reloaded = loadSettings();
+    if (reloaded.settingsReadError) return;
+    const prevMode = this.settings.connectionMode;
+    const prevTheme = this.settings.panelTheme;
+    const prevHeight = this.settings.panelHeight;
+    const prevHaBaseURL = this.settings.haBaseURL;
+    const prevAssistantBaseURL = this.settings.assistantBaseURL;
+    const prevMiSession = this.settings.miSession;
+    const prevMiUserId = prevMiSession?.userId ?? null;
+    const prevMiRegion = this.settings.miCloudRegion;
+    const prevSelectedHomeId = this.settings.selectedHomeId;
+    const prevHaToken = this.settings.haToken;
+    const prevOpenRouterApiKey = this.settings.openRouterApiKey;
+    const prevAssistantKeysByPreset = { ...this.assistantKeysByPreset };
+    const prevEventAutomation = isEventAutomationEnabled(this.settings);
+    const prevScheduledCommands = isScheduledCommandsEnabled(this.settings);
+    const prevRaycastIntegration = this.settings.enableRaycastIntegration;
+    const sourceIdentityChanged =
+      prevMode !== reloaded.settings.connectionMode ||
+      prevHaBaseURL.trim() !== reloaded.settings.haBaseURL.trim() ||
+      prevMiRegion !== reloaded.settings.miCloudRegion ||
+      (prevMiUserId !== null && hasPendingMiVaultDeletion());
+    if (!this.isStandaloneSettingsWindow) {
+      if (sourceIdentityChanged) {
+        switchSource(this, "settings-sync-source-changed");
+      } else if (prevSelectedHomeId !== reloaded.settings.selectedHomeId) {
+        switchHome(this);
+      }
+    }
+    this.loadedSettings = reloaded;
+    this.settings = reloaded.settings;
+    // `writeSettingsForStorage` strips credential secrets from localStorage, so keep live
+    // in-memory credentials intact across cross-window sync (unless sign-out/revocation
+    // cleared them) while re-hydrating authoritatively from CredentialVault below.
+    if (
+      !hasPendingMiVaultDeletion() &&
+      !(prevMode === "xiaomiCloud" && this.settings.connectionMode === "demo" && this.settings.cachedXiaomiDevices.length === 0) &&
+      prevMiSession
+    ) {
+      this.settings.miSession = prevMiSession;
+    }
+    if (this.settings.haBaseURL.trim() !== "" && this.settings.haBaseURL === prevHaBaseURL && prevHaToken !== "") {
+      this.settings.haToken = prevHaToken;
+    }
+    if (this.settings.assistantKeyEndpoint === null && this.settings.assistantCustomKeyEndpoint === null) {
+      this.assistantKeysByPreset = {};
+    } else if (this.settings.assistantBaseURL === prevAssistantBaseURL) {
+      if (prevOpenRouterApiKey !== "") this.settings.openRouterApiKey = prevOpenRouterApiKey;
+      this.assistantKeysByPreset = { ...prevAssistantKeysByPreset, ...this.assistantKeysByPreset };
+    }
+    this.applyInterfaceLanguage();
+    this.applyTemperatureSetting();
+    this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
+    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
+      this.devices = this.demoDevicesForEnabledTypes();
+      this.scenes = demoScenes();
+    } else if (
+      prevMode !== this.settings.connectionMode ||
+      prevHaBaseURL.trim() !== this.settings.haBaseURL.trim() ||
+      prevMiRegion !== this.settings.miCloudRegion
+    ) {
+      if (this.settings.connectionMode === "xiaomiCloud" && this.settings.miSession) {
+        this.devices =
+          prevMiRegion !== this.settings.miCloudRegion
+            ? []
+            : structuredClone(this.settings.cachedXiaomiDevices);
+        if (!this.isStandaloneSettingsWindow) void this.refreshDevices(true);
+      } else if (this.settings.connectionMode === "homeAssistant") {
+        const haCache = haCacheIfEnabled(this, { requireIdentityMatch: true })?.home ?? null;
+        this.devices = structuredClone(haCache?.devices ?? []);
+        this.scenes = structuredClone(haCache?.scenes ?? []);
+        this.environmentReadings = structuredClone(haCache?.environmentReadings ?? []);
+        this.deviceFacets = structuredClone(haCache?.deviceFacets ?? {});
+        if (!this.isStandaloneSettingsWindow && isHostHaEnabled(this)) {
+          void this.refreshHADevices(true);
+        }
+      }
+    }
+    this.initializeCredentials({ overwriteExisting: true });
+    if (!this.isStandaloneSettingsWindow) {
+      if (prevTheme !== this.settings.panelTheme || prevHeight !== this.settings.panelHeight) {
+        this.lastAppliedPanelHeightKey = null;
+        this.syncPanelGeometry();
+      }
+      this.syncPanelPlacement();
+      void this.applyGlobalHotkey();
+      const nextEventAutomation = isEventAutomationEnabled(this.settings);
+      if (nextEventAutomation !== prevEventAutomation) {
+        this.settings.eventAutomationEnabled = prevEventAutomation;
+        if (!setEventAutomationRunning(this, nextEventAutomation)) {
+          this.saveSettings();
+        }
+      }
+      const nextScheduledCommands = isScheduledCommandsEnabled(this.settings);
+      if (nextScheduledCommands !== prevScheduledCommands) {
+        this.scheduledCommandStore.reloadFromStorage();
+        this.settings.scheduledCommandsEnabled = prevScheduledCommands;
+        if (!setScheduledCommandsRunning(this, nextScheduledCommands)) {
+          this.saveSettings();
+        }
+      }
+      if (this.settings.enableRaycastIntegration !== prevRaycastIntegration) {
+        const nextRaycast = this.settings.enableRaycastIntegration;
+        this.settings.enableRaycastIntegration = prevRaycastIntegration;
+        setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
+      }
+      syncAutomationLifecycle(this);
+      if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
+        this.submitServiceEndpoints(true);
+      }
+    }
+    this.render();
+  }
+
+  private initializeCredentials(options?: { readonly overwriteExisting?: boolean }): void {
+    initializeCredentials(this, options);
   }
 
   public retryIdentityMigration(): Promise<void> {
@@ -925,7 +1104,28 @@ export class MenuMijiaWindowsApp {
     return `<span class="cc-filter-sep" aria-hidden="true"></span>${buttons}`;
   }
 
-  private allOffButtonText(count: number): string {
+  public allOffHelperText(): string {
+    const targets = this.allOffTargets;
+    if (targets.length === 0) return "";
+    const targetIds = new Set(targets.map((d) => d.id));
+    const visibleActive = this.filteredDevices.filter((d) => isActiveDevice(d));
+    const excluded = visibleActive.filter((d) => !targetIds.has(d.id));
+    if (excluded.length === 0) return "";
+    const includesPlug = excluded.some((d) => d.kind.kind === "plug");
+    return includesPlug
+      ? t("保留 {count} 台开启（含插座）", { count: excluded.length })
+      : t("保留 {count} 台开启", { count: excluded.length });
+  }
+
+  private allOffButtonText(count: number, isClassic = false): string {
+    if (isClassic) {
+      if (this.listCut.kind === "all") return t("全关 {count} 台", { count });
+      const scope =
+        this.listCut.kind === "room"
+          ? roomDisplayName(this.layout, this.listCut.roomId, this.listCut.roomName)
+          : t(KIND_CHIP[this.listCut.tag].title);
+      return t("全关 {room} {count} 台", { room: this.escapeHtml(scope), count });
+    }
     if (this.listCut.kind === "all") return `${t("全关")} (${count})`;
     const scope = this.listCut.kind === "room"
       ? this.listCut.roomName
@@ -933,14 +1133,16 @@ export class MenuMijiaWindowsApp {
     return `${t("全关·{room}", { room: this.escapeHtml(scope) })} (${count})`;
   }
 
-  public renderAllOffControl(): string {
+  public renderAllOffControl(
+    isClassic = getPanelThemeProfile(this.settings.panelTheme).shellLayout === "unifiedPopover",
+  ): string {
     if (this.isEditingLayout) return `<button class="cc-all-off-pill is-done" id="btn-done-editing" aria-label="${t("完成布局编辑")}">${t("完成")}</button>`;
     const count = this.allOffTargets.length;
     if (count === 0) return "";
     return `<button class="cc-all-off-pill is-hold" id="btn-all-off" title="${t("按住 0.6 秒关闭这 {count} 台（插座、扫地机默认不参与，可在设置里调整）", { count })}" aria-label="${t("全关，关闭 {count} 台设备，按住 0.6 秒确认", { count })}">
       <span class="cc-hold-fill"></span>
       ${SF_ICONS.power}
-      <span>${this.allOffButtonText(count)}</span>
+      <span>${this.allOffButtonText(count, isClassic)}</span>
     </button>`;
   }
 
@@ -1525,6 +1727,33 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
+  public get classicStatusSummaryText(): string {
+    if (this.settings.connectionMode === "xiaomiCloud" && this.isSyncingCloud && this.devices.length === 0) {
+      return t("正在从小米云端同步真实设备...");
+    }
+    const activeCount = this.activeDeviceCount;
+    const summary = activeCount > 0 ? t("{count} 台开启", { count: activeCount }) : t("全屋待机");
+    if (this.valuesAreStale) {
+      return `${summary} · ${t("可能过期")}`;
+    }
+    const reading = this.computedEnvironmentReadings[0] ?? null;
+    if (reading) {
+      const sourceDev = this.devices.find((d) => d.id === reading.id);
+      const place = roomDisplayName(this.layout, sourceDev?.roomId ?? reading.roomName, reading.roomName) || reading.label;
+      const temp = reading.temperature !== null ? `${formatTemperatureValue(reading.temperature, undefined, 1)}°` : "";
+      const hum = reading.humidity !== null ? `${Math.round(reading.humidity)}%` : "";
+      const sensorPart = [place, temp, hum].filter(Boolean).join(" ");
+      return sensorPart ? `${summary} · ${sensorPart}` : summary;
+    }
+    if (this.settings.connectionMode === "demo") {
+      return `${summary} · ${t("演示预览")}`;
+    }
+    if (this.settings.connectionMode === "homeAssistant") {
+      return this.isSyncingCloud ? `${summary} · Home Assistant` : `${summary} · ${this.onlineDeviceCount} online`;
+    }
+    return summary;
+  }
+
   public get statusSummaryText(): string {
     if (this.valuesAreStale) return t("可能过期");
     if (this.settings.connectionMode === "homeAssistant") return this.isSyncingCloud ? "Home Assistant · Connecting" : `Home Assistant · ${this.onlineDeviceCount} online`;
@@ -1585,6 +1814,9 @@ export class MenuMijiaWindowsApp {
   }
 
   public renderEnvironmentStrip(): string {
+    if (getPanelThemeProfile(this.settings.panelTheme).shellLayout === "unifiedPopover") {
+      return "";
+    }
     return renderEnvironmentStripView({
       readings: this.computedEnvironmentReadings,
       watts: this.totalPowerWatts,

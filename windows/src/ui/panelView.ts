@@ -76,6 +76,23 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
     .filter(Boolean)
     .join(" ");
   const notifStack = isClassic ? renderClassicUnifiedUpperStack(host) : renderNotificationStack(host, true);
+  const classicAllOffButton = isClassic ? host.renderAllOffControl(true) : "";
+  const classicAllOffHelper = isClassic && classicAllOffButton ? host.allOffHelperText() : "";
+  const classicAllOffStack = classicAllOffButton
+    ? `<div class="cc-all-off-stack">${classicAllOffButton}${classicAllOffHelper ? `<span class="cc-all-off-caption">${host.escapeHtml(classicAllOffHelper)}</span>` : ""}</div>`
+    : "";
+  const micButtonHtml = (inSpotlight: boolean) =>
+    isVoiceInputEnabled(host.settings)
+      ? `<button
+                class="cc-circle-btn ${inSpotlight ? "is-small cc-spotlight-mic " : ""}${host.isListeningVoice ? "is-recording" : ""}"
+                id="btn-mic"
+                title="${t("语音控制")}"
+                aria-label="${t("语音控制")}"
+                aria-pressed="${host.isListeningVoice}"
+              >
+                ${SF_ICONS.micFill}
+              </button>`
+      : "";
   const headerHtml = `
         <header class="cc-header">
           <div class="cc-header-top">
@@ -84,14 +101,19 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               <div class="cc-title-stack">
                 <div class="cc-title-row">
                   <button class="cc-home-switch" id="btn-home-menu" type="button" aria-expanded="${host.isHomeMenuOpen}" aria-label="${t("切换家庭")}">
+                    ${isClassic ? `<span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>` : ""}
                     <span class="cc-home-title">${host.escapeHtml(effectivePanelHomeTitle(host))}</span>
-                    <span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>
+                    ${!isClassic ? `<span class="cc-home-caret ${host.isHomeMenuOpen ? "is-open" : ""}">${SF_ICONS.chevronDown}</span>` : ""}
                   </button>
-                  <span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
+                  ${
+                    isClassic
+                      ? (isDemo ? `<span class="cc-mode-pill is-demo">${t("演示预览")}</span>` : "")
+                      : `<span class="cc-mode-pill ${isDemo ? "is-demo" : "is-cloud"}">
                     ${isDemo ? t("演示预览") : host.settings.connectionMode === "homeAssistant" ? "Home Assistant" : t("米家云端")}
-                  </span>
+                  </span>`
+                  }
                 </div>
-                <div class="cc-subtitle">${host.escapeHtml(host.isEditingLayout ? t("拖动卡片排序 · 点右下角圆弧手柄改大小") : host.statusSummaryText)}</div>
+                <div class="cc-subtitle">${host.escapeHtml(host.isEditingLayout ? t("拖动卡片排序 · 点右下角圆弧手柄改大小") : isClassic ? host.classicStatusSummaryText : host.statusSummaryText)}</div>
               </div>
             </div>
 
@@ -103,18 +125,9 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                   : ""
               }
               ${
-                isVoiceInputEnabled(host.settings)
-                  ? `<button
-                class="cc-circle-btn ${host.isListeningVoice ? "is-recording" : ""}"
-                id="btn-mic"
-                title="${t("语音控制")}"
-                aria-label="${t("语音控制")}"
-                aria-pressed="${host.isListeningVoice}"
-              >
-                ${SF_ICONS.micFill}
-              </button>`
-                  : ""
-              }
+                isClassic
+                  ? classicAllOffStack
+                  : `${micButtonHtml(false)}
               <button
                 class="cc-circle-btn ${host.isShowingAssistantBar ? "is-selected" : ""}"
                 id="btn-toggle-assistant"
@@ -124,7 +137,6 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               >
                 ${SF_ICONS.sparkles}
               </button>
-              ${isClassic ? host.renderAllOffControl() : ""}
               <button
                 class="cc-circle-btn"
                 id="btn-hide-panel"
@@ -132,13 +144,40 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                 aria-label="${t("收起面板")}"
               >
                 ${SF_ICONS.chevronDown}
-              </button>
+              </button>`
+              }
             </div>
           </div>
 
-          ${host.renderEnvironmentStrip()}
+          ${isClassic ? "" : host.renderEnvironmentStrip()}
         </header>`;
   const kindBarHtml = host.renderKindBar();
+  const roomOrderBtnHtml = `<button
+                class="cc-circle-btn is-small"
+                id="btn-room-order-editor"
+                title="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+                aria-label="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
+              >
+                ${isClassic ? SF_ICONS.arrowUpArrowDown : SF_ICONS.sliderHorizontal}
+              </button>`;
+  const gridToggleBtnHtml = `<button
+                class="cc-circle-btn is-small ${isClassic && host.settings.isCompactGridMode ? "is-active" : ""}"
+                id="btn-toggle-grid"
+                title="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
+                aria-label="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
+                aria-pressed="${host.settings.isCompactGridMode}"
+              >
+                ${host.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
+              </button>`;
+  const offlineToggleBtnHtml = `<button
+                class="cc-circle-btn is-small ${host.settings.hideOfflineDevices ? "is-selected" : ""}"
+                id="btn-toggle-hide-offline"
+                title="${host.settings.hideOfflineDevices ? t("当前只显示在线设备（点击显示全部）") : t("点击隐藏未通电/离线设备")}"
+                aria-label="${t("只显示在线设备")}"
+                aria-pressed="${host.settings.hideOfflineDevices}"
+              >
+                ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
+              </button>`;
   const controlsHtml = `
           <div class="cc-assistant-section">
             <div class="cc-spotlight-bar">
@@ -164,6 +203,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               >
                 ${SF_ICONS.arrowUpCircle}
               </button>
+              ${isClassic ? micButtonHtml(true) : ""}
             </div>
           </div>
 
@@ -193,32 +233,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
               </div>
             </div>
             <div class="cc-room-tools">
-              <button
-                class="cc-circle-btn is-small"
-                id="btn-toggle-grid"
-                title="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
-                aria-label="${host.settings.isCompactGridMode ? t("切换为单列详情视图") : t("切换为胶囊控制网格")}"
-                aria-pressed="${host.settings.isCompactGridMode}"
-              >
-                ${host.settings.isCompactGridMode ? SF_ICONS.grid2x2 : SF_ICONS.grid1x2}
-              </button>
-              <button
-                class="cc-circle-btn is-small ${host.settings.hideOfflineDevices ? "is-selected" : ""}"
-                id="btn-toggle-hide-offline"
-                title="${host.settings.hideOfflineDevices ? t("当前只显示在线设备（点击显示全部）") : t("点击隐藏未通电/离线设备")}"
-                aria-label="${t("只显示在线设备")}"
-                aria-pressed="${host.settings.hideOfflineDevices}"
-              >
-                ${host.settings.hideOfflineDevices ? SF_ICONS.wifi : SF_ICONS.wifiSlash}
-              </button>
-              <button
-                class="cc-circle-btn is-small"
-                id="btn-room-order-editor"
-                title="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
-                aria-label="${tr3("房间与类别顺序", "房間與類別順序", "Room & Category Order")}"
-              >
-                ${SF_ICONS.sliderHorizontal}
-              </button>
+              ${isClassic ? `${roomOrderBtnHtml}${gridToggleBtnHtml}${offlineToggleBtnHtml}` : `${gridToggleBtnHtml}${offlineToggleBtnHtml}${roomOrderBtnHtml}`}
             </div>
           </div>
           ${isClassic && kindBarHtml ? `<div class="cc-kind-bar" role="toolbar" aria-label="${host.escapeHtml(tr3("设备类型筛选", "設備類型篩選", "Filter by device type"))}"><div class="cc-room-scroll cc-kind-scroll"><span class="cc-tab-indicator" aria-hidden="true"></span>${kindBarHtml}</div></div>` : ""}`;
@@ -233,7 +248,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
         <footer class="cc-footer${verboseFooter ? " is-verbose-status" : ""}">
           <div class="cc-footer-status">
             ${footerStatus(host)}
-            ${isClassic ? "" : host.renderAllOffControl()}
+            ${isClassic ? "" : host.renderAllOffControl(false)}
           </div>
 
           <div class="cc-footer-actions">
@@ -252,14 +267,18 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
                   </button>`
                 : ""
             }
-            <button
+            ${
+              isClassic
+                ? ""
+                : `<button
               class="cc-footer-icon-btn"
               id="btn-toggle-appearance"
               title="${scheme === "light" ? t("切换深色模式") : t("切换浅色模式")}"
               aria-label="${scheme === "light" ? t("切换深色模式") : t("切换浅色模式")}"
             >
               ${scheme === "light" ? SF_ICONS.moonStarsFill : SF_ICONS.sunMaxFill}
-            </button>
+            </button>`
+            }
             <button
               class="cc-footer-icon-btn ${host.isSyncingCloud ? "is-spinning" : ""}"
               id="btn-refresh"

@@ -47,6 +47,18 @@ function startDemo(): MenuMijiaWindowsApp {
   return activeApp;
 }
 
+function seedFluentSettings(): void {
+  const raw = localStorage.getItem("menumijia.windows.settings.v2");
+  const parsed = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
+  localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ ...parsed, panelTheme: "fluent" }));
+}
+
+function startFluentDemo(): MenuMijiaWindowsApp {
+  const app = startDemo();
+  app.setPanelTheme("fluent");
+  return app;
+}
+
 async function flushTimerLoopTick(): Promise<void> {
   for (const handler of [...capturedIntervals.values()]) {
     handler();
@@ -439,6 +451,7 @@ describe("Windows device control and undo", () => {
       { targetId: "fixture-light", operation: { kind: "brightness", percent: 80 } },
       { targetId: "fixture-light", operation: { kind: "colorTemperature", kelvin: 5500 } },
     ]);
+    seedFluentSettings();
     new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
     assert.match(tile("fixture-light"), /50% · 4100K/);
@@ -472,6 +485,7 @@ describe("Windows device control and undo", () => {
 
   it("preserves final power correction when a failed undo is retried", async () => {
     const cloud = cloudFixture([]);
+    seedFluentSettings();
     cloud.values.set(1, false);
     new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
@@ -500,6 +514,7 @@ describe("Silent Xiaomi cloud refresh (#81)", { concurrency: false }, () => {
   }> {
     const cloud = cloudFixture([]);
     configure?.(cloud);
+    seedFluentSettings();
     let timerTick: (() => void) | null = null;
     const timerWindow = window as unknown as {
       setInterval: (handler: () => void, timeout?: number) => number;
@@ -1025,6 +1040,7 @@ describe("Credentials move out of localStorage (#28)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       assistantBaseURL: "https://openrouter.ai/api/v1",
       openRouterApiKey: "sk-live",
       haToken: "ha-token",
@@ -1069,6 +1085,7 @@ describe("AI key stays with the server it was saved for (#19)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       assistantBaseURL: "https://openrouter.ai/api/v1",
       openRouterApiKey: "sk-or-saved",
     }));
@@ -1234,6 +1251,7 @@ describe("AI suggestions wait for a tap (#21)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       assistantBaseURL: "https://openrouter.ai/api/v1",
       assistantModel: "~typesafe/jev-latest",
       openRouterApiKey: "sk-or-test",
@@ -1336,7 +1354,7 @@ describe("Timers the PC slept through (#22)", () => {
 
 describe("Bare category commands (#273)", () => {
   it("关灯 with several lights on offers the lit lights and one 全部关掉", async () => {
-    startDemo();
+    startFluentDemo();
     await command("关灯");
     assert.match(document.body.textContent ?? "", /开着：客厅吸顶灯、书房台灯。请说出房间或设备名/);
     assert.match(tile("light.living_ceiling"), /已开启/);
@@ -1524,7 +1542,7 @@ describe("Bare category opens (#274)", () => {
       light("light.study_desk", "书房台灯", "study", "书房", false),
       light("light.bedroom_lamp", "主卧灯", "bedroom", "主卧", false),
       light("light.living_lamp", "客厅落地灯", "living", "客厅", false),
-    ]);
+    ], { panelTheme: "fluent" });
     await command("开灯");
     assert.match(document.body.textContent ?? "", /关着：书房吸顶灯、书房台灯、主卧灯、客厅落地灯。请说出房间或设备名/);
     const chips = Array.from(
@@ -1571,7 +1589,7 @@ describe("Bare category opens (#274)", () => {
     await startWithDevices([
       plug("plug.study", "书房插座", "study", "书房"),
       plug("plug.bedroom", "主卧插座", "bedroom", "主卧"),
-    ]);
+    ], { panelTheme: "fluent" });
     await command("打开插座");
     assert.match(document.body.textContent ?? "", /关着：书房插座、主卧插座。请说出房间或设备名/);
     assert.match(tile("plug.study"), /已断电/);
@@ -1593,7 +1611,7 @@ describe("Bare category opens (#274)", () => {
     await startWithDevices([
       plug("plug.study", "书房插座", "study", "书房"),
       plug("plug.living", "客厅插座", "living", "客厅", true),
-    ]);
+    ], { panelTheme: "fluent" });
     await command("打开插座");
     assert.match(document.body.textContent ?? "", /「打开书房插座」属于高风险设备，再点一次确认执行/);
     assert.equal(
@@ -1649,7 +1667,7 @@ describe("Bare category opens (#274)", () => {
       heater("heat.study", "书房电暖器", "study", "书房"),
       heater("heat.study_desk", "书房暖风机", "study", "书房"),
       heater("heat.living", "客厅电暖器", "living", "客厅"),
-    ]);
+    ], { panelTheme: "fluent" });
     await click('[data-room-id="study"]');
     await command("打开电暖器");
     assert.match(document.body.textContent ?? "", /「打开书房电暖器、书房暖风机」属于高风险设备，再点一次确认执行/);
@@ -1682,7 +1700,7 @@ describe("Bare category opens (#274)", () => {
 
 describe("全关 (#23)", () => {
   it("needs a hold and leaves the plug on", async () => {
-    startDemo();
+    startFluentDemo();
     const button = element("#btn-all-off");
     assert.match(button.textContent ?? "", /全关 \(3\)/);
     button.click();
@@ -2173,7 +2191,7 @@ describe("Interface language and temperature units (#52)", () => {
     await setImmediate();
 
     const text = document.body.textContent ?? "";
-    assert.match(text, /All off/, "the hold-to-confirm control is translated");
+    assert.match(text, /All off/i, "the hold-to-confirm control is translated");
     assert.match(text, /Switch home|My Mi Home|Living room/, "home and room labels are translated");
     assert.doesNotMatch(text, /全关/, "no Simplified Chinese chrome leaks into English mode");
     assert.match(element('[data-body-device="light.living_ceiling"]').textContent ?? "", /Living room ceiling light/i);
@@ -2194,7 +2212,7 @@ describe("Interface language and temperature units (#52)", () => {
     seed({ interfaceLanguage: "system" });
     new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
-    assert.match(document.body.textContent ?? "", /All off/);
+    assert.match(document.body.textContent ?? "", /All off/i);
   });
 
   it("shows °F when the unit is Fahrenheit, and one tap moves exactly one °F", async () => {
@@ -3585,6 +3603,7 @@ describe("Air purifier support (#98)", () => {
       JSON.stringify({
         connectionMode: "xiaomiCloud",
         hasCompletedOnboarding: true,
+        panelTheme: "fluent",
         miSession: { userId: "10001", cUserId: "", ssecurity: security, serviceToken: "tok", passToken: "", region: "cn" },
         cachedModelTypes: {
           "zhimi.airp.rma3": rma3Spec.type,
@@ -3644,7 +3663,7 @@ describe("Air purifier support (#98)", () => {
   });
 
   it("switches between light (daylight) and dark appearance in Settings and via the footer toggle", async () => {
-    startDemo();
+    startFluentDemo();
     const popover = () => element(".cc-popover");
     const startedLight = popover().classList.contains("scheme-light");
 
@@ -3670,7 +3689,7 @@ describe("Air purifier support (#98)", () => {
   });
 
   it("renders bottom-right corner arc resize handles in layout edit mode and supports drag resizing and tap cycling without reordering (#115)", async () => {
-    startDemo();
+    startFluentDemo();
     const lightSelector = '[data-tile-id="light.living_ceiling"]';
     element(lightSelector).dispatchEvent(new window.MouseEvent("contextmenu", { bubbles: true, clientX: 80, clientY: 80 }));
     await click("[data-start-editing]");
@@ -3774,6 +3793,7 @@ describe("Manual habit learning and proactive Top-4 (#113)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
     }));
     new MenuMijiaWindowsApp(element("#app"));
     // Demo home: two lights on (全屋关灯), then running AC, plug, and camera power-offs.
@@ -3964,7 +3984,7 @@ describe("Home Assistant source", () => {
       return undefined;
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true }));
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, panelTheme: "fluent" }));
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
     await click('[data-expand-device="study-light"]');
@@ -4041,7 +4061,7 @@ describe("Home Assistant source", () => {
   it("cleans old camera bearer URLs from current and legacy settings copies on startup and later writes", async () => {
     const snapshot = structuredClone(fixture);
     snapshot.states.push({ entity_id: "camera.front", state: "idle", attributes: { entity_picture: "/api/camera_proxy/camera.front?token=old-camera-bearer" } });
-    const settings = { connectionMode: "demo", hasCompletedOnboarding: true, cachedHAHome: { identity: homeAssistantIdentity("http://localhost:8123", "account"), home: HomeAssistantSynthesizer.synthesize(snapshot) } };
+    const settings = { connectionMode: "demo", hasCompletedOnboarding: true, panelTheme: "fluent", cachedHAHome: { identity: homeAssistantIdentity("http://localhost:8123", "account"), home: HomeAssistantSynthesizer.synthesize(snapshot) } };
     const credentialWrites: unknown[] = [];
     const invoke = async (name: string, args: Record<string, unknown> = {}) => {
       if (name === "secure_store_set") credentialWrites.push(args);
@@ -4137,7 +4157,7 @@ describe("Home Assistant source", () => {
         return undefined;
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
+      localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, panelTheme: "fluent", assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
       const app = new MenuMijiaWindowsApp(element("#app"));
       try {
         await waitFor(() => !!document.querySelector('[data-body-device="study-light"]'));
@@ -4224,7 +4244,7 @@ describe("Home Assistant source", () => {
       return undefined;
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
-    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, cachedHAHome: { identity: homeAssistantIdentity("http://localhost:8123", "controlled-token"), home: HomeAssistantSynthesizer.synthesize(fixture) } }));
+    localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, panelTheme: "fluent", cachedHAHome: { identity: homeAssistantIdentity("http://localhost:8123", "controlled-token"), home: HomeAssistantSynthesizer.synthesize(fixture) } }));
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector("[data-ha-error]"));
     await click("#btn-toggle-assistant");
@@ -4444,7 +4464,7 @@ describe("Home Assistant source", () => {
 
 describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskbar motion", () => {
   it("renders Win+N notification island + Win+A Quick Settings island without GrokBall UI", async () => {
-    startDemo();
+    startFluentDemo();
     assert.ok(document.querySelector(".win-island--top .cc-header"));
     assert.ok(document.querySelector(".win-island--top .win-notif-stack"));
     assert.ok(document.querySelector(".win-island--bottom .win-island-controls #command-input"));
@@ -4463,7 +4483,7 @@ describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskb
   });
 
   it("drills down Win+A split-pill capsules into in-place sub-flyouts and drives the WinUI 3 slider deck", async () => {
-    startDemo();
+    startFluentDemo();
     const ceiling = element('[data-tile-id="light.living_ceiling"]');
     assert.ok(ceiling.classList.contains("is-capsule"), "Compact device tiles render as Win+A split-pill capsules");
     assert.ok(ceiling.querySelector(".win-split-pill .win-pill-toggle"));
@@ -4492,7 +4512,7 @@ describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskb
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     localStorage.setItem(["menumijia", "windows", "settings", "v2"].join("."), JSON.stringify({
-      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true,
+      connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, panelTheme: "fluent",
     }));
     new MenuMijiaWindowsApp(element("#app"));
     await waitFor(() => !!document.querySelector(".win-island--top .win-notif-stack [data-ha-error]"));
@@ -4508,7 +4528,7 @@ describe("Windows 11 Fluent 2 two-island flyout, Quick Settings capsules & taskb
     };
     Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
     const root = element("#app");
-    startDemo();
+    startFluentDemo();
 
     for (const edge of ["right", "top", "left", "bottom"] as const) {
       window.dispatchEvent(new window.CustomEvent("menumijia:panel-present", { detail: { edge } }));
@@ -4591,6 +4611,7 @@ describe("只显示在线设备 (#158)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "xiaomiCloud",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       cachedXiaomiDevices: [
         light("online-living", "客厅", true),
         light("offline-living", "客厅", false),
@@ -4779,6 +4800,7 @@ describe("light-group folding (#214)", () => {
     const stored = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as Record<string, unknown>;
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       ...stored,
+      panelTheme: "fluent",
       hideOfflineDevices: options.hideOffline ?? false,
       hideGroupedLights: options.hideGrouped ?? true,
     }));
@@ -5038,6 +5060,7 @@ describe("Appliance and generic cards (#9)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     // Optimistic writes mutate the rows they address, so every test gets its own copies.
@@ -5549,7 +5572,7 @@ describe("Manual control parity with macOS (#143)", () => {
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
-      ...(options.panelTheme ? { panelTheme: options.panelTheme } : {}),
+      panelTheme: options.panelTheme ?? "fluent",
     }));
     const app = new MenuMijiaWindowsApp(element("#app"));
     await setImmediate();
@@ -6103,6 +6126,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
     }));
     return new MenuMijiaWindowsApp(element("#app"));
   }
@@ -6208,6 +6232,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
     localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({
       connectionMode: "demo",
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       allOffOverrides: {
         "cover.garage_door": true,
         "cover.curtain": true,
@@ -6554,6 +6579,7 @@ describe("Tray feedback, status, search and keyboard (UX-03, UX-04, UX-19, UX-20
       connectionMode: "homeAssistant",
       haBaseURL: baseURL,
       hasCompletedOnboarding: true,
+      panelTheme: "fluent",
       cachedHAHome: cachedHaHome(baseURL, token),
     }));
     new MenuMijiaWindowsApp(element("#app"));

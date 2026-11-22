@@ -240,6 +240,7 @@ describe("Panel keyboard on the rendered demo", () => {
     key("Escape"); await setImmediate(); assert.ok(calls.includes("hide_panel"));
   });
   it("excludes hidden sibling cards from keyboard navigation while a device subpage is open", async () => {
+    app.setPanelTheme("fluent");
     app.devices = [light("one", "书房主灯"), light("two", "书房台灯")];
     app.render();
     input("书房");
@@ -260,6 +261,7 @@ describe("Panel keyboard on the rendered demo", () => {
   });
 
   it("Escape pops an open subpage before clearing active search or hiding the panel, even when a range slider is focused", async () => {
+    app.setPanelTheme("fluent");
     const calls: string[] = [];
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: { invoke: async (command: string) => { calls.push(command); } },
@@ -299,6 +301,7 @@ describe("Panel keyboard on the rendered demo", () => {
   });
 
   it("digit shortcuts 1-9 only activate visible room tabs and ignore kind chips or open subpages", () => {
+    app.setPanelTheme("fluent");
     app.render();
     const roomCount = document.querySelectorAll(".cc-room-pill[data-room]").length;
     const kindChipIndex = roomCount + 1;

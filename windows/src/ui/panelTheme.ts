@@ -1,8 +1,8 @@
 import { nextSize, type TileSize } from "./panelPrefs.js";
 
-export const PANEL_THEMES = ["fluent", "classic"] as const;
+export const PANEL_THEMES = ["classic", "fluent"] as const;
 export type PanelTheme = (typeof PANEL_THEMES)[number];
-export const DEFAULT_PANEL_THEME: PanelTheme = "fluent";
+export const DEFAULT_PANEL_THEME: PanelTheme = "classic";
 
 export type PanelShellLayout = "dualIsland" | "unifiedPopover";
 export type DrawerPresentation = "subpage" | "inlineAccordion";
@@ -58,7 +58,7 @@ export const PANEL_THEME_PROFILES: Readonly<Record<PanelTheme, PanelThemeProfile
 };
 
 export function normalizePanelTheme(raw: unknown): PanelTheme {
-  return raw === "classic" ? "classic" : "fluent";
+  return raw === "fluent" ? "fluent" : "classic";
 }
 
 export function getPanelThemeProfile(theme: PanelTheme): PanelThemeProfile {

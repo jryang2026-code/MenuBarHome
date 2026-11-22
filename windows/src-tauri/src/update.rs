@@ -558,17 +558,22 @@ pub(crate) fn build_update_progress_payload(
     }
 }
 
+fn update_progress_target_labels() -> [&'static str; 2] {
+    ["main", "settings"]
+}
+
 fn emit_update_progress(app: &AppHandle, payload: &UpdateProgressPayload) {
-    let Some(window) = app.get_webview_window("main") else {
-        return;
-    };
     let Ok(json) = serde_json::to_string(payload) else {
         return;
     };
     let script = format!(
         "window.dispatchEvent(new CustomEvent('menumijia:update-progress', {{ detail: {json} }}))"
     );
-    let _ = window.eval(&script);
+    for label in update_progress_target_labels() {
+        if let Some(window) = app.get_webview_window(label) {
+            let _ = window.eval(&script);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -718,6 +723,11 @@ mod update_progress_tests {
             "https://evil.example.com/jryang2026-code/MenuBarHome/releases"
         )
         .is_err());
+    }
+
+    #[test]
+    fn update_progress_targets_both_main_and_settings_windows() {
+        assert_eq!(update_progress_target_labels(), ["main", "settings"]);
     }
 }
 

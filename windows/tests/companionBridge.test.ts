@@ -857,7 +857,7 @@ describe("Desktop shell polish: Lock-screen guard, Launch at Login, Tray tooltip
     };
     app.isInstallingUpdate = true;
     app.activeSheet = "settings";
-    app.settingsTab = "system";
+    app.settingsTab = "about";
     app.render();
 
     window.dispatchEvent(

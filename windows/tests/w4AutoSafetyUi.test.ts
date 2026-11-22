@@ -262,7 +262,7 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
       return true;
     };
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     assert.ok(document.querySelector("#settings-auto-rules-empty"));
 
     // 触发器下拉只提供有生产事件来源的选项；Wi-Fi 条件编辑器恢复可用。
@@ -367,7 +367,7 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
       return true;
     };
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     selectValue("#settings-auto-trigger", "lateNightUsage");
     selectValue("#settings-auto-latenight-start", "23");
     selectValue("#settings-auto-latenight-end", "5");
@@ -430,7 +430,7 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
       return true;
     };
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     selectValue("#settings-auto-action-kind", "devices");
     selectValue("#settings-auto-devices-power", "on");
     toggleCheck(`[data-auto-target-device="${heaterPlug.id}"]`, true);
@@ -520,7 +520,7 @@ describe("Wave 4 · Active Safety Guard, Security Sensor Alerts & HA Doorbell Se
     ]);
     assert.equal(getHostActivityCenter(app).recentSafetyAlerts.length, 1);
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
 
     toggleCheck("#settings-safety-plug", false);
     assert.equal(loadSafetyGuardPrefs().longRunningPlug, false);
@@ -563,7 +563,7 @@ describe("Wave 4 · Active Safety Guard, Security Sensor Alerts & HA Doorbell Se
     const scheduler = new FakeDoorbellScheduler();
     getHostActivityCenter(app, { doorbellScheduler: scheduler });
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     toggleCheck("#settings-doorbell-chime", true);
     selectValue("#settings-doorbell-seconds", "120");
     assert.equal(loadSafetyGuardPrefs().doorbellPopupSeconds, 120);
@@ -638,7 +638,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     const center = getHostActivityCenter(app);
     center.offlineHistory.record(app.devices, sundayMs - 3_600_000);
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     await click("#btn-generate-copy-health-report");
     await setImmediate();
 
@@ -752,7 +752,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     typeInput("#settings-search-input", "门铃自动弹窗");
     await click('[data-settings-search-hit="doorbellAutoView"]');
 
-    assert.equal(app.settingsTab, "system");
+    assert.equal(app.settingsTab, "safety");
     const highlighted = element('[data-settings-anchor="doorbellAutoView"]');
     assert.equal(highlighted.getAttribute("data-settings-highlighted"), "doorbellAutoView");
   });
@@ -763,7 +763,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     const leakSensor = makeSensor({ id: "sensor.leak", name: "厨房水浸传感器" });
     app.devices = [xssLight, leakSensor];
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
 
     await click("#btn-toggle-auto-form");
     assert.equal(element("#settings-auto-form").hidden, true);
@@ -854,7 +854,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
       return true;
     };
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     assert.equal(document.querySelectorAll("[data-auto-rule-row]").length, 3);
     // 只剩 cameraInUse 不受支持：batteryBelowThreshold 已接入电源事件，Wi-Fi 条件在 Windows 上已接线。
     assert.equal(document.querySelectorAll("[data-auto-rule-unsupported]").length, 1);
@@ -912,7 +912,7 @@ describe("Wave 4 · Weekly Home Health Report Preview, Clipboard Copy & Search A
     await setImmediate();
     await setImmediate();
 
-    app.openSettingsSheet("system");
+    app.openSettingsSheet("safety");
     assert.equal(document.querySelector("#settings-auto-wifi-permission-hint"), null, "no hint while the draft is unrelated to Wi-Fi");
 
     selectValue("#settings-auto-trigger", "wifiNetworkJoined");

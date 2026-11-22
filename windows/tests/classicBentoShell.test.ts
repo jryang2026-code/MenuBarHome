@@ -37,7 +37,8 @@ describe("Classic Single-Card Glass Shell, 4-Size Bento Grid & Inline Accordion 
 
     assert.ok(popover.querySelector(":scope > .cc-header #btn-home-menu"));
     assert.ok(popover.querySelector(":scope > .cc-header #btn-all-off"));
-    assert.ok(popover.querySelector(":scope > .cc-header .cc-env-strip"));
+    assert.equal(popover.querySelector(":scope > .cc-header .cc-env-strip"), null);
+    assert.ok(popover.querySelector(":scope > .cc-header .cc-subtitle"));
     assert.ok(popover.querySelector(':scope > .cc-classic-upper-stack[data-slot="classic-upper"]'));
     assert.ok(popover.querySelector(":scope > .cc-assistant-section .cc-spotlight-bar #command-input"));
     assert.ok(popover.querySelector(":scope > .cc-quick-strip"));

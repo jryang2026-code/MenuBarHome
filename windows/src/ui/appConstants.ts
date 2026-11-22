@@ -62,6 +62,10 @@ export const SF_ICONS = {
   blindsHorizontal: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4h14M4.5 4v11.5M9.2 4v9.5M10.8 4v9.5M15.5 4v11.5M4.5 8h4.7M10.8 8h4.7M4.5 11.5h4.7M10.8 11.5h4.7"/></svg>`,
   washer: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="2.5" width="13" height="15" rx="2.2"/><path d="M3.5 6.5h13M6.5 4.5h2"/><circle cx="10" cy="12" r="3.2"/></svg>`,
   switchToggle: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="5.5" width="15" height="9" rx="4.5"/><circle cx="13" cy="10" r="2.3" fill="currentColor" stroke="none"/></svg>`,
+  arrowUpArrowDown: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6.8 15.5V4.5M6.8 4.5L4.2 7.1M6.8 4.5l2.6 2.6M13.2 4.5v11M13.2 15.5l-2.6-2.6M13.2 15.5l2.6-2.6"/></svg>`,
+  globe: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7.2"/><ellipse cx="10" cy="10" rx="3.4" ry="7.2"/><path d="M3.2 10h13.6M4.3 6.5h11.4M4.3 13.5h11.4"/></svg>`,
+  shieldCheck: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 2.6l6 2.4v4.4c0 4.1-2.5 7-6 8.3-3.5-1.3-6-4.2-6-8.3V5l6-2.4z"/><path d="M7.3 10.2l1.8 1.8 3.6-3.8"/></svg>`,
+  activityPulse: `<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 10.5h3l2.1-4.8 3.2 8.8 2.2-4h4.5"/></svg>`,
 };
 
 /** Demo home, materialised per language so the preview text follows the UI (#52). */

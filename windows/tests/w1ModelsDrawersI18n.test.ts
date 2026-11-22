@@ -208,7 +208,7 @@ describe("A6 computeTotalPowerWatts + 30+ semantic SVG icons", () => {
       makeDevice("plug-off", { kind: "plug", switchEntityId: "switch.off", isOn: false, powerWatts: 500, childLockEntityId: null, isChildLocked: false}),
       makeDevice( "plug-offline", { kind: "plug", switchEntityId: "switch.offline", isOn: true, powerWatts: 900, childLockEntityId: null, isChildLocked: false}, { isOnline: false }, ),
     ];
-    await mountHADevices(devices);
+    await mountHADevices(devices, { panelTheme: "fluent" });
     const stripText = document.querySelector(".cc-env-strip")?.textContent ?? "";
     assert.match(stripText, /62W/);
     assert.doesNotMatch(stripText, /562W|962W|1462W/);
@@ -771,7 +771,8 @@ describe("A7 Traditional Chinese (zh-Hant) + zero English/Chinese leaks", () => 
 
     assert.equal(app.settings.interfaceLanguage, "zh-Hant");
     assert.equal(currentLanguage(), "zh-Hant");
-    assert.match(document.body.textContent ?? "", /偏好設定/);
+    assert.match(document.body.textContent ?? "", /常規/);
+    assert.match(document.body.textContent ?? "", /關於與診斷/);
     assert.match(document.body.textContent ?? "", /中國大陸 \(cn\)/);
 
     const saved = JSON.parse(localStorage.getItem("menumijia.windows.settings.v2") ?? "{}") as {

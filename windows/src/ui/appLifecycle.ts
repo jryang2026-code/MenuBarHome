@@ -1,5 +1,6 @@
 import { finishPanelComposition, handlePanelKey } from "./panelKeyboard.js";
 import { handleSettingsSheetEscape } from "./settingsEvents.js";
+import { switchSource } from "./sourceSwitch.js";
 import { processScheduledCommands, scheduledCommandIdentity } from "./scheduledCommands.js";
 import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -30,7 +31,7 @@ import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
 import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
-import type { SettingsTab } from "./settingsViews.js";
+import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
@@ -101,7 +102,10 @@ export { dispatchSystemContextEvent };
    * Manager, then rewrite localStorage without secrets (#28). Later runs read only the
    * credential store, so an upgrade needs no QR login again.
    */
-export function initializeCredentials(host: MenuMijiaWindowsApp): void {
+export function initializeCredentials(
+  host: MenuMijiaWindowsApp,
+  options: { readonly overwriteExisting?: boolean } = {},
+): void {
     const initialKey = host.settings.openRouterApiKey.trim();
     const initialIdentity = assistantEndpointIdentity(host.settings.assistantBaseURL);
     if (initialKey !== "" && initialIdentity !== null && initialIdentity === host.settings.assistantKeyEndpoint) {
@@ -119,7 +123,7 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
     }
     // A stale pre-1.0 copy can still hold secrets even when the v2 copy is clean (#28).
     stripCredentialFieldsFromStoredCopies();
-    void hydrateCredentials(host);
+    void hydrateCredentials(host, options);
   }
 
 const hydratingHosts = new WeakSet<MenuMijiaWindowsApp>();
@@ -162,7 +166,10 @@ export async function retryIdentityMigration(host: MenuMijiaWindowsApp): Promise
   host.render();
 }
 
-export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
+export async function hydrateCredentials(
+  host: MenuMijiaWindowsApp,
+  options: { readonly overwriteExisting?: boolean } = {},
+): Promise<void> {
     hydratingHosts.add(host);
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
@@ -194,8 +201,13 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         if (pendingSignOut) host.render();
         return;
       }
+      const allowOverwrite = options.overwriteExisting === true && !pendingPersistDuringHydration.has(host);
+      const prevVaultMiUserId = host.settings.miSession?.userId ?? null;
+      const prevVaultHaToken = host.settings.haToken.trim();
       if (effectiveCredentials.assistantApiKeys) {
-        host.assistantKeysByPreset = { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
+        host.assistantKeysByPreset = allowOverwrite
+          ? { ...effectiveCredentials.assistantApiKeys }
+          : { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
       }
       const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
       // P2c-W: a connection whose removal is still incomplete must never be revived by re-adopting
@@ -204,11 +216,21 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       const miRemovalPending =
         adoptedMiSession !== null &&
         isConnectionRemovalPending(miConnectionRemovalScope(makeMiAccount(adoptedMiSession).id));
-      if (!current.miSession && adoptedMiSession && !miRemovalPending) host.settings.miSession = adoptedMiSession;
+      if ((allowOverwrite || !current.miSession) && adoptedMiSession && !miRemovalPending) {
+        host.settings.miSession = adoptedMiSession;
+      }
       const adoptedHaScope = effectiveCredentials.haToken.trim() === "" ? null : haConnectionScope(host.settings.haBaseURL, effectiveCredentials.haToken);
       const haRemovalPending = isConnectionRemovalPending(haConnectionRemovalScope(adoptedHaScope));
-      if (current.haToken === "" && effectiveCredentials.haToken !== "" && !haRemovalPending) {
+      if ((allowOverwrite || current.haToken === "") && effectiveCredentials.haToken !== "" && !haRemovalPending) {
         host.settings.haToken = effectiveCredentials.haToken;
+      }
+      if (
+        allowOverwrite &&
+        !host.isStandaloneSettingsWindow &&
+        ((host.settings.miSession?.userId ?? null) !== prevVaultMiUserId ||
+          host.settings.haToken.trim() !== prevVaultHaToken)
+      ) {
+        switchSource(host, "settings-sync-credential-changed");
       }
       const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
       const boundCustomEndpoint =
@@ -219,7 +241,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
             ? host.assistantKeysByPreset.custom?.trim() ?? ""
             : ""
           : host.assistantKeysByPreset[activePreset]?.trim() ?? effectiveCredentials.assistantApiKey;
-      if (host.settings.openRouterApiKey.trim() === "" && activeSlotKey !== "") {
+      if ((allowOverwrite || host.settings.openRouterApiKey.trim() === "") && activeSlotKey !== "") {
         host.settings.openRouterApiKey = activeSlotKey;
         if (activePreset !== "custom") {
           host.settings.assistantKeyEndpoint = currentEndpoint;
@@ -247,7 +269,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       if (host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) {
         if (!isHostMiSessionEnabled(host, host.settings.miSession) && !hasSecondaryMiAccountsInIndex()) {
           host.devices = [];
-        } else {
+        } else if (!host.isStandaloneSettingsWindow) {
           void host.refreshDevices(true);
         }
       }
@@ -266,7 +288,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         }
       }
       host.render();
-      if (host.settings.connectionMode === "homeAssistant" && hasConfiguredHA && isHostHaEnabled(host)) {
+      if (!host.isStandaloneSettingsWindow && host.settings.connectionMode === "homeAssistant" && hasConfiguredHA && isHostHaEnabled(host)) {
         void host.refreshHADevices();
       }
     } catch {
@@ -489,10 +511,25 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     host.render();
   }
 
+function hasTauriWindowMetadata(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    Boolean(
+      (window as unknown as { __TAURI_INTERNALS__?: { metadata?: unknown } }).__TAURI_INTERNALS__
+        ?.metadata,
+    )
+  );
+}
+
 export function saveSettings(host: MenuMijiaWindowsApp, forceSubmitEndpoints = false): void {
     writeSettingsForStorage(host.settings);
     submitServiceEndpoints(host, forceSubmitEndpoints);
     void persistCredentials(host);
+    if (hasTauriWindowMetadata()) {
+      invokeTauriVoid("notify_settings_changed", {
+        sourceLabel: host.isStandaloneSettingsWindow ? "settings" : "main",
+      });
+    }
   }
 
   /** OS-preferred languages, read from the WebView's `window.navigator` (#52). */
@@ -634,8 +671,13 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
 
 /** `tab` routes the caller to the category it needs: the QR button to sources, an update to general. */
 export function openSettingsSheet(host: MenuMijiaWindowsApp, tab: SettingsTab = "general"): void {
+    const normalized = normalizeSettingsTab(tab);
+    if (!host.isStandaloneSettingsWindow && hasTauriWindowMetadata()) {
+      invokeTauriVoid("open_settings_window", { tab: normalized });
+      return;
+    }
     host.activeSheet = "settings";
-    host.settingsTab = tab;
+    host.settingsTab = normalized;
     invokeTauriVoid("set_pin_popover", { pin: true });
     host.syncPanelPlacement();
     host.render();

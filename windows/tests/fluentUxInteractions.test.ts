@@ -164,7 +164,7 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
   });
 
   it("Alt+ArrowLeft inside an L2 subpage exits L2 and restores focus to the opener button", () => {
-    const app = startDemoApp();
+    const app = startDemoApp({ panelTheme: "fluent" });
     const expandBtn = element<HTMLButtonElement>('[data-expand-device="light.living_ceiling"]');
     expandBtn.focus();
     expandBtn.click();
@@ -201,7 +201,7 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
       configurable: true,
     });
 
-    const app = startDemoApp();
+    const app = startDemoApp({ panelTheme: "fluent" });
     assert.equal(shouldKeepPopoverPinned(app), false);
 
     app.isHomeMenuOpen = true;
@@ -327,16 +327,25 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
     assert.equal(roomStrip.scrollLeft, 55);
   });
 
-  it("orders active connectionMode credentials first with .is-active-mode, updates .cc-settings-save-hint, and preserves 3-zone layout", () => {
+  it("orders active connectionMode credentials first with .is-active-mode, updates .cc-settings-save-hint, and preserves two-column layout", () => {
     const app = startDemoApp({ connectionMode: "homeAssistant" });
     app.openSettingsSheet("connection");
 
     const sheet = element(".cc-settings-sheet");
+    const shell = element(".cc-settings-shell", );
+    assert.ok(shell.parentElement === sheet);
     assert.deepEqual(
-      [...sheet.children].map((child) =>
-        child.className.split(" ").find((cls) => ["cc-settings-top", "cc-sheet-body", "cc-sheet-footer"].includes(cls)),
+      [...shell.children].map((child) =>
+        child.className.split(" ").find((cls) => ["cc-settings-sidebar", "cc-settings-main"].includes(cls)),
       ),
-      ["cc-settings-top", "cc-sheet-body", "cc-sheet-footer"],
+      ["cc-settings-sidebar", "cc-settings-main"],
+    );
+    const main = element(".cc-settings-shell > .cc-settings-main");
+    assert.deepEqual(
+      [...main.children].map((child) =>
+        child.className.split(" ").find((cls) => ["cc-settings-pane-header", "cc-settings-unsaved-bar", "cc-sheet-body", "cc-sheet-footer"].includes(cls)),
+      ),
+      ["cc-settings-pane-header", "cc-settings-unsaved-bar", "cc-sheet-body", "cc-sheet-footer"],
     );
 
     const connPanel = element('[data-settings-panel="connection"]');

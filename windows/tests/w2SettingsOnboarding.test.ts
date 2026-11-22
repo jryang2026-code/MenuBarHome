@@ -179,8 +179,8 @@ describe("Wave 2 · A16 Settings Full-Text Anchor Search", () => {
     assert.ok(resultsEl.querySelector('[data-settings-search-hit="blockControlWhileLocked"]'));
 
     await click('[data-settings-search-hit="blockControlWhileLocked"]');
-    assert.equal(app.settingsTab, "system");
-    assert.equal(element('[data-settings-panel="system"]').hidden, false);
+    assert.equal(app.settingsTab, "safety");
+    assert.equal(element('[data-settings-panel="safety"]').hidden, false);
     assert.equal(field("#settings-search-input").value, "");
     assert.equal(element("#settings-search-results").hidden, true);
 
@@ -362,7 +362,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
   it("requires destructive risk confirmation when enabling #settings-allow-advanced-facets", async () => {
     const app = startDemoApp();
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
 
     assert.equal(app.settings.allowAdvancedFacetWrites, false);
     toggle("#settings-allow-advanced-facets", true);
@@ -450,7 +450,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
     await click('[data-settings-tab="assistant"]');
     const apiKeyInput = element<HTMLInputElement>("#settings-api-key");
     apiKeyInput.value = "dirty-sk-key";
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="about"]');
 
     await click("#btn-revoke-all-credentials");
     assert.equal(element("#settings-revoke-all-confirm").hidden, false);
@@ -532,7 +532,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
     app.settings.haToken = "ha-tok-fail";
 
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="about"]');
     await click("#btn-revoke-all-credentials");
     await click("#btn-confirm-revoke-all");
     await waitFor(() => app.replyBanner?.isError === true, "Expected vault deletion error banner");
@@ -554,7 +554,7 @@ describe("Wave 2 · A16 Safety Guards (Unsaved Draft, Advanced Facets, Revoke Al
 
     failDelete = false;
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="about"]');
     await click("#btn-revoke-all-credentials");
     await click("#btn-confirm-revoke-all");
     await waitFor(() => !hasPendingMiVaultDeletion(), "Expected pending vault deletion to clear");
@@ -1087,7 +1087,7 @@ describe("Wave 2 · Habit Memory Per-Item Viewing & Single-Item Deletion", () =>
     app.render();
 
     await click("#btn-settings");
-    await click('[data-settings-tab="system"]');
+    await click('[data-settings-tab="safety"]');
 
     assertMissing(document.querySelector('[data-alloff-device="cover.garage_door"]'));
     assertMissing(document.querySelector('[data-alloff-device="cover.curtain"]'));

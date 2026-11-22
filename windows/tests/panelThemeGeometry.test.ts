@@ -39,10 +39,10 @@ describe("PanelTheme profile domain, persistence, Settings UI, and dynamic 472px
   beforeEach(() => { installDom(); localStorage.clear(); setLanguage("zh-Hans"); });
   afterEach(() => { app = null; try { dom.happyDOM?.cancelAsync?.(); } catch {} });
 
-  it("normalizes unknown values to 'fluent' and exposes 412px Fluent & 472px Classic profiles", () => {
-    assert.deepEqual(PANEL_THEMES, ["fluent", "classic"]);
-    assert.equal(DEFAULT_PANEL_THEME, "fluent");
-    for (const bad of [undefined, null, "", "invalid-theme", 42]) assert.equal(normalizePanelTheme(bad), "fluent");
+  it("normalizes unknown values to 'classic' and exposes 412px Fluent & 472px Classic profiles", () => {
+    assert.deepEqual(PANEL_THEMES, ["classic", "fluent"]);
+    assert.equal(DEFAULT_PANEL_THEME, "classic");
+    for (const bad of [undefined, null, "", "invalid-theme", 42]) assert.equal(normalizePanelTheme(bad), "classic");
     assert.equal(normalizePanelTheme("fluent"), "fluent");
     assert.equal(normalizePanelTheme("classic"), "classic");
 
@@ -83,13 +83,13 @@ describe("PanelTheme profile domain, persistence, Settings UI, and dynamic 472px
     assert.deepEqual(["half", "full", "panel"].map((s) => nextSizeForTheme(s as "half", "fluent")), ["full", "panel", "half"]);
   });
 
-  it("persists panelTheme in menumijia.windows.settings.v2 with 'fluent' default and corrupt fallback", () => {
+  it("persists panelTheme in menumijia.windows.settings.v2 with 'classic' default and corrupt fallback", () => {
     const initial = loadSettings();
-    assert.equal(initial.settings.panelTheme, "fluent");
-    writeSettingsForStorage({ ...initial.settings, panelTheme: "classic" });
-    assert.equal(loadSettings().settings.panelTheme, "classic");
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...initial.settings, panelTheme: "corrupt-value" }));
+    assert.equal(initial.settings.panelTheme, "classic");
+    writeSettingsForStorage({ ...initial.settings, panelTheme: "fluent" });
     assert.equal(loadSettings().settings.panelTheme, "fluent");
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...initial.settings, panelTheme: "corrupt-value" }));
+    assert.equal(loadSettings().settings.panelTheme, "classic");
   });
 
   it("deduplicates set_panel_geometry IPC across boot, theme switches, height changes, DPR, and panel-present", async () => {
@@ -112,22 +112,22 @@ describe("PanelTheme profile domain, persistence, Settings UI, and dynamic 472px
     const root = document.querySelector<HTMLElement>("#app")!;
     app = new MenuMijiaWindowsApp(root);
     await app.panelGeometryUpdates;
-    assert.equal(root.dataset.panelTheme, "fluent");
-    assert.deepEqual(geometryCalls, [{ theme: "fluent", height: 680 }]);
+    assert.equal(root.dataset.panelTheme, "classic");
+    assert.deepEqual(geometryCalls, [{ theme: "classic", height: 680 }]);
 
     app.syncPanelGeometry();
     app.applyPanelHeight();
     await app.panelGeometryUpdates;
     assert.equal(geometryCalls.length, 1);
 
-    app.setPanelTheme("classic");
+    app.setPanelTheme("fluent");
     await app.panelGeometryUpdates;
-    assert.equal(root.dataset.panelTheme, "classic");
-    assert.equal(loadSettings().settings.panelTheme, "classic");
-    assert.deepEqual(geometryCalls.at(-1), { theme: "classic", height: 680 });
+    assert.equal(root.dataset.panelTheme, "fluent");
+    assert.equal(loadSettings().settings.panelTheme, "fluent");
+    assert.deepEqual(geometryCalls.at(-1), { theme: "fluent", height: 680 });
     assert.equal(geometryCalls.length, 2);
 
-    app.setPanelTheme("classic");
+    app.setPanelTheme("fluent");
     await app.panelGeometryUpdates;
     assert.equal(geometryCalls.length, 2);
 
@@ -152,21 +152,21 @@ describe("PanelTheme profile domain, persistence, Settings UI, and dynamic 472px
     haUrlInput.dispatchEvent(new window.Event("input", { bubbles: true }));
     assert.equal(hasUnsavedSettingsDraft(app), true);
 
-    const fluentTabKey = buildInactiveTabCacheKey(app as unknown as SettingsViewContext, "general");
-    app.settings.panelTheme = "classic";
-    assert.notEqual(fluentTabKey, buildInactiveTabCacheKey(app as unknown as SettingsViewContext, "general"));
+    const classicTabKey = buildInactiveTabCacheKey(app as unknown as SettingsViewContext, "general");
     app.settings.panelTheme = "fluent";
+    assert.notEqual(classicTabKey, buildInactiveTabCacheKey(app as unknown as SettingsViewContext, "general"));
+    app.settings.panelTheme = "classic";
 
     root.querySelector<HTMLElement>('[data-settings-tab="general"]')!.click();
     const anchorEl = root.querySelector<HTMLElement>('[data-settings-anchor="panelTheme"]')!;
-    assert.equal(anchorEl.querySelector('[data-panel-theme="fluent"]')?.getAttribute("aria-pressed"), "true");
-    anchorEl.querySelector<HTMLElement>('[data-panel-theme="classic"]')!.click();
+    assert.equal(anchorEl.querySelector('[data-panel-theme="classic"]')?.getAttribute("aria-pressed"), "true");
+    anchorEl.querySelector<HTMLElement>('[data-panel-theme="fluent"]')!.click();
 
-    assert.equal(app.settings.panelTheme, "classic");
-    assert.equal(root.dataset.panelTheme, "classic");
-    assert.equal(loadSettings().settings.panelTheme, "classic");
+    assert.equal(app.settings.panelTheme, "fluent");
+    assert.equal(root.dataset.panelTheme, "fluent");
+    assert.equal(loadSettings().settings.panelTheme, "fluent");
     assert.equal(loadSettings().settings.haBaseURL, "");
-    assert.equal(root.querySelector('[data-panel-theme="classic"]')?.getAttribute("aria-pressed"), "true");
+    assert.equal(root.querySelector('[data-panel-theme="fluent"]')?.getAttribute("aria-pressed"), "true");
     assert.equal(root.querySelector<HTMLInputElement>("#settings-ha-url")?.value, "http://192.168.1.99:8123");
     assert.equal(hasUnsavedSettingsDraft(app), true);
     assert.equal(hasUnsavedSettingsChanges(app), true);

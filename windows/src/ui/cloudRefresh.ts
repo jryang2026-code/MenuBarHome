@@ -7,7 +7,7 @@ import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../co
 import { adoptPairedDevicePreferences, applyOrder, homeOptions, scopedKey, spans, tr3 } from "./panelPrefs.js";
 import { filterByListCut, foldGroupedLights, kindChips, memberGroupOwners, showsKindRow } from "./listCut.js";
 import { hasMatchingDomShape, morphMatchingDom, parseSingleElement } from "./dom.js";
-import { getPanelThemeProfile } from "./panelTheme.js";
+import { getPanelThemeProfile, normalizePanelTheme } from "./panelTheme.js";
 import { hasPendingMiVaultDeletion } from "./speechGuard.js";
 import { environmentReadingPriority, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
@@ -1208,16 +1208,45 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
       }
     }
     if (host.settings.connectionMode === "homeAssistant") {
+      const isClassic = getPanelThemeProfile(host.settings.panelTheme).shellLayout === "unifiedPopover";
       const current = host.root.querySelector<HTMLElement>("#btn-all-off");
-      const desired = parseSingleElement(host.renderAllOffControl());
+      const desired = parseSingleElement(host.renderAllOffControl(isClassic));
+      const helperText = isClassic ? host.allOffHelperText() : "";
       if (current && desired) {
         morphMatchingDom(current, desired);
+        if (isClassic) {
+          const stack = current.closest(".cc-all-off-stack");
+          const caption = stack?.querySelector<HTMLElement>(".cc-all-off-caption");
+          if (helperText) {
+            if (caption) {
+              caption.textContent = helperText;
+            } else if (stack) {
+              const span = document.createElement("span");
+              span.className = "cc-all-off-caption";
+              span.textContent = helperText;
+              stack.append(span);
+            }
+          } else {
+            caption?.remove();
+          }
+        }
       } else if (current) {
-        current.remove();
+        const stack = current.closest(".cc-all-off-stack");
+        if (stack) stack.remove();
+        else current.remove();
       } else if (desired) {
-        if (getPanelThemeProfile(host.settings.panelTheme).shellLayout === "unifiedPopover") {
+        if (isClassic) {
           const headerControls = host.root.querySelector(".cc-header-controls");
-          headerControls?.insertBefore(desired, headerControls.querySelector("#btn-hide-panel"));
+          const stack = document.createElement("div");
+          stack.className = "cc-all-off-stack";
+          stack.append(desired);
+          if (helperText) {
+            const span = document.createElement("span");
+            span.className = "cc-all-off-caption";
+            span.textContent = helperText;
+            stack.append(span);
+          }
+          headerControls?.append(stack);
         } else {
           host.root.querySelector(".cc-footer-status")?.append(desired);
         }
@@ -1260,7 +1289,13 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     }
 
     const subtitle = host.root.querySelector<HTMLElement>(".cc-subtitle");
-    if (subtitle) subtitle.textContent = host.statusSummaryText;
+    if (subtitle) {
+      subtitle.textContent = host.isEditingLayout
+        ? t("拖动卡片排序 · 点右下角圆弧手柄改大小")
+        : normalizePanelTheme(host.settings.panelTheme) === "classic"
+          ? host.classicStatusSummaryText
+          : host.statusSummaryText;
+    }
     host.root
       .querySelector<HTMLElement>(".cc-home-badge")
       ?.classList.toggle("is-active", host.activeDeviceCount > 0);

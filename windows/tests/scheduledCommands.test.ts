@@ -102,7 +102,7 @@ const windows: Window[] = [];
 beforeEach(() => {
   dom = mountTestWindow({ stubInterval: true });
   windows.push(dom);
-  localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false }));
+  localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, autoCheckUpdates: false, panelTheme: "fluent" }));
 });
 afterEach(async () => {
   for (const instance of windows.splice(0)) {

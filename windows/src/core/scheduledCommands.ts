@@ -198,12 +198,24 @@ export class ScheduledCommandStore {
   private storageReadable = true;
 
   constructor(private readonly storage: TimerStorage, nowMs = Date.now()) {
+    this.sources = new Map();
+    this.reloadFromStorage(nowMs);
+  }
+
+  reloadFromStorage(nowMs = Date.now()): void {
     let raw: string | null = null;
-    try { raw = storage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY); } catch {
+    this.storageReadable = true;
+    this.unreadableRaw = null;
+    try { raw = this.storage.getItem(SCHEDULED_COMMANDS_STORAGE_KEY); } catch {
       this.storageReadable = false;
     }
     const parsed = parseQueues(raw);
-    this.sources = parsed?.queues ?? new Map();
+    this.sources.clear();
+    if (parsed) {
+      for (const [identity, queue] of parsed.queues.entries()) {
+        this.sources.set(identity, queue);
+      }
+    }
     if (!parsed || parsed.hadCorruption) this.unreadableRaw = raw;
     let changed = false;
     for (const queue of this.sources.values()) {

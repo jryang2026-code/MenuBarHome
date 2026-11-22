@@ -810,6 +810,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     app.settings.haBaseURL = HA_URL;
     app.settings.haToken = "ha-tok-gate";
     app.settings.blockControlWhileLocked = false;
+    app.settings.panelTheme = "fluent";
 
     await app.refreshHADevices(false);
     markTimerSnapshotReady(app);
