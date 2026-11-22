@@ -581,7 +581,7 @@ extension HomeStore {
                 localNetworkBlocks = snapshot.localNetworkBlockedFeatures
             }
             var nextRooms = snapshot.rooms
-            if var lgDev = latestLGDevice, lgConfig.isEnabled {
+            if var lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv) {
                 if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
                     lgDev.roomId = matchedRoom.id
                     latestLGDevice = lgDev

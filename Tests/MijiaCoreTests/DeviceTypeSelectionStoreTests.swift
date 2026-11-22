@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import os
 import PreferencesTestSupport
 import StateTestSupport
 import Testing
@@ -157,20 +158,48 @@ struct DeviceTypeSelectionStoreTests {
         #expect(uncertain.capabilitySelection.enabledCategories == allTypes)
     }
 
-    @Test("Closing a type takes its cards off the panel and Raycast at once, before any refresh prunes them")
+    @Test("Closing a type takes its cards off the panel, AI catalog and Raycast at once, before any refresh prunes them")
     func closedTypeCardsLeaveImmediately() async throws {
-        let store = try await makeStore()
+        var activePlug = Self.plug
+        if case .plug(var spec) = activePlug.kind {
+            spec.isOn = true
+            activePlug.kind = .plug(spec)
+        }
+        let store = try await makeStore(
+            provider: MockHomeProvider(snapshot: Self.homeSnapshot(devices: [Self.light, activePlug, Self.leakSensor]))
+        )
+        store.setAIAssistantEnabled(true)
+        let capturedBodies = OSAllocatedUnfairLock(initialState: [String]())
+        store.assistantResolverOverride = ModelIntentResolver(config: AssistantConfig(model: "glm-5.1"), transport: { request in
+            let body = String(decoding: request.httpBody ?? Data(), as: UTF8.self)
+            capturedBodies.withLock { $0.append(body) }
+            let ok = try JSONSerialization.data(withJSONObject: ["choices": [["message": ["content": #"{"actions":[],"reply":""}"#]]]])
+            return (ok, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        })
+
         let picked = allTypes.subtracting([.plug])
 
         #expect(store.applyDeviceCategorySelection(picked) == .applied)
+        #expect(!store.categoryVisibleDevices.contains { $0.id == Self.plug.id })
         #expect(!store.filteredDevices.contains { $0.id == Self.plug.id })
         #expect(!store.visibleDevices.contains { $0.id == Self.plug.id })
         #expect(!store.raycastVisibleDevices.contains { $0.id == Self.plug.id })
         #expect(store.filteredDevices.map(\.id).sorted() == [Self.leakSensor.id, Self.light.id].sorted())
 
+        _ = await store.runAssistantCommand("我要睡觉了")
+        let closedCatalog = try #require(capturedBodies.withLock { $0.last })
+        #expect(!closedCatalog.contains(Self.plug.name))
+        #expect(closedCatalog.contains(Self.light.name))
+        #expect(!store.buildAssistantContext(mention: .none).activeDevicesSummary.contains(Self.plug.name))
+
         #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
+        #expect(store.categoryVisibleDevices.contains { $0.id == Self.plug.id })
         #expect(store.filteredDevices.contains { $0.id == Self.plug.id }, "reopening the type brings the card back")
         #expect(store.raycastVisibleDevices.contains { $0.id == Self.plug.id })
+
+        _ = await store.runAssistantCommand("我要睡觉了")
+        let reopenedCatalog = try #require(capturedBodies.withLock { $0.last })
+        #expect(reopenedCatalog.contains(Self.plug.name))
     }
 
     @Test("Closing TVs drops the LAN LG card and keeps it out across updates; reopening restores it")
@@ -180,10 +209,12 @@ struct DeviceTypeSelectionStoreTests {
         store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.0.2.10")
         store.applyLGDeviceUpdate(Self.lgTV)
         #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id })
+        #expect(store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
 
         #expect(store.applyDeviceCategorySelection(allTypes.subtracting([.tv])) == .applied)
         #expect(!store.devices.contains { $0.id == Self.lgTV.id })
         #expect(!store.filteredDevices.contains { $0.id == Self.lgTV.id })
+        #expect(!store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
 
         store.applyLGDeviceUpdate(Self.lgTV)
         #expect(!store.devices.contains { $0.id == Self.lgTV.id }, "a fresh TV report stays hidden while TVs are closed")
@@ -196,6 +227,7 @@ struct DeviceTypeSelectionStoreTests {
 
         #expect(store.applyDeviceCategorySelection(allTypes) == .applied)
         #expect(store.filteredDevices.contains { $0.id == Self.lgTV.id }, "reopening TVs restores the card without a new report")
+        #expect(store.raycastVisibleDevices.contains { $0.id == Self.lgTV.id })
     }
 }
 

@@ -1147,6 +1147,9 @@ public final class HomeStore {
                let lgDev = latestLGDevice {
                 applyLGDeviceUpdate(lgDev)
             }
+            if oldValue.enabledCategories != capabilitySelection.enabledCategories {
+                scheduleRaycastSnapshotExport()
+            }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
             // The cards are still in `devices` here; the next refresh prunes them, so the stop requests

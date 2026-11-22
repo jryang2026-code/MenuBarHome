@@ -96,6 +96,12 @@ extension HomeStore {
         homeBackend == .demo || capabilitySelection.enabledCategories.contains(dev.capabilityCategoryID)
     }
 
+    /// All devices whose type is currently enabled (ignoring room/kind/hidden/offline filters),
+    /// used by search and the AI catalog before the next refresh prunes closed types (#348).
+    public var categoryVisibleDevices: [SmartDevice] {
+        devices.filter(showsDeviceCategory)
+    }
+
     private func passesVisibility(_ dev: SmartDevice) -> Bool {
         if hiddenDeviceIds.contains(dev.id) { return false }
         if hideOfflineDevices && !dev.isOnline { return false }
