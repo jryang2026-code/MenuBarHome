@@ -311,24 +311,28 @@ enum MiotFixtures {
         key("123", 2, 3): .number(4000),
         key("123", 2, 4): .number(2),
     ]
-    static let expectedLight = SmartDevice(
-        id: "123",
-        name: "书房吸顶灯",
-        roomId: "shu_fang",
-        roomName: "书房",
-        model: "yeelink.light.ceiling22",
-        isOnline: true,
-        kind: .light(LightSpec(
-            entityId: "miot:123:2",
-            isOn: true,
-            brightnessPercent: 80,
-            colorTempKelvin: 4000,
-            minKelvin: 2600,
-            maxKelvin: 6100,
-            currentEffect: "Night",
-            availableEffects: ["Day", "Night"]
-        ))
-    )
+    static let expectedLight: SmartDevice = {
+        var device = SmartDevice(
+            id: "123",
+            name: "书房吸顶灯",
+            roomId: "shu_fang",
+            roomName: "书房",
+            model: "yeelink.light.ceiling22",
+            isOnline: true,
+            kind: .light(LightSpec(
+                entityId: "miot:123:2",
+                isOn: true,
+                brightnessPercent: 80,
+                colorTempKelvin: 4000,
+                minKelvin: 2600,
+                maxKelvin: 6100,
+                currentEffect: "Night",
+                availableEffects: ["Day", "Night"]
+            ))
+        )
+        device.providerSafetySignals = [.starredOffline]
+        return device
+    }()
 }
 
 struct MiotSynthesizerTests {

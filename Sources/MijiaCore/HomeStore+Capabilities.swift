@@ -135,10 +135,7 @@ extension HomeStore {
     /// reads its box before every plan, so a closed type stops being polled on the next refresh
     /// (P3a-M); Home Assistant reads its box for every frame (P3b-M).
     func syncMiotTypePrunePolicy() {
-        var safetyPolicy = currentSafetyRetentionPolicy()
-        // The doorbell is its own switch, not part of the safety master switch (#308), so a closed
-        // camera type keeps ring detection and its chime even with safety alerts off.
-        if doorbellAutoPopup || doorbellChime { safetyPolicy.enabledSignals.insert(.doorbell) }
+        let safetyPolicy = effectiveSafetyRetentionPolicy()
         miotTypePruneBox.update(MiotTypePrunePolicy(
             selection: capabilitySelection,
             safetyPolicy: safetyPolicy,
@@ -1572,28 +1569,28 @@ extension HomeStore {
     }
 
     private func safetySignals(for device: SmartDevice) -> Set<SafetySignalKind> {
+        if let providerSignals = device.providerSafetySignals { return providerSignals }
         var signals: Set<SafetySignalKind> = [.starredOffline]
         switch device.kind {
         case .plug: signals.formUnion([.longRunningPlug, .highPower])
         case .climate: signals.insert(.longRunningClimate)
-        case .camera: signals.insert(.doorbell)
         case .sensor(let spec):
             if spec.battery != nil { signals.insert(.lowBattery) }
-            // Same rule as `DeviceSynthesizer.haSafetySignals`: without the observations a closed
-            // sensor type would preview as hidden even though its leak alert keeps reading it.
-            for observation in spec.observations { signals.insert(SafetySignalKind(sensorAlertKind: observation.kind)) }
         default: break
+        }
+        for observation in device.safetyObservations {
+            signals.insert(SafetySignalKind(sensorAlertKind: observation.kind))
         }
         return signals
     }
 
-    func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
-        guard enableSafetyAlerts else { return SafetyRetentionPolicy() }
-        var enabled: Set<SafetySignalKind> = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
-        // `isSensorAlertEnabled` applies each alert's own default: contact and motion ship off, so a
-        // closed type must not keep reading them just because the user never touched the switch.
-        for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
-            enabled.insert(SafetySignalKind(sensorAlertKind: kind))
+    func effectiveSafetyRetentionPolicy() -> SafetyRetentionPolicy {
+        var enabled: Set<SafetySignalKind> = []
+        if enableSafetyAlerts {
+            enabled = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
+            for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
+                enabled.insert(SafetySignalKind(sensorAlertKind: kind))
+            }
         }
         if doorbellAutoPopup || doorbellChime { enabled.insert(.doorbell) }
         return SafetyRetentionPolicy(enabledSignals: enabled, starredDeviceIds: favoriteDeviceIds)
@@ -1756,7 +1753,7 @@ extension HomeStore {
         let graph = buildCapabilityReferenceGraph(indexedDevices: indexed, expectedGeneration: expectedGeneration)
         return CapabilityReferenceEngine.evaluateDeactivation(
             current: capabilitySelection, proposed: proposed, manifest: .shared,
-            devices: indexed, safetyPolicy: currentSafetyRetentionPolicy(), references: graph
+            devices: indexed, safetyPolicy: effectiveSafetyRetentionPolicy(), references: graph
         )
     }
 
@@ -2037,7 +2034,7 @@ extension HomeStore {
         var rules = ruleStore.load()
         var rulesChanged = false
         let availableSet = Set(CapabilityReferenceEngine.partitionDevices(
-            devices: indexed, selection: capabilitySelection, safetyPolicy: currentSafetyRetentionPolicy()
+            devices: indexed, selection: capabilitySelection, safetyPolicy: effectiveSafetyRetentionPolicy()
         ).availableDeviceIds)
 
         for idx in rules.indices where !rules[idx].isEnabled
@@ -2128,7 +2125,7 @@ extension HomeStore {
 
     private func allowedDeactivationVerdict(for selection: CapabilitySelection) -> CapabilityDeactivationVerdict {
         let partition = CapabilityReferenceEngine.partitionDevices(
-            devices: currentIndexedDevicesList(), selection: selection, safetyPolicy: currentSafetyRetentionPolicy()
+            devices: currentIndexedDevicesList(), selection: selection, safetyPolicy: effectiveSafetyRetentionPolicy()
         )
         return CapabilityDeactivationVerdict(
             disposition: .allowed, cascadedCapabilities: [], itemsToPause: [],

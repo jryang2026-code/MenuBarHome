@@ -98,6 +98,48 @@ struct DeviceTypeSelectionStoreTests {
         #expect(restarted.capabilitySelection.enabledCategories == picked)
     }
 
+    @Test("The preview and provider retain the doorbell when safety alerts are off")
+    func doorbellUsesItsOwnPreferences() async throws {
+        let store = try await makeStore()
+        store.enableSafetyAlerts = false
+        store.doorbellAutoPopup = false
+        store.doorbellChime = true
+        let (_, home, _) = try HATypePruningTests.load(
+            HATypePruningTests.cameras, policy: HATypePruningTests.policy(closed: [])
+        )
+        store.devices.append(contentsOf: home.devices)
+        let (_, _, actual) = try HATypePruningTests.load(
+            HATypePruningTests.cameras, policy: HATypePruningTests.policy(closed: [.camera], signals: [.doorbell])
+        )
+
+        let impact = store.previewDeviceCategorySelection(allTypes.subtracting([.camera]))
+        #expect(impact.retainedSafetyDevices.map(\.id) == ["dev_doorbell"])
+        #expect(actual?.safetyDevices.map(\.id) == ["dev_doorbell"])
+        #expect(impact.retainedSafetyDevices.first?.signals == [.doorbell])
+        #expect(store.haTypePruneBox.get().safetyPolicy.enabledSignals == [.doorbell])
+        #expect(store.miotTypePruneBox.get().safetyPolicy.enabledSignals == [.doorbell])
+    }
+
+    @Test("The preview keeps the same auxiliary HA alarm as the provider")
+    func auxiliaryHAAlarmAppearsInPreview() async throws {
+        let store = try await makeStore()
+        store.enableSafetyAlerts = true
+        let (_, home, _) = try HATypePruningTests.load(HATypePruningTests.home, policy: HATypePruningTests.policy(closed: []))
+        let merged = DeviceDeduplicator.merge(homeAssistant: home, xiaomiCloud: nil).home
+        let valve = try #require(merged.devices.first { $0.id == "dev_valve" })
+        #expect(valve.providerSafetySignals?.contains(.gas) == true)
+        #expect(valve.auxiliarySafetyObservations.contains { $0.kind == .gas })
+        store.devices.append(valve)
+        let picked = allTypes.subtracting([valve.capabilityCategoryID])
+        let (_, _, actual) = try HATypePruningTests.load(
+            HATypePruningTests.home,
+            policy: HATypePruningTests.policy(closed: [valve.capabilityCategoryID], signals: [.gas])
+        )
+        let impact = store.previewDeviceCategorySelection(picked)
+        #expect(actual?.safetyDevices.contains { $0.id == valve.id } == true)
+        #expect(impact.retainedSafetyDevices.first { $0.id == valve.id }?.signals == [.gas])
+    }
+
     @Test("A timer on a closing type waits for confirmation of that exact list, then is paused")
     func referencedTimerNeedsConfirmation() async throws {
         let defaults = InMemoryUserDefaults()
