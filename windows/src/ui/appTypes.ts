@@ -187,6 +187,7 @@ export interface PendingHighRiskConfirmation {
   readonly actionKey: string;
   readonly expiresAtMs: number;
   readonly sourceRevision: number;
+  readonly origin?: "url";
   readonly confirm?: {
     readonly command: DeviceCommand;
     readonly summary: string;

@@ -1544,4 +1544,70 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     assert.match(readBannerText(), /该设备类型已关闭/);
     assert.equal(h.countCmd("ha_execute"), writesBefore);
   });
+
+  it("filters a batch of closed devices without reloading capabilities for every URL all-off candidate", async (test) => {
+    const h = makeHarness();
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "{{SECRET_7swvbi2f}}";
+    await app.refreshHADevices(false);
+    const strip = app.devices.find((d) => d.name === "HA灯带")!;
+    const candidateCount = 24;
+    app.devices = Array.from({ length: candidateCount }, (_, index) => ({
+      ...strip,
+      id: `${strip.id}-${index}`,
+    }));
+    assert.equal(app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS.filter((c) => c !== "light")), true);
+    await setRaycastIntegrationEnabled(app, true);
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+    const readStorage = test.mock.method(localStorage, "getItem");
+
+    await enqueueIncomingOpenUrl(app, `menumijia://scene?name=allOff&token=${token}`);
+    const selectionReads = readStorage.mock.calls.filter(({ arguments: [key] }) => key === MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+    assert.ok(selectionReads.length < candidateCount, `loaded capabilities ${selectionReads.length} times for ${candidateCount} candidates`);
+    assert.equal(h.countCmd("ha_execute"), 0);
+    assert.match(app.replyBanner?.text ?? "", /已关闭 0 台.*另有 24 台已跳过/);
+  });
+
+  it("reports all-off skips in the panel and URL replies in all supported languages", async () => {
+    const h = makeHarness({
+      onHaSnapshot: async () => {
+        const snapshot = makeHaSnapshotPayload();
+        return {
+          ...snapshot,
+          entities: [...snapshot.entities as unknown[], { entity_id: "fan.ha_fan", device_id: "ha-dev-heater" }],
+          states: [...snapshot.states as unknown[], { entity_id: "fan.ha_fan", state: "on", attributes: { friendly_name: "HA风扇", percentage: 50 } }],
+        };
+      },
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "{{SECRET_7swvbi2f}}";
+    await app.refreshHADevices(false);
+    const devices = structuredClone(app.devices);
+    assert.equal(app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS.filter((c) => c !== "light")), true);
+    await setRaycastIntegrationEnabled(app, true);
+    const token = getActiveRaycastBridgeTokenForHost(app)!;
+
+    for (const [language, expected] of [
+      ["zh-Hans", /已关闭 1 台.*另有 1 台已跳过/],
+      ["zh-Hant", /已關閉 1 台.*另有 1 台已跳過/],
+      ["en", /Switched off 1 devices\. Skipped 1 other devices\./],
+    ] as const) {
+      setLanguage(language);
+      for (const source of ["panel", "url"] as const) {
+        app.devices = structuredClone(devices);
+        const before = h.countCmd("ha_execute");
+        if (source === "panel") {
+          await (app as unknown as { turnAllOff(): Promise<void> }).turnAllOff();
+        } else {
+          await enqueueIncomingOpenUrl(app, `menumijia://scene?name=allOff&token=${token}`);
+        }
+        assert.match(app.replyBanner?.text ?? "", expected, `${language} ${source}`);
+        assert.equal(h.countCmd("ha_execute") - before, 1);
+      }
+    }
+  });
 });
