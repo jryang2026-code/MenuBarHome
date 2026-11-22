@@ -101,7 +101,10 @@ export { dispatchSystemContextEvent };
    * Manager, then rewrite localStorage without secrets (#28). Later runs read only the
    * credential store, so an upgrade needs no QR login again.
    */
-export function initializeCredentials(host: MenuMijiaWindowsApp): void {
+export function initializeCredentials(
+  host: MenuMijiaWindowsApp,
+  options: { readonly overwriteExisting?: boolean } = {},
+): void {
     const initialKey = host.settings.openRouterApiKey.trim();
     const initialIdentity = assistantEndpointIdentity(host.settings.assistantBaseURL);
     if (initialKey !== "" && initialIdentity !== null && initialIdentity === host.settings.assistantKeyEndpoint) {
@@ -119,7 +122,7 @@ export function initializeCredentials(host: MenuMijiaWindowsApp): void {
     }
     // A stale pre-1.0 copy can still hold secrets even when the v2 copy is clean (#28).
     stripCredentialFieldsFromStoredCopies();
-    void hydrateCredentials(host);
+    void hydrateCredentials(host, options);
   }
 
 const hydratingHosts = new WeakSet<MenuMijiaWindowsApp>();
@@ -162,7 +165,10 @@ export async function retryIdentityMigration(host: MenuMijiaWindowsApp): Promise
   host.render();
 }
 
-export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<void> {
+export async function hydrateCredentials(
+  host: MenuMijiaWindowsApp,
+  options: { readonly overwriteExisting?: boolean } = {},
+): Promise<void> {
     hydratingHosts.add(host);
     try {
       const activePreset = inferAssistantPreset(host.settings.assistantBaseURL).id;
@@ -194,8 +200,11 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         if (pendingSignOut) host.render();
         return;
       }
+      const allowOverwrite = options.overwriteExisting === true && !pendingPersistDuringHydration.has(host);
       if (effectiveCredentials.assistantApiKeys) {
-        host.assistantKeysByPreset = { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
+        host.assistantKeysByPreset = allowOverwrite
+          ? { ...effectiveCredentials.assistantApiKeys }
+          : { ...effectiveCredentials.assistantApiKeys, ...host.assistantKeysByPreset };
       }
       const current = credentialsFromSettings(host.settings, host.assistantKeysByPreset);
       // P2c-W: a connection whose removal is still incomplete must never be revived by re-adopting
@@ -204,10 +213,12 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       const miRemovalPending =
         adoptedMiSession !== null &&
         isConnectionRemovalPending(miConnectionRemovalScope(makeMiAccount(adoptedMiSession).id));
-      if (!current.miSession && adoptedMiSession && !miRemovalPending) host.settings.miSession = adoptedMiSession;
+      if ((allowOverwrite || !current.miSession) && adoptedMiSession && !miRemovalPending) {
+        host.settings.miSession = adoptedMiSession;
+      }
       const adoptedHaScope = effectiveCredentials.haToken.trim() === "" ? null : haConnectionScope(host.settings.haBaseURL, effectiveCredentials.haToken);
       const haRemovalPending = isConnectionRemovalPending(haConnectionRemovalScope(adoptedHaScope));
-      if (current.haToken === "" && effectiveCredentials.haToken !== "" && !haRemovalPending) {
+      if ((allowOverwrite || current.haToken === "") && effectiveCredentials.haToken !== "" && !haRemovalPending) {
         host.settings.haToken = effectiveCredentials.haToken;
       }
       const currentEndpoint = assistantEndpointIdentity(host.settings.assistantBaseURL);
@@ -219,7 +230,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
             ? host.assistantKeysByPreset.custom?.trim() ?? ""
             : ""
           : host.assistantKeysByPreset[activePreset]?.trim() ?? effectiveCredentials.assistantApiKey;
-      if (host.settings.openRouterApiKey.trim() === "" && activeSlotKey !== "") {
+      if ((allowOverwrite || host.settings.openRouterApiKey.trim() === "") && activeSlotKey !== "") {
         host.settings.openRouterApiKey = activeSlotKey;
         if (activePreset !== "custom") {
           host.settings.assistantKeyEndpoint = currentEndpoint;
@@ -247,7 +258,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
       if (host.settings.connectionMode === "xiaomiCloud" && host.settings.miSession) {
         if (!isHostMiSessionEnabled(host, host.settings.miSession) && !hasSecondaryMiAccountsInIndex()) {
           host.devices = [];
-        } else {
+        } else if (!host.isStandaloneSettingsWindow) {
           void host.refreshDevices(true);
         }
       }
@@ -266,7 +277,7 @@ export async function hydrateCredentials(host: MenuMijiaWindowsApp): Promise<voi
         }
       }
       host.render();
-      if (host.settings.connectionMode === "homeAssistant" && hasConfiguredHA && isHostHaEnabled(host)) {
+      if (!host.isStandaloneSettingsWindow && host.settings.connectionMode === "homeAssistant" && hasConfiguredHA && isHostHaEnabled(host)) {
         void host.refreshHADevices();
       }
     } catch {

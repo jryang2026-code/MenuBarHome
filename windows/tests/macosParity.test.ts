@@ -3,8 +3,10 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
+import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { SmartDevice } from "../src/core/models.js";
+import { serializeMiSession } from "../src/core/secureStore.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import { openSettingsSheet, saveSettings } from "../src/ui/appLifecycle.js";
@@ -248,5 +250,152 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     await setImmediate();
     assert.equal(app.activeSheet, "settings");
     assert.equal(app.settingsTab, "about");
+  });
+
+  it("preserves and rehydrates CredentialVault tokens in standalone settings across cross-window sync", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    win.__MENUMIJIA_WINDOW_MODE__ = "settings";
+    const vault = new Map<string, string>([
+      [
+        "mi_session",
+        serializeMiSession({
+          userId: "99887766",
+          cUserId: "",
+          ssecurity: "AQIDBAUGBwgJCgsMDQ4PEA==",
+          serviceToken: "live-mi-token",
+          passToken: "",
+          region: "cn",
+        }),
+      ],
+      ["ha_token", "live-ha-token"],
+      ["assistant_api_key_deepseek", "sk-live-ds"],
+    ]);
+    const deleted: string[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        metadata: { currentWindow: { label: "settings" } },
+        invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+          const name = String(args.name ?? "");
+          if (cmd === "secure_store_get") return vault.get(name) ?? null;
+          if (cmd === "secure_store_set") {
+            vault.set(name, String(args.value ?? ""));
+            return null;
+          }
+          if (cmd === "secure_store_delete") {
+            deleted.push(name);
+            vault.delete(name);
+            return null;
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    seedSettings({
+      connectionMode: "homeAssistant",
+      haBaseURL: "http://ha.local:8123",
+      assistantBaseURL: "https://api.deepseek.com/v1",
+      assistantKeyEndpoint: "api.deepseek.com",
+    });
+
+    app = new MenuMijiaWindowsApp(element("#app"));
+    app.refreshDevices = async () => {};
+    app.refreshHADevices = async () => {};
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.settings.miSession?.userId, "99887766");
+    assert.equal(app.settings.haToken, "live-ha-token");
+    assert.equal(app.settings.openRouterApiKey, "sk-live-ds");
+
+    // Simulate main window writing stripped localStorage & emitting cross-window sync.
+    writeSettingsForStorage({ ...app.settings, panelOpacity: 0.88 });
+    window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
+    await setImmediate();
+    await setImmediate();
+
+    // Toggling an unrelated preference in standalone Settings must not wipe vault credentials.
+    app.settings.panelTheme = "fluent";
+    saveSettings(app);
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(deleted.length, 0);
+    assert.ok(vault.get("mi_session")?.includes("99887766"));
+    assert.equal(vault.get("ha_token"), "live-ha-token");
+    assert.equal(app.settings.miSession?.userId, "99887766");
+    assert.equal(app.settings.haToken, "live-ha-token");
+  });
+
+  it("guards native close requests in standalone settings via menumijia:request-close-settings", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    win.__MENUMIJIA_WINDOW_MODE__ = "settings";
+    const invoked: string[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        metadata: { currentWindow: { label: "settings" } },
+        invoke: async (cmd: string) => {
+          invoked.push(cmd);
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    seedSettings();
+    app = new MenuMijiaWindowsApp(element("#app"));
+
+    // Clean close request closes the native window immediately.
+    window.dispatchEvent(new window.CustomEvent("menumijia:request-close-settings"));
+    assert.equal(invoked.includes("close_settings_window"), true);
+
+    // Dirty edits intercept native close and surface #settings-unsaved-confirm instead.
+    invoked.length = 0;
+    element('[data-settings-tab="connection"]').click();
+    const haInput = element<HTMLInputElement>("#settings-ha-url");
+    haInput.value = "http://dirty.local:8123";
+    haInput.dispatchEvent(new window.Event("input", { bubbles: true }));
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:request-close-settings"));
+    assert.equal(invoked.includes("close_settings_window"), false);
+    assert.equal(element("#settings-unsaved-confirm").hidden, false);
+
+    // Discarding closes the native window cleanly.
+    element("#btn-discard-settings").click();
+    assert.equal(invoked.includes("close_settings_window"), true);
+  });
+
+  it("synchronizes eventAutomationEnabled lifecycle on main window when toggled from standalone settings", async () => {
+    const ruleStore = new AutomationRuleStore();
+    ruleStore.save([
+      createAutomationRule({
+        id: "r-sleep-parity",
+        trigger: "systemSleep",
+        action: { kind: "devices", deviceIds: ["light.living_ceiling"], isOn: false },
+      }),
+    ]);
+
+    seedSettings({ eventAutomationEnabled: false });
+    app = new MenuMijiaWindowsApp(element("#app"));
+    const livingBefore = app.devices.find((d) => d.id === "light.living_ceiling");
+    assert.equal(livingBefore?.kind.kind === "light" && livingBefore.kind.isOn, true);
+
+    // While automation is disabled, system-sleep must not execute the rule.
+    window.dispatchEvent(new window.CustomEvent("menumijia:system-sleep"));
+    await setImmediate();
+    await setImmediate();
+    const livingWhileDisabled = app.devices.find((d) => d.id === "light.living_ceiling");
+    assert.equal(livingWhileDisabled?.kind.kind === "light" && livingWhileDisabled.kind.isOn, true);
+
+    // Simulate standalone Settings turning eventAutomationEnabled on and notifying main.
+    writeSettingsForStorage({ ...app.settings, eventAutomationEnabled: true });
+    window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
+    await setImmediate();
+
+    window.dispatchEvent(new window.CustomEvent("menumijia:system-sleep"));
+    await setImmediate();
+    await setImmediate();
+    const livingAfterEnable = app.devices.find((d) => d.id === "light.living_ceiling");
+    assert.equal(livingAfterEnable?.kind.kind === "light" && livingAfterEnable.kind.isOn, false);
   });
 });

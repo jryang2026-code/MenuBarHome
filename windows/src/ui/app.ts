@@ -1,5 +1,6 @@
 import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "../core/capabilityManifest.js";
 import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
+import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
@@ -96,6 +97,7 @@ import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
   releaseActivityWindowLifecycle,
+  setEventAutomationRunning,
   type HostActivityCenter,
 } from "./activityStackView.js";
 import {
@@ -120,7 +122,7 @@ import {
   syncSensorHistoryHost,
   type SensorHistoryUiState,
 } from "./sensorHistoryView.js";
-import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncTimerLoopSchedule } from "./appLifecycle.js";
+import { applyGlobalHotkey, applyInterfaceLanguage, applyTemperatureSetting, bindGlobalKeys, bindLifecycleRecovery, checkForAppUpdate, disposeAppLifecycle, hasAnyConnectedOrSelectedDataSource, initializeCredentials, openSettingsSheet, openUpdatePage, restoreUpdateState, retryIdentityMigration, saveSettings, signOutXiaomiAccount, startTimerLoop, startUpdateInstall, submitServiceEndpoints, syncAutomationLifecycle, syncTimerLoopSchedule } from "./appLifecycle.js";
 import { handleNaturalCommand, runScheduledCommand } from "./naturalCommand.js";
 import { currentProactiveSuggestions, maybeRefreshProactiveInBackground } from "./proactive.js";
 import { SourceEpoch } from "./sourceEpoch.js";
@@ -146,7 +148,7 @@ import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.js";
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
-  bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, isInsideScheduledTimerTick, isUndoHoverPaused,
+  bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, hasPendingMiVaultDeletion, isInsideScheduledTimerTick, isUndoHoverPaused,
   rejectIfControlBlockedWhileLocked, renderUrlConfirmationPrompt, restoreUndoKindSnapshot, runScheduledCommandWithLockGuard, shouldKeepPopoverPinned, syncUndoBannerClock, toggleVoiceInput, undoButtonVisible,
 } from "./speechGuard.js";
 import { createPanelSearchState, normalizeSearch, PanelSearchIndex } from "../core/panelSearch.js";
@@ -162,8 +164,8 @@ import {
   type PanelPrioritySnapshot,
 } from "./panelSplitTiles.js";
 
-import { ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { scheduledCommandIdentity } from "./scheduledCommands.js";
+import { ScheduledCommandStore, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
+import { scheduledCommandIdentity, setScheduledCommandsRunning } from "./scheduledCommands.js";
 
 export { undoBannerMs, undoDeviceCount } from "./undoTracker.js";
 
@@ -676,13 +678,19 @@ export class MenuMijiaWindowsApp {
       }
       this.syncFromPersistedStorage();
     };
+    const onRequestCloseSettings = () => {
+      if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
+      this.requestCloseSettingsSheet();
+    };
     window.addEventListener("menumijia:select-settings-tab", onSelectSettingsTab);
     window.addEventListener("menumijia:settings-sync", onCrossWindowSettingsSync);
+    window.addEventListener("menumijia:request-close-settings", onRequestCloseSettings);
     window.addEventListener("storage", onCrossWindowSettingsSync);
     this.appDisposers.push(
       () => window.removeEventListener("blur", onBlurCancelAllOff),
       () => window.removeEventListener("menumijia:select-settings-tab", onSelectSettingsTab),
       () => window.removeEventListener("menumijia:settings-sync", onCrossWindowSettingsSync),
+      () => window.removeEventListener("menumijia:request-close-settings", onRequestCloseSettings),
       () => window.removeEventListener("storage", onCrossWindowSettingsSync),
       unsubscribeHaLifecycle,
       () => undoTrackerFor(this).dispose(),
@@ -735,8 +743,35 @@ export class MenuMijiaWindowsApp {
     const prevMode = this.settings.connectionMode;
     const prevTheme = this.settings.panelTheme;
     const prevHeight = this.settings.panelHeight;
+    const prevHaBaseURL = this.settings.haBaseURL;
+    const prevAssistantBaseURL = this.settings.assistantBaseURL;
+    const prevMiSession = this.settings.miSession;
+    const prevHaToken = this.settings.haToken;
+    const prevOpenRouterApiKey = this.settings.openRouterApiKey;
+    const prevAssistantKeysByPreset = { ...this.assistantKeysByPreset };
+    const prevEventAutomation = isEventAutomationEnabled(this.settings);
+    const prevScheduledCommands = isScheduledCommandsEnabled(this.settings);
     this.loadedSettings = reloaded;
     this.settings = reloaded.settings;
+    // `writeSettingsForStorage` strips credential secrets from localStorage, so keep live
+    // in-memory credentials intact across cross-window sync (unless sign-out/revocation
+    // cleared them) while re-hydrating authoritatively from CredentialVault below.
+    if (
+      !hasPendingMiVaultDeletion() &&
+      !(prevMode === "xiaomiCloud" && this.settings.connectionMode === "demo" && this.settings.cachedXiaomiDevices.length === 0) &&
+      prevMiSession
+    ) {
+      this.settings.miSession = prevMiSession;
+    }
+    if (this.settings.haBaseURL.trim() !== "" && this.settings.haBaseURL === prevHaBaseURL && prevHaToken !== "") {
+      this.settings.haToken = prevHaToken;
+    }
+    if (this.settings.assistantKeyEndpoint === null && this.settings.assistantCustomKeyEndpoint === null) {
+      this.assistantKeysByPreset = {};
+    } else if (this.settings.assistantBaseURL === prevAssistantBaseURL) {
+      if (prevOpenRouterApiKey !== "") this.settings.openRouterApiKey = prevOpenRouterApiKey;
+      this.assistantKeysByPreset = { ...prevAssistantKeysByPreset, ...this.assistantKeysByPreset };
+    }
     this.applyInterfaceLanguage();
     this.applyTemperatureSetting();
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
@@ -758,14 +793,28 @@ export class MenuMijiaWindowsApp {
         }
       }
     }
+    this.initializeCredentials({ overwriteExisting: true });
     if (!this.isStandaloneSettingsWindow) {
-      this.initializeCredentials();
       if (prevTheme !== this.settings.panelTheme || prevHeight !== this.settings.panelHeight) {
         this.lastAppliedPanelHeightKey = null;
         this.syncPanelGeometry();
       }
       this.syncPanelPlacement();
       void this.applyGlobalHotkey();
+      const nextEventAutomation = isEventAutomationEnabled(this.settings);
+      if (nextEventAutomation !== prevEventAutomation) {
+        this.settings.eventAutomationEnabled = prevEventAutomation;
+        setEventAutomationRunning(this, nextEventAutomation);
+      }
+      const nextScheduledCommands = isScheduledCommandsEnabled(this.settings);
+      if (nextScheduledCommands !== prevScheduledCommands) {
+        this.scheduledCommandStore.reloadFromStorage();
+        if (nextScheduledCommands) {
+          this.settings.scheduledCommandsEnabled = prevScheduledCommands;
+          setScheduledCommandsRunning(this, true);
+        }
+      }
+      syncAutomationLifecycle(this);
       if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
         this.submitServiceEndpoints(true);
       }
@@ -773,8 +822,8 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  private initializeCredentials(): void {
-    initializeCredentials(this);
+  private initializeCredentials(options?: { readonly overwriteExisting?: boolean }): void {
+    initializeCredentials(this, options);
   }
 
   public retryIdentityMigration(): Promise<void> {

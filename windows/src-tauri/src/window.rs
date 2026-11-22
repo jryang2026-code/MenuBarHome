@@ -7,6 +7,11 @@ const TRAY_ICON_SLOP_PX: i32 = 36;
 const MAX_TRAY_HOLD_MS: u64 = 5_000;
 
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
+static SETTINGS_ALLOW_CLOSE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn consume_settings_allow_close(flag: &AtomicBool) -> bool {
+    flag.swap(false, Ordering::SeqCst)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TrayToggleAction {
@@ -821,7 +826,8 @@ pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) ->
     let init_script = format!(
         "window.__MENUMIJIA_WINDOW_MODE__ = 'settings'; window.__MENUMIJIA_SETTINGS_TAB__ = '{sanitized}';"
     );
-    tauri::WebviewWindowBuilder::new(
+    SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
+    let settings_win = tauri::WebviewWindowBuilder::new(
         &app,
         "settings",
         tauri::WebviewUrl::App(std::path::PathBuf::from("index.html")),
@@ -838,15 +844,36 @@ pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) ->
     .initialization_script(&init_script)
     .build()
     .map_err(|err| format!("无法打开设置窗口：{err}"))?;
+    let win_for_events = settings_win.clone();
+    settings_win.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
+            if consume_settings_allow_close(&SETTINGS_ALLOW_CLOSE) {
+                return;
+            }
+            api.prevent_close();
+            if win_for_events
+                .eval("window.dispatchEvent(new CustomEvent('menumijia:request-close-settings'))")
+                .is_err()
+            {
+                let _ = win_for_events.destroy();
+            }
+        }
+        WindowEvent::Destroyed => {
+            SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
+        }
+        _ => {}
+    });
     Ok(true)
 }
 
 #[tauri::command]
 pub(crate) fn close_settings_window(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window("settings") {
-        window
-            .close()
-            .map_err(|err| format!("无法关闭设置窗口：{err}"))?;
+        SETTINGS_ALLOW_CLOSE.store(true, Ordering::SeqCst);
+        if let Err(err) = window.close() {
+            SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
+            return Err(format!("无法关闭设置窗口：{err}"));
+        }
     }
     Ok(())
 }
@@ -909,5 +936,14 @@ mod tests {
         assert_eq!(sanitize_settings_tab(Some("system")), "safety");
         assert_eq!(sanitize_settings_tab(Some("about")), "about");
         assert_eq!(sanitize_settings_tab(Some("foo'; alert(1)//")), "general");
+    }
+
+    #[test]
+    fn settings_allow_close_flag_consumes_once() {
+        let flag = AtomicBool::new(false);
+        assert!(!consume_settings_allow_close(&flag));
+        flag.store(true, Ordering::SeqCst);
+        assert!(consume_settings_allow_close(&flag));
+        assert!(!consume_settings_allow_close(&flag));
     }
 }
