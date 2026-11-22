@@ -4102,6 +4102,11 @@ describe("Home Assistant source", () => {
       };
       Object.defineProperty(window, "__TAURI_INTERNALS__", { value: { invoke }, configurable: true });
       localStorage.setItem("menumijia.windows.settings.v2", JSON.stringify({ connectionMode: "homeAssistant", haBaseURL: "http://localhost:8123", hasCompletedOnboarding: true, assistantBaseURL: "http://localhost:1234/v1", assistantModel: "controlled-model" }));
+      // The weekly health report is due from Sunday 20:00 for two days, and its card takes the
+      // first slot of the Classic upper stack, hiding the proactive pill. This case owns the
+      // suggestion cache, not that calendar window, so mark the report delivered like the
+      // daily update check above.
+      localStorage.setItem("weekly_health_report_delivered_at_v1", String(Date.now()));
       new MenuMijiaWindowsApp(element("#app"));
       await waitFor(() => !!document.querySelector('[data-tile-id="light.study"]'));
       for (const tick of ticks) tick();
