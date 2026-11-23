@@ -1330,6 +1330,8 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     /// Alarm rows (`binary_sensor` gas / smoke / moisture) on a card that is not a sensor, such as
     /// the gas row on a valve. The card keeps its own kind; these only feed `SensorAlerts`.
     public var auxiliarySafetyObservations: [SensorObservation]
+    /// Provider read-plan signals, including capabilities whose current reading is unavailable.
+    var providerSafetySignals: Set<SafetySignalKind>?
 
     public init(
         id: String,
@@ -1364,6 +1366,10 @@ public struct SmartDevice: Identifiable, Equatable, Sendable {
     var safetyObservations: [SensorObservation] {
         guard case .sensor(let spec) = kind else { return auxiliarySafetyObservations }
         return spec.observations + auxiliarySafetyObservations
+    }
+
+    var freshSafetyObservations: [SensorObservation] {
+        telemetryStale ? [] : safetyObservations
     }
 
     /// Whether this device can be toggled on/off with a single primary click

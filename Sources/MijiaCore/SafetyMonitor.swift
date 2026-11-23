@@ -36,6 +36,7 @@ struct SafetyMonitor {
     mutating func evaluate(
         devices: [SmartDevice],
         favorites: Set<String>,
+        unavailableActionIds: Set<String> = [],
         sensorPolicy: SensorAlertPolicy,
         now: Date,
         calendar: Calendar = .current
@@ -92,6 +93,7 @@ struct SafetyMonitor {
                 }()
                 let elapsed = now.timeIntervalSince(startedAt)
 
+                let canTurnOff = !unavailableActionIds.contains(dev.id)
                 switch dev.kind {
                 // A read-only plug (unverified spec, mains breaker #265) gets no reminder: its
                 // notification button would send the very switch command the card refuses.
@@ -100,16 +102,20 @@ struct SafetyMonitor {
                     && (s.powerWatts ?? 0) > Self.longRunningPlugMinimumWatts
                     && !longRunAlertedForSession.contains(dev.id):
                     longRunAlertedForSession.insert(dev.id)
+                    let watts = DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0
                     emitted.append(
                         SafetyAlert(
                             id: "longrun:\(dev.id)",
                             deviceId: dev.id,
                             title: L10n.tr("\(dev.name) 已开启超过 45 分钟", "\(dev.name) On for Over 45m"),
-                            body: L10n.tr(
-                                "当前功率 \(DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0)W，如需关闭可直接点击通知按钮。",
-                                "Drawing \(DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0)W. Click the notification action to turn it off."
+                            body: canTurnOff ? L10n.tr(
+                                "当前功率 \(watts)W，如需关闭可直接点击通知按钮。",
+                                "Drawing \(watts)W. Click the notification action to turn it off."
+                            ) : L10n.tr(
+                                "当前功率 \(watts)W，请确认是否仍需开启。",
+                                "Drawing \(watts)W. Check if you still need it running."
                             ),
-                            turnOffCommand: .setSwitch(entityId: s.switchEntityId, isOn: false)
+                            turnOffCommand: canTurnOff ? .setSwitch(entityId: s.switchEntityId, isOn: false) : nil
                         )
                     )
                 case .climate(let s) where elapsed >= 4 * 3600 && !longRunAlertedForSession.contains(dev.id):
@@ -123,7 +129,7 @@ struct SafetyMonitor {
                                 "当前设定 \(L10n.temperature(s.targetTemperature))，请确认是否仍需开启。",
                                 "Target temp \(L10n.temperature(s.targetTemperature)). Check if you still need it running."
                             ),
-                            turnOffCommand: .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: s.hvacMode)
+                            turnOffCommand: canTurnOff ? .setClimatePower(entityId: s.entityId, isOn: false, fallbackMode: s.hvacMode) : nil
                         )
                     )
                 default:

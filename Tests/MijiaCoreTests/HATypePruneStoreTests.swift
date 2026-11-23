@@ -130,6 +130,59 @@ struct HATypePruneStoreTests {
         #expect(store.recentSafetyAlerts.contains { $0.alert.deviceId == Self.leakSensor.id })
     }
 
+    @Test("Hidden long-running devices still remind the user, and old actions write nothing")
+    func hiddenLongRunningAlertsHaveNoWriteAction() async throws {
+        let (store, mock) = try await makeStore(closed: [.plug, .climate])
+        store.enableSafetyAlerts = true
+        let plug = SmartDevice(
+            id: Self.hiddenPlug.id, name: Self.hiddenPlug.name, roomId: "balcony", roomName: "阳台",
+            model: "ha.switch", isOnline: true,
+            kind: .plug(PlugSpec(switchEntityId: "switch.balcony_heater", isOn: true, powerWatts: 700))
+        )
+        let climate = SmartDevice(
+            id: "dev_ac", name: "空调", roomId: "living", roomName: "客厅", model: "ha.climate", isOnline: true,
+            kind: .climate(ClimateSpec(entityId: "climate.ac", isOn: true, hvacMode: "cool",
+                                       availableModes: ["cool", "off"], targetTemperature: 24))
+        )
+        store.handleProviderEvent(.haTypePruneChanged(report(store, hidden: [plug, climate], safety: [plug, climate])))
+        let alerts = store.evaluateSafetyAlerts(now: Date().addingTimeInterval(5 * 3600))
+
+        #expect(Set(alerts.map(\.deviceId)) == [plug.id, climate.id])
+        #expect(alerts.allSatisfy { $0.turnOffCommand == nil })
+        let oldAlert = SafetyAlert(
+            id: "old", deviceId: plug.id, title: "Long running", body: "",
+            turnOffCommand: .setSwitch(entityId: "switch.balcony_heater", isOn: false)
+        )
+        // A stale visible snapshot can still contain the card when the old notification is tapped.
+        store.devices.append(plug)
+        #expect(store.executeSafetyAlertAction(oldAlert, deliveredInScope: store.connectionScopeIdentifier) == nil)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
+    @Test("Menu bar ignores disconnected telemetry and uses the auxiliary alarm on the first fresh frame")
+    func menuBarUsesFreshAuxiliarySafetyReading() async throws {
+        let (store, _) = try await makeStore(closed: [.appliance])
+        store.enableSafetyAlerts = true
+        var valve = SmartDevice(
+            id: "dev_valve", name: "燃气阀", roomId: "kitchen", roomName: "厨房", model: "ha.valve",
+            isOnline: true, kind: .appliance(.init(entityId: "valve.gas_main")),
+            telemetryStale: true,
+            auxiliarySafetyObservations: [.init(sourceId: "binary_sensor.gas_alarm", kind: .gas, alarming: true)]
+        )
+        store.handleProviderEvent(.haTypePruneChanged(report(store, hidden: [valve], safety: [valve])))
+        #expect(!store.menuBarShowsHazard)
+        #expect(store.recentSafetyAlerts.isEmpty)
+
+        valve.telemetryStale = false
+        store.handleProviderEvent(.haTypePruneChanged(report(store, hidden: [valve], safety: [valve])))
+        #expect(store.menuBarShowsHazard)
+        #expect(store.recentSafetyAlerts.map(\.alert.deviceId) == [valve.id])
+
+        valve.telemetryStale = true
+        store.handleProviderEvent(.haTypePruneChanged(report(store, hidden: [valve], safety: [valve])))
+        #expect(!store.menuBarShowsHazard)
+    }
+
     @Test("The retained set follows the connection: another address or a disabled connection keeps nothing")
     func retainedSetFollowsTheConnection() async throws {
         let (store, _) = try await makeStore(closed: [.sensor])

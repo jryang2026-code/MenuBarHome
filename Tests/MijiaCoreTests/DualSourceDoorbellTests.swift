@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -63,6 +64,27 @@ struct DualSourceDoorbellTests {
         #expect(result.routes[card.id]?.backend == .xiaomiCloud)
         #expect(result.haCanonicalIDs[Self.haID] == card.id)
         #expect(result.miCanonicalIDs[Self.did] == card.id)
+    }
+
+    @Test("The type preview retains a paired doorbell whose video and ring come from different sources")
+    @MainActor
+    func previewIncludesRingFromPairedHASource() throws {
+        var ha = haHome
+        ha.devices[0].providerSafetySignals = [.starredOffline, .doorbell]
+        var mi = miHome
+        mi.devices[0].providerSafetySignals = [.starredOffline]
+        let result = DeviceDeduplicator.merge(homeAssistant: ha, xiaomiCloud: mi)
+        let card = try #require(result.home.devices.first)
+        #expect(result.routes[card.id]?.backend == .xiaomiCloud)
+
+        let store = HomeStore(provider: MockHomeProvider(snapshot: result.home), defaults: InMemoryUserDefaults())
+        store.enableSafetyAlerts = false
+        store.doorbellAutoPopup = false
+        store.doorbellChime = true
+        store.devices = result.home.devices
+        let impact = store.previewDeviceCategorySelection(Set(DeviceCategoryID.allCases).subtracting([.camera]))
+        #expect(impact.retainedSafetyDevices.map(\.id) == [card.id])
+        #expect(impact.retainedSafetyDevices.first?.signals == [.doorbell])
     }
 
     // MARK: - firedAt parsing

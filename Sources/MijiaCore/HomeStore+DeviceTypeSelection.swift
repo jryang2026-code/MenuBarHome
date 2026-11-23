@@ -127,7 +127,7 @@ extension HomeStore {
         let target = deviceCategoryTarget(picked)
         let removed = capabilitySelection.enabledCategories.subtracting(target)
         let verdict = evaluateCapabilityDeactivation(proposed: proposedSelection(categories: target), expectedGeneration: nil)
-        let policy = currentSafetyRetentionPolicy()
+        let policy = effectiveSafetyRetentionPolicy()
         let indexed = Dictionary(currentIndexedDevicesList().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let retained = verdict.partition.hiddenSafetyRetainedDeviceIds.compactMap { id -> DeviceTypeSelectionImpact.RetainedSafetyDevice? in
             guard let device = indexed[id] else { return nil }
