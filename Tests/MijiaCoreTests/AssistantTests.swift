@@ -456,6 +456,29 @@ struct AssistantTests {
         return (store, mock)
     }
 
+    @Test("Snapshot queries bypass write confirmation, model fallback and timers")
+    @MainActor
+    func storeAnswersStateQueriesWithoutExecutingCommands() async throws {
+        let (store, mock) = try await makeStore()
+        store.applyDeviceAliases([Self.bedsideLamp.id: "阅读灯"])
+        store.isScreenLocked = true
+
+        let plan = try #require(await store.runAssistantCommand("ydd 开着吗"))
+        #expect(plan.intents.isEmpty)
+        #expect(plan.suggestions.isEmpty)
+        #expect(store.assistantState == .done("阅读灯：开着，亮度 80%"))
+
+        let missing = await store.runAssistantCommand("未知设备开着吗")
+        #expect(missing == nil)
+        #expect(store.assistantState == .failed("当前快照没有可回答的状态"))
+        #expect(store.pendingCloudConsent == nil)
+
+        let delayed = await store.runAssistantCommand("10分钟后阅读灯关了吗")
+        #expect(delayed == nil)
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
     @Test("runAssistantCommand dispatches local plans with optimistic state and undo")
     @MainActor
     func storeRunsLocalPlan() async throws {

@@ -3,15 +3,15 @@
 > 本文件由测试生成，请勿手工编辑。
 > 语料 `Tests/Fixtures/intent_coverage_corpus.json`：251 条中文口令，19 类，12 台设备的固定虚构家庭。
 > 重录：`RECORD_INTENT_COVERAGE=1 swift test --filter IntentCoverageBaseline`
-> 生成时间：2026-11-23T15:32:07Z
+> 生成时间：2026-11-23T18:35:31Z
 
 ## 口径
 
-按 `HomeStore.runAssistantCommand` 的阶段顺序判：定时取消 → 语音撤销 → 口语延后（“10分钟后”）→ `LocalIntentParser` → 模型。
+按 `HomeStore.runAssistantCommand` 的阶段顺序判：只读查询 → 定时取消 → 语音撤销 → 口语延后（“10分钟后”）→ `LocalIntentParser` → 模型。
 
-- **local**：`LocalIntentParser` 给出了指令（已剥掉口语延后前缀）。零网络、可复现。
+- **local**：`LocalIntentParser` 给出了快照答复或指令（已剥掉指令的口语延后前缀）。零网络、可复现。
 - **model**：本地解析器拒答，助手会把这句话交给大模型；成功率取决于模型，不在这张表里。表里不分原因：句式没覆盖、设备不支持该参数、目标有歧义，都会落到这一格。
-- **none**：本地无解，而且在流水线里也不会发模型请求——句子被更早的专门阶段接走了（「取消定时」「撤销」）。
+- **none**：本地无解，而且在流水线里也不会发模型请求——句子被更早的专门阶段接走了（如无数据的查询、「取消定时」「撤销」）。
 
 只跑不判：表里没有“期望值”，也还没有对错。这些数字是基线，不是门槛。
 面板房间（`panelRoom`）留空，所以“打开灯”这类裸类别句按全屋判定。
@@ -35,11 +35,11 @@
 | `oscillation` | 8 | 0 | 0 | 8 | 100.0% |
 | `cover` | 0 | 12 | 0 | 12 | 0.0% |
 | `scene` | 11 | 1 | 0 | 12 | 91.7% |
-| `state_query` | 0 | 16 | 0 | 16 | 0.0% |
+| `state_query` | 13 | 0 | 3 | 16 | 81.3% |
 | `timer` | 11 | 2 | 3 | 16 | 68.8% |
-| `polite_form` | 2 | 10 | 0 | 12 | 16.7% |
+| `polite_form` | 11 | 1 | 0 | 12 | 91.7% |
 | `out_of_domain` | 0 | 15 | 0 | 15 | 0.0% |
-| **合计** | **163** | **85** | **3** | **251** | **64.9%** |
+| **合计** | **185** | **60** | **6** | **251** | **73.7%** |
 
 ## 固定家庭
 
@@ -256,22 +256,22 @@
 | `scene` | 执行观影场景 | local |
 | `scene` | 观影 | local |
 | `scene` | 把家里的灯调成观影模式 | model |
-| `state_query` | 书房灯开着吗 | model |
-| `state_query` | 客厅空调开着吗 | model |
-| `state_query` | 书房灯现在什么状态 | model |
-| `state_query` | 空调多少度 | model |
-| `state_query` | 客厅温度是多少 | model |
-| `state_query` | 房间湿度多少 | model |
-| `state_query` | 净化器开着吗 | model |
-| `state_query` | 风扇在几档 | model |
-| `state_query` | 哪些灯开着 | model |
-| `state_query` | 家里有没有设备开着 | model |
-| `state_query` | 客厅灯亮着吗 | model |
-| `state_query` | 扫地机在哪 | model |
-| `state_query` | 书房台灯关了没 | model |
-| `state_query` | 空调现在设置多少度 | model |
-| `state_query` | 现在有几个灯开着 | model |
-| `state_query` | 客厅窗帘开着吗 | model |
+| `state_query` | 书房灯开着吗 | local |
+| `state_query` | 客厅空调开着吗 | local |
+| `state_query` | 书房灯现在什么状态 | local |
+| `state_query` | 空调多少度 | local |
+| `state_query` | 客厅温度是多少 | local |
+| `state_query` | 房间湿度多少 | none |
+| `state_query` | 净化器开着吗 | local |
+| `state_query` | 风扇在几档 | local |
+| `state_query` | 哪些灯开着 | local |
+| `state_query` | 家里有没有设备开着 | local |
+| `state_query` | 客厅灯亮着吗 | local |
+| `state_query` | 扫地机在哪 | none |
+| `state_query` | 书房台灯关了没 | local |
+| `state_query` | 空调现在设置多少度 | local |
+| `state_query` | 现在有几个灯开着 | local |
+| `state_query` | 客厅窗帘开着吗 | none |
 | `timer` | 10分钟后关闭书房灯 | local |
 | `timer` | 半小时后关空调 | local |
 | `timer` | 20分钟后打开客厅空调 | local |
@@ -288,17 +288,17 @@
 | `timer` | 撤销定时 | none |
 | `timer` | 关灯后告诉我 | model |
 | `timer` | 撤销 | none |
-| `polite_form` | 请问打开书房灯 | model |
+| `polite_form` | 请问打开书房灯 | local |
 | `polite_form` | 麻烦关闭客厅空调 | local |
-| `polite_form` | 谢谢打开客厅主灯 | model |
-| `polite_form` | 麻烦你把书房的灯关掉 | model |
+| `polite_form` | 谢谢打开客厅主灯 | local |
+| `polite_form` | 麻烦你把书房的灯关掉 | local |
 | `polite_form` | 请帮我打开客厅落地灯 | local |
-| `polite_form` | 能否打开书房台灯 | model |
-| `polite_form` | 可以帮我关掉风扇吗 | model |
-| `polite_form` | 我想要打开客厅灯 | model |
-| `polite_form` | 能不能把空调调到26度 | model |
-| `polite_form` | 请问一下书房灯开着吗 | model |
-| `polite_form` | 那个麻烦关一下灯 | model |
+| `polite_form` | 能否打开书房台灯 | local |
+| `polite_form` | 可以帮我关掉风扇吗 | local |
+| `polite_form` | 我想要打开客厅灯 | local |
+| `polite_form` | 能不能把空调调到26度 | local |
+| `polite_form` | 请问一下书房灯开着吗 | local |
+| `polite_form` | 那个麻烦关一下灯 | local |
 | `polite_form` | 帮我把客厅窗帘打开 | model |
 | `out_of_domain` | 今天天气怎么样 | model |
 | `out_of_domain` | 现在几点了 | model |

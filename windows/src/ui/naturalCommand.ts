@@ -1,6 +1,7 @@
 import { cancelScheduledCommands, enqueueScheduledCommand, scheduledCommandsGeneration } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
+import { answerStateQuery, parseStateQuery } from "../core/assistant/stateQuery.js";
 import { parseQuickActionCommand } from "../core/quickActions.js";
 import { missingScheduledCommandTargets, isScheduledCommandsEnabled } from "../core/scheduledCommands.js";
 import {
@@ -61,6 +62,22 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
     host.pendingCloudConsent = null;
     host.pendingSuggestions = [];
 
+    const delaySpec = !fromScheduled ? DelayPhrase.extract(trimmed) : null;
+    const query = parseStateQuery(delaySpec?.remainder ?? trimmed);
+    if (query) {
+      if (delaySpec) {
+        host.replyBanner = { text: t("定时查询仅支持查看当前状态"), source: t("0ms 本地直达"), isError: true };
+        host.render();
+        return;
+      }
+      const plan = answerStateQuery(query, withAliases(host.layout, host.devices));
+      host.replyBanner = plan
+        ? { text: plan.reply, source: t("0ms 本地直达") }
+        : { text: t("当前快照没有可回答的状态"), source: t("0ms 本地直达"), isError: true };
+      host.render();
+      return;
+    }
+
     const quickActionId = parseQuickActionCommand(trimmed);
     if (quickActionId) {
       await executeBuiltInQuickAction(host, quickActionId);
@@ -83,7 +100,6 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
       return;
     }
 
-    const delaySpec = !fromScheduled ? DelayPhrase.extract(trimmed) : null;
     if (!fromScheduled) {
       if (delaySpec) {
         // A learned phrase wins over the generic parser, exactly as it does without a delay.
