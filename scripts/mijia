@@ -603,9 +603,141 @@ def format_device_list(snapshot: dict, devices: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def command_list(snapshot: dict, room: str | None, as_json: bool) -> int:
+ALFRED_ICON_CANDIDATES = (
+    "/Applications/MenuBarHome.app",
+    "/Applications/MenuBarMijia.app",
+)
+
+# SwiftBar renders `sfimage=` through SF Symbols; stick to names shipped by macOS 13 and later.
+DEVICE_SF_SYMBOLS = {
+    "light": "lightbulb",
+    "climate": "snowflake",
+    "fan": "wind",
+    "plug": "powerplug",
+    "vacuum": "circle.grid.2x2",
+    "speaker": "hifispeaker",
+    "tv": "tv",
+    "camera": "video",
+    "sensor": "thermometer",
+    "cover": "window.vertical.closed",
+}
+DEFAULT_SF_SYMBOL = "house"
+
+
+def alfred_icon(explicit: str | None = None) -> dict | None:
+    """Alfred `icon` object pointing at an app or image on this machine; `None` keeps the workflow icon."""
+    if explicit:
+        path = Path(explicit).expanduser()
+        if not path.exists():
+            raise CliError(f"--icon 指定的路径不存在：{path}")
+        return {"type": "fileicon", "path": str(path)}
+    candidates = [*ALFRED_ICON_CANDIDATES, str(Path.home() / "Applications" / "MenuBarHome.app")]
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return {"type": "fileicon", "path": candidate}
+    return None
+
+
+def _device_state_text(device: dict) -> str:
+    if not device.get("isOnline"):
+        return "离线"
+    return str(device.get("stateText") or ("已开" if device.get("isActiveOn") else "已关"))
+
+
+def _device_link(device: dict, token: str) -> str:
+    """The action a click runs: flip the primary switch, or reveal devices that have no switch."""
+    device_id = str(device.get("id") or "")
+    if not device.get("isPrimaryToggleable"):
+        return build_url("focus", [("device", device_id)], token, uuid.uuid4().hex)
+    return build_url(
+        "power",
+        [("device", device_id), ("on", "false" if device.get("isActiveOn") else "true")],
+        token,
+        uuid.uuid4().hex,
+    )
+
+
+def _alfred_item(device: dict, token: str, icon: dict | None) -> dict:
+    device_id = str(device.get("id") or "")
+    subtitle_parts = [str(device.get("roomName") or ""), _device_state_text(device)]
+    if device.get("isFavorite"):
+        subtitle_parts.append("★")
+    item = {
+        "uid": f"menubarmijia.device.{device_id}",
+        "title": str(device.get("name") or "?"),
+        "subtitle": " · ".join(part for part in subtitle_parts if part),
+        "arg": _device_link(device, token),
+        "valid": True,
+        "mods": {
+            "cmd": {
+                "arg": build_url("focus", [("device", device_id)], token, uuid.uuid4().hex),
+                "subtitle": "在 MenuBarHome 中查看",
+            }
+        },
+    }
+    if icon is not None:
+        item["icon"] = icon
+    return item
+
+
+def build_alfred_payload(snapshot: dict, devices: list[dict], icon: dict | None = None) -> dict:
+    """Alfred Script Filter JSON: one item per device, `arg` is the `menumijia://` link to open."""
+    token = _token(snapshot)
+    items = [_alfred_item(device, token, icon) for device in devices if str(device.get("id") or "")]
+    if not items:
+        items.append(
+            {
+                "title": "没有面板里可见的设备",
+                "subtitle": "在 MenuBarHome 设置里打开「Raycast 集成」后重试",
+                "valid": False,
+            }
+        )
+    return {"items": items}
+
+
+def _swiftbar_text(value: object) -> str:
+    """SwiftBar splits a line at the first `|` and treats leading `--` as a submenu, so flatten both."""
+    text = " ".join(str(value or "").split()).replace("|", "·")
+    return text.lstrip("-").strip() or "?"
+
+
+def format_swiftbar(snapshot: dict, devices: list[dict]) -> str:
+    """SwiftBar / xbar plugin text: menu bar header, `---`, one clickable line per device."""
+    token = _token(snapshot)
+    active = sum(1 for device in devices if device.get("isOnline") and device.get("isActiveOn"))
+    lines = [f"{_swiftbar_text(f'MenuBarHome {active}/{len(devices)} 开启')}", "---"]
+    if not devices:
+        lines.append("没有面板里可见的设备 | color=#8e8e93")
+    for device in devices:
+        device_id = str(device.get("id") or "")
+        if not device_id:
+            continue
+        label = f"{device.get('name') or '?'} {_device_state_text(device)}"
+        if device.get("isFavorite"):
+            label += " ★"
+        symbol = DEVICE_SF_SYMBOLS.get(_fold(device.get("category")), DEFAULT_SF_SYMBOL)
+        params = [f"href={_device_link(device, token)}", f"sfimage={symbol}"]
+        if not device.get("isOnline"):
+            params.append("color=#8e8e93")
+        lines.append(f"{_swiftbar_text(label)} | {' '.join(params)}")
+    updated = str(snapshot.get("updatedAt") or "?")
+    if snapshot.get("isStale"):
+        updated += "（可能已过期）"
+    lines.extend(
+        [
+            "---",
+            f"{_swiftbar_text(f'更新于 {updated}')} | size=11 color=#8e8e93",
+            "刷新 | refresh=true size=11 sfimage=arrow.clockwise",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def command_list(
+    snapshot: dict, room: str | None, output_format: str = "text", icon: dict | None = None
+) -> int:
     devices = filter_devices(snapshot, room=room)
-    if as_json:
+    if output_format == "json":
         print(
             json.dumps(
                 {
@@ -619,6 +751,14 @@ def command_list(snapshot: dict, room: str | None, as_json: bool) -> int:
             )
         )
         return EXIT_OK
+    if output_format == "alfred":
+        print(json.dumps(build_alfred_payload(snapshot, devices, icon), ensure_ascii=False, indent=2))
+        return EXIT_OK
+    if output_format == "swiftbar":
+        print(format_swiftbar(snapshot, devices))
+        return EXIT_OK
+    if output_format != "text":
+        raise CliError(f"不认识的输出格式：{output_format}")
     print(format_device_list(snapshot, devices))
     return EXIT_OK
 
@@ -1562,6 +1702,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     listing = common(subparsers.add_parser("list", help="列出面板里可见的设备"))
     listing.add_argument("--room", help="只看某个房间")
+    listing.add_argument(
+        "--format",
+        choices=("text", "json", "alfred", "swiftbar"),
+        help="输出格式：text（默认）、json、alfred（Alfred Script Filter JSON）、swiftbar（SwiftBar / xbar 插件文本）",
+    )
+    listing.add_argument("--icon", help="alfred 条目的图标：应用或图片路径（默认自动找已安装的 MenuBarHome.app）")
 
     common(subparsers.add_parser("status", help="概览连接、场景与环境读数"))
 
@@ -1657,7 +1803,13 @@ def main(
 
         snapshot = load_snapshot(path)
         if args.command == "list":
-            return command_list(snapshot, args.room, args.json)
+            output_format = args.format or ("json" if args.json else "text")
+            return command_list(
+                snapshot,
+                args.room,
+                output_format,
+                alfred_icon(args.icon) if output_format == "alfred" else None,
+            )
         if args.command == "status":
             return command_status(snapshot, args.json)
 

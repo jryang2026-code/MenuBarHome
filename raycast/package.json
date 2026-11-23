@@ -30,6 +30,63 @@
       "subtitle": "MenuBarHome",
       "description": "Send one natural-language command to the MenuBarHome assistant, using the same parsing and confirmation rules as the app.",
       "mode": "view"
+    },
+    {
+      "name": "toggle-device",
+      "title": "Toggle Device",
+      "subtitle": "MenuBarHome",
+      "description": "Flip one device's power by name, room, id or pinyin initials, then report the app's result in a HUD.",
+      "mode": "no-view",
+      "keywords": ["switch", "on", "off"],
+      "arguments": [
+        {
+          "name": "device",
+          "type": "text",
+          "placeholder": "书房台灯 or sftd",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "run-scene",
+      "title": "Run Scene",
+      "subtitle": "MenuBarHome",
+      "description": "Run a Home Assistant scene or a built-in quick action by name, id or pinyin initials.",
+      "mode": "no-view",
+      "keywords": ["scene", "quick action", "automation"],
+      "arguments": [
+        {
+          "name": "scene",
+          "type": "text",
+          "placeholder": "观影模式 or gyms",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "all-off",
+      "title": "All off",
+      "subtitle": "MenuBarHome",
+      "description": "Ask for confirmation, then run the built-in All Off quick action that turns every controllable device off.",
+      "mode": "no-view",
+      "keywords": ["everything off", "lights out", "quick action"]
+    }
+  ],
+  "tools": [
+    {
+      "name": "list-devices",
+      "title": "List Devices",
+      "description": "List the devices MenuBarHome shows, with room, state and the controls each device supports."
+    },
+    {
+      "name": "get-device-state",
+      "title": "Get Device State",
+      "description": "Read one device's state, its room, the range of each control and the room's environment readings."
+    },
+    {
+      "name": "control-device",
+      "title": "Control Device",
+      "description": "Turn a device on, off or flip its power through MenuBarHome, after Raycast asks for confirmation."
     }
   ],
   "preferences": [
