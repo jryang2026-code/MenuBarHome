@@ -407,67 +407,15 @@ public enum MiotSynthesizer {
     /// Device-type label for a generic card. Known MIoT types get a Chinese name; otherwise the
     /// spec's own description or a humanized short name keeps the card honest.
     static func genericTypeTitle(for spec: MiotDeviceSpec) -> String {
-        let known: [String: String] = [
-            "fish-tank": "鱼缸",
-            "pet-feeder": "宠物喂食器",
-            "router": "路由器",
-            "gateway": "网关",
-            "repeater": "信号放大器",
-            "lock": "门锁",
-            "scale": "体重秤",
-            "body-fat-scale": "体脂秤",
-            "bracelet": "手环",
-            "watch": "手表",
-            "toothbrush": "牙刷",
-            "treadmill": "跑步机",
-            "massage": "按摩设备",
-            "bed": "床",
-            "mattress": "床垫",
-            "pillow": "枕头",
-            "sofa": "沙发",
-            "mirror": "镜子",
-            "shower": "淋浴",
-            "toilet": "马桶",
-            "towel-rack": "毛巾架",
-            "car-seat": "儿童安全座椅",
-            "tracker": "定位器",
-            "projector": "投影仪",
-            "television": "电视",
-            "stb": "机顶盒",
-            "stove": "燃气灶",
-            "boiler": "壁挂炉",
-            "clock": "时钟",
-            "coffee-machine": "咖啡机",
-        ]
-        if !L10n.isEnglish, let chinese = known[spec.shortName] { return chinese }
+        if !L10n.isEnglish, let chinese = DeviceLabels.shared.title(forDeviceType: spec.shortName) {
+            return chinese
+        }
         let description = spec.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return description.isEmpty ? MiotFacetText.humanized(spec.shortName) : description
     }
 
     static func genericSymbolName(for deviceType: String) -> String {
-        switch deviceType {
-        case "fish-tank": return "fish.fill"
-        case "pet-feeder": return "pawprint.fill"
-        case "router", "gateway", "repeater": return "wifi"
-        case "lock": return "lock.fill"
-        case "scale", "body-fat-scale": return "scalemass.fill"
-        case "bracelet", "watch": return "applewatch"
-        case "toothbrush": return "mouth.fill"
-        case "treadmill": return "figure.run"
-        case "bed", "mattress", "pillow": return "bed.double.fill"
-        case "sofa", "chair", "massage": return "chair.lounge.fill"
-        case "projector": return "projector.fill"
-        case "television", "stb": return "tv"
-        case "boiler": return "water.waves"
-        case "shower": return "drop.fill"
-        case "mirror": return "rectangle.portrait.fill"
-        case "car-seat": return "car.fill"
-        case "tracker": return "location.fill"
-        case "bike": return "bicycle"
-        case "clock": return "clock.fill"
-        case "coffee-machine": return "cup.and.saucer.fill"
-        default: return "square.grid.2x2"
-        }
+        DeviceIconSymbols.sfSymbol(for: DeviceLabels.shared.semanticIcon(forDeviceType: deviceType))
     }
 
     /// The cards a record produces: normally one. A dual-track curtain motor publishes two

@@ -1,6 +1,6 @@
 import { speechLocale, t } from "./i18n.js";
 import { formatTemperature } from "./temperature.js";
-import { facetLabel, familyFacetLabel } from "./deviceLabels.js";
+import { deviceTypeLabel, deviceTypeSymbolName, facetLabel, familyFacetLabel } from "./deviceLabels.js";
 import type { FacetControl } from "./models.js";
 
 /**
@@ -8,43 +8,9 @@ import type { FacetControl } from "./models.js";
  * (#5, #6), so the card and the drawer cannot format the same value differently. Mirrors macOS
  * `MiotFacetText`.
  *
- * The Chinese facet titles and their English column live in `Shared/deviceLabels.json` (#11); this
- * module only picks which one a row shows.
+ * The Chinese titles and their English column live in `Shared/deviceLabels.json` (#11); this module
+ * only picks which one a row shows.
  */
-
-/** Device-type labels for the generic card; an unlisted type is humanized instead. */
-const DEVICE_TYPE_TITLES: Readonly<Record<string, string>> = {
-  "fish-tank": "鱼缸",
-  "pet-feeder": "宠物喂食器",
-  router: "路由器",
-  gateway: "网关",
-  repeater: "信号放大器",
-  lock: "门锁",
-  scale: "体重秤",
-  "body-fat-scale": "体脂秤",
-  bracelet: "手环",
-  watch: "手表",
-  toothbrush: "牙刷",
-  treadmill: "跑步机",
-  massage: "按摩设备",
-  bed: "床",
-  mattress: "床垫",
-  pillow: "枕头",
-  sofa: "沙发",
-  mirror: "镜子",
-  shower: "淋浴",
-  toilet: "马桶",
-  "towel-rack": "毛巾架",
-  "car-seat": "儿童安全座椅",
-  tracker: "定位器",
-  projector: "投影仪",
-  television: "电视",
-  stb: "机顶盒",
-  stove: "燃气灶",
-  boiler: "壁挂炉",
-  clock: "时钟",
-  "coffee-machine": "咖啡机",
-};
 
 export function humanizedFacetName(raw: string): string {
   const words = raw.replaceAll("-", " ");
@@ -154,63 +120,13 @@ export function facetValue(control: FacetControl): string {
 
 /** Device-type label for a generic card. */
 export function genericTypeTitle(deviceType: string): string {
-  const known = DEVICE_TYPE_TITLES[deviceType];
+  // English keeps the catalog lookup: most device types have no English entry yet, and the shared
+  // file's `en` column is staged for the follow-up that lands those titles (#11).
+  const known = deviceTypeLabel(deviceType)?.["zh-Hans"];
   return known ? t(known) : humanizedFacetName(deviceType);
 }
 
 /** A symbol name in the macOS vocabulary, so both cards pick the same glyph. */
 export function genericSymbolName(deviceType: string): string {
-  switch (deviceType) {
-    case "fish-tank":
-      return "fish.fill";
-    case "pet-feeder":
-      return "pawprint.fill";
-    case "router":
-    case "gateway":
-    case "repeater":
-      return "wifi";
-    case "lock":
-      return "lock.fill";
-    case "scale":
-    case "body-fat-scale":
-      return "scalemass.fill";
-    case "bracelet":
-    case "watch":
-      return "applewatch";
-    case "toothbrush":
-      return "mouth.fill";
-    case "treadmill":
-      return "figure.run";
-    case "bed":
-    case "mattress":
-    case "pillow":
-      return "bed.double.fill";
-    case "sofa":
-    case "chair":
-    case "massage":
-      return "chair.lounge.fill";
-    case "projector":
-      return "projector.fill";
-    case "television":
-    case "stb":
-      return "tv";
-    case "boiler":
-      return "water.waves";
-    case "shower":
-      return "drop.fill";
-    case "mirror":
-      return "rectangle.portrait.fill";
-    case "car-seat":
-      return "car.fill";
-    case "tracker":
-      return "location.fill";
-    case "bike":
-      return "bicycle";
-    case "clock":
-      return "clock.fill";
-    case "coffee-machine":
-      return "cup.and.saucer.fill";
-    default:
-      return "square.grid.2x2";
-  }
+  return deviceTypeSymbolName(deviceType);
 }
