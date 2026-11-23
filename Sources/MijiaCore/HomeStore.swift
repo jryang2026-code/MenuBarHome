@@ -429,6 +429,10 @@ public final class HomeStore {
     public internal(set) var dismissedActivityIds: Set<String> = []
     /// Installed by the app to play the chime and open the live camera window for a ring.
     public var onDoorbellRing: (@MainActor (DoorbellResponse) -> Void)?
+    /// Installed by the app to post the press as a macOS notification with a snapshot thumbnail
+    /// (#10). The chime and popup switches gate it through `wantsDoorbellNotification`, and
+    /// `swift test` never sets it, so no test touches the notification centre.
+    public var onDoorbellNotification: (@MainActor (DoorbellNotification) -> Void)?
 
     /// Refuse user-initiated device control while the Mac screen is locked (#143). Defaults on:
     /// the only paths that can still fire while locked are external ones (URL links, App Intents,
