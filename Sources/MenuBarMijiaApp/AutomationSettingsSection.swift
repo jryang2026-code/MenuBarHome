@@ -39,6 +39,9 @@ struct AutomationSettingsSection: View {
     @State private var companionCheckReport: CompanionCheckReport?
     /// Loaded in `onAppear`; a `@State` initializer would re-decode `UserDefaults` on every render.
     @State private var rules: [AutomationRule] = []
+    /// Paused groups and quick actions whose connection was removed: the fail-safe keeps them paused,
+    /// so this list is the only place the user can release them by hand (`resumePausedQuickAction`).
+    @State private var pausedQuickActions: [HomeStore.PausedQuickAction] = []
     @State private var timersToPause: [ScheduledCommand]?
     /// Mirrors the Location authorization so the conditions editor can explain a silent rule.
     @State private var locationAuthorized = MacHardwareProbe.isWiFiAuthorized
@@ -195,6 +198,10 @@ struct AutomationSettingsSection: View {
                 }
             }
 
+            if !pausedQuickActions.isEmpty {
+                pausedQuickActionsBlock
+            }
+
             Divider().overlay(Color.primary.opacity(0.06))
             newRuleBuilder
 
@@ -304,6 +311,7 @@ struct AutomationSettingsSection: View {
         }
         .onAppear {
             rules = store.automationRuleStore.load()
+            refreshPausedQuickActions()
             locationAuthorized = MacHardwareProbe.isWiFiAuthorized
         }
         // Coming back from System Settings is the moment the state actually changed.
@@ -334,6 +342,15 @@ struct AutomationSettingsSection: View {
                         .foregroundStyle(DesignTokens.secondaryText)
                         .lineLimit(1)
                 }
+                if store.pausedRuleRequiresManualResume(rule) {
+                    Text(L10n.tr(
+                        "已暂停且不会自动恢复，打开右侧开关即可恢复",
+                        "Paused and it will not resume on its own; turn the switch on to resume it"
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             Spacer(minLength: 6)
@@ -355,6 +372,41 @@ struct AutomationSettingsSection: View {
             .help(L10n.tr("删除这条规则", "Delete this rule"))
         }
         .padding(.vertical, 2)
+    }
+
+    /// Paused quick actions and groups the fail-safe never resumes on its own; each row is the manual
+    /// path and still re-checks its targets before it clears the pause marker.
+    private var pausedQuickActionsBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(pausedQuickActions) { item in
+                HStack(alignment: .center, spacing: 8) {
+                    Image(systemName: "pause.circle")
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(item.title)
+                            .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
+                        Text(L10n.tr(
+                            "已暂停，未记录原连接，不会自动恢复",
+                            "Paused without the connection it lost; it will not resume on its own"
+                        ))
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(DesignTokens.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 6)
+                    Button(L10n.tr("手动恢复", "Resume Now")) {
+                        if store.resumePausedQuickAction(id: item.id) { refreshPausedQuickActions() }
+                    }
+                    .buttonStyle(PillActionButtonStyle())
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func refreshPausedQuickActions() {
+        pausedQuickActions = store.pausedQuickActionsRequiringManualResume
     }
 
     private func enabledBinding(for rule: AutomationRule) -> Binding<Bool> {
