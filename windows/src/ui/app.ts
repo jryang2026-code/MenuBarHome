@@ -510,6 +510,12 @@ export class MenuMijiaWindowsApp {
     return this.sourceEpoch.sourceRevision;
   }
   public lastCloudRefreshAt: number | null = null;
+  /**
+   * Epoch ms of the last panel open/close. The idle decay stretches the closed-panel poll only after
+   * 30 min / 2 h without one (`pollingSchedule.notePanelInteraction`). Mirrors macOS
+   * `HomeStore.lastPanelInteractionAt`, which starts stamped so a boot-time launch still decays.
+   */
+  public lastPanelInteractionAtMs: number | null = Date.now();
   /** A silent cloud result that is waiting for the user to finish interacting. */
   public pendingCloudRender = false;
   public endpointSubmission: Promise<unknown> = Promise.resolve();

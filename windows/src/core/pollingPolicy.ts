@@ -11,7 +11,7 @@ import {
 /**
  * Current panel and workstation activity context. Mirrors `Sources/MijiaCore/PollingPolicy.swift:4-44`.
  */
-interface PollingContext {
+export interface PollingContext {
   /** The control center panel is visible on screen. */
   readonly panelVisible: boolean;
   /** False while the machine or display sleeps or the workstation is locked. */
@@ -28,7 +28,7 @@ interface PollingContext {
    * 60 s however long the user is away. Defaults to `true`: an untracked caller must never decay.
    */
   readonly safetyAlertsRelyOnPolling?: boolean;
-  /** The tray/menu-bar label renders a polled reading. Defaults to `true`, same reasoning. */
+  /** The menu-bar label / tray label renders a polled reading. Defaults to `true`, same reasoning. */
   readonly menuBarShowsLiveReading?: boolean;
 }
 
@@ -125,6 +125,61 @@ export const PollingPolicy = {
     return RATE_LIMIT_BACKOFF_SCHEDULE_MS[clampedIndex] ?? 900_000;
   },
 } as const;
+
+/** Xiaomi cloud refresh while the panel is open (#26). Matches macOS `PollingPolicy.panelOpenInterval`. */
+export const CLOUD_REFRESH_VISIBLE_MS = PANEL_OPEN_INTERVAL_MS;
+/** Xiaomi cloud refresh while the panel is closed, before the idle steps stretch it. */
+export const CLOUD_REFRESH_HIDDEN_MS = PANEL_CLOSED_INTERVAL_MS;
+
+/**
+ * The decay inputs the runtime hands to `PollingPolicy` on top of the panel's visibility. Both gates
+ * are optional and default to `true` inside `PollingPolicy`, so a caller that forgets one keeps the
+ * flat 60 s cadence instead of silently polling slower than a safety alert can tolerate.
+ */
+export type PollingDecayInputs = Pick<
+  PollingContext,
+  "lastPanelInteractionAtMs" | "safetyAlertsRelyOnPolling" | "menuBarShowsLiveReading"
+>;
+
+/**
+ * The wait between cloud refreshes for the panel's current visibility and decay inputs. Windows keeps
+ * polling through a locked workstation — `refreshDevices` refuses that round on `isWorkstationLocked`
+ * itself — so `systemActive` stays `true` here and the answer is always a wait.
+ */
+export function cloudRefreshIntervalMs(
+  nowMs: number,
+  panelVisible: boolean,
+  decay: PollingDecayInputs = {},
+): number {
+  const intervalMs = PollingPolicy.intervalMs(
+    {
+      panelVisible,
+      systemActive: true,
+      lowPower: false,
+      lastPanelInteractionAtMs: decay.lastPanelInteractionAtMs ?? null,
+      safetyAlertsRelyOnPolling: decay.safetyAlertsRelyOnPolling ?? true,
+      menuBarShowsLiveReading: decay.menuBarShowsLiveReading ?? true,
+    },
+    CLOUD_REFRESH_VISIBLE_MS,
+    CLOUD_REFRESH_HIDDEN_MS,
+    nowMs,
+  );
+  return intervalMs ?? CLOUD_REFRESH_HIDDEN_MS;
+}
+
+/**
+ * True when the last cloud refresh is older than the interval for the panel's visibility and the idle
+ * decay. Without `decay` the answer is the historical 6 s / 60 s pair.
+ */
+export function cloudRefreshDue(
+  nowMs: number,
+  lastRefreshMs: number | null,
+  panelVisible: boolean,
+  decay: PollingDecayInputs = {},
+): boolean {
+  if (lastRefreshMs === null) return true;
+  return nowMs - lastRefreshMs >= cloudRefreshIntervalMs(nowMs, panelVisible, decay);
+}
 
 const RATE_LIMIT_MARKERS: readonly string[] = [
   "too many requests",

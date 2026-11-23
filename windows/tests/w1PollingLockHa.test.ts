@@ -29,7 +29,8 @@ import {
 } from "../src/core/pollingPolicy.js";
 import { HomeAssistantSynthesizer, haServiceCall, parseCachedHAHome } from "../src/core/homeAssistant.js";
 import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
-import { cloudRefreshDue, deviceStatusSummary } from "../src/core/models.js";
+import { deviceStatusSummary } from "../src/core/models.js";
+import { cloudRefreshDue, cloudRefreshIntervalMs } from "../src/core/pollingPolicy.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
 
@@ -222,6 +223,23 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     );
     assert.equal(describePollingContext({ panelVisible: false, systemActive: false, lowPower: false }), "paused (asleep or locked)");
     assert.equal(describePollingContext({ panelVisible: false, systemActive: true, lowPower: true }), "panel closed, low power");
+
+    // The runtime cadence (`cloudRefreshDue`) keeps 60 s while either decay gate is unknown or on,
+    // and only stretches to the 300 s idle step once the closed panel is untouched for two hours.
+    const touchedAtMs = 1_000_000;
+    assert.equal(
+      cloudRefreshIntervalMs(touchedAtMs + 5 * 60 * 60_000, false, { lastPanelInteractionAtMs: touchedAtMs }),
+      60_000,
+    );
+    assert.equal(cloudRefreshIntervalMs(touchedAtMs, false), 60_000);
+    assert.equal(
+      cloudRefreshIntervalMs(touchedAtMs + 5 * 60 * 60_000, false, {
+        lastPanelInteractionAtMs: touchedAtMs,
+        safetyAlertsRelyOnPolling: false,
+        menuBarShowsLiveReading: false,
+      }),
+      300_000,
+    );
 
     assert.deepEqual(
       [1, 2, 3, 4, 5, 6, 10].map((hit) => PollingPolicy.rateLimitBackoffMs(hit)),
@@ -510,15 +528,36 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
 
     const beforeLockCalls = httpCalls;
     workstationLocked = true;
+    // The idle clock is five hours old, i.e. the longest idle step is in force: the lock pause must
+    // still be the thing that refuses the round, not the cadence.
+    app.lastPanelInteractionAtMs = Date.now() - 5 * 60 * 60_000;
     await app.refreshDevices(true);
     assert.equal(httpCalls, beforeLockCalls, "locked workstation skips silent cloud poll");
     assert.equal(app.lastCloudRefreshAt, null);
     assert.equal(cloudRefreshDue(Date.now(), app.lastCloudRefreshAt, false), true, "due immediately upon unlock/open");
+    assert.equal(
+      cloudRefreshDue(Date.now(), app.lastCloudRefreshAt, false, {
+        lastPanelInteractionAtMs: app.lastPanelInteractionAtMs,
+        safetyAlertsRelyOnPolling: false,
+        menuBarShowsLiveReading: false,
+      }),
+      true,
+      "a refresh that never landed is due even at the longest idle step",
+    );
 
     workstationLocked = false;
     await app.refreshDevices(true);
     assert.equal(httpCalls, beforeLockCalls + 1, "unlocked workstation resumes polling immediately");
     assert.ok(app.lastCloudRefreshAt !== null);
+    assert.equal(
+      cloudRefreshDue(Date.now(), app.lastCloudRefreshAt, false, {
+        lastPanelInteractionAtMs: app.lastPanelInteractionAtMs,
+        safetyAlertsRelyOnPolling: false,
+        menuBarShowsLiveReading: false,
+      }),
+      false,
+      "the round that unlock just landed is not repeated by the decayed cadence",
+    );
   });
 
   it("parses and validates localIp & mac in parseDeviceRecord and attaches gatewayLocalIp without extra list fetch", () => {
