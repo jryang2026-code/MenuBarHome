@@ -65,7 +65,7 @@
 | 5 | **面板定位兜底**：macOS 补菜单栏自动隐藏、刘海右对齐、去掉 `NSScreen.main` 兜底；Windows 用 `SHAppBarMessage` 补偿任务栏自动隐藏 | 修可复现的错位 | S/M | 否 | R10、R07 | ✅ |
 | 6 | **Windows 小修**：设置窗口深色标题栏（`DWMWA_USE_IMMERSIVE_DARK_MODE`）；Esc 关闭后把焦点还给托盘 | 第一眼质感 | S | 否 | R07 | ○ |
 | 7 | **口令修错**：「冷光」对齐 4000K；最暗亮度显式定为 1% 或 10%；风扇百分比接入 `IntentOperation` | 修错 + 补齐已有能力 | S/M | 是 | R14 | ✅ / ◐ |
-| 8 | **口令覆盖率基线**：用 HA zh-CN 语料只跑不判，统计 local / model / none 三类 | 后续扩语料的依据 | M | 是 | R14 | ○ |
+| 8 | **口令覆盖率基线**：251 条自编 zh-CN 口令只跑不判，统计 local / model / none 三类（[基线](intent-coverage-baseline.md)，`RECORD_INTENT_COVERAGE=1` 可重录） | 后续扩语料的依据 | M | 是 | R14 | ✅ |
 | 9 | **MCP 收紧**：写工具改 `destructiveHint: true`，新增 `--read-only` 开关；Raycast 执行时加 Animated Toast | 外部 AI 最小授权 | S | 否 | R13 | ✅ |
 | 10 | **门铃系统通知带缩略图**：`UNNotificationAttachment` + `frame.jpeg` | 门铃不再错过 | S | 否 | R15 | ○ |
 | 11 | **共享数据第一步**：标题文字、状态词、图标语义抽成 `Shared/deviceLabels.json`，加 `check_device_rules.py` 门禁 | 减少双端重复 | S/M | 否 | R03 | ◐ |

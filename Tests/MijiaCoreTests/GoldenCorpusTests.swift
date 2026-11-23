@@ -20,7 +20,9 @@ struct GoldenCorpusTests {
         let cases: [IntentCase]
     }
 
-    private struct CorpusDevice: Decodable {
+    /// Internal, not private: `IntentCoverageBaselineTests` decodes its own device list with this
+    /// same schema so both corpora build `SmartDevice` values the one way.
+    struct CorpusDevice: Decodable {
         let id: String
         let name: String
         let roomId: String
@@ -42,7 +44,7 @@ struct GoldenCorpusTests {
         }
     }
 
-    private enum CorpusKind: Decodable {
+    enum CorpusKind: Decodable {
         case light(LightPayload)
         case climate(ClimatePayload)
         case fan(FanPayload)
