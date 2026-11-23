@@ -38,7 +38,7 @@ struct ContractReplayTests {
 
     // MARK: - Mi cloud
 
-    @Test("Device list page keeps the fields synthesis reads")
+    @Test("Device list page preserves synthesis fields and gateway metadata")
     func deviceListPage() throws {
         let result = try MiCloudClient.unwrapResult(Self.decode("mi_device_list_page.json"))
         let records = MiCloudClient.parseDeviceList(result)
@@ -70,9 +70,21 @@ struct ContractReplayTests {
                 localIp: "192.0.2.11",
                 mac: "02:00:00:00:00:03"
             ),
+            MiDeviceRecord(
+                did: "proxy.1001.0001",
+                name: "Contract VRF Indoor Unit",
+                model: "qdhkl.aircondition.ac",
+                isOnline: false,
+                parentDid: "1001",
+                pid: 18
+            ),
         ])
         let split = try #require(records.first { $0.splitParentDid != nil })
         #expect(split.miotDid == "did-switch-0002")
+        let proxy = try #require(records.first { $0.pid == 18 })
+        #expect(proxy.miotDid == proxy.did)
+        let cached = try JSONEncoder().encode(records)
+        #expect(try JSONDecoder().decode([MiDeviceRecord].self, from: cached) == records)
         #expect(result["next_start_did"]?.stringValue == "")
         #expect(result["has_more"]?.boolValue == false)
     }

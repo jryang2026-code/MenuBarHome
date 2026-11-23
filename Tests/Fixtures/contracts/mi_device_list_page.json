@@ -2,7 +2,7 @@
   "_fixture": {
     "endpoint": "POST /app/v2/home/device_list_page",
     "captured": "2026-11-03",
-    "sanitised": "dids, names, MAC addresses and IP addresses replaced with synthetic values; field shapes and value types preserved",
+    "sanitised": "dids, names, MAC addresses and IP addresses replaced with synthetic values; synthetic proxy row and empty metadata fields added for coverage",
     "shape": "decrypted response envelope {code, message, result}; result.list is one page"
   },
   "code": 0,
@@ -24,6 +24,8 @@
         "name": "Contract Downlight",
         "model": "lemesh.switch.sw2f12",
         "isOnline": false,
+        "parent_id": "",
+        "pid": "",
         "extra": {"split": {"parentId": "did-switch-0002", "moduleId": 2}}
       },
       {
@@ -33,6 +35,14 @@
         "isOnline": true,
         "localip": "192.0.2.11",
         "mac": "02:00:00:00:00:03"
+      },
+      {
+        "did": "proxy.1001.0001",
+        "name": "Contract VRF Indoor Unit",
+        "model": "qdhkl.aircondition.ac",
+        "isOnline": false,
+        "parent_id": "1001",
+        "pid": 18
       },
       {
         "did": "did-invalid-0004",

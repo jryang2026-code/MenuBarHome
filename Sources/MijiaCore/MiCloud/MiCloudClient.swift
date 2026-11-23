@@ -13,6 +13,9 @@ public struct MiDeviceRecord: Codable, Equatable, Sendable {
     /// go to the parent did, limited to the switch service `splitSiid`.
     public var splitParentDid: String?
     public var splitSiid: Int?
+    /// Cloud grouping metadata. MIoT requests use `miotDid`.
+    public var parentDid: String?
+    public var pid: Int?
     public var localIp: String?
     public var mac: String?
     public var token: String?
@@ -20,7 +23,8 @@ public struct MiDeviceRecord: Codable, Equatable, Sendable {
 
     public init(did: String, name: String, model: String, isOnline: Bool, specType: String? = nil,
                 splitParentDid: String? = nil, splitSiid: Int? = nil, localIp: String? = nil,
-                mac: String? = nil, token: String? = nil, isShared: Bool = false) {
+                mac: String? = nil, token: String? = nil, isShared: Bool = false,
+                parentDid: String? = nil, pid: Int? = nil) {
         self.did = did
         self.name = name
         self.model = model
@@ -28,6 +32,8 @@ public struct MiDeviceRecord: Codable, Equatable, Sendable {
         self.specType = specType
         self.splitParentDid = splitParentDid
         self.splitSiid = splitSiid
+        self.parentDid = parentDid
+        self.pid = pid
         self.localIp = localIp
         self.mac = mac
         self.token = token
@@ -574,6 +580,7 @@ public actor MiCloudClient: MiCloudAPI {
             let split = item["extra"]?["split"]
             let rawSplitParent = split?["parentId"]?.idString
             let rawSplitSiid = split?["moduleId"]?.intValue
+            let parentDid = item["parent_id"]?.idString
             let rawToken = item["token"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines)
             let token = (rawToken?.isEmpty == false) ? rawToken : nil
             let shareFlag: Bool? = {
@@ -584,6 +591,12 @@ public actor MiCloudClient: MiCloudAPI {
                 ?? item["isShared"]?.boolValue
                 ?? item["is_shared"]?.boolValue
                 ?? false
+            let pid: Int?
+            if case .number(let rawPid)? = item["pid"], abs(rawPid) <= 9_007_199_254_740_991 {
+                pid = Int(exactly: rawPid)
+            } else {
+                pid = nil
+            }
             return MiDeviceRecord(
                 did: did,
                 name: item["name"]?.stringValue ?? model,
@@ -595,7 +608,9 @@ public actor MiCloudClient: MiCloudAPI {
                 localIp: item["localip"]?.stringValue,
                 mac: item["mac"]?.stringValue,
                 token: token,
-                isShared: isShared
+                isShared: isShared,
+                parentDid: parentDid?.isEmpty == false ? parentDid : nil,
+                pid: pid
             )
         }
     }

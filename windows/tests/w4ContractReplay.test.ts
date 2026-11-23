@@ -94,7 +94,7 @@ describe("D4 Contract Replay · Fixture hygiene & metadata audit", () => {
 });
 
 describe("D4 Contract Replay · Xiaomi Cloud & local miIO envelopes (ContractReplayTests.swift parity)", () => {
-  it("replays mi_device_list_page.json and preserves device fields, split metadata & hostile numeric IDs", () => {
+  it("replays mi_device_list_page.json and preserves device fields, split and gateway metadata & hostile numeric IDs", () => {
     const doc = decodeContractFixture("mi_device_list_page.json");
     const result = MiCloudClient.unwrapResult(doc) as Record<string, unknown>;
     const records = MiCloudClient.parseDeviceList(result);
@@ -127,11 +127,23 @@ describe("D4 Contract Replay · Xiaomi Cloud & local miIO envelopes (ContractRep
         localIp: "192.0.2.11",
         mac: "02:00:00:00:00:03",
       },
+      {
+        did: "proxy.1001.0001",
+        name: "Contract VRF Indoor Unit",
+        model: "qdhkl.aircondition.ac",
+        isOnline: false,
+        specType: null,
+        parentDid: "1001",
+        pid: 18,
+      },
     ]);
 
     const split = records.find((r) => r.splitParentDid != null);
     assert.ok(split);
     assert.equal(miotDid(split), "did-switch-0002");
+    const proxy = records.find((r) => r.pid === 18);
+    assert.ok(proxy);
+    assert.equal(miotDid(proxy), proxy.did);
     assert.equal(result.next_start_did, "");
     assert.equal(result.has_more, false);
 

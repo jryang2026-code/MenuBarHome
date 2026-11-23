@@ -20,6 +20,7 @@ export interface MiDeviceRecord {
   readonly splitParentDid?: string | null;
   readonly splitSiid?: number | null;
   readonly parentDid?: string | null;
+  readonly pid?: number;
   readonly localIp?: string | null;
   readonly mac?: string | null;
 }
@@ -288,6 +289,7 @@ export class MiCloudClient {
       asIdString(extra["parentDid"]) ??
       asIdString(extra["parent_id"]) ??
       asIdString(extra["parentId"]);
+    const pid = rec["pid"];
     const localIp = normalizeDeviceLocalIp(rec["localip"] ?? rec["localIp"]);
     const mac = normalizeDeviceMac(rec["mac"]);
     return {
@@ -298,6 +300,7 @@ export class MiCloudClient {
       specType: typeof rec["spec_type"] === "string" ? rec["spec_type"] : null,
       ...(splitParentDid && splitSiid !== null ? { splitParentDid, splitSiid } : {}),
       ...(parentDid !== null ? { parentDid } : {}),
+      ...(typeof pid === "number" && Number.isSafeInteger(pid) ? { pid } : {}),
       ...(localIp !== null ? { localIp } : {}),
       ...(mac !== null ? { mac } : {}),
     };
