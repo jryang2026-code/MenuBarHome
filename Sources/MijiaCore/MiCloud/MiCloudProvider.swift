@@ -4,6 +4,10 @@ import os
 /// `HomeProvider` that talks to Xiaomi cloud directly (no Home Assistant): discovers devices and
 /// rooms, loads MIoT specs, polls properties and maps `DeviceCommand`s to MIoT writes.
 public actor MiCloudProvider: HomeProvider {
+    public static let capabilities: Set<HomeProviderCapability> = [
+        .readSnapshot, .control, .cameras,
+    ]
+
     public typealias APIFactory = @Sendable (MiSession) -> any MiCloudAPI
 
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "MiCloudProvider")

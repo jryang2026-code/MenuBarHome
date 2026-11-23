@@ -18,7 +18,7 @@ struct HomeBackendDescriptorTests {
         }
     }
 
-    @Test("All 12 combinations of homeBackend, hasHASource, and hasMiSource resolve expected activeBackends")
+    @Test("Zero, one, and two configured sources preserve backend selection")
     @MainActor
     func activeBackendsExhaustiveMatrix() {
         let suite = "test.backend.descriptor.matrix.\(UUID().uuidString)"
@@ -28,35 +28,53 @@ struct HomeBackendDescriptorTests {
             defaultsSuiteName: suite
         )
 
+        let sourceSets: [Set<HomeBackend>] = [
+            [], [.homeAssistant], [.xiaomiCloud], [.homeAssistant, .xiaomiCloud],
+        ]
         for backend in HomeBackend.allCases {
-            for hasHA in [false, true] {
-                for hasMi in [false, true] {
-                    store.homeBackend = backend
-                    store.hasHASource = hasHA
-                    store.miSessionMaskedUserId = hasMi ? "100***01" : nil
+            for configured in sourceSets {
+                store.homeBackend = backend
+                store.hasHASource = configured.contains(.homeAssistant)
+                store.miSessionMaskedUserId = configured.contains(.xiaomiCloud) ? "100***01" : nil
 
-                    let expected: Set<HomeBackend>
-                    if backend == .demo {
-                        expected = [.demo]
-                    } else if hasHA && hasMi {
-                        expected = [.homeAssistant, .xiaomiCloud]
-                    } else if hasHA {
-                        expected = [.homeAssistant]
-                    } else if hasMi {
-                        expected = [.xiaomiCloud]
-                    } else {
-                        expected = [backend]
-                    }
-
+                let expected = backend == .demo || configured.isEmpty ? [backend] : configured
+                #expect(store.activeBackends == expected)
+                for disabled in sourceSets {
                     let computed = HomeBackendDescriptor.activeBackends(
                         homeBackend: backend,
-                        hasHASource: hasHA,
-                        hasMiSource: hasMi
+                        configuredSources: configured,
+                        disabledSources: disabled
                     )
-                    #expect(computed == expected)
-                    #expect(store.activeBackends == expected)
+                    #expect(computed == (backend == .demo ? expected : expected.subtracting(disabled)))
                 }
             }
+        }
+    }
+
+    @Test("Built-in providers declare their capabilities")
+    func providerCapabilities() {
+        #expect(HAWebSocketProvider.capabilities == [.readSnapshot, .pushEvents, .control, .scenes, .cameras])
+        #expect(MiCloudProvider.capabilities == [.readSnapshot, .control, .cameras])
+        #expect(MiAccountsProvider.capabilities == MiCloudProvider.capabilities)
+    }
+
+    @Test("Adapter codes classify errors from both providers")
+    func adapterErrorCodes() {
+        let cases: [(any Error, AdapterErrorCode)] = [
+            (HomeProviderError.unauthorized, .authExpired),
+            (HomeProviderError.serviceCallFailed(429, "slow down"), .rateLimited),
+            (HomeProviderError.serviceCallFailed(501, "unsupported camera"), .unsupported),
+            (HomeProviderError.serviceCallFailed(500, "unrecognized failure"), .unknown),
+            (MiCloudError.sessionExpired, .authExpired),
+            (MiCloudError.http(429), .rateLimited),
+            (MiCloudError.http(501), .unsupported),
+            (MiCloudError.deviceError(code: ControlFailure.deviceOfflineMiotCode, message: "offline"), .deviceOffline),
+            (MiCloudError.api(code: ControlFailure.deviceOfflineMiotCode, message: "envelope error"), .unknown),
+            (MiotCommandError.unsupported("power"), .unsupported),
+            (URLError(.cannotConnectToHost), .unreachable),
+        ]
+        for (error, code) in cases {
+            #expect(AdapterErrorCode(classifying: error) == code)
         }
     }
 
