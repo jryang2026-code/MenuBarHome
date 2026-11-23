@@ -9,7 +9,7 @@ struct DeviceTypeSelectionView: View {
 
     @State private var draft: Set<DeviceCategoryID>
     @State private var isChoosingCustom: Bool
-    @State private var impact: DeviceTypeSelectionImpact?
+    @State private var review: DeviceTypeSelectionReview
     @State private var errorMessage: String?
 
     init(store: HomeStore, initialDraft: Set<DeviceCategoryID>? = nil) {
@@ -18,7 +18,7 @@ struct DeviceTypeSelectionView: View {
         let start = initialDraft ?? stored
         _draft = State(initialValue: start)
         _isChoosingCustom = State(initialValue: DeviceTypeSelectionMode.mode(for: start) == .custom)
-        _impact = State(initialValue: start == stored ? nil : store.previewDeviceCategorySelection(start))
+        _review = State(initialValue: .init(start == stored ? nil : store.previewDeviceCategorySelection(start)))
     }
 
     private var stored: Set<DeviceCategoryID> { store.capabilitySelection.enabledCategories }
@@ -29,6 +29,7 @@ struct DeviceTypeSelectionView: View {
 
     var body: some View {
         let _ = store.effectiveLanguage
+        let liveImpact = hasPendingChange ? store.previewDeviceCategorySelection(draft) : nil
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 ForEach(DeviceTypeSelectionMode.allCases, id: \.self) { mode in
@@ -56,7 +57,7 @@ struct DeviceTypeSelectionView: View {
             .foregroundStyle(DesignTokens.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
 
-            if hasPendingChange, let impact {
+            if hasPendingChange, let impact = review.shown {
                 impactSummary(impact)
                 actionRow(impact)
             }
@@ -68,9 +69,7 @@ struct DeviceTypeSelectionView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .onChange(of: store.capabilityGeneration) { _, _ in
-            if hasPendingChange { impact = store.previewDeviceCategorySelection(draft) }
-        }
+        .onChange(of: liveImpact) { _, latest in review.shown = latest }
     }
 
     private func hint(for mode: DeviceTypeSelectionMode) -> String {
@@ -116,8 +115,8 @@ struct DeviceTypeSelectionView: View {
             }
             if !impact.retainedSafetyDevices.isEmpty {
                 impactLine("shield.checkered", L10n.format(
-                    "提醒照常：%@",
-                    "Alerts keep working: %@",
+                    "继续读取安全信号：%@",
+                    "Continues reading safety signals: %@",
                     Self.list(impact.retainedSafetyDevices.map { device in
                         L10n.format("%@（%@）", "%@ (%@)", device.name, device.signals.map(\.selectionTitle).joined(separator: L10n.tr("、", ", ")))
                     })
@@ -147,18 +146,25 @@ struct DeviceTypeSelectionView: View {
     }
 
     private func actionRow(_ impact: DeviceTypeSelectionImpact) -> some View {
-        HStack(spacing: 8) {
+        let reviewOnly = review.needsReview
+        return HStack(spacing: 8) {
             Spacer(minLength: 0)
             Button(L10n.tr("取消", "Cancel")) { updateDraft(stored, custom: false) }
                 .buttonStyle(PillActionButtonStyle())
                 .keyboardShortcut(.cancelAction)
-            Button(impact.itemsToPause.isEmpty
-                ? L10n.tr("应用", "Apply")
-                : L10n.tr("暂停这些项并应用", "Pause These and Apply")
-            ) { apply(impact) }
+            Button(confirmTitle(impact, reviewOnly: reviewOnly)) { confirm(impact, reviewOnly: reviewOnly) }
                 .buttonStyle(PillActionButtonStyle(isSelected: true))
                 .disabled(!impact.verdict.canDeactivate || draft.isEmpty)
         }
+    }
+
+    private func confirmTitle(_ impact: DeviceTypeSelectionImpact, reviewOnly: Bool) -> String {
+        if reviewOnly {
+            return L10n.tr("确认更新后的影响", "Confirm Updated Impact")
+        }
+        return impact.itemsToPause.isEmpty
+            ? L10n.tr("应用", "Apply")
+            : L10n.tr("暂停这些项并应用", "Pause These and Apply")
     }
 
     private func select(_ mode: DeviceTypeSelectionMode) {
@@ -172,30 +178,47 @@ struct DeviceTypeSelectionView: View {
     private func updateDraft(_ next: Set<DeviceCategoryID>, custom: Bool? = nil) {
         if let custom { isChoosingCustom = custom }
         draft = next
+        review = .init(next == stored ? nil : store.previewDeviceCategorySelection(next))
         errorMessage = nil
-        impact = next == stored ? nil : store.previewDeviceCategorySelection(next)
     }
 
-    private func apply(_ previewed: DeviceTypeSelectionImpact) {
+    private func confirm(_ previewed: DeviceTypeSelectionImpact, reviewOnly: Bool) {
+        let latest = store.previewDeviceCategorySelection(draft)
+        switch review.confirm(shown: previewed, latest: latest, reviewOnly: reviewOnly) {
+        case .refresh:
+            showChangedImpact()
+            return
+        case .reviewed:
+            errorMessage = nil
+            return
+        case .apply:
+            break
+        }
+
         let outcome = store.applyDeviceCategorySelection(
             draft,
             pauseConfirmed: !previewed.itemsToPause.isEmpty,
-            expectedPauseItemKeys: previewed.pauseItemKeys
+            expectedPauseItemKeys: previewed.pauseItemKeys,
+            expectedGeneration: previewed.generation
         )
         switch outcome {
         case .applied, .unchanged:
             updateDraft(stored, custom: DeviceTypeSelectionMode.mode(for: stored) == .custom)
             announce(L10n.tr("设备类型已更新", "Device types updated"))
         case .needsConfirmation(let fresh), .blocked(let fresh):
-            // The references changed since the preview; show the fresh list before anything is paused.
-            impact = fresh
-            errorMessage = L10n.tr("影响范围有变化，请确认后再应用", "The impact changed; review it before applying")
-            announce(errorMessage ?? "")
+            review.shown = fresh
+            showChangedImpact()
         case .refused(let reason):
             updateDraft(stored, custom: DeviceTypeSelectionMode.mode(for: stored) == .custom)
             errorMessage = reason
             announce(reason)
         }
+    }
+
+    private func showChangedImpact() {
+        let message = L10n.tr("影响范围有变化，请确认后再应用", "The impact changed; review it before applying")
+        errorMessage = message
+        announce(message)
     }
 
     private func announce(_ message: String) {
@@ -220,5 +243,49 @@ struct DeviceTypeSelectionView: View {
         case .automationRule: L10n.tr("自动化规则", "automation rule")
         case .quickAction: L10n.tr("快捷动作", "quick action")
         }
+    }
+}
+
+struct DeviceTypeSelectionReview {
+    enum Decision: Equatable { case refresh, reviewed, apply }
+
+    var shown: DeviceTypeSelectionImpact?
+    private var reviewed: DeviceTypeSelectionImpact?
+    var needsReview: Bool {
+        guard let shown else { return false }
+        return !shown.matchesReview(reviewed)
+    }
+
+    init(_ impact: DeviceTypeSelectionImpact?) {
+        shown = impact
+        reviewed = impact
+    }
+
+    mutating func confirm(
+        shown preview: DeviceTypeSelectionImpact, latest: DeviceTypeSelectionImpact, reviewOnly: Bool
+    ) -> Decision {
+        shown = latest
+        guard latest.matchesReview(preview) else { return .refresh }
+        if reviewOnly {
+            reviewed = latest
+            return .reviewed
+        }
+        return needsReview ? .refresh : .apply
+    }
+}
+
+private extension DeviceTypeSelectionImpact {
+    func matchesReview(_ other: Self?) -> Bool {
+        guard let other else { return false }
+        return target == other.target
+            && generation == other.generation
+            && removedCategories == other.removedCategories
+            && hiddenCardNames == other.hiddenCardNames
+            && retainedSafetyDevices == other.retainedSafetyDevices
+            && itemsToPause == other.itemsToPause
+            && showsManualSceneNotice == other.showsManualSceneNotice
+            && verdict.disposition == other.verdict.disposition
+            && verdict.cascadedCapabilities == other.verdict.cascadedCapabilities
+            && verdict.blockingReasons == other.verdict.blockingReasons
     }
 }

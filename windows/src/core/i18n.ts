@@ -345,6 +345,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "正在获取小米安全登录二维码...": ["正在获取小米安全登录二维码...", "Requesting a Xiaomi sign-in QR code…"],
   "正在等待手机米家扫码确认...": ["正在等待手机米家扫码确认...", "Waiting for confirmation in Mi Home…"],
   "获取米家登录二维码": ["获取米家登录二维码", "Get Mi Home QR code"],
+  "米家登录二维码": ["米家登录二维码", "Mi Home sign-in QR code"],
   "请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录": ["请打开手机「米家 App → 我的 → 右上角扫一扫」确认登录", "Open “Mi Home → Profile → Scan” on your phone to confirm"],
   "已连接小米账号 {user}": ["已连接小米账号 {user}", "Connected to Mi account {user}"],
   "已连接小米账号 {user}（已切换到账号地区 {region}）": ["已连接小米账号 {user}（已切换到账号地区 {region}）", "Connected to Mi account {user} (switched to the account region {region})"],
@@ -1003,6 +1004,23 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。": [
     "明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。",
     "Plaintext HTTP connection was declined. Devices have not synced yet. Switch to HTTPS or approve this address.",
+  ],
+  "连接超时。设备还未同步。请确认家庭服务器已开机并在同一网络，然后重试。": [
+    "连接超时。设备还未同步。请确认家庭服务器已开机并在同一网络，然后重试。",
+    "The connection timed out. Devices have not synced yet. Confirm the server is running on the same network, then retry.",
+  ],
+  "安全连接或 WebSocket 握手未能完成。设备还未同步。请确认地址指向 Home Assistant 根路径（反向代理需转发 WebSocket Upgrade）、证书有效且系统时间正确。": [
+    "安全连接或 WebSocket 握手未能完成。设备还未同步。请确认地址指向 Home Assistant 根路径（反向代理需转发 WebSocket Upgrade）、证书有效且系统时间正确。",
+    "The secure connection or the WebSocket handshake did not complete. Devices have not synced yet. Confirm the address points at the Home Assistant root path (a reverse proxy must forward the WebSocket Upgrade), the certificate is valid, and this PC's clock is correct.",
+  ],
+  "找不到这个地址对应的主机。设备还未同步。请检查地址拼写，或改用局域网 IP 地址。": [
+    "找不到这个地址对应的主机。设备还未同步。请检查地址拼写，或改用局域网 IP 地址。",
+    "No host was found for this address. Devices have not synced yet. Check the spelling, or use a LAN IP address.",
+  ],
+  "正在读取已保存的连接…": ["正在读取已保存的连接…", "Reading your saved connection…"],
+  "读取本机凭据后即可继续，已连接过米家或 Home Assistant 的电脑不会重新出现引导。": [
+    "读取本机凭据后即可继续，已连接过米家或 Home Assistant 的电脑不会重新出现引导。",
+    "This finishes as soon as the local credentials are read; a PC that already connected to Mi Home or Home Assistant will not see the guide again.",
   ],
   "已连接 Home Assistant · {count} 台设备": ["已连接 Home Assistant · {count} 台设备", "Connected to Home Assistant · {count} devices"],
   "示例家庭，不会控制真实设备": ["示例家庭，不会控制真实设备", "Demo home; won't control real devices"],

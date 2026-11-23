@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MijiaCore
@@ -16,18 +17,19 @@ struct PanelSplitTilesTests {
             RoomArea(id: "study", name: "书房", sortOrder: 2),
         ],
         configureDefaults: (UserDefaults) -> Void = { _ in }
-    ) async throws -> (HomeStore, MockHomeProvider, String) {
-        let suiteName = "com.menubarmijia.tests.splittiles.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
+    ) async throws -> (HomeStore, MockHomeProvider, InMemoryUserDefaults) {
+        // One instance for the seed, the store and the assertions: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         configureDefaults(defaults)
         let provider = MockHomeProvider(snapshot: SynthesizedHome(
             rooms: rooms,
             devices: devices,
             scenes: []
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: defaults)
         try await store.waitForTestSnapshot()
-        return (store, provider, suiteName)
+        return (store, provider, defaults)
     }
 
     @Test("Typography and hit-target tokens satisfy §4.2 and compact split tiles are the default")
@@ -36,11 +38,9 @@ struct PanelSplitTilesTests {
         #expect(DesignTokens.TypeSize.footnote >= 11)
         #expect(DesignTokens.minHitTarget >= 28)
 
-        let freshSuite = "com.menubarmijia.tests.splittiles.prefs.\(UUID().uuidString)"
-        let freshDefaults = try #require(UserDefaults(suiteName: freshSuite))
-        defer { freshDefaults.removePersistentDomain(forName: freshSuite) }
+        let freshDefaults = InMemoryUserDefaults()
 
-        let freshStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: freshSuite)
+        let freshStore = HomeStore(provider: MockHomeProvider(), defaults: freshDefaults)
         #expect(freshStore.isCompactGridMode == true)
 
         let light = SmartDevice(
@@ -52,7 +52,7 @@ struct PanelSplitTilesTests {
 
         // Existing users who turned off compact grid or saved per-device full/panel sizes keep them.
         freshStore.isCompactGridMode = false
-        let reloadedStore = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: freshSuite)
+        let reloadedStore = HomeStore(provider: MockHomeProvider(), defaults: freshDefaults)
         #expect(reloadedStore.isCompactGridMode == false)
         #expect(DeviceLayoutPrefs.resolved(.auto, device: light, compactGrid: reloadedStore.isCompactGridMode, climatePanel: true) == .full)
         #expect(DeviceLayoutPrefs.resolved(.full, device: light, compactGrid: true, climatePanel: true) == .full)
@@ -98,10 +98,9 @@ struct PanelSplitTilesTests {
             ))
         )
 
-        let (store, provider, suiteName) = try await makeIsolatedStore(
+        let (store, provider, _) = try await makeIsolatedStore(
             devices: [dimmableLight, plainPlug, speaker, readOnlyGeneric, readOnlyValve, cameraWithDrawer]
         )
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
 
         #expect(DeviceTileActionLayout.resolve(for: dimmableLight, store: store) == .split(primary: .togglePower))
         #expect(DeviceTileActionLayout.resolve(for: cameraWithDrawer, store: store) == .split(primary: .cameraLive))
@@ -153,8 +152,7 @@ struct PanelSplitTilesTests {
             kind: .light(LightSpec(entityId: "light.locked", isOn: false, brightnessPercent: 50))
         )
 
-        let (store, provider, suiteName) = try await makeIsolatedStore(devices: [heater, wallSwitch, light])
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let (store, provider, _) = try await makeIsolatedStore(devices: [heater, wallSwitch, light])
 
         #expect(DeviceTileActionLayout.resolve(for: heater, store: store) == .split(primary: .togglePower))
         #expect(DeviceTileActionLayout.resolve(for: wallSwitch, store: store) == .split(primary: .togglePower))
@@ -200,8 +198,7 @@ struct PanelSplitTilesTests {
             kind: .light(LightSpec(entityId: "light.off_lamp", isOn: false, brightnessPercent: 50))
         )
 
-        let (store, _, suiteName) = try await makeIsolatedStore(devices: [offlineLamp, onlineLight])
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let (store, _, _) = try await makeIsolatedStore(devices: [offlineLamp, onlineLight])
         store.favoriteDeviceIds = ["off_lamp", "on_light"]
         store.favoriteOrder = ["off_lamp", "on_light"]
 
@@ -309,13 +306,12 @@ struct PanelSplitTilesTests {
             serviceToken: "tok",
             expiresAt: Date(timeIntervalSince1970: 1_700_000_000)
         )
-        let (store, provider, suiteName) = try await makeIsolatedStore(
+        let (store, provider, _) = try await makeIsolatedStore(
             devices: [nonToggleableCamWithDrawer, sleepingToggleableCam]
         ) { defaults in
             defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
             _ = MiSessionStore.save(expiredSession, defaults: defaults)
         }
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
         store.toastAutoDismissInterval = nil
 
         #expect(!nonToggleableCamWithDrawer.kind.canTogglePower)
@@ -368,8 +364,7 @@ struct PanelSplitTilesTests {
                 kind: .light(LightSpec(entityId: "light.lamp_\(idx)", isOn: false, brightnessPercent: 50))
             )
         }
-        let (store, _, suiteName) = try await makeIsolatedStore(devices: devices)
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let (store, _, _) = try await makeIsolatedStore(devices: devices)
         store.favoriteDeviceIds = []
         store.favoriteOrder = []
 
@@ -442,8 +437,7 @@ struct PanelSplitTilesTests {
             kind: .plug(PlugSpec(switchEntityId: "switch.offline", isOn: false))
         ))
 
-        let (store, _, suiteName) = try await makeIsolatedStore(devices: devices)
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let (store, _, _) = try await makeIsolatedStore(devices: devices)
 
         store.favoriteDeviceIds = ["dev_2"]
         store.favoriteOrder = ["dev_2"]

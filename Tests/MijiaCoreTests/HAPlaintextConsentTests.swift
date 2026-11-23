@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -6,8 +7,8 @@ import Testing
 struct HAPlaintextConsentTests {
     static let publicHTTP = "http://203.0.113.5:8123"
 
-    private static func freshDefaults() -> UserDefaults {
-        UserDefaults(suiteName: "test.ha.plaintext.\(UUID().uuidString)")!
+    private static func freshDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     @Test("https and local-network addresses never ask; public or dotless single-label plain http does")
@@ -63,7 +64,7 @@ struct HAPlaintextConsentTests {
     @Test("仍然连接 remembers the address; 不连接 keeps the reason and stops asking; revoke forgets every consent")
     @MainActor
     func storeFlow() async throws {
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome()), defaultsSuiteName: "test.ha.plaintext.store.\(UUID().uuidString)")
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome()), defaults: Self.freshDefaults())
         store.serverURLString = Self.publicHTTP
 
         store.askHAPlaintext("http://198.51.100.9:8123")
@@ -88,7 +89,7 @@ struct HAPlaintextConsentTests {
     @Test("Demo mode drops the question and ignores consent, so 仍然连接 cannot start the live backends")
     @MainActor
     func demoModeSupersedesPrompt() async throws {
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome()), defaultsSuiteName: "test.ha.plaintext.demo.\(UUID().uuidString)")
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome()), defaults: Self.freshDefaults())
         store.serverURLString = Self.publicHTTP
         store.askHAPlaintext(Self.publicHTTP)
         #expect(store.haPlaintextPrompt == .asking(Self.publicHTTP))

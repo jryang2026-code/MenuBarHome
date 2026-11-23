@@ -21,6 +21,12 @@ public final class InMemoryUserDefaults: UserDefaults, @unchecked Sendable {
         store(nil, forKey: defaultName)
     }
 
+    /// The values this instance holds, for a test that must prove a relaunch decodes the persisted
+    /// property-list graph instead of reading the in-process cache (#24).
+    public func storedValues() -> [String: Any] {
+        lock.withLock { values }
+    }
+
     private func store(_ value: Any?, forKey defaultName: String) {
         lock.withLock {
             if let value {

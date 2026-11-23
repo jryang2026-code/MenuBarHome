@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -22,8 +23,7 @@ struct DeviceReadoutTests {
             devices: [device]
         )
         let mock = MockHomeProvider(snapshot: snapshot)
-        let suite = "test.readout.\(UUID().uuidString)"
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         return (store, mock)
     }
@@ -113,8 +113,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.power.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         await provider.holdNextExecute()
         let toggle = store.togglePrimary(store.devices[0])
@@ -141,8 +140,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.echo.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.holdReadBackEcho = true
         try await store.waitForTestSnapshot()
         let first = store.togglePrimary(store.devices[0])
@@ -172,8 +170,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.echo-second.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.holdReadBackEcho = true
         try await store.waitForTestSnapshot()
         let first = store.togglePrimary(store.devices[0])
@@ -214,7 +211,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "客厅", sortOrder: 0)],
             devices: [tv]
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.readout.lg.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         let toggle = store.togglePrimary(store.devices[0])
         #expect(await toggle?.value == true)
@@ -229,8 +226,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.echo-lock.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.holdReadBackEcho = true
         try await store.waitForTestSnapshot()
         _ = store.lockOptimistic("lamp", duration: .seconds(5))
@@ -256,8 +252,7 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.fallback-lock.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         await provider.holdNextExecute()
         let toggle = store.togglePrimary(store.devices[0])
@@ -301,12 +296,8 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp1, lamp2]
         ))
-        let suite = "test.readout.echo-multi.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
-        defer {
-            store.releaseReadBackEcho()
-            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
-        }
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        defer { store.releaseReadBackEcho() }
         store.holdReadBackEcho = true
         try await store.waitForTestSnapshot()
 
@@ -354,12 +345,8 @@ struct DeviceReadoutTests {
             rooms: [RoomArea(id: "room", name: "书房", sortOrder: 0)],
             devices: [lamp]
         ))
-        let suite = "test.readout.echo-invalidate.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
-        defer {
-            store.releaseReadBackEcho()
-            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
-        }
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
+        defer { store.releaseReadBackEcho() }
         store.holdReadBackEcho = true
         try await store.waitForTestSnapshot()
 
