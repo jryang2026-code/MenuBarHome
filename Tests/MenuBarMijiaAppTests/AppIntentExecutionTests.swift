@@ -630,7 +630,10 @@ struct AppIntentExecutionTests {
     func spotlightIndexerBookkeeping() async throws {
         let indexer = SpotlightIndexer()
         var passes: [SpotlightIndexer.Pass] = []
-        indexer.writePass = { pass in passes.append(pass) }
+        indexer.writePass = { pass in
+            passes.append(pass)
+            return true
+        }
 
         let lamp = SpotlightIndexEntry(
             kind: .device, entityId: "lamp", title: "Lamp", roomName: "Study",
@@ -658,7 +661,10 @@ struct AppIntentExecutionTests {
         let indexer = SpotlightIndexer()
         indexer.debounce = .seconds(30)
         var passes: [SpotlightIndexer.Pass] = []
-        indexer.writePass = { pass in passes.append(pass) }
+        indexer.writePass = { pass in
+            passes.append(pass)
+            return true
+        }
 
         let entry = SpotlightIndexEntry(
             kind: .scene, entityId: "movie", title: "Movie", roomName: "",
@@ -673,12 +679,53 @@ struct AppIntentExecutionTests {
         #expect(passes.last?.items.isEmpty == true)
     }
 
+    @Test("A refused index write is retried instead of being remembered as applied")
+    func spotlightIndexerRetriesFailedWrites() async throws {
+        let indexer = SpotlightIndexer()
+        var passes: [SpotlightIndexer.Pass] = []
+        var succeeded = false
+        indexer.writePass = { pass in
+            passes.append(pass)
+            return succeeded
+        }
+
+        let lamp = SpotlightIndexEntry(
+            kind: .device, entityId: "lamp", title: "Lamp", roomName: "Study",
+            keywords: [], domainIdentifier: "menubarmijia.homeAssistant"
+        )
+        let signature = SpotlightIndexPlan.contentSignature(of: [lamp])
+        // The first pass is refused, so the same plan must not look "already indexed".
+        await indexer.apply([lamp], signature: signature)
+        #expect(passes.count == 1)
+
+        succeeded = true
+        await indexer.apply([lamp], signature: signature)
+        #expect(passes.count == 2)
+
+        // Now that the write succeeded, an unchanged plan is skipped by `accept`.
+        indexer.debounce = .milliseconds(10)
+        indexer.accept([lamp])
+        try? await Task.sleep(for: .milliseconds(80))
+        #expect(passes.count == 2)
+    }
+
+    @Test("A stale quick-action identifier still resolves so the intent can report it")
+    func staleQuickActionResolves() async throws {
+        let query = QuickActionEntityQuery()
+        let resolved = try await query.entities(for: ["lightsOff", "removed-action"])
+        #expect(resolved.map(\.id) == ["lightsOff", "removed-action"])
+        #expect(resolved.last?.name == "removed-action")
+    }
+
     @Test("An unchanged snapshot never rewrites the index")
     func spotlightIndexerSkipsUnchangedPlan() async throws {
         let indexer = SpotlightIndexer()
         indexer.debounce = .milliseconds(10)
         var written = 0
-        indexer.writePass = { _ in written += 1 }
+        indexer.writePass = { _ in
+            written += 1
+            return true
+        }
 
         let entry = SpotlightIndexEntry(
             kind: .device, entityId: "lamp", title: "Lamp", roomName: "Study",

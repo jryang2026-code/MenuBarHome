@@ -11,8 +11,10 @@ import Foundation
 // The filter writes this profile. Notification delivery reads it, so "睡眠专注时不要推送非安全通知"
 // is a per-Focus decision the user made in System Settings rather than a global switch.
 //
-// The one invariant: **safety alerts and the doorbell are never suppressed.** `NotificationDeliveryPolicy`
-// owns that rule, and the tests assert it against every profile shape, including a hostile one.
+// The one invariant: **safety alerts and the doorbell are never dropped.** A quiet filter only
+// removes routine notifications (missed timers, external-action banners, the weekly report); a
+// safety alert's interruption level still follows the sensor severity table.
+// `NotificationDeliveryPolicy` owns that rule, and the tests assert it for every profile shape.
 
 /// What one Focus mode asked the app to do, as written by `MenuBarHomeFocusFilter`.
 public struct FocusFilterProfile: Codable, Equatable, Sendable {

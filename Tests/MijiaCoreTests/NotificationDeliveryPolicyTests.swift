@@ -62,6 +62,21 @@ struct NotificationDeliveryPolicyTests {
         }
     }
 
+    @Test("Ordinary safety alerts stay in the list under a quiet Focus filter", arguments: [
+        "sensor:contact:device:123", "sensor:motion:device:123", "battery:device", "offline:device",
+    ])
+    func focusFilterNeverDropsOrdinarySafetyAlerts(id: String) {
+        let alert = SafetyAlert(id: id, deviceId: "device", title: "", body: "")
+        let policy = NotificationDeliveryPolicy.resolve(
+            for: .safetyAlert(alert),
+            isFocusActive: true,
+            focusFilter: Self.quietFilter
+        )
+        #expect(policy.isSuppressed == false)
+        // Focus still quiets it; the filter may not remove it.
+        #expect(policy.interruptionLevel == .passive)
+    }
+
     @Test("A ringing doorbell is never suppressed by a Focus filter")
     func focusFilterNeverSilencesTheDoorbell() {
         let policy = NotificationDeliveryPolicy.resolve(

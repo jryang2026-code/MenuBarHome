@@ -208,8 +208,13 @@ struct QuickActionEntityQuery: EntityStringQuery {
     static let catalog: [BuiltInURLScene] = [.lightsOff, .softNightLight, .climateSleepOff, .allOff]
 
     func entities(for identifiers: [String]) async throws -> [QuickActionEntity] {
-        let wanted = Set(identifiers)
-        return Self.catalog.filter { wanted.contains($0.rawValue) }.map { QuickActionEntity(scene: $0) }
+        // A shortcut saved by an earlier build can name an action this one no longer ships. Resolving
+        // it to a placeholder keeps the shortcut runnable so `RunQuickActionIntent` can say
+        // "unsupported" instead of Shortcuts failing entity resolution with no explanation.
+        identifiers.map { identifier in
+            Self.catalog.first { $0.rawValue == identifier }.map { QuickActionEntity(scene: $0) }
+                ?? QuickActionEntity(id: identifier, name: identifier)
+        }
     }
 
     func suggestedEntities() async throws -> [QuickActionEntity] {

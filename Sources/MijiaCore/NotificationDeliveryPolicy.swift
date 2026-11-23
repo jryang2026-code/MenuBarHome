@@ -36,19 +36,16 @@ public struct NotificationDeliveryPolicy: Equatable, Sendable {
         focusFilter: FocusFilterProfile = .inactive
     ) -> Self {
         let ordinaryLevel: NotificationInterruptionLevel = isFocusActive ? .passive : .active
-        // A Focus filter may only quieten ordinary notifications. `neverSuppressed` is checked per
-        // category below, so no profile value can silence a hazard or the doorbell.
+        // A Focus filter may only quieten ordinary notifications. Safety alerts and the doorbell
+        // return a policy without `isSuppressed`, so no profile value can silence them.
         let suppressed = focusFilter.suppressesNonSafetyNotifications(isFocusActive: isFocusActive)
         switch category {
         case .safetyAlert(let alert):
-            // The sensor severity table is the only place that decides which alerts stay loud in
-            // Focus; non-sensor safety alerts (battery, offline, long-run) keep the ordinary level.
+            // A safety alert is never dropped, whatever the severity: the sensor severity table
+            // decides only how loud it stays. Contact, motion, battery and offline alerts become
+            // passive in Focus like before, they are never silenced by a filter.
             guard alert.severity == .alert else {
-                return Self(
-                    interruptionLevel: ordinaryLevel,
-                    relevanceScore: 1,
-                    isSuppressed: suppressed
-                )
+                return Self(interruptionLevel: ordinaryLevel, relevanceScore: 1)
             }
             return Self(interruptionLevel: .timeSensitive, relevanceScore: 1)
         case .missedTimer:

@@ -30,13 +30,18 @@ final class SpotlightIndexer {
 
     /// Test seam: production waits two seconds after the last snapshot change.
     var debounce: Duration = .seconds(2)
-    /// Test seam replacing `CSSearchableIndex.default()`.
-    var writePass: ((Pass) async -> Void)?
+    /// Test seam replacing `CSSearchableIndex.default()`. Returns whether the pass was written, so a
+    /// refused pass is retried instead of being remembered as current.
+    var writePass: ((Pass) async -> Bool)?
 
     private var pending: Task<Void, Never>?
     private var lastSignature: String?
     private var indexedIdentifiers: Set<String> = []
+    private var retry: Task<Void, Never>?
     private var isStarted = false
+    /// Backoff for a write the system refused; a Spotlight service that is mid-rebuild accepts the
+    /// same pass a minute later.
+    private static let retryDelay: Duration = .seconds(60)
 
     init() {}
 
@@ -94,34 +99,55 @@ final class SpotlightIndexer {
         pending = nil
         let removals = SpotlightIndexPlan.removals(previous: indexedIdentifiers, current: entries)
         let clearsAll = entries.isEmpty && (forceClear || !indexedIdentifiers.isEmpty)
-        lastSignature = signature
-        indexedIdentifiers = Set(entries.map(\.itemIdentifier))
         let pass = Pass(items: entries, removals: removals, clearsAll: clearsAll)
-        if let writePass {
+        let written = if let writePass {
             await writePass(pass)
+        } else {
+            await Self.write(pass)
+        }
+        guard written else {
+            // A refused pass must not be remembered as applied: the index would stay stale — and keep
+            // names of devices that already left the home — until something else changes it.
+            scheduleRetry(entries, signature: signature, forceClear: forceClear)
             return
         }
-        await Self.write(pass)
+        retry?.cancel()
+        retry = nil
+        lastSignature = signature
+        indexedIdentifiers = Set(entries.map(\.itemIdentifier))
+    }
+
+    private func scheduleRetry(_ entries: [SpotlightIndexEntry], signature: String, forceClear: Bool) {
+        retry?.cancel()
+        retry = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: Self.retryDelay)
+            guard !Task.isCancelled, let self else { return }
+            await self.apply(entries, signature: signature, forceClear: forceClear)
+        }
     }
 
     // MARK: - CoreSpotlight
 
-    private static func write(_ pass: Pass) async {
-        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+    /// Returns false when the system refused the write, so `apply` retries instead of caching it.
+    private static func write(_ pass: Pass) async -> Bool {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return true }
         let index = CSSearchableIndex.default()
         do {
             if pass.clearsAll {
                 try await index.deleteAllSearchableItems()
-                return
+                return true
             }
             if !pass.removals.isEmpty {
                 try await index.deleteSearchableItems(withIdentifiers: pass.removals)
             }
-            guard !pass.items.isEmpty else { return }
+            guard !pass.items.isEmpty else { return true }
             try await index.indexSearchableItems(pass.items.map(searchableItem(for:)))
+            return true
         } catch {
-            // Indexing is best effort: a refused write must never break a snapshot application.
+            // Indexing is best effort: a refused write must never break a snapshot application, but
+            // it must be retried — a stale index would keep listing devices that were signed out.
             logger.notice("Spotlight index write failed: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
