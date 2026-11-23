@@ -450,6 +450,7 @@ struct AssistantTests {
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: Self.scenes))
         let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         return (store, mock)
@@ -559,6 +560,24 @@ struct AssistantTests {
         _ = await store.runAssistantCommand("打开书房灯")
         #expect(store.lastAssistantReceipt != nil)
         store.dismissAssistantBar()
+        #expect(store.lastAssistantReceipt == nil)
+    }
+
+    @Test("A finished reply resets itself to idle after the reset delay")
+    @MainActor
+    func finishedReplyAutoResets() async throws {
+        let (store, _) = try await makeStore()
+        // A tiny seam delay keeps the auto-reset itself under test without a 3.2 s real-clock wait.
+        store.assistantAutoResetTiming = .fixed(.milliseconds(20))
+        _ = await store.runAssistantCommand("打开书房灯")
+        #expect(store.assistantState == .done("已打开书房吸顶灯、书房台灯"))
+        #expect(store.lastAssistantReceipt != nil)
+
+        let deadline = ContinuousClock.now + .seconds(5)
+        while store.assistantState != .idle, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(store.assistantState == .idle)
         #expect(store.lastAssistantReceipt == nil)
     }
 

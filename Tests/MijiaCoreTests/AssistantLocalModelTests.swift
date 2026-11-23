@@ -441,6 +441,7 @@ struct AssistantLocalModelTests {
             scenes: AssistantTests.scenes
         ))
         let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         return (store, mock)

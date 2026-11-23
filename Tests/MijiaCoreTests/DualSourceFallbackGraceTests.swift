@@ -454,7 +454,9 @@ struct DualSourceFallbackGraceTests {
                 return disc && gate.waiting == 1
             }
             clock.advance(DualSourceHomeProvider.sourceFallbackGrace + 1)
-            gate.releaseLatest()
+            // An in-flight account snapshot can re-arm the timer after the test takes its callback.
+            // Recompute on the provider actor so the expiry uses the advanced clock.
+            provider.requestRecompute()
             await waitUntil { await collector.backend(forCard: Self.haID) == .homeAssistant }
             await waitUntil { await bridge.stopCalls.contains(Self.did) }
         }
