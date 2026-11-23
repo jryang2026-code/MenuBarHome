@@ -97,7 +97,7 @@ public struct MiAccountSection: View {
         }
 
         mutating func expandIfNeeded(forHighlight anchor: SettingsAnchor?) {
-            if anchor == .miAccount {
+            if anchor == .miAccount || anchor == .miCloudRegion {
                 isExpanded = true
             }
         }
@@ -319,6 +319,7 @@ public struct MiAccountSection: View {
                         .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                         .foregroundStyle(DesignTokens.secondaryText)
                 }
+                .settingsRow(anchor: .miCloudRegion)
             }
         }
         .task {

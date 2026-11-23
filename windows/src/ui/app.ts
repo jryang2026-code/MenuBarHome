@@ -1,4 +1,11 @@
 import { DEVICE_CATEGORY_IDS, deviceCategoryForDevice, type DeviceCategoryID } from "../core/capabilityManifest.js";
+import {
+  diagnoseEmptyPanel,
+  suggestedActionForEmptyPanelReason,
+  type EmptyPanelReason,
+  type EmptyPanelSyncOutcome,
+  type MiAccountSessionState,
+} from "../core/emptyPanelDiagnosis.js";
 import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
@@ -433,6 +440,8 @@ export class MenuMijiaWindowsApp {
   public waitingDeviceIds = new Set<string>();
   /** A Xiaomi refresh failed after devices were already on screen. */
   public cloudValuesStale = false;
+  /** Latest Xiaomi Cloud refresh failed, even when 0 devices were ever loaded (#67, #76). */
+  public lastMiCloudSyncFailed = false;
   /** Member did → owning light-group did from the latest Xiaomi Cloud refresh (#214). */
   public groupOwnerByMemberDid = new Map<string, string>();
   /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
@@ -1875,6 +1884,12 @@ export class MenuMijiaWindowsApp {
           </div>
         `;
       }
+      if (isDualSourceEnabled(this) && !this.isSyncingCloud) {
+        const diagnosis = this.emptyPanelDiagnosis();
+        if (diagnosis !== null) {
+          return this.renderDiagnosedEmptyState(diagnosis);
+        }
+      }
       return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
     }
     // A selected home the cloud no longer returns devices for is not an empty account (#67):
@@ -1895,7 +1910,7 @@ export class MenuMijiaWindowsApp {
       `;
     }
     if (this.settings.connectionMode === "xiaomiCloud" && this.devices.length === 0) {
-      if (this.isSyncingCloud) {
+      if (this.isSyncingCloud && !this.miSessionExpired) {
         return `
           <div class="cc-empty-state">
             <div class="cc-empty-icon is-pulsing">${SF_ICONS.sparkles}</div>
@@ -1903,6 +1918,10 @@ export class MenuMijiaWindowsApp {
             <div class="cc-empty-subtitle">${t("正在从小米云端拉取房间、MIoT 规格与实时状态")}</div>
           </div>
         `;
+      }
+      const diagnosis = this.emptyPanelDiagnosis();
+      if (diagnosis !== null) {
+        return this.renderDiagnosedEmptyState(diagnosis);
       }
       return `
         <div class="cc-empty-state">
@@ -1968,6 +1987,115 @@ export class MenuMijiaWindowsApp {
     });
 
     return `${onlineHtml}${longTailHtml}${offlineHtml}`;
+  }
+
+  public emptyPanelDiagnosis(): EmptyPanelReason | null {
+    const isDemoMode = this.settings.connectionMode === "demo";
+    const hasPrimaryEnabled = isHostMiSessionEnabled(this, this.settings.miSession);
+    const hasOverrideEnabled =
+      this.miAccountsOverride?.some((account) => isHostMiSessionEnabled(this, account.session)) ?? false;
+    const miEnabled = hasPrimaryEnabled || hasOverrideEnabled || hasSecondaryMiAccountsInIndex();
+    const miActive =
+      this.settings.connectionMode === "xiaomiCloud" ||
+      (isDualSourceEnabled(this) && miEnabled);
+    const hasSession = miActive && miEnabled;
+
+    const sessionState: MiAccountSessionState = !hasSession
+      ? "missing"
+      : this.miSessionExpired
+        ? "expired"
+        : "active";
+
+    const lastSyncOutcome: EmptyPanelSyncOutcome = this.miSessionExpired
+      ? "authFailed"
+      : this.isSyncingCloud
+        ? "pending"
+        : this.cloudValuesStale || this.lastMiCloudSyncFailed
+          ? "failed"
+          : "succeeded";
+
+    const hasOtherHomesWithDevices =
+      this.settings.selectedHomeId !== null &&
+      this.homes.some((home) => home.deviceCount > 0);
+
+    return diagnoseEmptyPanel({
+      isDemoMode,
+      sessionState,
+      homeCount: this.homes.length,
+      deviceCount: this.devices.length,
+      lastSyncOutcome,
+      region: normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion),
+      hasOtherHomesWithDevices,
+    });
+  }
+
+  private renderDiagnosedEmptyState(reason: EmptyPanelReason): string {
+    const region = normalizeMiCloudRegion(this.settings.miSession?.region ?? this.settings.miCloudRegion);
+    const action = suggestedActionForEmptyPanelReason(reason);
+    const icon =
+      reason === "sessionReauthRequired"
+        ? SF_ICONS.qrcode
+        : reason === "syncFailed"
+          ? SF_ICONS.exclamationTriangleFill
+          : reason === "homesWithoutDevices"
+            ? SF_ICONS.sparkles
+            : SF_ICONS.houseFill;
+
+    let title: string;
+    let subtitle: string;
+    let actionId: string;
+    let actionLabel: string;
+    let showsResync = true;
+
+    switch (reason) {
+      case "sessionReauthRequired":
+        title = t("米家登录状态已失效");
+        subtitle = t("升级或改名迁移后旧会话可能已失效，重新扫码登录即可恢复设备列表。");
+        actionId = "btn-empty-reauth";
+        actionLabel = t("重新扫码登录");
+        showsResync = false;
+        break;
+      case "syncFailed":
+        title = t("同步米家设备失败");
+        subtitle = t("最近一次云端同步未能拉取设备，可复制脱敏诊断信息排查或重试同步。");
+        actionId = "btn-empty-copy-diagnostics";
+        actionLabel = t("复制诊断");
+        break;
+      case "possibleWrongRegion":
+        title = t("当前服务器区域未找到家庭");
+        subtitle = t("当前地区（{region}）没有返回任何家庭，可能选错了米家服务器区域。", { region });
+        actionId = "btn-empty-switch-region";
+        actionLabel = t("切换区域");
+        break;
+      case "noHomes":
+        title = t("当前米家账号下没有家庭");
+        subtitle = t("请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。");
+        actionId = "btn-empty-confirm-mi-home";
+        actionLabel = t("打开米家确认家庭");
+        break;
+      case "homesWithoutDevices":
+        title = t("已找到家庭，但没有可显示的设备");
+        subtitle = t("请确认手机米家 App 里这些家庭下有设备（含被共享家庭）。若设备仍不显示，请复制诊断信息反馈。");
+        actionId = "btn-empty-copy-diagnostics";
+        actionLabel = t("复制诊断");
+        break;
+    }
+
+    const resyncButton = showsResync
+      ? `<button class="cc-btn-secondary" id="btn-empty-resync">${t("重新同步")}</button>`
+      : "";
+
+    return `
+      <div class="cc-empty-state" id="empty-mi-diagnosis" data-empty-reason="${reason}" data-empty-action="${action}">
+        <div class="cc-empty-icon">${icon}</div>
+        <div class="cc-empty-title">${this.escapeHtml(title)}</div>
+        <div class="cc-empty-subtitle">${this.escapeHtml(subtitle)}</div>
+        <div class="cc-empty-actions">
+          <button class="cc-btn-primary" id="${actionId}">${this.escapeHtml(actionLabel)}</button>
+          ${resyncButton}
+        </div>
+      </div>
+    `;
   }
 
   public renderRoomBrowseMenu(): string {

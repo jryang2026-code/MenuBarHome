@@ -1,0 +1,230 @@
+{
+  "_comment": "米家空面板诊断的双端共享黄金语料（#67, #76）。macOS (EmptyPanelDiagnosis.swift) 与 Windows (emptyPanelDiagnosis.ts) 必须对每条输入给出完全一致的 reason 与 suggestedAction。",
+  "version": 1,
+  "cases": [
+    {
+      "id": "demo_mode_never_diagnoses",
+      "input": {
+        "isDemoMode": true,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "demo_mode_ignores_expired_session",
+      "input": {
+        "isDemoMode": true,
+        "sessionState": "expired",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "authFailed",
+        "region": "sg",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "normal_user_with_devices_zero_change",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 1,
+        "deviceCount": 3,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "devices_present_even_when_sync_failed",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 1,
+        "deviceCount": 2,
+        "lastSyncOutcome": "failed",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "other_homes_have_devices_defers_to_show_all_homes",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 2,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": true
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "missing_session_defers_to_signed_out_state",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "missing",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "initial_sync_still_pending",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "pending",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": null,
+      "expectedAction": null
+    },
+    {
+      "id": "expired_session_requires_reauth",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "expired",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "pending",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "sessionReauthRequired",
+      "expectedAction": "reauth"
+    },
+    {
+      "id": "auth_failed_sync_requires_reauth",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "authFailed",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "sessionReauthRequired",
+      "expectedAction": "reauth"
+    },
+    {
+      "id": "non_auth_sync_failure_offers_diagnostics",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "failed",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "syncFailed",
+      "expectedAction": "copyDiagnostics"
+    },
+    {
+      "id": "non_default_region_with_zero_homes_suggests_switch_region",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "sg",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "possibleWrongRegion",
+      "expectedAction": "switchRegion"
+    },
+    {
+      "id": "uppercase_overseas_region_normalized",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": " DE ",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "possibleWrongRegion",
+      "expectedAction": "switchRegion"
+    },
+    {
+      "id": "default_cn_region_with_zero_homes_suggests_confirm_mi_home",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "noHomes",
+      "expectedAction": "confirmMiHome"
+    },
+    {
+      "id": "unknown_region_falls_back_to_cn_no_homes",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 0,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "noHomes",
+      "expectedAction": "confirmMiHome"
+    },
+    {
+      "id": "homes_present_but_zero_devices_offers_diagnostics",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 2,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "cn",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "homesWithoutDevices",
+      "expectedAction": "copyDiagnostics"
+    },
+    {
+      "id": "overseas_region_with_homes_still_diagnoses_homes_without_devices",
+      "input": {
+        "isDemoMode": false,
+        "sessionState": "active",
+        "homeCount": 1,
+        "deviceCount": 0,
+        "lastSyncOutcome": "succeeded",
+        "region": "us",
+        "hasOtherHomesWithDevices": false
+      },
+      "expectedReason": "homesWithoutDevices",
+      "expectedAction": "copyDiagnostics"
+    }
+  ]
+}
