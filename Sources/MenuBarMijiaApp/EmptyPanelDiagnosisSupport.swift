@@ -90,7 +90,7 @@ enum EmptyPanelDiagnosisPresenter {
         switch action {
         case .reauth:
             if store.miSessionMaskedUserId != nil || !store.enabledMiAccounts.isEmpty {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy)) {
                     store.presentMiReauth()
                 }
             } else {

@@ -1793,7 +1793,7 @@ struct CameraLivePanelView: View {
                 .padding(.horizontal, 10)
                 .padding(.bottom, 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: controller.videoOnlyNotice)
+                .animation(AppleMotion.resolve(.valueChange, reduceMotion: reduceMotion), value: controller.videoOnlyNotice)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
@@ -2246,7 +2246,7 @@ struct CameraLivePanelView: View {
                 )
         }
         .clipped()
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: videoRotationDegrees)
+        .animation(AppleMotion.resolve(.valueChange, reduceMotion: reduceMotion), value: videoRotationDegrees)
     }
 
     private var demoLiveCanvas: some View {

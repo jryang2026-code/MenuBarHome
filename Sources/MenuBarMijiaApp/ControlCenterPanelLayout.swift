@@ -26,7 +26,7 @@ extension ControlCenterPanel {
         guard store.favoriteDeviceIds.contains(device.id) else { return nil }
         return {
             guard store.favoriteDeviceIds.contains(device.id) else { return }
-            withAnimation(reduceMotion ? nil : AppleMotion.reveal) { store.toggleFavorite(device.id) }
+            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) { store.toggleFavorite(device.id) }
         }
     }
 
@@ -88,7 +88,7 @@ extension ControlCenterPanel {
         let current = RoomPrefs.seededOrder(RoomPrefs.decodeOrder(kindOrderRaw), rooms: kindItems)
         let next = RoomPrefs.reordered(current, id: tag.rawValue, toVisibleIndex: from + delta, visible: visible)
         guard next != current else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             kindOrderRaw = RoomPrefs.encodeOrder(next)
         }
     }
@@ -103,7 +103,7 @@ extension ControlCenterPanel {
         case .rooms: canReorderRooms ? .rooms : .kinds
         case .kinds: canReorderKinds ? .kinds : .rooms
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             store.expandedDeviceId = nil
             draggingId = nil
             activeResize = nil
@@ -133,7 +133,7 @@ extension ControlCenterPanel {
         let nothingToWrite = exit == .commit
             && draft?.hasChanges != true
             && kindDraft?.hasChanges != true
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             if exit == .commit, !nothingToWrite {
                 // `@AppStorage` republishes a moment after the write; without this mirror the strip
                 // would fall back to the pre-session order for one frame (§6.3).
@@ -155,7 +155,7 @@ extension ControlCenterPanel {
     func moveRoom(_ id: String, toVisibleIndex index: Int) {
         let visible = displayRooms.map(\.id)
         if layoutUI.editMode == .roomOrder {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { draft in
                     draft.move(id: id, toVisibleIndex: index, visible: draft.visibleOrder(for: store.rooms))
                 }
@@ -164,7 +164,7 @@ extension ControlCenterPanel {
         }
         let next = RoomPrefs.reordered(currentRoomOrder, id: id, toVisibleIndex: index, visible: visible)
         guard next != currentRoomOrder else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomOrderRaw = RoomPrefs.encodeOrder(next)
         }
         store.scheduleRaycastSnapshotExport()
@@ -173,7 +173,7 @@ extension ControlCenterPanel {
     /// First / last visible slot, for the VoiceOver actions on a row and on a pill.
     func moveRoom(_ id: String, toFront: Bool) {
         if layoutUI.editMode == .roomOrder {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { draft in
                     if toFront { draft.moveToFront(id: id) } else { draft.moveToEnd(id: id) }
                 }
@@ -184,7 +184,7 @@ extension ControlCenterPanel {
             ? RoomPrefs.moveToFront(currentRoomOrder, id: id)
             : RoomPrefs.moveToEnd(currentRoomOrder, id: id)
         guard next != currentRoomOrder else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomOrderRaw = RoomPrefs.encodeOrder(next)
         }
         store.scheduleRaycastSnapshotExport()
@@ -193,7 +193,7 @@ extension ControlCenterPanel {
     /// Writes one room alias: the session draft while reordering, `UserDefaults` otherwise.
     func setRoomAlias(_ id: String, to alias: String?) {
         if layoutUI.editMode == .roomOrder {
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+            withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { $0.rename(id: id, to: alias) }
                 layoutUI.renamingRoomId = nil
             }
@@ -201,7 +201,7 @@ extension ControlCenterPanel {
         }
         var aliases = RoomPrefs.decodeAliases(roomAliasesRaw)
         aliases[id] = alias
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomAliasesRaw = RoomPrefs.encodeAliases(aliases)
             layoutUI.renamingRoomId = nil
         }
@@ -227,7 +227,7 @@ extension ControlCenterPanel {
     func adoptSection(of target: String, for dragged: String) {
         let from = sectionKey(of: dragged), to = sectionKey(of: target)
         guard from != to else { return }
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             if store.selectedRoomId == nil, (from == "fav") != (to == "fav") {
                 store.toggleFavorite(dragged)
             }
@@ -242,11 +242,11 @@ extension ControlCenterPanel {
         let j = i + delta
         guard list.indices.contains(j) else { return }
         list.swapAt(i, j)
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { groupsRaw = GroupPrefs.encode(list) }
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) { groupsRaw = GroupPrefs.encode(list) }
     }
 
     func deleteGroup(_ id: String) {
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             groupsRaw = GroupPrefs.encode(groups.filter { $0.id != id })
             panelLayout.removeGroup(id)
         }
@@ -259,13 +259,13 @@ extension ControlCenterPanel {
             promptBackdrop {
                 GroupNamePrompt(title: L10n.tr("新建分组", "New Group"), name: "") { name in
                     let group = DeviceGroup(id: UUID().uuidString, name: name)
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         groupsRaw = GroupPrefs.encode(groups + [group])
                         panelLayout.assign(deviceId, toGroup: group.id)
                         layoutUI.newGroupForDevice = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.newGroupForDevice = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.newGroupForDevice = nil }
                 }
             }
         } else if let did = layoutUI.renamingDeviceId, let dev = store.devices.first(where: { $0.id == did }) {
@@ -279,7 +279,7 @@ extension ControlCenterPanel {
                     onReset: currentAliases[did] != nil ? {
                         var aliases = GroupPrefs.map(aliasesRaw)
                         aliases.removeValue(forKey: did)
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                             aliasesRaw = GroupPrefs.encode(aliases)
                             store.applyDeviceAliases(aliases)
                             layoutUI.renamingDeviceId = nil
@@ -289,13 +289,13 @@ extension ControlCenterPanel {
                     var aliases = GroupPrefs.map(aliasesRaw)
                     // Saving the original Mi Home name clears the alias.
                     aliases[did] = name == originalName ? nil : name
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         aliasesRaw = GroupPrefs.encode(aliases)
                         store.applyDeviceAliases(aliases)
                         layoutUI.renamingDeviceId = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingDeviceId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingDeviceId = nil }
                 }
             }
         } else if let rid = layoutUI.renamingRoomId, let room = store.rooms.first(where: { $0.id == rid }) {
@@ -314,18 +314,18 @@ extension ControlCenterPanel {
                     // Saving the original room name clears the alias.
                     setRoomAlias(rid, to: name == L10n.displayRoomName(originalName) ? nil : name)
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingRoomId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingRoomId = nil }
                 }
             }
         } else if let gid = layoutUI.renamingGroupId, let group = groups.first(where: { $0.id == gid }) {
             promptBackdrop {
                 GroupNamePrompt(title: L10n.tr("重命名分组", "Rename Group"), name: group.name) { name in
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         groupsRaw = GroupPrefs.encode(groups.map { $0.id == gid ? DeviceGroup(id: gid, name: name) : $0 })
                         layoutUI.renamingGroupId = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingGroupId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingGroupId = nil }
                 }
             }
         }
@@ -344,7 +344,7 @@ extension ControlCenterPanel {
                     if let onDismiss {
                         onDismiss()
                     } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             layoutUI.newGroupForDevice = nil
                             layoutUI.renamingGroupId = nil
                             layoutUI.renamingDeviceId = nil
@@ -401,7 +401,7 @@ extension ControlCenterPanel {
                     return
                 }
                 guard draggingId != nil else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     draggingId = nil
                     dragLocation = nil
                 }
@@ -457,7 +457,7 @@ extension ControlCenterPanel {
 
     func endResize(_ deviceId: String, translation: CGSize, samples: [TileResizeGestureMath.ResizeSample]) {
         guard let current = activeResize, current.deviceId == deviceId else { return }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             activeResize = nil
         }
         let moved = hypot(translation.width, translation.height)
@@ -483,7 +483,7 @@ extension ControlCenterPanel {
         let origin = tileFrames[id]?.origin ?? start
         grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
         dragLocation = start
-        withAnimation(AppleMotion.snappySpring) { draggingId = id }
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { draggingId = id }
     }
 
     /// Decides where the dragged card should go: before or after the card under the pointer (top
@@ -540,7 +540,7 @@ extension ControlCenterPanel {
         guard let t = order.firstIndex(of: target) else { return }
         order.insert(dragged, at: after ? t + 1 : t)
         guard order != currentOrder else { return }
-        withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) {
+        withAnimation(AppleMotion.resolve(.reorder, reduceMotion: reduceMotion)) {
             panelLayout.setOrder(order)
             if store.favoriteDeviceIds.contains(dragged) {
                 store.favoriteOrder = order.filter { store.favoriteDeviceIds.contains($0) }
@@ -564,7 +564,7 @@ extension ControlCenterPanel {
         if playHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
-        withAnimation(reduceMotion ? nil : AppleMotion.reveal) {
+        withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
             store.expandedDeviceId = nil
             panelLayout.setSize(next, of: device.id, scope: layoutScope)
         }
@@ -576,7 +576,7 @@ extension ControlCenterPanel {
             finishRoomOrder(.commit)
             return
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             draggingId = nil
             activeResize = nil
             layoutUI.endDeviceLayoutEditing()
@@ -758,8 +758,8 @@ extension ControlCenterPanel {
                 .transition(.opacity)
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0), value: ordered.map(\.id))
-        .animation(reduceMotion ? nil : AppleMotion.reveal, value: ordered.map { spanMap[$0.id] ?? 12 })
+        .animation(AppleMotion.resolve(.reorder, reduceMotion: reduceMotion), value: ordered.map(\.id))
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: ordered.map { spanMap[$0.id] ?? 12 })
         .id("rows")
     }
 }

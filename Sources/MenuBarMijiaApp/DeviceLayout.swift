@@ -252,7 +252,7 @@ struct LayoutEditDoneButton: View {
         .buttonStyle(.plain)
         .keyboardShortcut(.defaultAction)
         .scaleEffect(isHovering && !reduceMotion ? 1.02 : 1)
-        .animation(reduceMotion ? nil : AppleMotion.control, value: isHovering)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isHovering)
         .onHover { isHovering = $0 }
         .accessibilityHint(Text(L10n.tr("结束布局编辑", "Finish editing the layout")))
     }
@@ -304,7 +304,7 @@ struct LayoutEditable: ViewModifier {
                     radius: isDragging ? 14 : 0,
                     y: isDragging ? 6 : 0
                 )
-                .animation(reduceMotion ? nil : AppleMotion.snappySpring, value: isDragging)
+                .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: isDragging)
 
             if editing && !isDragging && !isAnyCardDragging {
                 resizeHandle
@@ -318,8 +318,8 @@ struct LayoutEditable: ViewModifier {
                     .transition(.opacity)
             }
         }
-        .animation(reduceMotion ? nil : AppleMotion.control, value: showsChrome)
-        .animation(reduceMotion ? nil : AppleMotion.control, value: isAnyCardDragging)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: showsChrome)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isAnyCardDragging)
         .offset(dragOffset)
         .zIndex(isDragging ? 10 : 0)
         .onChange(of: editing) { _, _ in

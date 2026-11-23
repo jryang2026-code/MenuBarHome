@@ -438,8 +438,8 @@ extension ControlCenterPanel {
         withAnimation(stackAnimation) { _ = expandedStacks.insert(stack.id) }
     }
 
-    private var stackAnimation: Animation {
-        reduceMotion ? .easeOut(duration: 0.2) : AppleMotion.stack
+    private var stackAnimation: Animation? {
+        AppleMotion.resolve(.stack, reduceMotion: reduceMotion)
     }
 
     private func setStack(_ stack: DeviceStack, open: Bool) {
@@ -461,7 +461,7 @@ extension ControlCenterPanel {
             }
             if let cut = listCutTitle {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { _ = store.selectRoom(nil) }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.selectRoom(nil) }
                 } label: {
                     HStack(spacing: 4) {
                         Text(cut)
@@ -657,7 +657,7 @@ extension ControlCenterPanel {
                 .foregroundStyle(color == nil ? Color.secondary : Color.white)
         }
         .frame(width: 38, height: 38)
-        .animation(AppleMotion.control, value: color == nil)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: color == nil)
     }
 
     /// What a notification body would say: which devices are on, plus the room's climate reading.

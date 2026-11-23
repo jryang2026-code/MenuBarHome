@@ -113,6 +113,7 @@ public enum DeviceTileActionLayout: Equatable, Sendable {
 /// single-action tiles render a single full-tile button without misleading affordances.
 struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.isEditingLayout) private var isEditingLayout
 
     let device: SmartDevice
@@ -147,7 +148,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                 showsChevron: false
             ) {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                 }
             }
@@ -158,7 +159,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
                 showsChevron: true
             ) {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     DeviceTileActionLayout.performAdjust(for: device, store: store)
                 }
             }
@@ -171,7 +172,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
         HStack(alignment: isHeroTile ? .top : .center, spacing: 0) {
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     _ = DeviceTileActionLayout.performPrimary(for: device, store: store)
                 }
             } label: {
@@ -199,7 +200,7 @@ struct SplitDeviceTileHeader<Orb: View, Badge: View, QuickBadge: View>: View {
 
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     DeviceTileActionLayout.performAdjust(for: device, store: store)
                 }
             } label: {

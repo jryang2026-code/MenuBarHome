@@ -6,6 +6,7 @@ import MijiaCore
 /// Compact (half row) stacks temperature over a humidity bar; full row lays them out side by side.
 struct SensorCardView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @Environment(\.isEditingLayout) private var isEditingLayout
     /// Observed so a temperature-unit change in Settings re-renders open cards (#52).
     @AppStorage(TemperatureUnitPreference.storageKey) private var temperatureUnitRaw = TemperatureUnitPreference.system.rawValue
@@ -109,7 +110,7 @@ struct SensorCardView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             guard !isEditingLayout, !forceExpanded, device.isOnline, let store else { return }
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 store.toggleExpanded(device.id)
             }
         }
@@ -255,7 +256,7 @@ struct SensorCardView: View {
                 .contentShape(Rectangle())
                 .onTapGesture {
                     guard !isEditingLayout, !forceExpanded, let store else { return }
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         store.toggleExpanded(device.id)
                     }
                 }
@@ -269,7 +270,7 @@ struct SensorCardView: View {
                 )
                 .padding(.horizontal, 8)
                 .padding(.bottom, 8)
-                .transition(AppleMotion.drawerTransition)
+                .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 // Absorb taps inside the chart controls so switching 24h/7d or metric never collapses the card.
                 .onTapGesture {}
         }
@@ -341,7 +342,7 @@ struct SensorCardView: View {
     private func metricTab(_ kind: SensorMetricKind, title: String, symbol: String, tint: Color) -> some View {
         let isSelected = selectedMetric == kind
         return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 selectedMetric = kind
             }
         } label: {
@@ -378,7 +379,7 @@ struct SensorCardView: View {
     private func windowTab(_ window: SensorHistoryWindow, title: String) -> some View {
         let isSelected = selectedWindow == window
         return Button {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 selectedWindow = window
             }
         } label: {
@@ -802,7 +803,7 @@ struct SensorCardView: View {
             }
         }
         .frame(width: 62, height: 62)
-        .animation(.spring(response: 0.6, dampingFraction: 0.8), value: h)
+        .animation(AppleMotion.resolve(.gauge, reduceMotion: reduceMotion), value: h)
     }
 
     private var comfortChip: some View {

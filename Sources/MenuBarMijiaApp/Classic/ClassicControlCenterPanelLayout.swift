@@ -78,7 +78,7 @@ extension ClassicControlCenterPanel {
         let current = RoomPrefs.seededOrder(RoomPrefs.decodeOrder(kindOrderRaw), rooms: kindItems)
         let next = RoomPrefs.reordered(current, id: tag.rawValue, toVisibleIndex: from + delta, visible: visible)
         guard next != current else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             kindOrderRaw = RoomPrefs.encodeOrder(next)
         }
     }
@@ -93,7 +93,7 @@ extension ClassicControlCenterPanel {
         case .rooms: canReorderRooms ? .rooms : .kinds
         case .kinds: canReorderKinds ? .kinds : .rooms
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             store.expandedDeviceId = nil
             draggingId = nil
             activeResize = nil
@@ -123,7 +123,7 @@ extension ClassicControlCenterPanel {
         let nothingToWrite = exit == .commit
             && draft?.hasChanges != true
             && kindDraft?.hasChanges != true
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             if exit == .commit, !nothingToWrite {
                 // `@AppStorage` republishes a moment after the write; without this mirror the strip
                 // would fall back to the pre-session order for one frame (§6.3).
@@ -145,7 +145,7 @@ extension ClassicControlCenterPanel {
     func moveRoom(_ id: String, toVisibleIndex index: Int) {
         let visible = displayRooms.map(\.id)
         if layoutUI.editMode == .roomOrder {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { draft in
                     draft.move(id: id, toVisibleIndex: index, visible: draft.visibleOrder(for: store.rooms))
                 }
@@ -154,7 +154,7 @@ extension ClassicControlCenterPanel {
         }
         let next = RoomPrefs.reordered(currentRoomOrder, id: id, toVisibleIndex: index, visible: visible)
         guard next != currentRoomOrder else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomOrderRaw = RoomPrefs.encodeOrder(next)
         }
         store.scheduleRaycastSnapshotExport()
@@ -163,7 +163,7 @@ extension ClassicControlCenterPanel {
     /// First / last visible slot, for the VoiceOver actions on a row and on a pill.
     func moveRoom(_ id: String, toFront: Bool) {
         if layoutUI.editMode == .roomOrder {
-            withAnimation(AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { draft in
                     if toFront { draft.moveToFront(id: id) } else { draft.moveToEnd(id: id) }
                 }
@@ -174,7 +174,7 @@ extension ClassicControlCenterPanel {
             ? RoomPrefs.moveToFront(currentRoomOrder, id: id)
             : RoomPrefs.moveToEnd(currentRoomOrder, id: id)
         guard next != currentRoomOrder else { return }
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomOrderRaw = RoomPrefs.encodeOrder(next)
         }
         store.scheduleRaycastSnapshotExport()
@@ -183,7 +183,7 @@ extension ClassicControlCenterPanel {
     /// Writes one room alias: the session draft while reordering, `UserDefaults` otherwise.
     func setRoomAlias(_ id: String, to alias: String?) {
         if layoutUI.editMode == .roomOrder {
-            withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+            withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 layoutUI.updateRoomOrderDraft(rooms: store.rooms) { $0.rename(id: id, to: alias) }
                 layoutUI.renamingRoomId = nil
             }
@@ -191,7 +191,7 @@ extension ClassicControlCenterPanel {
         }
         var aliases = RoomPrefs.decodeAliases(roomAliasesRaw)
         aliases[id] = alias
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             roomAliasesRaw = RoomPrefs.encodeAliases(aliases)
             layoutUI.renamingRoomId = nil
         }
@@ -415,7 +415,7 @@ extension ClassicControlCenterPanel {
     func adoptSection(of target: String, for dragged: String) {
         let from = sectionKey(of: dragged), to = sectionKey(of: target)
         guard from != to else { return }
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             if store.selectedRoomId == nil, (from == "fav") != (to == "fav") {
                 store.toggleFavorite(dragged)
             }
@@ -429,7 +429,7 @@ extension ClassicControlCenterPanel {
         let collapsed = collapsedGroups.contains(collapseKey(section))
         let accent = Color.accentColor
         return Button {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+            withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 var set = collapsedGroups
                 if collapsed { set.remove(collapseKey(section)) } else { set.insert(collapseKey(section)) }
                 collapsedRaw = GroupPrefs.encode(set)
@@ -463,7 +463,7 @@ extension ClassicControlCenterPanel {
         }
         .buttonStyle(.plain)
         .onHover { hoveredHeader = $0 ? section.id : (hoveredHeader == section.id ? nil : hoveredHeader) }
-        .animation(.easeOut(duration: 0.15), value: hoveredHeader)
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: hoveredHeader)
         .accessibilityLabel(Text(section.title ?? ""))
         .panelHelp(collapsed
             ? L10n.tr("展开分组", "Expand group")
@@ -487,11 +487,11 @@ extension ClassicControlCenterPanel {
         let j = i + delta
         guard list.indices.contains(j) else { return }
         list.swapAt(i, j)
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { groupsRaw = GroupPrefs.encode(list) }
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) { groupsRaw = GroupPrefs.encode(list) }
     }
 
     func deleteGroup(_ id: String) {
-        withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
             groupsRaw = GroupPrefs.encode(groups.filter { $0.id != id })
             panelLayout.removeGroup(id)
         }
@@ -504,13 +504,13 @@ extension ClassicControlCenterPanel {
             promptBackdrop {
                 ClassicGroupNamePrompt(title: L10n.tr("新建分组", "New Group"), name: "") { name in
                     let group = DeviceGroup(id: UUID().uuidString, name: name)
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         groupsRaw = GroupPrefs.encode(groups + [group])
                         panelLayout.assign(deviceId, toGroup: group.id)
                         layoutUI.newGroupForDevice = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.newGroupForDevice = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.newGroupForDevice = nil }
                 }
             }
         } else if let did = layoutUI.renamingDeviceId, let dev = store.devices.first(where: { $0.id == did }) {
@@ -524,7 +524,7 @@ extension ClassicControlCenterPanel {
                     onReset: currentAliases[did] != nil ? {
                         var aliases = GroupPrefs.map(aliasesRaw)
                         aliases.removeValue(forKey: did)
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                        withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                             aliasesRaw = GroupPrefs.encode(aliases)
                             store.applyDeviceAliases(aliases)
                             layoutUI.renamingDeviceId = nil
@@ -534,13 +534,13 @@ extension ClassicControlCenterPanel {
                     var aliases = GroupPrefs.map(aliasesRaw)
                     // Saving the original Mi Home name clears the alias.
                     aliases[did] = name == originalName ? nil : name
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         aliasesRaw = GroupPrefs.encode(aliases)
                         store.applyDeviceAliases(aliases)
                         layoutUI.renamingDeviceId = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingDeviceId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingDeviceId = nil }
                 }
             }
         } else if let rid = layoutUI.renamingRoomId, let room = store.rooms.first(where: { $0.id == rid }) {
@@ -559,18 +559,18 @@ extension ClassicControlCenterPanel {
                     // Saving the original room name clears the alias.
                     setRoomAlias(rid, to: name == L10n.displayRoomName(originalName) ? nil : name)
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingRoomId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingRoomId = nil }
                 }
             }
         } else if let gid = layoutUI.renamingGroupId, let group = groups.first(where: { $0.id == gid }) {
             promptBackdrop {
                 ClassicGroupNamePrompt(title: L10n.tr("重命名分组", "Rename Group"), name: group.name) { name in
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.8)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         groupsRaw = GroupPrefs.encode(groups.map { $0.id == gid ? DeviceGroup(id: gid, name: name) : $0 })
                         layoutUI.renamingGroupId = nil
                     }
                 } onCancel: {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { layoutUI.renamingGroupId = nil }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { layoutUI.renamingGroupId = nil }
                 }
             }
         }
@@ -589,7 +589,7 @@ extension ClassicControlCenterPanel {
                     if let onDismiss {
                         onDismiss()
                     } else {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             layoutUI.newGroupForDevice = nil
                             layoutUI.renamingGroupId = nil
                             layoutUI.renamingDeviceId = nil
@@ -630,7 +630,7 @@ extension ClassicControlCenterPanel {
                             try? await Task.sleep(for: .milliseconds(450))
                             guard !Task.isCancelled else { return }
                             NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                 store.expandedDeviceId = nil
                                 // Entering layout commits any open room-order draft: no draft crosses
                                 // into another context (§5.2).
@@ -659,7 +659,7 @@ extension ClassicControlCenterPanel {
                     return
                 }
                 guard draggingId != nil else { return }
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
+                withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
                     draggingId = nil
                     dragLocation = nil
                 }
@@ -704,7 +704,7 @@ extension ClassicControlCenterPanel {
 
     func endResize(_ deviceId: String, translation: CGSize, samples: [TileResizeGestureMath.ResizeSample]) {
         guard let current = activeResize, current.deviceId == deviceId else { return }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             activeResize = nil
         }
         let moved = hypot(translation.width, translation.height)
@@ -730,7 +730,7 @@ extension ClassicControlCenterPanel {
         let origin = tileFrames[id]?.origin ?? start
         grabOffset = CGSize(width: start.x - origin.x, height: start.y - origin.y)
         dragLocation = start
-        withAnimation(.spring(response: 0.25, dampingFraction: 0.7)) { draggingId = id }
+        withAnimation(AppleMotion.resolve(.control, reduceMotion: reduceMotion)) { draggingId = id }
     }
 
     /// Decides where the dragged card should go: before or after the card under the pointer (top
@@ -787,7 +787,7 @@ extension ClassicControlCenterPanel {
         guard let t = order.firstIndex(of: target) else { return }
         order.insert(dragged, at: after ? t + 1 : t)
         guard order != currentOrder else { return }
-        withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) {
+        withAnimation(AppleMotion.resolve(.stack, reduceMotion: reduceMotion)) {
             panelLayout.setOrder(order)
             if store.favoriteDeviceIds.contains(dragged) {
                 store.favoriteOrder = order.filter { store.favoriteDeviceIds.contains($0) }
@@ -813,7 +813,7 @@ extension ClassicControlCenterPanel {
         if playHaptic {
             NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
         }
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             store.expandedDeviceId = nil
             panelLayout.setSize(next, of: device.id, scope: layoutScope)
         }
@@ -837,7 +837,7 @@ extension ClassicControlCenterPanel {
                 finishRoomOrder(.commit)
                 return
             }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 draggingId = nil
                 activeResize = nil
                 layoutUI.endDeviceLayoutEditing()
@@ -955,7 +955,7 @@ extension ClassicControlCenterPanel {
                 .layoutValue(key: ClassicTileSpanKey.self, value: span)
             }
         }
-        .animation(AppleMotion.snappySpring, value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 6)" })
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: ordered.map { "\($0.id):\(spanMap[$0.id] ?? 6)" })
         .id("rows")
     }
 }

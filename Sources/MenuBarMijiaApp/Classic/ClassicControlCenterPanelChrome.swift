@@ -31,7 +31,7 @@ extension ClassicControlCenterPanel {
             Button(expired
                 ? L10n.tr("扫码重新登录", "Scan to sign in")
                 : L10n.tr("现在重新扫码", "Re-scan now")) {
-                withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.presentMiReauth() }
             }
             .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .accentColor))
         }
@@ -41,7 +41,7 @@ extension ClassicControlCenterPanel {
 
     var miReauthOverlay: some View {
         promptBackdrop(onDismiss: {
-            withAnimation(AppleMotion.snappySpring) { store.dismissMiReauth() }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissMiReauth() }
         }) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
@@ -54,7 +54,7 @@ extension ClassicControlCenterPanel {
                         .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     Spacer()
                     Button {
-                        withAnimation(AppleMotion.snappySpring) { store.dismissMiReauth() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissMiReauth() }
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -132,7 +132,7 @@ extension ClassicControlCenterPanel {
                             helpText: copy.tooltip,
                             onBeginHold: { store.beginAllOffHold() },
                             onConfirm: { mode in
-                                withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: mode) }
+                                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.confirmAllOffHold(mode: mode) }
                                 SoundFeedback.playSuccess()
                             },
                             onTap: {
@@ -226,7 +226,7 @@ extension ClassicControlCenterPanel {
     }
 
     func handleEnvironmentChipTap(_ env: EnvironmentReading) {
-        withAnimation(AppleMotion.snappySpring) {
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
             if search.isSearching {
                 search.clear()
             }
@@ -339,7 +339,7 @@ extension ClassicControlCenterPanel {
         HStack(spacing: 6) {
             ForEach(QuickAction.allCases) { action in
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         _ = store.executeQuickAction(action)
                     }
                 } label: {
@@ -359,7 +359,7 @@ extension ClassicControlCenterPanel {
 
             ForEach(store.scenes) { scene in
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         _ = store.triggerScene(scene)
                     }
                 } label: {
@@ -390,14 +390,14 @@ extension ClassicControlCenterPanel {
                     .id(room.id)
             }
         }
-        .animation(AppleMotion.snappySpring, value: displayRooms.map(\.id))
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: displayRooms.map(\.id))
     }
 
     func scrollRoomStrip(using proxy: ScrollViewProxy, roomId: String?, animated: Bool) {
         let target = roomId ?? "roomsStart"
         let anchor: UnitPoint = roomId == nil ? .leading : .center
         if animated && !reduceMotion {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 proxy.scrollTo(target, anchor: anchor)
             }
         } else {
@@ -409,7 +409,7 @@ extension ClassicControlCenterPanel {
         if reduceMotion {
             proxy.scrollTo(tag, anchor: .center)
         } else {
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
+            withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                 proxy.scrollTo(tag, anchor: .center)
             }
         }
@@ -477,7 +477,7 @@ extension ClassicControlCenterPanel {
                 .accessibilityHint(Text(L10n.tr("排序预览，不可点选", "Order preview; not selectable")))
         } else {
             Button {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     if store.listCut == .kind(tag) {
                         kindScrollTrigger &+= 1
                     } else {
@@ -534,7 +534,7 @@ extension ClassicControlCenterPanel {
                 }
             }
             .contentShape(Capsule(style: .continuous))
-            .animation(AppleMotion.snappySpring, value: isSelected)
+            .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: isSelected)
     }
 
     /// `[全部] [rooms…scroll…]` inside one capsule track, with the sort and view controls beside it.
@@ -686,7 +686,7 @@ extension ClassicControlCenterPanel {
         action: @escaping () -> Void
     ) -> some View {
         Button {
-            withAnimation(AppleMotion.snappySpring) { action() }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { action() }
         } label: {
             Image(systemName: isOn ? onSymbol : offSymbol)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
@@ -714,7 +714,7 @@ extension ClassicControlCenterPanel {
         .panelHelp(help)
     }
 
-    func selectRoom(_ roomId: String?, animation: Animation) {
+    func selectRoom(_ roomId: String?, animation: Animation?) {
         withAnimation(animation) {
             if !store.selectRoom(roomId) { roomScrollTrigger &+= 1 }
         }
@@ -749,14 +749,14 @@ extension ClassicControlCenterPanel {
                 content
             } else {
                 Button {
-                    selectRoom(roomId, animation: AppleMotion.snappySpring)
+                    selectRoom(roomId, animation: AppleMotion.resolve(.snappy, reduceMotion: reduceMotion))
                 } label: {
                     content
                 }
                 .buttonStyle(.plain)
             }
         }
-        .animation(AppleMotion.snappySpring, value: isSelected)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: isSelected)
         .contextMenu {
             if let roomId, !isPreview {
                 Button {
@@ -903,7 +903,7 @@ extension ClassicControlCenterPanel {
                     .multilineTextAlignment(.center)
                 HStack(spacing: 8) {
                     Button(L10n.tr("打开新手引导", "Setup Guide")) {
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.reopenOnboarding()
                         }
                     }
@@ -933,7 +933,7 @@ extension ClassicControlCenterPanel {
                     .multilineTextAlignment(.center)
                 HStack(spacing: 8) {
                     Button(L10n.tr("显示全部家庭", "Show All Homes")) {
-                        withAnimation(AppleMotion.snappySpring) { store.selectMiHome(nil) }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.selectMiHome(nil) }
                     }
                     .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .accentColor))
 
@@ -991,7 +991,7 @@ extension ClassicControlCenterPanel {
                 .foregroundStyle(.secondary)
                 if store.hideOfflineDevices {
                     Button(L10n.tr("显示离线设备", "Show Offline Devices")) {
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.hideOfflineDevices = false
                         }
                     }
@@ -1024,11 +1024,11 @@ extension ClassicControlCenterPanel {
             .foregroundStyle(.secondary)
             HStack(spacing: 8) {
                 Button(L10n.tr("切换", "Switch")) {
-                    withAnimation(AppleMotion.snappySpring) { store.acceptHAAddressSuggestion() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.acceptHAAddressSuggestion() }
                 }
                 .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .accentColor))
                 Button(L10n.tr("不切换", "Don't Switch")) {
-                    withAnimation(AppleMotion.snappySpring) { store.dismissHAAddressSuggestion() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissHAAddressSuggestion() }
                 }
                 .buttonStyle(ClassicPillActionButtonStyle())
             }
@@ -1074,13 +1074,13 @@ extension ClassicControlCenterPanel {
             HStack(spacing: 8) {
                 if !isDeclined {
                     Button(L10n.tr("不连接", "Don't Connect")) {
-                        withAnimation(AppleMotion.snappySpring) { store.declineHAPlaintext() }
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.declineHAPlaintext() }
                     }
                     .buttonStyle(ClassicPillActionButtonStyle(isSelected: true, tintColor: .orange))
                 }
                 Spacer(minLength: 8)
                 Button(L10n.tr("仍然连接", "Connect Anyway")) {
-                    withAnimation(AppleMotion.snappySpring) { store.allowHAPlaintext() }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.allowHAPlaintext() }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))

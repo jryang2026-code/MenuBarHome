@@ -138,7 +138,7 @@ final class PanelLayoutStore {
         let nextSizes = sizesChanged ? DeviceLayoutPrefs.decode(sizesRaw) : sizes
         let nextGroupMap = groupMapChanged ? GroupPrefs.map(groupMapRaw) : groupMap
         guard nextOrder != order || nextSizes != sizes || nextGroupMap != groupMap else { return }
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
+        withAnimation(AppleMotion.resolve(.surface)) {
             if nextOrder != order { order = nextOrder }
             if nextSizes != sizes { sizes = nextSizes }
             if nextGroupMap != groupMap { groupMap = nextGroupMap }

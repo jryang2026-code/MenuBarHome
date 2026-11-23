@@ -199,18 +199,18 @@ public struct ClassicControlCenterPanel: View {
                 }
             }
             if order != currentOrder {
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.78)) { panelLayout.setOrder(order) }
+                withAnimation(AppleMotion.resolve(.stack, reduceMotion: reduceMotion)) { panelLayout.setOrder(order) }
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingRoomId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.newGroupForDevice)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingGroupId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingDeviceId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingRoomId)
         // #41: the context menu's "Edit Layout" replaces the 0.6 s long-press for keyboard/VoiceOver users.
         .onChange(of: layoutUI.isEditingLayoutRequested) { _, requested in
             guard requested else { return }
             layoutUI.isEditingLayoutRequested = false
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 store.expandedDeviceId = nil
                 layoutUI.beginDeviceLayoutEditing()
             }
@@ -264,12 +264,12 @@ public struct ClassicControlCenterPanel: View {
         PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
         PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerStateActive
         PanelTransientUIState.shared.collapseRemindersHandler = {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.28, dampingFraction: 0.86)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 activitiesExpanded = false
             }
         }
         PanelTransientUIState.shared.collapseOfflineDrawerHandler = {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.30, dampingFraction: 0.86)) {
+            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
                 isOfflineDrawerExpanded = false
             }
         }
@@ -390,14 +390,14 @@ public struct ClassicControlCenterPanel: View {
                     inputDrawer
                         .padding(.horizontal, 14)
                         .padding(.bottom, 8)
-                        .transition(AppleMotion.drawerTransition)
+                        .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
 
                 if store.isShowingAssistantBar || speech.errorMessage != nil {
                     AssistantResponseArea(store: store)
                         .padding(.horizontal, 14)
                         .padding(.bottom, 8)
-                        .transition(AppleMotion.drawerTransition)
+                        .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
             }
 
@@ -440,9 +440,9 @@ public struct ClassicControlCenterPanel: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 6)
         }
-        .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
-        .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
-        .animation(AppleMotion.snappySpring, value: kindChipsRevealed)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.isShowingAssistantBar)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: layoutUI.editMode)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: kindChipsRevealed)
         .onChange(of: roomScrollTrigger) { _, value in handleAllPillReselect(value) }
         .onChange(of: store.focusedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
         .onChange(of: store.expandedDeviceId) { _, id in revealClassicDeviceIfNeeded(id) }
@@ -452,7 +452,7 @@ public struct ClassicControlCenterPanel: View {
         guard let deviceId, !isEditingLayout else { return }
         let partition = PanelDeviceOrganizer.partition(store.visibleDevices, customOrder: currentOrder)
         if partition.offline.contains(where: { $0.id == deviceId }), !isOfflineDrawerExpanded {
-            withAnimation(AppleMotion.snappySpring) { isOfflineDrawerExpanded = true }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isOfflineDrawerExpanded = true }
             return
         }
         if partition.online.contains(where: { $0.id == deviceId }), !isLongTailExpanded {
@@ -465,7 +465,7 @@ public struct ClassicControlCenterPanel: View {
             let isInCurrentOverview = unkeptSlice.visible.contains(where: { $0.id == deviceId })
                 && classicDeviceLayoutState.sections.flatMap(\.devices).contains(where: { $0.id == deviceId })
             if !isInCurrentOverview {
-                withAnimation(AppleMotion.snappySpring) { isLongTailExpanded = true }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isLongTailExpanded = true }
             }
         }
     }
@@ -554,12 +554,12 @@ public struct ClassicControlCenterPanel: View {
                                         rooms: classicRoomBrowseOptions,
                                         theme: .classic,
                                         onToggleExpand: {
-                                            withAnimation(AppleMotion.snappySpring) {
+                                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                                 isLongTailExpanded.toggle()
                                             }
                                         },
                                         onSelectRoom: { roomId in
-                                            selectRoom(roomId, animation: AppleMotion.snappySpring)
+                                            selectRoom(roomId, animation: AppleMotion.resolve(.snappy, reduceMotion: reduceMotion))
                                         }
                                     )
                                     .transition(.opacity)
@@ -575,7 +575,7 @@ public struct ClassicControlCenterPanel: View {
                                             ),
                                             isExpanded: isOfflineDrawerExpanded
                                         ) {
-                                            withAnimation(AppleMotion.snappySpring) {
+                                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                                 isOfflineDrawerExpanded.toggle()
                                             }
                                         }
@@ -622,7 +622,7 @@ public struct ClassicControlCenterPanel: View {
                     pendingScrollToDeviceId = nil
                     Task { @MainActor in
                         try? await Task.sleep(for: .milliseconds(80))
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             scrollProxy.scrollTo(targetId, anchor: .center)
                         }
                     }
@@ -681,8 +681,8 @@ public struct ClassicControlCenterPanel: View {
             Image(systemName: listening ? "waveform" : "magnifyingglass")
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(listening ? Color.red : Color.secondary)
-                .symbolEffect(.variableColor.iterative, isActive: listening)
-                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+                .symbolEffect(.variableColor.iterative, isActive: listening && !reduceMotion)
+                .symbolEffect(.pulse, isActive: store.assistantState == .thinking && !reduceMotion)
                 .padding(.trailing, 3)
 
             TextField(
@@ -705,7 +705,7 @@ public struct ClassicControlCenterPanel: View {
                     .foregroundStyle(.secondary)
 
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { search.query = "" }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { search.query = "" }
                     focusInput()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -726,7 +726,7 @@ public struct ClassicControlCenterPanel: View {
                     .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
             } else if store.enableVoiceInput {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         store.presentAssistantBar(startVoice: true)
                     }
                 } label: {
@@ -828,7 +828,7 @@ public struct ClassicControlCenterPanel: View {
     }
 
     private func toggleSearchResult(_ device: SmartDevice) {
-        withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.togglePrimary(device) }
         if device.isOnline { SoundFeedback.playSuccess() }
     }
 
