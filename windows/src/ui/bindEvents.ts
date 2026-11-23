@@ -36,9 +36,11 @@ import { bindPanelInput, finishPanelComposition } from "./panelKeyboard.js";
 import { bindRoomOrderEditorEvents } from "./roomOrderEditor.js";
 import {
   bindConnectionsAndDiagPanelEvents,
+  copyDiagnosticsReportOnHost,
   retryTimedOutHaStopOnHost,
   setHaConnectionEnabledOnHost,
 } from "./connectionsAndDiagView.js";
+import { highlightSettingsAnchor } from "./settingsSearch.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import {
@@ -822,6 +824,24 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
 
     host.root.querySelector("#btn-empty-resync")?.addEventListener("click", () => {
       void host.refreshDevices(false);
+    });
+
+    host.root.querySelector("#btn-empty-reauth")?.addEventListener("click", () => {
+      startQrLogin();
+    });
+
+    host.root.querySelector("#btn-empty-switch-region")?.addEventListener("click", () => {
+      host.openSettingsSheet("connection");
+      highlightSettingsAnchor(host.root, "miCloudRegion");
+    });
+
+    host.root.querySelector("#btn-empty-confirm-mi-home")?.addEventListener("click", () => {
+      host.openSettingsSheet("connection");
+      highlightSettingsAnchor(host.root, "miAccount");
+    });
+
+    host.root.querySelector("#btn-empty-copy-diagnostics")?.addEventListener("click", () => {
+      void copyDiagnosticsReportOnHost(host);
     });
 
     host.root.querySelector("#btn-empty-ha-reenable")?.addEventListener("click", () => {

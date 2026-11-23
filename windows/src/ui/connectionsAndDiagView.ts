@@ -2681,7 +2681,7 @@ async function writeTextToClipboard(text: string): Promise<boolean> {
   return false;
 }
 
-async function copyDiagnosticsReportOnHost(host: ConnectionsAndDiagHost): Promise<string> {
+export async function copyDiagnosticsReportOnHost(host: ConnectionsAndDiagHost): Promise<string> {
   const session = getHostConnDiagSession(host);
   const lang = activeLanguage(host.settings.interfaceLanguage);
   const markdown = buildDesensitizedDiagnosticsMarkdown(host);

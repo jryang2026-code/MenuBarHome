@@ -455,12 +455,17 @@ extension ControlCenterPanel {
     }
 
     var emptyStateView: some View {
-        VStack(spacing: 8) {
+        let diagnosisCopy = store.emptyPanelDiagnosis.map {
+            EmptyPanelDiagnosisPresenter.copy(for: $0, region: store.miCloudRegion)
+        }
+        return VStack(spacing: 8) {
             Image(systemName: store.identityMigrationDiagnostic != nil
                 ? "exclamationmark.triangle"
-                : (store.allConfiguredSourcesTurnedOff ? "pause.circle" : "sparkles"))
+                : (store.allConfiguredSourcesTurnedOff
+                    ? "pause.circle"
+                    : (diagnosisCopy?.iconName ?? "sparkles")))
                 .font(.system(size: DesignTokens.TypeSize.reading))
-                .foregroundStyle(store.identityMigrationDiagnostic != nil ? .orange : .secondary)
+                .foregroundStyle((store.identityMigrationDiagnostic != nil || diagnosisCopy?.isWarning == true) ? .orange : .secondary)
             if store.identityMigrationDiagnostic != nil {
                 Text(L10n.tr("配置或凭据读取受阻", "Could not read settings or credentials"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
@@ -493,6 +498,31 @@ extension ControlCenterPanel {
                         SettingsWindowOpener.shared.show(tab: .connection)
                     }
                     .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+                }
+                .padding(.top, 2)
+            } else if let diagnosisCopy {
+                Text(diagnosisCopy.title)
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text(diagnosisCopy.detail)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                HStack(spacing: 8) {
+                    Button(diagnosisCopy.actionTitle) {
+                        EmptyPanelDiagnosisPresenter.perform(diagnosisCopy.action, store: store)
+                    }
+                    .buttonStyle(PillActionButtonStyle(
+                        isSelected: true,
+                        tintColor: diagnosisCopy.isWarning ? .orange : .accentColor
+                    ))
+
+                    if diagnosisCopy.showsResyncButton {
+                        Button(L10n.tr("重新同步", "Sync Again")) {
+                            store.refreshNow()
+                        }
+                        .buttonStyle(PillActionButtonStyle())
+                    }
                 }
                 .padding(.top, 2)
             } else if case .disconnected = store.connectionStatus {

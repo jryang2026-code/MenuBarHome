@@ -1051,6 +1051,35 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "Your token will travel unencrypted. Prefer HTTPS or a Nabu Casa URL for remote access.",
   ],
   "开机自启与可选 AI 助手": ["开机自启与可选 AI 助手", "Launch at Login & Optional AI Assistant"],
+  "米家登录状态已失效": ["米家登录状态已失效", "Xiaomi Home sign-in expired"],
+  "升级或改名迁移后旧会话可能已失效，重新扫码登录即可恢复设备列表。": [
+    "升级或改名迁移后旧会话可能已失效，重新扫码登录即可恢复设备列表。",
+    "Your session may have expired after an upgrade or migration. Scan to sign in again and restore your devices.",
+  ],
+  "重新扫码登录": ["重新扫码登录", "Sign In Again"],
+  "同步米家设备失败": ["同步米家设备失败", "Failed to sync Xiaomi Home devices"],
+  "最近一次云端同步未能拉取设备，可复制脱敏诊断信息排查或重试同步。": [
+    "最近一次云端同步未能拉取设备，可复制脱敏诊断信息排查或重试同步。",
+    "The latest cloud sync could not load devices. Copy desensitized diagnostics to troubleshoot, or try syncing again.",
+  ],
+  "当前服务器区域未找到家庭": ["当前服务器区域未找到家庭", "No homes found in this server region"],
+  "当前地区（{region}）没有返回任何家庭，可能选错了米家服务器区域。": [
+    "当前地区（{region}）没有返回任何家庭，可能选错了米家服务器区域。",
+    "No homes were returned for region ({region}). You may have selected the wrong Xiaomi Cloud server region.",
+  ],
+  "切换区域": ["切换区域", "Switch Region"],
+  "当前米家账号下没有家庭": ["当前米家账号下没有家庭", "No homes in this Xiaomi account"],
+  "请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。": [
+    "请先在手机「米家」App 中确认已创建或接受共享家庭，再回来重新同步。",
+    "Check the Mi Home app on your phone to confirm a home or shared home exists for this account, then sync again.",
+  ],
+  "打开米家确认家庭": ["打开米家确认家庭", "Check Homes in Mi Home"],
+  "已找到家庭，但没有可显示的设备": ["已找到家庭，但没有可显示的设备", "Homes found, but no displayable devices"],
+  "请确认手机米家 App 里这些家庭下有设备（含被共享家庭）。若设备仍不显示，请复制诊断信息反馈。": [
+    "请确认手机米家 App 里这些家庭下有设备（含被共享家庭）。若设备仍不显示，请复制诊断信息反馈。",
+    "Check that these homes have devices in the Mi Home app (shared homes included). If devices are still missing, copy diagnostics to report it.",
+  ],
+  "重新同步": ["重新同步", "Sync Again"],
 };
 
 /** Every catalog key, for tests and tooling. */

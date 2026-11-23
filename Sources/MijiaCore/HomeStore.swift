@@ -148,6 +148,42 @@ public final class HomeStore {
         }
         return total > 0 ? total : nil
     }
+
+    /// Diagnoses why a signed-in Xiaomi Cloud panel is showing 0 devices, or `nil` when the panel
+    /// has devices, is in demo mode, has no enabled Mi account, is still syncing, or has devices
+    /// in other homes (`otherMiHomesDeviceCountWhenSelectedEmpty != nil`).
+    public var emptyPanelDiagnosis: EmptyPanelReason? {
+        let sessionState: MiAccountSessionState
+        if !hasEnabledMiSource {
+            sessionState = .missing
+        } else if miSessionShowsExpired {
+            sessionState = .expired
+        } else {
+            sessionState = .active
+        }
+
+        let miStatus = sourceStatuses[.xiaomiCloud] ?? connectionStatus
+        let lastSyncOutcome: EmptyPanelSyncOutcome
+        if miSessionShowsExpired {
+            lastSyncOutcome = .authFailed
+        } else if case .disconnected = miStatus {
+            lastSyncOutcome = .failed
+        } else if hasReceivedInitialSnapshot {
+            lastSyncOutcome = .succeeded
+        } else {
+            lastSyncOutcome = .pending
+        }
+
+        return EmptyPanelDiagnosis.diagnose(EmptyPanelDiagnosisInput(
+            isDemoMode: homeBackend == .demo,
+            sessionState: sessionState,
+            homeCount: homes.count,
+            deviceCount: devices.count,
+            lastSyncOutcome: lastSyncOutcome,
+            region: miCloudRegion.rawValue,
+            hasOtherHomesWithDevices: otherMiHomesDeviceCountWhenSelectedEmpty != nil
+        ))
+    }
     public internal(set) var devices: [SmartDevice] = [] {
         didSet {
             syncIndexedDevices(from: devices)
