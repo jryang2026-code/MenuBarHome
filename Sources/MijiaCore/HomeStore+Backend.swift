@@ -209,6 +209,9 @@ extension HomeStore {
                 self.handleProviderEvent(event)
             }
         }
+        // Stamped first, then handed to the new provider: a bare `PollingContext()` default would
+        // keep 60 s forever and never learn the idle clock or the decay gates.
+        refreshPollingContext()
         pushPollingContext()
         // The provider swap has taken effect here, which is the only point where the new connection
         // scope is final. `invalidateUndoContext()` runs before `homeBackend` and the sessions change,
@@ -234,6 +237,9 @@ extension HomeStore {
 
     /// The control center panel opened or closed.
     public func setPanelVisible(_ visible: Bool) {
+        // Opening or closing the panel is the user touching it: the idle clock that stretches the
+        // closed-panel interval restarts here, so the stretch never covers a moment the user is here.
+        lastPanelInteractionAt = Date()
         updatePollingContext { $0.panelVisible = visible }
     }
 
@@ -259,9 +265,21 @@ extension HomeStore {
     private func updatePollingContext(_ change: (inout PollingContext) -> Void) {
         var next = pollingContext
         change(&next)
+        // The idle clock and the two decay gates are derived inputs: stamp them on every change so a
+        // caller can never push a context that decays while a poll still feeds a safety alert or a
+        // live menu-bar reading.
+        next.lastPanelInteractionAt = lastPanelInteractionAt
+        next.safetyAlertsRelyOnPolling = safetyAlertsRelyOnPolling
+        next.menuBarShowsLiveReading = menuBarShowsLiveReading
         guard next != pollingContext else { return }
         pollingContext = next
         pushPollingContext()
+    }
+
+    /// Re-derives the context after a preference that decides one of its decay inputs changes, and
+    /// hands a fresh provider the stamped context instead of the bare `PollingContext()` default.
+    func refreshPollingContext() {
+        updatePollingContext { _ in }
     }
 
     /// Chained so quick open/close changes reach the provider in order.
