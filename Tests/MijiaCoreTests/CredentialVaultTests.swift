@@ -185,4 +185,25 @@ struct CredentialVaultTests {
         )
         #expect(!storage.write(Data("replacement".utf8)))
     }
+
+    @Test("A read-only recovery and explicit lookup preserve legacy slots until a successful write")
+    func recoveredLegacySlotsSurviveUntilMutationCommits() {
+        let storage = MemoryVaultStorage()
+        let original = Data("old-token".utf8)
+        let legacy = MemoryLegacyItems([KeychainHelper.tokenAccount: original])
+        let vault = CredentialVault(storage: storage.storage, legacy: legacy.legacy)
+
+        #expect(vault.reloadForIdentityRecovery())
+        #expect(vault.lookup(KeychainHelper.tokenAccount, retryingUnavailable: true) == .value(original))
+        #expect(storage.writes == 0 && legacy.deletedAccounts.isEmpty)
+        #expect(vault.mutateSlot(KeychainHelper.tokenAccount) { _ in .keep } == .unchanged)
+
+        storage.writeSucceeds = false
+        #expect(vault.mutateSlot(KeychainHelper.tokenAccount) { _ in .replace(nil) } == .writeFailed)
+        #expect(legacy.remaining[KeychainHelper.tokenAccount] == original)
+        storage.writeSucceeds = true
+        #expect(vault.mutateSlot(KeychainHelper.tokenAccount) { _ in .replace(nil) } == .updated)
+        #expect(storage.storedItems == [:] && legacy.remaining.isEmpty)
+        #expect(vault.lookup(KeychainHelper.tokenAccount) == .missing)
+    }
 }

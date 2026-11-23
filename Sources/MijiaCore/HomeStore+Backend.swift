@@ -43,7 +43,7 @@ extension HomeStore {
 
     // MARK: - LG TV & Provider Events
 
-    func startLGWebOSIfNeeded() {
+    func startLGWebOSIfNeeded(startImmediately: Bool = true) {
         guard homeBackend != .demo, !isIdentityUncertain else { return }
         let trustStore: LGCertificateTrust = if let credentialVault {
             LGCertificateTrust(vault: credentialVault)
@@ -83,7 +83,7 @@ extension HomeStore {
         self.lgWebOSClient = client
         self.lgWebOSClientID = clientID
         let currentPollingContext = pollingContext
-        if !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
+        if startImmediately && !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task {
                 await client.setPollingContext(currentPollingContext)
                 await client.start()
@@ -1808,6 +1808,7 @@ extension HomeStore {
     public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
         guard capabilityResolutionMode != .freshInstall,
               identityMigrationDiagnostic == nil,
+              wakeIdentityProviderGeneration == nil,
               hasCompletedOnboarding else { return false }
         guard homeBackend != .demo, homeBackend != .xiaomiCloud, isHAConnectionEnabled else { return false }
         guard !hasHASource, !hasMiSource else { return false }

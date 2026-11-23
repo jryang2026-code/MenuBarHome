@@ -1,4 +1,5 @@
 import Foundation
+import KeychainTestSupport
 import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
@@ -174,6 +175,153 @@ struct DebouncedResumeAndLifecycleTests {
     }
 
     // MARK: - HomeStore + Resume Integration
+
+    @Test("Wake rereads unavailable identity on a monotonic cooldown and defers provider work until an eligible resume")
+    @MainActor
+    func wakeIdentityRecovery() async throws {
+        let defaults = InMemoryUserDefaults()
+        defaults.set("https://ha.example.local:8123", forKey: "ha_server_url")
+        let blob = try #require(CredentialVault.encode([KeychainHelper.tokenAccount: Data("ha-token".utf8)]))
+        let storage = MemoryVaultStorage(blob: blob)
+        storage.readResult = .unavailable
+        let provider = CountingHomeProvider()
+        var providerStarts = 0
+        let store = HomeStore(
+            credentialVault: CredentialVault(storage: storage.storage),
+            haProviderFactory: { _, _ in
+                providerStarts += 1
+                return provider
+            },
+            defaults: defaults
+        )
+        let clock = VirtualClock()
+        store.resumeDebounceInterval = .zero
+        store.resumeScheduler = DebouncedResumeScheduler(now: { clock.now })
+
+        let launchReads = storage.reads
+        store.setScreenLocked(true)
+        store.scheduleDebouncedResume(reason: .systemWake)
+        store.setScreenLocked(false)
+        store.scheduleDebouncedResume(reason: .displayWake)
+        store.scheduleDebouncedResume(reason: .networkRestored)
+        await store.flushResumeSync()
+        #expect(storage.reads == launchReads)
+
+        store.setNetworkSatisfiedForResume(false)
+        store.scheduleDebouncedResume(reason: .systemWake)
+        #expect(storage.reads == launchReads + 1)
+        #expect(store.isIdentityUncertain)
+        #expect(store.toastNotice == nil)
+        storage.readResult = nil
+        clock.advance(by: .seconds(59))
+        store.scheduleDebouncedResume(reason: .systemWake)
+        #expect(storage.reads == launchReads + 1)
+        #expect(store.isIdentityUncertain)
+
+        clock.advance(by: .seconds(1))
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(storage.reads == launchReads + 2)
+        #expect(!store.isIdentityUncertain && store.hasEnabledHASource)
+        #expect(store.capabilityResolutionMode == .legacyPreserved && store.hasCompletedOnboarding)
+        #expect(store.shouldSuppressBackgroundNetworkWork)
+        #expect(providerStarts == 0)
+
+        store.setScreenLocked(true)
+        store.setNetworkSatisfiedForResume(true)
+        store.scheduleDebouncedResume(reason: .networkRestored)
+        await store.flushResumeSync()
+        #expect(providerStarts == 0)
+
+        store.setScreenLocked(false)
+        store.scheduleDebouncedResume(reason: .screenUnlocked)
+        await store.flushResumeSync()
+        #expect(providerStarts == 1)
+        #expect(await provider.refreshCount == 1)
+        #expect(!store.shouldSuppressBackgroundNetworkWork)
+
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(storage.reads == launchReads + 2 && storage.writes == 0)
+        #expect(providerStarts == 1)
+        #expect(await provider.refreshCount == 2)
+        await store.shutdown()
+    }
+
+    @Test("Wake leaves corrupt records and legacy credential storage alone")
+    @MainActor
+    func wakeIdentityRecoveryDoesNotAdoptOrDiscard() async throws {
+        let defaults = InMemoryUserDefaults()
+        let corruptRemoval = Data("broken-removal".utf8)
+        let legacyToken = Data("old-ha-token".utf8)
+        let legacy = MemoryLegacyItems(
+            [KeychainHelper.tokenAccount: legacyToken],
+            unreadable: [KeychainHelper.tokenAccount]
+        )
+        let storage = MemoryVaultStorage()
+        storage.readResult = .unavailable
+        let store = HomeStore(
+            provider: CountingHomeProvider(),
+            credentialVault: CredentialVault(storage: storage.storage, legacy: legacy.legacy),
+            defaults: defaults
+        )
+        let clock = VirtualClock()
+        store.resumeDebounceInterval = .zero
+        store.resumeScheduler = DebouncedResumeScheduler(now: { clock.now })
+        storage.readResult = nil
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(store.isIdentityUncertain)
+        #expect(storage.writes == 0 && legacy.remaining[KeychainHelper.tokenAccount] == legacyToken)
+
+        legacy.allow(KeychainHelper.tokenAccount)
+        defaults.set(corruptRemoval, forKey: ConnectionRemovalStore.storageKey)
+        clock.advance(by: .seconds(60))
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(store.identityMigrationDiagnostic == HomeStore.corruptConnectionRemovalDiagnostic)
+        #expect(store.canDiscardCorruptConnectionRemovalRecord)
+        #expect(defaults.data(forKey: ConnectionRemovalStore.storageKey) == corruptRemoval)
+        #expect(defaults.object(forKey: CapabilitySelectionStore.storageKey) == nil)
+        #expect(store.toastNotice == nil)
+        #expect(storage.writes == 0 && legacy.deletedAccounts.isEmpty)
+
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(store.discardCorruptConnectionRemovalRecord(quarantineDirectory: directory))
+        #expect(!store.isIdentityUncertain && store.hasEnabledHASource)
+        #expect(storage.writes == 0 && legacy.deletedAccounts.isEmpty)
+        await store.shutdown()
+    }
+
+    @Test("Wake does not confirm identity while the only Xiaomi session is still in legacy preferences")
+    @MainActor
+    func wakeLeavesUnmigratedXiaomiSessionAlone() async throws {
+        let defaults = InMemoryUserDefaults()
+        let session = Data("legacy-session".utf8)
+        defaults.set(session, forKey: MiSessionStore.fallbackDefaultsKey)
+        defaults.set("legacy-home", forKey: MiCloudProvider.selectedHomeKey)
+        let storage = MemoryVaultStorage()
+        storage.readResult = .unavailable
+        let provider = CountingHomeProvider()
+        let store = HomeStore(
+            provider: provider,
+            credentialVault: CredentialVault(storage: storage.storage),
+            defaults: defaults
+        )
+        store.resumeDebounceInterval = .zero
+        storage.readResult = nil
+
+        store.scheduleDebouncedResume(reason: .systemWake)
+        await store.flushResumeSync()
+        #expect(store.isIdentityUncertain)
+        #expect(await provider.refreshCount == 0)
+        #expect(storage.writes == 0)
+        #expect(defaults.data(forKey: MiSessionStore.fallbackDefaultsKey) == session)
+        #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == "legacy-home")
+        #expect(defaults.object(forKey: CapabilitySelectionStore.storageKey) == nil)
+        await store.shutdown()
+    }
 
     @Test("HomeStore coalesces burst resume notifications and cancels on lock, sleep, and shutdown")
     @MainActor

@@ -6,6 +6,14 @@ extension HomeStore {
     /// network restoration. Passive catch-up only: foreground user actions never wait on this.
     public func scheduleDebouncedResume(reason: ResumeReason) {
         guard !isResumeShutdown else { return }
+        if reason == .systemWake, homeBackend != .demo, isIdentityUncertain,
+           pollingContext.systemActive, !isScreenLocked {
+            let now = resumeScheduler.now()
+            if lastWakeIdentityReadAt.map({ $0.duration(to: now) >= .seconds(60) }) ?? true {
+                lastWakeIdentityReadAt = now
+                rereadIdentityOnWake()
+            }
+        }
         guard let coordinator = ensureResumeCoordinator() else { return }
         enqueueResumeSync {
             await coordinator.notify(reason)
@@ -115,12 +123,23 @@ extension HomeStore {
         guard !isResumeShutdown,
               !isPerformingResumeRefresh,
               homeBackend != .demo,
-              !shouldSuppressBackgroundNetworkWork,
               !isScreenLocked,
               pollingContext.systemActive,
               isNetworkSatisfiedForResume else {
             return
         }
+        if let wakeIdentityProviderGeneration {
+            self.wakeIdentityProviderGeneration = nil
+            if !usesInjectedProvider, !shouldSuppressBackgroundNetworkWork {
+                if wakeIdentityProviderGeneration == providerGeneration {
+                    rebuildLiveProvider(migrateLegacyMiEnvelope: false)
+                }
+                if lgWebOSClient == nil {
+                    startLGWebOSIfNeeded(startImmediately: false)
+                }
+            }
+        }
+        guard !shouldSuppressBackgroundNetworkWork else { return }
         isPerformingResumeRefresh = true
         defer { isPerformingResumeRefresh = false }
         let expectedProviderGeneration = providerGeneration
@@ -154,6 +173,7 @@ extension HomeStore {
         lgClient: LGWebOSClient?
     ) {
         isResumeShutdown = true
+        wakeIdentityProviderGeneration = nil
         let coordinator = debouncedResumeCoordinator
         debouncedResumeCoordinator = nil
         resumeSyncTask?.cancel()
