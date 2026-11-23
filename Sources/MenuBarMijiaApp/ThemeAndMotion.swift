@@ -152,29 +152,155 @@ extension View {
 // MARK: - Apple Design Motion Curves & Springs
 
 public enum AppleMotion {
+    public enum Token: String, CaseIterable, Sendable {
+        /// Fast ease-out for press / tap feedback (120 ms).
+        case pressFeedback
+        /// Smooth ease-in-out for slider track clicks, value swaps and surface highlights (180 ms).
+        case valueChange
+        /// Liquid glass thumb expansion spring (200 ms response, critically damped).
+        case glassLens
+        /// Switches, orbs and selection lenses (240 ms response).
+        case control
+        /// Critically damped spring (260 ms response, damping 0.94) — fast toggles, search, dismissals.
+        case snappy
+        /// Swipe-to-dismiss settle spring (280 ms response, damping 1.0).
+        case dismiss
+        /// Drawer expansion and grid reflow (340 ms response).
+        case reveal
+        /// Notification / activity stack expand and collapse (380 ms response).
+        case stack
+        /// Modal / rename / group overlay transitions and layout mutations (420 ms response).
+        case surface
+        /// Critically damped drag-and-drop tile reorder (500 ms response, damping 1.0).
+        case reorder
+        /// Gentle gauge / humidity arc sweep (550 ms response).
+        case gauge
+        /// Glass hover highlight opacity fade (300 ms ease-in-out).
+        case hoverFade
+        /// Linear hold-to-confirm progress fill (600 ms).
+        case holdProgress
+    }
+
+    public enum ReducedBehavior: Equatable, Sendable {
+        case none
+        case crossfade(duration: Double)
+        case linear(duration: Double)
+
+        public var animation: Animation? {
+            switch self {
+            case .none:
+                return nil
+            case .crossfade(let duration):
+                return .easeOut(duration: duration)
+            case .linear(let duration):
+                return .linear(duration: duration)
+            }
+        }
+    }
+
+    /// Standard motion curve for each token (when Reduce Motion is off).
+    public static func standardAnimation(for token: Token) -> Animation {
+        switch token {
+        case .pressFeedback:
+            return .easeOut(duration: 0.12)
+        case .valueChange:
+            return .easeInOut(duration: 0.18)
+        case .glassLens:
+            return .spring(response: 0.20, dampingFraction: 0.88, blendDuration: 0.05)
+        case .control:
+            return .spring(response: 0.24, dampingFraction: 0.86)
+        case .snappy:
+            return .spring(response: 0.26, dampingFraction: 0.94, blendDuration: 0.08)
+        case .dismiss:
+            return .spring(response: 0.28, dampingFraction: 1.0)
+        case .reveal:
+            return .spring(response: 0.34, dampingFraction: 0.86)
+        case .stack:
+            return .spring(response: 0.38, dampingFraction: 0.84)
+        case .surface:
+            return .spring(response: 0.42, dampingFraction: 0.82)
+        case .reorder:
+            return .spring(response: 0.50, dampingFraction: 1.0)
+        case .gauge:
+            return .spring(response: 0.55, dampingFraction: 0.80)
+        case .hoverFade:
+            return .easeInOut(duration: 0.30)
+        case .holdProgress:
+            return .linear(duration: 0.60)
+        }
+    }
+
+    /// Reduced-motion fallback for each token: crossfade, linear progress, or no animation — never a spring.
+    public static func reducedBehavior(for token: Token) -> ReducedBehavior {
+        switch token {
+        case .pressFeedback, .valueChange, .glassLens, .control, .snappy, .reorder, .gauge, .hoverFade:
+            return .none
+        case .dismiss, .reveal, .stack, .surface:
+            return .crossfade(duration: 0.20)
+        case .holdProgress:
+            return .linear(duration: 0.60)
+        }
+    }
+
+    /// Resolves a motion token for an explicit Reduce Motion flag.
+    public static func resolve(_ token: Token, reduceMotion: Bool) -> Animation? {
+        reduceMotion ? reducedBehavior(for: token).animation : standardAnimation(for: token)
+    }
+
+    /// Resolves a motion token against `NSWorkspace.shared.accessibilityDisplayShouldReduceMotion`
+    /// for non-View AppKit / store call sites.
+    @MainActor
+    public static func resolve(_ token: Token) -> Animation? {
+        resolve(token, reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+
+    /// Slider progress animation: zero delay while the pointer is actively dragging,
+    /// ~180 ms ease-in-out on track click / keyboard / external sync (nil under Reduce Motion).
+    public static func sliderProgressAnimation(isPointerTracking: Bool, reduceMotion: Bool) -> Animation? {
+        guard !isPointerTracking else { return nil }
+        return resolve(.valueChange, reduceMotion: reduceMotion)
+    }
+
     /// Critically damped spring (damping ~ 0.94, response 0.26s) — smooth, interruptible, no distracting overshoot
-    public static let snappySpring = Animation.spring(response: 0.26, dampingFraction: 0.94, blendDuration: 0.08)
+    public static let snappySpring = standardAnimation(for: .snappy)
 
     /// Switches, orbs and selection lenses (contract §1.6). Short enough that a toggle answers the
     /// click instead of performing for it.
-    public static let control = Animation.spring(response: 0.24, dampingFraction: 0.86)
+    public static let control = standardAnimation(for: .control)
 
     /// Drawer expansion and grid reflow: the same character as `control`, one beat slower, because
     /// a surface that changes the layout must not snap.
-    public static let reveal = Animation.spring(response: 0.34, dampingFraction: 0.86)
+    public static let reveal = standardAnimation(for: .reveal)
 
     /// Fast ease-out for press feedback (120ms)
-    public static let pressFeedback = Animation.easeOut(duration: 0.12)
+    public static let pressFeedback = standardAnimation(for: .pressFeedback)
 
     /// Liquid glass thumb expansion spring (200ms response, critically damped)
-    public static let glassLensSpring = Animation.spring(response: 0.20, dampingFraction: 0.88, blendDuration: 0.05)
+    public static let glassLensSpring = standardAnimation(for: .glassLens)
 
-    /// Origin-aware drawer reveal transition (never scales from 0)
-    public static var drawerTransition: AnyTransition {
-        .asymmetric(
+    public static let stack = standardAnimation(for: .stack)
+    public static let dismiss = standardAnimation(for: .dismiss)
+    public static let surface = standardAnimation(for: .surface)
+    public static let reorder = standardAnimation(for: .reorder)
+    public static let valueChange = standardAnimation(for: .valueChange)
+    public static let gauge = standardAnimation(for: .gauge)
+    public static let hoverFade = standardAnimation(for: .hoverFade)
+    public static let holdProgress = standardAnimation(for: .holdProgress)
+
+    /// Origin-aware drawer reveal transition (never scales from 0; pure opacity crossfade under Reduce Motion).
+    public static func drawerTransition(reduceMotion: Bool) -> AnyTransition {
+        if reduceMotion {
+            return .opacity
+        }
+        return .asymmetric(
             insertion: .scale(scale: 0.96, anchor: .top).combined(with: .opacity),
             removal: .scale(scale: 0.97, anchor: .top).combined(with: .opacity)
         )
+    }
+
+    /// Origin-aware drawer reveal transition (never scales from 0)
+    public static var drawerTransition: AnyTransition {
+        drawerTransition(reduceMotion: false)
     }
 }
 
@@ -192,7 +318,7 @@ public struct PressableCardButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed && !reduceMotion ? scaleAmount : 1.0)
             .brightness(configuration.isPressed ? -0.015 : 0)
-            .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
+            .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 
@@ -225,7 +351,7 @@ public struct PillActionButtonStyle: ButtonStyle {
                 )
             )
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
-            .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
+            .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 
@@ -402,7 +528,7 @@ struct GlassHoverHighlight<S: InsettableShape>: ViewModifier {
                 highlight
                     .opacity(isLit ? 1 : 0)
                     .animation(
-                        reduceMotion ? nil : .easeInOut(duration: 0.30),
+                        AppleMotion.resolve(.hoverFade, reduceMotion: reduceMotion),
                         value: isLit
                     )
                     .allowsHitTesting(false)
@@ -469,13 +595,14 @@ extension View {
 public struct GlassShapeBackground<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     public var shape: S
     public var isActive: Bool
     public var tint: Color?
 
     public func body(content: Content) -> some View {
         surfaceBody(content)
-            .animation(AppleMotion.control, value: isActive)
+            .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isActive)
     }
 
     @ViewBuilder
@@ -699,6 +826,7 @@ public struct LiquidGlassSlider: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.effectiveReduceTransparency) private var reduceTransparency
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     @Binding public var value: Double
     public let range: ClosedRange<Double>
@@ -710,6 +838,7 @@ public struct LiquidGlassSlider: View {
     public let formattedValue: String
 
     @State private var isDragging: Bool = false
+    @State private var isPointerTracking: Bool = false
     @FocusState private var isFocused: Bool
 
     public init<S: ShapeStyle>(
@@ -806,6 +935,11 @@ public struct LiquidGlassSlider: View {
             let thumbCenterX = 2 + thumbWidth / 2 + normalizedProgress * usableTravel
             let fillWidth = isSpectrumTrack ? width : max(thumbCenterX + thumbWidth / 2 - 1, trackHeight)
 
+            let progressAnimation = AppleMotion.sliderProgressAnimation(
+                isPointerTracking: isPointerTracking,
+                reduceMotion: reduceMotion
+            )
+
             ZStack(alignment: .leading) {
                 Capsule(style: .continuous)
                     .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
@@ -813,6 +947,7 @@ public struct LiquidGlassSlider: View {
                         Capsule(style: .continuous)
                             .fill(trackFill)
                             .frame(width: min(fillWidth, width))
+                            .animation(progressAnimation, value: normalizedProgress)
                     }
                     .clipShape(Capsule(style: .continuous))
 
@@ -835,6 +970,7 @@ public struct LiquidGlassSlider: View {
                     .specularRim(Capsule(style: .circular), strength: 1.4)
                     .shadow(color: .black.opacity(isDragging ? 0.26 : 0.18), radius: isDragging ? 5 : 2.5, y: isDragging ? 2 : 1)
                     .position(x: thumbCenterX, y: geo.size.height / 2)
+                    .animation(progressAnimation, value: normalizedProgress)
 
                 HStack {
                     Image(systemName: iconName)
@@ -861,12 +997,16 @@ public struct LiquidGlassSlider: View {
                     .onChanged { drag in
                         guard isEnabled else { return }
                         if !isDragging {
-                            withAnimation(AppleMotion.glassLensSpring) { isDragging = true }
+                            isPointerTracking = false
+                            withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) { isDragging = true }
+                        } else {
+                            isPointerTracking = true
                         }
                         updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
                     }
                     .onEnded { _ in
-                        withAnimation(AppleMotion.glassLensSpring) { isDragging = false }
+                        isPointerTracking = false
+                        withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) { isDragging = false }
                     }
             )
         }
@@ -1120,7 +1260,7 @@ struct GlassSwitch: View {
                 }
             }
         }
-        .animation(reduceMotion ? nil : .spring(response: 0.24, dampingFraction: 0.85), value: isOn)
+        .animation(AppleMotion.resolve(.control, reduceMotion: reduceMotion), value: isOn)
         .contentShape(Capsule(style: .continuous))
         .onTapGesture {
             guard isEnabled else { return }
@@ -1286,7 +1426,7 @@ struct GlassSegmentedControl<Value: Hashable>: View {
                 let isSelected = selection == segment.value
                 Button {
                     guard !isSelected else { return }
-                    withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { selection = segment.value }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { selection = segment.value }
                 } label: {
                     Text(segment.title)
                         .font(.system(

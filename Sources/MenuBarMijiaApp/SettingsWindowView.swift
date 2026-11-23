@@ -184,7 +184,7 @@ public struct SettingsWindowView: View {
             // Save, Discard or Cancel; a save that fails keeps the window open (#148).
             unsaved.resolveBeforeLeaving(allowCancel: true)
         })
-        .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: store.toastNotice)
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: store.toastNotice)
         .transaction { if reduceMotion { $0.disablesAnimations = true } }
         // Errors shown while the window is open still reach the diagnostics ring buffer (#45).
         .onChange(of: store.toastNotice?.id) { _, _ in
@@ -343,7 +343,7 @@ public struct SettingsWindowView: View {
         if reduceMotion {
             proxy.scrollTo(anchor, anchor: .center)
         } else {
-            withAnimation(AppleMotion.reveal) {
+            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
                 proxy.scrollTo(anchor, anchor: .center)
             }
         }
@@ -745,6 +745,7 @@ private struct GeneralSettingsTab: View {
     let store: HomeStore
     @Binding var advancedDisplay: GeneralSettingsDisclosure.State
     @Environment(\.settingsSearchFocus) private var searchFocus
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     @State private var showNotificationRationale = false
     @AppStorage(AppAppearance.storageKey) private var appearanceRaw: String = AppAppearance.system.rawValue
     @AppStorage(PanelTheme.storageKey) private var panelThemeRaw: String = PanelTheme.defaultValue.rawValue
@@ -985,7 +986,7 @@ private struct GeneralSettingsTab: View {
                             if store.hiddenDevices.count > 1 {
                                 Button(L10n.tr("全部恢复显示", "Unhide All")) {
                                     let ids = store.hiddenDevices.map(\.id)
-                                    withAnimation(AppleMotion.snappySpring) {
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                         for id in ids {
                                             store.unhideDevice(id)
                                         }
@@ -1013,7 +1014,7 @@ private struct GeneralSettingsTab: View {
                                 Spacer()
 
                                 Button(L10n.tr("恢复显示", "Unhide")) {
-                                    withAnimation(AppleMotion.snappySpring) {
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                         store.unhideDevice(dev.id)
                                     }
                                 }
@@ -1515,6 +1516,7 @@ private struct ConnectionSettingsTab: View {
     @State private var pendingHARemovalPauseConfirmation: HADisableConnectionConfirmation?
     @Environment(\.settingsSearchFocus) private var searchFocus
     @Environment(\.settingsUnsavedChanges) private var unsaved
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     /// The address and token as loaded or last saved; edits that differ are unsaved (#148).
     @State private var haBaselineURL = ""
     @State private var haBaselineToken = ""
@@ -1638,7 +1640,7 @@ private struct ConnectionSettingsTab: View {
                 Toggle(isOn: Binding(
                     get: { store.homeBackend == .demo },
                     set: { isDemo in
-                        withAnimation(AppleMotion.snappySpring) {
+                        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                             store.switchBackend(isDemo ? .demo : store.preferredLiveBackend)
                         }
                     }
@@ -1692,7 +1694,7 @@ private struct ConnectionSettingsTab: View {
                 } else {
                     SettingsSection(title: "Home Assistant") {
                         Button {
-                            withAnimation(AppleMotion.snappySpring) { haExpanded = true }
+                            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { haExpanded = true }
                         } label: {
                             HStack {
                                 Text(L10n.tr("我用 Home Assistant", "I use Home Assistant"))

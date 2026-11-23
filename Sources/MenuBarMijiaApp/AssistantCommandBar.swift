@@ -583,6 +583,7 @@ public final class SpeechInputController {
 /// itself lives in `ControlCenterPanel.omnibar`, shared with search; suggestions sit in
 /// `AssistantSuggestionsRow`, shown while that input is focused.
 struct AssistantResponseArea: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let store: HomeStore
 
     @Bindable private var speech = SpeechInputController.shared
@@ -650,13 +651,13 @@ struct AssistantResponseArea: View {
             }
 
         }
-        .animation(AppleMotion.snappySpring, value: store.assistantState)
-        .animation(AppleMotion.snappySpring, value: store.assistantSuggestions)
-        .animation(AppleMotion.snappySpring, value: store.pendingCloudConsent)
-        .animation(AppleMotion.snappySpring, value: store.scheduledCommands)
-        .animation(AppleMotion.snappySpring, value: store.visiblePausedScheduledCommands)
-        .animation(AppleMotion.snappySpring, value: asksForTimerNotifications)
-        .animation(AppleMotion.snappySpring, value: speech.isListening)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.assistantState)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.assistantSuggestions)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.pendingCloudConsent)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.scheduledCommands)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.visiblePausedScheduledCommands)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: asksForTimerNotifications)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: speech.isListening)
         // The receipt is a glance, not a log: it folds away unless something still needs the user.
         .task(id: store.assistantState) {
             guard case .done = store.assistantState else { return }
@@ -667,7 +668,7 @@ struct AssistantResponseArea: View {
                   store.scheduledCommands.isEmpty,
                   store.visiblePausedScheduledCommands.isEmpty,
                   !asksForTimerNotifications else { return }
-            withAnimation(AppleMotion.snappySpring) { store.dismissAssistantBar() }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.dismissAssistantBar() }
         }
         // First timer: explain notifications before macOS ever asks (#55).
         .onChange(of: store.scheduledCommands.count) { oldValue, newValue in

@@ -191,18 +191,18 @@ public struct ControlCenterPanel: View {
                 }
             }
             if order != currentOrder {
-                withAnimation(reduceMotion ? nil : .spring(response: 0.50, dampingFraction: 1.0)) { panelLayout.setOrder(order) }
+                withAnimation(AppleMotion.resolve(.reorder, reduceMotion: reduceMotion)) { panelLayout.setOrder(order) }
             }
         }
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.newGroupForDevice)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingGroupId)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingDeviceId)
-        .animation(.spring(response: 0.4, dampingFraction: 0.82), value: layoutUI.renamingRoomId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.newGroupForDevice)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingGroupId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingDeviceId)
+        .animation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion), value: layoutUI.renamingRoomId)
         // #41: the context menu's "Edit Layout" replaces the 0.6 s long-press for keyboard/VoiceOver users.
         .onChange(of: layoutUI.isEditingLayoutRequested) { _, requested in
             guard requested else { return }
             layoutUI.isEditingLayoutRequested = false
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 store.expandedDeviceId = nil
                 layoutUI.beginDeviceLayoutEditing()
             }
@@ -264,12 +264,12 @@ public struct ControlCenterPanel: View {
         PanelTransientUIState.shared.hasExpandedReminders = activitiesExpanded
         PanelTransientUIState.shared.hasExpandedOfflineDrawer = isOfflineDrawerExpanded
         PanelTransientUIState.shared.collapseRemindersHandler = {
-            withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 activitiesExpanded = false
             }
         }
         PanelTransientUIState.shared.collapseOfflineDrawerHandler = {
-            withAnimation(reduceMotion ? nil : AppleMotion.reveal) {
+            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) {
                 _ = expandedStacks.remove(PanelDeviceOrganizer.offlineSectionId)
             }
         }
@@ -374,7 +374,7 @@ public struct ControlCenterPanel: View {
                         omnibar
                         if showsInputDrawer {
                             inputDrawer
-                                .transition(AppleMotion.drawerTransition)
+                                .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                         }
                     }
                     .padding(.horizontal, Self.columnInset)
@@ -386,7 +386,7 @@ public struct ControlCenterPanel: View {
                     AssistantResponseArea(store: store)
                         .padding(.horizontal, Self.columnInset)
                         .padding(.bottom, 10)
-                        .transition(AppleMotion.drawerTransition)
+                        .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
                 }
 
                 if !isRoomOrdering, !search.isSearching {
@@ -427,13 +427,13 @@ public struct ControlCenterPanel: View {
                 .adaptiveHeightSlice(.bottomChrome, clearOnDisappear: true)
             }
         }
-        .animation(AppleMotion.reveal, value: store.expandedDeviceId)
-        .animation(AppleMotion.reveal, value: store.listCut)
-        .animation(AppleMotion.reveal, value: store.isCompactGridMode)
-        .animation(AppleMotion.reveal, value: groupingRaw)
-        .animation(AppleMotion.snappySpring, value: store.isShowingAssistantBar)
-        .animation(AppleMotion.snappySpring, value: layoutUI.editMode)
-        .animation(AppleMotion.snappySpring, value: showsOmnibar)
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: store.expandedDeviceId)
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: store.listCut)
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: store.isCompactGridMode)
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: groupingRaw)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: store.isShowingAssistantBar)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: layoutUI.editMode)
+        .animation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion), value: showsOmnibar)
         // Typing, ⌘F, "/" and dictation all ask for the field; it unfolds before it takes focus.
         .onChange(of: search.focusRequest) { _, _ in revealSearch() }
         .onChange(of: store.assistantFocusRequest) { _, _ in revealSearch() }
@@ -460,14 +460,14 @@ public struct ControlCenterPanel: View {
 
     private func revealSearch() {
         guard !isSearchRevealed else { return }
-        withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = true }
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isSearchRevealed = true }
     }
 
     /// Leaving an empty field folds it back; the drawer under the pointer keeps it until its click lands.
     private func foldSearchIfIdle() {
         guard search.query.isEmpty, !speech.isListening, !speech.isHoldToTalk,
               !isDrawerHovered, !store.isShowingAssistantBar else { return }
-        withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = false }
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isSearchRevealed = false }
     }
 
     /// The header's magnifier: opens and focuses the field, or closes an open one.
@@ -475,7 +475,7 @@ public struct ControlCenterPanel: View {
         if showsOmnibar {
             search.end()
             isSearchFieldFocused = false
-            withAnimation(reduceMotion ? nil : AppleMotion.snappySpring) { isSearchRevealed = false }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { isSearchRevealed = false }
         } else {
             search.focus()
         }
@@ -536,7 +536,7 @@ public struct ControlCenterPanel: View {
                                 theme: .liquidGlass,
                                 onToggleExpand: { toggleLongTail(in: stacks) },
                                 onSelectRoom: { roomId in
-                                    withAnimation(AppleMotion.snappySpring) {
+                                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                                         _ = store.selectRoom(roomId)
                                     }
                                 }
@@ -583,7 +583,7 @@ public struct ControlCenterPanel: View {
                 pendingScrollToDeviceId = nil
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(80))
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         scrollProxy.scrollTo(targetId, anchor: .center)
                     }
                 }
@@ -629,8 +629,8 @@ public struct ControlCenterPanel: View {
             Image(systemName: listening ? "waveform" : "magnifyingglass")
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
                 .foregroundStyle(listening ? Color.red : Color.secondary)
-                .symbolEffect(.variableColor.iterative, isActive: listening)
-                .symbolEffect(.pulse, isActive: store.assistantState == .thinking)
+                .symbolEffect(.variableColor.iterative, isActive: listening && !reduceMotion)
+                .symbolEffect(.pulse, isActive: store.assistantState == .thinking && !reduceMotion)
                 .padding(.trailing, 3)
 
             TextField(
@@ -653,7 +653,7 @@ public struct ControlCenterPanel: View {
                     .foregroundStyle(.secondary)
 
                 Button {
-                    withAnimation(AppleMotion.snappySpring) { search.query = "" }
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { search.query = "" }
                     focusInput()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -674,7 +674,7 @@ public struct ControlCenterPanel: View {
                     .frame(width: DesignTokens.minHitTarget, height: DesignTokens.minHitTarget)
             } else if store.enableVoiceInput {
                 Button {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         store.presentAssistantBar(startVoice: true)
                     }
                 } label: {
@@ -778,7 +778,7 @@ public struct ControlCenterPanel: View {
     }
 
     private func toggleSearchResult(_ device: SmartDevice) {
-        withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
+        withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.togglePrimary(device) }
         if device.isOnline { SoundFeedback.playSuccess() }
     }
 
@@ -1017,13 +1017,13 @@ enum PanelSearchKeyboard {
 
         case .toggleSelection:
             guard let device = state.selected(in: results) else { return false }
-            withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
+            withAnimation(AppleMotion.resolve(.snappy)) { _ = store.togglePrimary(device) }
             if device.isOnline { SoundFeedback.playSuccess() }
             return true
 
         case .expandSelection:
             guard let device = state.selected(in: results) else { return false }
-            withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
+            withAnimation(AppleMotion.resolve(.snappy)) { store.toggleExpanded(device.id) }
             return true
 
         case .runCommand:

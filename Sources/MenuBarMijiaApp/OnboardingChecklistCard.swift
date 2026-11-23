@@ -4,6 +4,7 @@ import MijiaCore
 /// One 44 pt row for the next getting-started step. Launch at login lives in the overflow menu
 /// so it does not add a second row above the devices.
 struct OnboardingChecklistCard: View {
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     let store: HomeStore
     var onBeginSearch: () -> Void
     var theme: PanelTheme = .liquidGlass
@@ -36,7 +37,7 @@ struct OnboardingChecklistCard: View {
             }
 
             Button {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.completeOnboarding()
                     store.dismissLaunchAtLoginSuggestion()
                 }
@@ -131,7 +132,7 @@ struct OnboardingChecklistCard: View {
         case .searchDevice:
             onBeginSearch()
         case .allOffAndUndo:
-            withAnimation(AppleMotion.snappySpring) { _ = store.confirmAllOffHold(mode: .rehearsal) }
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.confirmAllOffHold(mode: .rehearsal) }
         }
     }
 
@@ -149,13 +150,13 @@ struct OnboardingChecklistCard: View {
                 }
             } else {
                 Button(L10n.tr("登录 Mac 时自动启动", "Turn On Launch at Login")) {
-                    withAnimation(AppleMotion.snappySpring) {
+                    withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                         launchAtLogin.setEnabled(true)
                     }
                 }
             }
             Button(L10n.tr("跳过", "Skip")) {
-                withAnimation(AppleMotion.snappySpring) {
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                     store.dismissLaunchAtLoginSuggestion()
                 }
             }

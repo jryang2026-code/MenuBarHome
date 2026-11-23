@@ -77,7 +77,7 @@ struct ClassicClimatePanelModule: View {
                         )
                     }
                 }
-                .transition(AppleMotion.drawerTransition)
+                .transition(AppleMotion.drawerTransition(reduceMotion: reduceMotion))
             }
         }
         .padding(.horizontal, 11)
@@ -85,7 +85,7 @@ struct ClassicClimatePanelModule: View {
         .classicTile(isActive: isRunning, cornerRadius: DesignTokens.Radius.module, tint: DesignTokens.Orb.climate)
         .opacity(device.isOnline ? 1 : 0.58)
         .disabled(!device.isOnline)
-        .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.8), value: isRunning)
+        .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: isRunning)
     }
 
     // MARK: Strip: power badge，name (tap to expand)，− temp +
@@ -95,7 +95,7 @@ struct ClassicClimatePanelModule: View {
             if spec.powerWritable {
             Button {
                 guard !isEditingLayout else { return }
-                withAnimation(AppleMotion.snappySpring) { _ = store.togglePrimary(device) }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { _ = store.togglePrimary(device) }
                 if device.isOnline { SoundFeedback.playSuccess() }
             } label: {
                 ZStack {
@@ -118,7 +118,7 @@ struct ClassicClimatePanelModule: View {
 
             Button {
                 guard !isEditingLayout, canExpand else { return }
-                withAnimation(AppleMotion.snappySpring) { store.toggleExpanded(device.id) }
+                withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) { store.toggleExpanded(device.id) }
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(device.name)
@@ -201,7 +201,7 @@ struct ClassicClimatePanelModule: View {
             }
         }
         .frame(height: 4)
-        .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: spec.targetTemperature)
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: spec.targetTemperature)
     }
 
     private func stepButton(symbol: String, delta: Double) -> some View {
@@ -210,7 +210,7 @@ struct ClassicClimatePanelModule: View {
             : L10n.tr("降低目标温度", "Lower target temperature")
         return Button {
             guard !isEditingLayout else { return }
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+            withAnimation(AppleMotion.resolve(.snappy, reduceMotion: reduceMotion)) {
                 store.stepClimateTemperature(device.id, delta: delta)
             }
         } label: {
@@ -234,7 +234,7 @@ struct ClassicClimatePanelModule: View {
             ForEach(modes, id: \.self) { mode in
                 let selected = isRunning && spec.hvacMode == mode
                 Button {
-                    withAnimation(.spring(response: 0.4, dampingFraction: 0.75)) {
+                    withAnimation(AppleMotion.resolve(.surface, reduceMotion: reduceMotion)) {
                         store.setClimateMode(device.id, mode: mode)
                     }
                 } label: {
@@ -272,7 +272,7 @@ struct ClassicClimatePanelModule: View {
                 HStack(spacing: 4) {
                     ForEach(options, id: \.self) { option in
                         Button(Self.localizeOption(option)) {
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) { onSelect(option) }
+                            withAnimation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion)) { onSelect(option) }
                         }
                         .buttonStyle(ClassicPillActionButtonStyle(isSelected: option == current, tintColor: accent))
                     }

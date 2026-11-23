@@ -106,7 +106,7 @@ public struct ClassicPillActionButtonStyle: ButtonStyle {
             )
             .classicSpecularRim(capsule)
             .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1.0)
-            .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: configuration.isPressed)
+            .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: configuration.isPressed)
     }
 }
 
@@ -117,6 +117,7 @@ public struct ClassicPillActionButtonStyle: ButtonStyle {
 /// surface itself never turns opaque and never asks the system for a glass slab.
 struct ClassicGlassTileBackground: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
     public var isActive: Bool
     public var cornerRadius: CGFloat
     public var tint: Color?
@@ -137,7 +138,7 @@ struct ClassicGlassTileBackground: ViewModifier {
                 radius: 10,
                 y: 3
             )
-            .animation(.easeOut(duration: 0.18), value: isActive)
+            .animation(AppleMotion.resolve(.valueChange, reduceMotion: reduceMotion), value: isActive)
     }
 }
 
@@ -215,6 +216,7 @@ extension View {
 public struct ClassicLiquidGlassSlider: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     @Binding public var value: Double
     public let range: ClosedRange<Double>
@@ -226,6 +228,7 @@ public struct ClassicLiquidGlassSlider: View {
     public let formattedValue: String
 
     @State private var isDragging: Bool = false
+    @State private var isPointerTracking: Bool = false
     @FocusState private var isFocused: Bool
 
     public init<S: ShapeStyle>(
@@ -327,6 +330,10 @@ public struct ClassicLiquidGlassSlider: View {
                 let usableTravel = max(width - thumbWidth - 4, 1)
                 let thumbCenterX = 2 + thumbWidth / 2 + normalizedProgress * usableTravel
                 let fillWidth = isSpectrumTrack ? width : max(thumbCenterX + thumbWidth / 2 - 1, trackHeight)
+                let progressAnimation = AppleMotion.sliderProgressAnimation(
+                    isPointerTracking: isPointerTracking,
+                    reduceMotion: reduceMotion
+                )
 
                 ZStack(alignment: .leading) {
                     // 1. Recessed track capsule
@@ -342,6 +349,7 @@ public struct ClassicLiquidGlassSlider: View {
                                         width: isSpectrumTrack ? trackGeo.size.width : min(fillWidth, trackGeo.size.width),
                                         height: trackHeight
                                     )
+                                    .animation(progressAnimation, value: normalizedProgress)
                             }
                             .clipShape(Capsule(style: .continuous))
                         }
@@ -370,6 +378,7 @@ public struct ClassicLiquidGlassSlider: View {
                             y: isDragging ? 2 : 1
                         )
                         .position(x: thumbCenterX, y: geo.size.height / 2)
+                        .animation(progressAnimation, value: normalizedProgress)
                 }
                 .overlay {
                     Capsule(style: .continuous)
@@ -383,14 +392,18 @@ public struct ClassicLiquidGlassSlider: View {
                         .onChanged { drag in
                             guard isEnabled else { return }
                             if !isDragging {
-                                withAnimation(AppleMotion.glassLensSpring) {
+                                isPointerTracking = false
+                                withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) {
                                     isDragging = true
                                 }
+                            } else {
+                                isPointerTracking = true
                             }
                             updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
                         }
                         .onEnded { _ in
-                            withAnimation(AppleMotion.glassLensSpring) {
+                            isPointerTracking = false
+                            withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) {
                                 isDragging = false
                             }
                         }

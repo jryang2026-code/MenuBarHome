@@ -469,7 +469,7 @@ struct RoomOrderEditor: View {
 
     // MARK: Row actions
 
-    private var motion: Animation? { reduceMotion ? nil : AppleMotion.snappySpring }
+    private var motion: Animation? { AppleMotion.resolve(.snappy, reduceMotion: reduceMotion) }
 
     private func layoutOpenRoom(_ id: String) {
         ui.renamingRoomId = id
@@ -568,7 +568,7 @@ private struct RoomOrderRowView: View {
         .frame(height: RoomOrderMetrics.rowHeight)
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
-        .animation(reduceMotion ? nil : AppleMotion.pressFeedback, value: isHovered)
+        .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: isHovered)
         .zIndex(isDragging ? 2 : 0)
         // Pointer-free paths for everything the drag and the keyboard do (§5.3, §5.5), plus the
         // provider name when an alias hides it.
@@ -694,7 +694,7 @@ private struct RoomOrderRowView: View {
 enum RoomOrderKeyboard {
     /// Reduced motion drops the spring but keeps the reorder.
     static var defaultMotion: Animation? {
-        NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : AppleMotion.snappySpring
+        AppleMotion.resolve(.snappy)
     }
 
     /// The items of the list on screen: rooms, or the device kinds as id/name pairs.

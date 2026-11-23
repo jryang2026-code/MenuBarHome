@@ -952,13 +952,13 @@ final class MenuBarPanelController: NSObject {
             // An expired session keeps the panel open for the QR overlay; a second click on the
             // icon only closes the panel once that overlay is already the active view.
             if let store, store.miSessionBlocksControl, !store.isShowingMiReauth {
-                withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                withAnimation(AppleMotion.resolve(.snappy)) { store.presentMiReauth() }
                 return
             }
             hidePanel()
         } else {
             if let store, store.miSessionBlocksControl {
-                withAnimation(AppleMotion.snappySpring) { store.presentMiReauth() }
+                withAnimation(AppleMotion.resolve(.snappy)) { store.presentMiReauth() }
             }
             showPanel()
         }
