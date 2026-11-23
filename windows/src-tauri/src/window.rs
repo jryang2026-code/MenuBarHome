@@ -556,19 +556,18 @@ pub(crate) fn load_panel_placement() {
 }
 
 #[cfg(all(windows, not(test)))]
-fn autohide_taskbar_edge_and_thickness() -> Option<(TaskbarEdge, i32)> {
+fn autohide_taskbar_edge_and_thickness(monitor: Rect) -> Option<(TaskbarEdge, i32)> {
+    use windows_sys::Win32::Foundation::{HWND, RECT};
     use windows_sys::Win32::UI::Shell::{
         SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETSTATE,
         ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA,
     };
-    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, FindWindowW, GetWindowRect, IsWindowVisible,
+    };
 
-    let class_name: [u16; 14] = [
-        b'S' as u16, b'h' as u16, b'e' as u16, b'l' as u16, b'l' as u16, b'_' as u16,
-        b'T' as u16, b'r' as u16, b'a' as u16, b'y' as u16, b'W' as u16, b'n' as u16,
-        b'd' as u16, 0,
-    ];
-    let taskbar_hwnd = unsafe { FindWindowW(class_name.as_ptr(), std::ptr::null()) };
+    let primary_class: Vec<u16> = "Shell_TrayWnd\0".encode_utf16().collect();
+    let taskbar_hwnd = unsafe { FindWindowW(primary_class.as_ptr(), std::ptr::null()) };
     let mut abd: APPBARDATA = unsafe { std::mem::zeroed() };
     abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
     abd.hWnd = taskbar_hwnd;
@@ -589,17 +588,54 @@ fn autohide_taskbar_edge_and_thickness() -> Option<(TaskbarEdge, i32)> {
         ABE_BOTTOM => 3,
         _ => return None,
     };
-    taskbar_edge_from_appbar(
+    let (primary_edge, _) = taskbar_edge_from_appbar(
         normalized_edge,
         abd.rc.left,
         abd.rc.top,
         abd.rc.right,
         abd.rc.bottom,
-    )
+    )?;
+    let primary_rect = Rect::new(
+        abd.rc.left,
+        abd.rc.top,
+        abd.rc.right.saturating_sub(abd.rc.left),
+        abd.rc.bottom.saturating_sub(abd.rc.top),
+    );
+
+    let mut secondary_rects = Vec::new();
+    let secondary_class: Vec<u16> = "Shell_SecondaryTrayWnd\0".encode_utf16().collect();
+    let mut sec_hwnd: HWND = std::ptr::null_mut();
+    for _ in 0..32 {
+        sec_hwnd = unsafe {
+            FindWindowExW(
+                std::ptr::null_mut(),
+                sec_hwnd,
+                secondary_class.as_ptr(),
+                std::ptr::null(),
+            )
+        };
+        if sec_hwnd.is_null() {
+            break;
+        }
+        if unsafe { IsWindowVisible(sec_hwnd) } == 0 {
+            continue;
+        }
+        let mut rc: RECT = unsafe { std::mem::zeroed() };
+        if unsafe { GetWindowRect(sec_hwnd, &mut rc) } != 0 {
+            secondary_rects.push(Rect::new(
+                rc.left,
+                rc.top,
+                rc.right.saturating_sub(rc.left),
+                rc.bottom.saturating_sub(rc.top),
+            ));
+        }
+    }
+
+    autohide_taskbar_on_monitor(monitor, primary_edge, primary_rect, &secondary_rects)
 }
 
 #[cfg(any(not(windows), test))]
-fn autohide_taskbar_edge_and_thickness() -> Option<(TaskbarEdge, i32)> {
+fn autohide_taskbar_edge_and_thickness(_monitor: Rect) -> Option<(TaskbarEdge, i32)> {
     None
 }
 
@@ -622,7 +658,7 @@ pub(crate) fn monitor_rects(monitor: &Monitor) -> (Rect, Rect) {
     } else {
         raw_work
     };
-    let work = match autohide_taskbar_edge_and_thickness() {
+    let work = match autohide_taskbar_edge_and_thickness(full) {
         Some((edge, thickness)) => {
             inset_work_area_for_autohide_taskbar(full, base_work, edge, thickness)
         }

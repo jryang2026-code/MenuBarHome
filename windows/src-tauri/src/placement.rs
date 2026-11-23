@@ -82,6 +82,71 @@ pub fn taskbar_edge_from_appbar(
     (thickness > 0).then_some((edge, thickness))
 }
 
+/// Whether two non-degenerate screen rectangles share positive 2D area.
+pub fn rect_overlaps_2d(a: Rect, b: Rect) -> bool {
+    a.width > 0
+        && a.height > 0
+        && b.width > 0
+        && b.height > 0
+        && a.x < b.right()
+        && a.right() > b.x
+        && a.y < b.bottom()
+        && a.bottom() > b.y
+}
+
+/// Resolves the auto-hide taskbar edge and thickness for `monitor` only.
+///
+/// Primary taskbar data from `ABM_GETTASKBARPOS` applies only when `primary_rect` overlaps
+/// `monitor`. Secondary monitors look up a matching `Shell_SecondaryTrayWnd` rect in
+/// `secondary_rects`; if none overlaps `monitor` (e.g. "Show my taskbar on all displays" is off),
+/// `None` is returned so `monitor` keeps its full work area.
+pub fn autohide_taskbar_on_monitor(
+    monitor: Rect,
+    primary_edge: TaskbarEdge,
+    primary_rect: Rect,
+    secondary_rects: &[Rect],
+) -> Option<(TaskbarEdge, i32)> {
+    if rect_overlaps_2d(monitor, primary_rect) {
+        let thickness = match primary_edge {
+            TaskbarEdge::Left | TaskbarEdge::Right => primary_rect.width,
+            TaskbarEdge::Top | TaskbarEdge::Bottom => primary_rect.height,
+            TaskbarEdge::None => 0,
+        };
+        if thickness > 0 && primary_edge != TaskbarEdge::None {
+            return Some((primary_edge, thickness));
+        }
+    }
+
+    for &sec in secondary_rects {
+        if !rect_overlaps_2d(monitor, sec) {
+            continue;
+        }
+        if sec.width >= sec.height {
+            let mid_y = sec.y + sec.height / 2;
+            let dist_top = (mid_y - monitor.y).abs();
+            let dist_bottom = (monitor.bottom() - mid_y).abs();
+            let edge = if dist_top <= dist_bottom {
+                TaskbarEdge::Top
+            } else {
+                TaskbarEdge::Bottom
+            };
+            return Some((edge, sec.height));
+        } else {
+            let mid_x = sec.x + sec.width / 2;
+            let dist_left = (mid_x - monitor.x).abs();
+            let dist_right = (monitor.right() - mid_x).abs();
+            let edge = if dist_left <= dist_right {
+                TaskbarEdge::Left
+            } else {
+                TaskbarEdge::Right
+            };
+            return Some((edge, sec.width));
+        }
+    }
+
+    None
+}
+
 /// Insets `work` along `edge` by `thickness` physical pixels within `monitor` when an auto-hide
 /// taskbar leaves `work` flush with that edge (e.g. `rcWork == rcMonitor`), matching EarTrumpet's
 /// `PositionWindowRelativeToTaskbar` guard so other docked bars are never expanded back out.
@@ -652,5 +717,56 @@ mod tests {
         assert_eq!(taskbar_edge_from_appbar(3, 0, 1032, 1920, 1080), Some((TaskbarEdge::Bottom, 48)));
         assert_eq!(taskbar_edge_from_appbar(4, 0, 1032, 1920, 1080), None);
         assert_eq!(taskbar_edge_from_appbar(3, 0, 1080, 1920, 1080), None);
+    }
+
+    #[test]
+    fn autohide_taskbar_scopes_compensation_to_owning_monitor() {
+        let primary = Rect::new(0, 0, 1920, 1080);
+        let secondary = Rect::new(1920, 0, 2560, 1440);
+        let primary_bar = Rect::new(0, 1032, 1920, 48);
+
+        // Primary monitor gets the primary auto-hide taskbar.
+        assert_eq!(
+            autohide_taskbar_on_monitor(primary, TaskbarEdge::Bottom, primary_bar, &[]),
+            Some((TaskbarEdge::Bottom, 48))
+        );
+        // Secondary monitor without a secondary taskbar stays un-inset.
+        assert_eq!(
+            autohide_taskbar_on_monitor(secondary, TaskbarEdge::Bottom, primary_bar, &[]),
+            None
+        );
+
+        // Secondary monitor with a slid-off-edge Shell_SecondaryTrayWnd (2px hover strip inside
+        // the monitor at bottom, 72px thick at 150% DPI) resolves to its own edge and thickness.
+        let secondary_bar = Rect::new(1920, 1438, 2560, 72);
+        assert_eq!(
+            autohide_taskbar_on_monitor(
+                secondary,
+                TaskbarEdge::Bottom,
+                primary_bar,
+                &[secondary_bar]
+            ),
+            Some((TaskbarEdge::Bottom, 72))
+        );
+        // And an adjacent monitor's secondary bar never bleeds into the primary monitor.
+        let primary_right_bar = Rect::new(1872, 0, 48, 1080);
+        assert_eq!(
+            autohide_taskbar_on_monitor(
+                secondary,
+                TaskbarEdge::Right,
+                primary_right_bar,
+                &[Rect::new(1920, 0, 60, 1440)]
+            ),
+            Some((TaskbarEdge::Left, 60))
+        );
+        assert_eq!(
+            autohide_taskbar_on_monitor(
+                primary,
+                TaskbarEdge::Right,
+                primary_right_bar,
+                &[Rect::new(1920, 0, 60, 1440)]
+            ),
+            Some((TaskbarEdge::Right, 48))
+        );
     }
 }
