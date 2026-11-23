@@ -79,7 +79,7 @@ final class MacContextObserver: MacContextProviding {
             batteryPercent: batteryPercent,
             wifiSSID: wifiSSID(),
             isWiFiAuthorized: isWiFiAuthorized,
-            isFocusActive: focusActive(),
+            isFocusActive: Self.focusActive(),
             isUserPresent: Self.isUserPresent(),
             meetings: calendarMeetings(now: now)
         )
@@ -265,7 +265,7 @@ final class MacContextObserver: MacContextProviding {
 
     // MARK: - Focus (Intents)
 
-    private func focusActive() -> Bool? {
+    static func focusActive() -> Bool? {
         let center = INFocusStatusCenter.default
         guard center.authorizationStatus == .authorized else { return nil }
         return center.focusStatus.isFocused
