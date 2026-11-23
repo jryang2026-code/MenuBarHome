@@ -78,7 +78,7 @@ struct UnsupportedDevicesQuietRowTests {
         #expect(scanner.lastScannedAt != nil)
         #expect(scanner.cachedUnsupportedCount(for: store) == 0)
 
-        // 3. Cached scan with 3 devices becomes hidden when context changes.
+        // 3. Cached scan with 3 devices becomes hidden when URL or HA credential changes.
         scanner.seedCachedScanForTesting(
             devices: [
                 UnsupportedDevice(id: "u1", name: "设备1", model: "m1", reason: .unsupportedEntities),
@@ -88,6 +88,8 @@ struct UnsupportedDevicesQuietRowTests {
             store: store
         )
         #expect(scanner.cachedUnsupportedCount(for: store) == 3)
+        store.bumpHACredentialGenerationForTesting()
+        #expect(scanner.cachedUnsupportedCount(for: store) == 0)
         store.serverURLString = "https://other-ha.example.local:8123"
         #expect(scanner.cachedUnsupportedCount(for: store) == 0)
         #expect(await recorder.callCount == 1)

@@ -1214,6 +1214,10 @@ public final class HomeStore {
     public internal(set) var capabilityResolutionMode: CapabilityInstallResolutionMode = .freshInstall
     public internal(set) var identityMigrationDiagnostic: String?
     public internal(set) var capabilityGeneration: Int = 0
+    public internal(set) var haCredentialGeneration: Int = 0
+    #if DEBUG
+    public func bumpHACredentialGenerationForTesting() { haCredentialGeneration &+= 1 }
+    #endif
     public internal(set) var capabilityMergeConflictCount: Int = 0
     public internal(set) var lastCapabilityMergeDiagnostic: String?
     public internal(set) var isVerifyingHAOnboarding: Bool = false

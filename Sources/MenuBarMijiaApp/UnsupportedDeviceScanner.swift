@@ -45,6 +45,7 @@ final class UnsupportedDeviceScanner {
         let hasHASource: Bool
         let isHAConnectionEnabled: Bool
         let normalizedServerURL: String
+        let haCredentialGeneration: Int
         let miAccountIds: [String]
 
         @MainActor
@@ -53,6 +54,7 @@ final class UnsupportedDeviceScanner {
             self.hasHASource = store.hasEnabledHASource
             self.isHAConnectionEnabled = store.isHAConnectionEnabled
             self.normalizedServerURL = HAWebSocketProvider.normalizeBaseURL(store.serverURLString)
+            self.haCredentialGeneration = store.haCredentialGeneration
             self.miAccountIds = store.enabledMiAccounts.map(\.id)
         }
     }

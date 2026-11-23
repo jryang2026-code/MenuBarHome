@@ -421,6 +421,8 @@ export function getCachedUnsupportedDeviceCountOnHost(host: ConnectionsAndDiagHo
     dualSourceEnabled: isDualSourceEnabled(host),
     miAccounts,
     haBaseURL: host.settings.haBaseURL,
+    haToken: host.settings.haToken,
+    haDisabled: !isHostHaEnabled(host),
   });
 }
 

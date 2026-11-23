@@ -197,11 +197,19 @@ describe("Unsupported devices quiet row (#15)", () => {
     assert.equal(anchorEl.getAttribute("data-settings-highlighted"), "scanUnsupportedDevices");
     assert.equal(anchorEl.closest("details")?.open, true);
 
-    // Switching back to panel and changing HA URL hides the stale cached count without scanning.
+    // Changing only the HA token while keeping the same URL invalidates the cached count without scanning.
     app.activeSheet = "none";
+    app.settings.haToken = "token-secret-replaced";
+    assert.equal(getCachedUnsupportedDeviceCountOnHost(app), 0);
+    assert.equal(patchCloudPresentation(app), false, "patchCloudPresentation falls back when token changes");
+    app.render();
+    assert.equal(document.querySelector("[data-unsupported-devices-row]"), null);
+    assert.equal(haCalls, 2);
+
+    // Restoring token still shows cached count until URL changes (and URL change hides it too).
+    app.settings.haToken = "token-secret-1234";
     app.settings.haBaseURL = "https://other-ha.example.local:8123";
     assert.equal(getCachedUnsupportedDeviceCountOnHost(app), 0);
-    assert.equal(patchCloudPresentation(app), false, "patchCloudPresentation falls back when cached count drops to 0");
     app.render();
     assert.equal(document.querySelector("[data-unsupported-devices-row]"), null);
     assert.equal(haCalls, 2);
