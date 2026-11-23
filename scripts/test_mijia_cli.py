@@ -299,15 +299,15 @@ class MijiaCliTests(unittest.TestCase):
         self.assertEqual(first["icon"], {"type": "fileicon", "path": str(icon)})
         self.assertTrue(first["uid"].endswith("dev_living_light"))
 
-        power_url = urlparse(first["arg"])
-        self.assertEqual(power_url.scheme, "menumijia")
-        self.assertEqual(power_url.netloc, "power")
-        power_query = parse_qs(power_url.query)
-        self.assertEqual(power_query["device"], ["dev_living_light"])
-        # 当前是开着的，回车送去的是明确的关闭状态。
-        self.assertEqual(power_query["on"], ["false"])
-        self.assertEqual(power_query["token"], [TOKEN])
-        self.assertEqual(len(power_query["id"][0]), 32)
+        toggle_url = urlparse(first["arg"])
+        self.assertEqual(toggle_url.scheme, "menumijia")
+        # 回车是「翻转」，不带目标状态：由应用在执行时解析当前状态，快照过期也不会翻反。
+        self.assertEqual(toggle_url.netloc, "toggle")
+        toggle_query = parse_qs(toggle_url.query)
+        self.assertEqual(toggle_query["device"], ["dev_living_light"])
+        self.assertNotIn("on", toggle_query)
+        self.assertEqual(toggle_query["token"], [TOKEN])
+        self.assertEqual(len(toggle_query["id"][0]), 32)
 
         focus_url = urlparse(first["mods"]["cmd"]["arg"])
         self.assertEqual(focus_url.netloc, "focus")
@@ -349,10 +349,12 @@ class MijiaCliTests(unittest.TestCase):
         first = device_lines[0]
         self.assertTrue(first.startswith("客厅吸顶灯 已开 · 80% ★ | "))
         self.assertIn("sfimage=lightbulb", first)
-        href = parse_qs(first.split("href=", 1)[1].split(" ", 1)[0].split("?", 1)[1])
-        self.assertEqual(href["device"], ["dev_living_light"])
-        self.assertEqual(href["on"], ["false"])
-        self.assertEqual(href["token"], [TOKEN])
+        href = first.split("href=", 1)[1].split(" ", 1)[0]
+        self.assertTrue(href.startswith("menumijia://toggle?"))
+        href_query = parse_qs(href.split("?", 1)[1])
+        self.assertEqual(href_query["device"], ["dev_living_light"])
+        self.assertNotIn("on", href_query)
+        self.assertEqual(href_query["token"], [TOKEN])
         # 离线设备变灰，且没有主开关时只做定位。
         offline = device_lines[2]
         self.assertTrue(offline.startswith("阳台灯 离线 | "))
@@ -370,7 +372,7 @@ class MijiaCliTests(unittest.TestCase):
         self.assertNotIn("|", title)
         self.assertFalse(title.startswith("-"))
         self.assertIn("客厅·吸顶灯", title)
-        self.assertTrue(params.startswith("href=menumijia://power?"))
+        self.assertTrue(params.startswith("href=menumijia://toggle?"))
 
     def test_list_formats_require_the_bridge_token(self) -> None:
         snapshot = make_snapshot()

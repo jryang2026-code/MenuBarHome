@@ -645,16 +645,15 @@ def _device_state_text(device: dict) -> str:
 
 
 def _device_link(device: dict, token: str) -> str:
-    """The action a click runs: flip the primary switch, or reveal devices that have no switch."""
+    """The action a click runs: toggle the primary switch, or reveal devices that have no switch.
+
+    A click means "flip it", so the link carries no target state: the app resolves the current state
+    when it runs the command, and a snapshot a few seconds old can neither no-op nor invert the flip.
+    """
     device_id = str(device.get("id") or "")
     if not device.get("isPrimaryToggleable"):
         return build_url("focus", [("device", device_id)], token, uuid.uuid4().hex)
-    return build_url(
-        "power",
-        [("device", device_id), ("on", "false" if device.get("isActiveOn") else "true")],
-        token,
-        uuid.uuid4().hex,
-    )
+    return build_url("toggle", [("device", device_id)], token, uuid.uuid4().hex)
 
 
 def _alfred_item(device: dict, token: str, icon: dict | None) -> dict:
