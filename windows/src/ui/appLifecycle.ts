@@ -25,7 +25,8 @@ import {
 import { applyFreshInstallFeatureSwitches, isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
-import { CLOUD_REFRESH_HIDDEN_MS, cloudRefreshDue } from "../core/models.js";
+import { cloudRefreshDue, cloudRefreshIntervalMs } from "../core/pollingPolicy.js";
+import { notePanelInteraction, pollingDecayInputs } from "./pollingSchedule.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -835,6 +836,11 @@ export interface ResumeRecoveryHost {
   readonly isSyncingCloud: boolean;
   readonly isPollingQR: boolean;
   readonly lastCloudRefreshAt: number | null;
+  /**
+   * Epoch ms of the last panel open/close. The idle decay reads it (`pollingSchedule.notePanelInteraction`);
+   * a host that does not track it keeps the flat closed-panel interval.
+   */
+  lastPanelInteractionAtMs?: number | null;
   readonly cloudValuesStale: boolean;
   readonly haConnectionError: string | null;
   readonly root?: OptimisticLockRootLike;
@@ -1047,7 +1053,12 @@ export class ResumeRecoveryController {
       }
     } else {
       const panelVisible = docVisible && (winFocused || triggers.has("visibility") || this.host.isPanelVisible());
-      const due = cloudRefreshDue(now, this.host.lastCloudRefreshAt, panelVisible);
+      const due = cloudRefreshDue(
+        now,
+        this.host.lastCloudRefreshAt,
+        panelVisible,
+        pollingDecayInputs(this.host),
+      );
       if (!due && !isStaleOrErrored) {
         return;
       }
@@ -1207,6 +1218,9 @@ export function bindLifecycleRecovery(
     } else {
       notifyPanelWakeLifecycle(host);
     }
+    // Showing or hiding the panel is the user touching it: the idle clock restarts here, so the
+    // closed-panel stretch never covers a moment the user is here (`setPanelVisible` on macOS).
+    notePanelInteraction(host);
     state.syncTimerSchedule?.();
     controller.trigger("visibility");
   };
@@ -1215,6 +1229,7 @@ export function bindLifecycleRecovery(
       disposeAppLifecycle(host);
       return;
     }
+    notePanelInteraction(host);
     state.syncTimerSchedule?.();
     controller.trigger("focus");
   };
@@ -1313,6 +1328,8 @@ export function bindGlobalKeys(
       disposeAppLifecycle(host);
       return;
     }
+    // The tray popover hides when it loses focus, so blur is the panel closing (`setPanelVisible(false)`).
+    notePanelInteraction(host);
     finishPanelComposition(host);
     state.syncTimerSchedule?.();
   };
@@ -1467,16 +1484,19 @@ function nextHiddenWakeTargetMs(
     targetMs = nowMs + Math.max(1, schedDelayMs);
   }
   if (canScheduleBackgroundCloudRefresh(host)) {
+    // The wake target follows the same interval the due check uses, so an idle closed panel is woken
+    // at 120 s / 300 s instead of every 60 s once nothing on screen still depends on the poll.
+    const pollIntervalMs = cloudRefreshIntervalMs(nowMs, host.isPanelVisible(), pollingDecayInputs(host));
     const anchorMs =
-      host.lastCloudRefreshAt !== null && nowMs - host.lastCloudRefreshAt < CLOUD_REFRESH_HIDDEN_MS
+      host.lastCloudRefreshAt !== null && nowMs - host.lastCloudRefreshAt < pollIntervalMs
         ? host.lastCloudRefreshAt
-        : state.lastTimerTickAtMs !== null && nowMs - state.lastTimerTickAtMs < CLOUD_REFRESH_HIDDEN_MS
+        : state.lastTimerTickAtMs !== null && nowMs - state.lastTimerTickAtMs < pollIntervalMs
           ? state.lastTimerTickAtMs
           : host.isSyncingCloud
             ? nowMs
             : null;
     const pollTargetMs =
-      anchorMs !== null ? anchorMs + CLOUD_REFRESH_HIDDEN_MS : nowMs + intervalMs;
+      anchorMs !== null ? anchorMs + pollIntervalMs : nowMs + intervalMs;
     if (targetMs === null || pollTargetMs < targetMs) {
       targetMs = pollTargetMs;
     }
@@ -1562,7 +1582,7 @@ export function startTimerLoop(
 
     if (
       canRefreshDevicesInBackground(host) &&
-      cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible())
+      cloudRefreshDue(now, host.lastCloudRefreshAt, host.isPanelVisible(), pollingDecayInputs(host))
     ) {
       void Promise.resolve(host.refreshDevices(true)).finally(() => {
         syncTimerSchedule();

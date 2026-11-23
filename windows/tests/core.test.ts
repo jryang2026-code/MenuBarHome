@@ -10,6 +10,11 @@ import {
   unmarkSwitchAsLight,
 } from "../src/core/switchLightMarks.js";
 import { setLanguage } from "../src/core/i18n.js";
+import {
+  CLOUD_REFRESH_HIDDEN_MS,
+  CLOUD_REFRESH_VISIBLE_MS,
+  cloudRefreshDue,
+} from "../src/core/pollingPolicy.js";
 import { buildRaycastSnapshot } from "../src/core/raycastSnapshot.js";
 import {
   normalizeCameraStreamQuality,
@@ -88,9 +93,6 @@ import {
   joinsAllOff,
   joinsAllOffByDefault,
   partitionDueTimers,
-  cloudRefreshDue,
-  CLOUD_REFRESH_HIDDEN_MS,
-  CLOUD_REFRESH_VISIBLE_MS,
   type DeviceCommand,
   type DeviceIntent,
   type ScheduledCommand,

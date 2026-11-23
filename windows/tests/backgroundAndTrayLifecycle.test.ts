@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { afterEach, describe, it } from "node:test";
+import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Window } from "happy-dom";
 
@@ -18,13 +18,17 @@ import {
   disposeAppLifecycle,
   startTimerLoop,
   syncAutomationLifecycle,
+  syncTimerLoopSchedule,
   type LifecycleEventTarget,
   type LifecycleScheduler,
   type ResumeRecoveryHost,
 } from "../src/ui/appLifecycle.js";
 import { saveSafetyGuardPrefs } from "../src/ui/automationSettingsView.js";
+import { demoDevices } from "../src/ui/demo.js";
+import { formatDynamicTraySummary } from "../src/core/raycastSnapshot.js";
+import { SENSOR_ALERT_KINDS, saveSensorAlertPolicy, type SensorAlertKind } from "../src/core/safetyAndHealth.js";
 import { AutomationRuleStore, createAutomationRule } from "../src/core/automationEngine.js";
-import { CLOUD_REFRESH_HIDDEN_MS, CLOUD_REFRESH_VISIBLE_MS } from "../src/core/models.js";
+import { CLOUD_REFRESH_HIDDEN_MS, CLOUD_REFRESH_VISIBLE_MS } from "../src/core/pollingPolicy.js";
 import { setLanguage } from "../src/core/i18n.js";
 
 const TEST_DIR = dirname(fileURLToPath(import.meta.url));
@@ -1195,3 +1199,216 @@ describe("MenuMijiaWindowsApp integrated tray/resume lifecycle", () => {
   });
 });
 
+
+describe("idle polling decay in the hidden wake (#407, ADR-0023 §4)", () => {
+  let dom: Window;
+  let realDateNow: () => number;
+
+  beforeEach(() => {
+    dom = mountTestWindow({ stubInterval: true });
+    installCssEscape();
+    setLanguage("zh-Hans");
+    localStorage.clear();
+    realDateNow = Date.now;
+  });
+
+  afterEach(async () => {
+    Date.now = realDateNow;
+    await closeTestWindow(dom);
+  });
+
+  /** 安全与提醒 and 传感器告警 both fully off: the only configuration that may stretch the closed poll. */
+  function disableEverySafetyAlert(): void {
+    saveSensorAlertPolicy(
+      {
+        enabled: Object.fromEntries(SENSOR_ALERT_KINDS.map((kind) => [kind, false])) as Record<SensorAlertKind, boolean>,
+        onlyWhenAway: false,
+      },
+      localStorage,
+    );
+    saveSafetyGuardPrefs(
+      {
+        enableSafetyAlerts: false,
+        longRunningPlug: false,
+        longRunningClimate: false,
+        favoriteOffline: false,
+        lowBattery: false,
+      },
+      localStorage,
+    );
+  }
+
+  function hiddenDecayHost(scheduler: FakeLifecycleScheduler, touchedAtMs: number): MockLifecycleHost {
+    return Object.assign(
+      createMockHost({
+        lastCloudRefreshAt: 10_000,
+        panelVisible: false,
+        lastPanelInteractionAtMs: touchedAtMs,
+      }),
+      {
+        devices: [],
+        scenes: [],
+        scheduledCommands: [] as Array<{ id: string; command: string; reply: string; delaySeconds: number; fireTimestampMs: number; intents: [] }>,
+        missedScheduledCommands: [],
+        scheduledCommandStore: { hasFeaturePause: () => false, hasWaitingTimers: () => false, takeDue: () => [] },
+      },
+    );
+  }
+
+  it("keeps the 60 s wake while an enabled sensor alert depends on the poll, however long the panel is closed", () => {
+    disableEverySafetyAlert();
+    saveSensorAlertPolicy({ enabled: { smoke: true }, onlyWhenAway: false }, localStorage);
+
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    const host = hiddenDecayHost(scheduler, scheduler.now() - 5 * 60 * 60_000);
+    startTimerLoop(host as unknown as MenuMijiaWindowsApp, { scheduler, intervalMs: 1000 });
+
+    scheduler.advanceBy(CLOUD_REFRESH_HIDDEN_MS - 1);
+    assert.equal(host.refreshCalls.length, 0, "no early poll");
+
+    scheduler.advanceBy(1);
+    assert.deepEqual(
+      host.refreshCalls,
+      [true],
+      "5 h untouched still polls every 60 s because a smoke alert reads this poll",
+    );
+  });
+
+  it("stretches the hidden wake to the idle step only once every alert is off", () => {
+    disableEverySafetyAlert();
+
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    const host = hiddenDecayHost(scheduler, scheduler.now() - 2.5 * 60 * 60_000);
+    startTimerLoop(host as unknown as MenuMijiaWindowsApp, { scheduler, intervalMs: 1000 });
+
+    scheduler.advanceBy(CLOUD_REFRESH_HIDDEN_MS * 4);
+    assert.equal(host.refreshCalls.length, 0, "2.5 h of no interaction wakes at 300 s, not every 60 s");
+
+    scheduler.advanceBy(300_000 - CLOUD_REFRESH_HIDDEN_MS * 4 - 1);
+    assert.equal(host.refreshCalls.length, 0, "still inside the long-idle step");
+
+    scheduler.advanceBy(1);
+    assert.deepEqual(host.refreshCalls, [true], "the long-idle step polls once it comes due");
+  });
+
+  it("refreshes at once when the panel opens after a stretched gap, so the first reading is fresh", async () => {
+    disableEverySafetyAlert();
+
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    const win = new FakeEventTarget();
+    const doc = new FakeEventTarget();
+    const host = Object.assign(hiddenDecayHost(scheduler, scheduler.now() - 3 * 60 * 60_000), {
+      lastCloudRefreshAt: 10_000,
+    });
+    (host as unknown as { panelVisible: boolean }).panelVisible = false;
+
+    startTimerLoop(host as unknown as MenuMijiaWindowsApp, { scheduler, intervalMs: 1000 });
+    bindLifecycleRecovery(host, {
+      window: win,
+      document: doc,
+      scheduler,
+      isDocumentVisible: () => host.panelVisible,
+      isWindowFocused: () => host.panelVisible,
+    });
+    // Deliberately keep the three-hour-old idle clock: reopening the panel is exactly what must not
+    // wait for the stretched interval.
+    host.lastPanelInteractionAtMs = scheduler.now() - 3 * 60 * 60_000;
+    host.lastCloudRefreshAt = scheduler.now() - 100_000;
+    host.panelVisible = true;
+    syncTimerLoopSchedule(host);
+
+    doc.dispatch("visibilitychange");
+    scheduler.advanceBy(RESUME_BURST_DEBOUNCE_MS);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.deepEqual(host.refreshCalls, [true], "opening the panel polls despite the stretched hidden cadence");
+  });
+
+  it("keeps the tray reading refreshed at the stretched wake", async () => {
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    Date.now = () => scheduler.now();
+    let pollCount = 0;
+    const traySummaries: Array<string | null> = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
+          if (cmd === "set_tray_tooltip") {
+            traySummaries.push((args?.summary as string | null | undefined) ?? null);
+          }
+          return null;
+        },
+      },
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ connectionMode: "demo", hasCompletedOnboarding: true, interfaceLanguage: "zh-Hans", autoCheckUpdates: false }),
+    );
+    const app = new MenuMijiaWindowsApp(document.querySelector("#app")!);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    assert.ok(traySummaries.length > 0, "the tray reading is published on the first render");
+    const beforeWakeSummary = traySummaries[traySummaries.length - 1];
+
+    // Only the poll cadence needs a real source; the demo devices stay on screen so the tray summary
+    // has something to show, and the answer arrives through the same render path production uses.
+    app.settings.connectionMode = "xiaomiCloud";
+    app.settings.miSession = {
+      userId: "10001",
+      cUserId: "",
+      serviceToken: "tok",
+      ssecurity: "sec",
+      passToken: "",
+      region: "cn",
+    } as unknown as typeof app.settings.miSession;
+    app.lastCloudRefreshAt = 10_000;
+    disableEverySafetyAlert();
+    setWindowFocused(false);
+
+    app.refreshDevices = async () => {
+      pollCount += 1;
+      app.lastCloudRefreshAt = scheduler.now();
+      app.devices = demoDevices().map((device) =>
+        device.kind.kind === "light" ? { ...device, kind: { ...device.kind, isOn: false } } : device,
+      );
+      app.render();
+    };
+    app.lastPanelInteractionAtMs = scheduler.now() - 3 * 60 * 60_000;
+    startTimerLoop(app, { scheduler, intervalMs: 1000 });
+
+    scheduler.advanceBy(299_999);
+    assert.equal(pollCount, 0, "3 h idle: no poll before the 300 s step");
+
+    scheduler.advanceBy(1);
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+    assert.equal(pollCount, 1, "the stretched wake still lands the poll");
+    assert.equal(
+      traySummaries[traySummaries.length - 1],
+      formatDynamicTraySummary(app.computedEnvironmentReadings, app.devices),
+      "the tray reading follows the newest snapshot after the stretched wake",
+    );
+    assert.notEqual(traySummaries[traySummaries.length - 1], beforeWakeSummary, "the reading actually moved");
+  });
+
+  it("keeps the locked-workstation poll pause while the idle clock is five hours old", () => {
+    disableEverySafetyAlert();
+
+    const scheduler = new FakeLifecycleScheduler(10_000);
+    const host = hiddenDecayHost(scheduler, scheduler.now() - 5 * 60 * 60_000);
+    let locked = true;
+    const polls: boolean[] = [];
+    host.refreshDevices = async () => {
+      // `refreshDevices` refuses the round itself while the workstation is locked (transport gate), so
+      // the stretched wake still has to fire: a stretch must never turn the lock pause into a silent stop.
+      if (!locked) polls.push(true);
+    };
+    startTimerLoop(host as unknown as MenuMijiaWindowsApp, { scheduler, intervalMs: 1000 });
+
+    scheduler.advanceBy(300_000);
+    assert.deepEqual(polls, [], "locked: the stretched wake fired and the round was refused");
+
+    locked = false;
+    scheduler.advanceBy(300_000);
+    assert.deepEqual(polls, [true], "unlocked: the next stretched wake polls");
+  });
+});
