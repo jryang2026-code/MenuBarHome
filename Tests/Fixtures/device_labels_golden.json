@@ -1,0 +1,1184 @@
+{
+  "version": 1,
+  "defaultSymbol": "square.grid.2x2",
+  "symbols": {
+    "fish-tank": "fish.fill",
+    "pet-feeder": "pawprint.fill",
+    "router": "wifi",
+    "gateway": "wifi",
+    "repeater": "wifi",
+    "lock": "lock.fill",
+    "scale": "scalemass.fill",
+    "body-fat-scale": "scalemass.fill",
+    "bracelet": "applewatch",
+    "watch": "applewatch",
+    "toothbrush": "mouth.fill",
+    "treadmill": "figure.run",
+    "massage": "chair.lounge.fill",
+    "bed": "bed.double.fill",
+    "mattress": "bed.double.fill",
+    "pillow": "bed.double.fill",
+    "sofa": "chair.lounge.fill",
+    "mirror": "rectangle.portrait.fill",
+    "shower": "drop.fill",
+    "toilet": "square.grid.2x2",
+    "towel-rack": "square.grid.2x2",
+    "car-seat": "car.fill",
+    "tracker": "location.fill",
+    "projector": "projector.fill",
+    "television": "tv",
+    "stb": "tv",
+    "stove": "square.grid.2x2",
+    "boiler": "water.waves",
+    "clock": "clock.fill",
+    "coffee-machine": "cup.and.saucer.fill",
+    "chair": "chair.lounge.fill",
+    "bike": "bicycle"
+  },
+  "macos": {
+    "facetTitles": {
+      "on": {
+        "zh-Hans": "开关",
+        "zh-Hant": "开关",
+        "en": "On"
+      },
+      "mode": {
+        "zh-Hans": "模式",
+        "zh-Hant": "模式",
+        "en": "Mode"
+      },
+      "fan-level": {
+        "zh-Hans": "风速",
+        "zh-Hant": "风速",
+        "en": "Fan level"
+      },
+      "fan-speed": {
+        "zh-Hans": "风速",
+        "zh-Hant": "风速",
+        "en": "Fan speed"
+      },
+      "brightness": {
+        "zh-Hans": "亮度",
+        "zh-Hant": "亮度",
+        "en": "Brightness"
+      },
+      "color-temperature": {
+        "zh-Hans": "色温",
+        "zh-Hant": "色温",
+        "en": "Color temperature"
+      },
+      "target-temperature": {
+        "zh-Hans": "目标温度",
+        "zh-Hant": "目标温度",
+        "en": "Target temperature"
+      },
+      "target-temp": {
+        "zh-Hans": "目标温度",
+        "zh-Hant": "目标温度",
+        "en": "Target temp"
+      },
+      "temperature": {
+        "zh-Hans": "温度",
+        "zh-Hant": "温度",
+        "en": "Temperature"
+      },
+      "relative-humidity": {
+        "zh-Hans": "湿度",
+        "zh-Hant": "湿度",
+        "en": "Relative humidity"
+      },
+      "humidity": {
+        "zh-Hans": "湿度",
+        "zh-Hant": "湿度",
+        "en": "Humidity"
+      },
+      "target-humidity": {
+        "zh-Hans": "目标湿度",
+        "zh-Hant": "目标湿度",
+        "en": "Target humidity"
+      },
+      "current-humidity": {
+        "zh-Hans": "当前湿度",
+        "zh-Hant": "当前湿度",
+        "en": "Current humidity"
+      },
+      "pm2.5-density": {
+        "zh-Hans": "PM2.5",
+        "zh-Hant": "PM2.5",
+        "en": "Pm2.5 density"
+      },
+      "battery-level": {
+        "zh-Hans": "电量",
+        "zh-Hant": "电量",
+        "en": "Battery level"
+      },
+      "fault": {
+        "zh-Hans": "故障",
+        "zh-Hant": "故障",
+        "en": "Fault"
+      },
+      "status": {
+        "zh-Hans": "状态",
+        "zh-Hant": "状态",
+        "en": "Status"
+      },
+      "volume": {
+        "zh-Hans": "音量",
+        "zh-Hant": "音量",
+        "en": "Volume"
+      },
+      "mute": {
+        "zh-Hans": "静音",
+        "zh-Hant": "静音",
+        "en": "Mute"
+      },
+      "motion-detection": {
+        "zh-Hans": "移动侦测",
+        "zh-Hant": "移动侦测",
+        "en": "Motion detection"
+      },
+      "detection-sensitivity": {
+        "zh-Hans": "侦测灵敏度",
+        "zh-Hant": "侦测灵敏度",
+        "en": "Detection sensitivity"
+      },
+      "alarm-interval": {
+        "zh-Hans": "报警间隔",
+        "zh-Hant": "报警间隔",
+        "en": "Alarm interval"
+      },
+      "night-shot": {
+        "zh-Hans": "夜视",
+        "zh-Hant": "夜视",
+        "en": "Night shot"
+      },
+      "current-position": {
+        "zh-Hans": "当前位置",
+        "zh-Hant": "当前位置",
+        "en": "Current position"
+      },
+      "target-position": {
+        "zh-Hans": "目标位置",
+        "zh-Hant": "目标位置",
+        "en": "Target position"
+      },
+      "motor-control": {
+        "zh-Hans": "电机控制",
+        "zh-Hant": "电机控制",
+        "en": "Motor control"
+      },
+      "motor-reverse": {
+        "zh-Hans": "电机方向",
+        "zh-Hant": "电机方向",
+        "en": "Motor reverse"
+      },
+      "physical-controls-locked": {
+        "zh-Hans": "按键锁",
+        "zh-Hant": "按键锁",
+        "en": "Physical controls locked"
+      },
+      "indicator-light": {
+        "zh-Hans": "指示灯",
+        "zh-Hant": "指示灯",
+        "en": "Indicator light"
+      },
+      "default-power-on-state": {
+        "zh-Hans": "通电默认状态",
+        "zh-Hant": "通电默认状态",
+        "en": "Default power on state"
+      },
+      "soft-wind": {
+        "zh-Hans": "柔风",
+        "zh-Hant": "柔风",
+        "en": "Soft wind"
+      },
+      "horizontal-swing": {
+        "zh-Hans": "左右摆风",
+        "zh-Hant": "左右摆风",
+        "en": "Horizontal swing"
+      },
+      "vertical-swing": {
+        "zh-Hans": "上下摆风",
+        "zh-Hant": "上下摆风",
+        "en": "Vertical swing"
+      },
+      "heat-level": {
+        "zh-Hans": "加热档位",
+        "zh-Hant": "加热档位",
+        "en": "Heat level"
+      },
+      "storage-free-space": {
+        "zh-Hans": "剩余空间",
+        "zh-Hant": "剩余空间",
+        "en": "Storage free space"
+      },
+      "storage-total-space": {
+        "zh-Hans": "总空间",
+        "zh-Hant": "总空间",
+        "en": "Storage total space"
+      },
+      "storage-used-space": {
+        "zh-Hans": "已用空间",
+        "zh-Hant": "已用空间",
+        "en": "Storage used space"
+      },
+      "left-time": {
+        "zh-Hans": "剩余时间",
+        "zh-Hant": "剩余时间",
+        "en": "Left time"
+      },
+      "delay-off-time": {
+        "zh-Hans": "延时关闭",
+        "zh-Hant": "延时关闭",
+        "en": "Delay off time"
+      },
+      "work-mode": {
+        "zh-Hans": "工作模式",
+        "zh-Hant": "工作模式",
+        "en": "Work mode"
+      },
+      "privacy-mode": {
+        "zh-Hans": "隐私模式",
+        "zh-Hant": "隐私模式",
+        "en": "Privacy mode"
+      },
+      "water-pump": {
+        "zh-Hans": "水泵",
+        "zh-Hant": "水泵",
+        "en": "Water pump"
+      },
+      "pump-flux": {
+        "zh-Hans": "水泵档位",
+        "zh-Hant": "水泵档位",
+        "en": "Pump flux"
+      },
+      "water-pump-status": {
+        "zh-Hans": "水泵状态",
+        "zh-Hant": "水泵状态",
+        "en": "Water pump status"
+      },
+      "pump-alarm": {
+        "zh-Hans": "水泵告警",
+        "zh-Hant": "水泵告警",
+        "en": "Pump alarm"
+      },
+      "pump-fault-detection": {
+        "zh-Hans": "水泵故障检测",
+        "zh-Hant": "水泵故障检测",
+        "en": "Pump fault detection"
+      },
+      "pet-food-out": {
+        "zh-Hans": "投喂",
+        "zh-Hant": "投喂",
+        "en": "Pet food out"
+      },
+      "feeding-measure": {
+        "zh-Hans": "投喂份数",
+        "zh-Hant": "投喂份数",
+        "en": "Feeding measure"
+      },
+      "today-feeded-num": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Today feeded num"
+      },
+      "sum-fed-measure": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Sum fed measure"
+      },
+      "feeding-quantity": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Feeding quantity"
+      },
+      "eaten-food-measure": {
+        "zh-Hans": "已吃份数",
+        "zh-Hant": "已吃份数",
+        "en": "Eaten food measure"
+      },
+      "feeding-cycle": {
+        "zh-Hans": "投喂周期",
+        "zh-Hant": "投喂周期",
+        "en": "Feeding cycle"
+      },
+      "feeding-status": {
+        "zh-Hans": "投喂状态",
+        "zh-Hant": "投喂状态",
+        "en": "Feeding status"
+      },
+      "feeding-alarm": {
+        "zh-Hans": "投喂告警",
+        "zh-Hant": "投喂告警",
+        "en": "Feeding alarm"
+      },
+      "feeding-protection": {
+        "zh-Hans": "投喂保护",
+        "zh-Hant": "投喂保护",
+        "en": "Feeding protection"
+      },
+      "feeding-type": {
+        "zh-Hans": "投喂方式",
+        "zh-Hant": "投喂方式",
+        "en": "Feeding type"
+      },
+      "pet-food-left-level": {
+        "zh-Hans": "余粮",
+        "zh-Hant": "余粮",
+        "en": "Pet food left level"
+      },
+      "target-feeding-measure": {
+        "zh-Hans": "目标份数",
+        "zh-Hant": "目标份数",
+        "en": "Target feeding measure"
+      },
+      "food-heap-value": {
+        "zh-Hans": "粮仓余量",
+        "zh-Hant": "粮仓余量",
+        "en": "Food heap value"
+      },
+      "post-feed-pump-pause": {
+        "zh-Hans": "投喂后停泵",
+        "zh-Hant": "投喂后停泵",
+        "en": "Post feed pump pause"
+      },
+      "post-feed-pump-state": {
+        "zh-Hans": "投喂后水泵",
+        "zh-Hant": "投喂后水泵",
+        "en": "Post feed pump state"
+      },
+      "filter-life-level": {
+        "zh-Hans": "滤芯寿命",
+        "zh-Hant": "滤芯寿命",
+        "en": "Filter life level"
+      },
+      "filter-left-time": {
+        "zh-Hans": "滤芯剩余",
+        "zh-Hant": "滤芯剩余",
+        "en": "Filter left time"
+      },
+      "reset-filter-life": {
+        "zh-Hans": "重置滤芯",
+        "zh-Hant": "重置滤芯",
+        "en": "Reset filter life"
+      },
+      "filter-alarm": {
+        "zh-Hans": "滤芯告警",
+        "zh-Hant": "滤芯告警",
+        "en": "Filter alarm"
+      },
+      "water-alarm": {
+        "zh-Hans": "换水提醒",
+        "zh-Hant": "换水提醒",
+        "en": "Water alarm"
+      },
+      "flow-speed-level": {
+        "zh-Hans": "流速",
+        "zh-Hant": "流速",
+        "en": "Flow speed level"
+      },
+      "temp-warn-switch": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Temp warn switch"
+      },
+      "temp-warn-min": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Temp warn min"
+      },
+      "temp-warn-max": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Temp warn max"
+      },
+      "temperature-warn-on": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Temperature warn on"
+      },
+      "temperature-warn-min": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Temperature warn min"
+      },
+      "temperature-warn-max": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Temperature warn max"
+      },
+      "upper-temperature": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Upper temperature"
+      },
+      "lower-temperature": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Lower temperature"
+      },
+      "limit-alarm": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Limit alarm"
+      },
+      "desiccant-left-level": {
+        "zh-Hans": "干燥剂余量",
+        "zh-Hant": "干燥剂余量",
+        "en": "Desiccant left level"
+      },
+      "desiccant-left-time": {
+        "zh-Hans": "干燥剂剩余",
+        "zh-Hant": "干燥剂剩余",
+        "en": "Desiccant left time"
+      },
+      "reset-desiccant-life": {
+        "zh-Hans": "重置干燥剂",
+        "zh-Hant": "重置干燥剂",
+        "en": "Reset desiccant life"
+      },
+      "no-disturb": {
+        "zh-Hans": "勿扰",
+        "zh-Hant": "勿扰",
+        "en": "No disturb"
+      },
+      "alarm": {
+        "zh-Hans": "告警",
+        "zh-Hant": "告警",
+        "en": "Alarm"
+      },
+      "working-time": {
+        "zh-Hans": "运行时长",
+        "zh-Hant": "运行时长",
+        "en": "Working time"
+      }
+    },
+    "deviceTypes": {
+      "fish-tank": {
+        "zh-Hans": "鱼缸",
+        "zh-Hant": "鱼缸",
+        "en": "Fish tank"
+      },
+      "pet-feeder": {
+        "zh-Hans": "宠物喂食器",
+        "zh-Hant": "宠物喂食器",
+        "en": "Pet feeder"
+      },
+      "router": {
+        "zh-Hans": "路由器",
+        "zh-Hant": "路由器",
+        "en": "Router"
+      },
+      "gateway": {
+        "zh-Hans": "网关",
+        "zh-Hant": "网关",
+        "en": "Gateway"
+      },
+      "repeater": {
+        "zh-Hans": "信号放大器",
+        "zh-Hant": "信号放大器",
+        "en": "Repeater"
+      },
+      "lock": {
+        "zh-Hans": "门锁",
+        "zh-Hant": "门锁",
+        "en": "Lock"
+      },
+      "scale": {
+        "zh-Hans": "体重秤",
+        "zh-Hant": "体重秤",
+        "en": "Scale"
+      },
+      "body-fat-scale": {
+        "zh-Hans": "体脂秤",
+        "zh-Hant": "体脂秤",
+        "en": "Body fat scale"
+      },
+      "bracelet": {
+        "zh-Hans": "手环",
+        "zh-Hant": "手环",
+        "en": "Bracelet"
+      },
+      "watch": {
+        "zh-Hans": "手表",
+        "zh-Hant": "手表",
+        "en": "Watch"
+      },
+      "toothbrush": {
+        "zh-Hans": "牙刷",
+        "zh-Hant": "牙刷",
+        "en": "Toothbrush"
+      },
+      "treadmill": {
+        "zh-Hans": "跑步机",
+        "zh-Hant": "跑步机",
+        "en": "Treadmill"
+      },
+      "massage": {
+        "zh-Hans": "按摩设备",
+        "zh-Hant": "按摩设备",
+        "en": "Massage"
+      },
+      "bed": {
+        "zh-Hans": "床",
+        "zh-Hant": "床",
+        "en": "Bed"
+      },
+      "mattress": {
+        "zh-Hans": "床垫",
+        "zh-Hant": "床垫",
+        "en": "Mattress"
+      },
+      "pillow": {
+        "zh-Hans": "枕头",
+        "zh-Hant": "枕头",
+        "en": "Pillow"
+      },
+      "sofa": {
+        "zh-Hans": "沙发",
+        "zh-Hant": "沙发",
+        "en": "Sofa"
+      },
+      "mirror": {
+        "zh-Hans": "镜子",
+        "zh-Hant": "镜子",
+        "en": "Mirror"
+      },
+      "shower": {
+        "zh-Hans": "淋浴",
+        "zh-Hant": "淋浴",
+        "en": "Shower"
+      },
+      "toilet": {
+        "zh-Hans": "马桶",
+        "zh-Hant": "马桶",
+        "en": "Toilet"
+      },
+      "towel-rack": {
+        "zh-Hans": "毛巾架",
+        "zh-Hant": "毛巾架",
+        "en": "Towel rack"
+      },
+      "car-seat": {
+        "zh-Hans": "儿童安全座椅",
+        "zh-Hant": "儿童安全座椅",
+        "en": "Car seat"
+      },
+      "tracker": {
+        "zh-Hans": "定位器",
+        "zh-Hant": "定位器",
+        "en": "Tracker"
+      },
+      "projector": {
+        "zh-Hans": "投影仪",
+        "zh-Hant": "投影仪",
+        "en": "Projector"
+      },
+      "television": {
+        "zh-Hans": "电视",
+        "zh-Hant": "电视",
+        "en": "Television"
+      },
+      "stb": {
+        "zh-Hans": "机顶盒",
+        "zh-Hant": "机顶盒",
+        "en": "Stb"
+      },
+      "stove": {
+        "zh-Hans": "燃气灶",
+        "zh-Hant": "燃气灶",
+        "en": "Stove"
+      },
+      "boiler": {
+        "zh-Hans": "壁挂炉",
+        "zh-Hant": "壁挂炉",
+        "en": "Boiler"
+      },
+      "clock": {
+        "zh-Hans": "时钟",
+        "zh-Hant": "时钟",
+        "en": "Clock"
+      },
+      "coffee-machine": {
+        "zh-Hans": "咖啡机",
+        "zh-Hant": "咖啡机",
+        "en": "Coffee machine"
+      },
+      "chair": null,
+      "bike": null
+    }
+  },
+  "windows": {
+    "facetTitles": {
+      "on": {
+        "zh-Hans": "开关",
+        "zh-Hant": "開關",
+        "en": "Power"
+      },
+      "mode": {
+        "zh-Hans": "模式",
+        "zh-Hant": "模式",
+        "en": "Mode"
+      },
+      "fan-level": {
+        "zh-Hans": "风速",
+        "zh-Hant": "風速",
+        "en": "Fan speed"
+      },
+      "fan-speed": {
+        "zh-Hans": "风速",
+        "zh-Hant": "風速",
+        "en": "Fan speed"
+      },
+      "brightness": {
+        "zh-Hans": "亮度",
+        "zh-Hant": "亮度",
+        "en": "Brightness"
+      },
+      "color-temperature": {
+        "zh-Hans": "色温",
+        "zh-Hant": "色溫",
+        "en": "Color temp"
+      },
+      "target-temperature": {
+        "zh-Hans": "目标温度",
+        "zh-Hant": "目標溫度",
+        "en": "Target temperature"
+      },
+      "target-temp": {
+        "zh-Hans": "目标温度",
+        "zh-Hant": "目標溫度",
+        "en": "Target temperature"
+      },
+      "temperature": {
+        "zh-Hans": "温度",
+        "zh-Hant": "溫度",
+        "en": "Temperature"
+      },
+      "relative-humidity": {
+        "zh-Hans": "湿度",
+        "zh-Hant": "溼度",
+        "en": "Humidity"
+      },
+      "humidity": {
+        "zh-Hans": "湿度",
+        "zh-Hant": "溼度",
+        "en": "Humidity"
+      },
+      "target-humidity": {
+        "zh-Hans": "目标湿度",
+        "zh-Hant": "目標溼度",
+        "en": "Target humidity"
+      },
+      "current-humidity": {
+        "zh-Hans": "当前湿度",
+        "zh-Hant": "當前溼度",
+        "en": "Current humidity"
+      },
+      "pm2.5-density": {
+        "zh-Hans": "PM2.5",
+        "zh-Hant": "PM2.5",
+        "en": "PM2.5"
+      },
+      "battery-level": {
+        "zh-Hans": "电量",
+        "zh-Hant": "電量",
+        "en": "Battery"
+      },
+      "fault": {
+        "zh-Hans": "故障",
+        "zh-Hant": "故障",
+        "en": "Fault"
+      },
+      "status": {
+        "zh-Hans": "状态",
+        "zh-Hant": "狀態",
+        "en": "Status"
+      },
+      "volume": {
+        "zh-Hans": "音量",
+        "zh-Hant": "音量",
+        "en": "Volume"
+      },
+      "mute": {
+        "zh-Hans": "静音",
+        "zh-Hant": "靜音",
+        "en": "Silent"
+      },
+      "motion-detection": {
+        "zh-Hans": "移动侦测",
+        "zh-Hant": "移動偵測",
+        "en": "Motion detection"
+      },
+      "detection-sensitivity": {
+        "zh-Hans": "侦测灵敏度",
+        "zh-Hant": "偵測靈敏度",
+        "en": "Detection sensitivity"
+      },
+      "alarm-interval": {
+        "zh-Hans": "报警间隔",
+        "zh-Hant": "報警間隔",
+        "en": "Alarm interval"
+      },
+      "night-shot": {
+        "zh-Hans": "夜视",
+        "zh-Hant": "夜視",
+        "en": "Night vision"
+      },
+      "current-position": {
+        "zh-Hans": "当前位置",
+        "zh-Hant": "當前位置",
+        "en": "Position"
+      },
+      "target-position": {
+        "zh-Hans": "目标位置",
+        "zh-Hant": "目標位置",
+        "en": "Target position"
+      },
+      "motor-control": {
+        "zh-Hans": "电机控制",
+        "zh-Hant": "電機控制",
+        "en": "Motor control"
+      },
+      "motor-reverse": {
+        "zh-Hans": "电机方向",
+        "zh-Hant": "電機方向",
+        "en": "Motor direction"
+      },
+      "physical-controls-locked": {
+        "zh-Hans": "按键锁",
+        "zh-Hant": "按鍵鎖",
+        "en": "Button lock"
+      },
+      "indicator-light": {
+        "zh-Hans": "指示灯",
+        "zh-Hant": "指示燈",
+        "en": "Indicator light"
+      },
+      "default-power-on-state": {
+        "zh-Hans": "通电默认状态",
+        "zh-Hant": "通電預設狀態",
+        "en": "Default power-on state"
+      },
+      "soft-wind": {
+        "zh-Hans": "柔风",
+        "zh-Hant": "柔風",
+        "en": "Soft wind"
+      },
+      "horizontal-swing": {
+        "zh-Hans": "左右摆风",
+        "zh-Hant": "左右擺風",
+        "en": "Horizontal swing"
+      },
+      "vertical-swing": {
+        "zh-Hans": "上下摆风",
+        "zh-Hant": "上下擺風",
+        "en": "Vertical swing"
+      },
+      "heat-level": {
+        "zh-Hans": "加热档位",
+        "zh-Hant": "加熱檔位",
+        "en": "Heat level"
+      },
+      "storage-free-space": {
+        "zh-Hans": "剩余空间",
+        "zh-Hant": "剩餘空間",
+        "en": "Free space"
+      },
+      "storage-total-space": {
+        "zh-Hans": "总空间",
+        "zh-Hant": "總空間",
+        "en": "Total space"
+      },
+      "storage-used-space": {
+        "zh-Hans": "已用空间",
+        "zh-Hant": "已用空間",
+        "en": "Used space"
+      },
+      "left-time": {
+        "zh-Hans": "剩余时间",
+        "zh-Hant": "剩餘時間",
+        "en": "Remaining"
+      },
+      "delay-off-time": {
+        "zh-Hans": "延时关闭",
+        "zh-Hant": "延時關閉",
+        "en": "Delayed off"
+      },
+      "work-mode": {
+        "zh-Hans": "工作模式",
+        "zh-Hant": "工作模式",
+        "en": "Work mode"
+      },
+      "privacy-mode": {
+        "zh-Hans": "隐私模式",
+        "zh-Hant": "隱私模式",
+        "en": "Privacy mode"
+      },
+      "water-pump": {
+        "zh-Hans": "水泵",
+        "zh-Hant": "水泵",
+        "en": "Water pump"
+      },
+      "pump-flux": {
+        "zh-Hans": "水泵档位",
+        "zh-Hant": "水泵档位",
+        "en": "Pump flux"
+      },
+      "water-pump-status": {
+        "zh-Hans": "水泵状态",
+        "zh-Hant": "水泵状态",
+        "en": "Water pump status"
+      },
+      "pump-alarm": {
+        "zh-Hans": "水泵告警",
+        "zh-Hant": "水泵告警",
+        "en": "Pump alarm"
+      },
+      "pump-fault-detection": {
+        "zh-Hans": "水泵故障检测",
+        "zh-Hant": "水泵故障检测",
+        "en": "Pump fault detection"
+      },
+      "pet-food-out": {
+        "zh-Hans": "投喂",
+        "zh-Hant": "投喂",
+        "en": "Pet food out"
+      },
+      "feeding-measure": {
+        "zh-Hans": "投喂份数",
+        "zh-Hant": "投喂份数",
+        "en": "Feeding measure"
+      },
+      "today-feeded-num": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Today feeded num"
+      },
+      "sum-fed-measure": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Sum fed measure"
+      },
+      "feeding-quantity": {
+        "zh-Hans": "今日已投喂",
+        "zh-Hant": "今日已投喂",
+        "en": "Feeding quantity"
+      },
+      "eaten-food-measure": {
+        "zh-Hans": "已吃份数",
+        "zh-Hant": "已吃份数",
+        "en": "Eaten food measure"
+      },
+      "feeding-cycle": {
+        "zh-Hans": "投喂周期",
+        "zh-Hant": "投喂周期",
+        "en": "Feeding cycle"
+      },
+      "feeding-status": {
+        "zh-Hans": "投喂状态",
+        "zh-Hant": "投喂状态",
+        "en": "Feeding status"
+      },
+      "feeding-alarm": {
+        "zh-Hans": "投喂告警",
+        "zh-Hant": "投喂告警",
+        "en": "Feeding alarm"
+      },
+      "feeding-protection": {
+        "zh-Hans": "投喂保护",
+        "zh-Hant": "投喂保护",
+        "en": "Feeding protection"
+      },
+      "feeding-type": {
+        "zh-Hans": "投喂方式",
+        "zh-Hant": "投喂方式",
+        "en": "Feeding type"
+      },
+      "pet-food-left-level": {
+        "zh-Hans": "余粮",
+        "zh-Hant": "余粮",
+        "en": "Pet food left level"
+      },
+      "target-feeding-measure": {
+        "zh-Hans": "目标份数",
+        "zh-Hant": "目标份数",
+        "en": "Target feeding measure"
+      },
+      "food-heap-value": {
+        "zh-Hans": "粮仓余量",
+        "zh-Hant": "粮仓余量",
+        "en": "Food heap value"
+      },
+      "post-feed-pump-pause": {
+        "zh-Hans": "投喂后停泵",
+        "zh-Hant": "投喂后停泵",
+        "en": "Post feed pump pause"
+      },
+      "post-feed-pump-state": {
+        "zh-Hans": "投喂后水泵",
+        "zh-Hant": "投喂后水泵",
+        "en": "Post feed pump state"
+      },
+      "filter-life-level": {
+        "zh-Hans": "滤芯寿命",
+        "zh-Hant": "滤芯寿命",
+        "en": "Filter life level"
+      },
+      "filter-left-time": {
+        "zh-Hans": "滤芯剩余",
+        "zh-Hant": "滤芯剩余",
+        "en": "Filter left time"
+      },
+      "reset-filter-life": {
+        "zh-Hans": "重置滤芯",
+        "zh-Hant": "重置滤芯",
+        "en": "Reset filter life"
+      },
+      "filter-alarm": {
+        "zh-Hans": "滤芯告警",
+        "zh-Hant": "滤芯告警",
+        "en": "Filter alarm"
+      },
+      "water-alarm": {
+        "zh-Hans": "换水提醒",
+        "zh-Hant": "换水提醒",
+        "en": "Water alarm"
+      },
+      "flow-speed-level": {
+        "zh-Hans": "流速",
+        "zh-Hant": "流速",
+        "en": "Flow speed level"
+      },
+      "temp-warn-switch": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Temp warn switch"
+      },
+      "temp-warn-min": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Temp warn min"
+      },
+      "temp-warn-max": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Temp warn max"
+      },
+      "temperature-warn-on": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Temperature warn on"
+      },
+      "temperature-warn-min": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Temperature warn min"
+      },
+      "temperature-warn-max": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Temperature warn max"
+      },
+      "upper-temperature": {
+        "zh-Hans": "水温上限",
+        "zh-Hant": "水温上限",
+        "en": "Upper temperature"
+      },
+      "lower-temperature": {
+        "zh-Hans": "水温下限",
+        "zh-Hant": "水温下限",
+        "en": "Lower temperature"
+      },
+      "limit-alarm": {
+        "zh-Hans": "水温告警",
+        "zh-Hant": "水温告警",
+        "en": "Limit alarm"
+      },
+      "desiccant-left-level": {
+        "zh-Hans": "干燥剂余量",
+        "zh-Hant": "干燥剂余量",
+        "en": "Desiccant left level"
+      },
+      "desiccant-left-time": {
+        "zh-Hans": "干燥剂剩余",
+        "zh-Hant": "干燥剂剩余",
+        "en": "Desiccant left time"
+      },
+      "reset-desiccant-life": {
+        "zh-Hans": "重置干燥剂",
+        "zh-Hant": "重置干燥剂",
+        "en": "Reset desiccant life"
+      },
+      "no-disturb": {
+        "zh-Hans": "勿扰",
+        "zh-Hant": "勿扰",
+        "en": "No disturb"
+      },
+      "alarm": {
+        "zh-Hans": "告警",
+        "zh-Hant": "告警",
+        "en": "Alarm"
+      },
+      "working-time": {
+        "zh-Hans": "运行时长",
+        "zh-Hant": "运行时长",
+        "en": "Working time"
+      }
+    },
+    "deviceTypes": {
+      "fish-tank": {
+        "zh-Hans": "鱼缸",
+        "zh-Hant": "魚缸",
+        "en": "Fish tank"
+      },
+      "pet-feeder": {
+        "zh-Hans": "宠物喂食器",
+        "zh-Hant": "寵物餵食器",
+        "en": "Pet feeder"
+      },
+      "router": {
+        "zh-Hans": "路由器",
+        "zh-Hant": "路由器",
+        "en": "路由器"
+      },
+      "gateway": {
+        "zh-Hans": "网关",
+        "zh-Hant": "网关",
+        "en": "网关"
+      },
+      "repeater": {
+        "zh-Hans": "信号放大器",
+        "zh-Hant": "信号放大器",
+        "en": "信号放大器"
+      },
+      "lock": {
+        "zh-Hans": "门锁",
+        "zh-Hant": "门锁",
+        "en": "门锁"
+      },
+      "scale": {
+        "zh-Hans": "体重秤",
+        "zh-Hant": "体重秤",
+        "en": "体重秤"
+      },
+      "body-fat-scale": {
+        "zh-Hans": "体脂秤",
+        "zh-Hant": "体脂秤",
+        "en": "体脂秤"
+      },
+      "bracelet": {
+        "zh-Hans": "手环",
+        "zh-Hant": "手环",
+        "en": "手环"
+      },
+      "watch": {
+        "zh-Hans": "手表",
+        "zh-Hant": "手表",
+        "en": "手表"
+      },
+      "toothbrush": {
+        "zh-Hans": "牙刷",
+        "zh-Hant": "牙刷",
+        "en": "牙刷"
+      },
+      "treadmill": {
+        "zh-Hans": "跑步机",
+        "zh-Hant": "跑步机",
+        "en": "跑步机"
+      },
+      "massage": {
+        "zh-Hans": "按摩设备",
+        "zh-Hant": "按摩设备",
+        "en": "按摩设备"
+      },
+      "bed": {
+        "zh-Hans": "床",
+        "zh-Hant": "床",
+        "en": "床"
+      },
+      "mattress": {
+        "zh-Hans": "床垫",
+        "zh-Hant": "床垫",
+        "en": "床垫"
+      },
+      "pillow": {
+        "zh-Hans": "枕头",
+        "zh-Hant": "枕头",
+        "en": "枕头"
+      },
+      "sofa": {
+        "zh-Hans": "沙发",
+        "zh-Hant": "沙发",
+        "en": "沙发"
+      },
+      "mirror": {
+        "zh-Hans": "镜子",
+        "zh-Hant": "镜子",
+        "en": "镜子"
+      },
+      "shower": {
+        "zh-Hans": "淋浴",
+        "zh-Hant": "淋浴",
+        "en": "淋浴"
+      },
+      "toilet": {
+        "zh-Hans": "马桶",
+        "zh-Hant": "马桶",
+        "en": "马桶"
+      },
+      "towel-rack": {
+        "zh-Hans": "毛巾架",
+        "zh-Hant": "毛巾架",
+        "en": "毛巾架"
+      },
+      "car-seat": {
+        "zh-Hans": "儿童安全座椅",
+        "zh-Hant": "儿童安全座椅",
+        "en": "儿童安全座椅"
+      },
+      "tracker": {
+        "zh-Hans": "定位器",
+        "zh-Hant": "定位器",
+        "en": "定位器"
+      },
+      "projector": {
+        "zh-Hans": "投影仪",
+        "zh-Hant": "投影仪",
+        "en": "投影仪"
+      },
+      "television": {
+        "zh-Hans": "电视",
+        "zh-Hant": "電視",
+        "en": "TV"
+      },
+      "stb": {
+        "zh-Hans": "机顶盒",
+        "zh-Hant": "机顶盒",
+        "en": "机顶盒"
+      },
+      "stove": {
+        "zh-Hans": "燃气灶",
+        "zh-Hant": "燃气灶",
+        "en": "燃气灶"
+      },
+      "boiler": {
+        "zh-Hans": "壁挂炉",
+        "zh-Hant": "壁挂炉",
+        "en": "壁挂炉"
+      },
+      "clock": {
+        "zh-Hans": "时钟",
+        "zh-Hant": "时钟",
+        "en": "时钟"
+      },
+      "coffee-machine": {
+        "zh-Hans": "咖啡机",
+        "zh-Hant": "咖啡机",
+        "en": "咖啡机"
+      },
+      "chair": null,
+      "bike": null
+    }
+  }
+}
