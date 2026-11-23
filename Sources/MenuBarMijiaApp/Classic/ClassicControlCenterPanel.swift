@@ -460,7 +460,9 @@ public struct ClassicControlCenterPanel: View {
                 orderedOnline: pageSections.flatMap(\.devices),
                 listCut: store.listCut,
                 isExpanded: isLongTailExpanded,
-                keepingVisibleIds: []
+                keepingVisibleIds: [],
+                pinnedIds: store.favoriteDeviceIds,
+                slotSize: { tileSize($0).overviewSlotSize }
             )
             let isInCurrentOverview = unkeptSlice.visible.contains(where: { $0.id == deviceId })
                 && classicDeviceLayoutState.sections.flatMap(\.devices).contains(where: { $0.id == deviceId })
@@ -479,7 +481,11 @@ public struct ClassicControlCenterPanel: View {
 
     private var showsLessonRow: Bool { store.showsLessonRow }
 
-    private var showsScrollPreface: Bool { showsLessonRow }
+    private var showsHomeSummaryRow: Bool {
+        store.showHomeSummaryRow && !search.isSearching && !isEditingLayout && !store.homeSummary.isEmpty
+    }
+
+    private var showsScrollPreface: Bool { showsLessonRow || showsHomeSummaryRow }
 
     /// The toast the panel actually draws. A pinned blocked notice already carries the same
     /// message and Scan action, so #47's persistent expiry toast must not repeat it.
@@ -504,8 +510,25 @@ public struct ClassicControlCenterPanel: View {
 
     @ViewBuilder
     private var scrollPreface: some View {
-        if showsLessonRow {
-            OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() }, theme: .classic)
+        VStack(alignment: .leading, spacing: 8) {
+            if showsLessonRow {
+                OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() }, theme: .classic)
+            }
+            if showsHomeSummaryRow {
+                HomeSummaryRowView(
+                    summary: store.homeSummary,
+                    activeListCut: store.listCut,
+                    theme: .classic
+                ) { capsule in
+                    HomeSummaryCapsuleRouter.handleTap(
+                        capsule,
+                        store: store,
+                        expandActivities: { activitiesExpanded = true },
+                        scrollToDevice: { pendingScrollToDeviceId = $0 }
+                    )
+                }
+                .padding(.bottom, 4)
+            }
         }
     }
 
