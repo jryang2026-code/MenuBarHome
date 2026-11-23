@@ -1096,13 +1096,41 @@ export async function setRaycastIntegrationEnabled(
   return registered && active === enabled;
 }
 
+/**
+ * A `set_companion_integration` IPC that never settles must not park every later switch behind it:
+ * a link that has not settled within this window yields `null` (a failed registration) and releases
+ * the queue. A disconnect therefore still reaches the native host and revokes the token.
+ */
+export const COMPANION_REGISTRATION_TIMEOUT_MS = 5_000;
+
+/** Resolves with `work`'s value, or with `fallback` once `timeoutMs` elapses. The first settlement wins, so a late result is dropped. */
+function settleWithin<T>(work: Promise<T>, fallback: T, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (value: T): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(fallback), timeoutMs);
+    work.then(finish, () => finish(fallback));
+  });
+}
+
 /** Moves the native registration (`companion.rs`), which only accepts writes of the generation it returns. */
 function registerCompanionWithNativeHost(host: MenuMijiaWindowsApp, enabled: boolean): Promise<number | null> {
   const state = hostState(host);
   const invoke = window.__TAURI_INTERNALS__?.invoke;
+  // Every link settles (a hang resolves `null` after the bounded wait), so this chain never parks.
   state.companionGeneration = state.companionGeneration.then(async () => {
     try {
-      const generation = await invoke?.<number>("set_companion_integration", { enabled });
+      const call = invoke?.<number>("set_companion_integration", { enabled });
+      if (!call) return null;
+      // A generation that arrives after the timeout belongs to a superseded run: the promise already
+      // resolved `null`, so `setRaycastIntegrationEnabled` and `exportRaycastSnapshotNow` ignore it.
+      const generation = await settleWithin(call, null, COMPANION_REGISTRATION_TIMEOUT_MS);
       return typeof generation === "number" ? generation : null;
     } catch {
       return null;
