@@ -911,7 +911,7 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
-fn present_panel_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+fn present_panel_for_user_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -924,22 +924,26 @@ fn present_panel_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition
         "window.dispatchEvent(new CustomEvent('menumijia:panel-present', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
     );
     let _ = window.eval(&script);
-    let _ = window.show();
-    let _ = window.set_focus();
+    if !window.is_visible().unwrap_or(false) {
+        let _ = window.show();
+    }
+    if !window.is_focused().unwrap_or(false) {
+        let _ = window.set_focus();
+    }
 }
 
-pub(crate) fn present_panel(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
-    present_panel_and_eval(app, anchor, None);
+pub(crate) fn present_panel_for_user(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+    present_panel_for_user_and_eval(app, anchor, None);
 }
 
-pub(crate) fn present_panel_and_eval(
+pub(crate) fn present_panel_for_user_and_eval(
     app: &AppHandle,
     anchor: Option<PhysicalPosition<f64>>,
     after_present_script: Option<&'static str>,
 ) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        present_panel_on_main_thread(&app_clone, anchor);
+        present_panel_for_user_on_main_thread(&app_clone, anchor);
         if let Some(script) = after_present_script {
             if let Some(window) = app_clone.get_webview_window("main") {
                 let _ = window.eval(script);
@@ -975,7 +979,7 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
         };
         match action {
             TrayToggleAction::Hide => request_hide_panel_on_main_thread(&app_clone),
-            TrayToggleAction::Present => present_panel_on_main_thread(&app_clone, anchor),
+            TrayToggleAction::Present => present_panel_for_user_on_main_thread(&app_clone, anchor),
             TrayToggleAction::Noop => {}
         }
     });

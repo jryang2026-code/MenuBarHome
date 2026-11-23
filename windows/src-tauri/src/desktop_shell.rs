@@ -276,31 +276,148 @@ pub(crate) fn escape_toast_xml(raw: &str) -> String {
     out
 }
 
-pub(crate) fn format_windows_toast_xml(title: &str, body: &str) -> Result<String, String> {
+const TOAST_URL_PREFIX: &str = "menumijia://notification/";
+
+#[derive(Clone, Copy, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ToastKind {
+    #[default]
+    Safety,
+    Doorbell,
+    Leak,
+    Smoke,
+    Gas,
+}
+
+impl ToastKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Safety => "safety",
+            Self::Doorbell => "doorbell",
+            Self::Leak => "leak",
+            Self::Smoke => "smoke",
+            Self::Gas => "gas",
+        }
+    }
+
+    fn is_hazard(self) -> bool {
+        matches!(self, Self::Leak | Self::Smoke | Self::Gas)
+    }
+}
+
+fn is_valid_toast_device_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id != "."
+        && id != ".."
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:@-".contains(&b))
+}
+
+pub(crate) fn parse_toast_activation(url: &str) -> Option<&str> {
+    let (kind, id) = url.strip_prefix(TOAST_URL_PREFIX)?.split_once('/')?;
+    if !matches!(kind, "safety" | "doorbell" | "leak" | "smoke" | "gas")
+        || !is_valid_toast_device_id(id)
+    {
+        return None;
+    }
+    Some(id)
+}
+
+fn format_windows_toast_xml(
+    title: &str,
+    body: &str,
+    kind: ToastKind,
+    device_id: Option<&str>,
+) -> Result<String, String> {
     let clean_title = escape_toast_xml(&clamp_utf16_units(title.trim(), 120));
     let clean_body = escape_toast_xml(&clamp_utf16_units(body.trim(), 240));
     if clean_title.is_empty() && clean_body.is_empty() {
         return Err("通知标题与内容不能为空".to_string());
     }
+    let scenario = if kind.is_hazard() { " scenario=\"alarm\"" } else { "" };
+    let activation = device_id
+        .filter(|id| is_valid_toast_device_id(id))
+        .map(|id| format!(" activationType=\"protocol\" launch=\"{TOAST_URL_PREFIX}{}/{id}\"", kind.as_str()))
+        .unwrap_or_default();
     Ok(format!(
-        "<toast><visual><binding template=\"ToastGeneric\"><text>{clean_title}</text><text>{clean_body}</text></binding></visual></toast>"
+        "<toast{scenario}{activation}><visual><binding template=\"ToastGeneric\"><text>{clean_title}</text><text>{clean_body}</text></binding></visual></toast>"
     ))
 }
 
+#[cfg(any(windows, test))]
 pub(crate) const WINDOWS_TOAST_POWERSHELL_SCRIPT: &str =
     "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
      [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
      $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; \
      $doc.LoadXml([string]$env:MMB_TOAST_XML); \
      $toast = [Windows.UI.Notifications.ToastNotification]::new($doc); \
-     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('com.jryang.menubarmijia').Show($toast)";
+     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier([string]$env:MMB_TOAST_AUMID).Show($toast)";
+
+#[cfg(windows)]
+fn is_toast_registered(aumid: &str) -> bool {
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CLASSES_ROOT, RRF_RT_REG_SZ};
+
+    let key: Vec<u16> = format!("AppUserModelId\\{aumid}").encode_utf16().chain([0]).collect();
+    let value: Vec<u16> = "CustomActivator".encode_utf16().chain([0]).collect();
+    let mut size = 0;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CLASSES_ROOT,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    status == 0 && size > 2
+}
+
+#[cfg(windows)]
+fn show_winrt_toast(aumid: &str, xml: &str, kind: ToastKind) -> windows::core::Result<()> {
+    use windows::core::HSTRING;
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::UI::Notifications::{
+        NotificationSetting, ToastNotification, ToastNotificationManager, ToastNotificationPriority,
+    };
+    use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+
+    unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
+    let result = (|| {
+        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?;
+        if notifier.Setting()? != NotificationSetting::Enabled {
+            return Ok(());
+        }
+        let doc = XmlDocument::new()?;
+        doc.LoadXml(&HSTRING::from(xml))?;
+        let toast = ToastNotification::CreateToastNotification(&doc)?;
+        if kind.is_hazard() {
+            toast.SetPriority(ToastNotificationPriority::High)?;
+        }
+        notifier.Show(&toast)
+    })();
+    unsafe { RoUninitialize() };
+    result
+}
 
 #[tauri::command]
-pub(crate) async fn send_desktop_notification(title: String, body: String) -> Result<(), String> {
-    let xml = format_windows_toast_xml(&title, &body)?;
+pub(crate) async fn send_desktop_notification(
+    app: AppHandle,
+    title: String,
+    body: String,
+    kind: Option<ToastKind>,
+    device_id: Option<String>,
+) -> Result<(), String> {
+    let kind = kind.unwrap_or_default();
     #[cfg(windows)]
     {
+        let aumid = app.config().identifier.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            if !cfg!(debug_assertions) && !tauri::is_dev() && is_toast_registered(&aumid) {
+                let xml = format_windows_toast_xml(&title, &body, kind, device_id.as_deref())?;
+                return show_winrt_toast(&aumid, &xml, kind).map_err(|err| format!("系统通知发送失败：{err}"));
+            }
+            let xml = format_windows_toast_xml(&title, &body, kind, None)?;
             let status = std::process::Command::new("powershell.exe")
                 .args([
                     "-NoProfile",
@@ -311,6 +428,7 @@ pub(crate) async fn send_desktop_notification(title: String, body: String) -> Re
                     WINDOWS_TOAST_POWERSHELL_SCRIPT,
                 ])
                 .env("MMB_TOAST_XML", &xml)
+                .env("MMB_TOAST_AUMID", &aumid)
                 .creation_flags(crate::CREATE_NO_WINDOW)
                 .status()
                 .map_err(|err| format!("启动系统通知失败：{err}"))?;
@@ -321,6 +439,10 @@ pub(crate) async fn send_desktop_notification(title: String, body: String) -> Re
         })
         .await
         .map_err(|err| format!("启动系统通知失败：{err}"))??;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, format_windows_toast_xml(&title, &body, kind, device_id.as_deref())?);
     }
     Ok(())
 }
@@ -424,19 +546,44 @@ mod tests {
 
     #[test]
     fn windows_toast_xml_escapes_entities_and_rejects_empty_payloads() {
-        let xml = format_windows_toast_xml("门铃 <前门> & 告警", "点击 '查看' \"画面\"\n第二行")
-            .expect("valid toast xml");
+        let xml = format_windows_toast_xml(
+            "门铃 <前门> & 告警",
+            "点击 '查看' \"画面\"\n第二行",
+            ToastKind::Doorbell,
+            Some("camera.front_door"),
+        )
+        .expect("valid toast xml");
         assert!(xml.contains("&lt;前门&gt; &amp; 告警"));
         assert!(xml.contains("&apos;查看&apos; &quot;画面&quot; 第二行"));
+        assert!(xml.contains("activationType=\"protocol\" launch=\"menumijia://notification/doorbell/camera.front_door\""));
+        assert!(!xml.contains("scenario="));
         let curly = format_windows_toast_xml(
             "小明’s 传感器’; calc.exe; #",
             "‘注入测试’ ‚ ‛ <toast>",
+            ToastKind::Smoke,
+            Some("invalid/id"),
         )
         .expect("curly single quotes toast xml");
         assert!(curly.contains("小明’s 传感器’; calc.exe; #"));
         assert!(curly.contains("&lt;toast&gt;"));
+        assert!(curly.contains("scenario=\"alarm\""));
+        assert!(!curly.contains("launch="));
         assert!(WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("$doc.LoadXml([string]$env:MMB_TOAST_XML)"));
         assert!(!WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("{}"));
-        assert!(format_windows_toast_xml("   ", "\n\t").is_err());
+        assert!(format_windows_toast_xml("   ", "\n\t", ToastKind::Safety, None).is_err());
+    }
+
+    #[test]
+    fn toast_activation_accepts_only_known_kinds_and_bounded_device_ids() {
+        for kind in ["safety", "doorbell", "leak", "smoke", "gas"] {
+            let id = "homeAssistant:binary_sensor.leak-1";
+            assert_eq!(parse_toast_activation(&format!("{TOAST_URL_PREFIX}{kind}/{id}")), Some(id));
+        }
+        for suffix in ["toggle/1", "gas/", "gas/..", "gas/a/b", "gas/a?b", "gas/a#b", "gas/a%2Fb", "gas/a ", "gas/门铃", "gas/a\""] {
+            assert_eq!(parse_toast_activation(&format!("{TOAST_URL_PREFIX}{suffix}")), None);
+        }
+        let max_id = "a".repeat(128);
+        assert_eq!(parse_toast_activation(&format!("{TOAST_URL_PREFIX}leak/{max_id}")), Some(max_id.as_str()));
+        assert_eq!(parse_toast_activation(&format!("{TOAST_URL_PREFIX}leak/{max_id}a")), None);
     }
 }
