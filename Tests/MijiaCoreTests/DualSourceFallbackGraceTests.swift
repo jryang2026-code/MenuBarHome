@@ -380,8 +380,15 @@ struct DualSourceFallbackGraceTests {
             #expect(rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
 
             rig.clock.advance(2)
+            let beforeThirdMiUpdate = await rig.collector.snapshotCount
             await rig.miMock.updateSnapshot(updatedMiHome)
-            await waitUntil { rig.gate.parkCount == 3 && rig.gate.waiting == 2 }
+            // `recompute` schedules the recheck before it yields its snapshot, so parking alone does not
+            // mean that snapshot reached the collector. A loaded runner can then deliver it between the
+            // count below and the assertion, making an untouched count look like an extra wake.
+            await waitUntil {
+                let count = await rig.collector.snapshotCount
+                return rig.gate.parkCount == 3 && rig.gate.waiting == 2 && count > beforeThirdMiUpdate
+            }
             let beforeStaleWake = await rig.collector.snapshotCount
             rig.gate.releaseOldestNormally()
             await waitUntil { await rig.provider.discardedFallbackWakeCountForTesting == 1 }
