@@ -1272,7 +1272,8 @@ struct MenuBarPanelControllerTests {
         let panel = try #require(controller.panelWindow)
         #expect(controller.hostedPanelTheme == .classic)
 
-        let visible = try #require(panel.screen ?? NSScreen.main).visibleFrame
+        let screen = try #require(panel.screen ?? NSScreen.main)
+        let visible = screen.visibleFrame
         let expectedHeight = min(height.points, visible.height - 24)
         #expect(abs(panel.frame.width - MenuBarPanelController.panelWidth) < 1)
         #expect(abs(panel.frame.height - expectedHeight) <= 1, "classic height follows panel_height")
@@ -1281,12 +1282,12 @@ struct MenuBarPanelControllerTests {
         #expect(panel.frame.minX >= visible.minX)
         #expect(panel.frame.maxX <= visible.maxX)
 
-        // `swift test` can receive a detached status-item window below the visible screen. Use a
-        // known menu-bar anchor to verify placement independently of that AppKit host lifecycle.
+        // Model a visible bar without a notch so a centered anchor can represent a real status item.
         let anchor = NSRect(x: visible.midX - 12, y: visible.maxY, width: 24, height: 24)
-        let anchoredFrame = MenuBarPanelController.frame(
-            for: panel.frame.size, anchor: anchor, screen: panel.screen, theme: .classic
+        let placementInput = MenuBarPanelController.PanelPlacementInput(
+            screenFrame: screen.frame, visibleFrame: visible, anchor: anchor, size: panel.frame.size
         )
+        let anchoredFrame = MenuBarPanelController.placement(theme: .classic, input: placementInput).frame
         #expect(abs(anchoredFrame.maxY - (anchor.minY - 6)) <= 1)
         #expect(abs(anchoredFrame.midX - anchor.midX) <= 1)
     }

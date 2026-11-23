@@ -24,6 +24,9 @@ struct CoverCommandOriginTests {
     private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.curtain]))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.coverorigin.\(UUID().uuidString)")
+        // Keep the cover lease live while a loaded runner delivers command and snapshot events.
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        store.optimisticNow = { now }
         try await store.waitForTestSnapshot()
         return (store, mock)
     }
@@ -167,7 +170,7 @@ struct CoverCommandOriginTests {
         let card = try #require(store.devices.first)
         let openBefore = store.snapshotGeneration
         #expect(await store.togglePrimary(card)?.value == true)
-        try await store.settleCoverCommand(card.id, after: openBefore)
+        await store.waitForCoverSnapshot(after: openBefore)
 
         let moving = try #require(store.devices.first)
         guard case .cover(let openSpec) = moving.kind else {
