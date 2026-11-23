@@ -592,14 +592,17 @@ describe("A13 Panel keyboard navigation (Tab/Shift+Tab, Ctrl+,, Escape hide_pane
   let dom: Window;
   let app: MenuMijiaWindowsApp;
   let tauriCalls: string[];
+  let tauriPayloads: Array<{ cmd: string; args?: Record<string, unknown> }>;
 
   beforeEach(() => {
     dom = mountTestWindow({ stubInterval: true });
     tauriCalls = [];
+    tauriPayloads = [];
     Object.defineProperty(window, "__TAURI_INTERNALS__", {
       value: {
-        invoke: async (cmd: string) => {
+        invoke: async (cmd: string, args?: Record<string, unknown>) => {
           tauriCalls.push(cmd);
+          tauriPayloads.push({ cmd, args });
           return undefined;
         },
       },
@@ -692,6 +695,10 @@ describe("A13 Panel keyboard navigation (Tab/Shift+Tab, Ctrl+,, Escape hide_pane
     assert.equal(handlePanelKey(app, escEvent), true);
     await setImmediate();
     assert.ok(tauriCalls.includes("hide_panel"));
+    assert.deepEqual(
+      tauriPayloads.find((entry) => entry.cmd === "hide_panel"),
+      { cmd: "hide_panel", args: { returnFocus: true } },
+    );
     assert.equal(app.activeSheet, "none");
     const ctrlComma = dispatchKey(",", { ctrlKey: true });
     assert.equal(ctrlComma.defaultPrevented, true);

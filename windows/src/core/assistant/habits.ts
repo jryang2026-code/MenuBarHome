@@ -198,6 +198,7 @@ export function encodeHabitOperation(op: IntentOperation): string | null {
     case "targetTemperature": return `temp:${Math.round(op.celsius)}`;
     case "activateScene": return "scene:activate";
     case "fanSpeed": return `fan:${op.speed}`;
+    case "fanPercentage": return null;
     case "oscillation": return op.enabled ? "swing:on" : "swing:off";
     case "brightnessStep":
     case "temperatureStep": return null;
@@ -247,6 +248,7 @@ export function habitActionable(
       return k.kind === "climate" && k.availableModes.length > 0 && (!k.isOn || k.hvacMode !== op.mode);
     case "targetTemperature":
       return k.kind === "climate" && k.temperatureWritable !== false && (!k.isOn || Math.abs(k.targetTemperature - op.celsius) >= 0.5);
+    case "fanPercentage": return false;
     case "fanSpeed":
       if (k.kind === "fan") return k.availablePresetModes.length > 0 && (!k.isOn || k.presetMode !== op.speed);
       if (k.kind === "climate") return k.availableFanModes.length > 0 && k.fanMode !== op.speed;

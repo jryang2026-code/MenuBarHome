@@ -73,7 +73,7 @@
         "kind": "fan",
         "entityId": "miot:dev_fan:2",
         "isOn": true,
-        "percentage": null,
+        "percentage": 30,
         "presetMode": "Level1",
         "availablePresetModes": ["Level1", "Level2", "Level3"],
         "isOscillating": false
@@ -204,6 +204,118 @@
       "expected": [
         { "targetId": "dev_ac", "kind": "targetTemperature", "value": 18 }
       ]
+    },
+    {
+      "utterance": "书房台灯冷光",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 4000}
+      ]
+    },
+    {
+      "utterance": "书房台灯冷白光",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 4000}
+      ]
+    },
+    {
+      "utterance": "书房台灯日光",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 6500}
+      ]
+    },
+    {
+      "utterance": "书房吸顶灯日光模式",
+      "expected": [
+        {"targetId": "dev_ceiling", "kind": "lightEffect", "value": "Day"}
+      ]
+    },
+    {
+      "utterance": "书房台灯正白光",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 6500}
+      ]
+    },
+    {
+      "utterance": "书房台灯蜡烛光",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 2700}
+      ]
+    },
+    {
+      "utterance": "set 书房台灯 to cool white",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 4000}
+      ]
+    },
+    {
+      "utterance": "set 书房台灯 to cold light",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "colorTemperature", "value": 4000}
+      ]
+    },
+    {
+      "utterance": "书房台灯最暗",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "brightness", "value": 1}
+      ]
+    },
+    {
+      "utterance": "set 书房台灯 to minimum brightness",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "brightness", "value": 1}
+      ]
+    },
+    {
+      "utterance": "make 书房台灯 dimmest",
+      "expected": [
+        {"targetId": "dev_desk", "kind": "brightness", "value": 1}
+      ]
+    },
+    {
+      "utterance": "风速 50%",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 50}
+      ]
+    },
+    {
+      "utterance": "客厅风扇调到百分之五十",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 50}
+      ]
+    },
+    {
+      "utterance": "风扇调到50％",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 50}
+      ]
+    },
+    {
+      "utterance": "风扇调到百分之一百",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 100}
+      ]
+    },
+    {
+      "utterance": "风扇调到百分之零",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 1}
+      ]
+    },
+    {
+      "utterance": "set living room fan to 65 percent",
+      "expected": [
+        {"targetId": "dev_fan", "kind": "fanPercentage", "value": 65}
+      ]
+    },
+    {
+      "utterance": "书房净化器风速调到百分之六十",
+      "expected": [
+        {"targetId": "dev_purifier", "kind": "fanPercentage", "value": 60}
+      ]
+    },
+    {
+      "utterance": "书房台灯风速 50%",
+      "expected": null
     },
     {
       "utterance": "风扇调到高档",
@@ -526,6 +638,21 @@
     }
   ],
   "commandValidationCases": [
+    {
+      "name": "fan percentage uses the fan percentage write and clamps to a running speed",
+      "intent": { "targetId": "dev_fan", "kind": "fanPercentage", "value": 0 },
+      "expectedNormalized": { "targetId": "dev_fan", "kind": "fanPercentage", "value": 1 },
+      "expectedExecutable": true,
+      "expectedEntityId": "miot:dev_fan:2",
+      "expectedFanPercent": 1
+    },
+    {
+      "name": "fan percentage is rejected for an HVAC target",
+      "intent": { "targetId": "dev_ac", "kind": "fanPercentage", "value": 50 },
+      "expectedNormalized": null,
+      "expectedExecutable": false,
+      "expectedEntityId": null
+    },
     {
       "name": "momentary button power on dispatches button press",
       "intent": { "targetId": "dev_wol_pc", "kind": "power", "value": true },
