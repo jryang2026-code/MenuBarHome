@@ -582,6 +582,33 @@ extension HomeStore {
         if rulesChanged { ruleStore.save(rules); onAutomationRulesChanged?() }
     }
 
+    func requireManualResumeAfterHARemoval() {
+        let ruleStore = AutomationRuleStore(defaults: userDefaults)
+        var rules = ruleStore.load()
+        var rulesChanged = false
+        for index in rules.indices where !rules[index].isEnabled {
+            guard rules[index].pausedScopes.contains(where: { $0.hasPrefix("ha:") })
+                || rules[index].pausedCapabilities.contains(.connection(.homeAssistant)) else { continue }
+            // Clear every auto-resume marker together, including pauses from prior HA addresses.
+            rules[index].pausedCapabilities = []
+            rules[index].pausedScopes = []
+            rulesChanged = true
+        }
+        if rulesChanged {
+            ruleStore.save(rules)
+            onAutomationRulesChanged?()
+        }
+
+        var groupsChanged = false
+        for id in pausedQuickActionIDs where id.hasPrefix("group:") {
+            guard pausedQuickActionScopes[id]?.contains(where: { $0.hasPrefix("ha:") }) == true else { continue }
+            // Keep the group paused without an eligible source for automatic recovery.
+            pausedQuickActionScopes[id] = []
+            groupsChanged = true
+        }
+        if groupsChanged { persistPausedQuickActionScopes() }
+    }
+
     func blockedSelectionVerdict(proposed: CapabilitySelection, storeKey: String) -> CapabilityDeactivationVerdict {
         allowedDeactivationVerdict(for: proposed).withBlockingReason(
             CapabilityBlockingReason(kind: .corruptedReferenceStore, referenceId: storeKey, detail: storeKey)
@@ -1243,7 +1270,7 @@ extension HomeStore {
         let rules = AutomationRuleStore(defaults: userDefaults).load()
         let hasPausedReferences = !pausedScheduledCommands.isEmpty
             || !pausedQuickActionIDs.isEmpty
-            || rules.contains { !$0.pausedCapabilities.isEmpty }
+            || rules.contains { !$0.pausedCapabilities.isEmpty || !$0.pausedScopes.isEmpty }
         if hasPausedReferences { pendingRevalidationScopes.formUnion(capabilitySelection.enabledConnectionScopes) }
     }
 
@@ -1362,7 +1389,16 @@ extension HomeStore {
                 } else {
                     haConnected = true
                 }
-                accountReady = snapshot.isInitialLoadComplete && snapshot.closesAwayGap && haConnected
+                // A merged snapshot may arrive after HA reports connected but before HA supplies data,
+                // or still carry an older HA instance's snapshot across a URL change.
+                let includesHA = snapshot.sourceStatuses[.homeAssistant] == nil
+                    || snapshot.activeBackends.contains(.homeAssistant)
+                let matchesHAScope = snapshot.homeAssistantScope == nil || snapshot.homeAssistantScope == scope
+                accountReady = snapshot.isInitialLoadComplete
+                    && snapshot.closesAwayGap
+                    && haConnected
+                    && includesHA
+                    && matchesHAScope
             } else if selectedHomeHidesScope(scope) {
                 accountReady = false
             } else if activeMiAccountsProvider != nil || snapshot.miAccountsEpoch != nil {
@@ -1407,12 +1443,13 @@ extension HomeStore {
         }
     }
 
-    /// One rule for every paused reference (timer, automation, quick action): only the scopes it
-    /// actually lost decide when it may resume.
-    private func pausedItemScopesAreSettled(_ scopes: [String]) -> Bool {
+    /// Timers classify foreign ownership separately. Manual quick actions use the current connections.
+    private func pausedItemScopesAreSettled(_ scopes: [String], requiresOriginalHA: Bool = false) -> Bool {
         scopes.allSatisfy { scope in
             guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return true }
-            guard isCapabilityScopeConfigured(connection, scope: scope) else { return true }
+            guard isCapabilityScopeConfigured(connection, scope: scope) else {
+                return !requiresOriginalHA || connection != .homeAssistant
+            }
             return capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
                 && !pendingRevalidationScopes.contains(scope)
         }
@@ -1832,6 +1869,14 @@ extension HomeStore {
 
     // MARK: - Pause & Re-Enable Revalidation
 
+    /// Preserves an existing `ha:` pause scope when an already-paused item is paused again under a
+    /// different HA address, avoiding an unsatisfiable multi-HA scope set while still merging non-HA scopes.
+    private func mergePausedScopes(existing: [String], adding: [String]) -> [String] {
+        let hasExistingHA = existing.contains { $0.hasPrefix("ha:") }
+        let filteredAdding = hasExistingHA ? adding.filter { !$0.hasPrefix("ha:") } : adding
+        return Array(Set(existing).union(filteredAdding)).sorted()
+    }
+
     func pauseAffectedReferences(
         _ items: [AffectedReferenceItem],
         fallbackCapabilities: [CapabilityID] = [.connection(.xiaomiCloud)]
@@ -1878,7 +1923,7 @@ extension HomeStore {
                 paused[idx].pausedCapabilities = Set(paused[idx].pausedCapabilities).union(
                     pause.caps.isEmpty ? fallbackCapabilities : pause.caps
                 ).sorted { $0.rawValue < $1.rawValue }
-                paused[idx].pausedScopes = Set(paused[idx].pausedScopes).union(pause.scopes).sorted()
+                paused[idx].pausedScopes = mergePausedScopes(existing: paused[idx].pausedScopes, adding: pause.scopes)
             }
             if commitScheduledCommands(waiting: waiting, missed: missed, foreign: foreign, paused: paused) {
                 for id in timerPauseById.keys { disarmScheduledCommand(id) }
@@ -1895,7 +1940,7 @@ extension HomeStore {
                 rules[idx].pausedCapabilities = Array(
                     Set(rules[idx].pausedCapabilities + (pause.caps.isEmpty ? fallbackCapabilities : pause.caps))
                 ).sorted { $0.rawValue < $1.rawValue }
-                rules[idx].pausedScopes = Array(Set(rules[idx].pausedScopes + pause.scopes)).sorted()
+                rules[idx].pausedScopes = mergePausedScopes(existing: rules[idx].pausedScopes, adding: pause.scopes)
                 changed = true
             }
             if changed {
@@ -1907,7 +1952,10 @@ extension HomeStore {
         if !quickActionScopes.isEmpty {
             pausedQuickActionIDs.formUnion(quickActionScopes.keys)
             for (id, scopes) in quickActionScopes {
-                pausedQuickActionScopes[id] = Array(Set(pausedQuickActionScopes[id] ?? []).union(scopes)).sorted()
+                pausedQuickActionScopes[id] = mergePausedScopes(
+                    existing: pausedQuickActionScopes[id] ?? [],
+                    adding: scopes
+                )
             }
             userDefaults.set(pausedQuickActionIDs.sorted(), forKey: Self.pausedQuickActionsKey)
             persistPausedQuickActionScopes()
@@ -1921,6 +1969,10 @@ extension HomeStore {
                 if let haStatus = snapshot.sourceStatuses[.homeAssistant] ?? sourceStatuses[.homeAssistant] {
                     if !haStatus.isConnected { return false }
                 } else if case .disconnected = connectionStatus {
+                    return false
+                }
+                if let snapshotHAScope = snapshot.homeAssistantScope,
+                   snapshotHAScope != homeAssistantScopeIdentifier {
                     return false
                 }
             }
@@ -2042,8 +2094,11 @@ extension HomeStore {
 
         for idx in rules.indices where !rules[idx].isEnabled
             && (!rules[idx].pausedCapabilities.isEmpty || !rules[idx].pausedScopes.isEmpty) {
-            guard pausedItemScopesAreSettled(rules[idx].pausedScopes) else { continue }
-            let capsSatisfied = rules[idx].pausedCapabilities.allSatisfy { cap in
+            let scopes = rules[idx].pausedScopes
+            let capabilities = rules[idx].pausedCapabilities
+            guard !capabilities.contains(.connection(.homeAssistant)) || scopes.contains(where: { $0.hasPrefix("ha:") }),
+                  pausedItemScopesAreSettled(scopes, requiresOriginalHA: true) else { continue }
+            let capsSatisfied = capabilities.allSatisfy { cap in
                 switch cap {
                 case .connection(let conn): capabilitySelection.enabledConnections.contains(conn)
                 case .feature, .deviceCategory: capabilitySelection.contains(cap)
@@ -2093,11 +2148,14 @@ extension HomeStore {
         if !pausedQuickActionIDs.isEmpty {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
-                guard pausedItemScopesAreSettled(pausedQuickActionScopes[qaId] ?? []) else {
+                let isGroup = qaId.hasPrefix("group:")
+                let scopes = pausedQuickActionScopes[qaId] ?? []
+                guard (!isGroup || !scopes.isEmpty),
+                      pausedItemScopesAreSettled(scopes, requiresOriginalHA: isGroup) else {
                     remainingQA.insert(qaId)
                     continue
                 }
-                if qaId.hasPrefix("group:") {
+                if isGroup {
                     let grpId = String(qaId.dropFirst("group:".count))
                     guard let grp = groupById[grpId], !grp.memberDeviceIds.isEmpty,
                           grp.memberDeviceIds.allSatisfy(availableSet.contains) else {

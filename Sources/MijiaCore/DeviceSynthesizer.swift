@@ -252,6 +252,8 @@ public struct SynthesizedHome: Equatable, Sendable {
     public var lightGroupOwners: [String: String] = [:]
     /// Sources that contributed this merged snapshot.
     public var activeBackends: Set<HomeBackend> = []
+    /// Canonical `ha:<url>` scope of the Home Assistant instance that produced the HA portion of this snapshot.
+    public var homeAssistantScope: String?
     /// Per-source connection state for the bottom dual-source summary. Empty on single-source.
     public var sourceStatuses: [HomeBackend: ConnectionStatus] = [:]
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Empty on backends without MIoT
