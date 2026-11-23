@@ -470,33 +470,13 @@ public enum SensorAlertKind: String, CaseIterable, Hashable, Identifiable, Senda
         return SensorAlertKind(rawValue: String(afterPrefix[..<colonIndex]))
     }
 
-    public var enabledByDefault: Bool {
-        switch self {
-        case .leak, .smoke, .gas: true
-        case .contact, .motion: false
-        }
-    }
+    public var enabledByDefault: Bool { severity == .alert }
 
-    public var colorsMenuBar: Bool {
-        switch self {
-        case .leak, .smoke, .gas: true
-        case .contact, .motion: false
-        }
-    }
+    public var colorsMenuBar: Bool { severity == .alert }
 
-    public var honorsAwayLimit: Bool {
-        switch self {
-        case .leak, .smoke, .gas: false
-        case .contact, .motion: true
-        }
-    }
+    public var honorsAwayLimit: Bool { severity == .warning }
 
-    public var notifiesOnFirstSample: Bool {
-        switch self {
-        case .leak, .smoke, .gas: true
-        case .contact, .motion: false
-        }
-    }
+    public var notifiesOnFirstSample: Bool { severity == .alert }
 
     public var defaultsKey: String { "safety_alert_\(rawValue)_v1" }
 

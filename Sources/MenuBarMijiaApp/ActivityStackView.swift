@@ -27,11 +27,8 @@ enum ActivityStackPolicy {
     }
 
     static func isUrgentLifeSafetyHazard(_ activity: PanelActivity) -> Bool {
-        guard case .safety(let recorded) = activity.kind,
-              let kind = SensorAlertKind.parse(fromAlertId: recorded.alert.id) else {
-            return false
-        }
-        return !kind.honorsAwayLimit
+        guard case .safety(let recorded) = activity.kind else { return false }
+        return recorded.alert.severity == .alert
     }
 
     @MainActor
@@ -42,12 +39,8 @@ enum ActivityStackPolicy {
         case .safety(let recorded):
             let id = recorded.alert.id
             if let kind = SensorAlertKind.parse(fromAlertId: id) {
-                switch kind {
-                case .leak, .smoke, .gas:
-                    return true
-                case .contact, .motion:
-                    return store.isSensorAlertEnabled(kind) && allowsPinningAwayCondition(store: store)
-                }
+                if kind.severity == .alert { return true }
+                return store.isSensorAlertEnabled(kind) && allowsPinningAwayCondition(store: store)
             }
             if id.hasPrefix("longrun:") || recorded.alert.turnOffCommand != nil {
                 return true

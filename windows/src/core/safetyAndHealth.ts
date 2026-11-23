@@ -1,4 +1,5 @@
 import { currentLanguage, resolveLanguage, tr3, type AppLanguage, type LanguagePreference } from "./i18n.js";
+import { sensorAlertSeverity } from "./alertSeverity.js";
 import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "./models.js";
 import { defaultStorage } from "./pollingPolicy.js";
 import { formatTemperature } from "./temperature.js";
@@ -49,6 +50,7 @@ export function sensorAlertEnabledByDefault(kind: SensorAlertKind): boolean {
   return kind === "smoke" || kind === "gas" || kind === "leak" || kind === "lock";
 }
 
+/** Life-safety kinds that stay on 24/7. A lock is an `alert` but still follows away-only. */
 export function sensorAlertIsHazard(kind: SensorAlertKind): boolean {
   return kind === "smoke" || kind === "gas" || kind === "leak";
 }
@@ -495,7 +497,7 @@ export function evaluateSensorAlerts(
         ),
         category: "sensor",
         sensorKind: obs.kind,
-        priority: sensorAlertIsHazard(obs.kind) || obs.kind === "lock" ? "high" : "normal",
+        priority: sensorAlertSeverity(obs.kind) === "alert" ? "high" : "normal",
       });
     }
   }

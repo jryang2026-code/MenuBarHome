@@ -16,8 +16,13 @@ enum PanelActivityCard {
         case .safety(let recorded):
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .firstTextBaseline) {
-                    Label(recorded.alert.title, systemImage: "exclamationmark.shield.fill")
-                        .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
+                    Label {
+                        Text(recorded.alert.title)
+                    } icon: {
+                        Image(systemName: "exclamationmark.shield.fill")
+                            .foregroundStyle(severityTint(recorded.alert.severity))
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     Spacer(minLength: 4)
                     timeView(recorded.date)
                 }
@@ -45,6 +50,14 @@ enum PanelActivityCard {
                     .themedPillButtonStyle(theme, isSelected: true, tintColor: .accentColor)
             }
             .padding(10)
+        }
+    }
+
+    private static func severityTint(_ severity: AlertSeverity?) -> Color {
+        switch severity {
+        case .alert?: .red
+        case .warning?: .orange
+        case nil: .primary
         }
     }
 
