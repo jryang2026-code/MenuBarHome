@@ -31,6 +31,7 @@ struct AuditWave2Tests {
         let snapshot = SynthesizedHome(devices: devices, environmentReadings: readings, scenes: scenes)
         let mock = MockHomeProvider(snapshot: snapshot)
         let store = HomeStore(provider: mock, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         store.enableSafetyAlerts = false
         try await store.waitForTestSnapshot()
         store.enableSafetyAlerts = true

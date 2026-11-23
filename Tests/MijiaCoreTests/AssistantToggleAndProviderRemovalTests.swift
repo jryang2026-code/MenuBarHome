@@ -66,6 +66,7 @@ struct AssistantToggleAndProviderRemovalTests {
         let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
         let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         return (store, mock, vault, mem, defaults)
     }

@@ -18,6 +18,7 @@ struct UndoScopeTests {
         ))
         let suite = "test.undo.scope.\(UUID().uuidString)"
         let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         #expect(store.devices.count == 2)

@@ -63,6 +63,7 @@ struct AssistantConsentTests {
         AssistantConfig(baseURL: baseURL, model: "deepseek-chat", apiKey: "sk-deepseek").save(to: defaults)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: AssistantTests.devices, scenes: AssistantTests.scenes))
         let store = HomeStore(provider: mock, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         let log = CallLog()
