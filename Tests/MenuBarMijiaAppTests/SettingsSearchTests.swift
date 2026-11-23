@@ -1,6 +1,7 @@
 import Testing
 import StateTestSupport
 import Foundation
+import PreferencesTestSupport
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
 
@@ -484,8 +485,6 @@ struct SettingsSearchTests {
     @Test("Stale sensor cards surface transport readout when diagnostics exist in both themes")
     @MainActor
     func staleSensorShowsTransportReadout() {
-        let suite = "test.stale.sensor.transport.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         let sensor = SmartDevice(
             id: "sensor-blocked",
             name: "卧室传感器",
@@ -498,7 +497,7 @@ struct SettingsSearchTests {
         )
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [sensor], scenes: [])),
-            defaultsSuiteName: suite
+            defaults: InMemoryUserDefaults()
         )
         #expect(SensorCardView.showsStaleTransportReadout(device: sensor, store: store) == false)
 

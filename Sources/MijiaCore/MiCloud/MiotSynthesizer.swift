@@ -114,7 +114,7 @@ public enum MiotSynthesizer {
             if plans.isEmpty {
                 guard !Self.isMainsBreaker(spec),
                       let generic = genericCard(record: record, spec: scopedSpec, values: values) else { continue }
-                let device = SmartDevice(
+                var device = SmartDevice(
                     id: record.did,
                     name: name,
                     roomId: roomId,
@@ -124,6 +124,7 @@ public enum MiotSynthesizer {
                     kind: .generic(generic.spec),
                     isSharedHome: room?.isSharedHome ?? false
                 )
+                device.providerSafetySignals = safetySignals(category: device.capabilityCategoryID, spec: spec)
                 smartDevices.append(device)
                 identities[device.id] = DeviceSourceIdentity(
                     dids: [record.did],
@@ -142,7 +143,7 @@ public enum MiotSynthesizer {
 
             for (service, build) in plans {
                 let kind = Self.attachCameraLenses(build(reader, service), model: record.model, name: record.name)
-                let device = SmartDevice(
+                var device = SmartDevice(
                     id: splitPerService ? trackID(record: record, siid: service.iid) : record.did,
                     name: splitPerService ? trackName(service: service, fallback: name) : name,
                     roomId: roomId,
@@ -152,6 +153,7 @@ public enum MiotSynthesizer {
                     kind: record.isOnline ? kind : Self.redactOfflineLockClaim(kind),
                     isSharedHome: room?.isSharedHome ?? false
                 )
+                device.providerSafetySignals = safetySignals(category: device.capabilityCategoryID, spec: spec)
                 smartDevices.append(device)
                 identities[device.id] = DeviceSourceIdentity(
                     dids: [record.did],
@@ -1702,7 +1704,6 @@ extension MiotSynthesizer {
         switch category {
         case .plug: signals.formUnion([.longRunningPlug, .highPower])
         case .climate: signals.insert(.longRunningClimate)
-        case .camera: signals.insert(.doorbell)
         case .sensor:
             // The evaluator reads a battery from the sensor card only (`SafetyMonitor`), so a ring
             // camera's battery does not keep an otherwise pruned card alive.
@@ -1711,6 +1712,7 @@ extension MiotSynthesizer {
             }) { signals.insert(.lowBattery) }
         default: break
         }
+        if MiCloudProvider.doorbellEventTarget(for: spec) != nil { signals.insert(.doorbell) }
         signals.formUnion(serviceSignals(spec: spec))
         return signals
     }
@@ -1730,7 +1732,6 @@ extension MiotSynthesizer {
             case "magnet-sensor", "door-sensor", "contact-sensor": signals.insert(.contact)
             case "motion-sensor", "occupancy-sensor", "presence-sensor", "motion-detection": signals.insert(.motion)
             case "vibration-sensor", "shock-sensor": signals.insert(.vibration)
-            case "video-doorbell", "doorbell": signals.insert(.doorbell)
             case "door":
                 signals.insert(.lock)
                 signals.insert(.contact)

@@ -281,6 +281,7 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "撤销未完成，{count} 项待恢复。{message}": "撤銷未完成，{count} 項待恢復。{message}",
   "已撤销：{summary}": "已撤銷：{summary}",
   "已关闭 {count} 台开启中的设备": "已關閉 {count} 台開啓中的裝置",
+  "{result}，另有 {count} 台已跳过": "{result}，另有 {count} 台已跳過",
   "设备未响应": "裝置未響應",
   "设备未响应或离线": "裝置未響應或離線",
   "设备未返回执行结果": "裝置未返回執行結果",

@@ -6,9 +6,9 @@ import {
   type BuiltInURLSceneId,
   type UrlDeviceFocusResult,
 } from "../core/appUrlCommand.js";
-import { speechLocale, t } from "../core/i18n.js";
+import { allOffResultText, speechLocale, t } from "../core/i18n.js";
 import { miSessionExpiryState } from "../core/miCloud/session.js";
-import { allOffTargets, hasDetailDrawer, type SmartDevice } from "../core/models.js";
+import { hasDetailDrawer, type SmartDevice } from "../core/models.js";
 import { planQuickAction, quickActionTitle, type QuickActionId } from "../core/quickActions.js";
 import {
   RaycastBridgeTokenManager,
@@ -28,7 +28,7 @@ import type {
 import { isConnectionsAndDiagModalOpen } from "./connectionsAndDiagView.js";
 import { buildHostCapabilityContext, foldGrouped, isDualSourceEnabled, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
-import { evaluateDeviceEntityWriteGate, evaluateQuickActionSourceWriteGate } from "../core/miAccountControl.js";
+import { evaluateDeviceEntityWriteGate, evaluateQuickActionSourceWriteGate, planWritableAllOff } from "../core/miAccountControl.js";
 import { resolveConnectionStatus } from "./connectionStatus.js";
 import { recordHabits } from "./intentExecution.js";
 import { filterByListCut } from "./listCut.js";
@@ -66,6 +66,7 @@ export interface CompanionNotice {
   readonly checkedAt: number;
   readonly lines: readonly string[];
   readonly isError: boolean;
+  readonly retryDisconnect?: boolean;
 }
 
 interface UndoHoverPauseSnapshot {
@@ -908,14 +909,14 @@ export function getActiveRaycastBridgeTokenForHost(
 
 function warnBridgeTokenUnavailable(host: MenuMijiaWindowsApp, error: unknown): void {
   const state = hostState(host);
-  if (state.bridgeTokenWarningShown) return;
-  state.bridgeTokenWarningShown = true;
-  const detail = error instanceof Error ? error.message : String(error);
-  host.replyBanner = {
-    text: detail,
-    source: tr3("Raycast 集成", "Raycast 整合", "Raycast Integration"),
-    isError: true,
-  };
+  if (!state.bridgeTokenWarningShown) {
+    state.bridgeTokenWarningShown = true;
+    host.replyBanner = {
+      text: error instanceof Error ? error.message : String(error),
+      source: tr3("Raycast 集成", "Raycast 整合", "Raycast Integration"),
+      isError: true,
+    };
+  }
   // Without a token nothing can be written safely, so the integration stays off until it works.
   host.settings.enableRaycastIntegration = false;
   host.saveSettings();
@@ -993,7 +994,7 @@ async function exportRaycastSnapshotNow(
   // one transient I/O failure permanent: every later render saw "already exported" and skipped.
   const seq = ++state.exportSeq;
   const generation = await state.companionGeneration;
-  if (seq !== state.exportSeq || !host.settings.enableRaycastIntegration) return;
+  if (generation === null || seq !== state.exportSeq || !host.settings.enableRaycastIntegration) return;
   try {
     await invoke("write_raycast_snapshot", {
       contents: JSON.stringify(snapshot, null, 2),
@@ -1026,45 +1027,35 @@ export function scheduleRaycastSnapshotExport(host: MenuMijiaWindowsApp): void {
   }, 300);
 }
 
-export function setRaycastIntegrationEnabled(
+export async function setRaycastIntegrationEnabled(
   host: MenuMijiaWindowsApp,
   enabled: boolean,
-  options?: { readonly persistSettings?: boolean; readonly render?: boolean },
-): void {
+  options?: {
+    readonly persistSettings?: boolean;
+    readonly render?: boolean;
+    readonly announceDisconnect?: boolean;
+  },
+): Promise<boolean> {
   const persistSettings = options?.persistSettings ?? true;
   const shouldRender = options?.render ?? true;
   const state = hostState(host);
-  if (host.isStandaloneSettingsWindow) {
-    host.settings.enableRaycastIntegration = enabled;
-    if (persistSettings) {
-      host.saveSettings();
-    }
-    state.companionNotice = null;
-    if (shouldRender) {
-      host.render();
-    }
-    return;
-  }
   const changed = host.settings.enableRaycastIntegration !== enabled;
   host.settings.enableRaycastIntegration = enabled;
-  if (persistSettings) {
+  const active = enabled && (host.isStandaloneSettingsWindow || getActiveRaycastBridgeTokenForHost(host) !== undefined);
+  if (persistSettings && active === enabled) {
     host.saveSettings();
   }
-  if (changed || !enabled) {
+  if (changed || !active) {
     // Whatever external link is waiting belongs to the run that just ended (P6a-W).
     state.companionEpoch += 1;
     state.companionNotice = null;
-    cancelPendingExternalUrlWork(host);
-  }
-  registerCompanionWithNativeHost(host, enabled);
-  if (enabled) {
-    if (getActiveRaycastBridgeTokenForHost(host) === undefined) {
-      // No CSPRNG: `warnBridgeTokenUnavailable` already turned the integration back off.
-      if (shouldRender) host.render();
-      return;
+    state.lastCommandFeedback = undefined;
+    if (!host.isStandaloneSettingsWindow) {
+      if (!active && host.pendingHighRisk?.origin === "url") host.clearPendingHighRisk();
+      cancelPendingExternalUrlWork(host);
     }
-    void exportRaycastSnapshotNow(host, true);
-  } else {
+  }
+  if (!active) {
     const ownerWin = host.root.ownerDocument?.defaultView ?? window;
     if (state.snapshotExportTimer !== null) {
       ownerWin.clearTimeout(state.snapshotExportTimer);
@@ -1075,26 +1066,62 @@ export function setRaycastIntegrationEnabled(
     // Any write still in flight belongs to the run that just ended; its completion must not
     // reinstate a dedupe stamp for a snapshot that is being deleted.
     state.exportSeq += 1;
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (invoke) {
-      void invoke("remove_raycast_snapshot").catch(() => undefined);
-    }
   }
-  if (shouldRender) {
-    host.render();
+  // The main window owns token creation and exports. Settings can retry the atomic native
+  // disable directly even when the persisted switch is already off.
+  const registration = !host.isStandaloneSettingsWindow || (!active && persistSettings)
+    ? registerCompanionWithNativeHost(host, active)
+    : null;
+  if (active && registration) void exportRaycastSnapshotNow(host, true);
+  if (shouldRender) host.render();
+
+  const epoch = state.companionEpoch;
+  if (!registration) return true;
+  const registered = (await registration) !== null;
+  if (epoch !== state.companionEpoch) return false;
+  if (!active && (!registered || options?.announceDisconnect)) {
+    state.companionNotice = registered
+      ? {
+          checkedAt: Date.now(),
+          lines: [tr3(
+            "已断开：快照已删除，旧令牌已吊销，之前排队的外部命令不会再执行。",
+            "已中斷連線：快照已刪除，舊權杖已撤銷，之前排隊的外部命令不會再執行。",
+            "Disconnected: the snapshot is deleted, the old token is revoked and earlier queued commands will not run.",
+          )],
+          isError: false,
+        }
+      : companionDisconnectFailure();
+    if (shouldRender) host.render();
   }
+  return registered && active === enabled;
 }
 
 /** Moves the native registration (`companion.rs`), which only accepts writes of the generation it returns. */
-function registerCompanionWithNativeHost(host: MenuMijiaWindowsApp, enabled: boolean): void {
+function registerCompanionWithNativeHost(host: MenuMijiaWindowsApp, enabled: boolean): Promise<number | null> {
   const state = hostState(host);
   const invoke = window.__TAURI_INTERNALS__?.invoke;
-  state.companionGeneration = invoke
-    ? invoke<unknown>("set_companion_integration", { enabled }).then(
-        (generation) => (typeof generation === "number" ? generation : null),
-        () => null,
-      )
-    : Promise.resolve(null);
+  state.companionGeneration = state.companionGeneration.then(async () => {
+    try {
+      const generation = await invoke?.<number>("set_companion_integration", { enabled });
+      return typeof generation === "number" ? generation : null;
+    } catch {
+      return null;
+    }
+  });
+  return state.companionGeneration;
+}
+
+function companionDisconnectFailure(): CompanionNotice {
+  return {
+    checkedAt: Date.now(),
+    lines: [tr3(
+      "集成已关闭，但无法确认快照已移除。请重试删除快照。",
+      "整合已關閉，但無法確認快照已移除。請重試刪除快照。",
+      "Integration is off, but snapshot removal could not be confirmed. Retry deleting the snapshot.",
+    )],
+    isError: true,
+    retryDisconnect: true,
+  };
 }
 
 export function getCompanionNotice(host: MenuMijiaWindowsApp): CompanionNotice | null {
@@ -1170,6 +1197,11 @@ export async function detectCompanionIntegration(host: MenuMijiaWindowsApp): Pro
   const lines: string[] = [];
   let isError = false;
   if (!host.settings.enableRaycastIntegration) {
+    if (status?.enabled !== false || status.snapshotExists !== false) {
+      const failure = companionDisconnectFailure();
+      if (epoch === state.companionEpoch) state.companionNotice = failure;
+      return failure;
+    }
     lines.push(tr3("集成已关闭：没有快照，外部工具发来的命令会被拒绝。", "整合已關閉：沒有快照，外部工具傳來的命令會被拒絕。", "Integration is off: no snapshot, and companion commands are refused."));
   } else if (status === null) {
     isError = true;
@@ -1229,8 +1261,7 @@ function createUrlCommandHostAdapter(
   const revisionStillMatches = () =>
     host.sourceRevision === expectedRevision && state.companionEpoch === companionEpoch;
   let createdUndoAction: UndoAction | null = null;
-  // The same gate the panel write runs, asked before any prompt so a type closed ahead of the
-  // refresh is refused up front and 全关 leaves it out instead of failing the whole batch (#346).
+  // Check before opening a prompt so a type closed ahead of the refresh is refused up front.
   const deviceWriteGate = (deviceId: string): string | null => {
     if (host.settings.connectionMode === "demo" && !isDualSourceEnabled(host)) return null;
     return evaluateDeviceEntityWriteGate({
@@ -1329,11 +1360,11 @@ function createUrlCommandHostAdapter(
     },
 
     setPendingHighRisk(next): void {
-      host.setPendingHighRisk(next);
+      if (revisionStillMatches()) host.setPendingHighRisk(next);
     },
 
     clearPendingHighRisk(): void {
-      host.clearPendingHighRisk();
+      if (revisionStillMatches()) host.clearPendingHighRisk();
     },
 
     showExternalToast(message: string, isError: boolean): void {
@@ -1346,6 +1377,7 @@ function createUrlCommandHostAdapter(
     },
 
     recordRaycastCommandFeedback(feedback): void {
+      if (state.companionEpoch !== companionEpoch) return;
       state.lastCommandFeedback = {
         ...feedback,
         completedAt: new Date().toISOString(),
@@ -1403,11 +1435,14 @@ function createUrlCommandHostAdapter(
         };
       }
       if (scene === "allOff") {
-        if (host.settings.connectionMode !== "demo" || isDualSourceEnabled(host)) {
+        const context = host.settings.connectionMode === "demo" && !isDualSourceEnabled(host)
+          ? null
+          : buildHostCapabilityContext(host);
+        if (context) {
           const gateMsg = evaluateQuickActionSourceWriteGate({
             actionId: "lightsOff",
             scopeDevices: [],
-            context: buildHostCapabilityContext(host),
+            context,
             languagePreference: host.settings.interfaceLanguage,
           });
           if (gateMsg !== null) {
@@ -1416,26 +1451,28 @@ function createUrlCommandHostAdapter(
             return { message: gateMsg, isError: true };
           }
         }
-        const targets = allOffTargets(
-          foldGrouped(host, host.devices).filter((d) => deviceWriteGate(d.id) === null),
+        const { targets, skipped } = planWritableAllOff(
+          foldGrouped(host, host.devices),
           host.settings.allOffOverrides,
+          context,
         );
+        const result = allOffResultText(targets.length, skipped);
         if (targets.length === 0) {
           return {
-            message: tr3("当前没有开启的设备", "目前沒有開啟的裝置", "No active devices are currently on"),
+            message: skipped > 0
+              ? result
+              : tr3("当前没有开启的设备", "目前沒有開啟的裝置", "No active devices are currently on"),
             isError: false,
           };
         }
         const ok = await host.executeIntents(
           targets.map((d) => ({ targetId: d.id, operation: { kind: "power", isOn: false } })),
-          t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+          result,
           t("一键全关"),
           { recordHabits: true },
         );
         return {
-          message:
-            host.replyBanner?.text ??
-            t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+          message: host.replyBanner?.text ?? result,
           isError: !ok || Boolean(host.replyBanner?.isError),
         };
       }
@@ -1508,16 +1545,17 @@ export function enqueueIncomingOpenUrl(
           while (state.urlQueue.length > 0) {
             const item = state.urlQueue.shift()!;
             try {
-              if (host.sourceRevision !== item.sourceRevision) {
-                reportStaleExternalUrl(host, item.url);
-                continue;
-              }
               if (state.companionEpoch !== item.companionEpoch) {
                 reportStaleExternalUrl(
                   host,
                   item.url,
                   tr3("Raycast 与本地 CLI / MCP 集成已切换，已取消之前排队的外部链接", "Raycast 與本機 CLI / MCP 整合已切換，已取消之前排隊的外部連結", "Raycast & local CLI / MCP integration was switched; earlier queued links were cancelled"),
+                  false,
                 );
+                continue;
+              }
+              if (host.sourceRevision !== item.sourceRevision) {
+                reportStaleExternalUrl(host, item.url);
                 continue;
               }
               await onOpenURL(
@@ -1544,23 +1582,25 @@ function reportStaleExternalUrl(
   host: MenuMijiaWindowsApp,
   rawUrl: string,
   staleMessage = tr3("数据源已切换，已取消外部链接执行", "資料源已切換，已取消外部連結執行", "Data source changed; external link cancelled"),
+  recordFeedback = true,
 ): void {
-  const state = hostState(host);
-  const envelope = AppURLParser.parseEnvelope(rawUrl);
   host.replyBanner = {
     text: staleMessage,
     source: t("外部链接"),
     isError: true,
   };
-  state.lastCommandFeedback = {
-    ...(envelope?.requestId ? { requestId: envelope.requestId } : {}),
-    command: envelope ? formatAppURLCommandLabel(envelope.command) : "invalid",
-    message: staleMessage,
-    isError: true,
-    completedAt: new Date().toISOString(),
-  };
+  if (recordFeedback) {
+    const envelope = AppURLParser.parseEnvelope(rawUrl);
+    hostState(host).lastCommandFeedback = {
+      ...(envelope?.requestId ? { requestId: envelope.requestId } : {}),
+      command: envelope ? formatAppURLCommandLabel(envelope.command) : "invalid",
+      message: staleMessage,
+      isError: true,
+      completedAt: new Date().toISOString(),
+    };
+  }
   host.render();
-  if (host.settings.enableRaycastIntegration) {
+  if (recordFeedback && host.settings.enableRaycastIntegration) {
     void exportRaycastSnapshotNow(host, true);
   }
 }
@@ -1596,16 +1636,7 @@ function bindCompanionAndUpdaterEvents(host: MenuMijiaWindowsApp): void {
     }
   });
 
-  registerCompanionWithNativeHost(host, host.settings.enableRaycastIntegration);
-  if (host.settings.enableRaycastIntegration) {
-    getActiveRaycastBridgeTokenForHost(host);
-    void exportRaycastSnapshotNow(host, true);
-  } else {
-    const invoke = window.__TAURI_INTERNALS__?.invoke;
-    if (invoke) {
-      void invoke("remove_raycast_snapshot").catch(() => undefined);
-    }
-  }
+  void setRaycastIntegrationEnabled(host, host.settings.enableRaycastIntegration, { persistSettings: false, render: false });
 
   const invoke = window.__TAURI_INTERNALS__?.invoke;
   if (!invoke) return;

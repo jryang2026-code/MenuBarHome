@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -180,9 +181,7 @@ struct PanelHealthTests {
 
     @Test("One expired Mi account beside a live one does not claim Home Assistant still works")
     func partialMiExpiryNamesTheOtherAccount() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.panel-health.partial.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let saved = MiSessionStore.saveAccounts([
             MiAccount(session: MiSession(
@@ -193,7 +192,7 @@ struct PanelHealthTests {
             ))
         ], defaults: defaults)
         #expect(saved)
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         try await store.waitForTestSnapshot()
         #expect(store.miSessionShowsExpired)
         #expect(!store.miSessionBlocksControl)
@@ -553,9 +552,7 @@ struct PanelHealthTests {
 
     @Test("Two Mi accounts, one expired, keep a declined HA prompt degraded")
     func declinedPlaintextWithAnotherMiAccountStaysDegraded() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.panel-health.declined-partial.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let saved = MiSessionStore.saveAccounts([
             MiAccount(session: MiSession(
@@ -566,7 +563,7 @@ struct PanelHealthTests {
             )),
         ], defaults: defaults)
         #expect(saved)
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         try await store.waitForTestSnapshot()
         store.hasHASource = true
         store.haPlaintextPrompt = .declined("http://203.0.113.5:8123")
@@ -814,9 +811,7 @@ struct PanelHealthTests {
 
     @Test("One expired Mi account beside an online one and an offline HA names the other account")
     func offlineHAWithAnotherMiAccountNamesTheOtherAccount() async throws {
-        let suite = "com.jryang1997.MenuBarMijia.panel-health.offline-ha.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let saved = MiSessionStore.saveAccounts([
             MiAccount(session: MiSession(
@@ -827,7 +822,7 @@ struct PanelHealthTests {
             )),
         ], defaults: defaults)
         #expect(saved)
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         try await store.waitForTestSnapshot()
         #expect(store.miSessionShowsExpired)
         #expect(!store.miSessionBlocksControl)
@@ -1093,15 +1088,13 @@ struct PanelHealthTests {
         haSource: Bool = false,
         provider: MockHomeProvider? = nil
     ) async throws -> HomeStore {
-        let suite = "com.jryang1997.MenuBarMijia.panel-health.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(backend.rawValue, forKey: "home_backend")
         if let session {
             let saved = MiSessionStore.save(session, defaults: defaults)
             #expect(saved)
         }
-        let store = HomeStore(provider: provider ?? MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider ?? MockHomeProvider(), defaults: defaults)
         try await store.waitForTestSnapshot()
         if haSource {
             store.hasHASource = true

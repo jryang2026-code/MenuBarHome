@@ -1,6 +1,7 @@
 import Foundation
 import KeychainTestSupport
 import Observation
+import PreferencesTestSupport
 import StateTestSupport
 import Testing
 @testable import MijiaCore
@@ -90,13 +91,13 @@ struct ProactiveSuggestionsToggleTests {
     private func makeStore(
         temperature: Double = 29.5
     ) async throws -> (store: HomeStore, mock: MockHomeProvider, transport: DeferredTransport, defaults: UserDefaults) {
-        let suite = "test.proactive.toggle.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: Self.home(temperature: temperature))
         let store = HomeStore(
-            provider: mock, defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: MemoryVaultStorage().storage)
+            provider: mock,
+            credentialVault: CredentialVault(storage: MemoryVaultStorage().storage),
+            defaults: defaults
         )
         store.assistantNow = { Self.frozenNow }
         store.enableSafetyAlerts = false
@@ -117,11 +118,10 @@ struct ProactiveSuggestionsToggleTests {
 
     @Test("Fresh installs and upgrades both start with suggestions on, independently of AI")
     func defaults() async throws {
-        let suite = "test.proactive.toggle.fresh.\(UUID().uuidString)"
         let fresh = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: MemoryVaultStorage().storage)
+            credentialVault: CredentialVault(storage: MemoryVaultStorage().storage),
+            defaults: InMemoryUserDefaults()
         )
         try await fresh.waitForTestSnapshot()
         #expect(fresh.capabilityResolutionMode == .freshInstall)
@@ -141,12 +141,11 @@ struct ProactiveSuggestionsToggleTests {
     func refusals() async throws {
         let mem = MemoryVaultStorage()
         mem.readResult = .unavailable
-        let suite = "test.proactive.toggle.uncertain.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let uncertain = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage)
+            credentialVault: CredentialVault(storage: mem.storage), defaults: defaults
         )
         try await uncertain.waitForTestSnapshot()
         #expect(uncertain.isIdentityUncertain)
@@ -161,20 +160,19 @@ struct ProactiveSuggestionsToggleTests {
 
     @Test("Turning suggestions off persists across a store restart")
     func persistsAcrossRestart() async throws {
-        let suite = "test.proactive.toggle.persist.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite, credentialVault: vault
+            credentialVault: vault, defaults: defaults
         )
         try await store.waitForTestSnapshot()
         #expect(store.setProactiveSuggestionsEnabled(false))
 
         let restarted = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite, credentialVault: vault
+            credentialVault: vault, defaults: defaults
         )
         try await restarted.waitForTestSnapshot()
         #expect(restarted.proactiveSuggestionsEnabled == false)

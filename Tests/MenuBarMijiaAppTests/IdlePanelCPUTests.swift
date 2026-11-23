@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MenuBarMijiaApp
@@ -11,17 +12,18 @@ extension PanelPresentationTests {
 struct IdlePanelCPUTests {
     private static func makeStore(
         theme: PanelTheme
-    ) async throws -> (HomeStore, UserDefaults, String) {
-        let suite = "MenuBarMijiaTests.IdlePanelCPU.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    ) async throws -> (HomeStore, InMemoryUserDefaults) {
+        // One instance for the store and for `MenuBarPanelController`: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         defaults.set(theme.rawValue, forKey: PanelTheme.storageKey)
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         store.completeOnboarding()
         try await store.waitForTestSnapshot()
-        return (store, defaults, suite)
+        return (store, defaults)
     }
 
     private static func pumpMainRunLoop(seconds: TimeInterval) {
@@ -37,8 +39,7 @@ struct IdlePanelCPUTests {
     ])
     func hiddenPanelUnmountsHostingViewAndMouseMonitors(theme: PanelTheme) async throws {
         _ = NSApplication.shared
-        let (store, defaults, suite) = try await Self.makeStore(theme: theme)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await Self.makeStore(theme: theme)
 
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let controller = MenuBarPanelController(statusItem: statusItem, userDefaults: defaults)
@@ -78,8 +79,7 @@ struct IdlePanelCPUTests {
     @Test("Animated Liquid Glass close tears down contentView and mouse monitors on completion")
     func animatedLiquidGlassCloseUnmountsOnCompletion() async throws {
         _ = NSApplication.shared
-        let (store, defaults, suite) = try await Self.makeStore(theme: .liquidGlass)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await Self.makeStore(theme: .liquidGlass)
 
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let controller = MenuBarPanelController(statusItem: statusItem, userDefaults: defaults)
@@ -114,8 +114,7 @@ struct IdlePanelCPUTests {
     @Test("Reopening during an animated close cancels teardown and keeps the panel mounted")
     func reopenDuringAnimatedCloseKeepsPanelMounted() async throws {
         _ = NSApplication.shared
-        let (store, defaults, suite) = try await Self.makeStore(theme: .liquidGlass)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await Self.makeStore(theme: .liquidGlass)
 
         let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let controller = MenuBarPanelController(statusItem: statusItem, userDefaults: defaults)

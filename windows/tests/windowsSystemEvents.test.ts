@@ -17,7 +17,8 @@ import {
   pollSystemContextSignals,
   tickSafetyHealthAndAutomation,
 } from "../src/ui/activityStackView.js";
-import { bindLifecycleRecovery, syncAutomationLifecycle } from "../src/ui/appLifecycle.js";
+import { bindLifecycleRecovery, retryIdentityMigration, syncAutomationLifecycle } from "../src/ui/appLifecycle.js";
+import { markTimerSnapshotReady } from "../src/ui/scheduledCommands.js";
 import { createAutomationRule } from "../src/core/automationEngine.js";
 import { setLanguage } from "../src/core/i18n.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
@@ -29,6 +30,9 @@ import {
   type NativeSystemSignals,
 } from "../src/ui/systemContextPoll.js";
 import { readNativeSystemPower } from "../src/ui/transport.js";
+
+/** The three DOM events `system_events.rs` forwards, and the only ones the switch controls. */
+const AUTOMATION_EVENT_TYPES = ["menumijia:system-sleep", "menumijia:system-wake", "menumijia:display-power"];
 
 let dom: Window | null = null;
 
@@ -576,6 +580,46 @@ describe("PC context automation runtime switch", () => {
     assert.equal(sent.length, 1);
   });
 
+  it("resumes a scene-only home without device cards and still pauses it when the source is not live", () => {
+    const sceneRule = (id: string, sceneId: string) =>
+      createAutomationRule({ id, trigger: "systemSleep", action: { kind: "scene", sceneId } });
+    const rules = [sceneRule("sleep-scene", "scene.sleep"), sceneRule("gone-scene", "scene.removed")];
+    const { app } = trackingApp(rules);
+    // A Home Assistant home whose kept types leave no device cards: scenes are all it has.
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = "https://ha.local:8123";
+    app.settings.haToken = "ha-token";
+    app.devices = [];
+    app.scenes = [{ id: "scene.sleep", name: "睡眠模式", entityId: "scene.sleep" }];
+    markTimerSnapshotReady(app);
+
+    setEventAutomationRunning(app, false);
+    assert.equal(setEventAutomationRunning(app, true), true);
+    assert.deepEqual(
+      getHostActivityCenter(app).automationEngine.store.load().map(({ id, isEnabled }) => [id, isEnabled]),
+      [["sleep-scene", true], ["gone-scene", false]],
+    );
+
+    // A pending source switch (no snapshot for this revision) pauses the scene rule again.
+    setEventAutomationRunning(app, false);
+    app.sourceEpoch.advance("source");
+    assert.equal(setEventAutomationRunning(app, true), true);
+    assert.deepEqual(
+      getHostActivityCenter(app).automationEngine.store.load().map(({ id, isEnabled }) => [id, isEnabled]),
+      [["sleep-scene", false], ["gone-scene", false]],
+    );
+
+    // A failed Home Assistant connection is not a live source either.
+    markTimerSnapshotReady(app);
+    app.haConnectionError = "Home Assistant authentication rejected";
+    setEventAutomationRunning(app, false);
+    assert.equal(setEventAutomationRunning(app, true), true);
+    assert.equal(
+      getHostActivityCenter(app).automationEngine.store.load().find((rule) => rule.id === "sleep-scene")?.isEnabled,
+      false,
+    );
+  });
+
   it("pauses a climate quick action after fan is disabled and keeps lights off available", () => {
     const rules = (["climateSleepOff", "lightsOff"] as const).map((quickAction) =>
       createAutomationRule({ id: quickAction, trigger: "systemSleep", action: { kind: "quickAction", quickAction } }));
@@ -690,5 +734,50 @@ describe("PC context automation runtime switch", () => {
     assert.deepEqual(runs.map((run) => run.ruleId), ["first"]);
     assert.ok(app.lastUndoAction);
     assert.equal(getHostActivityCenter(app).recentAutomationRuns.length, 1);
+  });
+
+  it("detaches the system-event listeners once a settings reload settles automation on off", async () => {
+    // A cold start whose settings read failed binds the three automation listeners to the default
+    // (on); the repaired storage below says off, so the listeners must go away with the reload.
+    const tracked = (type: string): boolean => AUTOMATION_EVENT_TYPES.includes(type);
+    const listeners = new Set<string>();
+    const addEventListener = window.addEventListener.bind(window);
+    const removeEventListener = window.removeEventListener.bind(window);
+    window.addEventListener = (type: string, listener: EventListenerOrEventListenerObject) => {
+      if (tracked(type)) listeners.add(`${type}:${String(listener)}`);
+      addEventListener(type, listener);
+    };
+    window.removeEventListener = (type: string, listener: EventListenerOrEventListenerObject) => {
+      if (tracked(type)) listeners.delete(`${type}:${String(listener)}`);
+      removeEventListener(type, listener);
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, "{not-json");
+      const app = new MenuMijiaWindowsApp(element("#app"));
+      const stub = stubNative();
+      const stop = bindLifecycleRecovery(app);
+      try {
+        const bound = [...listeners].filter((entry) => entry.startsWith("menumijia:system-sleep:"));
+        assert.equal(bound.length, 1, "the default (on) binds the native system-event consumers");
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify({
+          connectionMode: "demo",
+          hasCompletedOnboarding: true,
+          eventAutomationEnabled: false,
+        }));
+        await retryIdentityMigration(app);
+        assert.equal(app.settings.eventAutomationEnabled, false, "the repaired storage value wins");
+        assert.deepEqual([...listeners], [], "a settled off switch unbinds the system-event consumers");
+
+        window.dispatchEvent(new window.CustomEvent("menumijia:system-sleep"));
+        await flush();
+        assert.deepEqual(stub.calls, []);
+      } finally {
+        stop();
+      }
+    } finally {
+      window.addEventListener = addEventListener;
+      window.removeEventListener = removeEventListener;
+    }
   });
 });

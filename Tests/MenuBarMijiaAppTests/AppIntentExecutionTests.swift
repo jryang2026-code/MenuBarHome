@@ -303,9 +303,7 @@ struct AppIntentExecutionTests {
 
     @Test("ToggleDeviceIntent returns capability-disabled reason instead of not-found when Xiaomi account is turned off")
     func toggleDeviceIntentReportsDisabledXiaomiAccountInsteadOfNotFound() async throws {
-        let suite = "test.intent.mi.disabled.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         let cn = MiAccount(session: MiSession(
             userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
@@ -317,7 +315,7 @@ struct AppIntentExecutionTests {
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
 
         let provider = ControlledIntentProvider(autoComplete: true)
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: provider, credentialVault: vault, defaults: defaults)
         let cnLamp = SmartDevice(
             id: "cn-lamp", name: "客厅台灯", roomId: "\(cn.id)/living", roomName: "客厅",
             model: "yeelink.light.lamp4", isOnline: true,
@@ -367,9 +365,7 @@ struct AppIntentExecutionTests {
 
     @Test("UnsupportedDeviceScanner scopes ScanContext and scan sessions strictly to enabledMiAccounts")
     func unsupportedDeviceScannerUsesOnlyEnabledMiAccounts() async throws {
-        let suite = "test.scanner.enabled.mi.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
         let cn = MiAccount(session: MiSession(
             userId: "10010001", cUserId: "c-cn", ssecurity: "ssec-cn", serviceToken: "tok-cn", region: "cn"
@@ -380,7 +376,7 @@ struct AppIntentExecutionTests {
         MiSessionStore.saveAccounts([cn, de], defaults: defaults, vault: vault)
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: MockHomeProvider(), credentialVault: vault, defaults: defaults)
         let bothEnabledContext = UnsupportedDeviceScanner.ScanContext(store: store)
         #expect(bothEnabledContext.miAccountIds == [cn.id, de.id])
 

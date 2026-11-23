@@ -551,6 +551,19 @@ describe("Wave 4 · Active Safety Guard, Security Sensor Alerts & HA Doorbell Se
     assert.equal(policy.onlyWhenAway, true);
   });
 
+  it("names a retained alert-only device by its local alias in the safety alert", () => {
+    const app = createCloudApp();
+    app.devices = [];
+    app.safetyRetainedDevices = [makeSensor({ id: "sensor.door", name: "入户门磁", battery: 9 })];
+    app.layout.aliases = { "sensor.door": "玄关门磁" };
+
+    tickSafetyHealthAndAutomation(app, new Date(2026, 10, 14, 10, 0, 0).getTime());
+
+    const alert = getHostActivityCenter(app).recentSafetyAlerts.find((r) => r.alert.id === "battery:sensor.door");
+    assert.match(alert?.alert.title ?? "", /玄关门磁/);
+    assert.doesNotMatch(alert?.alert.title ?? "", /入户门磁/);
+  });
+
   it("persists HA doorbell auto-popup, chime, and auto-close seconds across restarts and governs live rings", async () => {
     const app = createCloudApp({ connectionMode: "homeAssistant", haBaseURL: "http://ha.local:8123", haToken: "tok" });
     const cam = makeCamera();

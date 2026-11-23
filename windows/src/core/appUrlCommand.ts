@@ -395,6 +395,7 @@ export interface AppURLCommandHost {
     readonly actionKey: string;
     readonly expiresAtMs: number;
     readonly sourceRevision: number;
+    readonly origin?: "url";
     readonly confirm?: {
       readonly command: DeviceCommand;
       readonly summary: string;
@@ -769,7 +770,7 @@ async function runIntentOnDevice(
         return { message: sourceChangedBlockedMessage(), isError: true };
       }
       const actionKey = JSON.stringify(firstCommand);
-      host.setPendingHighRisk({ deviceId: dev.id, actionKey, expiresAtMs: Date.now() + 8000, sourceRevision: host.sourceRevision, confirm: { command: firstCommand, summary, intent, promptLabel: labelForHighRisk }});
+      host.setPendingHighRisk({ deviceId: dev.id, actionKey, expiresAtMs: Date.now() + 8000, sourceRevision: host.sourceRevision, origin: "url", confirm: { command: firstCommand, summary, intent, promptLabel: labelForHighRisk }});
       const promptMsg = trText( "「{action}」属于高风险设备，请在面板中确认", '"{action}" is high-risk; confirm in the panel', { action: labelForHighRisk });
       host.showExternalToast(promptMsg, false);
       await host.revealPanelForExternalUrl();

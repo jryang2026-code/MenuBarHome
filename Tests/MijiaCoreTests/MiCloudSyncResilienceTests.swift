@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -344,9 +345,10 @@ struct MiCloudSyncResilienceTests {
     @Test("The empty-panel home hint counts only the other homes")
     @MainActor
     func otherHomesCount() async throws {
-        let suite = "test.micloud.resilience.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome()), defaultsSuiteName: suite)
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome()),
+            defaults: InMemoryUserDefaults()
+        )
         try await store.waitForTestSnapshot()
 
         store.homes = [

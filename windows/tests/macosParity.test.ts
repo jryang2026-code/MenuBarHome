@@ -539,18 +539,19 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
       assert.equal(settingsInvoked.includes("set_companion_integration"), false);
       assert.equal(settingsInvoked.includes("write_raycast_snapshot"), false);
 
-      // Toggling Raycast off in Settings clears snapshot via main when settings-sync arrives.
+      // Settings can confirm native cleanup before showing the result.
       settingsContainer.querySelector<HTMLElement>('[data-settings-tab="safety"]')?.click();
       const raycastToggle = settingsContainer.querySelector<HTMLInputElement>("#settings-raycast-integration")!;
       raycastToggle.checked = false;
       raycastToggle.dispatchEvent(new window.Event("change"));
       await setImmediate();
-      assert.equal(settingsInvoked.includes("remove_raycast_snapshot"), false);
+      assert.equal(settingsInvoked.includes("set_companion_integration"), true);
+      assert.equal(settingsInvoked.includes("write_raycast_snapshot"), false);
 
       currentInvoked = mainInvoked;
       window.dispatchEvent(new window.CustomEvent("menumijia:settings-sync"));
       await setImmediate();
-      assert.equal(mainInvoked.includes("remove_raycast_snapshot"), true);
+      assert.equal(mainInvoked.filter((call) => call === "set_companion_integration").length, 2);
     } finally {
       settingsApp.dispose();
       settingsContainer.remove();

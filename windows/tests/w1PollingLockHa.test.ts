@@ -28,6 +28,7 @@ import {
   shouldSkipSilentPollForBackoff,
 } from "../src/core/pollingPolicy.js";
 import { HomeAssistantSynthesizer, haServiceCall, parseCachedHAHome } from "../src/core/homeAssistant.js";
+import { DEVICE_CATEGORY_IDS } from "../src/core/capabilityManifest.js";
 import { cloudRefreshDue, deviceStatusSummary } from "../src/core/models.js";
 import { setLanguage } from "../src/core/i18n.js";
 import { closeTestWindow, mountTestWindow } from "./uiHarness.js";
@@ -362,6 +363,84 @@ describe("A2: PollingPolicy cadence, 20-round topology split, 429 backoff, lock 
     await app.refreshDevices(true);
     assert.equal(deviceListCalls, 4, "home switch forces full topology fetch");
     assert.deepEqual(app.devices.map((d) => d.id), ["lamp-b"]);
+  });
+
+  it("re-fetches light-group membership after the light type comes back on, instead of reusing the round that skipped it", async () => {
+    let lightGroupCalls = 0;
+    let deviceListCalls = 0;
+
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
+          if (cmd === "is_workstation_locked") return false;
+          if (cmd !== "native_http") return null;
+          const url = String(args["url"] ?? "");
+          if (url.includes("miot-spec.org/miot-spec-v2/instance")) return okResponse(LIGHT_SPEC_RAW);
+          if (url.includes("device_list")) {
+            deviceListCalls += 1;
+            return okResponse({
+              list: [
+                { did: "lamp-a", name: "客厅吸顶灯", model: LIGHT_MODEL, isOnline: true, spec_type: LIGHT_SPEC_RAW.type },
+                { did: "group.living", name: "客厅灯组", model: LIGHT_MODEL, isOnline: true, spec_type: LIGHT_SPEC_RAW.type },
+              ],
+            });
+          }
+          if (url.includes("homeroom/gethome")) {
+            return okResponse({
+              homelist: [{ id: "home-1", name: "主家", roomlist: [{ id: "r-1", name: "客厅", dids: ["lamp-a", "group.living"] }] }],
+            });
+          }
+          if (url.includes("groupv2/query_status")) {
+            lightGroupCalls += 1;
+            return okResponse([{ group_did: "group.living", status: "1", member_ship: { "lamp-a": "1" } }]);
+          }
+          if (url.includes("miotspec/prop/get")) {
+            const payload = decryptMiPayload(String(args["body"] ?? "")) as {
+              params?: Array<{ did: string; siid: number; piid: number }>;
+            };
+            return okResponse(
+              (payload.params ?? []).map((p) => ({ did: p.did, siid: p.siid, piid: p.piid, code: 0, value: p.piid === 1 ? true : 40 })),
+            );
+          }
+          return okResponse({});
+        },
+      },
+    });
+
+    localStorage.setItem(
+      SETTINGS_KEY,
+      JSON.stringify({
+        connectionMode: "xiaomiCloud",
+        hasCompletedOnboarding: true,
+        autoCheckUpdates: false,
+        selectedHomeId: "home-1",
+        miSession: SESSION_A,
+        cachedModelTypes: { [LIGHT_MODEL]: LIGHT_SPEC_RAW.type },
+      }),
+    );
+
+    const app = new MenuMijiaWindowsApp(document.querySelector<HTMLElement>("#app")!);
+    while (app.isSyncingCloud || app.devices.length === 0) {
+      await setImmediate();
+    }
+    assert.equal(lightGroupCalls, 1, "the first load asks for membership");
+    assert.equal(app.groupOwnerByMemberDid.get("lamp-a"), "group.living");
+
+    // Turning the light type off skips the query. A manual refresh is the round that discovers the
+    // topology, and it caches the skipped decision alongside it.
+    assert.equal(app.setEnabledDeviceCategories(["plug"]), true);
+    await app.refreshDevices(false);
+    assert.equal(lightGroupCalls, 1, "a closed light type asks for no membership");
+    const cachedSkipsMembership = lightGroupCalls;
+
+    // Turning it back on must not reuse that cached round: a silent poll has to discover again, or
+    // the group card would leave its members unfolded until the next 20th poll (P2-10).
+    assert.equal(app.setEnabledDeviceCategories(DEVICE_CATEGORY_IDS), true);
+    await app.refreshDevices(true);
+    assert.ok(lightGroupCalls > cachedSkipsMembership, "re-enabling lights fetches membership again");
+    assert.equal(app.groupOwnerByMemberDid.get("lamp-a"), "group.living");
+    assert.ok(deviceListCalls >= 3, "a full discovery, not a cached topology round");
   });
 
   it("skips silent polls during 429 backoff or workstation lock, allows manual refresh to clear backoff, and resumes on unlock", async () => {
