@@ -38,8 +38,9 @@ When Raycast AI is available, mention the extension and it can call three tools:
 | `get-device-state` | no | Returns one device's state, its room, the range of each control and the room's environment readings. |
 | `control-device` | yes | Turns one device `on`, `off` or `toggle`. Raycast's `confirmation` export names the device and action before the tool runs. |
 
-The two read-only tools only read the snapshot the app writes. The write tool resolves the device locally
-and sends `menumijia://power` with an explicit state, so the app's capability gate, lock-screen block and
+The two read-only tools only read the snapshot the app writes. The write tool resolves the device locally:
+`on` and `off` go out as explicit `menumijia://power` states, `toggle` uses `menumijia://toggle` so the app
+decides from the state it sees when the command runs. The app's capability gate, lock-screen block and
 high-risk device confirmation still apply on top of Raycast's confirmation.
 
 ## Preferences

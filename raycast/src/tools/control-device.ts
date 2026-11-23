@@ -1,4 +1,5 @@
 import { Action, type Tool } from "@raycast/api";
+import { normalizePowerAction, powerCommand, type PowerAction } from "../control";
 import { describeDevice, matchDevice } from "../match";
 import { loadSnapshot } from "../snapshot";
 import { runCommand } from "../url";
@@ -6,18 +7,9 @@ import { runCommand } from "../url";
 type Input = {
   /** Device name, room-prefixed name, id or pinyin initials, as returned by list-devices. */
   device: string;
-  /** "on", "off" or "toggle": the exact power state to ask MenuBarHome for. */
+  /** "on", "off" or "toggle": an absolute state, or a flip resolved by the app at execution time. */
   action: string;
 };
-
-type PowerAction = "on" | "off" | "toggle";
-
-function normalizeAction(raw: unknown): PowerAction | undefined {
-  const value = String(raw ?? "")
-    .trim()
-    .toLowerCase();
-  return value === "on" || value === "off" || value === "toggle" ? value : undefined;
-}
 
 function verb(action: PowerAction | undefined): string {
   if (action === "on") {
@@ -35,7 +27,7 @@ function verb(action: PowerAction | undefined): string {
  * lock-screen block and high-risk confirmation still run on top of it.
  */
 export const confirmation: Tool.Confirmation<Input> = async (input) => {
-  const action = normalizeAction(input.action);
+  const action = normalizePowerAction(input.action);
   let target = (input.device ?? "").trim() || "unknown device";
   try {
     const snapshot = await loadSnapshot();
@@ -57,16 +49,17 @@ export const confirmation: Tool.Confirmation<Input> = async (input) => {
 };
 
 /**
- * The only write tool. It resolves the device locally, then sends `menumijia://power` with an explicit
- * state and waits for the app's own result, so the AI can report exactly what happened.
+ * The only write tool. It resolves the device locally, sends a `menumijia://` link and waits for the
+ * app's own result, so the AI can report exactly what happened. `on` / `off` go out as explicit
+ * `power` states; `toggle` uses the app's `toggle` route so the app decides from live state.
  */
 export default async function tool(input: Input): Promise<{
   device: string;
   room: string;
-  action: "on" | "off";
+  action: PowerAction;
   message: string;
 }> {
-  const action = normalizeAction(input.action);
+  const action = normalizePowerAction(input.action);
   if (!action) {
     throw new Error(`Unknown action "${input.action}". Use "on", "off" or "toggle".`);
   }
@@ -79,18 +72,15 @@ export default async function tool(input: Input): Promise<{
   if (!device.isPrimaryToggleable) {
     throw new Error(`${device.name} has no switch to toggle. Use Search Devices to see what it offers.`);
   }
-  const target = action === "toggle" ? !device.isActiveOn : action === "on";
-  const result = await runCommand("power", [
-    ["device", device.id],
-    ["on", target ? "true" : "false"],
-  ]);
+  const command = powerCommand(device, action);
+  const result = await runCommand(command.route, command.params);
   if (result.isError) {
     throw new Error(result.message || "MenuBarHome refused the command.");
   }
   return {
     device: device.name,
     room: device.roomName,
-    action: target ? "on" : "off",
+    action,
     message: result.message,
   };
 }

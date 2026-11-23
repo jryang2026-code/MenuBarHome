@@ -1,4 +1,5 @@
 import { showHUD } from "@raycast/api";
+import { powerCommand } from "./control";
 import { describeDevice, matchDevice } from "./match";
 import { loadSnapshot } from "./snapshot";
 import { errorMessage, runCommandWithHUD } from "./url";
@@ -10,8 +11,8 @@ type Props = {
 };
 
 /**
- * One global-hotkey toggle. The command resolves the device against the read-only snapshot, then sends
- * an explicit `power` link (never `toggle`) so the app can name the exact action it is about to run.
+ * One global-hotkey toggle. The device is resolved against the read-only snapshot, then the app's own
+ * `toggle` route flips whatever state the device is in when the command actually runs.
  */
 export default async function ToggleDevice({ arguments: args }: Props) {
   const query = (args.device ?? "").trim();
@@ -31,10 +32,8 @@ export default async function ToggleDevice({ arguments: args }: Props) {
       await showHUD(`⚠️ ${describeDevice(device)}: no switch to toggle`);
       return;
     }
-    await runCommandWithHUD("power", [
-      ["device", device.id],
-      ["on", device.isActiveOn ? "false" : "true"],
-    ]);
+    const command = powerCommand(device, "toggle");
+    await runCommandWithHUD(command.route, command.params);
   } catch (error) {
     await showHUD(`⚠️ ${errorMessage(error)}`);
   }
