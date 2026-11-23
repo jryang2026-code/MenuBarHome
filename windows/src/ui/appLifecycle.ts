@@ -33,6 +33,12 @@ import { homeAssistantIdentity } from "../core/homeAssistant.js";
 import { loadSettings, stripCredentialFieldsFromStoredCopies, evaluateLegacyOnboardingMigration, writeSettingsForStorage } from "./settings.js";
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
+  clearSettingsHighlight,
+  highlightSettingsAnchor,
+  normalizeSettingsAnchor,
+  type SettingsAnchor,
+} from "./settingsSearch.js";
+import {
   clearHostActivitiesOnSignOut,
   collapseActivityStackOnHide,
   dispatchSystemContextEvent,
@@ -683,10 +689,18 @@ export async function checkForAppUpdate(host: MenuMijiaWindowsApp, manual: boole
   }
 
 /** `tab` routes the caller to the category it needs: the QR button to sources, an update to general. */
-export function openSettingsSheet(host: MenuMijiaWindowsApp, tab: SettingsTab = "general"): void {
+export function openSettingsSheet(
+  host: MenuMijiaWindowsApp,
+  tab: SettingsTab = "general",
+  anchor?: SettingsAnchor,
+): void {
     const normalized = normalizeSettingsTab(tab);
+    const normalizedAnchor = normalizeSettingsAnchor(anchor);
     if (!host.isStandaloneSettingsWindow && hasTauriWindowMetadata()) {
-      invokeTauriVoid("open_settings_window", { tab: normalized });
+      invokeTauriVoid(
+        "open_settings_window",
+        normalizedAnchor ? { tab: normalized, anchor: normalizedAnchor } : { tab: normalized },
+      );
       return;
     }
     host.activeSheet = "settings";
@@ -694,6 +708,11 @@ export function openSettingsSheet(host: MenuMijiaWindowsApp, tab: SettingsTab = 
     invokeTauriVoid("set_pin_popover", { pin: true });
     host.syncPanelPlacement();
     host.render();
+    if (normalizedAnchor) {
+      highlightSettingsAnchor(host.root, normalizedAnchor);
+    } else {
+      clearSettingsHighlight(host.root);
+    }
     void host.checkForAppUpdate(false);
   }
 

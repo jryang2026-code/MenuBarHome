@@ -200,5 +200,62 @@ describe("Windows empty-panel diagnosis UI", () => {
     assert.equal(instance.emptyPanelDiagnosis(), null);
     assert.equal(document.querySelector("#empty-mi-diagnosis"), null);
   });
+
+  it("forwards anchor to open_settings_window when packaged Tauri metadata is present", async () => {
+    const invoked: Array<{ cmd: string; args?: Record<string, unknown> }> = [];
+    const prevTauri = Object.getOwnPropertyDescriptor(window, "__TAURI_INTERNALS__");
+    const mockTauri = () => {
+      Object.defineProperty(window, "__TAURI_INTERNALS__", {
+        value: {
+          metadata: { currentWindow: { label: "main" } },
+          invoke: async (cmd: string, args?: Record<string, unknown>) => {
+            invoked.push({ cmd, args });
+            return null;
+          },
+        },
+        configurable: true,
+      });
+    };
+    const restoreTauri = () => {
+      if (prevTauri) {
+        Object.defineProperty(window, "__TAURI_INTERNALS__", prevTauri);
+      } else {
+        delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+      }
+    };
+    try {
+      const sgApp = await createCloudApp("sg");
+      sgApp.render();
+      mockTauri();
+      const switchRegionBtn = document.querySelector<HTMLElement>("#btn-empty-switch-region");
+      assert.ok(switchRegionBtn, "expected #btn-empty-switch-region");
+      switchRegionBtn.click();
+      assert.deepEqual(
+        invoked.find((c) => c.cmd === "open_settings_window"),
+        { cmd: "open_settings_window", args: { tab: "connection", anchor: "miCloudRegion" } },
+      );
+      assert.equal(sgApp.activeSheet, "none");
+
+      sgApp.dispose();
+      app = null;
+      invoked.length = 0;
+      restoreTauri();
+      document.body.innerHTML = '<div id="app"></div>';
+
+      const cnApp = await createCloudApp("cn");
+      cnApp.render();
+      mockTauri();
+      const confirmHomeBtn = document.querySelector<HTMLElement>("#btn-empty-confirm-mi-home");
+      assert.ok(confirmHomeBtn, "expected #btn-empty-confirm-mi-home");
+      confirmHomeBtn.click();
+      assert.deepEqual(
+        invoked.find((c) => c.cmd === "open_settings_window"),
+        { cmd: "open_settings_window", args: { tab: "connection", anchor: "miAccount" } },
+      );
+      assert.equal(cnApp.activeSheet, "none");
+    } finally {
+      restoreTauri();
+    }
+  });
 });
 

@@ -991,6 +991,17 @@ pub(crate) fn sanitize_settings_tab(raw: Option<&str>) -> &'static str {
     }
 }
 
+pub(crate) fn sanitize_settings_anchor(raw: Option<&str>) -> Option<&str> {
+    let trimmed = raw?.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 64
+        || !trimmed.bytes().all(|b| b.is_ascii_alphanumeric())
+    {
+        return None;
+    }
+    Some(trimmed)
+}
+
 #[cfg(all(windows, not(test)))]
 fn apply_dark_titlebar(window: &WebviewWindow, dark: bool) {
     use windows_sys::Win32::Foundation::HWND;
@@ -1017,25 +1028,44 @@ fn apply_dark_titlebar(window: &WebviewWindow, dark: bool) {
 fn apply_dark_titlebar(_window: &WebviewWindow, _dark: bool) {}
 
 #[tauri::command]
-pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) -> Result<bool, String> {
+pub(crate) async fn open_settings_window(
+    app: AppHandle,
+    tab: Option<String>,
+    anchor: Option<String>,
+) -> Result<bool, String> {
     let sanitized = sanitize_settings_tab(tab.as_deref());
+    let sanitized_anchor = sanitize_settings_anchor(anchor.as_deref());
     let has_explicit_tab = tab.as_deref().is_some_and(|raw| !raw.trim().is_empty());
+    let anchor_js = match sanitized_anchor {
+        Some(a) => format!("'{a}'"),
+        None => "null".to_string(),
+    };
     request_hide_panel(&app);
     if let Some(window) = app.get_webview_window("settings") {
         apply_dark_titlebar(&window, matches!(window.theme(), Ok(tauri::Theme::Dark)));
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
-        if has_explicit_tab {
+        if has_explicit_tab || sanitized_anchor.is_some() {
+            let tab_js = if has_explicit_tab {
+                format!("'{sanitized}'")
+            } else {
+                "null".to_string()
+            };
             let script = format!(
-                "window.dispatchEvent(new CustomEvent('menumijia:select-settings-tab', {{ detail: {{ tab: '{sanitized}' }} }}))"
+                "window.dispatchEvent(new CustomEvent('menumijia:select-settings-tab', {{ detail: {{ tab: {tab_js}, anchor: {anchor_js} }} }}))"
             );
             let _ = window.eval(&script);
         }
         return Ok(true);
     }
+    let tab_init = if has_explicit_tab || sanitized_anchor.is_none() {
+        format!("'{sanitized}'")
+    } else {
+        "null".to_string()
+    };
     let init_script = format!(
-        "window.__MENUMIJIA_WINDOW_MODE__ = 'settings'; window.__MENUMIJIA_SETTINGS_TAB__ = '{sanitized}';"
+        "window.__MENUMIJIA_WINDOW_MODE__ = 'settings'; window.__MENUMIJIA_SETTINGS_TAB__ = {tab_init}; window.__MENUMIJIA_SETTINGS_ANCHOR__ = {anchor_js};"
     );
     SETTINGS_ALLOW_CLOSE.store(false, Ordering::SeqCst);
     let settings_win = tauri::WebviewWindowBuilder::new(
@@ -1154,6 +1184,23 @@ mod tests {
         assert_eq!(sanitize_settings_tab(Some("system")), "safety");
         assert_eq!(sanitize_settings_tab(Some("about")), "about");
         assert_eq!(sanitize_settings_tab(Some("foo'; alert(1)//")), "general");
+    }
+
+    #[test]
+    fn settings_anchor_slug_sanitizes_empty_and_unsafe_values() {
+        assert_eq!(sanitize_settings_anchor(None), None);
+        assert_eq!(sanitize_settings_anchor(Some("")), None);
+        assert_eq!(sanitize_settings_anchor(Some("   ")), None);
+        assert_eq!(
+            sanitize_settings_anchor(Some("miCloudRegion")),
+            Some("miCloudRegion")
+        );
+        assert_eq!(
+            sanitize_settings_anchor(Some(" miAccount ")),
+            Some("miAccount")
+        );
+        assert_eq!(sanitize_settings_anchor(Some("foo'; alert(1)//")), None);
+        assert_eq!(sanitize_settings_anchor(Some(&"a".repeat(65))), None);
     }
 
     #[test]

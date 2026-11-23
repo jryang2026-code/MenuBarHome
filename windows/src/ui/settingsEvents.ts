@@ -125,7 +125,7 @@ export interface SettingsEventsHost extends SourceSwitchHost {
   lastHabitAction(): HabitLastAction | null;
   checkForAppUpdate(manual: boolean): Promise<void>;
   handleNaturalCommand(raw: string, fromScheduled?: boolean): Promise<void>;
-  openSettingsSheet(tab?: SettingsTab): void;
+  openSettingsSheet(tab?: SettingsTab, anchor?: SettingsAnchor): void;
   openUpdatePage(): void;
   refreshDevices(silent?: boolean): Promise<void>;
   refreshHADevices(silent?: boolean): Promise<void>;
