@@ -52,18 +52,22 @@ import {
 import { controlFailureUserMessage } from "../src/core/controlFailure.js";
 import {
   HaBlockedRequestError,
+  abandonHungHaScopeInFlight,
   acquireHaTransportLease,
   beginHaScopeDisable,
   getHaScopeInFlightCount,
   getHaScopeLifecyclePhase,
+  invokeHaWithLease,
   isHaBlockedRequestError,
   isHaDrainTimerRefedForTests,
   isHaNativeCancelReady,
   isHaScopeStopTimedOut,
+  isNativeHaDrainTimeoutError,
   requestHaScopeEnableAfterDrain,
   resetHaTransportGateForTests,
   setHaNativeCancelReadyForTests,
   setHaStopDrainTimeoutMsForTests,
+  waitForHaScopeDrained,
 } from "../src/core/haTransportGate.js";
 import { HomeAssistantClient, homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import { HomeAssistantProvider } from "../src/core/homeProvider.js";
@@ -191,20 +195,22 @@ function makeHaSnapshotPayload(overrides: Partial<Record<string, unknown>> = {})
 }
 
 function makeHarness(options: {
-  onHaSetConnection?: (args: Record<string, unknown>) => Promise<void>;
+  onHaSetConnection?: (args: Record<string, unknown>) => Promise<number | void>;
   onHaSnapshot?: (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   onHaExecute?: (args: Record<string, unknown>) => Promise<unknown>;
   onTransport?: (req: HttpRequest) => Promise<HttpResponse>;
   workstationLocked?: boolean;
 } = {}) {
   const vaultData = new Map<string, string>();
-  const tauriCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+  const tauriCalls: Array<{ cmd: string; args: Record<string, unknown>; result?: unknown }> = [];
   const miWritePaths: string[] = [];
   const aiRequests: string[] = [];
   let lockChecks = 0;
+  let nativeHaGeneration = 0;
 
   const invoke = async <T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> => {
-    tauriCalls.push({ cmd, args });
+    const record: { cmd: string; args: Record<string, unknown>; result?: unknown } = { cmd, args };
+    tauriCalls.push(record);
     const name = String(args["name"] ?? "");
     if (cmd === "secure_store_get") return ((vaultData.get(name) ?? null) as unknown) as T;
     if (cmd === "secure_store_set") {
@@ -222,7 +228,13 @@ function makeHarness(options: {
       lockChecks += 1;
       return (Boolean(options.workstationLocked) as unknown) as T;
     }
-    if (cmd === "ha_set_connection") return (await options.onHaSetConnection?.(args)) as T;
+    if (cmd === "ha_set_connection") {
+      const assigned = ++nativeHaGeneration;
+      const custom = await options.onHaSetConnection?.(args);
+      const generation = typeof custom === "number" ? custom : assigned;
+      record.result = generation;
+      return (generation as unknown) as T;
+    }
     if (cmd === "ha_snapshot") return ((options.onHaSnapshot ? await options.onHaSnapshot(args) : makeHaSnapshotPayload()) as unknown) as T;
     if (cmd === "ha_execute") return ((options.onHaExecute ? await options.onHaExecute(args) : { ok: true }) as unknown) as T;
     if (cmd === "resolve_ha_camera_stream") return ({ mode: "mjpeg", streamUrl: `${HA_URL}/api/camera_proxy_stream/camera.ha_porch` } as unknown) as T;
@@ -1206,7 +1218,8 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     await app.refreshHADevices(false);
     const first = h.tauriCalls.find((call) => call.cmd === "ha_snapshot")!;
     const firstRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection")!;
-    assert.equal(first.args["generation"], firstRegistration.args["generation"]);
+    assert.equal("generation" in firstRegistration.args, false, "P2-3: ha_set_connection must not send a clock-based generation");
+    assert.equal(first.args["generation"], firstRegistration.result);
 
     await fetchHomeAssistantSensorHistory({
       baseURL: HA_URL,
@@ -1215,7 +1228,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
       entityIds: ["sensor.ha_temp"],
       window: "24h",
     });
-    assert.equal(h.tauriCalls.find((call) => call.cmd === "ha_http")?.args["generation"], firstRegistration.args["generation"]);
+    assert.equal(h.tauriCalls.find((call) => call.cmd === "ha_http")?.args["generation"], firstRegistration.result);
 
     // #292 N1: `ha_http` is read-only, so a write is refused before any IPC instead of being
     // downgraded to a GET, and an already-aborted lease never reaches the native command.
@@ -1244,7 +1257,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
     assert.equal(getHostHaLifecyclePhase(app), "stopping");
     const stop = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === null)!;
-    assert.ok(Number(stop.args["generation"]) > Number(first.args["generation"]));
+    assert.equal("generation" in stop.args, false);
 
     app.settings.haBaseURL = nextURL;
     app.settings.haToken = "ha-next";
@@ -1258,8 +1271,9 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     const last = h.tauriCalls.filter((call) => call.cmd === "ha_snapshot").at(-1)!;
     const nextRegistration = h.tauriCalls.find((call) => call.cmd === "ha_set_connection" && call.args["baseUrl"] === nextURL)!;
     assert.equal(last.args["baseUrl"], nextURL);
-    assert.equal(last.args["generation"], nextRegistration.args["generation"]);
-    assert.ok(Number(last.args["generation"]) > Number(stop.args["generation"]));
+    assert.equal(last.args["generation"], nextRegistration.result);
+    assert.ok(Number(stop.result) > Number(first.args["generation"]));
+    assert.ok(Number(last.args["generation"]) > Number(stop.result));
 
     app.settings.connectionMode = "demo";
     await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
@@ -1268,7 +1282,7 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     await app.endpointSubmission;
     const demoRegistration = h.tauriCalls.filter((call) => call.cmd === "ha_set_connection").at(-1)!;
     assert.equal(demoRegistration.args["baseUrl"], nextURL);
-    assert.ok(Number(demoRegistration.args["generation"]) > Number(last.args["generation"]));
+    assert.ok(Number(demoRegistration.result) > Number(last.args["generation"]));
     assert.equal(h.countCmd("ha_snapshot"), 2);
 
     app.settings.connectionMode = "homeAssistant";
@@ -1287,6 +1301,103 @@ describe("P2b-W Home Assistant disable, draining lifecycle & unified host write 
     const reenabledAfterReject = await setHaConnectionEnabledOnHost(app, true);
     assert.equal(reenabledAfterReject.status, "applied");
     assert.equal(isHostHaEnabled(app), true);
+  });
+
+  it("distinguishes native drain timeout from registration rejection, never issues TS-local generations on native host, and tracks native monotonic generations across reloads (#292 P2-1/P2-2/P2-3)", async () => {
+    const STILL_DRAINING = "Home Assistant connection still draining";
+    assert.equal(isNativeHaDrainTimeoutError(STILL_DRAINING), true);
+    assert.equal(isNativeHaDrainTimeoutError(new Error(STILL_DRAINING)), true);
+    assert.equal(isNativeHaDrainTimeoutError(new Error("native drain unavailable")), false);
+
+    // P2-1: native drain timeout enters stop_timeout and blocks re-enable until retry drains.
+    let nativeStillDraining = true;
+    const h = makeHarness({
+      onHaSetConnection: async ({ baseUrl }) => {
+        if (baseUrl === null && nativeStillDraining) {
+          throw STILL_DRAINING;
+        }
+      },
+    });
+    const { app } = h;
+    app.settings.connectionMode = "homeAssistant";
+    app.settings.haBaseURL = HA_URL;
+    app.settings.haToken = "ha-tok-p2-1";
+    app.submitServiceEndpoints();
+    await app.endpointSubmission;
+
+    const dis = await setHaConnectionEnabledOnHost(app, false, { confirmPause: true });
+    assert.equal(dis.status, "applied");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(isHaScopeStopTimedOut(HA_SCOPE), true);
+    assert.equal(getHostHaLifecyclePhase(app), "stop_timeout");
+    assert.deepEqual(await waitForHaScopeDrained(HA_SCOPE, 20), { drained: false, timedOut: true });
+    const blockedEnable = await setHaConnectionEnabledOnHost(app, true);
+    assert.equal(blockedEnable.status, "blocked");
+    assert.equal(isHostHaEnabled(app), false);
+
+    nativeStillDraining = false;
+    assert.equal(abandonHungHaScopeInFlight(HA_SCOPE), "stopping");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(isHaScopeStopTimedOut(HA_SCOPE), false);
+    assert.equal(getHostHaLifecyclePhase(app), "disabled");
+    const recoveredEnable = await setHaConnectionEnabledOnHost(app, true);
+    assert.equal(recoveredEnable.status, "applied");
+    assert.equal(isHostHaEnabled(app), true);
+
+    // P2-2 & P2-3: simulate WebView reload (empty nativeRegistrations) while native monotonic counter continues from 41.
+    resetHaTransportGateForTests();
+    let nativeCounter = 41;
+    let failNextRegistration = false;
+    const nativeCalls: Array<{ cmd: string; args: Record<string, unknown> }> = [];
+    (window as unknown as { __TAURI_INTERNALS__?: { invoke: unknown } }).__TAURI_INTERNALS__ = {
+      invoke: async (cmd: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+        nativeCalls.push({ cmd, args });
+        if (cmd === "ha_set_connection") {
+          assert.equal("generation" in args, false);
+          if (failNextRegistration) throw new Error("registration refused");
+          nativeCounter += 1;
+          return nativeCounter;
+        }
+        if (cmd === "ha_snapshot") return makeHaSnapshotPayload();
+        return null;
+      },
+    };
+
+    // Without a token to register natively, no lease is issued on a native host.
+    assert.equal(acquireHaTransportLease(HA_URL), null);
+
+    // With a token, acquiring a lease bootstraps native registration and uses the native-assigned generation (42).
+    const bootstrapped = acquireHaTransportLease(HA_URL, { token: "ha-reload-tok" });
+    assert.ok(bootstrapped);
+    assert.ok(bootstrapped.nativeReady);
+    await invokeHaWithLease(
+      bootstrapped,
+      (cmd, args) => (window.__TAURI_INTERNALS__!.invoke as (c: string, a: Record<string, unknown>) => Promise<unknown>)(cmd, args),
+      "ha_snapshot",
+      { baseUrl: HA_URL, token: "ha-reload-tok" },
+    );
+    bootstrapped.release();
+    const snapCall = nativeCalls.find((c) => c.cmd === "ha_snapshot")!;
+    assert.equal(snapCall.args["generation"], 42);
+
+    // If bootstrap registration fails, ha_snapshot is never sent and subsequent acquires return null.
+    resetHaTransportGateForTests();
+    failNextRegistration = true;
+    const failedLease = acquireHaTransportLease(HA_URL, { token: "ha-fail-tok" });
+    assert.ok(failedLease);
+    const snapsBeforeFail = nativeCalls.filter((c) => c.cmd === "ha_snapshot").length;
+    await assert.rejects(
+      invokeHaWithLease(
+        failedLease,
+        (cmd, args) => (window.__TAURI_INTERNALS__!.invoke as (c: string, a: Record<string, unknown>) => Promise<unknown>)(cmd, args),
+        "ha_snapshot",
+        { baseUrl: HA_URL, token: "ha-fail-tok" },
+      ),
+      /registration refused/,
+    );
+    failedLease.release();
+    assert.equal(nativeCalls.filter((c) => c.cmd === "ha_snapshot").length, snapsBeforeFail);
+    assert.equal(acquireHaTransportLease(HA_URL, { token: "ha-fail-tok" }), null);
   });
 
   it("bounds hung HA in-flight stop with stop_timeout, surfaces Still stopping · Retry without hanging setHaConnectionEnabledOnHost(true), and abandons stale leases cleanly", async () => {
