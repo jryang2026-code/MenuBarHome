@@ -493,21 +493,35 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.equal(app.settings.openRouterApiKey, "sk-or-test");
   });
 
-  it("waits for startup credential hydration before mutating provider state", async () => {
+  it("waits for startup credential hydration before mutating provider state", async (context) => {
+    let releaseHydration!: () => void;
+    const hydrationGate = new Promise<void>((resolve) => { releaseHydration = resolve; });
+    const loadCredentials = CredentialVault.prototype.load;
+    const load = context.mock.method(CredentialVault.prototype, "load", async function (
+      this: CredentialVault, ...args: Parameters<CredentialVault["load"]>
+    ) {
+      await hydrationGate;
+      return loadCredentials.apply(this, args);
+    });
+    context.after(releaseHydration);
+
     const app = mountDemoApp();
     app.settings.openRouterApiKey = "sk-or-test";
     app.settings.assistantKeyEndpoint = "openrouter.ai";
     app.assistantKeysByPreset["openrouter_jev"] = "sk-or-test";
-    app.timerCredentialsReady = false;
+    assert.equal(load.mock.callCount(), 1, "startup requested the gated vault read");
 
     const pendingRemoval = removeActiveAssistantProvider(app);
-    await setImmediate();
-    await setImmediate();
-    assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "must not mutate while hydration is pending");
-
-    app.timerCredentialsReady = true;
-    await pendingRemoval;
-    await setImmediate();
+    try {
+      await setImmediate();
+      await setImmediate();
+      assert.equal(app.timerCredentialsReady, false, "the vault read is still pending");
+      assert.equal(app.assistantKeysByPreset["openrouter_jev"], "sk-or-test", "must not mutate while hydration is pending");
+    } finally {
+      releaseHydration();
+      await pendingRemoval;
+    }
+    assert.equal(app.timerCredentialsReady, true);
     assert.equal(app.assistantKeysByPreset["openrouter_jev"], undefined, "removal proceeds once hydration finished");
   });
 

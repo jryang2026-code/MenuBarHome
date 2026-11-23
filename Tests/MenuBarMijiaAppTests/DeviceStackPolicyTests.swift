@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -222,9 +223,7 @@ struct DeviceStackPolicyTests {
     @MainActor
     @Test("Sole online Favorites stack keeps its header when accompanied by the bottom offline drawer, and manually opened >8 single-device stacks remain collapsible")
     func favoritesHeaderWithOfflineDrawerAndOverviewFoldedCollapse() async throws {
-        let suiteName = "com.menubarmijia.tests.stackpolicy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let favLight = Self.makeLight("fav_1", name: "客厅主灯", roomId: "living", roomName: "客厅")
         var offlineLight = Self.makeLight("off_1", name: "离线筒灯", roomId: "bedroom", roomName: "卧室")
@@ -240,7 +239,7 @@ struct DeviceStackPolicyTests {
             devices: [favLight, offlineLight],
             scenes: []
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.favoriteDeviceIds = ["fav_1"]
         store.favoriteOrder = ["fav_1"]

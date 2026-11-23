@@ -34,7 +34,7 @@ import {
 import { AutomationRuleStore, createAutomationRule, executeAutomationRule } from "../src/core/automationEngine.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../src/core/scheduledCommands.js";
 import { setLanguage } from "../src/core/i18n.js";
-import type { HomeScene, SmartDevice } from "../src/core/models.js";
+import type { HomeScene, ScheduledCommand, SmartDevice } from "../src/core/models.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { buildHostCapabilityContext } from "../src/ui/cloudRefresh.js";
 import { enqueueIncomingOpenUrl, getActiveRaycastBridgeTokenForHost, setRaycastIntegrationEnabled } from "../src/ui/speechGuard.js";
@@ -448,6 +448,15 @@ function startDemo(): MenuMijiaWindowsApp {
 
   it("keeps climateSleepOff paused with fan enabled until climate is restored and revalidated", async () => {
     const app = startDemo();
+    const identity = scheduledCommandIdentity(app.settings);
+    const timer: ScheduledCommand = {
+      id: "demo_climate_timer", command: "稍后关空调", reply: "好", delaySeconds: 600,
+      fireTimestampMs: Date.now() + 600_000,
+      intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }],
+    };
+    const queue = app.scheduledCommandStore.queue(identity);
+    queue.scheduledCommands = [timer];
+    assert.equal(app.scheduledCommandStore.persist(), true);
     const ruleStore = new AutomationRuleStore();
     const rule = createAutomationRule({
       id: "sleep_off", trigger: "away", action: { kind: "quickAction", quickAction: "climateSleepOff" }, isEnabled: true,
@@ -463,6 +472,8 @@ function startDemo(): MenuMijiaWindowsApp {
       activeTimerIdentity: scheduledCommandIdentity(app.settings),
       ruleStore,
     }), true);
+    assert.equal(queue.scheduledCommands.length, 0);
+    assert.deepEqual(queue.pausedScheduledCommands?.map((item) => item.command.id), [timer.id]);
     const [paused] = ruleStore.load();
     assert.equal(paused?.isEnabled, false);
     assert.ok(paused.pausedByCapabilities?.includes("climate"));
@@ -470,8 +481,48 @@ function startDemo(): MenuMijiaWindowsApp {
     assert.equal(await executeAutomationRule(app, paused), null);
     await click('[data-device-type-mode="allSupportedTypes"]');
     await click("[data-device-type-apply]");
+    assert.deepEqual(queue.scheduledCommands.map((item) => [item.id, item.fireTimestampMs]), [[timer.id, timer.fireTimestampMs]]);
+    assert.equal(queue.pausedScheduledCommands?.length, 0);
+    assert.deepEqual(queue.missedScheduledCommands, []);
     assert.equal(ruleStore.load()[0]?.isEnabled, true);
     assert.equal(ruleStore.load()[0]?.pausedByCapabilities, undefined);
+  });
+
+  it("requires confirmation again when affected references change after the preview", async () => {
+    const app = startDemo();
+    await click("#btn-settings");
+    await click('[data-device-type-mode="lightAndSwitch"]');
+    const timer: ScheduledCommand = {
+      id: "new_climate_timer", command: "稍后关空调", reply: "好", delaySeconds: 600,
+      fireTimestampMs: Date.now() + 600_000,
+      intents: [{ targetId: "climate.living_ac", operation: { kind: "power", isOn: false } }],
+    };
+    const queue = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
+    const storedSelection = localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY);
+    assert.doesNotMatch(el("[data-device-type-preview]").textContent ?? "", /稍后关空调/);
+    const ruleStore = new AutomationRuleStore();
+    assert.equal(ruleStore.save([createAutomationRule({
+      id: "new_climate_rule", trigger: "away", action: { kind: "quickAction", quickAction: "climateSleepOff" }, isEnabled: true,
+    })]), true);
+
+    for (const waiting of [timer, { ...timer, fireTimestampMs: timer.fireTimestampMs + 60_000 }]) {
+      queue.scheduledCommands = [waiting];
+      assert.equal(app.scheduledCommandStore.persist(), true);
+      await click("[data-device-type-apply]");
+      assert.match(el("[data-device-type-error]").textContent ?? "", /重新确认/);
+      assert.equal(document.activeElement, el("[data-device-type-error]"));
+      assert.match(el("[data-device-type-preview]").textContent ?? "", /稍后关空调/);
+      assert.equal(localStorage.getItem(MI_ACCOUNT_CAPABILITY_STORAGE_KEY), storedSelection);
+      assert.deepEqual(queue.scheduledCommands, [waiting]);
+      assert.deepEqual(queue.pausedScheduledCommands ?? [], []);
+      assert.equal(ruleStore.load()[0]?.isEnabled, true);
+    }
+
+    await click("[data-device-type-apply]");
+    assert.match(el("[data-device-type-status]").textContent ?? "", /已应用/);
+    assert.deepEqual(queue.scheduledCommands, []);
+    assert.deepEqual(queue.pausedScheduledCommands?.map((item) => item.command.id), [timer.id]);
+    assert.equal(ruleStore.load()[0]?.isEnabled, false);
   });
 
   it("persists lightsOff pause and rejects both voice and URL execution", async () => {

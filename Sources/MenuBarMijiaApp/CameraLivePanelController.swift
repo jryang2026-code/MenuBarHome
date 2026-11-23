@@ -952,7 +952,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func saveCustomStreamURL() {
-        guard let store, let id = activeDeviceId else { return }
+        guard let store, store.supportsCustomCameraStreams, let id = activeDeviceId else { return }
         store.setCameraCustomStreamURL(customURLInput, for: id)
         isShowingURLConfig = false
         setURLFieldActive(false)
@@ -960,7 +960,7 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     public func clearCustomStreamURL() {
-        guard let store, let id = activeDeviceId else { return }
+        guard let store, store.supportsCustomCameraStreams, let id = activeDeviceId else { return }
         customURLInput = ""
         store.setCameraCustomStreamURL(nil, for: id)
         isShowingURLConfig = false
@@ -1739,7 +1739,7 @@ struct CameraLivePanelView: View {
         VStack(spacing: 0) {
             topHUDBar
 
-            if controller.isShowingURLConfig {
+            if store.supportsCustomCameraStreams, controller.isShowingURLConfig {
                 customURLBar
             }
 
@@ -1945,14 +1945,16 @@ struct CameraLivePanelView: View {
                 }
                 .disabled(!controller.hasLiveVideoFrame && !controller.isPictureInPictureActive)
             }
-            Button {
-                controller.isShowingURLConfig.toggle()
-                controller.setURLFieldActive(controller.isShowingURLConfig)
-            } label: {
-                Label(
-                    L10n.tr("配置流地址", "Stream address"),
-                    systemImage: hasCustomURL || controller.isShowingURLConfig ? "checkmark" : "link"
-                )
+            if store.supportsCustomCameraStreams {
+                Button {
+                    controller.isShowingURLConfig.toggle()
+                    controller.setURLFieldActive(controller.isShowingURLConfig)
+                } label: {
+                    Label(
+                        L10n.tr("配置流地址", "Stream address"),
+                        systemImage: hasCustomURL || controller.isShowingURLConfig ? "checkmark" : "link"
+                    )
+                }
             }
             Button {
                 controller.userReloadStream()
@@ -2180,13 +2182,15 @@ struct CameraLivePanelView: View {
                         .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
                     }
 
-                    Button {
-                        controller.isShowingURLConfig = true
-                        controller.setURLFieldActive(true)
-                    } label: {
-                        Label(L10n.tr("填写 go2rtc / HLS 流地址", "Set go2rtc / HLS Stream URL"), systemImage: "link.badge.plus")
+                    if store.supportsCustomCameraStreams {
+                        Button {
+                            controller.isShowingURLConfig = true
+                            controller.setURLFieldActive(true)
+                        } label: {
+                            Label(L10n.tr("填写 go2rtc / HLS 流地址", "Set go2rtc / HLS Stream URL"), systemImage: "link.badge.plus")
+                        }
+                        .buttonStyle(PillActionButtonStyle(isSelected: !offersMiSignIn, tintColor: .cyan))
                     }
-                    .buttonStyle(PillActionButtonStyle(isSelected: !offersMiSignIn, tintColor: .cyan))
 
                     Button {
                         controller.userReloadStream()

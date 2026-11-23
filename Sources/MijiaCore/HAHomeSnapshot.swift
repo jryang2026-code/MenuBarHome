@@ -31,6 +31,7 @@ struct HAHomeSnapshot {
     /// The type-pruning policy the last published round was built under (P3b-M).
     private var appliedPrunePolicy: HATypePrunePolicy?
     private var consumedEntityIds: Set<String> = []
+    private var cardCategoriesByEntityId: [String: Set<DeviceCategoryID>] = [:]
     private var lastPruneReport: MiotTypePruneReport?
     private var pendingPruneReport: MiotTypePruneReport?
 
@@ -44,6 +45,12 @@ struct HAHomeSnapshot {
     static func isSupportedSmartHomeDomain(_ entityId: String) -> Bool {
         guard let dotIndex = entityId.firstIndex(of: ".") else { return false }
         return supportedSmartHomeDomains.contains(String(entityId[..<dotIndex]))
+    }
+
+    mutating func resetForReconnect() {
+        let knownCategories = cardCategoriesByEntityId
+        self = HAHomeSnapshot()
+        cardCategoriesByEntityId = knownCategories
     }
 
     /// Doorbell presses seen since the last call. Initial loads and `get_states` refreshes never ring.
@@ -136,7 +143,8 @@ struct HAHomeSnapshot {
             let previous = states.updateValue(state, forKey: state.entityId)
             guard pendingInitialResults.isEmpty else { return false }
             if state.entityId.hasPrefix("event.") {
-                return false
+                let wasDoorbell = previous.map(DoorbellRing.isDoorbellEvent) ?? false
+                return wasDoorbell != DoorbellRing.isDoorbellEvent(state)
             }
             if appliedPrunePolicy == typePrunePolicy, let previous {
                 if previous.state == state.state && previous.attributes == state.attributes {
@@ -180,7 +188,21 @@ struct HAHomeSnapshot {
     /// (architecture.md §D, network saving counted as 0).
     private mutating func applyTypePruning(to home: SynthesizedHome, policy: HATypePrunePolicy) -> SynthesizedHome {
         appliedPrunePolicy = policy
+        var home = home
         let cardEntities = DeviceSynthesizer.haCardEntities(cardIds: Set(home.devices.map(\.id)), entities: entities)
+        cardCategoriesByEntityId.removeAll(keepingCapacity: true)
+        for index in home.devices.indices {
+            let device = home.devices[index]
+            let rows = cardEntities[device.id] ?? []
+            for entityId in DeviceSynthesizer.haCardReadKeys(
+                for: device, entities: rows, facets: home.deviceFacets[device.id] ?? []
+            ) {
+                cardCategoriesByEntityId[entityId, default: []].insert(device.capabilityCategoryID)
+            }
+            home.devices[index].providerSafetySignals = DeviceSynthesizer.haSafetySignals(
+                for: device, entities: rows, states: states
+            )
+        }
         guard let plan = DeviceSynthesizer.haTypePrunePlan(
             home: home, cardEntities: cardEntities, states: states, policy: policy
         ) else {
@@ -211,6 +233,13 @@ struct HAHomeSnapshot {
             safetyDevices: home.devices.filter { plan.safetyRetainedDeviceIds.contains($0.id) }
         ))
         return DeviceSynthesizer.applying(plan, to: home)
+    }
+
+    func closedCategory(for entityId: String, policy: HATypePrunePolicy) -> DeviceCategoryID? {
+        guard !policy.prunesNothing,
+              let categories = cardCategoriesByEntityId[entityId],
+              categories.isDisjoint(with: policy.selection.enabledCategories) else { return nil }
+        return DeviceCategoryID.allCases.first(where: categories.contains)
     }
 
     private static func collectConsumedEntityIds(

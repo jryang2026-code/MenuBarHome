@@ -1131,7 +1131,7 @@ public final class HomeStore {
         enabledCategories: Set(DeviceCategoryID.allCases)
     ) {
         didSet {
-            if !isPersistingCompanionToggle,
+            if !isPersistingCompanionToggle, !companionRevokedForSession,
                oldValue.enabledFeatures.contains(.companionIntegration) != companionIntegrationEnabled {
                 applyCompanionIntegrationTransition(enabled: companionIntegrationEnabled)
             }
@@ -1142,6 +1142,14 @@ public final class HomeStore {
                     guard let self, self.automationGeneration == generation else { return }
                     self.automationAvailabilityDidChange()
                 }
+            }
+            if oldValue.enabledCategories.contains(.tv) != capabilitySelection.enabledCategories.contains(.tv),
+               let lgDev = latestLGDevice {
+                // Restoring a card the type toggle hid keeps the user's favorite choice.
+                applyLGDeviceUpdate(lgDev, favoritesNewCard: false)
+            }
+            if oldValue.enabledCategories != capabilitySelection.enabledCategories {
+                scheduleRaycastSnapshotExport()
             }
             guard oldValue.enabledCategories.contains(.camera),
                   !capabilitySelection.enabledCategories.contains(.camera) else { return }
@@ -1160,6 +1168,10 @@ public final class HomeStore {
     public internal(set) var pendingConnectionRemovals: [ConnectionRemovalRecord] = []
     /// True when `connection_removal_v1` failed strict parsing (fail-closed, never treated as empty).
     public internal(set) var hasCorruptConnectionRemovalState: Bool = false
+    /// Last failure while persisting/verifying the quarantine backup before discarding a corrupt removal record (#381).
+    public internal(set) var corruptRemovalDiscardFailure: ConnectionRemovalQuarantineFailure?
+    /// Test seam overriding quarantine directory & sync primitives so tests never touch real Application Support.
+    @ObservationIgnored var corruptRemovalQuarantineHooks: ConnectionRemovalStore.QuarantinePersistenceHooks = .live
     /// Scopes currently executing drain + slot deletion on this instance.
     public internal(set) var isRemovingConnectionScopes: Set<String> = []
     /// Test seam invoked right after drain completes and before credential slots are mutated.
@@ -1180,7 +1192,12 @@ public final class HomeStore {
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
     /// Monotonic generation for companion integration (Raycast / CLI / MCP / external links).
     public internal(set) var companionGeneration: UInt64 = 0
-    @ObservationIgnored public internal(set) var activeCompanionCommandGeneration: UInt64?
+    @TaskLocal static var companionCommandContext: (owner: ObjectIdentifier, generation: UInt64)?
+    public var activeCompanionCommandGeneration: UInt64? {
+        guard let context = Self.companionCommandContext, context.owner == ObjectIdentifier(self) else { return nil }
+        return context.generation
+    }
+    var companionRevokedForSession = false
     @ObservationIgnored var isPersistingCompanionToggle = false
     public var onCompanionIntegrationChanged: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
@@ -1488,8 +1505,8 @@ public final class HomeStore {
 
     /// Re-reads the stored accounts (a login, a removal or a sign-out changed them) and rebuilds the
     /// provider around the enabled list.
-    func makeMiAccountsProvider() -> MiAccountsProvider {
-        miAccounts = loadActiveMiAccounts()
+    func makeMiAccountsProvider(migrateLegacyMiEnvelope: Bool = true) -> MiAccountsProvider {
+        miAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
         let enabled = enabledMiAccounts
         activeMiProviderAccounts = enabled
         if let factory = miAccountsProviderFactory {
@@ -1728,5 +1745,7 @@ public final class HomeStore {
     @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
     @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)
     @ObservationIgnored var resumeScheduler: DebouncedResumeScheduler = .live
+    @ObservationIgnored var lastWakeIdentityReadAt: ContinuousClock.Instant?
+    @ObservationIgnored var wakeIdentityProviderGeneration: UInt64?
     @ObservationIgnored var onDebouncedResumeHook: (@MainActor (Set<ResumeReason>) async -> Void)?
 }

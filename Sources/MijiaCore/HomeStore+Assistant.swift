@@ -216,7 +216,7 @@ extension HomeStore {
         proactiveWorkCounters.rankings += 1
         return userHabitMemory.topSuggestions(
             for: assistantNow(),
-            devices: devices,
+            devices: categoryVisibleDevices,
             scenes: scenes,
             favoriteIds: favoriteOrder,
             environmentReadings: environmentReadings
@@ -276,7 +276,7 @@ extension HomeStore {
         let assistantContext = buildAssistantContext(mention: .none)
         do {
             let inferred = try await resolver.recommendProactiveSuggestions(
-                devices: devices,
+                devices: categoryVisibleDevices,
                 scenes: scenes,
                 context: assistantContext
             )
@@ -341,7 +341,8 @@ extension HomeStore {
         }
         let environmentSummary = envParts.joined(separator: "，")
 
-        let activeParts = devices.filter(\.isActiveDevice).map { dev in
+        let visible = categoryVisibleDevices
+        let activeParts = visible.filter(\.isActiveDevice).map { dev in
             let name = PromptText.cleanField(dev.name, limit: PromptText.nameLimit)
             let state = PromptText.cleanField(IntentCatalog.stateSummary(dev), limit: PromptText.activeStateLimit)
             return "\(name)(\(state))"
@@ -352,7 +353,7 @@ extension HomeStore {
         let habitSummary = shareHabitSentence(
             sharing: habitSharing,
             memory: userHabitMemory,
-            devices: devices,
+            devices: visible,
             scenes: scenes,
             mention: mention,
             now: now
@@ -400,7 +401,7 @@ extension HomeStore {
         defer { isProactiveRecommending = false }
 
         let controlContext = controlContextID
-        let snapshotDevices = devices
+        let snapshotDevices = categoryVisibleDevices
         let snapshotScenes = scenes
         let resolver = makeAssistantResolver(config: config, epoch: epoch, proactiveEpoch: suggestionEpoch)
         let context = buildAssistantContext(mention: .none)
@@ -417,7 +418,7 @@ extension HomeStore {
                 let label = ModelIntentResolver.isSystemOneModel(config.model) ? "Jev" : "AI"
                 setAssistantState(.done(L10n.tr("\(label) 已结合室温与习惯生成建议", "\(label) generated suggestions from room climate & habits")))
             } else {
-                let fallback = userHabitMemory.topSuggestions(devices: devices, scenes: scenes, limit: 3)
+                let fallback = userHabitMemory.topSuggestions(devices: categoryVisibleDevices, scenes: scenes, limit: 3)
                 assistantSuggestions = fallback
                 setAssistantState(.done(L10n.tr("当前居家状态已处于理想区间", "Home environment is already in an ideal range")))
             }
@@ -490,13 +491,18 @@ extension HomeStore {
     }
 
     /// The consent request to show before the first cloud call to this service, or nil when sending is already allowed.
-    func cloudConsentNeeded(for config: AssistantConfig, utterance: String?) -> PendingCloudConsent? {
+    func cloudConsentNeeded(
+        for config: AssistantConfig, utterance: String?, companionGeneration: UInt64? = nil
+    ) -> PendingCloudConsent? {
         guard assistantResolverOverride == nil, !config.isLoopbackEndpoint,
               let endpoint = AssistantEndpoint(config.baseURL)?.identity,
               !consentedCloudEndpoints.contains(endpoint) else {
             return nil
         }
-        return PendingCloudConsent(utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle)
+        return PendingCloudConsent(
+            utterance: utterance, endpoint: endpoint, providerTitle: config.preset.shortTitle,
+            companionGeneration: companionGeneration
+        )
     }
 
     /// Remembers the user's OK for the waiting service, then runs what was waiting.
@@ -504,6 +510,7 @@ extension HomeStore {
     public func allowPendingCloudRequest() async -> IntentPlan? {
         guard let pending = pendingCloudConsent else { return nil }
         pendingCloudConsent = nil
+        if let generation = pending.companionGeneration, !companionCanExecute(generation: generation) { return nil }
         var endpoints = consentedCloudEndpoints
         if !endpoints.contains(pending.endpoint) {
             endpoints.append(pending.endpoint)
@@ -512,6 +519,9 @@ extension HomeStore {
         guard let utterance = pending.utterance else {
             await requestProactiveJevSuggestions()
             return nil
+        }
+        if let generation = pending.companionGeneration {
+            return await withCompanionCommandGeneration(generation) { await runAssistantCommand(utterance) }
         }
         return await runAssistantCommand(utterance)
     }
@@ -803,6 +813,8 @@ extension HomeStore {
     /// Resolves a natural-language command (local parser first, model fallback) and applies it.
     @discardableResult
     public func runAssistantCommand(_ text: String) async -> IntentPlan? {
+        let companion = activeCompanionCommandGeneration
+        if let companion, !companionCanExecute(generation: companion) { return nil }
         let controlContext = controlContextID
         // A disable, provider change or removal while this command runs must discard its late
         // model result before it can reach the write gate (P5a-M acceptance #3).
@@ -828,11 +840,12 @@ extension HomeStore {
         setAssistantState(.thinking)
         assistantThinkingEpoch = assistantGeneration
 
+        let catalogDevices = categoryVisibleDevices
         var plan: IntentPlan
         var habitSummary: String?
         if let local = LocalIntentParser.parse(
             utterance,
-            devices: devices,
+            devices: catalogDevices,
             scenes: scenes,
             panelRoom: panelRoom,
             usageOrder: userHabitMemory.usageOrder()
@@ -862,7 +875,7 @@ extension HomeStore {
                     setAssistantState(.failed(AssistantError.userMessage(for: AssistantError.missingAPIKey)))
                     return nil
                 }
-                if let consent = cloudConsentNeeded(for: config, utterance: spoken) {
+                if let consent = cloudConsentNeeded(for: config, utterance: spoken, companionGeneration: companion) {
                     pendingCloudConsent = consent
                     setAssistantState(.idle)
                     return nil
@@ -876,7 +889,7 @@ extension HomeStore {
             do {
                 plan = try await resolver.resolve(
                     utterance,
-                    devices: devices,
+                    devices: catalogDevices,
                     scenes: scenes,
                     context: context,
                     confirmation: aiConfirmationPolicy
@@ -897,7 +910,7 @@ extension HomeStore {
                 return nil
             }
             // A companion command disconnected while the model was answering must not act.
-            if let companion = activeCompanionCommandGeneration, !companionCanExecute(generation: companion) {
+            if let companion, !companionCanExecute(generation: companion) {
                 clearThinkingAssistantState(epoch: assistantGeneration)
                 return nil
             }

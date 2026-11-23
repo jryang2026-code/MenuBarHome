@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -208,15 +209,13 @@ struct ManualControlPolicyTests {
         let uvLamp = negatives[1]
         let kitchenPlug = makePlug(id: "kitchen_plug", name: "厨房插座", model: "cuco.plug.cp1")
 
-        let suite = "test.switched.light.snapshot.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         let provider = MockHomeProvider(
             snapshot: SynthesizedHome(
                 rooms: [RoomArea(id: "kitchen", name: "厨房", sortOrder: 0)],
                 devices: [kitchenLight, uvLamp, kitchenPlug]
             )
         )
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         let snapshot = store.buildRaycastSnapshot()
 
@@ -496,9 +495,7 @@ struct ManualControlPolicyTests {
 
     @Test("Switch-light marks persist per device id and join the canonical-ID preference index (#104)")
     func switchLightMarksPersistAndSurviveMerge() throws {
-        let suiteName = "test.switch-light-marks.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let wall = Self.wallSwitch(id: "canonical-wall")
         #expect(!SwitchLightMarks.isMarked(wall.id, defaults: defaults))
@@ -525,13 +522,11 @@ struct ManualControlPolicyTests {
         let wall = Self.wallSwitch(id: "wall-e2e")
         let initiallyLightNamed = Self.wallSwitch(id: "wall-aliased", name: "厨房灯")
         let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall, initiallyLightNamed], scenes: []))
-        let suiteName = "test.switch-light-store.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         let snapshotURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("raycast-switch-mark-\(UUID().uuidString).json")
         defer {
             try? FileManager.default.removeItem(at: snapshotURL)
-            UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
         }
         store.controlDebounceInterval = .milliseconds(10)
         store.raycastSnapshotTestURL = snapshotURL

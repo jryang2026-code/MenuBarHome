@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -44,7 +45,7 @@ struct AssistantScheduleTests {
     @MainActor
     private func makeStore() async throws -> (HomeStore, MockHomeProvider, ScheduledCommandTestSupport.SleepGate) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedule.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         let gate = ScheduledCommandTestSupport.SleepGate()
         store.assistantSleep = { _ in await gate.sleep() }
@@ -89,10 +90,9 @@ struct AssistantScheduleTests {
     @Test("Pending timers persist across restarts and resume their remaining countdown")
     @MainActor
     func pendingTimerSurvivesRestart() async throws {
-        let suiteName = "test.schedule.persist.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         // Current builds stamp the creating source; only pre-scope legacy entries wait for
         // confirmation instead of arming (#22), and that path has its own tests.
@@ -128,10 +128,9 @@ struct AssistantScheduleTests {
     @Test("Expired timers move to missedScheduledCommands on launch and only run when confirmed")
     @MainActor
     func expiredTimerRequiresConfirmationOnLaunch() async throws {
-        let suiteName = "test.schedule.missed.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         // Current builds stamp the creating source. Unscoped legacy entries are never announced as
         // missed (#22); ScheduledCommandScopeTests covers them.
@@ -162,7 +161,7 @@ struct AssistantScheduleTests {
         #expect(await mock.executedCommands.isEmpty)
 
         // A second restart before user action must keep the missed timer until confirmed or dismissed.
-        let restartedStore = HomeStore(provider: mock, defaultsSuiteName: suiteName)
+        let restartedStore = HomeStore(provider: mock, defaults: defaults)
         try await restartedStore.waitForTestSnapshot()
         #expect(restartedStore.missedScheduledCommands.map(\.id) == [expiredEntry.id])
 
@@ -242,7 +241,7 @@ struct AssistantUndoTests {
     @MainActor
     func undoTimerDoesNotUndoDeviceAction() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.timer.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         _ = await store.runAssistantCommand("关闭书房吸顶灯")
         #expect(store.devices.first?.isActiveOn == false)
@@ -263,7 +262,7 @@ struct AssistantUndoTests {
     @MainActor
     func voiceUndo() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [AssistantScheduleTests.ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.undo.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         _ = await store.runAssistantCommand("关闭书房吸顶灯")
         #expect(store.devices.first?.isActiveOn == false)

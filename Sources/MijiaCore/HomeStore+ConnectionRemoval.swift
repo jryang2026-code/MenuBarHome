@@ -14,9 +14,15 @@ extension HomeStore {
             || pendingMiRemovalScopes.contains(ConnectionRemovalStore.miScope(accountId: accountId))
     }
 
-    func syncPendingConnectionRemovals() {
+    func syncPendingConnectionRemovals(quarantineCorruptPayload: Bool = true) {
         let state = ConnectionRemovalStore.readState(defaults: userDefaults)
-        if state.readError { ConnectionRemovalStore.quarantineCorruptPayloadIfNeeded(defaults: userDefaults) }
+        if state.readError {
+            if quarantineCorruptPayload {
+                ConnectionRemovalStore.quarantineCorruptPayloadIfNeeded(defaults: userDefaults)
+            }
+        } else if corruptRemovalDiscardFailure != nil {
+            corruptRemovalDiscardFailure = nil
+        }
         if hasCorruptConnectionRemovalState != state.readError { hasCorruptConnectionRemovalState = state.readError }
         if pendingConnectionRemovals != state.records { pendingConnectionRemovals = state.records }
     }
@@ -49,20 +55,79 @@ extension HomeStore {
     /// Connections the record meant to remove must be removed again by the user.
     @discardableResult
     public func discardCorruptConnectionRemovalRecord() -> Bool {
-        syncPendingConnectionRemovals()
-        guard canDiscardCorruptConnectionRemovalRecord else { return false }
-        guard ConnectionRemovalStore.discardCorruptPayload(defaults: userDefaults) else {
-            showToast(L10n.tr("无法放弃损坏的移除记录，请稍后重试", "Could not discard the damaged removal record; try again later"), isError: true)
-            return false
-        }
-        syncPendingConnectionRemovals()
-        return retryIdentityMigration()
+        discardCorruptConnectionRemovalRecordWithResult(quarantineDirectory: nil).succeeded
     }
 
-    func loadActiveMiAccounts() -> [MiAccount] {
+    /// Retries discarding the unreadable removal record using a user-selected alternate parent folder.
+    /// Creates/verifies a private `0700` quarantine directory inside `parentDirectory` with `F_FULLFSYNC`
+    /// and byte-for-byte read-back before removing the original record.
+    @discardableResult
+    public func discardCorruptConnectionRemovalRecord(inAlternateParentDirectory parentDirectory: URL) -> Bool {
+        let directory = ConnectionRemovalStore.quarantineSubdirectory(inParentDirectory: parentDirectory)
+        return discardCorruptConnectionRemovalRecordWithResult(
+            quarantineDirectory: directory,
+            usedAlternateDirectory: true
+        ).succeeded
+    }
+
+    func discardCorruptConnectionRemovalRecord(quarantineDirectory: URL?) -> Bool {
+        discardCorruptConnectionRemovalRecordWithResult(quarantineDirectory: quarantineDirectory).succeeded
+    }
+
+    @discardableResult
+    func discardCorruptConnectionRemovalRecordWithResult(
+        quarantineDirectory: URL? = nil,
+        usedAlternateDirectory: Bool = false,
+        hooks: ConnectionRemovalStore.QuarantinePersistenceHooks? = nil
+    ) -> ConnectionRemovalDiscardResult {
+        syncPendingConnectionRemovals()
+        guard canDiscardCorruptConnectionRemovalRecord else { return .notDiscardable }
+        let result = ConnectionRemovalStore.discardCorruptPayloadResult(
+            defaults: userDefaults,
+            quarantineDirectory: quarantineDirectory,
+            usedAlternateDirectory: usedAlternateDirectory,
+            hooks: hooks ?? corruptRemovalQuarantineHooks
+        )
+        switch result {
+        case .discarded:
+            corruptRemovalDiscardFailure = nil
+            syncPendingConnectionRemovals()
+            _ = retryIdentityMigration(migrateLegacyMiEnvelope: false)
+            return result
+        case .notDiscardable:
+            return .notDiscardable
+        case .failed(let failure):
+            corruptRemovalDiscardFailure = failure
+            switch failure.kind {
+            case .fullFsyncUnsupported:
+                showToast(
+                    L10n.tr(
+                        "当前卷不支持 F_FULLFSYNC 落盘同步，已保留原记录；请选择本机本地文件夹重试",
+                        "This volume does not support required F_FULLFSYNC flushing; original record kept. Choose a local folder and retry"
+                    ),
+                    isError: true
+                )
+            case .transientOrVerificationFailed:
+                showToast(
+                    L10n.tr(
+                        "无法写入或校验隔离备份，已保留原记录，请重试",
+                        "Could not write or verify the quarantine backup; original record kept. Try again"
+                    ),
+                    isError: true
+                )
+            }
+            return result
+        }
+    }
+
+    func loadActiveMiAccounts(migrateLegacyMiEnvelope: Bool = true) -> [MiAccount] {
         guard !hasCorruptConnectionRemovalState else { return [] }
         let blocked = pendingMiRemovalScopes
-        let loaded = MiSessionStore.loadAccounts(defaults: userDefaults, vault: credentialVault)
+        let loaded = MiSessionStore.loadAccountsResult(
+            defaults: userDefaults,
+            vault: credentialVault,
+            migrateLegacyEnvelope: migrateLegacyMiEnvelope
+        ).accounts
         return blocked.isEmpty ? loaded : loaded.filter { !blocked.contains($0.id) }
     }
 
@@ -314,6 +379,7 @@ extension HomeStore {
             hasHASource = false
             explicitlyDisabledConnections.remove(.homeAssistant)
             capabilitySelection.enabledConnections.insert(.homeAssistant)
+            requireManualResumeAfterHARemoval()
             purgeRemovedAccountCapabilities(scopes: [record.scope])
             pendingHAAddressSuggestion = nil
             haPlaintextPrompt = nil

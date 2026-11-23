@@ -1,5 +1,6 @@
 import AppKit
 import Carbon
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MenuBarMijiaApp
@@ -15,10 +16,10 @@ struct PanelAlertsAndStatusTests {
         backend: HomeBackend = .xiaomiCloud,
         hasMi: Bool = true,
         hasHA: Bool = false
-    ) -> (store: HomeStore, suiteName: String) {
-        let suiteName = "com.menubarmijia.tests.wp2a.\(UUID().uuidString)"
-        let ud = UserDefaults(suiteName: suiteName)!
-        ud.removePersistentDomain(forName: suiteName)
+    ) -> (store: HomeStore, defaults: InMemoryUserDefaults) {
+        // One instance for the seed, the store and the assertions: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let ud = InMemoryUserDefaults()
         ud.set(true, forKey: "onboarding_completed_v1")
         ud.set(backend.rawValue, forKey: "home_backend")
         if hasMi {
@@ -26,7 +27,7 @@ struct PanelAlertsAndStatusTests {
         }
         let store = HomeStore(
             provider: DemoHomeProvider(),
-            defaultsSuiteName: suiteName
+            defaults: ud
         )
         store.homeBackend = backend
         store.hasHASource = hasHA
@@ -34,7 +35,7 @@ struct PanelAlertsAndStatusTests {
         if hasMi { connected.insert(.xiaomiCloud) }
         if hasHA { connected.insert(.homeAssistant) }
         store.connectedBackends = connected
-        return (store, suiteName)
+        return (store, ud)
     }
 
     private static func validMiSession(expiresAt: Date? = Date().addingTimeInterval(86_400 * 10)) -> MiSession {
@@ -66,8 +67,7 @@ struct PanelAlertsAndStatusTests {
 
     @Test("Alert tiering pins hazards, doorbell, missed timers, active away-aware sensors, and high-power/long-run alerts while routing offline & low-battery into the 32pt ordinary capsule")
     func alertTieringAndAwayCondition() {
-        let (store, suite) = makeIsolatedStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = makeIsolatedStore()
 
         let smoke = recordedSafety(id: "sensor:smoke:s1#smoke", title: "厨房烟雾告警")
         let gas = recordedSafety(id: "sensor:gas:g1#gas", title: "厨房燃气告警")
@@ -149,8 +149,7 @@ struct PanelAlertsAndStatusTests {
     @Test("Classic activity stack caps height at expandedViewportHeight when 6 pinned alerts + 2 missed timers are present and keeps intrinsic height when small")
     func classicActivityStackBoundedHeight() {
         _ = NSApplication.shared
-        let (store, suite) = makeIsolatedStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = makeIsolatedStore()
 
         let pinnedAlerts = [
             recordedSafety(id: "sensor:smoke:s1#smoke", title: "厨房烟雾告警"),
@@ -242,8 +241,7 @@ struct PanelAlertsAndStatusTests {
 
     @Test("Ordinary reminder capsule summary and one-click clear leave pinned cards and missed timers untouched")
     func ordinaryCapsuleSummaryAndClearIsolation() {
-        let (store, suite) = makeIsolatedStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = makeIsolatedStore()
 
         store.devices = [
             SmartDevice(id: "s1", name: "烟雾传感器", roomId: "k", roomName: "厨房", model: "lumi.sensor_smoke", isOnline: true, kind: .sensor(SensorSpec())),
@@ -297,8 +295,7 @@ struct PanelAlertsAndStatusTests {
 
     @Test("A sole source shows its real disconnect instead of connecting forever")
     func soleSourceKeepsDisconnectedStatus() {
-        let (store, suite) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
         store.connectedBackends = []
         store.sourceStatuses = [:]
         store.connectionStatus = .disconnected("401 invalid token")
@@ -312,8 +309,7 @@ struct PanelAlertsAndStatusTests {
     func footerConnectionStatusCopy() {
         // 1. All healthy
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
             store.connectionStatus = .connected
             store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .connected]
 
@@ -335,8 +331,7 @@ struct PanelAlertsAndStatusTests {
 
         // 2. Partial unavailable: Xiaomi down, HA online -> "米家暂不可用，部分设备暂无数据"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
             store.connectionStatus = .connected
             store.sourceStatuses = [.xiaomiCloud: .disconnected("timeout"), .homeAssistant: .connected]
 
@@ -357,8 +352,7 @@ struct PanelAlertsAndStatusTests {
 
         // 3. Partial unavailable: HA down, Xiaomi online -> "Home Assistant 暂不可用，部分设备暂无数据"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .homeAssistant, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .homeAssistant, hasMi: true, hasHA: true)
             store.connectionStatus = .connected
             store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("unreachable")]
 
@@ -371,8 +365,7 @@ struct PanelAlertsAndStatusTests {
 
         // 3b. Dual-source with one online and the other still connecting must report connecting rather than false degraded "暂不可用"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
             store.connectionStatus = .connected
             store.sourceStatuses = [.xiaomiCloud: .connecting, .homeAssistant: .connected]
 
@@ -393,8 +386,7 @@ struct PanelAlertsAndStatusTests {
         // 3c. Dual-source with HA credentials rejected (401) while Xiaomi is online must say the key needs
         // updating and offer the connection entry, like the HA-only path, not a transient outage.
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
             store.connectionStatus = .connected
             store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("401 Unauthorized")]
 
@@ -419,8 +411,7 @@ struct PanelAlertsAndStatusTests {
 
         // 4. Only LG TV online while Xiaomi is unavailable -> "米家暂不可用，LG 电视仍可控制"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
             store.connectionStatus = .disconnected("offline")
             store.sourceStatuses = [.xiaomiCloud: .disconnected("offline")]
             store.lgConfig = LGWebOSConfig(isEnabled: true, host: "192.168.1.55", clientKey: "lg-key")
@@ -453,8 +444,7 @@ struct PanelAlertsAndStatusTests {
 
         // 5. Demo mode -> "示例家庭，不会控制真实设备" + "连接真实家庭"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .demo, hasMi: false, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .demo, hasMi: false, hasHA: false)
 
             L10n.$overrideLanguage.withValue(.zhHans) {
                 let status = PanelConnectionStatusPresentation.resolve(store: store)
@@ -475,8 +465,7 @@ struct PanelAlertsAndStatusTests {
 
         // 6. Not connected / not configured -> "还没连接家居平台" + "去连接"
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: false, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: false, hasHA: false)
 
             L10n.$overrideLanguage.withValue(.zhHans) {
                 let status = PanelConnectionStatusPresentation.resolve(store: store)
@@ -518,8 +507,7 @@ struct PanelAlertsAndStatusTests {
 
         // 7. Credential expired -> "米家登录已过期" + inline action "重新扫码", while primary status button still opens detail popover
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
             let expiredSession = Self.validMiSession(expiresAt: Self.fixedNow.addingTimeInterval(-3600))
             store.miAccounts = [MiAccount(session: expiredSession)]
             store.miSessionExpiresAt = expiredSession.expiresAt
@@ -545,8 +533,7 @@ struct PanelAlertsAndStatusTests {
 
         // 8. HA plaintext http declined -> dedicated status text + inline action to open connection settings
         do {
-            let (store, suite) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .homeAssistant, hasMi: false, hasHA: true)
             store.haPlaintextPrompt = .declined("http://example.com:8123")
 
             L10n.$overrideLanguage.withValue(.zhHans) {
@@ -584,11 +571,10 @@ struct PanelAlertsAndStatusTests {
 
     @Test("Connection status detail provides actual per-source online state, settings entry, and keyboard routing for Tab, Return, Space, and Esc")
     func statusDetailAndKeyboardEscapeRouting() {
-        let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
+        let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
         defer {
             PanelConnectionDetailState.shared.dismiss(restoreFocus: false)
             PanelConnectionDetailState.shared.clearStatusControlFocus()
-            UserDefaults.standard.removePersistentDomain(forName: suite)
         }
         store.connectionStatus = .connected
         store.sourceStatuses = [.xiaomiCloud: .connected, .homeAssistant: .disconnected("502 Bad Gateway")]
@@ -671,8 +657,7 @@ struct PanelAlertsAndStatusTests {
     func footerDisabledAndPartialMiAccountStates() {
         // (a) Single Xiaomi account disabled -> calm turned-off copy + openConnectionSettings, no fault badge
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: false)
             let accountId = store.miAccounts[0].id
             store.setMiAccountEnabled(false, id: accountId)
 
@@ -698,8 +683,7 @@ struct PanelAlertsAndStatusTests {
 
         // (b) Dual-source with Xiaomi disabled + Home Assistant online -> "设备同步正常" (.online), not stuck on connecting
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: true, hasHA: true)
             store.serverURLString = "http://192.168.1.10:8123"
             let accountId = store.miAccounts[0].id
             store.setMiAccountEnabled(false, id: accountId)
@@ -720,8 +704,7 @@ struct PanelAlertsAndStatusTests {
 
         // (c) Two Xiaomi accounts: valid Account A disabled + expired Account B enabled -> .reauthRequired
         do {
-            let (store, suite) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: false, hasHA: false)
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+            let (store, _) = makeIsolatedStore(backend: .xiaomiCloud, hasMi: false, hasHA: false)
             let validA = MiAccount(session: MiSession(
                 userId: "10001", cUserId: "ca", ssecurity: "c2VjcmV0", serviceToken: "tok-a",
                 region: "cn", expiresAt: Self.fixedNow.addingTimeInterval(86_400 * 30)

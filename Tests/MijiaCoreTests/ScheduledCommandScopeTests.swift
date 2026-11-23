@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -697,7 +698,7 @@ struct ScheduledCommandScopeTests {
     @MainActor
     func haAddedAfterCreationHoldsTheTimerBack() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.miLamp], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.homeBackend = .xiaomiCloud
         store.hasHASource = false
@@ -737,7 +738,7 @@ struct ScheduledCommandScopeTests {
     @MainActor
     func secondAccountTimerSurvivesFirstAccountRemoval() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.miLamp, Self.deLamp], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.homeBackend = .xiaomiCloud
         store.hasHASource = false

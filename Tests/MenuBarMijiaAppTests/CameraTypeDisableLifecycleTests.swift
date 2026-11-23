@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreferencesTestSupport
 import StateTestSupport
 import Testing
 @testable import MijiaCore
@@ -130,10 +131,12 @@ struct CameraTypeDisableLifecycleTests {
         store.capabilitySelection = selection
     }
 
-    private static func makeRig(_ suite: String) throws -> (CameraLivePanelController, HomeStore, CameraTypeRecorder, UserDefaults) {
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private static func makeRig() -> (CameraLivePanelController, HomeStore, CameraTypeRecorder, InMemoryUserDefaults) {
+        // One instance for the controller's frames and for the store: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         let recorder = CameraTypeRecorder()
-        let store = HomeStore(provider: CameraTypeProvider(recorder: recorder), defaultsSuiteName: suite)
+        let store = HomeStore(provider: CameraTypeProvider(recorder: recorder), defaults: defaults)
         store.devices = [camera("cam-a"), camera("cam-b")]
         let controller = CameraLivePanelController()
         controller.presentsActively = false
@@ -144,9 +147,7 @@ struct CameraTypeDisableLifecycleTests {
 
     @Test("Closing the camera type clears frames and warm streams, stops each session, then the helper; nothing returns after the warm window")
     func closingReleasesEverythingInOrder() async throws {
-        let suite = "MenuBarMijiaTests.CameraTypeClose.\(UUID().uuidString)"
-        let (controller, store, recorder, defaults) = try Self.makeRig(suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (controller, store, recorder, _) = Self.makeRig()
         let clock = FrozenClock()
         controller.warmExpirySleep = { try await clock.sleep(for: $0) }
         controller.bridgeShutdownOverride = { await recorder.record("shutdown") }
@@ -185,9 +186,7 @@ struct CameraTypeDisableLifecycleTests {
 
     @Test("A quick close and reopen waits for the helper to stop and starts one stream")
     func reopenWaitsForTheRelease() async throws {
-        let suite = "MenuBarMijiaTests.CameraTypeReopen.\(UUID().uuidString)"
-        let (controller, store, recorder, defaults) = try Self.makeRig(suite)
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let (controller, store, recorder, _) = Self.makeRig()
         let gate = ShutdownGate()
         controller.bridgeShutdownOverride = {
             await recorder.record("shutdown-begin")

@@ -1,6 +1,7 @@
 import Dispatch
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -379,8 +380,15 @@ struct DualSourceFallbackGraceTests {
             #expect(rig.gate.recordedDelays == [.seconds(15), .seconds(11)])
 
             rig.clock.advance(2)
+            let beforeThirdMiUpdate = await rig.collector.snapshotCount
             await rig.miMock.updateSnapshot(updatedMiHome)
-            await waitUntil { rig.gate.parkCount == 3 && rig.gate.waiting == 2 }
+            // `recompute` schedules the recheck before it yields its snapshot, so parking alone does not
+            // mean that snapshot reached the collector. A loaded runner can then deliver it between the
+            // count below and the assertion, making an untouched count look like an extra wake.
+            await waitUntil {
+                let count = await rig.collector.snapshotCount
+                return rig.gate.parkCount == 3 && rig.gate.waiting == 2 && count > beforeThirdMiUpdate
+            }
             let beforeStaleWake = await rig.collector.snapshotCount
             rig.gate.releaseOldestNormally()
             await waitUntil { await rig.provider.discardedFallbackWakeCountForTesting == 1 }
@@ -646,9 +654,7 @@ struct DualSourceFallbackGraceTests {
         let accountA = MiAccount(session: MiSession(userId: "10030011", cUserId: "c-grace-a", ssecurity: "ssec-a", serviceToken: "tok-a", region: "cn"))
         let accountB = MiAccount(session: MiSession(userId: "10030022", cUserId: "c-grace-b", ssecurity: "ssec-b", serviceToken: "tok-b", region: "de"))
         for signOut in [true, false] {
-            let suite = "com.jryang1997.MenuBarMijia.grace-revoke.\(UUID().uuidString)"
-            defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-            let defaults = try #require(UserDefaults(suiteName: suite))
+            let defaults = InMemoryUserDefaults()
             let vault = CredentialVault(storage: MemoryVaultStorage().storage)
             MiSessionStore.saveAccounts([accountA, accountB], defaults: defaults, vault: vault)
             defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
@@ -675,7 +681,7 @@ struct DualSourceFallbackGraceTests {
             let clock = TestClock()
             let gate = GraceTimerGate()
             let dual = DualSourceHomeProvider(homeAssistant: haMock, xiaomiCloud: miMock, graceNow: { clock.now }, fallbackRecheckTimer: gate)
-            let store = HomeStore(provider: dual, defaultsSuiteName: suite, credentialVault: vault)
+            let store = HomeStore(provider: dual, credentialVault: vault, defaults: defaults)
 
             await waitUntil { store.deviceBackends[Self.haID] == .xiaomiCloud }
             let initialCard = try #require(store.devices.first { $0.id == Self.haID })

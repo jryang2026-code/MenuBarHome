@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -302,16 +303,16 @@ struct CameraLiveLifecycleTests {
             controller.bridgeShutdownOverride = nil
         }
 
-        let suiteName = "MenuBarMijiaTests.CameraReload.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        // One instance for the store and for anything reading the same domain: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
 
         let cam = Self.makeCameraDevice(id: "cam-reload-1")
         let provider = MockCameraLifecycleProvider(
             pauseFirstResolve: true,
             streamToReturn: .demo(deviceId: cam.id)
         )
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: defaults)
         store.devices = [cam]
         controller.install(with: store)
         controller.activeDeviceId = cam.id
@@ -354,14 +355,10 @@ struct CameraLiveLifecycleTests {
         controller.mjpegWatchdogInterval = .seconds(1)
         controller.mjpegMaxAttempts = 3
 
-        let suiteName = "MenuBarMijiaTests.CameraMJPEG.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-
         let mjpegURL = try #require(URL(string: "http://127.0.0.1:43123/api/stream.mjpeg?src=cam_mjpeg_1"))
         let cam = Self.makeCameraDevice(id: "cam-mjpeg-1")
         let provider = MockCameraLifecycleProvider(pauseFirstResolve: false, streamToReturn: .mjpeg(mjpegURL))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.devices = [cam]
         controller.install(with: store)
         controller.activeDeviceId = cam.id
@@ -443,16 +440,14 @@ struct CameraLiveLifecycleTests {
         }
         controller.hasLiveOwnedProcessOverride = { false }
 
-        let suiteName = "MenuBarMijiaTests.CameraTerminate.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let defaults = InMemoryUserDefaults()
 
         let cam = Self.makeCameraDevice(id: "cam-term-1")
         let provider = MockCameraLifecycleProvider(
             pauseFirstResolve: false,
             streamToReturn: .demo(deviceId: cam.id)
         )
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: provider, defaults: defaults)
         store.devices = [cam]
         controller.install(with: store)
 
@@ -511,7 +506,7 @@ struct CameraLiveLifecycleTests {
             hangStop: true,
             streamToReturn: .demo(deviceId: hungCam.id)
         )
-        let hungStore = HomeStore(provider: hungProvider, defaultsSuiteName: suiteName)
+        let hungStore = HomeStore(provider: hungProvider, defaults: defaults)
         hungStore.devices = [hungCam]
         controller.install(with: hungStore)
         controller.activeDeviceId = hungCam.id

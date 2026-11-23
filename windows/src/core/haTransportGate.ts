@@ -129,6 +129,7 @@ interface ScopeLifecycleEntry {
   generation: number;
   abandonedBeforeGen: number;
   stopTimedOut: boolean;
+  nativeDrainTimedOut: boolean;
   nativeDrain: Promise<void> | null;
   drainTimer: ReturnType<typeof setTimeout> | null;
   lastPhase: HaConnectionLifecyclePhase | null;
@@ -159,35 +160,55 @@ function currentEnvKey(): object {
 interface NativeRegistration {
   readonly scope: string | null;
   readonly token: string;
-  readonly generation: number;
-  readonly ready: Promise<void>;
+  generation: number | null;
+  ready: Promise<void>;
   status: "pending" | "ready" | "failed";
 }
 
 const nativeRegistrations = new WeakMap<object, NativeRegistration>();
-// Keep revisions increasing across WebView reloads in the same native process.
-let nativeGeneration = Math.floor(performance.timeOrigin * 1000);
 
 export function syncHaNativeConnection(baseURL: string, token: string): Promise<void> | undefined {
   const env = currentEnvKey();
   const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
   if (!invoke) return undefined;
-  const scope = token ? haConnectionScope(baseURL) : null;
+  const trimmedToken = token.trim();
+  const scope = trimmedToken ? haConnectionScope(baseURL) : null;
   const previous = nativeRegistrations.get(env);
-  const activeToken = scope ? token : "";
+  const activeToken = scope ? trimmedToken : "";
   if (!scope && !previous) return undefined;
   if (previous && previous.scope === scope && previous.token === activeToken && previous.status !== "failed") {
     return previous.status === "pending" ? previous.ready : undefined;
   }
 
-  const generation = ++nativeGeneration;
-  const ready = invoke<void>("ha_set_connection", { baseUrl: scope ? baseURL : null, generation });
-  const registration: NativeRegistration = { scope, token: activeToken, generation, ready, status: "pending" };
-  nativeRegistrations.set(env, registration);
-  void ready.then(
-    () => { registration.status = "ready"; },
-    () => { registration.status = "failed"; },
+  const registration: NativeRegistration = {
+    scope,
+    token: activeToken,
+    generation: null,
+    ready: Promise.resolve(),
+    status: "pending",
+  };
+  const ready = invoke<number | void>("ha_set_connection", { baseUrl: scope ? baseURL : null }).then(
+    (assigned) => {
+      if (typeof assigned === "number") {
+        if (!Number.isSafeInteger(assigned) || assigned <= 0) {
+          registration.status = "failed";
+          throw new Error("Invalid Home Assistant native generation");
+        }
+        registration.generation = assigned;
+      } else if (assigned !== undefined && assigned !== null) {
+        registration.status = "failed";
+        throw new Error("Invalid Home Assistant native generation");
+      }
+      registration.status = "ready";
+    },
+    (error: unknown) => {
+      registration.status = "failed";
+      throw error;
+    },
   );
+  registration.ready = ready;
+  nativeRegistrations.set(env, registration);
+  void ready.catch(() => undefined);
   return ready;
 }
 
@@ -198,6 +219,11 @@ function retireNativeHaScope(scope: string | null): Promise<void> | undefined {
 }
 
 const NATIVE_HA_STALE_MESSAGE = "Home Assistant connection is disabled or has changed";
+const NATIVE_HA_STILL_DRAINING_MESSAGE = "Home Assistant connection still draining";
+
+export function isNativeHaDrainTimeoutError(error: unknown): boolean {
+  return nativeErrorMessage(error).includes(NATIVE_HA_STILL_DRAINING_MESSAGE);
+}
 
 function nativeErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
@@ -309,6 +335,7 @@ function ensureEntry(scope: string): ScopeLifecycleEntry {
       generation: 1,
       abandonedBeforeGen: 0,
       stopTimedOut: false,
+      nativeDrainTimedOut: false,
       nativeDrain: null,
       drainTimer: null,
       lastPhase: null,
@@ -393,7 +420,7 @@ export function isHaScopeStopTimedOut(scope: string | null | undefined): boolean
   const normalized = haConnectionScope(scope);
   if (!normalized) return false;
   const entry = getScopeEntries().get(normalized);
-  return Boolean(entry && entry.stopTimedOut && activeInFlight(entry) > 0);
+  return Boolean(entry && (entry.nativeDrainTimedOut || (entry.stopTimedOut && activeInFlight(entry) > 0)));
 }
 
 export function getHaScopeLifecyclePhase(
@@ -405,6 +432,7 @@ export function getHaScopeLifecyclePhase(
   const entry = getScopeEntries().get(normalized);
   const disabled = isHaScopeDisabledInStorage(normalized, storage);
   if (entry) {
+    if (entry.nativeDrainTimedOut) return "stop_timeout";
     const draining = disabled ? activeInFlight(entry) : activeOlderInFlight(entry);
     if (draining > 0) return entry.stopTimedOut ? "stop_timeout" : "stopping";
   }
@@ -421,26 +449,39 @@ export function beginHaScopeDisable(
   clearDrainTimer(entry);
   cancelPendingEnableCallbacks(entry);
   entry.stopTimedOut = false;
+  entry.nativeDrainTimedOut = false;
   entry.generation += 1;
   entry.controller.abort();
   entry.controller = new AbortController();
   const nativeDrain = retireNativeHaScope(normalized);
   if (nativeDrain) {
     entry.nativeDrain = nativeDrain;
-    void nativeDrain.then(() => {
-      if (entry.nativeDrain !== nativeDrain) return;
-      entry.nativeDrain = null;
-      finishDrain(normalized, entry, storage);
-    }, () => {
-      if (entry.nativeDrain !== nativeDrain) return;
-      // A rejected registration would otherwise stay counted as in-flight forever, pinning the
-      // lifecycle at `stop_timeout` and starving every later `requestHaScopeEnableAfterDrain`.
-      entry.nativeDrain = null;
-      clearDrainTimer(entry);
-      entry.stopTimedOut = true;
-      cancelPendingEnableCallbacks(entry, { timedOut: true });
-      notifyPhaseListeners(normalized, "stop_timeout");
-    });
+    void nativeDrain.then(
+      () => {
+        if (entry.nativeDrain !== nativeDrain) return;
+        entry.nativeDrain = null;
+        entry.nativeDrainTimedOut = false;
+        finishDrain(normalized, entry, storage);
+      },
+      (error: unknown) => {
+        if (entry.nativeDrain !== nativeDrain) return;
+        entry.nativeDrain = null;
+        clearDrainTimer(entry);
+        if (isNativeHaDrainTimeoutError(error)) {
+          // Native confirmed a blocking worker did not exit within its drain deadline.
+          // Keep `stop_timeout` visible so the user can retry draining (`abandonHungHaScopeInFlight`).
+          entry.nativeDrainTimedOut = true;
+          entry.stopTimedOut = true;
+          cancelPendingEnableCallbacks(entry, { timedOut: true });
+          notifyPhaseListeners(normalized, "stop_timeout");
+        } else {
+          // A rejected registration (e.g. IPC unavailable) must not pin the lifecycle at
+          // `stop_timeout` or starve later `requestHaScopeEnableAfterDrain`.
+          entry.nativeDrainTimedOut = false;
+          finishDrain(normalized, entry, storage);
+        }
+      },
+    );
   }
   const draining = activeInFlight(entry) > 0;
   const phase: HaConnectionLifecyclePhase = draining ? "stopping" : "disabled";
@@ -465,12 +506,13 @@ export function abandonHungHaScopeInFlight(
   const entry = ensureEntry(normalized);
   clearDrainTimer(entry);
   cancelPendingEnableCallbacks(entry);
-  if (entry.nativeDrain) return beginHaScopeDisable(normalized, storage);
+  if (entry.nativeDrain || entry.nativeDrainTimedOut) return beginHaScopeDisable(normalized, storage);
   entry.abandonedBeforeGen = entry.generation;
   entry.generation += 1;
   entry.controller.abort();
   entry.controller = new AbortController();
   entry.stopTimedOut = false;
+  entry.nativeDrainTimedOut = false;
   const nextPhase: HaConnectionLifecyclePhase = isHaScopeDisabledInStorage(normalized, storage)
     ? "disabled"
     : "enabled";
@@ -489,6 +531,13 @@ export function requestHaScopeEnableAfterDrain(
     return { immediate: true, generation: 0 };
   }
   const entry = ensureEntry(normalized);
+  if (entry.nativeDrainTimedOut && activeInFlight(entry) <= 0) {
+    clearDrainTimer(entry);
+    cancelPendingEnableCallbacks(entry);
+    notifyPhaseListeners(normalized, "stop_timeout");
+    onReady(false, { timedOut: true });
+    return { immediate: false, generation: entry.generation };
+  }
   if (activeInFlight(entry) > 0) {
     entry.stopTimedOut = false;
     cancelPendingEnableCallbacks(entry);
@@ -575,9 +624,29 @@ export function acquireHaTransportLease(
     return null;
   }
   const env = currentEnvKey();
-  const registration = nativeRegistrations.get(env);
-  if (registration && (registration.scope !== scope ||
-    (options?.token !== undefined && registration.token !== options.token.trim()))) {
+  const hasNativeHost = typeof window !== "undefined" && Boolean(window.__TAURI_INTERNALS__?.invoke);
+  let registration = nativeRegistrations.get(env);
+  if (hasNativeHost) {
+    if (!registration) {
+      const token = options?.token?.trim() ?? "";
+      if (!token) return null;
+      syncHaNativeConnection(baseURL, token);
+      registration = nativeRegistrations.get(env);
+      if (!registration) return null;
+    }
+    if (
+      registration.status === "failed" ||
+      registration.scope !== scope ||
+      (options?.token !== undefined && registration.token !== options.token.trim())
+    ) {
+      return null;
+    }
+  } else if (
+    registration &&
+    (registration.status === "failed" ||
+      registration.scope !== scope ||
+      (options?.token !== undefined && registration.token !== options.token.trim()))
+  ) {
     return null;
   }
   const entry = ensureEntry(scope);
@@ -588,13 +657,16 @@ export function acquireHaTransportLease(
 
   return {
     scope,
-    generation: registration?.generation ?? leaseGeneration,
+    get generation(): number {
+      return registration ? (registration.generation ?? 0) : leaseGeneration;
+    },
     ...(registration && registration.status !== "ready" ? { nativeReady: registration.ready } : {}),
     signal: leaseSignal,
     isCurrent(storage?: HaGateStorageLike | null): boolean {
       const effectiveStorage = storage === undefined ? options?.storage : storage;
       return (
         nativeRegistrations.get(env) === registration &&
+        (!registration || registration.status !== "failed") &&
         !leaseSignal.aborted &&
         leaseGeneration >= entry.abandonedBeforeGen &&
         entry.generation === leaseGeneration &&
@@ -645,8 +717,11 @@ export function waitForHaScopeDrained(
   timeoutMs: number = getHaStopDrainTimeoutMs(),
 ): Promise<HaDrainWaitResult> {
   const normalized = haConnectionScope(scope);
-  if (!normalized || getHaScopeInFlightCount(normalized) === 0) {
+  if (!normalized || (getHaScopeInFlightCount(normalized) === 0 && !isHaScopeStopTimedOut(normalized))) {
     return Promise.resolve({ drained: true, timedOut: false });
+  }
+  if (isHaScopeStopTimedOut(normalized)) {
+    return Promise.resolve({ drained: false, timedOut: true });
   }
   return new Promise<HaDrainWaitResult>((resolve) => {
     let settled = false;

@@ -20,9 +20,12 @@ import { currentLanguage, setLanguage } from "../src/core/i18n.js";
 import type { SmartDevice } from "../src/core/models.js";
 import { makeMiAccount, mergeMiAccountSnapshots, refreshMiAccountsConcurrently, type AccountChildSnapshot } from "../src/core/miAccountsStore.js";
 import {
-  buildIndexedCapabilityDevices, evaluateDeviceEntityWriteGate, evaluateDisabledDeviceUrlGate,
+  buildIndexedCapabilityDevices, evaluateDeviceEntityWriteGate, evaluateDisabledDeviceUrlGate, previewDeviceCategorySelection,
   evaluateDisabledUtteranceGate, evaluateIntentsWriteGate, resolveMiAccountSelectionState,
 } from "../src/core/miAccountControl.js";
+import { AutomationRuleStore } from "../src/core/automationEngine.js";
+import { ScheduledCommandStore } from "../src/core/scheduledCommands.js";
+import { applyMiotTypePruneSnapshot, buildHostCapabilityContext } from "../src/ui/cloudRefresh.js";
 import { MiotSpecResolver } from "../src/core/miCloud/spec.js";
 import type { MiRoom, MiSession } from "../src/core/miCloudClient.js";
 
@@ -258,6 +261,61 @@ describe("Mi device-type pruning (P3a-W)", () => {
     assert.equal(custom.includes("leak"), false);
   });
 
+  it("skips the light-group membership query while the light type is off", async () => {
+    const rooms: MiRoom[] = [{
+      id: "room1", name: "客厅", homeId: "home1", homeName: "我的家",
+      dids: devices.map((device) => device.did), isSharedHome: false,
+    }];
+    // A group did is what makes the refresh ask for membership at all.
+    const groupRecord: MiDeviceRecord = {
+      did: "group.living", name: "客厅灯组", model: MODEL_BY_DID.light, isOnline: true, specType: null,
+    };
+    const withGroup = [...devices, groupRecord];
+    const roomFor = (dids: readonly string[]): MiRoom[] => [{ ...rooms[0]!, dids: [...dids] }];
+    const session: MiSession = {
+      userId: "acc1", cUserId: "", ssecurity: "sec", serviceToken: "tok", passToken: "", region: "cn",
+    };
+    const account = makeMiAccount(session);
+    const transport = async () => ({ status: 200, headers: {}, body: "{}" });
+
+    const runWith = async (enabledCategories: readonly DeviceCategoryID[]) => {
+      const membershipCalls: string[][] = [];
+      const client = {
+        deviceList: async () => withGroup,
+        homeRooms: async () => roomFor(withGroup.map((device) => device.did)),
+        devicesByDids: async () => [],
+        homeDevices: async () => [],
+        lightGroupMembers: async (dids: readonly string[]) => {
+          membershipCalls.push([...dids]);
+          return new Map<string, string[]>([["group.living", ["light"]]]);
+        },
+        getProps: async () => new Map<string, unknown>(),
+      };
+      const result = await refreshMiAccountsConcurrently({
+        accounts: [account],
+        transport,
+        specResolver: new MiotSpecResolver(transport, specs),
+        prune: { selection: selection(enabledCategories, [account.id]), safetySignals: [...ALL_SENSOR_SIGNALS] },
+        clientFactory: () => client as never,
+      });
+      return { membershipCalls, child: result.children[account.id] as AccountChildSnapshot };
+    };
+
+    // `light` on: the group card is drawn, so its membership is worth a request.
+    const lightsOn = await runWith(["light", "plug"]);
+    assert.deepEqual(lightsOn.membershipCalls, [["group.living"]]);
+    assert.equal(lightsOn.child.lightGroupOwners.get("light"), "group.living");
+
+    // `light` off: no group card is drawn, so the per-group request is skipped and nothing is folded.
+    const lightsOff = await runWith(["plug"]);
+    assert.deepEqual(lightsOff.membershipCalls, []);
+    assert.equal(lightsOff.child.lightGroupOwners.size, 0);
+
+    // A selection that prunes nothing (every type on) still asks: the scope is unknown or full.
+    const everyType = await runWith([...DEVICE_CATEGORY_IDS]);
+    assert.deepEqual(everyType.membershipCalls, [["group.living"]]);
+  });
+
   it("prunes the per-account refresh and keeps the alert-only half on the child snapshot", async () => {
     const rooms: MiRoom[] = [{
       id: "room1", name: "客厅", homeId: "home1", homeName: "我的家",
@@ -280,13 +338,28 @@ describe("Mi device-type pruning (P3a-W)", () => {
     };
     const account = makeMiAccount(session);
     const transport = async () => ({ status: 200, headers: {}, body: "{}" });
-    const { merged, children } = await refreshMiAccountsConcurrently({
+    const refresh = (categories: readonly DeviceCategoryID[]) => refreshMiAccountsConcurrently({
       accounts: [account],
       transport,
       specResolver: new MiotSpecResolver(transport, specs),
-      prune: { selection: selection(["light"], [account.id]), safetySignals: [...ALL_SENSOR_SIGNALS] },
+      prune: { selection: selection(categories, [account.id]), safetySignals: [...ALL_SENSOR_SIGNALS] },
       clientFactory: () => client as never,
     });
+    const { merged: allTypes } = await refresh(DEVICE_CATEGORY_IDS);
+    const host = {
+      settings: { connectionMode: "xiaomiCloud", miSession: session },
+      devices: allTypes.home.devices,
+      miTypeSafetySignals: {},
+    };
+    applyMiotTypePruneSnapshot(host, allTypes);
+    const storage = { getItem: () => null, setItem: () => {}, removeItem: () => {} };
+    const preview = previewDeviceCategorySelection({
+      context: buildHostCapabilityContext(host, [account]), proposedCategories: ["light"],
+      scheduledCommandStore: new ScheduledCommandStore(storage), activeTimerIdentity: null,
+      ruleStore: new AutomationRuleStore(storage), safetyPolicy: { enabledSignals: ALL_SENSOR_SIGNALS },
+    });
+    readKeys.length = 0;
+    const { merged, children } = await refresh(["light"]);
 
     // Only the kept type is a card; the curtain is neither a card nor a read.
     assert.deepEqual(merged.home.devices.map((device) => device.id), ["light"]);
@@ -299,12 +372,65 @@ describe("Mi device-type pruning (P3a-W)", () => {
     assert.deepEqual((child.safetyDevices ?? []).map((device) => device.id).sort(), ["contact", "gas", "leak", "lock", "smoke"]);
     assert.equal(child.home.devices.some((device) => device.id === "leak"), false);
     assert.deepEqual(merged.safetyDevices?.map((device) => device.id).sort(), ["contact", "gas", "leak", "lock", "smoke"]);
+    assert.deepEqual(preview.retainedSafetyCards.map((device) => device.id).sort(), merged.safetyDevices?.map((device) => device.id).sort());
+    assert.ok(preview.retainedSafetySignals.includes("leak"));
 
     // A disconnected account's stale alert devices never reach the merged evaluation set.
     const offline = mergeMiAccountSnapshots([account], {
       [account.id]: { ...child, status: { kind: "disconnected", reason: "offline" } },
     });
     assert.deepEqual(offline.safetyDevices ?? [], []);
+  });
+
+  it("still names a closed type from the index after the account's refresh fails", async () => {
+    const rooms: MiRoom[] = [{
+      id: "room1", name: "客厅", homeId: "home1", homeName: "我的家",
+      dids: devices.map((device) => device.did), isSharedHome: false,
+    }];
+    const session: MiSession = {
+      userId: "acc1", cUserId: "", ssecurity: "sec", serviceToken: "tok", passToken: "", region: "cn",
+    };
+    const account = makeMiAccount(session);
+    const transport = async () => ({ status: 200, headers: {}, body: "{}" });
+    const selectionFor = selection(["light"], [account.id]);
+    const clientFor = (fail: boolean) => ({
+      deviceList: async () => {
+        if (fail) throw new Error("network down");
+        return devices;
+      },
+      homeRooms: async () => rooms,
+      devicesByDids: async () => [],
+      homeDevices: async () => [],
+      lightGroupMembers: async () => new Map<string, string[]>(),
+      getProps: async () => new Map<string, unknown>(),
+    });
+    const run = (fail: boolean, previousSnapshots?: Record<string, AccountChildSnapshot>) =>
+      refreshMiAccountsConcurrently({
+        accounts: [account],
+        transport,
+        specResolver: new MiotSpecResolver(transport, specs),
+        prune: { selection: selectionFor, safetySignals: [...ALL_SENSOR_SIGNALS] },
+        clientFactory: () => clientFor(fail) as never,
+        ...(previousSnapshots ? { previousSnapshots } : {}),
+      });
+
+    const first = await run(false);
+    const closedIds = (first.children[account.id] as AccountChildSnapshot).hiddenDevices ?? [];
+    assert.ok(closedIds.some((device) => device.id === "curtain"), "the closed cover is indexed");
+
+    // A failed round keeps the last snapshot on screen, so the same closed type must stay nameable
+    // instead of falling back to "no such device" (Nit-12).
+    const failed = await run(true, first.children);
+    const child = failed.children[account.id] as AccountChildSnapshot;
+    assert.equal(child.status.kind, "disconnected");
+    assert.deepEqual(
+      (child.hiddenDevices ?? []).map((device) => device.id).sort(),
+      closedIds.map((device) => device.id).sort(),
+    );
+    // ...but the stale entry cannot authorize a write while the account is not answering.
+    const curtain = (failed.merged.hiddenDevices ?? []).find((device) => device.id === "curtain");
+    assert.ok(curtain, "the merged index still names the closed cover");
+    assert.equal(curtain.isSourceAvailable, false);
   });
 
   it("keeps a closed card in the identity index so the gate names it, with zero writes", () => {

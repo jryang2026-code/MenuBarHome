@@ -1,5 +1,6 @@
 import Observation
 import Foundation
+import PreferencesTestSupport
 @testable import MijiaCore
 
 /// Fixtures and the sleep gate shared by scheduled-command tests.
@@ -59,7 +60,7 @@ enum ScheduledCommandTestSupport {
             devices: devices ?? [ceiling, miLamp],
             scenes: []
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.hasHASource = true
         store.miAccounts = [cnAccount]
@@ -72,7 +73,7 @@ enum ScheduledCommandTestSupport {
     @MainActor
     static func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.schedulescope.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         return (store, mock)
     }

@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -18,16 +19,18 @@ struct AuditWave2Tests {
         )
     }
 
+    /// One instance per store: a second `UserDefaults(suiteName:)` reads through cfprefsd and can
+    /// serve a stale cache under CI load (#309). Cases that reopen the same domain pass it in.
     @MainActor
     private func makeStore(
         devices: [SmartDevice],
         scenes: [HomeScene] = [],
         readings: [EnvironmentReading] = [],
-        suite: String? = nil
+        defaults: InMemoryUserDefaults = InMemoryUserDefaults()
     ) async throws -> (HomeStore, MockHomeProvider) {
         let snapshot = SynthesizedHome(devices: devices, environmentReadings: readings, scenes: scenes)
         let mock = MockHomeProvider(snapshot: snapshot)
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite ?? "test.auditwave2.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: defaults)
         store.enableSafetyAlerts = false
         try await store.waitForTestSnapshot()
         store.enableSafetyAlerts = true
@@ -96,9 +99,8 @@ struct AuditWave2Tests {
             }
         }
 
-        let suite = "test.auditwave2.schedule.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (schedStore, _) = try await makeStore(devices: [Self.studyCeiling], suite: suite)
+        let schedDefaults = InMemoryUserDefaults()
+        let (schedStore, _) = try await makeStore(devices: [Self.studyCeiling], defaults: schedDefaults)
         schedStore.assistantSleep = { _ in }
         schedStore.assistantNow = { Date() }
         _ = await schedStore.runAssistantCommand("10秒后打开书房灯")
@@ -107,8 +109,7 @@ struct AuditWave2Tests {
 
         let missedPlan = IntentPlan(intents: [DeviceIntent(targetId: Self.studyCeiling.id, operation: .power(false))], reply: "关闭书房吸顶灯", source: .local)
         let entry = ScheduledCommand(reply: "关闭书房吸顶灯", fireDate: Date().addingTimeInterval(-120), plan: missedPlan)
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        ScheduledCommand.save([entry], to: defaults)
+        ScheduledCommand.save([entry], to: schedDefaults)
         schedStore.restoreScheduledCommands(now: Date())
         _ = await schedStore.runMissedScheduledCommand(id: entry.id)
         #expect(schedStore.devices.first?.isActiveOn == false && schedStore.userHabitMemory.entries.isEmpty)
@@ -134,14 +135,14 @@ struct AuditWave2Tests {
         let alerts = plugStore.evaluateSafetyAlerts(now: start.addingTimeInterval(46 * 60))
         #expect(alerts.map(\.id) == ["longrun:plug_high"])
 
-        let suite = "test.auditwave2.battery.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
+        // Three stores on one domain: the shared instance is what proves the cooldown was persisted.
+        let batteryDefaults = InMemoryUserDefaults()
         let sensor = SmartDevice(id: "sensor_low", name: "门磁", roomId: "hall", roomName: "走廊", model: "lumi.sensor_magnet", isOnline: true, kind: .sensor(SensorSpec(battery: 10)))
-        let (first, _) = try await makeStore(devices: [sensor], suite: suite)
+        let (first, _) = try await makeStore(devices: [sensor], defaults: batteryDefaults)
         #expect(first.evaluateSafetyAlerts(now: start).contains { $0.id == "battery:sensor_low" })
-        let (second, _) = try await makeStore(devices: [sensor], suite: suite)
+        let (second, _) = try await makeStore(devices: [sensor], defaults: batteryDefaults)
         #expect(second.evaluateSafetyAlerts(now: start.addingTimeInterval(3_600)).isEmpty)
-        let (third, _) = try await makeStore(devices: [sensor], suite: suite)
+        let (third, _) = try await makeStore(devices: [sensor], defaults: batteryDefaults)
         #expect(third.evaluateSafetyAlerts(now: start.addingTimeInterval(86_401)).contains { $0.id == "battery:sensor_low" })
     }
 
@@ -166,20 +167,16 @@ struct AuditWave2Tests {
         )
         #expect(haHome.rooms.map(\.name) == ["Living Room", "Bedroom"])
 
-        let mbSuite = "test.auditwave2.menubar.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: mbSuite)?.removePersistentDomain(forName: mbSuite) }
-        let mbDefaults = try #require(UserDefaults(suiteName: mbSuite))
+        let mbDefaults = InMemoryUserDefaults()
         mbDefaults.set("primaryTemp", forKey: "menubar_display_mode")
         let livingReading = EnvironmentReading(id: "sensor_living", label: "Living Room Sensor", roomName: "Living Room", temperature: 25.5, humidity: 45)
-        let (mbStore, _) = try await makeStore(devices: [], readings: [livingReading], suite: mbSuite)
+        let (mbStore, _) = try await makeStore(devices: [], readings: [livingReading], defaults: mbDefaults)
         #expect(mbStore.menuBarDisplayMode == .sensorTemperature && mbStore.menuBarTargetId == "temp:sensor_living")
         L10n.$overrideTemperatureUnit.withValue(.celsius) { #expect(mbStore.menuBarText == "25.5°C") }
 
-        let nlSuite = "test.auditwave2.nightlight.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: nlSuite)?.removePersistentDomain(forName: nlSuite) }
         let bedLight = Self.light(id: "bed_light", name: "Bed Lamp", roomId: "bed", roomName: "Bedroom")
         let livLight = Self.light(id: "living_light", name: "Ceiling", roomId: "living", roomName: "Living Room")
-        let (nlStore, _) = try await makeStore(devices: [bedLight, livLight], suite: nlSuite)
+        let (nlStore, _) = try await makeStore(devices: [bedLight, livLight])
         storeToggle: do {
             let l1 = try #require(nlStore.devices.first { $0.id == "living_light" })
             #expect(await nlStore.togglePrimary(l1)?.value == true)
@@ -190,19 +187,17 @@ struct AuditWave2Tests {
         #expect(nlStore.devices.first { $0.id == "bed_light" }?.isActiveOn == false)
         #expect(nlStore.devices.first { $0.id == "living_light" }?.isActiveOn == true)
 
-        let demoSuite = "test.auditwave2.demo.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: demoSuite)?.removePersistentDomain(forName: demoSuite) }
-        UserDefaults(suiteName: demoSuite)?.set(HomeBackend.demo.rawValue, forKey: "home_backend")
-        let demoStore = HomeStore(defaultsSuiteName: demoSuite)
+        let demoDefaults = InMemoryUserDefaults()
+        demoDefaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
+        let demoStore = HomeStore(defaults: demoDefaults)
         try await demoStore.waitForTestSnapshot()
         #expect(demoStore.homeBackend == .demo && demoStore.provider is DemoHomeProvider && demoStore.environmentReadings.count == 3)
         #expect(demoStore.prefersOnDeviceSpeech == true)
         demoStore.prefersOnDeviceSpeech = false
-        #expect(HomeStore(provider: MockHomeProvider(), defaultsSuiteName: demoSuite).prefersOnDeviceSpeech == false)
+        #expect(HomeStore(provider: MockHomeProvider(), defaults: demoDefaults).prefersOnDeviceSpeech == false)
 
         demoStore.pinDeviceSource("card-a", to: .xiaomiCloud)
         #expect(demoStore.pinnedSource(for: "card-a") == .xiaomiCloud)
-        let demoDefaults = try #require(UserDefaults(suiteName: demoSuite))
         #expect(DeviceSourcePinStorage.load(defaults: demoDefaults)["card-a"] == .xiaomiCloud)
         #expect(DevicePreferenceIndex.referencedIDs(defaults: demoDefaults).contains("card-a"))
         demoStore.pinDeviceSource("card-a", to: nil)

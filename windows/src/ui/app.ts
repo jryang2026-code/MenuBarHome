@@ -3,7 +3,7 @@ import { normalizeDeviceCategorySelection } from "../core/deviceTypeSelection.js
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
 import { type HAInvoke } from "../core/homeAssistant.js";
 import { DualSourceCoordinator } from "../core/dualSourceProvider.js";
-import type { CapabilityIndexedDevice } from "../core/capabilityReferenceVerdict.js";
+import type { CapabilityIndexedDevice, SafetySignalKind } from "../core/capabilityReferenceVerdict.js";
 import {
   MiAccountsStore,
   type MiAccount,
@@ -45,7 +45,6 @@ import {
   type HomeScene,
   type ScheduledCommand,
   type SmartDevice,
-  allOffTargets,
   computeTotalPowerWatts,
   deviceEnvironmentReading,
   environmentReadingPriority,
@@ -72,6 +71,7 @@ import {
 import { getPanelThemeProfile, normalizePanelTheme, type PanelTheme } from "./panelTheme.js";
 import { formatTemperatureValue } from "../core/temperature.js";
 import {
+  allOffResultText,
   t,
 } from "../core/i18n.js";
 import {
@@ -133,7 +133,7 @@ import { getSpeakerDrawerItemState } from "./detailDrawers.js";
 import { activeRoomOptions } from "./roomOrderEditor.js";
 import { buildHostCapabilityContext, foldGrouped, getHostHaLifecyclePhase, haCacheIfEnabled, isDualSourceEnabled, isHostHaEnabled, isHostMiSessionEnabled, refreshDevices, refreshHADevices, resolveHostMiSelectionState } from "./cloudRefresh.js";
 import { hasSecondaryMiAccountsInIndex, miAccountId } from "../core/miAccountsStore.js";
-import { buildIndexedCapabilityDevices, evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
+import { evaluateAutomationRuleWriteGate, evaluateDeviceEntityWriteGate, evaluateIntentsWriteGate, evaluateQuickActionSourceWriteGate, planWritableAllOff, queueMiAccountReenableFromLogin, writeMiAccountSelectionMutation } from "../core/miAccountControl.js";
 import { subscribeHaScopeLifecycle } from "../core/haTransportGate.js";
 import { executeIntents, executeSingleCommand, getRunningBatch, getUndoActionBatch, habitSequences, lastHabitAction, unrecordHabits, type ExecuteIntentsOptions } from "./intentExecution.js";
 import { getAutomationUndoRunId, type AutomationRule } from "../core/automationEngine.js";
@@ -204,6 +204,9 @@ export class MenuMijiaWindowsApp {
   // Assigned in the constructor, after the interface language is resolved: the demo home is
   // generated per language (#52), so a field initializer would freeze the module default.
   private _devices: SmartDevice[] = [];
+  // Reading `devices` must return the same array until `_devices` or the camera flag changes, so
+  // identity checks such as the energy-history clear marker hold while cameras are filtered (#330).
+  private filteredDevicesCache: { readonly source: SmartDevice[]; readonly devices: SmartDevice[] } | null = null;
   private devicesMutationScheduled = false;
   public energySession: HostEnergySession = createDefaultHostEnergySession();
   public autoSafetySession: HostAutoSafetySession = createDefaultHostAutoSafetySession();
@@ -229,9 +232,14 @@ export class MenuMijiaWindowsApp {
   public lockProbeInFlight = false;
   public lastSessionFingerprint: string | null = null;
   public get devices(): SmartDevice[] {
-    return this.cameraLive?.cameraCategoryEnabled === false
-      ? this._devices.filter((device) => device.kind.kind !== "camera")
-      : this._devices;
+    if (this.cameraLive?.cameraCategoryEnabled !== false) return this._devices;
+    if (this.filteredDevicesCache?.source !== this._devices) {
+      this.filteredDevicesCache = {
+        source: this._devices,
+        devices: this._devices.filter((device) => device.kind.kind !== "camera"),
+      };
+    }
+    return this.filteredDevicesCache.devices;
   }
   public set devices(next: SmartDevice[]) {
     this._devices = next;
@@ -268,6 +276,9 @@ export class MenuMijiaWindowsApp {
    */
   public haTypePruneScope: string | null = null;
   public hiddenHADevices: readonly CapabilityIndexedDevice[] = [];
+  /** Each source's per-card alert signals from its last round, for the device-type preview. */
+  public miTypeSafetySignals: Readonly<Record<string, readonly SafetySignalKind[]>> = {};
+  public haTypeSafetySignals: Readonly<Record<string, readonly SafetySignalKind[]>> = {};
   /** Home Assistant cards a closed type keeps only so enabled alerts still read their signal. */
   public safetyRetainedHADevices: SmartDevice[] = [];
   public safetyRetainedHADeviceFacets: Readonly<Record<string, readonly FacetControl[]>> = {};
@@ -409,6 +420,12 @@ export class MenuMijiaWindowsApp {
   public isShowingAssistantBar = true;
   public readonly isStandaloneSettingsWindow: boolean = false;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
+  /**
+   * True while the guide is mounted only as a loading state: startup credential hydration has not
+   * settled, so an empty `localStorage` copy cannot yet tell a fresh install from a returning user
+   * whose session or token lives in the credential store (P2-6, #293).
+   */
+  public onboardingAwaitingCredentials = false;
   /** Open Settings category (#78); a re-render keeps it, `openSettingsSheet(tab)` routes it. */
   public settingsTab: SettingsTab = "general";
   public replyBanner: ReplyBannerState | null = null;
@@ -646,6 +663,11 @@ export class MenuMijiaWindowsApp {
     }
     if (!this.isStandaloneSettingsWindow && migration.shouldShowOnboarding) {
       this.activeSheet = "onboarding";
+      // P2-6 (#293): with an empty localStorage copy the synchronous verdict cannot tell a fresh
+      // install from a returning user whose Mi session or HA token only exists in the credential
+      // store. Paint a loading state and let `hydrateCredentials` settle the decision, instead of
+      // flashing the full guide and closing it a frame later.
+      this.onboardingAwaitingCredentials = !this.loadedSettings.hasLegacyCredentials;
     }
     this.initializeCredentials();
     if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
@@ -848,7 +870,7 @@ export class MenuMijiaWindowsApp {
       if (this.settings.enableRaycastIntegration !== prevRaycastIntegration) {
         const nextRaycast = this.settings.enableRaycastIntegration;
         this.settings.enableRaycastIntegration = prevRaycastIntegration;
-        setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
+        void setRaycastIntegrationEnabled(this, nextRaycast, { persistSettings: false, render: false });
       }
       syncAutomationLifecycle(this);
       if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
@@ -1074,22 +1096,13 @@ export class MenuMijiaWindowsApp {
 
   /** Devices 全关 would switch off: on screen (current room), on, and taking part (#23). */
   public get allOffTargets(): SmartDevice[] {
-    if (this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)) {
-      return allOffTargets(this.filteredDevices, this.settings.allOffOverrides);
-    }
-    const context = buildHostCapabilityContext(this);
-    const { indexedDevices } = buildIndexedCapabilityDevices(context);
-    // A type switched off before the refresh lands would otherwise fail the whole 全关 batch (#346).
-    const enabledCategories = context.state.selection.enabledCategories;
-    const availableIds = new Set(
-      indexedDevices
-        .filter((d) => d.isSourceAvailable && !d.upstreamHiddenOrDisabled && enabledCategories.includes(d.category))
-        .map((d) => d.id),
-    );
-    return allOffTargets(
-      this.filteredDevices.filter((d) => availableIds.has(d.id)),
-      this.settings.allOffOverrides,
-    );
+    return planWritableAllOff(this.filteredDevices, this.settings.allOffOverrides, this.allOffCapabilityContext).targets;
+  }
+
+  private get allOffCapabilityContext() {
+    return this.settings.connectionMode === "demo" && !isDualSourceEnabled(this)
+      ? null
+      : buildHostCapabilityContext(this);
   }
 
   public renderKindBar(): string {
@@ -1213,11 +1226,12 @@ export class MenuMijiaWindowsApp {
   }
 
   private async turnAllOff(): Promise<void> {
-    if (this.settings.connectionMode !== "demo" || isDualSourceEnabled(this)) {
+    const context = this.allOffCapabilityContext;
+    if (context) {
       const gateMsg = evaluateQuickActionSourceWriteGate({
         actionId: "lightsOff",
         scopeDevices: [],
-        context: buildHostCapabilityContext(this),
+        context,
         languagePreference: this.settings.interfaceLanguage,
       });
       if (gateMsg !== null) {
@@ -1226,15 +1240,22 @@ export class MenuMijiaWindowsApp {
         return;
       }
     }
-    const targets = this.allOffTargets;
-    if (targets.length === 0) return;
+    const { targets, skipped } = planWritableAllOff(this.filteredDevices, this.settings.allOffOverrides, context);
+    const reply = allOffResultText(targets.length, skipped);
+    if (targets.length === 0) {
+      if (skipped > 0) {
+        this.replyBanner = { text: reply, source: t("一键全关") };
+        this.render();
+      }
+      return;
+    }
     const intents: DeviceIntent[] = targets.map((d) => ({
       targetId: d.id,
       operation: { kind: "power", isOn: false },
     }));
     await this.executeIntents(
       intents,
-      t("已关闭 {count} 台开启中的设备", { count: targets.length }),
+      reply,
       t("一键全关"),
       { recordHabits: true },
     );

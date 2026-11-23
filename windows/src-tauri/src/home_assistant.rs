@@ -27,6 +27,10 @@ pub struct HaServiceCall {
 
 const STALE: &str = "Home Assistant connection is disabled or has changed";
 const CANCELLED: &str = "Home Assistant request cancelled";
+const STILL_DRAINING: &str = "Home Assistant connection still draining";
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(7);
+const CONNECT_TOTAL_TIMEOUT: Duration = Duration::from_secs(8);
+const CONNECT_PER_ADDRESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
 pub(crate) struct HaConnections(Mutex<HaRegistration>);
@@ -50,22 +54,30 @@ struct HaTask {
 }
 
 impl HaConnections {
-    async fn configure(&self, scope: Option<String>, generation: u64) -> Result<(), String> {
-        let retiring = {
+    async fn configure(&self, scope: Option<String>) -> Result<u64, String> {
+        self.configure_with_timeout(scope, DRAIN_TIMEOUT).await
+    }
+
+    async fn configure_with_timeout(
+        &self,
+        scope: Option<String>,
+        drain_timeout: Duration,
+    ) -> Result<u64, String> {
+        let (generation, retiring) = {
             let mut state = self.0.lock().map_err(|_| STALE)?;
-            if generation <= state.generation {
-                return Err(STALE.into());
-            }
-            state.generation = generation;
+            state.generation = state.generation.checked_add(1).ok_or(STALE)?;
+            let generation = state.generation;
             if let Some(current) = &state.current {
                 current.cancel.cancel();
             }
-            state.current.clone()
+            (generation, state.current.clone())
         };
         if let Some(connection) = retiring {
             // Keep the retiring connection registered until its last task exits.
-            // Concurrent configurations wait on the same connection.
-            let _drained = connection.tasks.write().await;
+            // Concurrent configurations wait on the same connection up to `drain_timeout`.
+            let _drained = tokio::time::timeout(drain_timeout, connection.tasks.write())
+                .await
+                .map_err(|_| STILL_DRAINING.to_string())?;
         }
         let mut state = self.0.lock().map_err(|_| STALE)?;
         if state.generation == generation {
@@ -78,7 +90,7 @@ impl HaConnections {
                 })
             });
         }
-        Ok(())
+        Ok(generation)
     }
 
     fn acquire(&self, base_url: &str, generation: u64) -> Result<HaTask, String> {
@@ -107,10 +119,78 @@ fn connection_scope(base_url: &str) -> Result<String, String> {
 pub(crate) async fn ha_set_connection(
     connections: tauri::State<'_, HaConnections>,
     base_url: Option<String>,
-    generation: u64,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let scope = base_url.as_deref().map(connection_scope).transpose()?;
-    connections.configure(scope, generation).await
+    connections.configure(scope).await
+}
+
+fn describe_connect_io_error(error: &std::io::Error) -> String {
+    match error.kind() {
+        std::io::ErrorKind::ConnectionRefused => "connection refused".into(),
+        std::io::ErrorKind::ConnectionReset => "connection reset".into(),
+        std::io::ErrorKind::ConnectionAborted => "connection aborted".into(),
+        std::io::ErrorKind::TimedOut => "timed out".into(),
+        std::io::ErrorKind::AddrNotAvailable => "address not available".into(),
+        std::io::ErrorKind::PermissionDenied => "permission denied".into(),
+        _ => error.to_string(),
+    }
+}
+
+fn format_connect_failures(failures: &[(std::net::SocketAddr, String)], timed_out: bool) -> String {
+    if failures.is_empty() {
+        if timed_out {
+            return "Home Assistant connection timed out".into();
+        }
+        return "Home Assistant connection failed: no resolved addresses".into();
+    }
+    let summary = failures
+        .iter()
+        .map(|(addr, reason)| format!("{addr} ({reason})"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if timed_out {
+        format!("Home Assistant connection timed out after trying {summary}")
+    } else {
+        format!("Home Assistant connection failed: {summary}")
+    }
+}
+
+async fn connect_addresses_with_budget<A, F, Fut>(
+    addresses: A,
+    total_budget: Duration,
+    per_address_timeout: Duration,
+    mut dial: F,
+) -> Result<tokio::net::TcpStream, String>
+where
+    A: IntoIterator<Item = std::net::SocketAddr>,
+    F: FnMut(std::net::SocketAddr) -> Fut,
+    Fut: Future<Output = std::io::Result<tokio::net::TcpStream>>,
+{
+    let deadline = tokio::time::Instant::now() + total_budget;
+    let mut failures: Vec<(std::net::SocketAddr, String)> = Vec::new();
+    let mut budget_exhausted = false;
+
+    for address in addresses {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            budget_exhausted = true;
+            break;
+        }
+        let attempt_timeout = remaining.min(per_address_timeout);
+        match tokio::time::timeout(attempt_timeout, dial(address)).await {
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(error)) => failures.push((address, describe_connect_io_error(&error))),
+            Err(_) => {
+                failures.push((address, "timed out".into()));
+                if tokio::time::Instant::now() >= deadline {
+                    budget_exhausted = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    Err(format_connect_failures(&failures, budget_exhausted))
 }
 
 impl HaTask {
@@ -132,16 +212,19 @@ impl HaTask {
             .trim_end_matches(']');
         let port = parsed.port_or_known_default().ok_or("Invalid Home Assistant port")?;
         let connect = async {
-            let addresses = tokio::net::lookup_host((host, port))
+            let deadline = tokio::time::Instant::now() + CONNECT_TOTAL_TIMEOUT;
+            let addresses = tokio::time::timeout_at(deadline, tokio::net::lookup_host((host, port)))
                 .await
-                .map_err(|_| "Home Assistant address lookup failed")?;
-            for address in addresses {
-                let socket = tokio::net::TcpStream::connect(address);
-                if let Ok(Ok(stream)) = tokio::time::timeout(Duration::from_secs(5), socket).await {
-                    return Ok(stream);
-                }
-            }
-            Err("Home Assistant connection failed")
+                .map_err(|_| "Home Assistant address lookup timed out".to_string())?
+                .map_err(|_| "Home Assistant address lookup failed".to_string())?;
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            connect_addresses_with_budget(
+                addresses,
+                remaining,
+                CONNECT_PER_ADDRESS_TIMEOUT,
+                |address| tokio::net::TcpStream::connect(address),
+            )
+            .await
         };
         let stream = self
             .cancel
@@ -624,18 +707,19 @@ mod tests {
             let b = "https://home.example/second";
             let connections = Arc::new(HaConnections::default());
             assert!(connections.acquire(a, 1).is_err());
-            connections.configure(Some(connection_scope(a).unwrap()), 1).await.unwrap();
-            let task = connections.acquire("https://HOME.example:443/first/api/websocket/", 1).unwrap();
-            assert!(connections.acquire(b, 1).is_err());
+            let gen1 = connections.configure(Some(connection_scope(a).unwrap())).await.unwrap();
+            assert_eq!(gen1, 1);
+            let task = connections.acquire("https://HOME.example:443/first/api/websocket/", gen1).unwrap();
+            assert!(connections.acquire(b, gen1).is_err());
 
             let stop = {
                 let connections = connections.clone();
-                tauri::async_runtime::spawn(async move { connections.configure(None, 2).await })
+                tauri::async_runtime::spawn(async move { connections.configure(None).await })
             };
             tokio::time::timeout(Duration::from_secs(2), task.cancel.cancelled()).await.unwrap();
-            assert!(connections.acquire(a, 1).is_err());
+            assert!(connections.acquire(a, gen1).is_err());
 
-            let switch = connections.configure(Some(connection_scope(b).unwrap()), 3);
+            let switch = connections.configure(Some(connection_scope(b).unwrap()));
             let mut switch = std::pin::pin!(switch);
             std::future::poll_fn(|cx| {
                 assert!(switch.as_mut().poll(cx).is_pending());
@@ -644,14 +728,169 @@ mod tests {
             assert!(connections.acquire(b, 3).is_err());
             assert!(!stop.inner().is_finished());
             drop(task);
-            switch.await.unwrap();
-            stop.await.unwrap().unwrap();
+            let gen3 = switch.await.unwrap();
+            let gen2 = stop.await.unwrap().unwrap();
+            assert!(gen2 > gen1 && gen3 > gen2);
 
-            assert!(connections.acquire(b, 3).is_ok());
-            assert!(connections.acquire(a, 3).is_err());
-            assert!(connections.acquire(b, 1).is_err());
-            assert!(connections.configure(Some(connection_scope(a).unwrap()), 2).await.is_err());
-            assert!(connections.acquire(b, 3).is_ok());
+            assert!(connections.acquire(b, gen3).is_ok());
+            assert!(connections.acquire(a, gen3).is_err());
+            assert!(connections.acquire(b, gen1).is_err());
+            assert!(connections.acquire(b, gen2).is_err());
+            let gen4 = connections.configure(Some(connection_scope(b).unwrap())).await.unwrap();
+            assert!(gen4 > gen3);
+            assert!(connections.acquire(b, gen3).is_err());
+            assert!(connections.acquire(b, gen4).is_ok());
+        });
+    }
+
+    #[test]
+    fn configure_times_out_with_still_draining_when_worker_blocks() {
+        tauri::async_runtime::block_on(async {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let connections = Arc::new(HaConnections::default());
+            let gen1 = connections
+                .configure_with_timeout(Some(connection_scope(&base).unwrap()), Duration::from_secs(2))
+                .await
+                .unwrap();
+            let task = connections.acquire(&base, gen1).unwrap();
+            let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+
+            // Simulate a worker that holds the `HaTask` read guard even after cancellation.
+            let stuck_worker = tauri::async_runtime::spawn(async move {
+                let _task = task;
+                let _ = started_tx.send(());
+                let _ = release_rx.await;
+            });
+            tokio::time::timeout(Duration::from_secs(2), started_rx)
+                .await
+                .unwrap()
+                .unwrap();
+
+            let err = connections
+                .configure_with_timeout(None, Duration::from_millis(60))
+                .await
+                .unwrap_err();
+            assert_eq!(err, STILL_DRAINING);
+            assert!(connections.acquire(&base, gen1).is_err());
+
+            // Once the blocked worker exits, a subsequent configure drains and succeeds cleanly.
+            let _ = release_tx.send(());
+            stuck_worker.await.unwrap();
+            let next_base = "https://home.example/recovered";
+            let gen3 = connections
+                .configure_with_timeout(
+                    Some(connection_scope(next_base).unwrap()),
+                    Duration::from_secs(2),
+                )
+                .await
+                .unwrap();
+            assert!(gen3 > gen1);
+            assert!(connections.acquire(next_base, gen3).is_ok());
+        });
+    }
+
+    #[test]
+    fn multi_address_connect_aggregates_failures_and_enforces_total_budget() {
+        tauri::async_runtime::block_on(async {
+            let addrs: [std::net::SocketAddr; 3] = [
+                "127.0.0.1:1".parse().unwrap(),
+                "127.0.0.1:2".parse().unwrap(),
+                "127.0.0.1:3".parse().unwrap(),
+            ];
+            let err = connect_addresses_with_budget(
+                addrs,
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+                |addr| async move {
+                    match addr.port() {
+                        1 => Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            "refused",
+                        )),
+                        2 => Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionReset,
+                            "reset",
+                        )),
+                        _ => Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "timed out",
+                        )),
+                    }
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(err.contains("127.0.0.1:1 (connection refused)"), "unexpected err: {err}");
+            assert!(err.contains("127.0.0.1:2 (connection reset)"), "unexpected err: {err}");
+            assert!(err.contains("127.0.0.1:3 (timed out)"), "unexpected err: {err}");
+
+            // Total budget stops serial fallback before exhausting every slow address.
+            let slow_addrs: [std::net::SocketAddr; 4] = [
+                "127.0.0.1:11".parse().unwrap(),
+                "127.0.0.1:12".parse().unwrap(),
+                "127.0.0.1:13".parse().unwrap(),
+                "127.0.0.1:14".parse().unwrap(),
+            ];
+            let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let attempts_clone = attempts.clone();
+            let started = Instant::now();
+            let budget_err = connect_addresses_with_budget(
+                slow_addrs,
+                Duration::from_millis(90),
+                Duration::from_millis(60),
+                move |_addr| {
+                    let attempts = attempts_clone.clone();
+                    async move {
+                        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "slow",
+                        ))
+                    }
+                },
+            )
+            .await
+            .unwrap_err();
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "total budget took too long: {:?}",
+                started.elapsed()
+            );
+            assert!(
+                attempts.load(std::sync::atomic::Ordering::SeqCst) < slow_addrs.len(),
+                "expected total budget to stop before all {} addresses",
+                slow_addrs.len()
+            );
+            assert!(
+                budget_err.contains("timed out"),
+                "expected timeout diagnostic, got: {budget_err}"
+            );
+
+            // Falls back past a refused address to a reachable loopback listener.
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let live_addr = listener.local_addr().unwrap();
+            let failed_addr: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+            let stream = connect_addresses_with_budget(
+                [failed_addr, live_addr],
+                Duration::from_secs(2),
+                Duration::from_secs(1),
+                move |addr| async move {
+                    if addr == failed_addr {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionRefused,
+                            "refused",
+                        ))
+                    } else {
+                        tokio::net::TcpStream::connect(addr).await
+                    }
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(stream.peer_addr().unwrap(), live_addr);
         });
     }
 
@@ -687,17 +926,17 @@ mod tests {
             });
             tauri::async_runtime::block_on(async {
                 let connections = HaConnections::default();
-                connections.configure(Some(connection_scope(&base).unwrap()), 1).await.unwrap();
-                let task = connections.acquire(&base, 1).unwrap();
+                let gen1 = connections.configure(Some(connection_scope(&base).unwrap())).await.unwrap();
+                let task = connections.acquire(&base, gen1).unwrap();
                 let operation = tauri::async_runtime::spawn(task.websocket(
                     format!("{}/api/websocket", base.replacen("http:", "ws:", 1)),
                     "fixture-token".into(), snapshot,
                 ));
                 tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
-                tokio::time::timeout(Duration::from_secs(2), connections.configure(None, 2))
+                tokio::time::timeout(Duration::from_secs(2), connections.configure(None))
                     .await.unwrap().unwrap();
                 assert!(operation.await.unwrap().is_err());
-                assert!(connections.acquire(&base, 1).is_err());
+                assert!(connections.acquire(&base, gen1).is_err());
             });
             peer.join().unwrap();
         }
@@ -745,14 +984,14 @@ mod tests {
             });
             tauri::async_runtime::block_on(async {
                 let connections = HaConnections::default();
-                connections.configure(Some(connection_scope(&base).unwrap()), 1).await.unwrap();
-                let task = connections.acquire(&base, 1).unwrap();
+                let gen1 = connections.configure(Some(connection_scope(&base).unwrap())).await.unwrap();
+                let task = connections.acquire(&base, gen1).unwrap();
                 let operation = tauri::async_runtime::spawn(task.http(crate::network::native_http_with_scope(
                     format!("{base}/api/stream"), None, None, None, None, Some(10_000),
                     Some(connection_scope(&base).unwrap()),
                 )));
                 tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
-                tokio::time::timeout(Duration::from_secs(2), connections.configure(None, 2))
+                tokio::time::timeout(Duration::from_secs(2), connections.configure(None))
                     .await.unwrap().unwrap();
                 assert_eq!(operation.await.unwrap().err().as_deref(), Some(CANCELLED));
             });
@@ -846,12 +1085,12 @@ mod tests {
         });
         let connections = HaConnections::default();
         let scope = connection_scope(&base_url).unwrap();
-        tauri::async_runtime::block_on(connections.configure(Some(scope), 1)).unwrap();
+        let gen1 = tauri::async_runtime::block_on(connections.configure(Some(scope))).unwrap();
         let url = endpoint(&base_url, "controlled-native-token").unwrap();
         let mut snapshot_ms = Vec::new();
         for _ in 0..5 {
             let start = std::time::Instant::now();
-            let snapshot = tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+            let snapshot = tauri::async_runtime::block_on(connections.acquire(&base_url, gen1).unwrap().websocket(
                 url.clone(), "controlled-native-token".into(), snapshot,
             ))
             .unwrap();
@@ -868,7 +1107,7 @@ mod tests {
                 entity_id: "light.study".into(),
                 data: Default::default(),
             };
-            let result = tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+            let result = tauri::async_runtime::block_on(connections.acquire(&base_url, gen1).unwrap().websocket(
                 url.clone(), "controlled-native-token".into(), move |socket, cancel| execute(socket, cancel, command),
             ));
             assert_eq!(result.is_err(), fail);
@@ -877,7 +1116,7 @@ mod tests {
             }
         }
         let error =
-            tauri::async_runtime::block_on(connections.acquire(&base_url, 1).unwrap().websocket(
+            tauri::async_runtime::block_on(connections.acquire(&base_url, gen1).unwrap().websocket(
                 url, "controlled-native-token".into(), snapshot,
             ))
                 .err()

@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import StateTestSupport
 import Testing
 @testable import MijiaCore
@@ -62,10 +63,9 @@ struct AssistantToggleAndProviderRemovalTests {
     ) {
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
-        let suite = "test.assistant.toggle.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         return (store, mock, vault, mem, defaults)
     }
@@ -95,11 +95,10 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(store.aiAssistantEnabled == false, "manifest ai-assistant.defaultOnFreshInstall is false")
 
         let mem = MemoryVaultStorage()
-        let suite = "test.assistant.toggle.legacy.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let legacy = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage))
+        let legacy = HomeStore(provider: mock, credentialVault: CredentialVault(storage: mem.storage), defaults: defaults)
         try await legacy.waitForTestSnapshot()
         #expect(legacy.aiAssistantEnabled == true, "pre-existing users keep the always-on behavior")
     }
@@ -222,6 +221,41 @@ struct AssistantToggleAndProviderRemovalTests {
         #expect(await task.value == nil, "the disconnected companion run returns no plan")
         #expect(await mock.executedCommands.isEmpty, "a late result must not actuate the device")
         #expect(store.scheduledCommands.isEmpty, "nor leave a timer behind")
+    }
+
+    @Test("Disconnect clears consent requested by a companion ask and keeps local consent")
+    @MainActor
+    func disconnectClearsOnlyCompanionConsent() async throws {
+        let (store, mock, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        store.revokeCloudConsent()
+        #expect(store.setCompanionIntegrationEnabled(true))
+        let generation = store.companionGeneration
+
+        let gate = ScheduledCommandTestSupport.SleepGate()
+        let companion = Task {
+            await store.withCompanionCommandGeneration(generation) {
+                _ = await store.runAssistantCommand("我要睡觉了")
+                await gate.sleep()
+            }
+        }
+        try await awaitState { gate.waiting == 1 }
+        #expect(store.pendingCloudConsent?.companionGeneration == generation)
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.pendingCloudConsent == nil)
+        #expect(await store.allowPendingCloudRequest() == nil)
+        #expect(store.consentedCloudEndpoints.isEmpty)
+        #expect(await mock.executedCommands.isEmpty)
+
+        #expect(store.setCompanionIntegrationEnabled(true))
+        _ = await store.runAssistantCommand("客厅现在舒服吗")
+        let local = store.pendingCloudConsent
+        #expect(local != nil && local?.companionGeneration == nil)
+        #expect(store.disconnectCompanionIntegration())
+        #expect(store.pendingCloudConsent == local)
+        gate.release()
+        await companion.value
     }
 
     @Test("No retry may leave once AI is switched off mid-flight")
@@ -592,11 +626,10 @@ struct AssistantToggleAndProviderRemovalTests {
     func toggleRefusedWhileIdentityUncertain() async throws {
         let mem = MemoryVaultStorage()
         mem.readResult = .unavailable
-        let suite = "test.assistant.toggle.uncertain.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: CredentialVault(storage: mem.storage))
+        let store = HomeStore(provider: mock, credentialVault: CredentialVault(storage: mem.storage), defaults: defaults)
         try await store.waitForTestSnapshot()
 
         #expect(store.isIdentityUncertain)
@@ -608,13 +641,12 @@ struct AssistantToggleAndProviderRemovalTests {
     @Test("Toggling persists across a store restart")
     @MainActor
     func togglePersistsAcrossRestart() async throws {
-        let suite = "test.assistant.toggle.persist.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
         try await store.waitForTestSnapshot()
         // A legacy user's explicit off must survive a restart.
         #expect(store.aiAssistantEnabled == true)
@@ -622,8 +654,8 @@ struct AssistantToggleAndProviderRemovalTests {
 
         let restarted = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.desk], scenes: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         try await restarted.waitForTestSnapshot()
         #expect(restarted.aiAssistantEnabled == false)

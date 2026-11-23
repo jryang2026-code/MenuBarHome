@@ -72,6 +72,7 @@ public struct DeviceTypeSelectionImpact: Equatable, Sendable {
     }
 
     public let target: Set<DeviceCategoryID>
+    public let generation: Int
     public let removedCategories: [DeviceCategoryID]
     /// Cards on the panel now that the change hides.
     public let hiddenCardNames: [String]
@@ -127,7 +128,7 @@ extension HomeStore {
         let target = deviceCategoryTarget(picked)
         let removed = capabilitySelection.enabledCategories.subtracting(target)
         let verdict = evaluateCapabilityDeactivation(proposed: proposedSelection(categories: target), expectedGeneration: nil)
-        let policy = currentSafetyRetentionPolicy()
+        let policy = effectiveSafetyRetentionPolicy()
         let indexed = Dictionary(currentIndexedDevicesList().map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let retained = verdict.partition.hiddenSafetyRetainedDeviceIds.compactMap { id -> DeviceTypeSelectionImpact.RetainedSafetyDevice? in
             guard let device = indexed[id] else { return nil }
@@ -140,6 +141,7 @@ extension HomeStore {
         }
         return DeviceTypeSelectionImpact(
             target: target,
+            generation: capabilityGeneration,
             removedCategories: DeviceCategoryID.allCases.filter(removed.contains),
             hiddenCardNames: devices.filter { removed.contains($0.capabilityCategoryID) }.map(\.name),
             retainedSafetyDevices: retained,
@@ -153,7 +155,8 @@ extension HomeStore {
     public func applyDeviceCategorySelection(
         _ picked: Set<DeviceCategoryID>,
         pauseConfirmed: Bool = false,
-        expectedPauseItemKeys: Set<String>? = nil
+        expectedPauseItemKeys: Set<String>? = nil,
+        expectedGeneration: Int? = nil
     ) -> DeviceTypeSelectionOutcome {
         let target = deviceCategoryTarget(picked)
         guard target != capabilitySelection.enabledCategories else { return .unchanged }
@@ -168,33 +171,32 @@ extension HomeStore {
         }
         let impact = previewDeviceCategorySelection(target)
         if impact.verdict.disposition == .blocked { return .blocked(impact) }
-        let saveFailed = L10n.tr("无法保存设备类型选择，已恢复原来的选择，请重试", "Could not save the device types; the previous choice is restored. Try again")
+        if let expectedGeneration, expectedGeneration != impact.generation {
+            return .needsConfirmation(impact)
+        }
+        let saveFailed = L10n.tr(
+            "无法保存设备类型选择，已恢复原来的选择，请重试",
+            "Could not save the device types; the previous choice is restored. Try again"
+        )
         guard canPersistCapabilitySelection() else { return .refused(saveFailed) }
         if pauseConfirmed {
-            // A timer or rule that appeared since the preview re-previews instead of being paused unseen.
-            if let expectedPauseItemKeys, !impact.pauseItemKeys.isEmpty, expectedPauseItemKeys != impact.pauseItemKeys {
+            guard expectedGeneration == impact.generation, expectedPauseItemKeys == impact.pauseItemKeys else {
                 return .needsConfirmation(impact)
             }
         } else if impact.verdict.requiresPauseConfirmation {
             return .needsConfirmation(impact)
         }
 
-        let previous = capabilitySelection
-        let added = target.subtracting(previous.enabledCategories)
+        let previousCategories = capabilitySelection.enabledCategories
         // Index the live cards first so every write entry answers 「该设备类型已关闭」 for the newly hidden ones.
         if !devices.isEmpty { syncIndexedDevices(from: devices) }
-        capabilitySelection = proposedSelection(categories: target)
-        capabilityGeneration &+= 1
-        guard persistCapabilitySelection() else {
-            capabilitySelection = previous
-            capabilityGeneration &+= 1
-            syncMiotTypePrunePolicy()
+        guard persistCapabilitySelection(proposed: proposedSelection(categories: target)) else {
             return .refused(saveFailed)
         }
         if !impact.itemsToPause.isEmpty {
             pauseAffectedReferences(impact.itemsToPause, fallbackCapabilities: impact.removedCategories.map(CapabilityID.deviceCategory))
         }
-        if !added.isEmpty { revalidatePausedItems() }
+        if !capabilitySelection.enabledCategories.isSubset(of: previousCategories) { revalidatePausedItems() }
         // The Mi and HA read plans pick the new types up on the next round; ask for it now.
         refreshNow()
         return .applied

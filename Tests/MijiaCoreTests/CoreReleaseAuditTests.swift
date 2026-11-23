@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -133,10 +134,8 @@ struct CoreReleaseAuditTests {
         let curtain = SmartDevice(id: "curtain", name: "客厅窗帘", roomId: "living", roomName: "客厅", model: "lumi.curtain.hagl04", isOnline: true, kind: .cover(CoverSpec(entityId: "cover.curtain", subtype: .curtain, positionPercent: 20, positionWritable: true, openDescription: "Open", closeDescription: "Close", pauseDescription: "Pause")))
         let ac = SmartDevice(id: "ac", name: "空调", roomId: "study", roomName: "书房", model: "xiaomi.aircondition.mt0", isOnline: true, kind: .climate(ClimateSpec(entityId: "climate.ac", isOn: true, hvacMode: "cool", availableModes: ["off", "cool", "heat"], targetTemperature: 26)))
 
-        let suite = "test.audit.f1.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
         let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [lamp, fan, curtain, ac]))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.controlDebounceInterval = .zero
 
@@ -177,14 +176,12 @@ struct CoreReleaseAuditTests {
         await pendingOff?.value
         #expect(store.debouncedWrites.isEmpty)
 
-        let selSuite = "test.audit.r2.sibling.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: selSuite)?.removePersistentDomain(forName: selSuite) }
         let selProvider = SelectiveCommandProvider(snapshot: SynthesizedHome(devices: [
             Self.makeLamp("l1", brightness: 20, kelvin: 3000),
             Self.makeLamp("l2", brightness: 25, kelvin: 3200),
             Self.makeLamp("l3", brightness: 30, kelvin: 3500),
         ]))
-        let selStore = HomeStore(provider: selProvider, defaultsSuiteName: selSuite)
+        let selStore = HomeStore(provider: selProvider, defaults: InMemoryUserDefaults())
         selStore.toastAutoDismissInterval = nil
         try await selStore.waitForTestSnapshot()
         selStore.controlDebounceInterval = .zero
@@ -218,9 +215,7 @@ struct CoreReleaseAuditTests {
 
         let gate = AsyncGate()
         let gatedProvider = GatedFailingProvider(snapshot: SynthesizedHome(devices: [Self.makeLamp()]), gate: gate)
-        let suite2 = "test.audit.sec5.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite2)?.removePersistentDomain(forName: suite2) }
-        let store2 = HomeStore(provider: gatedProvider, defaultsSuiteName: suite2)
+        let store2 = HomeStore(provider: gatedProvider, defaults: InMemoryUserDefaults())
         store2.toastAutoDismissInterval = nil
         try await store2.waitForTestSnapshot()
         let task = store2.togglePrimary(Self.makeLamp())
@@ -402,10 +397,7 @@ struct CoreReleaseAuditTests {
         )
         #expect(facets.first?.value == nil)
 
-        let safetySuite = "test.audit.f30h.safety.\(UUID().uuidString)"
-        let safetyDefaults = UserDefaults(suiteName: safetySuite)!
-        defer { safetyDefaults.removePersistentDomain(forName: safetySuite) }
-        var monitor = SafetyMonitor(defaults: safetyDefaults)
+        var monitor = SafetyMonitor(defaults: InMemoryUserDefaults())
         let policy = SensorAlertPolicy(enabled: [:], onlyWhenAway: false, includesAway: false)
         let heater = SmartDevice(id: "heater", name: "取暖器", roomId: "study", roomName: "书房", model: "cuco.plug", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: true, powerWatts: 1200)))
         let t0 = Date(timeIntervalSince1970: 5_000_000)
@@ -454,9 +446,7 @@ struct CoreReleaseAuditTests {
 
         var cal = Calendar(identifier: .gregorian)
         cal.timeZone = TimeZone(secondsFromGMT: 8 * 3600)!
-        let energySuite = "test.audit.f30.\(UUID().uuidString)"
-        let energyDefaults = try #require(UserDefaults(suiteName: energySuite))
-        defer { energyDefaults.removePersistentDomain(forName: energySuite) }
+        let energyDefaults = InMemoryUserDefaults()
         func date(_ day: Int, _ hour: Int) -> Date { cal.date(from: DateComponents(year: 2026, month: 3, day: day, hour: hour))! }
         func plug(_ kwh: Double) -> SmartDevice {
             SmartDevice(id: "plug1", name: "桌面插座", roomId: "study", roomName: "书房", model: "cuco.plug.v3", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "switch.plug1", isOn: true, energyKwh: kwh)))
@@ -469,10 +459,9 @@ struct CoreReleaseAuditTests {
         #expect(abs(relaunched.dailyTotals(dayCount: 2, now: date(2, 12))[1].kwh - 1.5) < 1e-9)
 
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
-        let suiteHA = "test.audit.f30d.ha.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suiteHA)?.removePersistentDomain(forName: suiteHA) }
-        UserDefaults(suiteName: suiteHA)?.set(HomeBackend.demo.rawValue, forKey: "home_backend")
-        let storeHA = HomeStore(defaultsSuiteName: suiteHA, credentialVault: vault)
+        let haDefaults = InMemoryUserDefaults()
+        haDefaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
+        let storeHA = HomeStore(credentialVault: vault, defaults: haDefaults)
         storeHA.updateConnection(serverURL: "http://127.0.0.1:9", token: "")
         #expect(storeHA.homeBackend == .homeAssistant && storeHA.lgWebOSClient != nil)
         storeHA.switchBackend(.demo)
@@ -508,10 +497,12 @@ struct CoreReleaseAuditTests {
         }
         #expect(home.devices.contains { $0.id == "dev_cover" })
 
-        let c3Suite = "test.audit.c3.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: c3Suite)?.removePersistentDomain(forName: c3Suite) }
         let snapHome = SynthesizedHome(devices: home.devices, environmentReadings: [EnvironmentReading(id: "env1", label: "温湿度计", roomName: "浴室", temperature: 24.5, humidity: 58)])
-        let c3Store = HomeStore(provider: MockHomeProvider(snapshot: snapHome), defaultsSuiteName: c3Suite, credentialVault: vault)
+        let c3Store = HomeStore(
+            provider: MockHomeProvider(snapshot: snapHome),
+            credentialVault: vault,
+            defaults: InMemoryUserDefaults()
+        )
         try await c3Store.waitForTestSnapshot()
         let snap1 = c3Store.buildRaycastSnapshot(now: now)
         let snap2 = c3Store.buildRaycastSnapshot(now: now.addingTimeInterval(30))

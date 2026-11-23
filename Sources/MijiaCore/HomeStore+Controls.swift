@@ -2306,6 +2306,8 @@ extension HomeStore {
         userDefaults.set(map, forKey: Self.cameraStreamQualityKey)
     }
 
+    public var supportsCustomCameraStreams: Bool { !(provider is DemoHomeProvider) }
+
     public func resolveCameraStream(for deviceId: String, channel: Int = 0) async throws -> CameraStreamSource {
         if let reason = capabilityWriteRejection(forDeviceId: deviceId) {
             throw CapabilityControlBlockedError(reason: reason)
@@ -2314,7 +2316,8 @@ extension HomeStore {
               case .camera = device.kind else {
             throw HomeProviderError.serviceCallFailed(400, L10n.tr("未找到该摄像头设备", "Camera device not found"))
         }
-        if let custom = cameraCustomStreamURL(for: deviceId),
+        if supportsCustomCameraStreams,
+           let custom = cameraCustomStreamURL(for: deviceId),
            let url = URL(string: custom),
            let scheme = url.scheme?.lowercased(),
            (scheme == "http" || scheme == "https") {

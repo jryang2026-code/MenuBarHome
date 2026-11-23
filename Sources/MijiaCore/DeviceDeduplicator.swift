@@ -329,21 +329,22 @@ public enum DeviceDeduplicator {
                 merged.roomName = name
             }
 
-            mergedDevices.append(
-                SmartDevice(
-                    id: canonicalID,
-                    name: merged.name,
-                    roomId: merged.roomId,
-                    roomName: merged.roomName,
-                    model: merged.model,
-                    isOnline: merged.isOnline,
-                    kind: merged.kind,
-                    isSharedHome: merged.isSharedHome,
-                    accountId: merged.accountId,
-                    accountLabel: merged.accountLabel,
-                    telemetryStale: merged.telemetryStale
-                )
+            var canonicalDevice = SmartDevice(
+                id: canonicalID,
+                name: merged.name,
+                roomId: merged.roomId,
+                roomName: merged.roomName,
+                model: merged.model,
+                isOnline: merged.isOnline,
+                kind: merged.kind,
+                isSharedHome: merged.isSharedHome,
+                accountId: merged.accountId,
+                accountLabel: merged.accountLabel,
+                telemetryStale: merged.telemetryStale,
+                auxiliarySafetyObservations: merged.auxiliarySafetyObservations
             )
+            canonicalDevice.providerSafetySignals = merged.providerSafetySignals
+            mergedDevices.append(canonicalDevice)
             routes[canonicalID] = DeviceMergeRoute(
                 backend: card.winner.backend,
                 sourceDeviceID: card.winner.device.id,
@@ -378,7 +379,10 @@ public enum DeviceDeduplicator {
         home.closesAwayGap = (homeAssistant?.closesAwayGap ?? true) && (xiaomiCloud?.closesAwayGap ?? true)
         home.isInitialLoadComplete = (homeAssistant?.isInitialLoadComplete ?? true) && (xiaomiCloud?.isInitialLoadComplete ?? true)
         var activeBackends: Set<HomeBackend> = []
-        if homeAssistant != nil && haConnected { activeBackends.insert(.homeAssistant) }
+        if homeAssistant != nil && haConnected {
+            activeBackends.insert(.homeAssistant)
+            home.homeAssistantScope = homeAssistant?.homeAssistantScope
+        }
         if xiaomiCloud != nil && miConnected { activeBackends.insert(.xiaomiCloud) }
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends
@@ -721,32 +725,21 @@ public enum DeviceDeduplicator {
     }
 
     private static func mergedDevice(for card: Card) -> SmartDevice {
-        let winner = card.winner.device
-        var roomId = winner.roomId
-        var roomName = winner.roomName
-        if let other = card.other?.device,
-           isRoomUnassigned(roomName: roomName),
-           !isRoomUnassigned(roomName: other.roomName) {
-            roomId = other.roomId
-            roomName = other.roomName
+        var winner = card.winner.device
+        if let other = card.other?.device {
+            if isRoomUnassigned(roomName: winner.roomName), !isRoomUnassigned(roomName: other.roomName) {
+                winner.roomId = other.roomId
+                winner.roomName = other.roomName
+            }
+            if isBlank(winner.name) { winner.name = other.name }
+            if isBlank(winner.model) { winner.model = other.model }
+            winner.accountId = winner.accountId ?? other.accountId
+            winner.accountLabel = winner.accountLabel ?? other.accountLabel
+            if let otherSignals = other.providerSafetySignals {
+                winner.providerSafetySignals = (winner.providerSafetySignals ?? []).union(otherSignals)
+            }
         }
-        let name = isBlank(winner.name) ? (card.other?.device.name ?? winner.name) : winner.name
-        let model = isBlank(winner.model) ? (card.other?.device.model ?? winner.model) : winner.model
-        let accountId = winner.accountId ?? card.other?.device.accountId
-        let accountLabel = winner.accountLabel ?? card.other?.device.accountLabel
-        return SmartDevice(
-            id: winner.id,
-            name: name,
-            roomId: roomId,
-            roomName: roomName,
-            model: model,
-            isOnline: winner.isOnline,
-            kind: winner.kind,
-            isSharedHome: winner.isSharedHome,
-            accountId: accountId,
-            accountLabel: accountLabel,
-            telemetryStale: winner.telemetryStale
-        )
+        return winner
     }
 
     /// Two Xiaomi account room IDs (`"<accountA>/<room>"` vs `"<accountB>/<room>"`) stay separate

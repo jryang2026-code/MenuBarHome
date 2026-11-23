@@ -810,7 +810,7 @@ public struct ClassicControlCenterPanel: View {
             toggleSearchResult(device)
             return
         }
-        if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+        if PanelSearch.kind(of: search.query, devices: store.categoryVisibleDevices, scenes: store.scenes) == .command {
             PanelSearchKeyboard.runCommand(search.query, store: store, state: search)
             return
         }
@@ -833,7 +833,7 @@ public struct ClassicControlCenterPanel: View {
                 Text(L10n.tr("没有匹配的设备", "No matching devices"))
                     .font(.system(size: DesignTokens.TypeSize.body, weight: .semibold))
                     .foregroundStyle(.primary)
-                if PanelSearch.kind(of: search.query, devices: store.devices, scenes: store.scenes) == .command {
+                if PanelSearch.kind(of: search.query, devices: store.categoryVisibleDevices, scenes: store.scenes) == .command {
                     Text(L10n.tr("回车把这句交给助手执行", "Press Return to run this as a command"))
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(.secondary)

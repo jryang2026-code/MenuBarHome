@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MijiaCore
@@ -28,12 +29,10 @@ struct PreReleaseMacOSUIFixesTests {
 
     @Test("Quick-index keyboard navigation, SliderStepSnap bounds, URL toggle state check, UnsupportedDeviceScanner invalidation, favorite reorder, and AutomationEngine polling check")
     func quickIndexSliderStepUrlToggleScannerFavoritesAndPolling() async throws {
-        let suite = "test.prerelease.quicknav.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer {
-            PanelQuickIndexState.shared.clear()
-            defaults.removePersistentDomain(forName: suite)
-        }
+        // One instance for the seed, the store and the assertions: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
+        defer { PanelQuickIndexState.shared.clear() }
         defaults.set(true, forKey: "has_completed_onboarding")
         defaults.set(false, forKey: "automatically_checks_for_updates")
 
@@ -42,7 +41,7 @@ struct PreReleaseMacOSUIFixesTests {
             SmartDevice(id: "d\(idx)", name: "灯 \(idx)", roomId: room.id, roomName: room.name, model: "test.light", isOnline: true, kind: .light(LightSpec(entityId: "light.d\(idx)", isOn: true)))
         }
         let mock = MockHomeProvider(snapshot: SynthesizedHome(rooms: [room], devices: devices))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         let drawnOrder = PanelQuickIndexOrder(deviceIds: devices.map(\.id).reversed())
@@ -90,8 +89,6 @@ struct PreReleaseMacOSUIFixesTests {
         scanner.invalidateIfContextChanged(for: store)
         #expect(scanner.lastScannedAt == nil && !scanner.isScanning)
 
-        let favSuite = "test.prerelease.favorder.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: favSuite)?.removePersistentDomain(forName: favSuite) }
         let rooms = [RoomArea(id: "living", name: "客厅", sortOrder: 0), RoomArea(id: "bedroom", name: "卧室", sortOrder: 1), RoomArea(id: "study", name: "书房", sortOrder: 2)]
         let favDevices = [
             SmartDevice(id: "l1", name: "客厅灯", roomId: "living", roomName: "客厅", model: "m", isOnline: true, kind: .light(LightSpec(entityId: "light.l1", isOn: true))),
@@ -99,7 +96,10 @@ struct PreReleaseMacOSUIFixesTests {
             SmartDevice(id: "s1", name: "台灯", roomId: "study", roomName: "书房", model: "m", isOnline: true, kind: .light(LightSpec(entityId: "light.s1", isOn: true))),
             SmartDevice(id: "b2", name: "床头灯", roomId: "bedroom", roomName: "卧室", model: "m", isOnline: true, kind: .light(LightSpec(entityId: "light.b2", isOn: true)))
         ]
-        let favStore = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(rooms: rooms, devices: favDevices)), defaultsSuiteName: favSuite)
+        let favStore = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(rooms: rooms, devices: favDevices)),
+            defaults: InMemoryUserDefaults()
+        )
         try await favStore.waitForTestSnapshot()
         favStore.favoriteDeviceIds = ["l1", "b1", "s1", "b2"]
         favStore.favoriteOrder = ["l1", "b1", "s1", "b2"]
@@ -147,12 +147,14 @@ struct PreReleaseMacOSUIFixesTests {
             }
         }
 
-        let suite = "test.prerelease.havault.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let seeded = try #require(CredentialVault.encode([HAConnectionSaveGuard.haTokenAccount: Data("secret-ha-token".utf8)]))
         let box = ToggleableVaultBox(blob: seeded, readable: false, writable: false)
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])), defaultsSuiteName: suite, credentialVault: CredentialVault(storage: box.storage))
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
+            credentialVault: CredentialVault(storage: box.storage),
+            defaults: defaults
+        )
         store.toastAutoDismissInterval = nil
         try await store.waitForTestSnapshot()
 
@@ -219,10 +221,11 @@ struct PreReleaseMacOSUIFixesTests {
 
     @Test("ActivityStackView collapse, DeviceFacetSection nil select binding, MenuBarPanelController idle timer, card context menus, LG discovery, stale sensor/climate a11y, and AllOffHoldLatch rehearsal lock")
     func activityStackFacetsMenuBarTimerCardsStaleA11yAndAllOffLatch() async throws {
-        let suite = "test.menubar.idle.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite)
+        let defaults = InMemoryUserDefaults()
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()),
+            defaults: defaults
+        )
         try await store.waitForTestSnapshot()
         _ = NSApplication.shared
 
@@ -289,10 +292,8 @@ struct PreReleaseMacOSUIFixesTests {
         #expect(ClimatePanelModule.powerToggleTurnsOff(onClimateSpec) && !ClimatePanelModule.powerToggleTurnsOff(offClimateSpec))
 
         let plainSwitch = SmartDevice(id: "switch-plain", name: "走廊墙壁开关", roomId: "r1", roomName: "走廊", model: "lumi.switch.b1lacn02", isOnline: true, kind: .plug(PlugSpec(switchEntityId: "miot:switch-plain:2", isOn: true)))
-        let spySuite = "test.transport.only.drawer.\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: spySuite) }
         let spy = LANRetrySpyProvider(snapshot: SynthesizedHome(devices: [plainSwitch, staleSensor, light], scenes: []))
-        let spyStore = HomeStore(provider: spy, defaultsSuiteName: spySuite)
+        let spyStore = HomeStore(provider: spy, defaults: InMemoryUserDefaults())
         try await spyStore.waitForTestSnapshot()
         #expect(!spyStore.hasDetailDrawer(for: plainSwitch))
         spyStore.deviceTransportDiagnostics = [plainSwitch.id: DeviceTransportDiagnostics(route: .cooldown, consecutiveFailures: 3)]

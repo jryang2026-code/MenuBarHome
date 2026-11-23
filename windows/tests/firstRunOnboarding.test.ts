@@ -18,6 +18,7 @@ import {
 import { MI_ACCOUNT_CAPABILITY_STORAGE_KEY } from "../src/core/miAccountControl.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY } from "../src/core/scheduledCommands.js";
 import { serializeMiSession } from "../src/core/secureStore.js";
+import { homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
 import {
@@ -595,6 +596,284 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
       assert.equal(state.selection.enabledCategories.length, 14, `${scenario.label}: preserves all device categories`);
       assert.equal(readStoredMigrationComplete(), true, `${scenario.label}: seals migrationComplete`);
     }
+  });
+
+  it("holds the guide as a loading state until credential hydration settles, then skips it for a returning user (P2-6)", async () => {
+    // Empty localStorage copy with a Mi session only in the Windows Credential Manager: exactly the
+    // returning-user shape the synchronous verdict cannot see.
+    const pendingVault = {
+      resolve: null as ((value: string | null) => void) | null,
+    };
+    const miSessionPayload = serializeMiSession({
+      userId: "10086",
+      cUserId: "c10086",
+      passToken: "pt-secret",
+      serviceToken: "st-secret",
+      ssecurity: "ss-secret",
+      region: "cn",
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string, args: Record<string, unknown> = {}) => {
+          if (name === "secure_store_get" && args.name === "mi_session") {
+            return new Promise<string | null>((resolve) => {
+              pendingVault.resolve = resolve;
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+
+    // Before hydration settles the sheet exists but shows only the loading state: no platform cards,
+    // so the user never sees the guide appear and disappear.
+    assert.equal(app.activeSheet, "onboarding");
+    assert.equal(app.onboardingAwaitingCredentials, true);
+    assert.ok(document.querySelector("[data-onboarding-loading]"), "loading state is mounted");
+    assert.equal(document.querySelector('[data-onboarding-card="homeAssistant"]'), null, "no platform cards yet");
+    assert.equal(document.querySelector("#btn-skip-onboarding"), null, "no footer actions yet");
+    assert.match(
+      document.querySelector("[data-onboarding-announcer]")?.textContent ?? "",
+      /正在读取已保存的连接/,
+      "the loading state is spoken through the persistent live region",
+    );
+
+    app.render();
+    pendingVault.resolve?.(miSessionPayload);
+    await setImmediate();
+    await setImmediate();
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+
+    assert.equal(app.onboardingAwaitingCredentials, false);
+    assert.equal(app.activeSheet, "none", "a vault-backed Mi session must not re-show onboarding");
+    assert.equal(app.settings.miSession?.userId, "10086");
+    assert.equal(document.querySelector("[data-onboarding-loading]"), null);
+    assert.equal(
+      el("[data-onboarding-announcer]").textContent,
+      "",
+      "the queued loading announcement must stay cleared after the guide closes",
+    );
+  });
+
+  it("reveals the full guide after hydration when the credential store is empty (P2-6)", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async () => null },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    assert.equal(app.onboardingAwaitingCredentials, false);
+    assert.equal(app.activeSheet, "onboarding", "a genuinely fresh install keeps the guide");
+    assert.ok(document.querySelector('[data-onboarding-card="homeAssistant"]'));
+    assert.ok(document.querySelector("#btn-finish-onboarding"));
+  });
+
+  it("keeps keyboard focus on the chosen platform radio and answers arrow keys (P2-8/P2-9)", async () => {
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.activeSheet, "onboarding");
+
+    const cards = () => Array.from(document.querySelectorAll<HTMLElement>("[data-onboarding-mode]"));
+    const miCard = el('[data-onboarding-mode="xiaomiCloud"]');
+    assert.equal(miCard.getAttribute("role"), "radio");
+    assert.equal(miCard.getAttribute("aria-checked"), "false");
+    assert.equal(miCard.hasAttribute("aria-pressed"), false, "radiogroup children must not use aria-pressed");
+
+    // A radio click rebuilds the whole sheet; focus must come back to the same radio.
+    miCard.click();
+    await setImmediate();
+    assert.equal(document.activeElement, document.querySelector('[data-onboarding-mode="xiaomiCloud"]'), "focus returns to the pressed radio");
+    assert.equal(el('[data-onboarding-mode="xiaomiCloud"]').getAttribute("aria-checked"), "true");
+    assert.equal(cards().filter((card) => card.getAttribute("tabindex") === "0").length, 1, "roving tabindex keeps one stop");
+
+    // Arrow keys move selection inside the group instead of scrolling the sheet. The sheet is rebuilt
+    // on every change, so each key goes to the freshly mounted group.
+    const pressKey = async (key: string) => {
+      el("[data-onboarding-mode-group]").dispatchEvent(
+        new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }),
+      );
+      await setImmediate();
+    };
+    await pressKey("ArrowDown");
+    assert.equal(el('[data-onboarding-mode="homeAssistant"]').getAttribute("aria-checked"), "true");
+    assert.equal(document.activeElement, document.querySelector('[data-onboarding-mode="homeAssistant"]'));
+
+    await pressKey("End");
+    assert.equal(el('[data-onboarding-mode="demo"]').getAttribute("aria-checked"), "true", "End jumps to the last radio");
+    await pressKey("ArrowRight");
+    assert.equal(el('[data-onboarding-mode="xiaomiCloud"]').getAttribute("aria-checked"), "true", "arrows wrap around the group");
+  });
+
+  it("announces async guide status through one persistent live region (P2-9)", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: { invoke: async () => null },
+      configurable: true,
+    });
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    // The announcer lives outside the sheet, so a rebuild cannot replace it before it speaks.
+    const announcer = () => document.querySelector("[data-onboarding-announcer]");
+    const first = announcer();
+    assert.ok(first, "announcer is mounted");
+    assert.equal(first.getAttribute("role"), "status");
+    assert.equal(first.getAttribute("aria-live"), "polite");
+    assert.equal(first.getAttribute("aria-atomic"), "true");
+    assert.equal(first.closest(".cc-sheet"), null, "announcer must survive the sheet rebuild");
+
+    await click('[data-onboarding-mode="xiaomiCloud"]');
+    assert.equal(announcer(), first, "the same node survives a platform switch");
+    assert.equal(document.querySelector(".cc-qr-frame img"), null, "no QR image before a ticket");
+    // The QR status line is now plain text; the announcer carries the spoken copy.
+    assert.equal(el(".cc-qr-status").hasAttribute("aria-live"), false);
+
+    await click('[data-onboarding-mode="homeAssistant"]');
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "ha-token");
+    const refreshGate = { release: null as (() => void) | null };
+    app.refreshHADevices = async () => {
+      await new Promise<void>((resolve) => {
+        refreshGate.release = resolve;
+      });
+      app.settings.cachedHAHome = {
+        identity: homeAssistantIdentity(app.settings.haBaseURL, app.settings.haToken),
+        home: { devices: [], scenes: [], rooms: [], environmentReadings: [], deviceFacets: {} },
+      } as never;
+    };
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    assert.match(announcer()?.textContent ?? "", /正在连接并验证 Home Assistant/, "pending state is announced");
+    refreshGate.release?.();
+    await setImmediate();
+    await setImmediate();
+    assert.ok(document.querySelector("[data-onboarding-ha-verified]"), "success line is still rendered");
+    assert.match(announcer()?.textContent ?? "", /已连接 Home Assistant · 0 台设备/, "success is announced by the persistent node");
+    assert.equal(announcer(), first, "announcements never replace the live region");
+  });
+
+  it("names a failed TLS/WebSocket handshake without guessing the cause or suggesting plaintext (P2-13)", async () => {
+    let nextError = "Home Assistant read timed out";
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string) => {
+          if (name === "ha_snapshot") throw new Error(nextError);
+          return null;
+        },
+      },
+      configurable: true,
+    });
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    assert.equal(app.activeSheet, "onboarding");
+
+    await click('[data-onboarding-mode="homeAssistant"]');
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    typeInput("#onboarding-ha-token", "ha-token");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /连接超时/, "a timeout is named as such");
+
+    // `client_tls` folds the TLS upgrade and the WebSocket HTTP Upgrade into one string, so the copy
+    // must cover both without claiming a certificate failure, and must never suggest plaintext.
+    nextError = "Home Assistant handshake failed";
+    typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    const handshakeError = el("[data-onboarding-ha-error]").textContent ?? "";
+    assert.match(handshakeError, /安全连接或 WebSocket 握手未能完成/, "both possible causes are named");
+    assert.match(handshakeError, /WebSocket Upgrade/, "reverse-proxy guidance is given");
+    assert.match(handshakeError, /证书/, "certificate check is offered");
+    assert.match(handshakeError, /系统时间/, "clock check is offered");
+    assert.doesNotMatch(handshakeError, /http 局域网|改用 http/, "never advises falling back to plaintext");
+
+    // The same string over plain http is also possible (a proxy answering 404/5xx), so the copy is
+    // independent of the scheme and does not imply TLS was even attempted.
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /安全连接或 WebSocket 握手未能完成/);
+
+    nextError = "Home Assistant address lookup failed";
+    typeInput("#onboarding-ha-url", "http://missing.invalid:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /找不到这个地址对应的主机/, "a DNS failure is named as such");
+
+    // Anything else keeps the original generic copy rather than inventing a cause.
+    nextError = "Home Assistant connection failed";
+    typeInput("#onboarding-ha-url", "http://192.168.1.50:8123");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    assert.match(el("[data-onboarding-ha-error]").textContent ?? "", /无法访问此地址/);
+
+    // An auth-handshake failure is the protocol step after a working socket, so it stays generic.
+    nextError = "Home Assistant authentication handshake failed";
+    typeInput("#onboarding-ha-url", "https://homeassistant.example.com");
+    await click("#btn-onboarding-connect-ha");
+    await setImmediate();
+    await setImmediate();
+    const authError = el("[data-onboarding-ha-error]").textContent ?? "";
+    assert.doesNotMatch(authError, /安全连接或 WebSocket 握手/);
+    assert.match(authError, /无法访问此地址/);
+  });
+
+  it("warns about plaintext HA only for public hosts, matching the shared LAN corpus (P2-10)", async () => {
+    const corpus = JSON.parse(
+      readFileSync(resolve(process.cwd(), "..", "Tests/Fixtures/local_network_endpoint_golden.json"), "utf8"),
+    ) as { cases: readonly { host: string; isLocalNetwork: boolean }[] };
+    assert.ok(corpus.cases.length >= 50);
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+    await click('[data-onboarding-mode="homeAssistant"]');
+
+    const warning = () => el<HTMLElement>("[data-onboarding-ha-http-warning]");
+    // Every host form a person actually types into the HA field: bare name, name:port, the
+    // /api/websocket suffix, and an upper-case host. The warning must follow the shared corpus in all
+    // four, so the guide can never be stricter or looser than the native origin consent.
+    for (const item of corpus.cases) {
+      const forms = item.host.includes(":")
+        ? [`http://[${item.host}]`, `http://[${item.host}]:8123`, `http://[${item.host}]/api/websocket`]
+        : [
+            `http://${item.host}`,
+            `http://${item.host}:8123`,
+            `http://${item.host}:8123/api/websocket`,
+            item.host.toUpperCase(),
+          ];
+      for (const form of forms) {
+        typeInput("#onboarding-ha-url", form);
+        assert.equal(
+          warning().hidden,
+          item.isLocalNetwork,
+          `${form}: public plaintext must warn (${!item.isLocalNetwork}), LAN must stay quiet (${item.isLocalNetwork})`,
+        );
+      }
+    }
+
+    // Scheme-less input is read as http, and https never warns regardless of host.
+    typeInput("#onboarding-ha-url", "203.0.113.5:8123");
+    assert.equal(warning().hidden, false, "scheme-less public host defaults to http and warns");
+    typeInput("#onboarding-ha-url", "https://203.0.113.5:8123");
+    assert.equal(warning().hidden, true, "https never warns");
+    typeInput("#onboarding-ha-url", "");
+    assert.equal(warning().hidden, true, "an empty draft is not a warning");
+    assert.equal(app.activeSheet, "onboarding");
   });
 
   it("fails closed when auxiliary localStorage reads throw in detectPersistedLocalData", () => {

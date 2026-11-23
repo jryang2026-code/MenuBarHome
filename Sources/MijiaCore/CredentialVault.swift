@@ -3,6 +3,7 @@ import Security
 
 enum SystemKeychainAccess {
     private static let lock = NSLock()
+    private static let accessLock = NSLock()
     nonisolated(unsafe) private static var guardAccess: @Sendable () -> Void = {}
 
     static func installGuard(_ guardAccess: @escaping @Sendable () -> Void) {
@@ -16,6 +17,26 @@ enum SystemKeychainAccess {
         let check = guardAccess
         lock.unlock()
         check()
+    }
+
+    static func perform<T>(_ body: () -> T) -> T {
+        check()
+        return accessLock.withLock(body)
+    }
+
+    static func readWithoutInteraction<T>(onFailure: T, _ body: () -> T) -> T {
+        perform {
+            #if os(macOS)
+            // SecItem authentication contexts do not suppress ACL prompts for the file-based
+            // login Keychain. Serialize our Security calls while its process-wide flag is off.
+            var allowed = DarwinBoolean(false)
+            guard SecKeychainGetUserInteractionAllowed(&allowed) == errSecSuccess else { return onFailure }
+            if !allowed.boolValue { return body() }
+            guard SecKeychainSetUserInteractionAllowed(false) == errSecSuccess else { return onFailure }
+            defer { SecKeychainSetUserInteractionAllowed(true) }
+            #endif
+            return body()
+        }
     }
 }
 
@@ -62,13 +83,15 @@ public final class CredentialVault: @unchecked Sendable {
         var read: @Sendable () -> ReadResult
         /// Replaces the item's data in place (keeping its access control), adding the item only when it is missing.
         var write: @Sendable (Data) -> Bool
+        var readForRecovery: (@Sendable () -> ReadResult)? = nil
     }
 
     /// Per-account items written by releases up to 1.1.0. Adopted once, when no vault exists yet.
     struct LegacyItems: Sendable {
-        var accounts: @Sendable () -> [String]
+        var accounts: @Sendable () -> [String]?
         var read: @Sendable (String) -> Data?
         var delete: @Sendable (String) -> Void
+        var readForRecovery: (@Sendable (String) -> Data?)? = nil
 
         static let none = LegacyItems(accounts: { [] }, read: { _ in nil }, delete: { _ in })
     }
@@ -83,9 +106,8 @@ public final class CredentialVault: @unchecked Sendable {
     private enum State {
         case unloaded
         case loaded([String: Data])
-        /// Some 1.1.0 per-account items were read while `unreadable` ones were declined.
-        /// Readable items serve this session from memory, `unreadable` accounts report `.unavailable`,
-        /// and no vault is written until every legacy account can be read.
+        /// Per-account items serve this session from memory until a write can adopt them.
+        /// Accounts that could not be read report `.unavailable`.
         case partialLegacy(items: [String: Data], unreadable: Set<String>, allLegacyAccounts: Set<String>)
         case unavailable
     }
@@ -122,6 +144,40 @@ public final class CredentialVault: @unchecked Sendable {
         return nil
     }
 
+    /// Refreshes the in-memory view of the Keychain without migrating legacy items.
+    func reloadForIdentityRecovery() -> Bool {
+        lock.withLock {
+            switch (storage.readForRecovery ?? storage.read)() {
+            case .found(let blob):
+                if let items = Self.decode(blob) {
+                    state = .loaded(items)
+                    return true
+                }
+            case .notFound:
+                if reloadLegacyItemsForRecovery() { return true }
+            case .unavailable:
+                break
+            }
+            if case .partialLegacy = state { return false }
+            state = .unavailable
+            return false
+        }
+    }
+
+    private func reloadLegacyItemsForRecovery() -> Bool {
+        guard let accounts = legacy.accounts() else { return false }
+        let read = legacy.readForRecovery ?? legacy.read
+        var items: [String: Data] = [:]
+        for account in accounts {
+            guard let data = read(account) else { return false }
+            items[account] = data
+        }
+        state = accounts.isEmpty
+            ? .loaded([:])
+            : .partialLegacy(items: items, unreadable: [], allLegacyAccounts: Set(accounts))
+        return true
+    }
+
     /// `nil` removes the account. Writes retry an unreadable vault once: they follow a user action, and the vault
     /// has to be readable before any of it is rewritten.
     @discardableResult
@@ -135,9 +191,8 @@ public final class CredentialVault: @unchecked Sendable {
     func setAll(_ updates: [String: Data?]) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        var pendingLegacyDelete: Set<String> = []
-        loadIfNeeded(retryingUnavailable: true, completedLegacyAccounts: &pendingLegacyDelete)
-        guard case .loaded(var items) = state else { return false }
+        guard let writable = itemsForWriteUnlocked(retryingUnavailable: true) else { return false }
+        var items = writable.items
         var changed = false
         for (account, data) in updates {
             if items[account] != data {
@@ -145,9 +200,9 @@ public final class CredentialVault: @unchecked Sendable {
                 changed = true
             }
         }
-        if !changed && pendingLegacyDelete.isEmpty { return true }
+        if !changed && writable.legacyAccounts.isEmpty { return true }
         guard persist(items) else { return false }
-        for legacyAccount in pendingLegacyDelete {
+        for legacyAccount in writable.legacyAccounts {
             legacy.delete(legacyAccount)
         }
         return true
@@ -157,11 +212,13 @@ public final class CredentialVault: @unchecked Sendable {
     func insertIfMissing(_ data: Data, for account: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        loadIfNeeded(retryingUnavailable: false)
-        guard case .loaded(var items) = state else { return false }
+        guard let writable = itemsForWriteUnlocked(retryingUnavailable: false) else { return false }
+        var items = writable.items
         guard items[account] == nil else { return true }
         items[account] = data
-        return persist(items)
+        guard persist(items) else { return false }
+        for legacyAccount in writable.legacyAccounts { legacy.delete(legacyAccount) }
+        return true
     }
 
     /// Refreshes the single-item vault from storage and atomically transforms only `account`,
@@ -176,7 +233,7 @@ public final class CredentialVault: @unchecked Sendable {
         }
         switch transform(items[account]) {
         case .keep:
-            state = .loaded(items)
+            if pendingLegacyDelete.isEmpty { state = .loaded(items) }
             return .unchanged
         case .abort(let reason):
             return .aborted(reason)
@@ -194,9 +251,9 @@ public final class CredentialVault: @unchecked Sendable {
 
     private func loadLatestItemsForWriteUnlocked(completedLegacyAccounts: inout Set<String>) -> [String: Data]? {
         let wasLoaded: Bool = if case .loaded = state { true } else { false }
-        loadIfNeeded(retryingUnavailable: true, completedLegacyAccounts: &completedLegacyAccounts)
-        guard case .loaded(let cached) = state else { return nil }
-        guard wasLoaded, completedLegacyAccounts.isEmpty else { return cached }
+        guard let writable = itemsForWriteUnlocked(retryingUnavailable: true) else { return nil }
+        completedLegacyAccounts = writable.legacyAccounts
+        guard wasLoaded, completedLegacyAccounts.isEmpty else { return writable.items }
         switch storage.read() {
         case .found(let blob):
             guard let fresh = Self.decode(blob) else { state = .unavailable; return nil }
@@ -205,6 +262,20 @@ public final class CredentialVault: @unchecked Sendable {
             return [:]
         case .unavailable:
             state = .unavailable
+            return nil
+        }
+    }
+
+    private func itemsForWriteUnlocked(
+        retryingUnavailable: Bool
+    ) -> (items: [String: Data], legacyAccounts: Set<String>)? {
+        loadIfNeeded(retryingUnavailable: retryingUnavailable)
+        switch state {
+        case .loaded(let items):
+            return (items, [])
+        case .partialLegacy(let items, let unreadable, let accounts) where unreadable.isEmpty:
+            return (items, accounts)
+        default:
             return nil
         }
     }
@@ -219,7 +290,7 @@ public final class CredentialVault: @unchecked Sendable {
 
     // MARK: - Loading
 
-    private func loadIfNeeded(retryingUnavailable: Bool, completedLegacyAccounts: inout Set<String>) {
+    private func loadIfNeeded(retryingUnavailable: Bool) {
         switch state {
         case .loaded:
             return
@@ -231,12 +302,7 @@ public final class CredentialVault: @unchecked Sendable {
                     unreadable.remove(account)
                 }
             }
-            if unreadable.isEmpty {
-                state = .loaded(items)
-                completedLegacyAccounts = allLegacy
-            } else {
-                state = .partialLegacy(items: items, unreadable: unreadable, allLegacyAccounts: allLegacy)
-            }
+            state = .partialLegacy(items: items, unreadable: unreadable, allLegacyAccounts: allLegacy)
             return
         case .unavailable where !retryingUnavailable:
             return
@@ -258,11 +324,6 @@ public final class CredentialVault: @unchecked Sendable {
         }
     }
 
-    private func loadIfNeeded(retryingUnavailable: Bool) {
-        var ignored: Set<String> = []
-        loadIfNeeded(retryingUnavailable: retryingUnavailable, completedLegacyAccounts: &ignored)
-    }
-
     /// Moves the 1.1.0 per-account items into a new vault. The old items are deleted only after the vault was
     /// written. When any of them cannot be read (a declined prompt), nothing is written or deleted here, so the next
     /// launch retries the whole move; the readable ones still serve this session, while the unreadable ones report
@@ -270,7 +331,7 @@ public final class CredentialVault: @unchecked Sendable {
     private func adoptLegacyItems() {
         var items: [String: Data] = [:]
         var unreadable: Set<String> = []
-        let accounts = legacy.accounts()
+        let accounts = legacy.accounts() ?? []
         for account in accounts {
             if let data = legacy.read(account) {
                 items[account] = data
@@ -329,27 +390,33 @@ extension CredentialVault.Storage {
     static func keychainItem(
         service: String = KeychainHelper.service,
         account: String,
-        updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus = { SystemKeychainAccess.check(); return SecItemUpdate($0, $1) },
-        addItem: @escaping @Sendable (CFDictionary) -> OSStatus = { SystemKeychainAccess.check(); return SecItemAdd($0, nil) }
+        updateItem: @escaping @Sendable (CFDictionary, CFDictionary) -> OSStatus = { query, changes in
+            SystemKeychainAccess.perform { SecItemUpdate(query, changes) }
+        },
+        addItem: @escaping @Sendable (CFDictionary) -> OSStatus = { query in
+            SystemKeychainAccess.perform { SecItemAdd(query, nil) }
+        }
     ) -> Self {
-        return Self(
-            read: {
-                SystemKeychainAccess.check()
-                var query = keychainQuery(service: service, account: account)
-                query[kSecReturnData as String] = true
-                query[kSecMatchLimit as String] = kSecMatchLimitOne
+        @Sendable func read(forRecovery: Bool) -> ReadResult {
+            var query = keychainQuery(service: service, account: account)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            if !forRecovery {
                 query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUISkip
-                var item: CFTypeRef?
-                switch SecItemCopyMatching(query as CFDictionary, &item) {
-                case errSecSuccess:
-                    guard let data = item as? Data else { return .unavailable }
-                    return .found(data)
-                case errSecItemNotFound:
-                    return .notFound
-                default:
-                    return .unavailable
-                }
-            },
+            }
+            var item: CFTypeRef?
+            switch SecItemCopyMatching(query as CFDictionary, &item) {
+            case errSecSuccess:
+                guard let data = item as? Data else { return .unavailable }
+                return .found(data)
+            case errSecItemNotFound:
+                return .notFound
+            default:
+                return .unavailable
+            }
+        }
+        return Self(
+            read: { SystemKeychainAccess.perform { read(forRecovery: false) } },
             write: { data in
                 let attributes: [String: Any] = [
                     kSecValueData as String: data,
@@ -362,7 +429,8 @@ extension CredentialVault.Storage {
                 guard status == errSecItemNotFound else { return false }
                 let addQuery = query.merging(attributes) { _, new in new }
                 return addItem(addQuery as CFDictionary) == errSecSuccess
-            }
+            },
+            readForRecovery: { SystemKeychainAccess.readWithoutInteraction(onFailure: .unavailable) { read(forRecovery: true) } }
         )
     }
 }
@@ -370,32 +438,32 @@ extension CredentialVault.Storage {
 extension CredentialVault.LegacyItems {
     static func keychainItems(service: String = KeychainHelper.service, excluding vaultAccount: String) -> Self {
         #if os(macOS)
+        @Sendable func read(account: String) -> Data? {
+            var query = keychainQuery(service: service, account: account)
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
+            return item as? Data
+        }
         return Self(
             accounts: {
                 // Attributes only: listing items never needs their secret, so it never prompts.
-                SystemKeychainAccess.check()
                 var query = keychainQuery(service: service, account: nil)
                 query[kSecReturnAttributes as String] = true
                 query[kSecMatchLimit as String] = kSecMatchLimitAll
                 var result: CFTypeRef?
-                guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-                      let rows = result as? [[String: Any]] else { return [] }
+                let status = SystemKeychainAccess.perform { SecItemCopyMatching(query as CFDictionary, &result) }
+                if status == errSecItemNotFound { return [] }
+                guard status == errSecSuccess, let rows = result as? [[String: Any]] else { return nil }
                 return rows.compactMap { $0[kSecAttrAccount as String] as? String }.filter { $0 != vaultAccount }
             },
-            read: { account in
-                SystemKeychainAccess.check()
-                var query = keychainQuery(service: service, account: account)
-                query[kSecReturnData as String] = true
-                query[kSecMatchLimit as String] = kSecMatchLimitOne
-                var item: CFTypeRef?
-                guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else { return nil }
-                return item as? Data
-            },
+            read: { account in SystemKeychainAccess.perform { read(account: account) } },
             delete: { account in
-                SystemKeychainAccess.check()
                 let query = keychainQuery(service: service, account: account)
-                SecItemDelete(query as CFDictionary)
-            }
+                _ = SystemKeychainAccess.perform { SecItemDelete(query as CFDictionary) }
+            },
+            readForRecovery: { account in SystemKeychainAccess.readWithoutInteraction(onFailure: nil) { read(account: account) } }
         )
         #else
         return .none
@@ -416,12 +484,11 @@ extension CredentialVault {
 
     private static func itemExists(service: String, account: String?) -> Bool {
         #if os(macOS)
-        SystemKeychainAccess.check()
         var query = keychainQuery(service: service, account: account)
         query[kSecReturnAttributes as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
-        return SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess
+        return SystemKeychainAccess.perform { SecItemCopyMatching(query as CFDictionary, &result) } == errSecSuccess
         #else
         return false
         #endif

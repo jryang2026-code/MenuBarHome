@@ -1,6 +1,7 @@
 import { markTimerSnapshotReady, scheduledCommandIdentity } from "./scheduledCommands.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
+import { deviceCategoryForDevice } from "../core/capabilityManifest.js";
 import { MiCloudClient, MiCloudError, MiotSynthesizer, normalizeMiCloudRegion, type MiDeviceRecord, type MiRoom, type MiSession, type MiotDeviceSpec } from "../core/miCloudClient.js";
 import { discoverMiHome } from "../core/miCloud/discovery.js";
 import { HomeAssistantClient, homeAssistantIdentity, type HAInvoke } from "../core/homeAssistant.js";
@@ -67,7 +68,7 @@ import {
   type HostCapabilityContextInput,
   type MiAccountSelectionState,
 } from "../core/miAccountControl.js";
-import { buildMiotTypePrunePlan } from "../core/miotTypePruning.js";
+import { buildMiotTypePrunePlan, miotRoundClosesCategory } from "../core/miotTypePruning.js";
 import type { HaTypePruneOptions } from "../core/haTypePruning.js";
 import { safetySignalsForPrefs } from "../core/safetySignalPolicy.js";
 import { loadSensorAlertPolicy } from "../core/safetyAndHealth.js";
@@ -176,13 +177,16 @@ export interface HostMiotTypePruneSnapshot {
   readonly safetyDevices?: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** The plan's own per-card signals, so the device-type preview names what pruning keeps. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
-/** The three host fields the off-panel Mi snapshot owns; every production host is wider. */
+/** The host fields the Mi prune snapshot owns. */
 export interface MiotTypePruneHostSlice {
   safetyRetainedDevices?: SmartDevice[];
   safetyRetainedDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenMiDevices?: readonly CapabilityIndexedDevice[];
+  miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function applyMiotTypePruneSnapshot(
@@ -192,13 +196,17 @@ export function applyMiotTypePruneSnapshot(
   host.safetyRetainedDevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
   host.safetyRetainedDeviceFacets = snapshot?.safetyDeviceFacets ?? {};
   host.hiddenMiDevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+  host.miTypeSafetySignals = snapshot?.safetySignalsByDeviceId ?? {};
 }
 
 /**
  * Drops one Mi account's off-panel devices right after it is disabled: until the next refresh
  * rewrites the snapshot, its retained sensors would otherwise keep evaluating (P3a-W).
  */
-export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice, accountId: string): void {
+export function dropMiotTypePruneSnapshotForAccount(
+  host: MiotTypePruneHostSlice & { readonly devices?: readonly SmartDevice[] },
+  accountId: string,
+): void {
   const scope = miAccountScope(accountId);
   const ownedByAccount = (device: { readonly id: string; readonly accountId?: string }): boolean =>
     device.accountId === accountId || device.id.startsWith(`${accountId}/`);
@@ -206,10 +214,18 @@ export function dropMiotTypePruneSnapshotForAccount(host: MiotTypePruneHostSlice
   const dropped = new Set(retained.filter(ownedByAccount).map((device) => device.id));
   const facets: Record<string, readonly FacetControl[]> = { ...(host.safetyRetainedDeviceFacets ?? {}) };
   for (const id of dropped) delete facets[id];
+  const droppedSignalIds = new Set([
+    ...dropped,
+    ...(host.devices ?? []).filter(ownedByAccount).map((device) => device.id),
+    ...(host.hiddenMiDevices ?? []).filter((device) => device.sourceScope === scope).map((device) => device.id),
+  ]);
   applyMiotTypePruneSnapshot(host, {
     safetyDevices: retained.filter((device) => !dropped.has(device.id)),
     safetyDeviceFacets: facets,
     hiddenDevices: (host.hiddenMiDevices ?? []).filter((device) => device.sourceScope !== scope),
+    safetySignalsByDeviceId: Object.fromEntries(
+      Object.entries(host.miTypeSafetySignals ?? {}).filter(([id]) => !droppedSignalIds.has(id)),
+    ),
   });
 }
 
@@ -252,6 +268,8 @@ export interface HostHaTypePruneSnapshot {
   readonly safetyDevices?: readonly SmartDevice[];
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** Every card's own signals (`haCardSafetySignals`), kept even when this round pruned nothing. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 /** The host fields the off-panel Home Assistant snapshot owns; every production host is wider. */
@@ -260,6 +278,7 @@ export interface HaTypePruneHostSlice {
   safetyRetainedHADevices?: SmartDevice[];
   safetyRetainedHADeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   hiddenHADevices?: readonly CapabilityIndexedDevice[];
+  haTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function applyHaTypePruneSnapshot(
@@ -270,6 +289,7 @@ export function applyHaTypePruneSnapshot(
   host.safetyRetainedHADevices = snapshot?.safetyDevices ? [...snapshot.safetyDevices] : [];
   host.safetyRetainedHADeviceFacets = snapshot?.safetyDeviceFacets ?? {};
   host.hiddenHADevices = snapshot?.hiddenDevices ? [...snapshot.hiddenDevices] : [];
+  host.haTypeSafetySignals = snapshot?.safetySignalsByDeviceId ?? {};
 }
 
 /**
@@ -405,16 +425,38 @@ export function collectHostKnownScenes(
 }
 
 export function buildHostCapabilityContext(
-  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly unprunedCameraDevices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
+  host: MiSelectionHost & { readonly devices?: readonly SmartDevice[]; readonly unprunedCameraDevices?: readonly SmartDevice[]; readonly multiAccountState?: HostMultiAccountState | null; readonly dualSourceCoordinator?: DualSourceCoordinator | null; readonly hiddenMiDevices?: readonly CapabilityIndexedDevice[]; readonly miTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>; readonly haTypePruneScope?: string | null; readonly hiddenHADevices?: readonly CapabilityIndexedDevice[]; readonly haTypeSafetySignals?: Readonly<Record<string, readonly SafetySignalKind[]>>; readonly settings: DualSourceInspectableHost["settings"] & { readonly allOffOverrides?: Readonly<Record<string, boolean>> } } & HostSceneSource,
   accountsOverride?: readonly MiAccount[],
 ): HostCapabilityContextInput {
   const accounts = hostKnownMiAccounts(host, accountsOverride);
   const state = resolveHostMiSelectionState(host, accounts), dualEnabled = isDualSourceEnabled(host);
   const dualRoutes = dualEnabled ? host.dualSourceCoordinator?.getLastMerged?.()?.routes : undefined;
   const hidden = hiddenTypeDevices(host);
+  const haSignals = haTypePruneSnapshotIsCurrent(host) ? host.haTypeSafetySignals ?? {} : {};
+  const miSignals = host.settings.connectionMode === "xiaomiCloud" || dualEnabled ? host.miTypeSafetySignals ?? {} : {};
+  const signals: Record<string, readonly SafetySignalKind[]> = Object.create(null);
+  const getSignals = (id: string, isHA: boolean) => {
+    const byId = isHA ? haSignals : miSignals;
+    return Object.hasOwn(byId, id) ? byId[id] : undefined;
+  };
+  for (const device of host.devices ?? []) {
+    const route = dualRoutes?.[device.id];
+    if (route) {
+      const winnerIsHA = route.backend === "homeAssistant";
+      const winner = getSignals(route.sourceDeviceId, winnerIsHA);
+      const alternate = route.alternateDevice;
+      const other = alternate && deviceCategoryForDevice(alternate) === deviceCategoryForDevice(device)
+        ? getSignals(alternate.id, !winnerIsHA) : undefined;
+      if (winner || other) signals[device.id] = [...new Set([...(winner ?? []), ...(other ?? [])])];
+    } else {
+      const own = getSignals(device.id, device.sourceBackend === "homeAssistant" || host.settings.connectionMode === "homeAssistant");
+      if (own) signals[device.id] = own;
+    }
+  }
   const context: HostCapabilityContextInput = {
     state, accounts, devices: host.devices ?? [], scenes: collectHostKnownScenes(host),
     ...(hidden.length ? { hiddenDevices: hidden } : {}),
+    ...(Object.keys(signals).length ? { safetySignalsByDeviceId: signals } : {}),
     ...(host.multiAccountState?.merged?.deviceOwners ? { deviceOwners: host.multiAccountState.merged.deviceOwners } : {}),
     ...(dualRoutes ? { dualRoutes } : {}),
     haBaseURL: host.settings.haBaseURL ?? "", haToken: host.settings.haToken ?? "",
@@ -590,12 +632,16 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
 
     try {
       const client = new MiCloudClient(session, host.transport);
+      // A closed `light` type draws no group card, so its membership query is a wasted request per
+      // group (P2-10). The scope is this round's own, so the same fail-closed rule as the read plan.
+      const skipLightGroupMembers = miotRoundClosesCategory(pruneOptions.selection, scope, "light");
       const cachedTopology = takeCachedXiaomiTopologyForPoll(
         host,
         session,
         sourceRevisionAtStart,
         selectedHomeAtStart ?? null,
         silent,
+        !skipLightGroupMembers,
       );
 
       let rawDevices: readonly MiDeviceRecord[];
@@ -647,7 +693,8 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         allDevicesForCache = allDevices;
         allRoomsForCache = allRooms;
         const groupDids = rawDevices.map((device) => device.did).filter((did) => did.startsWith("group."));
-        const membershipPromise = groupDids.length > 0
+        // Skipped while `light` is off: no group card is drawn, so the membership read is waste.
+        const membershipPromise = groupDids.length > 0 && !skipLightGroupMembers
           ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
           : Promise.resolve(new Map<string, string[]>());
 
@@ -706,6 +753,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
           rooms,
           specs,
           membersByGroup,
+          ...(skipLightGroupMembers ? { skippedLightGroupMembers: true } : {}),
         });
       }
       clearXiaomiRateLimitBackoff(host);
@@ -740,6 +788,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
         safetyDevices: safetyHome?.devices.map((device) => ({ ...device, accountId })),
         safetyDeviceFacets: safetyHome?.deviceFacets,
         hiddenDevices: prunePlan.hiddenIndexedDevices.filter((device) => device.sourceScope === scope),
+        safetySignalsByDeviceId: prunePlan.safetySignalsByDeviceId,
       });
       markTimerSnapshotReady(host);
       if (completePendingMiRevalidation(host, [miAccountId(session)])) {
@@ -879,13 +928,16 @@ export async function refreshHADevices(host: MenuMijiaWindowsApp, silent = false
       applyMiotTypePruneSnapshot(host, null);
       // A closed type contributes nothing to the panel, search, the AI directory, the companion
       // export or a control entry; only its enabled alerts still read it (architecture.md §D).
-      applyHaTypePruneSnapshot(host, synthesized.prunePlan === null || prune === null
+      // An unpruned round still records each card's signals, so the device-type preview can say
+      // which cards closing a type would keep reading.
+      applyHaTypePruneSnapshot(host, prune === null
         ? null
         : {
             scope: prune.connectionScope,
             safetyDevices: synthesized.safetyDevices,
             ...(synthesized.safetyDeviceFacets ? { safetyDeviceFacets: synthesized.safetyDeviceFacets } : {}),
             hiddenDevices: synthesized.hiddenIndexedDevices,
+            safetySignalsByDeviceId: synthesized.safetySignalsByDeviceId,
           });
       host.scenes = home.scenes;
       if (haClient.lastRawSnapshot && typeof haClient.lastRawSnapshot === "object") {
@@ -1550,6 +1602,7 @@ async function refreshMultiAccountXiaomiDevices(
       safetyDevices: merged.safetyDevices,
       safetyDeviceFacets: merged.safetyDeviceFacets,
       hiddenDevices: merged.hiddenDevices,
+      ...(merged.safetySignalsByDeviceId ? { safetySignalsByDeviceId: merged.safetySignalsByDeviceId } : {}),
     });
     if (merged.resetSelectedHome) {
       host.settings.selectedHomeId = null;
@@ -1826,6 +1879,7 @@ async function refreshDualSourceDevices(
               home: res.home,
               identity: homeAssistantIdentity(endpoint, token),
               identities: res.identities,
+              safetySignalsByDeviceId: res.safetySignalsByDeviceId,
               ...(haPrune !== null
                 ? {
                     safetyDevices: res.safetyDevices,
@@ -1874,6 +1928,7 @@ async function refreshDualSourceDevices(
           safetyDevices: merged.safetyDevices ?? [],
           safetyDeviceFacets: merged.safetyDeviceFacets ?? {},
           hiddenDevices: merged.hiddenDevices ?? [],
+          ...(merged.safetySignalsByDeviceId ? { safetySignalsByDeviceId: merged.safetySignalsByDeviceId } : {}),
         };
       },
     });
@@ -1918,6 +1973,7 @@ async function refreshDualSourceDevices(
       safetyDevices: lastMiSnapshot?.safetyDevices,
       safetyDeviceFacets: lastMiSnapshot?.safetyDeviceFacets,
       hiddenDevices: lastMiSnapshot?.hiddenDevices,
+      ...(lastMiSnapshot?.safetySignalsByDeviceId ? { safetySignalsByDeviceId: lastMiSnapshot.safetySignalsByDeviceId } : {}),
     });
     const lastHaSnapshot = coordinator.getLastHASnapshot();
     const haPruneScope = haConnectionScope(endpoint, token);
@@ -1927,6 +1983,7 @@ async function refreshDualSourceDevices(
           safetyDevices: lastHaSnapshot.safetyDevices,
           ...(lastHaSnapshot.safetyDeviceFacets ? { safetyDeviceFacets: lastHaSnapshot.safetyDeviceFacets } : {}),
           hiddenDevices: lastHaSnapshot.hiddenDevices,
+          ...(lastHaSnapshot.safetySignalsByDeviceId ? { safetySignalsByDeviceId: lastHaSnapshot.safetySignalsByDeviceId } : {}),
         }
       : null);
     if (haEnabledAtStart && haRawSnapshot && typeof haRawSnapshot === "object") {

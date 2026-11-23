@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -21,9 +22,9 @@ struct CameraTypeDisableStoreTests {
         kind: .light(LightSpec(entityId: "miot:light-visible:2", isOn: true))
     )
 
-    private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
+    private func makeStore(defaults: UserDefaults = InMemoryUserDefaults()) async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.camera, Self.light]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.cameratype.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.toastAutoDismissInterval = nil
         var selection = store.capabilitySelection
@@ -31,6 +32,41 @@ struct CameraTypeDisableStoreTests {
         selection.enabledConnectionScopes.insert(Self.scope)
         store.capabilitySelection = selection
         return (store, mock)
+    }
+
+    @Test("Only a persisted camera type closure tears down the stream")
+    func persistencePrecedesTeardown() async throws {
+        let defaults = CameraCapabilityDefaults()
+        let (store, provider) = try await makeStore(defaults: defaults)
+        try #require(store.persistCapabilitySelection())
+        let original = store.capabilitySelection
+        let generation = store.capabilityGeneration
+        let picked = original.enabledCategories.subtracting([.camera])
+        var reported: [[String]] = []
+        store.onCameraCategoryDisabled = { cameras in
+            reported.append(cameras.map(\.id))
+            let data = defaults.data(forKey: CapabilitySelectionStore.storageKey) ?? Data()
+            let envelope = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            #expect((envelope?["enabledCategories"] as? [String])?.contains(DeviceCategoryID.camera.rawValue) == false)
+        }
+
+        _ = try await store.resolveCameraStream(for: Self.camera.id)
+        defaults.failCapabilityReadAfterPreflight()
+        guard case .refused = store.applyDeviceCategorySelection(picked) else {
+            Issue.record("the corrupt envelope must refuse the save")
+            return
+        }
+        #expect(store.capabilitySelection == original)
+        #expect(store.capabilityGeneration == generation)
+        #expect(store.lastCapabilityMergeDiagnostic == "corrupt_capability_selection")
+        #expect(reported.isEmpty)
+        #expect(await provider.stoppedCameraIDs.isEmpty)
+        _ = try await store.resolveCameraStream(for: Self.camera.id)
+
+        #expect(store.applyDeviceCategorySelection(picked) == .applied)
+        #expect(reported == [[Self.camera.id]])
+        #expect(store.capabilityGeneration == generation + 1)
+        #expect(!store.capabilitySelection.enabledFeatures.contains(.cameraLive))
     }
 
     private func setCamera(_ enabled: Bool, in store: HomeStore) {
@@ -88,5 +124,31 @@ struct CameraTypeDisableStoreTests {
         }
         #expect(await mock.requestedCameraQualities.isEmpty)
         #expect(await mock.executedCommands.isEmpty)
+    }
+}
+
+private final class CameraCapabilityDefaults: UserDefaults, @unchecked Sendable {
+    private let backing = InMemoryUserDefaults()
+    private let lock = NSLock()
+    private var readsUntilFailure: Int?
+
+    func failCapabilityReadAfterPreflight() {
+        lock.withLock { readsUntilFailure = 1 }
+    }
+
+    override func object(forKey defaultName: String) -> Any? { backing.object(forKey: defaultName) }
+    override func set(_ value: Any?, forKey defaultName: String) { backing.set(value, forKey: defaultName) }
+    override func removeObject(forKey defaultName: String) { backing.removeObject(forKey: defaultName) }
+
+    override func data(forKey defaultName: String) -> Data? {
+        if defaultName == CapabilitySelectionStore.storageKey {
+            let shouldFail = lock.withLock {
+                guard let remaining = readsUntilFailure else { return false }
+                readsUntilFailure = remaining == 0 ? nil : remaining - 1
+                return remaining == 0
+            }
+            if shouldFail { return Data("corrupt".utf8) }
+        }
+        return backing.data(forKey: defaultName)
     }
 }

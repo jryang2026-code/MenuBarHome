@@ -78,6 +78,7 @@ function installTauriStub(): void {
         pendingStartupUrls = [];
         return drained;
       }
+      if (cmd === "set_companion_integration") return 1;
       return null;
     },
   };
@@ -165,8 +166,8 @@ describe("RaycastSnapshot exporter & bridgeToken lifecycle", () => {
     await flushAsync();
     assert.equal(getActiveRaycastBridgeTokenForHost(app), undefined);
     assert.ok(
-      tauriCalls.some((c) => c.cmd === "remove_raycast_snapshot"),
-      "remove_raycast_snapshot invoked immediately when toggled off",
+      tauriCalls.some((c) => c.cmd === "set_companion_integration" && c.args?.enabled === false),
+      "native registration is disabled and removes its snapshot atomically",
     );
 
     setRaycastIntegrationEnabled(app, true);

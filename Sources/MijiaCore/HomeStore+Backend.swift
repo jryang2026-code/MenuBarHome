@@ -43,7 +43,7 @@ extension HomeStore {
 
     // MARK: - LG TV & Provider Events
 
-    func startLGWebOSIfNeeded() {
+    func startLGWebOSIfNeeded(startImmediately: Bool = true) {
         guard homeBackend != .demo, !isIdentityUncertain else { return }
         let trustStore: LGCertificateTrust = if let credentialVault {
             LGCertificateTrust(vault: credentialVault)
@@ -83,7 +83,7 @@ extension HomeStore {
         self.lgWebOSClient = client
         self.lgWebOSClientID = clientID
         let currentPollingContext = pollingContext
-        if !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
+        if startImmediately && !shouldSuppressBackgroundNetworkWork && lgConfig.isEnabled && lgConfig.hasConfiguredHost {
             Task {
                 await client.setPollingContext(currentPollingContext)
                 await client.start()
@@ -134,13 +134,20 @@ extension HomeStore {
         return true
     }
 
-    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil) {
+    func applyLGDeviceUpdate(_ dev: SmartDevice, fromClientID clientID: UUID? = nil, favoritesNewCard: Bool = true) {
         if let clientID {
             guard !isResumeShutdown, clientID == lgWebOSClientID else { return }
         }
         // Demo mode never shows the LAN TV tile (#47), and a disabled or unconfigured TV drops it too.
         guard homeBackend != .demo, lgConfig.isEnabled, lgConfig.hasConfiguredHost else {
             latestLGDevice = nil
+            lastReportedDevices.removeValue(forKey: dev.id)
+            devices.removeAll { $0.id == dev.id }
+            return
+        }
+        // A closed TV type drops the card but keeps the report, so reopening the type restores it (#342).
+        guard capabilitySelection.enabledCategories.contains(.tv) else {
+            latestLGDevice = dev
             lastReportedDevices.removeValue(forKey: dev.id)
             devices.removeAll { $0.id == dev.id }
             return
@@ -165,7 +172,7 @@ extension HomeStore {
             devices[idx] = nextDev
         } else {
             devices.append(nextDev)
-            if favoriteDeviceIds.contains(dev.id) == false && favoriteOrder.count < 8 {
+            if favoritesNewCard, favoriteDeviceIds.contains(dev.id) == false, favoriteOrder.count < 8 {
                 favoriteDeviceIds.insert(dev.id)
                 favoriteOrder.insert(dev.id, at: 0)
             }
@@ -574,7 +581,7 @@ extension HomeStore {
                 localNetworkBlocks = snapshot.localNetworkBlockedFeatures
             }
             var nextRooms = snapshot.rooms
-            if var lgDev = latestLGDevice, lgConfig.isEnabled {
+            if var lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv) {
                 if let matchedRoom = nextRooms.first(where: { $0.id == lgDev.roomId || $0.name == lgDev.roomName }) {
                     lgDev.roomId = matchedRoom.id
                     latestLGDevice = lgDev
@@ -675,7 +682,7 @@ extension HomeStore {
                     )
                 )
             }
-            if let lgDev = latestLGDevice, lgConfig.isEnabled,
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv),
                !merged.contains(where: { $0.id == lgDev.id }) {
                 rawDeviceNames[lgDev.id] = lgDev.name
                 pruneExpiredOptimisticLocks(for: lgDev.id, at: now)
@@ -692,7 +699,8 @@ extension HomeStore {
                 snapshot.devices.map { ($0.id, $0) },
                 uniquingKeysWith: { first, _ in first }
             )
-            if let lgDev = latestLGDevice, lgConfig.isEnabled, nextReportedDevices[lgDev.id] == nil {
+            if let lgDev = latestLGDevice, lgConfig.isEnabled, capabilitySelection.enabledCategories.contains(.tv),
+               nextReportedDevices[lgDev.id] == nil {
                 nextReportedDevices[lgDev.id] = lgDev
             }
             lastReportedDevices = nextReportedDevices
@@ -748,6 +756,9 @@ extension HomeStore {
             }
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
+            if activeDualProvider != nil || provider is DualSourceHomeProvider {
+                syncMiotTypePrunePolicy()
+            }
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
             scheduleRaycastSnapshotExport()
@@ -1027,7 +1038,7 @@ extension HomeStore {
         haPlaintextPrompt = .declined(url)
     }
 
-    func makeLiveProvider() -> any HomeProvider {
+    func makeLiveProvider(migrateLegacyMiEnvelope: Bool = true) -> any HomeProvider {
         guard !isIdentityUncertain else {
             activeHAProvider = nil
             activeHAConfig = nil
@@ -1051,7 +1062,7 @@ extension HomeStore {
         }
         activeHAProvider = ha
         activeHAConfig = wantsHA ? (url: HAWebSocketProvider.normalizeBaseURL(serverURLString), token: token) : nil
-        let mi: MiAccountsProvider? = wantsMi ? makeMiAccountsProvider() : nil
+        let mi: MiAccountsProvider? = wantsMi ? makeMiAccountsProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope) : nil
         activeMiAccountsProvider = mi
         let composite = Self.makeComposite(
             homeAssistant: ha,
@@ -1060,6 +1071,7 @@ extension HomeStore {
             pinBox: pinnedDeviceSourcesBox
         )
         activeDualProvider = composite
+        syncMiotTypePrunePolicy()
         return composite
     }
 
@@ -1094,7 +1106,7 @@ extension HomeStore {
         )
     }
 
-    func rebuildLiveProvider(forceHAReconnect: Bool = false) {
+    func rebuildLiveProvider(forceHAReconnect: Bool = false, migrateLegacyMiEnvelope: Bool = true) {
         haPlaintextPrompt = nil
         guard !isIdentityUncertain else {
             eventTask?.cancel()
@@ -1119,7 +1131,7 @@ extension HomeStore {
             eventTask?.cancel()
             shutdownCurrentProvider()
             miAccountsConfigEpoch = 0
-            self.provider = makeLiveProvider()
+            self.provider = makeLiveProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             startListening()
             return
         }
@@ -1166,7 +1178,7 @@ extension HomeStore {
         var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revokedIDs: Set<String>)?
         var miAccountsChanged = false
         if wantsMi {
-            let latestAccounts = loadActiveMiAccounts()
+            let latestAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             miAccounts = latestAccounts
             let enabledAccounts = enabledMiAccounts
             let previousAccounts = activeMiProviderAccounts
@@ -1190,7 +1202,7 @@ extension HomeStore {
                     miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty, revokedIDs)
                 }
             } else {
-                let createdMi = makeMiAccountsProvider()
+                let createdMi = makeMiAccountsProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
                 activeMiAccountsProvider = createdMi
                 nextMiReplacement = (true, createdMi)
             }
@@ -1525,6 +1537,7 @@ extension HomeStore {
         hasHASource = false
         explicitlyDisabledConnections.remove(.homeAssistant)
         capabilitySelection.enabledConnections.insert(.homeAssistant)
+        requireManualResumeAfterHARemoval()
         purgeRemovedAccountCapabilities(scopes: [removedScope])
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
@@ -1697,6 +1710,7 @@ extension HomeStore {
         }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
+        if trimmedToken.isEmpty { requireManualResumeAfterHARemoval() }
         // Only the connection-level flag carries the user's decision. `isHAConnectionEnabled` also
         // reads false for a scope-level turn-off left over from an earlier address, while adopting
         // the address below migrates the `ha:` scope back into `enabledConnectionScopes`. Taking the
@@ -1794,6 +1808,7 @@ extension HomeStore {
     public var shouldAutoDiscoverHomeAssistantOnLAN: Bool {
         guard capabilityResolutionMode != .freshInstall,
               identityMigrationDiagnostic == nil,
+              wakeIdentityProviderGeneration == nil,
               hasCompletedOnboarding else { return false }
         guard homeBackend != .demo, homeBackend != .xiaomiCloud, isHAConnectionEnabled else { return false }
         guard !hasHASource, !hasMiSource else { return false }

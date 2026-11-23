@@ -1155,7 +1155,9 @@ function renderCompanionControls(ctx: SettingsViewContext): string {
         <div class="cc-field-row" style="margin-top: 6px; gap: 6px; flex-wrap: wrap; justify-content: flex-start;">
           <button type="button" class="cc-btn-secondary" id="btn-companion-copy-config">${ctx.escapeHtml(tr3("复制配置", "複製設定", "Copy Config"))}</button>
           <button type="button" class="cc-btn-secondary" id="btn-companion-detect">${ctx.escapeHtml(tr3("检测接入", "檢測接入", "Check Connection"))}</button>
-          ${enabled ? `<button type="button" class="cc-btn-secondary" id="btn-companion-disconnect">${ctx.escapeHtml(tr3("断开并吊销令牌", "中斷連線並撤銷權杖", "Disconnect & Revoke Token"))}</button>` : ""}
+          ${enabled || notice?.retryDisconnect ? `<button type="button" class="cc-btn-secondary" id="btn-companion-disconnect">${ctx.escapeHtml(enabled
+            ? tr3("断开并吊销令牌", "中斷連線並撤銷權杖", "Disconnect & Revoke Token")
+            : tr3("重试删除快照", "重試刪除快照", "Retry Snapshot Deletion"))}</button>` : ""}
         </div>
         ${noticeHtml}`;
 }

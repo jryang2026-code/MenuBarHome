@@ -521,6 +521,178 @@ struct HAConnectionDisableTests {
         #expect(rulesAfter[vanishedRule.id]?.isEnabled == false && rulesAfter[vanishedRule.id]?.pausedCapabilities.isEmpty == true)
     }
 
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var date = Date(timeIntervalSince1970: 1_760_000_000)
+
+        var now: Date { lock.withLock { date } }
+        func advance(by seconds: TimeInterval) { lock.withLock { date.addTimeInterval(seconds) } }
+    }
+
+    @Test("Only a fresh snapshot from the original HA URL restores its paused references")
+    func pausedHAReferencesStayBoundAcrossAddressChangesAndRestart() async throws {
+        let defaults = InMemoryUserDefaults()
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        let otherURL = "http://192.168.1.51:8123"
+        let otherScope = ConnectionRemovalStore.haScope(serverURL: otherURL)
+        let light = Self.makeLight(id: "ha-light", name: "Hall", entityId: "light.hall")
+        let scene = HomeScene(id: "scene.movie", name: "Movie", entityId: "scene.movie")
+        var snapshot = Self.makeLoadedSnapshot(devices: [light], scenes: [scene])
+        snapshot.homeAssistantScope = Self.haScope
+        var otherSnapshot = Self.makeLoadedSnapshot(devices: [light], scenes: [scene])
+        otherSnapshot.homeAssistantScope = otherScope
+        let stub = StubHARuntimeProvider()
+        var store = HomeStore(provider: nil, credentialVault: vault, haProviderFactory: { _, _ in stub }, defaults: defaults)
+        let clock = TestClock()
+        let timerGate = ScheduledCommandTestSupport.SleepGate()
+        store.assistantNow = { clock.now }
+        store.assistantSleep = { _ in await timerGate.sleep() }
+        defer { store.scheduledTasks.values.forEach { $0.cancel() } }
+        store.handleProviderEvent(.statusChanged(.connected))
+        store.handleProviderEvent(.snapshotUpdated(snapshot))
+
+        let timer = Self.makeTimer(reply: "Turn off hall light", fireDate: clock.now.addingTimeInterval(60), targetId: light.id)
+        ScheduledCommand.save([timer], to: defaults)
+        store.restoreScheduledCommands(now: clock.now)
+        let deviceRule = AutomationRule(trigger: .away, action: .devices(ids: [light.id], isOn: false), isEnabled: true)
+        let sceneRule = AutomationRule(trigger: .back, action: .scene(sceneId: scene.id), isEnabled: true)
+        let quickRule = AutomationRule(trigger: .away, action: .quickAction(.lightsOff), isEnabled: true)
+        let rules = store.automationRuleStore
+        rules.save([deviceRule, sceneRule, quickRule])
+        disableHAAndPauseReferences(in: store)
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionIDs.contains(QuickAction.lightsOff.rawValue))
+        #expect(store.pausedScheduledCommands.map(\.command.id) == [timer.id])
+        seedPausedHAGroup(in: store, defaults: defaults, memberID: light.id)
+        await store.providerShutdownTask?.value
+
+        #expect(store.updateConnection(serverURL: otherURL, token: Self.haToken))
+        #expect(!store.isHAConnectionEnabled)
+        clock.advance(by: 120)
+        #expect(store.setHAConnectionEnabled(true).disposition == .allowed)
+        store.handleProviderEvent(.statusChanged(.connected))
+        store.handleProviderEvent(.snapshotUpdated(otherSnapshot))
+        #expect(AutomationMatcher.rules(for: .away, in: rules.load()).isEmpty)
+        #expect(!store.pausedQuickActionIDs.contains(QuickAction.lightsOff.rawValue))
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.foreignScheduledCommands.map(\.id) == [timer.id])
+        #expect(store.missedScheduledCommands.isEmpty && store.scheduledCommands.isEmpty)
+        #expect(store.scheduledTasks[timer.id] == nil)
+
+        // Disabling HA again while pointed at another server must keep the original HA scope intact.
+        disableHAAndPauseReferences(in: store)
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionScopes["group:hall"] == [Self.haScope])
+        #expect(store.setHAConnectionEnabled(true).disposition == .allowed)
+        store.handleProviderEvent(.statusChanged(.connected))
+        store.handleProviderEvent(.snapshotUpdated(otherSnapshot))
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+
+        store.eventTask?.cancel()
+        store = HomeStore(provider: nil, credentialVault: vault, haProviderFactory: { _, _ in stub }, defaults: defaults)
+        store.assistantNow = { clock.now }
+        store.assistantSleep = { _ in await timerGate.sleep() }
+        store.handleProviderEvent(.statusChanged(.connected))
+        store.handleProviderEvent(.snapshotUpdated(Self.makeLoadedSnapshot()))
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+
+        #expect(store.updateConnection(serverURL: Self.haURL, token: Self.haToken))
+        store.handleProviderEvent(.statusChanged(.connected))
+        var partial = Self.makeLoadedSnapshot()
+        partial.sourceStatuses = [.homeAssistant: .connected]
+        partial.activeBackends = [.xiaomiCloud]
+        store.handleProviderEvent(.snapshotUpdated(partial))
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+
+        // A stale dual-source snapshot from the prior HA address must not unlock references for the new URL.
+        var staleDual = otherSnapshot
+        staleDual.sourceStatuses = [.homeAssistant: .connected, .xiaomiCloud: .connected]
+        staleDual.activeBackends = [.homeAssistant, .xiaomiCloud]
+        store.handleProviderEvent(.snapshotUpdated(staleDual))
+        #expect(rules.load().allSatisfy { !$0.isEnabled && $0.pausedScopes == [Self.haScope] })
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+
+        store.handleProviderEvent(.snapshotUpdated(snapshot))
+        #expect(rules.load().allSatisfy { $0.isEnabled && $0.pausedScopes.isEmpty })
+        #expect(!store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.missedScheduledCommands.map(\.id) == [timer.id])
+        #expect(store.scheduledTasks[timer.id] == nil)
+        #expect(await stub.executedCommands.isEmpty)
+    }
+
+    enum CredentialRemoval: CaseIterable { case delete, disconnect, clearToken }
+
+    @Test("Removing HA credentials makes previously paused HA rules manual across subsequent connections", arguments: CredentialRemoval.allCases)
+    func removingHAWhileAtAnotherAddressRequiresManualResume(_ removal: CredentialRemoval) async throws {
+        let defaults = InMemoryUserDefaults()
+        let vault = CredentialVault(storage: MemoryVaultStorage().storage)
+        Self.seedHAConfig(defaults, vault)
+        let otherURL = "http://192.168.1.51:8123"
+        let thirdURL = "http://192.168.1.52:8123"
+        let light = Self.makeLight(id: "ha-light", name: "Hall", entityId: "light.hall")
+        let snapshot = Self.makeLoadedSnapshot(devices: [light])
+        let stub = StubHARuntimeProvider()
+        var store = HomeStore(provider: nil, credentialVault: vault, haProviderFactory: { _, _ in stub }, defaults: defaults)
+        store.handleProviderEvent(.statusChanged(.connected))
+        store.handleProviderEvent(.snapshotUpdated(snapshot))
+        let rule = AutomationRule(trigger: .away, action: .devices(ids: [light.id], isOn: false), isEnabled: true)
+        let rules = store.automationRuleStore
+        rules.save([rule])
+        disableHAAndPauseReferences(in: store)
+        seedPausedHAGroup(in: store, defaults: defaults, memberID: light.id)
+        await store.providerShutdownTask?.value
+        #expect(store.updateConnection(serverURL: otherURL, token: Self.haToken))
+        #expect(rules.load().first?.pausedScopes == [Self.haScope])
+
+        switch removal {
+        case .delete:
+            #expect(await store.removeHomeAssistantConnection() == .completed)
+        case .disconnect:
+            #expect(store.disconnectHomeAssistant())
+        case .clearToken:
+            #expect(store.updateConnection(serverURL: thirdURL, token: ""))
+        }
+        #expect(store.loadHAToken().isEmpty)
+        let disabled = try #require(rules.load().first)
+        #expect(disabled.id == rule.id && disabled.action == rule.action && !disabled.isEnabled)
+        #expect(disabled.pausedScopes.isEmpty && disabled.pausedCapabilities.isEmpty)
+        store.eventTask?.cancel()
+        store = HomeStore(provider: nil, credentialVault: vault, haProviderFactory: { _, _ in stub }, defaults: defaults)
+
+        // Both a different server and a later use of the old URL require manual enablement.
+        for url in [thirdURL, Self.haURL] {
+            #expect(store.updateConnection(serverURL: url, token: Self.haToken))
+            store.handleProviderEvent(.statusChanged(.connected))
+            store.handleProviderEvent(.snapshotUpdated(snapshot))
+            #expect(rules.load() == [disabled])
+            #expect(store.pausedQuickActionIDs.contains("group:hall"))
+        }
+        #expect(await stub.executedCommands.isEmpty)
+    }
+
+    private func disableHAAndPauseReferences(in store: HomeStore) {
+        let preview = store.previewSetHAConnectionEnabled(false)
+        #expect(preview.disposition == .requiresPauseConfirmation)
+        _ = store.setHAConnectionEnabled(
+            false, pauseConfirmed: true, expectedGeneration: store.capabilityGeneration,
+            expectedPauseItemKeys: Set(preview.itemsToPause.map(\.pauseKey))
+        )
+        #expect(!store.isHAConnectionEnabled)
+    }
+
+    private func seedPausedHAGroup(in store: HomeStore, defaults: UserDefaults, memberID: String) {
+        defaults.set(#"[{"id":"hall","name":"Hall"}]"#, forKey: "device_groups")
+        defaults.set("{\"\(memberID)\":\"hall\"}", forKey: ViewPreferenceKeys.groupMap)
+        store.pauseAffectedReferences([AffectedReferenceItem(
+            kind: .quickAction, id: "group:hall", name: "Hall", connectionScopes: [Self.haScope],
+            affectedTargetIds: [memberID], affectedCapabilities: [.connection(.homeAssistant)]
+        )])
+    }
+
     @Test("Dual-source unpinned paired card fails over to Xiaomi Cloud without pausing references and strips HA facets, while HA-pinned card blocks writes")
     func dualSourceFailoverAndPinnedSourceSemantics() async throws {
         let defaults = InMemoryUserDefaults()

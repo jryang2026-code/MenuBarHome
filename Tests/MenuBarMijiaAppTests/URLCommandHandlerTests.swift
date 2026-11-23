@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import MijiaCore
 @testable import MenuBarMijiaApp
@@ -33,12 +34,11 @@ struct URLCommandHandlerTests {
     )
 
     private static func makeStore() async throws -> (HomeStore, MockHomeProvider) {
-        let suite = "test.urlhandler.\(UUID().uuidString)"
         let provider = MockHomeProvider(snapshot: SynthesizedHome(
             rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
             devices: [lamp, airConditioner]
         ))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         return (store, provider)
     }
@@ -56,9 +56,7 @@ struct URLCommandHandlerTests {
     private static func makeBlockedStore(
         devices: [SmartDevice]? = nil
     ) async throws -> (HomeStore, MockHomeProvider) {
-        let suite = "test.urlhandler.blocked.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let provider = MockHomeProvider(snapshot: SynthesizedHome(
             rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
@@ -72,7 +70,7 @@ struct URLCommandHandlerTests {
             expiresAt: Date().addingTimeInterval(-60)
         )
         #expect(MiSessionStore.save(expired, defaults: defaults))
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: defaults)
         try await store.waitForTestSnapshot()
         return (store, provider)
     }
@@ -306,12 +304,11 @@ struct URLCommandHandlerTests {
                 model: "chuangmi.plug.212a01", isOnline: true,
                 kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: false))
             )
-            let suite = "test.urlhandler.queue.\(UUID().uuidString)"
             let provider = MockHomeProvider(snapshot: SynthesizedHome(
                 rooms: [RoomArea(id: "study", name: "Study", sortOrder: 0)],
                 devices: [Self.lamp, heater]
             ))
-            let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+            let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
             try await store.waitForTestSnapshot()
 
             let handler = URLCommandHandler()

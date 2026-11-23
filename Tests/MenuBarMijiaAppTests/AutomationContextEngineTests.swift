@@ -433,6 +433,61 @@ struct AutomationContextEngineTests {
         ])
     }
 
+    @Test("After re-enabling, a meeting added later still runs while one already due stays quiet")
+    func calendarMeetingCreatedAfterResumeRuns() async throws {
+        let defaults = InMemoryUserDefaults()
+        let rule = AutomationRule(
+            trigger: .calendarMeetingStartingSoon,
+            action: .scene(sceneId: Self.workScene.id),
+            triggerOptions: AutomationTriggerOptions(calendarLeadMinutes: 5)
+        )
+        AutomationRuleStore(defaults: defaults).save([rule])
+        let (store, mock) = try await makeStore(scenes: [Self.workScene])
+        defer { store.stop() }
+        let resumedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let provider = FakeMacContextProvider()
+        let engine = AutomationEngine(
+            defaults: defaults,
+            contextProvider: provider,
+            environment: Self.unlockedEnvironment,
+            now: { resumedAt }
+        )
+        engine.start(with: store)
+        #expect(store.setEventAutomationEnabled(false))
+        #expect(store.setEventAutomationEnabled(true))
+        #expect(provider.isStarted)
+
+        let dueAtResume = CalendarMeeting(
+            id: "due",
+            title: "Due",
+            startDate: resumedAt.addingTimeInterval(3 * 60),
+            endDate: resumedAt.addingTimeInterval(30 * 60)
+        )
+        await provider.emit(MacContextSnapshot(meetings: [dueAtResume]), at: resumedAt.addingTimeInterval(10))
+        #expect(await mock.executedCommands.isEmpty)
+
+        let addedLater = CalendarMeeting(
+            id: "later",
+            title: "Later",
+            startDate: resumedAt.addingTimeInterval(5 * 60),
+            endDate: resumedAt.addingTimeInterval(35 * 60)
+        )
+        await provider.emit(
+            MacContextSnapshot(meetings: [dueAtResume, addedLater]),
+            at: resumedAt.addingTimeInterval(60)
+        )
+        let command = DeviceCommand.activateScene(entityId: Self.workScene.entityId)
+        #expect(await mock.executedCommands == [command])
+
+        let nextDay = resumedAt.addingTimeInterval(24 * 60 * 60)
+        var nextOccurrence = dueAtResume
+        nextOccurrence.startDate = nextDay.addingTimeInterval(3 * 60)
+        nextOccurrence.endDate = nextDay.addingTimeInterval(30 * 60)
+        await provider.emit(MacContextSnapshot(meetings: [nextOccurrence]), at: nextDay)
+        #expect(await mock.executedCommands == [command, command])
+        withExtendedLifetime(engine) {}
+    }
+
     @Test("Late-night use runs once per night, not once per observer tick")
     func lateNightRule() async throws {
         let defaults = InMemoryUserDefaults()

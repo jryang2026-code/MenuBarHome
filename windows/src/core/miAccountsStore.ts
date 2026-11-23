@@ -34,7 +34,7 @@ import { environmentReadingPriority,
   type SmartDevice,
   type SynthesizedHome,
 } from "./models.js";
-import { buildMiotTypePrunePlan } from "./miotTypePruning.js";
+import { buildMiotTypePrunePlan, miotRoundClosesCategory } from "./miotTypePruning.js";
 import type { CapabilityIndexedDevice, CapabilitySelection, SafetySignalKind } from "./capabilityReferenceVerdict.js";
 import { clearPersistedMiSessionExpired,
   clearPersistedMiSessionExpiredFor,
@@ -724,6 +724,8 @@ export interface AccountChildSnapshot { readonly account: MiAccount;
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   /** Index entries of the cards the type selection withholds, for the host write gate. */
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** The prune plan's per-card signals, drawn or not, for the device-type preview. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
   readonly status: ConnectionStatus;
   readonly tokenStatus: MiAccountTokenStatus;
   readonly error?: unknown;
@@ -748,6 +750,8 @@ export interface MergedMiAccountsSnapshot {
   readonly safetyDeviceFacets?: Readonly<Record<string, readonly FacetControl[]>>;
   /** Union of the children's withheld index entries, for the host write gate. */
   readonly hiddenDevices?: readonly CapabilityIndexedDevice[];
+  /** First-seen union of the connected children's per-card signals. */
+  readonly safetySignalsByDeviceId?: Readonly<Record<string, readonly SafetySignalKind[]>>;
 }
 
 export function buildHomeOptionsFromMiRooms(rooms: readonly MiRoom[],
@@ -927,6 +931,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
   const safetyDeviceIds = new Set<string>();
   const hiddenDevices: CapabilityIndexedDevice[] = [];
   const hiddenDeviceIds = new Set<string>();
+  const safetySignalsByDeviceId: Record<string, readonly SafetySignalKind[]> = Object.create(null);
 
   for (const account of accounts) { const child = children[account.id];
     if (!child) continue;
@@ -948,11 +953,17 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
         const facets = child.safetyDeviceFacets?.[device.id];
         if (facets && facets.length > 0) safetyDeviceFacets[device.id] = facets;
       }
-      for (const hidden of child.hiddenDevices ?? []) { const key = `${hidden.sourceScope}|${hidden.id}`;
-        if (hiddenDeviceIds.has(key)) continue;
-        hiddenDeviceIds.add(key);
-        hiddenDevices.push(hidden);
+      for (const [id, signals] of Object.entries(child.safetySignalsByDeviceId ?? {})) {
+        if (!(id in safetySignalsByDeviceId)) safetySignalsByDeviceId[id] = signals;
       }
+    }
+    // The identity index is not an alert: a round that failed keeps drawing the account's last
+    // cards, so it must keep naming their closed types too. Availability drops instead, so a stale
+    // entry can never authorize a write while the account is not answering.
+    for (const hidden of child.hiddenDevices ?? []) { const key = `${hidden.sourceScope}|${hidden.id}`;
+      if (hiddenDeviceIds.has(key)) continue;
+      hiddenDeviceIds.add(key);
+      hiddenDevices.push(isConnected ? hidden : { ...hidden, isSourceAvailable: false });
     }
 
     const childFacets = child.home.deviceFacets ?? {};
@@ -1078,6 +1089,7 @@ export function mergeMiAccountSnapshots(accounts: readonly MiAccount[],
     safetyDevices,
     safetyDeviceFacets,
     hiddenDevices,
+    safetySignalsByDeviceId,
   };
 }
 
@@ -1297,9 +1309,13 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
       const groupDids = filtered.devices
         .map((d) => d.did)
         .filter((did) => did.startsWith("group."));
+      // No group card is drawn while `light` is off, so the per-group membership read is waste (P2-10).
+      const skipLightGroupMembers =
+        options.prune !== undefined &&
+        miotRoundClosesCategory(options.prune.selection, miAccountScopeOf(account.id), "light");
       const [specs, membersByGroup] = await Promise.all([
         specResolver.resolveForDevices(filtered.devices),
-        groupDids.length > 0
+        groupDids.length > 0 && !skipLightGroupMembers
           ? client.lightGroupMembers(groupDids).catch(() => new Map<string, string[]>())
           : Promise.resolve(new Map<string, string[]>()),
       ]);
@@ -1353,6 +1369,7 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
           ? { safetyDevices: stampedSafety.home.devices, safetyDeviceFacets: stampedSafety.home.deviceFacets ?? {} }
           : {}),
         ...(prune && prune.hiddenIndexedDevices.length > 0 ? { hiddenDevices: prune.hiddenIndexedDevices } : {}),
+        ...(prune ? { safetySignalsByDeviceId: prune.safetySignalsByDeviceId } : {}),
         status: { kind: "connected" },
         tokenStatus: freshTokenStatus,
       };
@@ -1413,6 +1430,12 @@ export async function refreshMiAccountsConcurrently(options: RefreshMiAccountsOp
         allRooms: previous?.allRooms ?? [],
         specs: previous?.specs ?? {},
         lightGroupOwners: previous?.lightGroupOwners ?? new Map(),
+        // The panel keeps drawing this account's last snapshot, so it must keep answering
+        // "该设备类型已关闭" for the same closed-type devices instead of "设备不存在" until the
+        // account answers again (Nit-12).
+        ...(previous?.hiddenDevices && previous.hiddenDevices.length > 0
+          ? { hiddenDevices: previous.hiddenDevices }
+          : {}),
         status: { kind: "disconnected", reason },
         tokenStatus: getAccountTokenStatus(account, nowMs, storage),
         error,

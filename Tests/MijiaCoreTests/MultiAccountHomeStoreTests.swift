@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -26,15 +27,16 @@ struct MultiAccountHomeStoreTests {
     private static let cn = MiAccount(session: cnSession)
     private static let de = MiAccount(session: deSession)
 
-    private static func makeSuite() -> String {
-        "com.jryang1997.MenuBarMijia.multi-account.\(UUID().uuidString)"
+    /// One instance for the seed and for every store a test opens on the same domain: a second
+    /// `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+    private static func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     @Test("Signing in a second account keeps the first")
     func secondSignInKeepsTheFirst() {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let defaults = Self.makeDefaults()
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         defer { store.logoutMiAccount() }
         store.homeBackend = .xiaomiCloud
 
@@ -47,7 +49,7 @@ struct MultiAccountHomeStoreTests {
         #expect(store.miSessionMaskedUserId == Self.cnSession.maskedUserId)
         #expect(store.serverHostSummary == "米家云端 (2 个账号)")
 
-        let reopened = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let reopened = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         defer { reopened.logoutMiAccount() }
         #expect(reopened.miAccounts == store.miAccounts)
         #expect(reopened.miSessionMaskedUserId == Self.cnSession.maskedUserId)
@@ -55,11 +57,9 @@ struct MultiAccountHomeStoreTests {
 
     @Test("Removing one account keeps the other")
     func removingOneAccountKeepsTheOther() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = Self.makeDefaults()
         MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults)
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         defer { store.logoutMiAccount() }
         store.miAccounts = [Self.cn, Self.de]
         store.miSessionMaskedUserId = Self.cn.maskedUserId
@@ -120,9 +120,7 @@ struct MultiAccountHomeStoreTests {
 
     @Test("Logging out removes all accounts")
     func loggingOutRemovesAllAccounts() {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: Self.makeDefaults())
         store.homeBackend = .xiaomiCloud
 
         store.completeMiLogin(Self.cnSession)
@@ -137,12 +135,8 @@ struct MultiAccountHomeStoreTests {
 
     @Test("Leaving Xiaomi closes reauthentication and a late login preserves the selected backend")
     func lateReauthDoesNotReplaceBackend() {
-        let suite = Self.makeSuite()
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
-        defer {
-            store.logoutMiAccount()
-            store.userDefaults.removePersistentDomain(forName: suite)
-        }
+        let store = HomeStore(provider: MockHomeProvider(), defaults: Self.makeDefaults())
+        defer { store.logoutMiAccount() }
         store.homeBackend = .xiaomiCloud
         store.isShowingMiReauth = true
         store.beginMiLogin()
@@ -169,14 +163,12 @@ struct MultiAccountHomeStoreTests {
 
     @Test("A legacy bare selected home migrates to the only account on launch")
     func legacySelectedHomeMigrates() throws {
-        let suite = Self.makeSuite()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = Self.makeDefaults()
         // Exactly what a single-account build left behind: one bare session and a bare home id.
         defaults.set(try JSONEncoder().encode(Self.cnSession), forKey: MiSessionStore.fallbackDefaultsKey)
         defaults.set("home-1", forKey: MiCloudProvider.selectedHomeKey)
 
-        let single = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let single = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(single.miAccounts.count == 1)
         #expect(single.selectedMiHomeId == Self.cn.id + "/home-1")
         #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == Self.cn.id + "/home-1")
@@ -185,7 +177,7 @@ struct MultiAccountHomeStoreTests {
         MiSessionStore.saveAccounts([Self.cn, Self.de], defaults: defaults)
         defaults.set("home-1", forKey: MiCloudProvider.selectedHomeKey)
 
-        let several = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suite)
+        let several = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(several.miAccounts.count == 2)
         #expect(several.selectedMiHomeId == nil)
         #expect(defaults.string(forKey: MiCloudProvider.selectedHomeKey) == nil)

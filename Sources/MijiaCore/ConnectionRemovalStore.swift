@@ -1,5 +1,10 @@
 import CryptoKit
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#else
+import Glibc
+#endif
 
 public enum ConnectionRemovalKind: String, Codable, Equatable, Sendable { case mi, ha }
 public enum ConnectionRemovalStage: String, Codable, Equatable, Sendable { case draining, cleaning, failed }
@@ -62,10 +67,48 @@ public enum ConnectionRemovalSlotExecution: Equatable, Sendable {
     case incomplete(reason: String, remainingSlots: [String])
 }
 
+public enum ConnectionRemovalQuarantineFailureKind: String, Equatable, Sendable {
+    /// The target volume rejected `F_FULLFSYNC` as unsupported (`ENOTSUP`, `EOPNOTSUPP`, `ENOTTY`, `EINVAL`, `ENOSYS`).
+    case fullFsyncUnsupported
+    /// Transient I/O, directory creation, permission/ownership, symlink, or byte-for-byte read-back verification failure.
+    case transientOrVerificationFailed
+}
+
+public struct ConnectionRemovalQuarantineFailure: Equatable, Sendable, Error {
+    public let kind: ConnectionRemovalQuarantineFailureKind
+    public let directoryPath: String?
+    public let errorCode: Int32?
+    public let usedAlternateDirectory: Bool
+
+    public init(
+        kind: ConnectionRemovalQuarantineFailureKind,
+        directoryPath: String? = nil,
+        errorCode: Int32? = nil,
+        usedAlternateDirectory: Bool = false
+    ) {
+        self.kind = kind
+        self.directoryPath = directoryPath
+        self.errorCode = errorCode
+        self.usedAlternateDirectory = usedAlternateDirectory
+    }
+}
+
+public enum ConnectionRemovalDiscardResult: Equatable, Sendable {
+    case discarded(quarantineFileURL: URL, usedAlternateDirectory: Bool)
+    case notDiscardable
+    case failed(ConnectionRemovalQuarantineFailure)
+
+    public var succeeded: Bool {
+        if case .discarded = self { return true }
+        return false
+    }
+}
+
 /// Strict, read-merge-write persistence and targeted slot execution for connection removal (P2c-M).
 public enum ConnectionRemovalStore {
     public static let storageKey = "connection_removal_v1"
     public static let unreadableKeyPrefix = "connection_removal_v1.unreadable"
+    public static let quarantineDirectoryName = "MenuBarMijia-ConnectionRemovalQuarantine"
     public static let schemaVersion = 1
     static let maxRemovals = 32
     private static let storeLock = NSLock()
@@ -136,17 +179,97 @@ public enum ConnectionRemovalStore {
         }
     }
 
-    /// Drops an unreadable removal payload only after a byte-identical quarantine copy is confirmed.
+    struct QuarantinePersistenceHooks: Sendable {
+        var defaultDirectory: @Sendable () -> URL?
+        var syncFD: @Sendable (Int32, URL) -> Int32
+        var fullFsync: @Sendable (Int32, URL) -> Int32
+        var readBack: @Sendable (FileHandle, URL) -> Data?
+
+        static let live = QuarantinePersistenceHooks(
+            defaultDirectory: {
+                guard let support = try? FileManager.default.url(
+                    for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true
+                ) else { return nil }
+                return support.resolvingSymlinksInPath()
+                    .appendingPathComponent(quarantineDirectoryName, isDirectory: true)
+            },
+            syncFD: { fd, _ in
+                fsync(fd) == 0 ? 0 : errno
+            },
+            fullFsync: { file, _ in
+                #if canImport(Darwin)
+                return fcntl(file, F_FULLFSYNC) == 0 ? 0 : errno
+                #else
+                return 0
+                #endif
+            },
+            readBack: { handle, _ in
+                try? (handle.readToEnd() ?? Data())
+            }
+        )
+    }
+
+    public static func quarantineSubdirectory(inParentDirectory parentDirectory: URL) -> URL {
+        parentDirectory.appendingPathComponent(quarantineDirectoryName, isDirectory: true)
+    }
+
+    /// Drops an unreadable removal payload only after a byte-identical quarantine file is persisted.
     /// Touches no credential slot. Returns false when the payload is readable or the copy cannot be confirmed.
     @discardableResult
     public static func discardCorruptPayload(defaults: UserDefaults = .standard) -> Bool {
+        discardCorruptPayloadResult(defaults: defaults, quarantineDirectory: nil).succeeded
+    }
+
+    static func discardCorruptPayload(defaults: UserDefaults, quarantineDirectory: URL?) -> Bool {
+        discardCorruptPayloadResult(defaults: defaults, quarantineDirectory: quarantineDirectory).succeeded
+    }
+
+    static func discardCorruptPayloadResult(
+        defaults: UserDefaults,
+        quarantineDirectory: URL?,
+        usedAlternateDirectory: Bool = false,
+        hooks: QuarantinePersistenceHooks = .live
+    ) -> ConnectionRemovalDiscardResult {
         storeLock.withLock {
             let read = readStateUnlocked(defaults: defaults)
-            guard read.state.readError, let raw = read.state.corruptData else { return false }
+            guard read.state.readError, let raw = read.state.corruptData else { return .notDiscardable }
             let key = storeQuarantineCopyUnlocked(raw, defaults: defaults)
-            guard defaults.data(forKey: key) == raw else { return false }
-            defaults.removeObject(forKey: storageKey)
-            return defaults.object(forKey: storageKey) == nil
+            guard defaults.data(forKey: key) == raw else {
+                return .failed(.init(
+                    kind: .transientOrVerificationFailed,
+                    directoryPath: quarantineDirectory?.path,
+                    errorCode: nil,
+                    usedAlternateDirectory: usedAlternateDirectory
+                ))
+            }
+            switch persistQuarantineFile(
+                raw,
+                directory: quarantineDirectory,
+                usedAlternateDirectory: usedAlternateDirectory,
+                hooks: hooks
+            ) {
+            case .failure(let failure):
+                return .failed(failure)
+            case .success(let fileURL):
+                guard readStateUnlocked(defaults: defaults).state.corruptData == raw else {
+                    return .failed(.init(
+                        kind: .transientOrVerificationFailed,
+                        directoryPath: fileURL.deletingLastPathComponent().path,
+                        errorCode: nil,
+                        usedAlternateDirectory: usedAlternateDirectory
+                    ))
+                }
+                defaults.removeObject(forKey: storageKey)
+                guard defaults.object(forKey: storageKey) == nil else {
+                    return .failed(.init(
+                        kind: .transientOrVerificationFailed,
+                        directoryPath: fileURL.deletingLastPathComponent().path,
+                        errorCode: nil,
+                        usedAlternateDirectory: usedAlternateDirectory
+                    ))
+                }
+                return .discarded(quarantineFileURL: fileURL, usedAlternateDirectory: usedAlternateDirectory)
+            }
         }
     }
 
@@ -544,6 +667,122 @@ public enum ConnectionRemovalStore {
         }
         defaults.set(raw, forKey: key)
         return key
+    }
+
+    static func isFullFsyncUnsupportedError(_ code: Int32) -> Bool {
+        code == ENOTSUP || code == EOPNOTSUPP || code == ENOTTY || code == EINVAL || code == ENOSYS
+    }
+
+    private static func persistQuarantineFile(
+        _ raw: Data,
+        directory: URL?,
+        usedAlternateDirectory: Bool,
+        hooks: QuarantinePersistenceHooks
+    ) -> Result<URL, ConnectionRemovalQuarantineFailure> {
+        guard let destination = directory ?? hooks.defaultDirectory() else {
+            return .failure(.init(
+                kind: .transientOrVerificationFailed,
+                directoryPath: nil,
+                errorCode: nil,
+                usedAlternateDirectory: usedAlternateDirectory
+            ))
+        }
+
+        let failTransient: (Int32?) -> Result<URL, ConnectionRemovalQuarantineFailure> = { code in
+            .failure(.init(
+                kind: .transientOrVerificationFailed,
+                directoryPath: destination.path,
+                errorCode: code,
+                usedAlternateDirectory: usedAlternateDirectory
+            ))
+        }
+
+        let parentURL = destination.deletingLastPathComponent()
+        let parent = open(parentURL.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { return failTransient(errno) }
+        defer { close(parent) }
+
+        var parentInfo = stat()
+        let stickyBit: mode_t = 0o1000
+        guard fstat(parent, &parentInfo) == 0,
+              (parentInfo.st_uid == geteuid() && (parentInfo.st_mode & 0o002) == 0)
+              || (parentInfo.st_uid == 0 && (parentInfo.st_mode & stickyBit) != 0) else {
+            return failTransient(EACCES)
+        }
+
+        let directoryName = destination.lastPathComponent
+        guard mkdirat(parent, directoryName, 0o700) == 0 || errno == EEXIST else { return failTransient(errno) }
+        let folder = openat(parent, directoryName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard folder >= 0 else { return failTransient(errno) }
+        defer { close(folder) }
+
+        var info = stat()
+        guard fstat(folder, &info) == 0, info.st_uid == geteuid(), info.st_mode & 0o777 == 0o700 else {
+            return failTransient(EACCES)
+        }
+        let digest = SHA256.hash(data: raw).map { String(format: "%02x", $0) }.joined()
+        let name = "\(unreadableKeyPrefix).\(digest).bin"
+        let fileURL = destination.appendingPathComponent(name, isDirectory: false)
+        let flags = O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+        var file = openat(folder, name, flags)
+        if file < 0 {
+            guard errno == ENOENT else { return failTransient(errno) }
+            let writeErrno = writeQuarantineFile(raw, name: name, folder: folder, fileURL: fileURL, syncFD: hooks.syncFD)
+            guard writeErrno == 0 else { return failTransient(writeErrno) }
+            file = openat(folder, name, flags)
+        }
+        guard file >= 0 else { return failTransient(errno) }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: true)
+        defer { try? handle.close() }
+        guard fstat(file, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == geteuid(), info.st_mode & 0o777 == 0o600,
+              info.st_size == raw.count else {
+            return failTransient(EACCES)
+        }
+        // Flush the file, enforce F_FULLFSYNC on the target volume, flush directory entries, then read back.
+        let fileSyncErr = hooks.syncFD(file, fileURL)
+        guard fileSyncErr == 0 else { return failTransient(fileSyncErr) }
+        let fullSyncErr = hooks.fullFsync(file, destination)
+        if fullSyncErr != 0 {
+            let kind: ConnectionRemovalQuarantineFailureKind = isFullFsyncUnsupportedError(fullSyncErr)
+                ? .fullFsyncUnsupported
+                : .transientOrVerificationFailed
+            return .failure(.init(
+                kind: kind,
+                directoryPath: destination.path,
+                errorCode: fullSyncErr,
+                usedAlternateDirectory: usedAlternateDirectory
+            ))
+        }
+        for (fd, url) in [(folder, destination), (parent, parentURL)] {
+            let dirSyncErr = hooks.syncFD(fd, url)
+            guard dirSyncErr == 0 else { return failTransient(dirSyncErr) }
+        }
+        guard hooks.readBack(handle, fileURL) == raw else { return failTransient(EIO) }
+        return .success(fileURL)
+    }
+
+    private static func writeQuarantineFile(
+        _ raw: Data,
+        name: String,
+        folder: Int32,
+        fileURL: URL,
+        syncFD: @Sendable (Int32, URL) -> Int32
+    ) -> Int32 {
+        let temporary = ".\(UUID().uuidString).tmp"
+        let file = openat(folder, temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard file >= 0 else { return errno }
+        defer { _ = unlinkat(folder, temporary, 0) }
+        let handle = FileHandle(fileDescriptor: file, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: raw)
+            let syncErr = syncFD(file, fileURL)
+            guard syncErr == 0 else { return syncErr }
+            try handle.close()
+            return renameat(folder, temporary, folder, name) == 0 ? 0 : errno
+        } catch {
+            return errno != 0 ? errno : EIO
+        }
     }
 
     private static func strictInt(_ value: JSONValue?, min: Int) -> Int? {
