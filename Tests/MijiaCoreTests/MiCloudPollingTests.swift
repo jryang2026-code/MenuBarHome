@@ -32,6 +32,69 @@ struct MiCloudPollingTests {
         #expect(PollingPolicy.interval(for: PollingContext(panelVisible: false, systemActive: false)) == nil)
     }
 
+    @Test("Policy: an untouched closed panel stretches 60 s → 120 s after 30 min → 300 s after 2 h")
+    func policyIdleDecay() {
+        let touched = Date(timeIntervalSince1970: 1_000_000)
+
+        func makeContext(
+            idle: TimeInterval,
+            panelVisible: Bool = false,
+            systemActive: Bool = true,
+            lowPower: Bool = false,
+            safetyAlertsRelyOnPolling: Bool = false,
+            menuBarShowsLiveReading: Bool = false
+        ) -> (PollingContext, Date) {
+            (PollingContext(
+                panelVisible: panelVisible,
+                systemActive: systemActive,
+                lowPower: lowPower,
+                lastPanelInteractionAt: touched,
+                safetyAlertsRelyOnPolling: safetyAlertsRelyOnPolling,
+                menuBarShowsLiveReading: menuBarShowsLiveReading
+            ), touched.addingTimeInterval(idle))
+        }
+
+        let ladder: [(TimeInterval, Duration)] = [
+            (0, .seconds(60)),
+            (29 * 60, .seconds(60)),
+            (30 * 60, .seconds(120)),
+            (60 * 60, .seconds(120)),
+            (2 * 60 * 60 - 1, .seconds(120)),
+            (2 * 60 * 60, .seconds(300)),
+            (5 * 60 * 60, .seconds(300)),
+        ]
+        for (idle, expected) in ladder {
+            let (idleContext, idleNow) = makeContext(idle: idle)
+            #expect(PollingPolicy.interval(for: idleContext, now: idleNow) == expected)
+            // Low Power takes the longer of the two and never their product.
+            let (lowPowerContext, lowPowerNow) = makeContext(idle: idle, lowPower: true)
+            let lowPowerExpected: Duration = expected == .seconds(300) ? .seconds(300) : .seconds(180)
+            #expect(PollingPolicy.interval(for: lowPowerContext, now: lowPowerNow) == lowPowerExpected)
+        }
+
+        // An enabled safety alert (ADR-0023 §4) or a label the user keeps on screen holds 60 s.
+        let fiveHours: TimeInterval = 5 * 60 * 60
+        let (safety, safetyNow) = makeContext(idle: fiveHours, safetyAlertsRelyOnPolling: true)
+        #expect(PollingPolicy.interval(for: safety, now: safetyNow) == .seconds(60))
+        let (reading, readingNow) = makeContext(idle: fiveHours, menuBarShowsLiveReading: true)
+        #expect(PollingPolicy.interval(for: reading, now: readingNow) == .seconds(60))
+        let (both, bothNow) = makeContext(
+            idle: fiveHours,
+            safetyAlertsRelyOnPolling: true,
+            menuBarShowsLiveReading: true
+        )
+        #expect(PollingPolicy.interval(for: both, now: bothNow) == .seconds(60))
+
+        // An open panel stays at 6 s however long the idle clock says, and sleep still stops polling.
+        let (open, openNow) = makeContext(idle: fiveHours, panelVisible: true, lowPower: true)
+        #expect(PollingPolicy.interval(for: open, now: openNow) == .seconds(6))
+        let (asleep, asleepNow) = makeContext(idle: fiveHours, systemActive: false)
+        #expect(PollingPolicy.interval(for: asleep, now: asleepNow) == nil)
+
+        // Untracked interaction time keeps the old flat cadence.
+        #expect(PollingPolicy.interval(for: PollingContext(), now: touched.addingTimeInterval(fiveHours)) == .seconds(60))
+    }
+
     @Test("Closed panel waits; opening it polls at once and then often; sleep stops polling; waking polls again")
     func pacesWithContext() async throws {
         let api = StubMiCloudAPI(devices: [MiotFixtures.lightRecord], rooms: [], values: MiotFixtures.lightValues)
@@ -211,21 +274,65 @@ struct MiCloudPollingTests {
         store.setSystemActive(true)
         store.setLowPowerMode(true)
         store.setPanelVisible(false)
-        #expect(store.pollingContext == PollingContext(panelVisible: false, systemActive: true, lowPower: true))
+        #expect(!store.pollingContext.panelVisible)
+        #expect(store.pollingContext.systemActive)
+        #expect(store.pollingContext.lowPower)
+        // The store stamps the decay inputs itself: the idle clock moved off the launch stamp, the
+        // default menu-bar reading keeps the gate closed, and alerts are on by default.
+        #expect(store.pollingContext.lastPanelInteractionAt != nil)
+        #expect(store.pollingContext.menuBarShowsLiveReading)
+        #expect(store.pollingContext.safetyAlertsRelyOnPolling)
 
-        let expected = [
-            PollingContext(panelVisible: true),
-            PollingContext(panelVisible: true, systemActive: false),
-            PollingContext(panelVisible: true, systemActive: true),
-            PollingContext(panelVisible: true, systemActive: true, lowPower: true),
-            PollingContext(panelVisible: false, systemActive: true, lowPower: true),
+        // Forwarding is what this test covers. The idle clock is a `Date` stamped at each call, so
+        // compare the paced fields and check the gates on their own.
+        let expected: [[Bool]] = [
+            [true, true, false],
+            [true, false, false],
+            [true, true, false],
+            [true, true, true],
+            [false, true, true],
         ]
         var received: [PollingContext] = []
         for _ in 0..<300 {
             received = await mock.pollingContexts
-            if received.suffix(expected.count) == expected[...] { break }
+            if received.count >= expected.count { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(Array(received.suffix(expected.count)) == expected)
+        let receivedStyles = received.suffix(expected.count).map {
+            [$0.panelVisible, $0.systemActive, $0.lowPower]
+        }
+        #expect(Array(receivedStyles) == expected)
+    }
+
+    @MainActor
+    @Test("Decay gates follow the safety switches and the menu-bar display mode")
+    func storeDecayGates() throws {
+        let defaults = "test.polling.gates.\(UUID().uuidString)"
+        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: defaults)
+        defer { UserDefaults().removePersistentDomain(forName: defaults) }
+
+        #expect(store.safetyAlertsRelyOnPolling)
+        #expect(store.menuBarShowsLiveReading)
+
+        store.menuBarDisplayMode = .iconOnly
+        #expect(!store.menuBarShowsLiveReading)
+        #expect(!store.pollingContext.menuBarShowsLiveReading)
+
+        store.menuBarDisplayMode = .sensorTemperature
+        #expect(store.pollingContext.menuBarShowsLiveReading)
+
+        store.enableSafetyAlerts = false
+        #expect(!store.safetyAlertsRelyOnPolling)
+        #expect(!store.pollingContext.safetyAlertsRelyOnPolling)
+
+        // Turning the switch back on re-arms the full-speed cadence at once.
+        store.enableSafetyAlerts = true
+        #expect(store.pollingContext.safetyAlertsRelyOnPolling)
+
+        // Every alert kind off is what finally lets an idle poll stretch.
+        for kind in SensorAlertKind.allCases {
+            store.setSensorAlertEnabled(kind, false)
+        }
+        #expect(!store.pollingContext.safetyAlertsRelyOnPolling)
     }
 }
