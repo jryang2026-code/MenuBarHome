@@ -155,8 +155,12 @@ struct MiAccountDisableTests {
 
     @Test("Active backends, panel health, HA address changes, and per-account session expiry reflect account enablement")
     func activeBackendsPanelHealthHAAddressAndSessionExpiry() throws {
-        #expect(HomeBackendDescriptor.activeBackends(homeBackend: .xiaomiCloud, hasHASource: false, hasMiSource: true, isHAEnabled: true, isMiEnabled: false).isEmpty)
-        #expect(HomeBackendDescriptor.activeBackends(homeBackend: .xiaomiCloud, hasHASource: true, hasMiSource: true, isHAEnabled: true, isMiEnabled: false) == [.homeAssistant])
+        #expect(HomeBackendDescriptor.activeBackends(
+            homeBackend: .xiaomiCloud, configuredSources: [.xiaomiCloud], disabledSources: [.xiaomiCloud]
+        ).isEmpty)
+        #expect(HomeBackendDescriptor.activeBackends(
+            homeBackend: .xiaomiCloud, configuredSources: [.homeAssistant, .xiaomiCloud], disabledSources: [.xiaomiCloud]
+        ) == [.homeAssistant])
 
         let (store, defaults, _, _) = Self.makeSeededStore()
         #expect(store.activeBackends == [.xiaomiCloud] && store.activeConnectionScopes == [Self.cn.id, Self.de.id])

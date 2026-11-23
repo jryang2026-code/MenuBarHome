@@ -3,6 +3,8 @@ import Foundation
 /// `HomeProvider` over several Xiaomi accounts: one `MiCloudProvider` per account, merged into one
 /// panel listing whose devices and homes carry the account they came from.
 public actor MiAccountsProvider: HomeProvider {
+    public static let capabilities = MiCloudProvider.capabilities
+
     private enum ScopedSelection: Equatable, Sendable {
         case allHomes
         case home(String)
