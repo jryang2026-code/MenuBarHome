@@ -449,7 +449,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && (needs.changes.outputs.macos_build == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: macos-26-intel
-    timeout-minutes: 30
+    # A Package.swift change misses the cache key and invalidates the release build plan, so the
+    # whole of MijiaCore recompiles with -O. That cold build needs more than the 30 minutes a warm
+    # cache takes (#404 hit the cap while still compiling MijiaCore).
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
