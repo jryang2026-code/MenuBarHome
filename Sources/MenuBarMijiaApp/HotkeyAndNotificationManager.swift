@@ -45,6 +45,8 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private static let safetyCategoryId = "MIJIA_SAFETY_ALERT"
     private static let runMissedTimerActionId = "RUN_MISSED_TIMER_ACTION"
     private static let missedTimerCategoryId = "MIJIA_MISSED_TIMER"
+    /// Ties a banner back to the camera card it was about, so a tap can open that camera (#10).
+    static let doorbellDeviceIdKey = "doorbell_device_id"
 
     private override init() {
         super.init()
@@ -662,6 +664,9 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         store?.onMissedScheduledCommand = { [weak self] entry in
             self?.deliverMissedTimerNotification(for: entry)
         }
+        store?.onDoorbellNotification = { [weak self] event in
+            self?.deliverDoorbellNotification(event)
+        }
         store?.notifyMissedScheduledCommandsIfNeeded()
         Task { [weak self] in
             await self?.refreshNotificationPermission()
@@ -823,6 +828,64 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         UNUserNotificationCenter.current().add(request)
     }
 
+    /// A doorbell press as a banner with the camera's snapshot (#10).
+    ///
+    /// One request id per press comes from `DoorbellNotification`, the same dedupe key the
+    /// activity feed uses, so a duplicated report replaces the banner instead of stacking a second
+    /// one. The picture is fetched first, bounded to 2.5 s; a missing snapshot still posts the
+    /// notification without one.
+    private func deliverDoorbellNotification(_ event: DoorbellNotification) {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var picture: DoorbellNotificationThumbnail.Picture?
+            if let store = self.store,
+               let device = store.devices.first(where: { $0.id == event.deviceId }) {
+                picture = await DoorbellNotificationThumbnail.picture(for: device, store: store)
+            }
+
+            let content = self.notificationContent(for: .doorbell)
+            content.title = event.title
+            content.body = event.body
+            content.threadIdentifier = "doorbell"
+            content.userInfo = [Self.doorbellDeviceIdKey: event.deviceId]
+            // The chime switch already plays its own sound for this press; the banner does not
+            // need to double it. Every other ring gets the system sound.
+            if content.interruptionLevel != .passive, self.store?.doorbellChime != true {
+                content.sound = .default
+            }
+            if let picture {
+                content.attachments = [picture.attachment]
+            }
+            let request = UNNotificationRequest(
+                identifier: event.identifier,
+                content: content,
+                trigger: nil
+            )
+            // The system copies the attachment file when the request is added; the temp file is
+            // ours to clean up either way.
+            let pictureFile = picture?.fileURL
+            UNUserNotificationCenter.current().add(request) { _ in
+                if let pictureFile {
+                    try? FileManager.default.removeItem(at: pictureFile)
+                }
+            }
+        }
+    }
+
+    /// Then the tap opens the card and its live camera through the same entry points as
+    /// `menumijia://focus` (#10).
+    private func openDoorbellCamera(deviceId: String) {
+        guard let store else { return }
+        // Same order as `menumijia://focus`: move the panel to the card, then show it.
+        _ = store.focusRaycastDevice(deviceId: deviceId)
+        ensureMenuBarExtraWindowVisible()
+        guard let device = store.devices.first(where: { $0.id == deviceId }),
+              device.isOnline,
+              case .camera = device.kind else { return }
+        store.openCameraLiveView(device.id)
+    }
+
     private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
@@ -899,6 +962,14 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let alertId = response.notification.request.identifier
+        // A doorbell banner is not a pending alert: its tap opens the camera card (#10).
+        if let deviceId = response.notification.request.content.userInfo[Self.doorbellDeviceIdKey] as? String {
+            completionHandler()
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier {
+                openDoorbellCamera(deviceId: deviceId)
+            }
+            return
+        }
         if response.actionIdentifier == Self.turnOffActionId {
             defer { completionHandler() }
             guard let pending = pendingAlertsById[alertId] else {

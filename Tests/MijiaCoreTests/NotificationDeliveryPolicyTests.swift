@@ -30,6 +30,16 @@ struct NotificationDeliveryPolicyTests {
         expectPolicy(for: .weeklyHealthReport, ordinary: .passive, focused: .passive, score: 0)
     }
 
+    @Test("A doorbell press keeps its priority in Focus, below an alarm")
+    func doorbellKeepsDeliveryPriority() {
+        let withoutFocus = NotificationDeliveryPolicy.resolve(for: .doorbell, isFocusActive: false)
+        let withFocus = NotificationDeliveryPolicy.resolve(for: .doorbell, isFocusActive: true)
+        #expect(withoutFocus.interruptionLevel == .timeSensitive)
+        #expect(withFocus.interruptionLevel == .timeSensitive)
+        #expect(withoutFocus.relevanceScore == 0.9)
+        #expect(withFocus.relevanceScore == 0.9)
+    }
+
     private func expectPolicy(
         for category: NotificationCategory,
         ordinary: NotificationInterruptionLevel,

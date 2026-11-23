@@ -2491,13 +2491,25 @@ private struct PrivacySettingsTab: View {
 
                 SettingsToggleRow(
                     title: L10n.tr("门铃响时自动弹出摄像头画面", "Show the doorbell camera when it rings"),
-                    isOn: Binding(get: { store.doorbellAutoPopup }, set: { store.doorbellAutoPopup = $0 })
+                    isOn: Binding(
+                        get: { store.doorbellAutoPopup },
+                        set: { enabled in
+                            store.doorbellAutoPopup = enabled
+                            if enabled { askForNotificationsIfNeeded() }
+                        }
+                    )
                 )
                 .settingsRow(anchor: .doorbellAutoView)
 
                 SettingsToggleRow(
                     title: L10n.tr("门铃响时播放提示音", "Play a chime when the doorbell rings"),
-                    isOn: Binding(get: { store.doorbellChime }, set: { store.doorbellChime = $0 })
+                    isOn: Binding(
+                        get: { store.doorbellChime },
+                        set: { enabled in
+                            store.doorbellChime = enabled
+                            if enabled { askForNotificationsIfNeeded() }
+                        }
+                    )
                 )
                 .settingsRow(anchor: .doorbellChime)
 
