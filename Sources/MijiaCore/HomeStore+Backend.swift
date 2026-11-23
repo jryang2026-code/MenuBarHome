@@ -1175,7 +1175,7 @@ extension HomeStore {
             nextHAReplacement = (true, nil)
         }
         var nextMiReplacement: (shouldReplace: Bool, provider: MiAccountsProvider?) = (false, nil)
-        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revokedIDs: Set<String>)?
+        var miAccountsUpdate: (provider: MiAccountsProvider, accounts: [MiAccount], invalidateSnapshot: Bool, revocations: [String: UInt64])?
         var miAccountsChanged = false
         if wantsMi {
             let latestAccounts = loadActiveMiAccounts(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
@@ -1187,8 +1187,8 @@ extension HomeStore {
                 activeMiAccountsProvider?.markAccountEnabled(account.id)
             }
             let revokedIDs = Set(previousAccounts.map(\.id)).subtracting(enabledAccounts.map(\.id))
+            let revocations = dual.markXiaomiAccountsDisabled(revokedIDs)
             if !revokedIDs.isEmpty {
-                dual.markXiaomiAccountsDisabled(revokedIDs)
                 activeMiAccountsProvider?.markAccountsDisabled(revokedIDs)
             }
             miAccountsChanged = enabledAccounts.count != previousAccounts.count
@@ -1199,7 +1199,7 @@ extension HomeStore {
             if let existingMi = activeMiAccountsProvider {
                 if miAccountsChanged {
                     activeMiProviderAccounts = enabledAccounts
-                    miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty, revokedIDs)
+                    miAccountsUpdate = (existingMi, enabledAccounts, !keptAnyAccount && !enabledAccounts.isEmpty, revocations)
                 }
             } else {
                 let createdMi = makeMiAccountsProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
@@ -1246,7 +1246,7 @@ extension HomeStore {
                 await dual.setSourceProvider(nil, for: .xiaomiCloud)
             }
             if let u = miAccountsUpdate {
-                if !u.revokedIDs.isEmpty { await dual.revokeXiaomiAccountsGrace(u.revokedIDs) }
+                await dual.revokeXiaomiAccountsGrace(u.revocations)
                 if u.invalidateSnapshot { await dual.invalidateSnapshot(for: .xiaomiCloud) }
                 await u.provider.updateAccounts(u.accounts, configEpoch: targetMiEpoch)
             }
@@ -1586,7 +1586,7 @@ extension HomeStore {
         miAccounts = loadActiveMiAccounts()
         purgeRemovedAccountCapabilities(scopes: [id])
         let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
-        dual?.markXiaomiAccountDisabled(id)
+        let revocations = dual?.markXiaomiAccountDisabled(id) ?? [:]
         if !hasEnabledMiSource {
             dual?.markBackendDisabled(.xiaomiCloud)
         }
@@ -1653,7 +1653,7 @@ extension HomeStore {
                 let previousShutdown = providerShutdownTask
                 providerShutdownTask = Task {
                     await previousShutdown?.value
-                    await injectedDual.revokeXiaomiAccountGrace(accountID: id)
+                    await injectedDual.revokeXiaomiAccountsGrace(revocations)
                     if shouldRemoveMiSource {
                         await injectedDual.setSourceProvider(nil, for: .xiaomiCloud)
                     }

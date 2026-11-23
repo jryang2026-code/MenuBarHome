@@ -193,20 +193,16 @@ private final class DisabledXiaomiAccountsGate: @unchecked Sendable {
     private var disabled: Set<String> = []
     private var revocationVersions: [String: UInt64] = [:]
 
-    func markDisabled(_ accountID: String) {
-        guard !accountID.isEmpty else { return }
+    func markDisabled(_ accountIDs: Set<String>) -> [String: UInt64] {
         lock.withLock {
-            disabled.insert(accountID)
-            revocationVersions[accountID] = (revocationVersions[accountID] ?? 0) &+ 1
-        }
-    }
-
-    func markDisabled(_ accountIDs: Set<String>) {
-        lock.withLock {
+            var revocations: [String: UInt64] = [:]
             for accountID in accountIDs where !accountID.isEmpty {
                 disabled.insert(accountID)
-                revocationVersions[accountID] = (revocationVersions[accountID] ?? 0) &+ 1
+                let version = (revocationVersions[accountID] ?? 0) &+ 1
+                revocationVersions[accountID] = version
+                revocations[accountID] = version
             }
+            return revocations
         }
     }
 
@@ -570,11 +566,13 @@ public actor DualSourceHomeProvider: HomeProvider {
 
     /// Synchronously revokes grace eligibility for a disabled or signed-out Xiaomi account before
     /// async provider updates reach the actor, preventing cached pre-drop copies from being picked.
-    public nonisolated func markXiaomiAccountDisabled(_ accountID: String) {
-        disabledXiaomiAccountsGate.markDisabled(accountID)
+    @discardableResult
+    public nonisolated func markXiaomiAccountDisabled(_ accountID: String) -> [String: UInt64] {
+        markXiaomiAccountsDisabled([accountID])
     }
 
-    public nonisolated func markXiaomiAccountsDisabled(_ accountIDs: Set<String>) {
+    @discardableResult
+    public nonisolated func markXiaomiAccountsDisabled(_ accountIDs: Set<String>) -> [String: UInt64] {
         disabledXiaomiAccountsGate.markDisabled(accountIDs)
     }
 
@@ -582,30 +580,28 @@ public actor DualSourceHomeProvider: HomeProvider {
         disabledXiaomiAccountsGate.markEnabled(accountID)
     }
 
-    public func revokeXiaomiAccountGrace(accountID: String) {
-        revokeXiaomiAccountsGrace([accountID])
-    }
-
-    public func revokeXiaomiAccountsGrace(_ accountIDs: Set<String>) {
-        guard !accountIDs.isEmpty else { return }
-        _ = pruneRevokedXiaomiAccountGraceState()
-        for accountID in accountIDs {
-            miAccountPreDropDevices.removeValue(forKey: accountID)
-            miAccountOfflineSince.removeValue(forKey: accountID)
-            miAccountStatuses.removeValue(forKey: accountID)
-            miExpiredAccountIDs.remove(accountID)
-            miGracedAccountsInLastRecompute.remove(accountID)
+    public func revokeXiaomiAccountsGrace(_ revocations: [String: UInt64]) {
+        guard !isShutDown, !revocations.isEmpty else { return }
+        let (disabled, versions) = disabledXiaomiAccountsGate.snapshot()
+        let currentRevocations = revocations.filter { accountID, version in
+            disabled.contains(accountID) && versions[accountID] == version
         }
-        guard started, !isShutDown else { return }
+        guard !currentRevocations.isEmpty else { return }
+        applyXiaomiAccountRevocations(currentRevocations)
+        guard started else { return }
         emitStatus()
         emitSourceStatuses()
         emitLocalNetworkPermission()
         recompute()
     }
 
-    @discardableResult
     private func pruneRevokedXiaomiAccountGraceState() -> Set<String> {
         let (disabled, versions) = disabledXiaomiAccountsGate.snapshot()
+        applyXiaomiAccountRevocations(versions)
+        return disabled
+    }
+
+    private func applyXiaomiAccountRevocations(_ versions: [String: UInt64]) {
         for (accountID, version) in versions where appliedXiaomiRevocationVersions[accountID] != version {
             appliedXiaomiRevocationVersions[accountID] = version
             miAccountPreDropDevices.removeValue(forKey: accountID)
@@ -614,7 +610,6 @@ public actor DualSourceHomeProvider: HomeProvider {
             miExpiredAccountIDs.remove(accountID)
             miGracedAccountsInLastRecompute.remove(accountID)
         }
-        return disabled
     }
 
     /// Attaching without a generation requires the backend to still be enabled.

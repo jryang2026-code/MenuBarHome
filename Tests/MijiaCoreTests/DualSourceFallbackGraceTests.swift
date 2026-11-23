@@ -753,6 +753,47 @@ struct DualSourceFallbackGraceTests {
         }
     }
 
+    @Test("Delayed Xiaomi grace cleanup leaves a re-enabled account and later revocation to their own generation")
+    func staleXiaomiRevocationPreservesNewGrace() async throws {
+        try await withTeardown { teardown in
+            let rig = await makeRig(teardown, haStream: nil)
+            let accountID = "cn:grace-account"
+            let otherAccountID = "cn:other-account"
+            var device = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: "miot:\(Self.did):5")
+            device.accountId = accountID
+            var connected = home([device], identityID: Self.did)
+            connected.accountStatuses = [accountID: .connected, otherAccountID: .connected]
+            connected.deviceAccountIDs = [Self.did: [accountID]]
+
+            let staleRevocations = rig.provider.markXiaomiAccountDisabled(accountID)
+            rig.provider.markXiaomiAccountEnabled(accountID)
+            await rig.miMock.updateSnapshot(connected)
+            await waitUntil { await rig.collector.accountIsConnected(accountID) }
+
+            var disconnected = connected
+            disconnected.accountStatuses[accountID] = .disconnected("offline")
+            disconnected.devices[0].isOnline = false
+            await rig.miMock.updateSnapshot(disconnected)
+            await waitUntil {
+                let accountIsDisconnected = await rig.collector.accountIsDisconnected(accountID)
+                return accountIsDisconnected && rig.gate.waiting == 1
+            }
+            try #require(await rig.collector.backend(forCard: Self.haID) == .xiaomiCloud)
+
+            await rig.provider.revokeXiaomiAccountsGrace(staleRevocations)
+            #expect(rig.gate.waiting == 1)
+
+            let currentRevocations = rig.provider.markXiaomiAccountDisabled(accountID)
+            await rig.provider.revokeXiaomiAccountsGrace(staleRevocations)
+            #expect(rig.gate.waiting == 1)
+
+            await rig.provider.revokeXiaomiAccountsGrace(currentRevocations)
+            #expect(rig.gate.waiting == 0)
+            await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+            #expect(await rig.collector.accountIsConnected(otherAccountID))
+        }
+    }
+
     @MainActor
     @Test("Signing out or disabling a Xiaomi account during grace revokes its cached copy and fails over to HA")
     func revokingOrDisablingMiAccountDuringGraceEvictsCachedCopyAndFailsOverToHA() async throws {

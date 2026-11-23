@@ -895,7 +895,7 @@ extension HomeStore {
     private func applyMiAccountDisabledRuntimeState(id: String) {
         dropMiotTypePruneReport(scope: id)
         let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
-        dual?.markXiaomiAccountDisabled(id)
+        let revocations = dual?.markXiaomiAccountDisabled(id) ?? [:]
         if !hasEnabledMiSource {
             dual?.markBackendDisabled(.xiaomiCloud)
         }
@@ -990,7 +990,7 @@ extension HomeStore {
             let previousShutdown = providerShutdownTask
             providerShutdownTask = Task {
                 await previousShutdown?.value
-                await dual.revokeXiaomiAccountGrace(accountID: id)
+                await dual.revokeXiaomiAccountsGrace(revocations)
                 if shouldRemoveMiSource {
                     await dual.setSourceProvider(nil, for: .xiaomiCloud)
                 }
