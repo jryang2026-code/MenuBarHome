@@ -21,6 +21,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case hideOfflineDevices
     case hideGroupedLights
     case quickScenesBar
+    case homeSummaryRow
     case voiceInput
     case soundFeedback
     case launchAtLogin
@@ -89,7 +90,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     var tab: SettingsTab {
         switch self {
         case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .menuBarPinnedReadouts, .compactGrid,
-             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .voiceInput,
+             .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .homeSummaryRow, .voiceInput,
              .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
              .scheduledCommands, .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
@@ -293,6 +294,9 @@ enum SettingsSearch {
             entry(.quickScenesBar, section: generalSection,
                   zhTitle: "输入框里显示快捷场景", enTitle: "Show Scenes Under the Input",
                   synonyms: ["快捷场景", "场景栏", "输入框", "quick action", "scene bar", "shortcut"]),
+            entry(.homeSummaryRow, section: generalSection,
+                  zhTitle: "面板顶部显示「我家现在」摘要行", enTitle: "Show Home Summary Row",
+                  synonyms: ["摘要", "我家现在", "胶囊", "状态行", "summary", "home summary", "capsules", "chips"]),
             entry(.voiceInput, section: generalSection, zhTitle: "语音输入", enTitle: "Voice Input",
                   synonyms: ["语音", "麦克风", "说话", "听写", "长按说话", "录音", "voice", "mic",
                              "microphone", "speech", "dictation", "hold to talk"]),

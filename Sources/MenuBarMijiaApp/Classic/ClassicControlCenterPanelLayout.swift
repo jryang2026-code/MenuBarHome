@@ -328,7 +328,9 @@ extension ClassicControlCenterPanel {
             orderedOnline: allOrderedOnline,
             listCut: store.listCut,
             isExpanded: isLongTailExpanded,
-            keepingVisibleIds: keepIds
+            keepingVisibleIds: keepIds,
+            pinnedIds: store.favoriteDeviceIds,
+            slotSize: { tileSize($0).overviewSlotSize }
         )
         let visibleSet = Set(slice.visible.map(\.id))
         let slicedSections: [PageSection] = rawSections.compactMap { section in

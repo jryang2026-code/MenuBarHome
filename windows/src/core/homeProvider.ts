@@ -3,7 +3,7 @@ import { HaBlockedRequestError, getHaScopeLifecyclePhase, haConnectionScope } fr
 import type { HomeAssistantClient } from "./homeAssistant.js";
 import { MiotCommandMapper, miotShortName, propKeyString } from "./miCloudClient.js";
 import type { MiCloudClient, MiotSpecResolver } from "./miCloudClient.js";
-import { readMiotPower, type DeviceCommand, type SmartDevice } from "./models.js";
+import { readMiotPower, type DeviceCommand, type SmartDevice, type SynthesizedHome } from "./models.js";
 
 export interface ExecuteOptions {
   /** Read the power property back after a power write, on a backend that can read one property. */
@@ -16,17 +16,21 @@ export interface ExecuteOptions {
   readonly beforeSend?: () => void;
 }
 
-/**
- * One connection backend (ADR-0020). The panel sends a command through this without knowing which
- * backend is behind it. Mirrors `HomeProvider` in `Sources/MijiaCore/HomeProvider.swift`; methods
- * are added as their callers move behind it.
- */
-export interface HomeProvider {
+/** The dispatch surface shared by all built-in sources (ADR-0020). */
+export interface HomeCommandProvider {
   /**
    * Sends one command. Resolves to the power state read back after the write when
    * `readBackPower` was asked for and the backend could read it, otherwise to null.
    */
   execute(command: DeviceCommand, options?: ExecuteOptions): Promise<boolean | null>;
+}
+
+export type HomeProviderEvent = { readonly kind: "snapshotUpdated"; readonly home: SynthesizedHome };
+
+export interface HomeProvider extends HomeCommandProvider {
+  snapshot(): Promise<SynthesizedHome>;
+  /** Observes successful snapshot reads through this provider. Returns an unsubscribe function. */
+  subscribe(listener: (event: HomeProviderEvent) => void): () => void;
 }
 
 /** Capabilities of the built-in Windows backends, including operations outside the command wrapper. */
@@ -44,7 +48,7 @@ export class PowerReadBackError extends Error {
 }
 
 /** The built-in virtual home: nothing is sent. */
-export class DemoHomeProvider implements HomeProvider {
+export class DemoHomeProvider implements HomeCommandProvider {
   async execute(): Promise<null> {
     return null;
   }
@@ -54,12 +58,27 @@ export class HomeAssistantProvider implements HomeProvider {
   static readonly capabilities: ReadonlySet<HomeProviderCapability> = new Set([
     "readSnapshot", "control", "scenes", "cameras",
   ]);
+  private readonly events = new EventTarget();
 
   /** `ready` settles once the endpoint the client talks to has been accepted by the native side. */
   constructor(
-    private readonly client: Pick<HomeAssistantClient, "execute"> & { readonly baseURL?: string },
+    private readonly client: Pick<HomeAssistantClient, "execute" | "snapshot"> & { readonly baseURL?: string },
     private readonly ready: Promise<unknown> = Promise.resolve(),
   ) {}
+
+  async snapshot(): Promise<SynthesizedHome> {
+    await this.ready;
+    const home = await this.client.snapshot();
+    const event: HomeProviderEvent = { kind: "snapshotUpdated", home };
+    this.events.dispatchEvent(new CustomEvent(event.kind, { detail: event }));
+    return home;
+  }
+
+  subscribe(listener: (event: HomeProviderEvent) => void): () => void {
+    const receive = (event: Event): void => listener((event as CustomEvent<HomeProviderEvent>).detail);
+    this.events.addEventListener("snapshotUpdated", receive);
+    return () => this.events.removeEventListener("snapshotUpdated", receive);
+  }
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<null> {
     const scope = this.client.baseURL ? haConnectionScope(this.client.baseURL) : null;
@@ -83,7 +102,7 @@ export interface MiCloudProviderDependencies {
   readonly deviceForEntity: (entityId: string) => SmartDevice | undefined;
 }
 
-export class MiCloudProvider implements HomeProvider {
+export class MiCloudProvider implements HomeCommandProvider {
   static readonly capabilities: ReadonlySet<HomeProviderCapability> = new Set([
     "readSnapshot", "control", "cameras",
   ]);

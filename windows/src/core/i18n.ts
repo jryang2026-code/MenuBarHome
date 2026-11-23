@@ -1099,6 +1099,15 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "1 台设备暂不支持显示": ["1 台设备暂不支持显示", "1 device not supported yet"],
   "{count} 台设备暂不支持显示": ["{count} 台设备暂不支持显示", "{count} devices not supported yet"],
   "在设置中查看未能显示的设备": ["在设置中查看未能显示的设备", "View devices not shown in Settings"],
+  "面板顶部显示「我家现在」摘要行": ["面板顶部显示「我家现在」摘要行", "Show Home Summary Row"],
+  "我家现在摘要": ["我家现在摘要", "Home Summary"],
+  "1 条告警": ["1 条告警", "1 alert"],
+  "{count} 条告警": ["{count} 条告警", "{count} alerts"],
+  "1 盏灯开着": ["1 盏灯开着", "1 light on"],
+  "{count} 盏灯开着": ["{count} 盏灯开着", "{count} lights on"],
+  "1 处门窗开着": ["1 处门窗开着", "1 door/window open"],
+  "{count} 处门窗开着": ["{count} 处门窗开着", "{count} doors/windows open"],
+  "室内 {temp}°": ["室内 {temp}°", "Indoor {temp}°"],
 };
 
 /** Every catalog key, for tests and tooling. */

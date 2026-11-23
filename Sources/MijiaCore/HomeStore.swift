@@ -340,6 +340,10 @@ public final class HomeStore {
         didSet { HomePreferences.showQuickActionsBar.save(showQuickActionsBar, to: userDefaults) }
     }
 
+    public var showHomeSummaryRow: Bool {
+        didSet { HomePreferences.showHomeSummaryRow.save(showHomeSummaryRow, to: userDefaults) }
+    }
+
     /// Mirror devices, rooms and scenes into the system Spotlight index (#575). Off by default.
     public var spotlightIndexEnabled: Bool {
         didSet {
@@ -1447,6 +1451,7 @@ public final class HomeStore {
         self.awayGap = MacAwayGap(includesAway: ud.bool(forKey: MacAwayGap.storageKey))
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
+        self.showHomeSummaryRow = HomePreferences.showHomeSummaryRow.load(from: ud)
         self.spotlightIndexEnabled = HomePreferences.spotlightIndexEnabled.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
         self.menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(HomePreferences.menuBarPinnedReadouts.load(from: ud))

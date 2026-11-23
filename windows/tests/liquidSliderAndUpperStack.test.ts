@@ -71,6 +71,7 @@ describe("SliderStepSnap & LiquidGlassSlider 28px Pill Track", () => {
     assert.equal(dispatched.some((c) => c.kind === "setLightBrightness" && c.percent === 84), true);
 
     app.expandedDeviceId = "light.living_ceiling";
+    app.isLongTailExpanded = true;
     app.render();
     const kelvinInput = element<HTMLInputElement>('input[data-colortemp="light.living_ceiling"]');
     const kelvinWrap = kelvinInput.closest<HTMLElement>(".cc-liquid-slider")!;

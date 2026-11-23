@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "name": "empty home hides entire row",
+      "devices": [],
+      "alerts": [],
+      "lightMarkedSwitchIds": [],
+      "expected": []
+    },
+    {
+      "name": "all off and offline devices hide entire row",
+      "devices": [
+        { "id": "l1", "kind": "light", "isOnline": true, "isOn": false },
+        { "id": "l2", "kind": "light", "isOnline": false, "isOn": true },
+        { "id": "c1", "kind": "cover", "isOnline": true, "positionPercent": 0 },
+        { "id": "s1", "kind": "sensor", "isOnline": false, "temperature": 25.0 }
+      ],
+      "alerts": [],
+      "lightMarkedSwitchIds": [],
+      "expected": []
+    },
+    {
+      "name": "full summary with critical alert, lights, covers, contact sensor, and averaged indoor temp",
+      "devices": [
+        { "id": "l1", "kind": "light", "isOnline": true, "isOn": true },
+        { "id": "l2", "kind": "light", "isOnline": true, "isOn": true },
+        { "id": "sw1", "kind": "plug", "isOnline": true, "isOn": true },
+        { "id": "sw2", "kind": "plug", "isOnline": true, "isOn": true },
+        { "id": "cov1", "kind": "cover", "isOnline": true, "positionPercent": 60 },
+        { "id": "door1", "kind": "sensor", "isOnline": true, "contactAlarming": true },
+        { "id": "temp1", "kind": "sensor", "isOnline": true, "temperature": 23.4 },
+        { "id": "temp2", "kind": "sensor", "isOnline": true, "temperature": 24.6 }
+      ],
+      "alerts": [
+        { "id": "sensor:contact:door1:1", "deviceId": "door1" },
+        { "id": "sensor:leak:bath1:2", "deviceId": "bath1" }
+      ],
+      "lightMarkedSwitchIds": ["sw1"],
+      "expected": [
+        {
+          "kind": "alerts",
+          "count": 2,
+          "alertSeverity": "alert",
+          "targetDeviceIds": ["door1", "bath1"],
+          "filterTag": null
+        },
+        {
+          "kind": "lightsOn",
+          "count": 3,
+          "alertSeverity": null,
+          "targetDeviceIds": ["l1", "l2", "sw1"],
+          "filterTag": "light"
+        },
+        {
+          "kind": "doorsOpen",
+          "count": 2,
+          "alertSeverity": null,
+          "targetDeviceIds": ["cov1", "door1"],
+          "filterTag": "cover"
+        },
+        {
+          "kind": "indoorTemp",
+          "count": 2,
+          "temperatureCelsius": 24.0,
+          "alertSeverity": null,
+          "targetDeviceIds": ["temp1", "temp2"],
+          "filterTag": "sensor"
+        }
+      ]
+    },
+    {
+      "name": "warning-only alerts use warning severity and climate fallback supplies indoor temp",
+      "devices": [
+        { "id": "ac1", "kind": "climate", "isOnline": true, "currentTemperature": 26.2 },
+        { "id": "door1", "kind": "sensor", "isOnline": true, "contactAlarming": true }
+      ],
+      "alerts": [
+        { "id": "sensor:contact:door1:1", "deviceId": "door1" }
+      ],
+      "lightMarkedSwitchIds": [],
+      "expected": [
+        {
+          "kind": "alerts",
+          "count": 1,
+          "alertSeverity": "warning",
+          "targetDeviceIds": ["door1"],
+          "filterTag": null
+        },
+        {
+          "kind": "doorsOpen",
+          "count": 1,
+          "alertSeverity": null,
+          "targetDeviceIds": ["door1"],
+          "filterTag": "sensor"
+        },
+        {
+          "kind": "indoorTemp",
+          "count": 1,
+          "temperatureCelsius": 26.2,
+          "alertSeverity": null,
+          "targetDeviceIds": ["ac1"],
+          "filterTag": "climate"
+        }
+      ]
+    },
+    {
+      "name": "plug marked as light without native lights filters to plug",
+      "devices": [
+        { "id": "sw1", "kind": "plug", "isOnline": true, "isOn": true }
+      ],
+      "alerts": [],
+      "lightMarkedSwitchIds": ["sw1"],
+      "expected": [
+        {
+          "kind": "lightsOn",
+          "count": 1,
+          "alertSeverity": null,
+          "targetDeviceIds": ["sw1"],
+          "filterTag": "plug"
+        }
+      ]
+    }
+  ]
+}
