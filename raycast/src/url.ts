@@ -39,14 +39,18 @@ export async function runCommand(
 }
 
 export async function runCommandWithToast(route: string, params: CommandParams = []): Promise<void> {
+  // A control round-trip takes 0.3–1 s through the app, so show an animated toast first instead of
+  // leaving the user with no feedback until the result lands.
+  const toast = await showToast({ style: Toast.Style.Animated, title: "Running…" });
   try {
     const result = await runCommand(route, params);
-    await showToast({
-      style: result.isError ? Toast.Style.Failure : Toast.Style.Success,
-      title: result.message || (result.isError ? "The command failed" : "Done"),
-    });
+    toast.style = result.isError ? Toast.Style.Failure : Toast.Style.Success;
+    toast.title = result.message || (result.isError ? "The command failed" : "Done");
+    toast.message = undefined;
   } catch (error) {
-    await showToast({ style: Toast.Style.Failure, title: "MenuBarHome", message: errorMessage(error) });
+    toast.style = Toast.Style.Failure;
+    toast.title = "MenuBarHome";
+    toast.message = errorMessage(error);
   }
 }
 
