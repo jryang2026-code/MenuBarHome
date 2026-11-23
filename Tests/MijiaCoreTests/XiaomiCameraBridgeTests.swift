@@ -196,7 +196,7 @@ struct XiaomiCameraBridgeTests {
         let pid = proc.processIdentifier
         defer {
             if proc.isRunning {
-                XiaomiCameraBridge.terminateProcess(pid, force: true)
+                _ = kill(pid, SIGKILL)
             }
         }
 
@@ -207,7 +207,7 @@ struct XiaomiCameraBridgeTests {
         #expect(FileManager.default.fileExists(atPath: readyFile.path))
         #expect(XiaomiCameraBridge.processIsAlive(pid))
 
-        await XiaomiCameraBridge.terminateOwnedPID(pid, pollInterval: .milliseconds(15), maxPolls: 4)
+        await SupervisedProcess.terminate(pid: pid) { proc.isRunning }
         proc.waitUntilExit()
         #expect(!XiaomiCameraBridge.processIsAlive(pid))
     }
