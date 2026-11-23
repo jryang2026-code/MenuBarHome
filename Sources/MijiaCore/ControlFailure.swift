@@ -65,7 +65,7 @@ enum ControlFailure: Sendable {
         }
     }
 
-    private static func classify(_ error: Error) -> ControlFailure? {
+    static func classify(_ error: Error) -> ControlFailure? {
         if isCancellation(error) { return nil }
         if error is ManualWriteNeedsCoverConfirmation { return .coverNeedsConfirmation }
         if error is ManualWriteNeedsFacetConfirmation { return .facetNeedsConfirmation }
@@ -108,10 +108,10 @@ enum ControlFailure: Sendable {
     /// Only statuses that mean "no answer from the service itself" are network errors. A plain 500 is the
     /// service (or a Home Assistant integration) reporting its own failure, so it keeps the generic copy.
     private static func failure(forHTTPStatus status: Int, authFailure: ControlFailure) -> ControlFailure? {
-        switch status {
-        case 401, 403: return authFailure
-        case 429: return .rateLimited
-        case 408, 502, 503, 504: return .network
+        switch AdapterErrorCode(httpStatus: status) {
+        case .authExpired: return authFailure
+        case .rateLimited: return .rateLimited
+        case .unreachable: return .network
         default: return nil
         }
     }

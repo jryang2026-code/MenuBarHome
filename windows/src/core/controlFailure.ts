@@ -120,16 +120,16 @@ function classifyHttpStatus(
   status: number,
   authKind: "sessionExpired" | "tokenRejected",
 ): ClassifiedControlFailure | null {
-  if (status === 401 || status === 403) {
-    return { kind: authKind, isCancellation: false };
+  switch (adapterErrorCodeForHttpStatus(status)) {
+    case "authExpired":
+      return { kind: authKind, isCancellation: false };
+    case "rateLimited":
+      return { kind: "rateLimited", isCancellation: false };
+    case "unreachable":
+      return { kind: "network", isCancellation: false };
+    default:
+      return null;
   }
-  if (status === 429) {
-    return { kind: "rateLimited", isCancellation: false };
-  }
-  if (status === 408 || status === 502 || status === 503 || status === 504) {
-    return { kind: "network", isCancellation: false };
-  }
-  return null;
 }
 
 function parseHttpStatusFromMessage(message: string): number | null {
@@ -396,6 +396,67 @@ export function classifyControlFailure(
     return { kind: "deviceOffline", isCancellation: false };
   }
   return direct;
+}
+
+export type AdapterErrorCode =
+  | "authExpired"
+  | "unreachable"
+  | "rateLimited"
+  | "unsupported"
+  | "deviceOffline"
+  | "unknown";
+
+function adapterErrorCodeForHttpStatus(status: number | null): AdapterErrorCode {
+  switch (status) {
+    case 401:
+    case 403:
+      return "authExpired";
+    case 408:
+    case 502:
+    case 503:
+    case 504:
+      return "unreachable";
+    case 429:
+      return "rateLimited";
+    case 501:
+      return "unsupported";
+    default:
+      return "unknown";
+  }
+}
+
+export function adapterErrorCode(error: unknown): AdapterErrorCode {
+  const shape = extractErrorShape(error);
+  const { message, status } = shape;
+  const httpStatus = error instanceof MiCloudError && error.kind === "http"
+    ? error.code ?? null
+    : status ?? parseHttpStatusFromMessage(message);
+  if (
+    adapterErrorCodeForHttpStatus(httpStatus) === "unsupported" ||
+    message.startsWith("Unsupported ") ||
+    message === "Scenes are not Miot device properties" ||
+    message === "setMiotProperty is a Xiaomi-only command"
+  ) {
+    return "unsupported";
+  }
+  // The native HA bridge rejects with strings. Keep its diagnostics intact.
+  if (/^Home Assistant (?:connection failed\b|disconnected$|send failed$)/.test(message)) {
+    return "unreachable";
+  }
+  switch (classifyRawError(error, shape)?.kind) {
+    case "sessionExpired":
+    case "signedOut":
+    case "tokenRejected":
+      return "authExpired";
+    case "network":
+      return "unreachable";
+    case "rateLimited":
+      return "rateLimited";
+    case "deviceOffline":
+      return "deviceOffline";
+    default:
+      return "unknown";
+  }
 }
 
 function controlFailureVerb(deviceName: string, adjustment = false): string {

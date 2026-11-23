@@ -365,8 +365,10 @@ final class MenuBarPanelController: NSObject {
         ) {
             let active = HomeBackendDescriptor.activeBackends(
                 homeBackend: homeBackend,
-                hasHASource: hasHASource,
-                hasMiSource: hasMiSource
+                configuredSources: Set([
+                    hasHASource ? .homeAssistant : nil,
+                    hasMiSource ? .xiaomiCloud : nil,
+                ].compactMap { $0 })
             )
             isDemo = active.contains(.demo)
             includesHomeAssistant = active.contains(.homeAssistant)
