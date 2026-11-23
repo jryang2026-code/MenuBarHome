@@ -443,6 +443,28 @@ def validate_claims_document(
     return errs
 
 
+def validate_resource_copies() -> list[str]:
+    """Both Swift packages must copy every shared document the runtime decodes.
+
+    `Package.swift` alone is not enough: `scripts/linux-check/Package.swift` lists its resources
+    again, and forgetting a document there traps on `DeviceClaims.shared` under `linux-core` (#440).
+    """
+    errs: list[str] = []
+    for label, path in (
+        ("Package.swift", ROOT / "Package.swift"),
+        ("scripts/linux-check/Package.swift", ROOT / "scripts/linux-check/Package.swift"),
+    ):
+        try:
+            text = path.read_text("utf-8")
+        except OSError as exc:
+            errs.append(f"{label} 不可读: {exc}")
+            continue
+        for name in ("deviceLabels.json", "deviceClaims.json"):
+            if f'Resources/{name}' not in text:
+                errs.append(f"资源缺失: {label} 没有复制 Resources/{name}")
+    return errs
+
+
 def validate_divergence_ratchet(golden: Any, ladder_services: set[str]) -> list[str]:
     errs: list[str] = []
     if not isinstance(golden, dict):
@@ -510,6 +532,7 @@ def run_self_test() -> int:
 
     claims, swift_builders, ts_source, golden = load_claim_inputs()
     assert not validate_claims_document(claims, swift_builders, ts_source, golden), "基线认领清单应通过"
+    assert not validate_resource_copies(), "两个 Swift 包都应复制共享文档"
 
     def expect_claim_err(mutator: Any, keyword: str) -> None:
         doc = copy.deepcopy(claims)
@@ -561,6 +584,7 @@ def main() -> int:
             errors.append("副本不一致: Sources/MijiaCore/Resources/deviceLabels.json 必须与 Shared/deviceLabels.json 逐字节相同")
         claims, swift_builders, ts_source, golden = load_claim_inputs()
         errors.extend(validate_claims_document(claims, swift_builders, ts_source, golden))
+        errors.extend(validate_resource_copies())
         if SHARED_CLAIMS.read_bytes() != SWIFT_CLAIMS_COPY.read_bytes():
             errors.append("副本不一致: Sources/MijiaCore/Resources/deviceClaims.json 必须与 Shared/deviceClaims.json 逐字节相同")
     except Exception as exc:  # noqa: BLE001 - the message is the gate output
