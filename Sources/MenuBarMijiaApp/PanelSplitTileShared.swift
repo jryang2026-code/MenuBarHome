@@ -337,6 +337,7 @@ public struct PanelPrioritySnapshot: Equatable, Sendable {
 
 public enum PanelDeviceOrganizer {
     public static let initialOverviewLimit = 8
+    public static let initialOverviewSlotBudget = OverviewSlotBudget.defaultBudget
     public static let offlineSectionId = "offline"
 
     public struct Partition: Equatable, Sendable {
@@ -415,28 +416,41 @@ public enum PanelDeviceOrganizer {
         )
     }
 
-    /// Caps the initial `全部` (`listCut == .all`) overview at `limit` (8) online devices when >8
-    /// online devices exist, while keeping any focused/expanded device visible.
+    /// Caps the initial `全部` (`listCut == .all`) overview using size-weighted slot accounting
+    /// (`OverviewSlotBudget`, default 16 slots = 8 `half` tiles). Pinned items always appear;
+    /// remaining slots are filled in order, skipping oversized tiles when smaller ones fit.
     public static func overviewSlice(
         orderedOnline: [SmartDevice],
         listCut: DeviceListCut,
         isExpanded: Bool,
         keepingVisibleIds: Set<String>,
-        limit: Int = initialOverviewLimit
+        slotBudget: Int = initialOverviewSlotBudget,
+        pinnedIds: Set<String> = [],
+        slotSize: (SmartDevice) -> OverviewSlotSize = { _ in .half }
     ) -> OverviewSlice {
-        guard listCut == .all, orderedOnline.count > limit else {
+        guard listCut == .all else {
+            return OverviewSlice(visible: orderedOnline, hiddenCount: 0, showsLongTailControl: false)
+        }
+        let items = orderedOnline.map { dev in
+            OverviewSlotItem(
+                id: dev.id,
+                size: slotSize(dev),
+                isPinned: pinnedIds.contains(dev.id)
+            )
+        }
+        let budgetResult = OverviewSlotBudget.select(
+            items: items,
+            budget: slotBudget,
+            keepingVisibleIds: keepingVisibleIds
+        )
+        guard budgetResult.hasOverflow else {
             return OverviewSlice(visible: orderedOnline, hiddenCount: 0, showsLongTailControl: false)
         }
         if isExpanded {
             return OverviewSlice(visible: orderedOnline, hiddenCount: 0, showsLongTailControl: true)
         }
-        var visible: [SmartDevice] = []
-        visible.reserveCapacity(min(orderedOnline.count, limit + keepingVisibleIds.count))
-        for (index, dev) in orderedOnline.enumerated() {
-            if index < limit || keepingVisibleIds.contains(dev.id) {
-                visible.append(dev)
-            }
-        }
+        let visibleSet = Set(budgetResult.visibleIds)
+        let visible = orderedOnline.filter { visibleSet.contains($0.id) }
         let hidden = max(0, orderedOnline.count - visible.count)
         return OverviewSlice(
             visible: visible,

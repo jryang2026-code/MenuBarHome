@@ -513,6 +513,24 @@ public struct ControlCenterPanel: View {
                     if showsLessonRow {
                         OnboardingChecklistCard(store: store, onBeginSearch: { search.focus() })
                     }
+                    if store.showHomeSummaryRow, !search.isSearching, !isEditingLayout {
+                        let summary = store.homeSummary
+                        if !summary.isEmpty {
+                            HomeSummaryRowView(
+                                summary: summary,
+                                activeListCut: store.listCut,
+                                theme: .liquidGlass
+                            ) { capsule in
+                                HomeSummaryCapsuleRouter.handleTap(
+                                    capsule,
+                                    store: store,
+                                    expandActivities: { activitiesExpanded = true },
+                                    scrollToDevice: { pendingScrollToDeviceId = $0 }
+                                )
+                            }
+                            .transition(.opacity)
+                        }
+                    }
                     if search.isSearching {
                         searchResultsList(results: searchResults)
                     } else if store.visibleDevices.isEmpty {

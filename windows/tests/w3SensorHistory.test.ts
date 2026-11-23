@@ -539,6 +539,8 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
 
     const root = document.getElementById("app")!;
     const app = new MenuMijiaWindowsApp(root);
+    app.isLongTailExpanded = true;
+    app.render();
 
     const cardCollapsed = root.querySelector<HTMLElement>('[data-sensor-card="sensor.living_env"]');
     assert.ok(cardCollapsed);
@@ -801,6 +803,8 @@ describe("Sensor card inline SVG trend chart UI & interactions", () => {
 
     const root = document.getElementById("app")!;
     const app = new MenuMijiaWindowsApp(root);
+    app.isLongTailExpanded = true;
+    app.render();
 
     root.querySelector<HTMLElement>('[data-sensor-card="sensor.living_env"]')!.click();
     root.querySelector<HTMLButtonElement>('[data-sensor-window="sensor.living_env:7d"]')!.click();

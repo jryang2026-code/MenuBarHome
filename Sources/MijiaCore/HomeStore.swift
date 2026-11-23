@@ -335,6 +335,10 @@ public final class HomeStore {
         didSet { HomePreferences.showQuickActionsBar.save(showQuickActionsBar, to: userDefaults) }
     }
 
+    public var showHomeSummaryRow: Bool {
+        didSet { HomePreferences.showHomeSummaryRow.save(showHomeSummaryRow, to: userDefaults) }
+    }
+
     public var favoriteDeviceIds: Set<String> {
         didSet {
             HomePreferences.favoriteDeviceIds.save(favoriteDeviceIds, to: userDefaults)
@@ -1431,6 +1435,7 @@ public final class HomeStore {
         self.awayGap = MacAwayGap(includesAway: ud.bool(forKey: MacAwayGap.storageKey))
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
+        self.showHomeSummaryRow = HomePreferences.showHomeSummaryRow.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
         self.menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(HomePreferences.menuBarPinnedReadouts.load(from: ud))
         self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)

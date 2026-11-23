@@ -855,6 +855,15 @@ private struct GeneralSettingsTab: View {
                 .settingsRow(anchor: .quickScenesBar)
 
                 SettingsToggleRow(
+                    title: L10n.tr("面板顶部显示「我家现在」摘要行", "Show Home Summary Row"),
+                    isOn: Binding(
+                        get: { store.showHomeSummaryRow },
+                        set: { store.showHomeSummaryRow = $0 }
+                    )
+                )
+                .settingsRow(anchor: .homeSummaryRow)
+
+                SettingsToggleRow(
                     title: L10n.tr("操作声音反馈", "Play Feedback Sounds"),
                     isOn: $soundFeedbackEnabled
                 )

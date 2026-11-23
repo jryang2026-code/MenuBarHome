@@ -12,6 +12,16 @@ extension HomeStore {
         devices.filter(\.isOnline).count
     }
 
+    public var homeSummary: HomeSummary {
+        let candidates = categoryVisibleDevices.filter { !hiddenDeviceIds.contains($0.id) }
+        let lightSwitches = Set(candidates.compactMap { isSwitchMarkedAsLight($0.id) ? $0.id : nil })
+        return HomeSummary.compute(
+            devices: candidates,
+            alerts: recentSafetyAlerts.map(\.alert),
+            lightMarkedSwitchIds: lightSwitches
+        )
+    }
+
     public var totalPowerWatts: Double {
         devices.reduce(0.0) { acc, dev in
             guard dev.isOnline, case .plug(let s) = dev.kind, s.isOn, s.countsInTotalPower else { return acc }

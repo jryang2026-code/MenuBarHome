@@ -29,6 +29,16 @@ public enum TileSize: String, CaseIterable, Identifiable, Sendable {
         case .panel: return "rectangle.expand.vertical"
         }
     }
+
+    public var overviewSlotSize: OverviewSlotSize {
+        switch self {
+        case .small: .small
+        case .auto, .half: .half
+        case .hero: .hero
+        case .full: .full
+        case .panel: .panel
+        }
+    }
 }
 
 /// Pure threshold resolver for the bottom-right corner arc resize gesture (#115).

@@ -6330,6 +6330,74 @@ html.is-settings-window #btn-close-settings {
   }
 }
 
+.cc-home-summary-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 2px 14px 6px;
+}
+
+.cc-home-summary-row::-webkit-scrollbar {
+  display: none;
+}
+
+.cc-home-summary-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+  background: var(--surface-pill, rgba(255, 255, 255, 0.08));
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.cc-home-summary-pill:hover {
+  background: var(--surface-pill-hover, rgba(255, 255, 255, 0.14));
+}
+
+.cc-home-summary-pill.is-alert {
+  color: #ff453a;
+  background: rgba(255, 69, 58, 0.14);
+  border-color: rgba(255, 69, 58, 0.42);
+  font-weight: 600;
+}
+
+.cc-home-summary-pill.is-warning {
+  color: #ff9f0a;
+  background: rgba(255, 159, 10, 0.14);
+  border-color: rgba(255, 159, 10, 0.36);
+}
+
+.cc-home-summary-pill.is-lightsOn .cc-home-summary-icon { color: #ff9f0a; }
+.cc-home-summary-pill.is-doorsOpen .cc-home-summary-icon { color: #5e5ce6; }
+.cc-home-summary-pill.is-indoorTemp .cc-home-summary-icon { color: #30b0c7; }
+
+.cc-home-summary-pill.is-active {
+  background: rgba(10, 132, 255, 0.18);
+  border-color: rgba(10, 132, 255, 0.55);
+  font-weight: 600;
+}
+
+.cc-home-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cc-home-summary-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
 @media (prefers-reduced-motion: reduce) {
   #app[data-panel-theme="classic"] {
     --spring-control: var(--ease-linear); --spring-reveal: var(--ease-linear);
@@ -6339,5 +6407,6 @@ html.is-settings-window #btn-close-settings {
   .cc-tab-indicator, #app[data-panel-theme="classic"] .cc-tile, #app[data-panel-theme="classic"] .cc-expander-grid,
   #app[data-panel-theme="classic"] .cc-liquid-thumb, #app[data-panel-theme="classic"] .cc-resize-handle,
   .cc-stack-backplate, .cc-upper-stack [data-upper-card-id],
+  .cc-home-summary-pill,
   .cc-long-tail-pill, .cc-offline-drawer-toggle, .cc-offline-drawer-chevron { transition-duration: 0ms !important; }
 }
