@@ -261,6 +261,19 @@ public enum AppleMotion {
         return resolve(.valueChange, reduceMotion: reduceMotion)
     }
 
+    /// Determines whether a slider `DragGesture(minimumDistance: 0)` event should track the pointer
+    /// with zero animation delay (`true`) vs. slide smoothly in ~180 ms (`false`, track click away from thumb).
+    public static func sliderIsPointerTracking(
+        wasTracking: Bool,
+        translation: CGSize,
+        touchDistanceFromThumb: CGFloat,
+        thumbHalfWidth: CGFloat
+    ) -> Bool {
+        if wasTracking { return true }
+        if hypot(translation.width, translation.height) > 1 { return true }
+        return touchDistanceFromThumb <= thumbHalfWidth
+    }
+
     /// Critically damped spring (damping ~ 0.94, response 0.26s) — smooth, interruptible, no distracting overshoot
     public static let snappySpring = standardAnimation(for: .snappy)
 
@@ -996,11 +1009,15 @@ public struct LiquidGlassSlider: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { drag in
                         guard isEnabled else { return }
+                        let tracking = AppleMotion.sliderIsPointerTracking(
+                            wasTracking: isPointerTracking,
+                            translation: drag.translation,
+                            touchDistanceFromThumb: abs(drag.location.x - thumbCenterX),
+                            thumbHalfWidth: thumbWidth / 2
+                        )
+                        isPointerTracking = tracking
                         if !isDragging {
-                            isPointerTracking = false
                             withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) { isDragging = true }
-                        } else {
-                            isPointerTracking = true
                         }
                         updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
                     }

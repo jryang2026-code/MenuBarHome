@@ -391,13 +391,17 @@ public struct ClassicLiquidGlassSlider: View {
                     DragGesture(minimumDistance: 0)
                         .onChanged { drag in
                             guard isEnabled else { return }
+                            let tracking = AppleMotion.sliderIsPointerTracking(
+                                wasTracking: isPointerTracking,
+                                translation: drag.translation,
+                                touchDistanceFromThumb: abs(drag.location.x - thumbCenterX),
+                                thumbHalfWidth: thumbWidth / 2
+                            )
+                            isPointerTracking = tracking
                             if !isDragging {
-                                isPointerTracking = false
                                 withAnimation(AppleMotion.resolve(.glassLens, reduceMotion: reduceMotion)) {
                                     isDragging = true
                                 }
-                            } else {
-                                isPointerTracking = true
                             }
                             updateValue(at: drag.location.x, in: width, thumbWidth: thumbWidth)
                         }

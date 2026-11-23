@@ -48,5 +48,37 @@ struct AppleMotionTests {
         #expect(AppleMotion.sliderProgressAnimation(isPointerTracking: true, reduceMotion: false) == nil)
         #expect(AppleMotion.sliderProgressAnimation(isPointerTracking: false, reduceMotion: true) == nil)
         #expect(AppleMotion.sliderProgressAnimation(isPointerTracking: true, reduceMotion: true) == nil)
+
+        // Track click away from thumb with zero translation animates (isPointerTracking == false).
+        #expect(AppleMotion.sliderIsPointerTracking(
+            wasTracking: false,
+            translation: .zero,
+            touchDistanceFromThumb: 60,
+            thumbHalfWidth: 11
+        ) == false)
+
+        // Touch-down on the thumb immediately tracks with zero delay.
+        #expect(AppleMotion.sliderIsPointerTracking(
+            wasTracking: false,
+            translation: .zero,
+            touchDistanceFromThumb: 5,
+            thumbHalfWidth: 11
+        ) == true)
+
+        // First movement beyond 1 pt tracks with zero delay even on the initial onChanged event.
+        #expect(AppleMotion.sliderIsPointerTracking(
+            wasTracking: false,
+            translation: CGSize(width: 4, height: 0),
+            touchDistanceFromThumb: 60,
+            thumbHalfWidth: 11
+        ) == true)
+
+        // Once tracking, subsequent events stay in zero-delay tracking mode.
+        #expect(AppleMotion.sliderIsPointerTracking(
+            wasTracking: true,
+            translation: .zero,
+            touchDistanceFromThumb: 60,
+            thumbHalfWidth: 11
+        ) == true)
     }
 }
