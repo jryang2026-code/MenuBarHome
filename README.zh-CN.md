@@ -18,7 +18,8 @@
 <p align="center">
   <b>不用掏手机，在电脑上就能管好整个家。</b><br>
   住在 Mac 菜单栏里的米家控制中心，也有 Windows 11 托盘版。<br>
-  用米家 App 扫一下码就能连上，不必先搭 Home Assistant。
+  用米家 App 扫一下码就能连上，不必先搭 Home Assistant。<br>
+  <sub>本项目原名 <b>MenuBarMijia</b>。</sub>
 </p>
 
 <p align="center">
@@ -64,7 +65,7 @@
 - **按住说话，松手就办。** 没有唤醒词，也不用等它回话。开关、调光、调温、定时这些常用说法在本机就能听懂，不填 AI Key 也能用。
 - **关错了能撤销。** 「全关」默认放过插座、扫地机和摄像机；关完之后点一下「撤销」，刚才亮着的灯原样回来。
 - **跟着你的 Mac 走。** 锁屏自动关灯，接上外接显示器打开台灯，日历里的会议快开始了就把灯调好。规则默认全关，开哪条由你决定。
-- **原生、安静。** macOS 版用 Swift 写成，不带浏览器内核；面板开着不操作时 CPU 占用约 0.1%。
+- **原生、安静。** macOS 版用 Swift 写成，不带浏览器内核；后台静置（面板关闭）时实测 CPU 占用约 1.2%，内存约 113 MB（详情见 [FAQ](docs/faq.zh-CN.md)）。
 
 ---
 
@@ -85,15 +86,42 @@ brew install --cask jryang2026-code/tap/menubarhome
 
 **macOS · 下载 DMG**
 
-从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载最新的 DMG，把 `MenuBarHome.app` 拖进「应用程序」。
+从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>.dmg`（例如 `MenuBarHome-1.4.0.dmg`），打开后将 `MenuBarHome.app` 拖进「应用程序」。
 
-> 本项目没有加入付费的 Apple 开发者计划，安装包未经公证。第一次打开如果被拦下，到 **「系统设置 → 隐私与安全性」** 页面底部点 **「仍要打开」** 就好。
+> 本项目没有加入付费的 Apple 开发者计划，安装包未经 Apple 公证。首次打开如果被 macOS Gatekeeper 拦截，按以下步骤放行：
+> 1. 双击打开 `/Applications/MenuBarHome.app`，弹出「无法验证开发者」或拦截提示时先点 **「完成」**（或 **「好」**）关闭弹窗。
+> 2. 在 macOS 15 及以上系统，打开 **「系统设置 → 隐私与安全性」**，向下滚动到「安全性」区域。
+> 3. 找到 `MenuBarHome` 被阻止的提示，点击 **「仍要打开」**，并在确认框中再次点击 **「仍要打开」** 后输入密码或使用触控 ID。
+> 4. **备选方式**：若仍无法打开或未看到「仍要打开」按钮，可在终端执行以下命令移除隔离属性：
+>    ```bash
+>    xattr -dr com.apple.quarantine /Applications/MenuBarHome.app
+>    ```
+
+校验 DMG 下载完整性（将输出哈希对照 Release 中的 `MenuBarHome-1.4.0.dmg.sha256`）：
+
+```bash
+shasum -a 256 MenuBarHome-1.4.0.dmg
+# 若同时下载了同名 .sha256 文件到同一目录，也可直接校验：
+shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+```
 
 **Windows 11**
 
-从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `.exe` 或 `.msi` 安装包。
+从 [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) 下载 `MenuBarHome-<版本>-windows-x64-setup.exe`（例如 `MenuBarHome-1.4.0-windows-x64-setup.exe`）或 `MenuBarHome-<版本>-windows-x64.msi`（例如 `MenuBarHome-1.4.0-windows-x64.msi`）。
 
-> 安装包没有商业代码签名证书。如果弹出「Windows 已保护你的电脑」，点 **「更多信息」→「仍要运行」**。每个版本的 SHA-256 都公布在 Releases 页面，可以自行核对。
+> 安装包没有商业代码签名证书。如果触发 Windows SmartScreen 拦截，按以下步骤放行：
+> 1. 弹出蓝色 **「Windows 已保护你的电脑」** 提示框时，点击文字下方的 **「更多信息」**。
+> 2. 在展开的窗口底部点击 **「仍要运行」** 继续安装。
+
+校验 Windows 安装包完整性（在 PowerShell 中运行，并将输出哈希与 Release 中的 `.sha256` 文件对照）：
+
+```powershell
+# 核对 EXE（对应 MenuBarHome-1.4.0-windows-x64-setup.exe.sha256）
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
+
+# 若下载的是 MSI（对应 MenuBarHome-1.4.0-windows-x64.msi.sha256）
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+```
 
 ### 2. 连接你的家
 
@@ -381,5 +409,6 @@ npm run build
 
 ## 常见问题（FAQ）
 
+- [首次打开被 macOS Gatekeeper 或 Windows SmartScreen 拦截怎么办？怎么校验安装包？](docs/faq.zh-CN.md#首次打开被-macos-gatekeeper-或-windows-smartscreen-拦截怎么办怎么校验安装包)
 - [占用多少内存和 CPU，怎么自己测？](docs/faq.zh-CN.md)
-- [Windows 11 端占用如何？](docs/faq.zh-CN.md)
+- [Windows 11 端占用如何？](docs/faq.zh-CN.md#windows-11-端占用如何)
