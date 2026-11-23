@@ -374,6 +374,7 @@ extension HomeStore {
             hasHASource = false
             explicitlyDisabledConnections.remove(.homeAssistant)
             capabilitySelection.enabledConnections.insert(.homeAssistant)
+            requireManualResumeAfterHARemoval()
             purgeRemovedAccountCapabilities(scopes: [record.scope])
             pendingHAAddressSuggestion = nil
             haPlaintextPrompt = nil

@@ -379,7 +379,10 @@ public enum DeviceDeduplicator {
         home.closesAwayGap = (homeAssistant?.closesAwayGap ?? true) && (xiaomiCloud?.closesAwayGap ?? true)
         home.isInitialLoadComplete = (homeAssistant?.isInitialLoadComplete ?? true) && (xiaomiCloud?.isInitialLoadComplete ?? true)
         var activeBackends: Set<HomeBackend> = []
-        if homeAssistant != nil && haConnected { activeBackends.insert(.homeAssistant) }
+        if homeAssistant != nil && haConnected {
+            activeBackends.insert(.homeAssistant)
+            home.homeAssistantScope = homeAssistant?.homeAssistantScope
+        }
         if xiaomiCloud != nil && miConnected { activeBackends.insert(.xiaomiCloud) }
         home.activeBackends = activeBackends
         home.deviceBackends = deviceBackends

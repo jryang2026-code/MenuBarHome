@@ -1537,6 +1537,7 @@ extension HomeStore {
         hasHASource = false
         explicitlyDisabledConnections.remove(.homeAssistant)
         capabilitySelection.enabledConnections.insert(.homeAssistant)
+        requireManualResumeAfterHARemoval()
         purgeRemovedAccountCapabilities(scopes: [removedScope])
         pendingHAAddressSuggestion = nil
         haPlaintextPrompt = nil
@@ -1709,6 +1710,7 @@ extension HomeStore {
         }
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
+        if trimmedToken.isEmpty { requireManualResumeAfterHARemoval() }
         // Only the connection-level flag carries the user's decision. `isHAConnectionEnabled` also
         // reads false for a scope-level turn-off left over from an earlier address, while adopting
         // the address below migrates the `ha:` scope back into `enabledConnectionScopes`. Taking the

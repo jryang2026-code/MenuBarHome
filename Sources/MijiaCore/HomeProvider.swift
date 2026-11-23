@@ -776,6 +776,10 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     private func publish(_ home: SynthesizedHome, force: Bool = false) {
+        var home = home
+        if home.homeAssistantScope == nil {
+            home.homeAssistantScope = ConnectionRemovalStore.haScope(serverURL: baseURLString)
+        }
         let report = snapshot.takeTypePruneReport()
         if let report {
             continuation?.yield(.haTypePruneChanged(report))
