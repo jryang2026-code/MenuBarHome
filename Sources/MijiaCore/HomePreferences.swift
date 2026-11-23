@@ -84,6 +84,8 @@ public enum HomePreferences {
     public static let blockControlWhileLocked = HomePreference.flag("block_control_while_locked", default: true)
     public static let sensorAlertsOnlyWhenAway = HomePreference.flag("safety_alert_only_when_away_v1", default: false)
     public static let menuBarTargetId = HomePreference.text(ViewPreferenceKeys.menuBarTargetId, default: { "auto:primary" })
+    /// Up to 2 optional pinned menu-bar readouts (default empty = no change for existing users).
+    public static let menuBarPinnedReadouts = HomePreference.idList(ViewPreferenceKeys.menuBarPinnedReadouts)
     public static let homeName = HomePreference.text("home_name", default: { KeychainHelper.localizedDefaultHomeName })
     public static let favoriteDeviceIds = HomePreference.idSet(ViewPreferenceKeys.favoriteDeviceIds)
     public static let favoriteOrder = HomePreference.idList(ViewPreferenceKeys.favoriteOrder)

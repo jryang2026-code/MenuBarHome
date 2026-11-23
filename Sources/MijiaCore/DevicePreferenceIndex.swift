@@ -23,6 +23,7 @@ public enum ViewPreferenceKeys {
     public static let cameraStreamQuality = "camera_stream_quality_v1"
     public static let lastManualLightId = "last_manual_light_id"
     public static let menuBarTargetId = "menubar_target_id"
+    public static let menuBarPinnedReadouts = "menubar_pinned_readouts"
     public static let canonicalDeviceIds = "dual_source_canonical_ids_v1"
     public static let pinnedDeviceSources = "dual_source_pinned_sources_v1"
     /// #104: wall switches the user marked as ordinary lights («这其实是灯»).
@@ -81,6 +82,11 @@ public enum DevicePreferenceIndex {
         if let target = defaults.string(forKey: ViewPreferenceKeys.menuBarTargetId) {
             for prefix in ["temp:", "temp_hum:"] where target.hasPrefix(prefix) {
                 add(String(target.dropFirst(prefix.count)))
+            }
+        }
+        if let pinned = defaults.stringArray(forKey: ViewPreferenceKeys.menuBarPinnedReadouts) {
+            for token in pinned {
+                add(MenuBarPinnedReadout.extractReferencedID(token))
             }
         }
         return ids

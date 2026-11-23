@@ -881,6 +881,37 @@ struct MenuBarPanelControllerTests {
         #expect(controller.labelSymbol == "waveform")
     }
 
+    @Test("Status bar icon stays template for normal and attention badges, red for safety alerts")
+    func statusBarImageTemplateAndBadgeModes() throws {
+        let normal = try #require(MenuBarPanelController.statusBarImage(for: MenuBarIconState(symbolName: "house.fill", badge: .none)))
+        #expect(normal.isTemplate)
+
+        let attention = try #require(MenuBarPanelController.statusBarImage(for: MenuBarIconState(symbolName: "house.slash", badge: .attention)))
+        #expect(attention.isTemplate)
+        #expect(attention.size.width >= 18)
+
+        let alert = try #require(MenuBarPanelController.statusBarImage(for: MenuBarIconState(symbolName: "house.fill", badge: .safetyAlert)))
+        #expect(!alert.isTemplate)
+    }
+
+    @Test("Status item reserves width for readouts and resets to variable length for icon-only")
+    func statusItemWidthStabilization() async throws {
+        let (store, _) = try await makeStore()
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        let item = try #require(controller.statusItem)
+        controller.syncStatusItem()
+        let reserved = try #require(controller.widthState.reservedWidth)
+        #expect(reserved > 0)
+        #expect(abs(item.length - CGFloat(reserved)) <= 0.5)
+
+        store.menuBarTargetId = "icon:only"
+        controller.syncStatusItem()
+        #expect(controller.widthState.reservedWidth == nil)
+        #expect(item.length == NSStatusItem.variableLength)
+    }
+
     @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
     func reopenDuringDismissal(reduced: Bool) async throws {
         // The slide-in dismissal this test drives belongs to the liquid-glass window.
