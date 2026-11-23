@@ -327,6 +327,7 @@ run_contract_checks() {
         "$PYTHON_BIN" scripts/check_doc_links.py
         "$PYTHON_BIN" scripts/check_capability_matrix.py
         "$PYTHON_BIN" scripts/check_capability_manifest.py
+        "$PYTHON_BIN" scripts/check_device_rules.py
         "$PYTHON_BIN" scripts/check_supported_devices.py
         "$PYTHON_BIN" scripts/check_windows_geometry.py
         "$PYTHON_BIN" scripts/go2rtc-ptz/check_model_tables.py
@@ -342,6 +343,7 @@ run_script_self_tests() {
         run_clean_env "$PYTHON_BIN" scripts/probe_lan_gateway.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/measure_footprint.py --self-test
         run_clean_env "$PYTHON_BIN" scripts/check_capability_manifest.py --self-test
+        run_clean_env "$PYTHON_BIN" scripts/check_device_rules.py --self-test
         run_clean_env bash scripts/test_ci_relevant_paths.sh
         run_clean_env bash scripts/test_check_release.sh
         run_clean_env bash scripts/test_nas_setup.sh
@@ -446,6 +448,7 @@ if [ "$CHANGED_ONLY" = "1" ]; then
                 "$PYTHON_BIN" scripts/check_doc_links.py
                 "$PYTHON_BIN" scripts/check_capability_matrix.py
                 "$PYTHON_BIN" scripts/check_capability_manifest.py
+                "$PYTHON_BIN" scripts/check_device_rules.py
                 "$PYTHON_BIN" scripts/check_supported_devices.py
             fi
             if [ "$SCOPE_WINDOWS" = "true" ]; then

@@ -1,136 +1,16 @@
 import { speechLocale, t } from "./i18n.js";
 import { formatTemperature } from "./temperature.js";
+import { deviceTypeLabel, deviceTypeSymbolName, facetLabel, familyFacetLabel } from "./deviceLabels.js";
 import type { FacetControl } from "./models.js";
 
 /**
  * Display text for a generic facet, shared by the generic card's readouts and the 更多设置 drawer
  * (#5, #6), so the card and the drawer cannot format the same value differently. Mirrors macOS
  * `MiotFacetText`.
+ *
+ * The Chinese titles and their English column live in `Shared/deviceLabels.json` (#11); this module
+ * only picks which one a row shows.
  */
-
-/** Common MIoT short names; a localized title here beats the spec's vendor description. */
-const FACET_TITLES: Readonly<Record<string, string>> = {
-  on: "开关",
-  mode: "模式",
-  "fan-level": "风速",
-  "fan-speed": "风速",
-  brightness: "亮度",
-  "color-temperature": "色温",
-  "target-temperature": "目标温度",
-  "target-temp": "目标温度",
-  temperature: "温度",
-  "relative-humidity": "湿度",
-  humidity: "湿度",
-  "target-humidity": "目标湿度",
-  "current-humidity": "当前湿度",
-  "pm2.5-density": "PM2.5",
-  "battery-level": "电量",
-  fault: "故障",
-  status: "状态",
-  volume: "音量",
-  mute: "静音",
-  "motion-detection": "移动侦测",
-  "detection-sensitivity": "侦测灵敏度",
-  "alarm-interval": "报警间隔",
-  "night-shot": "夜视",
-  "current-position": "当前位置",
-  "target-position": "目标位置",
-  "motor-control": "电机控制",
-  "motor-reverse": "电机方向",
-  "physical-controls-locked": "按键锁",
-  "indicator-light": "指示灯",
-  "default-power-on-state": "通电默认状态",
-  "soft-wind": "柔风",
-  "horizontal-swing": "左右摆风",
-  "vertical-swing": "上下摆风",
-  "heat-level": "加热档位",
-  "storage-free-space": "剩余空间",
-  "storage-total-space": "总空间",
-  "storage-used-space": "已用空间",
-  "left-time": "剩余时间",
-  "delay-off-time": "延时关闭",
-  "work-mode": "工作模式",
-  "privacy-mode": "隐私模式",
-};
-
-const FAMILY_FACET_TITLES: Readonly<Record<string, string>> = {
-  "water-pump": "水泵",
-  "pump-flux": "水泵档位",
-  "water-pump-status": "水泵状态",
-  "pump-alarm": "水泵告警",
-  "pump-fault-detection": "水泵故障检测",
-  "pet-food-out": "投喂",
-  "feeding-measure": "投喂份数",
-  "today-feeded-num": "今日已投喂",
-  "sum-fed-measure": "今日已投喂",
-  "feeding-quantity": "今日已投喂",
-  "eaten-food-measure": "已吃份数",
-  "feeding-cycle": "投喂周期",
-  "feeding-status": "投喂状态",
-  "feeding-alarm": "投喂告警",
-  "feeding-protection": "投喂保护",
-  "feeding-type": "投喂方式",
-  "pet-food-left-level": "余粮",
-  "target-feeding-measure": "目标份数",
-  "food-heap-value": "粮仓余量",
-  "post-feed-pump-pause": "投喂后停泵",
-  "post-feed-pump-state": "投喂后水泵",
-  "filter-life-level": "滤芯寿命",
-  "filter-left-time": "滤芯剩余",
-  "reset-filter-life": "重置滤芯",
-  "filter-alarm": "滤芯告警",
-  "water-alarm": "换水提醒",
-  "flow-speed-level": "流速",
-  "temp-warn-switch": "水温告警",
-  "temp-warn-min": "水温下限",
-  "temp-warn-max": "水温上限",
-  "temperature-warn-on": "水温告警",
-  "temperature-warn-min": "水温下限",
-  "temperature-warn-max": "水温上限",
-  "upper-temperature": "水温上限",
-  "lower-temperature": "水温下限",
-  "limit-alarm": "水温告警",
-  "desiccant-left-level": "干燥剂余量",
-  "desiccant-left-time": "干燥剂剩余",
-  "reset-desiccant-life": "重置干燥剂",
-  "no-disturb": "勿扰",
-  alarm: "告警",
-  "working-time": "运行时长",
-};
-
-/** Device-type labels for the generic card; an unlisted type is humanized instead. */
-const DEVICE_TYPE_TITLES: Readonly<Record<string, string>> = {
-  "fish-tank": "鱼缸",
-  "pet-feeder": "宠物喂食器",
-  router: "路由器",
-  gateway: "网关",
-  repeater: "信号放大器",
-  lock: "门锁",
-  scale: "体重秤",
-  "body-fat-scale": "体脂秤",
-  bracelet: "手环",
-  watch: "手表",
-  toothbrush: "牙刷",
-  treadmill: "跑步机",
-  massage: "按摩设备",
-  bed: "床",
-  mattress: "床垫",
-  pillow: "枕头",
-  sofa: "沙发",
-  mirror: "镜子",
-  shower: "淋浴",
-  toilet: "马桶",
-  "towel-rack": "毛巾架",
-  "car-seat": "儿童安全座椅",
-  tracker: "定位器",
-  projector: "投影仪",
-  television: "电视",
-  stb: "机顶盒",
-  stove: "燃气灶",
-  boiler: "壁挂炉",
-  clock: "时钟",
-  "coffee-machine": "咖啡机",
-};
 
 export function humanizedFacetName(raw: string): string {
   const words = raw.replaceAll("-", " ");
@@ -140,10 +20,10 @@ export function humanizedFacetName(raw: string): string {
 
 /** Row title: a known MIoT name, else the spec's own description, else the humanized name. */
 export function facetTitle(control: FacetControl): string {
-  const known = FACET_TITLES[control.name];
-  if (known) return t(known);
-  const family = FAMILY_FACET_TITLES[control.name];
-  if (family && speechLocale() !== "en-US") return family;
+  const known = facetLabel(control.name);
+  if (known) return speechLocale() === "en-US" ? known.en : t(known["zh-Hans"]);
+  const family = familyFacetLabel(control.name);
+  if (family && speechLocale() !== "en-US") return family["zh-Hans"];
   const raw = (control.title ?? "").trim();
   return raw.length > 0 ? raw : humanizedFacetName(control.name);
 }
@@ -240,63 +120,13 @@ export function facetValue(control: FacetControl): string {
 
 /** Device-type label for a generic card. */
 export function genericTypeTitle(deviceType: string): string {
-  const known = DEVICE_TYPE_TITLES[deviceType];
+  // English keeps the catalog lookup: most device types have no English entry yet, and the shared
+  // file's `en` column is staged for the follow-up that lands those titles (#11).
+  const known = deviceTypeLabel(deviceType)?.["zh-Hans"];
   return known ? t(known) : humanizedFacetName(deviceType);
 }
 
 /** A symbol name in the macOS vocabulary, so both cards pick the same glyph. */
 export function genericSymbolName(deviceType: string): string {
-  switch (deviceType) {
-    case "fish-tank":
-      return "fish.fill";
-    case "pet-feeder":
-      return "pawprint.fill";
-    case "router":
-    case "gateway":
-    case "repeater":
-      return "wifi";
-    case "lock":
-      return "lock.fill";
-    case "scale":
-    case "body-fat-scale":
-      return "scalemass.fill";
-    case "bracelet":
-    case "watch":
-      return "applewatch";
-    case "toothbrush":
-      return "mouth.fill";
-    case "treadmill":
-      return "figure.run";
-    case "bed":
-    case "mattress":
-    case "pillow":
-      return "bed.double.fill";
-    case "sofa":
-    case "chair":
-    case "massage":
-      return "chair.lounge.fill";
-    case "projector":
-      return "projector.fill";
-    case "television":
-    case "stb":
-      return "tv";
-    case "boiler":
-      return "water.waves";
-    case "shower":
-      return "drop.fill";
-    case "mirror":
-      return "rectangle.portrait.fill";
-    case "car-seat":
-      return "car.fill";
-    case "tracker":
-      return "location.fill";
-    case "bike":
-      return "bicycle";
-    case "clock":
-      return "clock.fill";
-    case "coffee-machine":
-      return "cup.and.saucer.fill";
-    default:
-      return "square.grid.2x2";
-  }
+  return deviceTypeSymbolName(deviceType);
 }
