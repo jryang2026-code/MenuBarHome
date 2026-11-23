@@ -17,7 +17,7 @@
 | [0011](0011-full-device-coverage.md) | 2026-11-05 | 已接受 | 按控制形状建模、`MiotFacet` 通用兜底与双端共享 `deviceProfiles.json` 覆盖层。 |
 | [0012](0012-releases-on-gitlab.md) | 2026-11-06 | 已被 ADR-0018 取代 | 过渡期将仓库、CI 与发布迁往 GitLab 的记录。 |
 | [0013](0013-raycast-companion-contract.md) | 2026-11-06 | 已接受 | Raycast / CLI / MCP 伴生端统一走只读快照 + `BridgeToken` URL Scheme。 |
-| [0014](0014-xiaomi-oauth2-mqtt-evaluation.md) | 2026-11-07 | 已接受 | 保留扫码 HTTP 直连 + HA 双后端，不迁往 `ha_xiaomi_home` 私有 OAuth2/MQTT。 |
+| [0014](0014-xiaomi-oauth2-mqtt-evaluation.md) | 2026-11-07 | 已接受（已修订） | 保留扫码 HTTP 直连 + HA 双后端，不迁往 `ha_xiaomi_home` 私有 OAuth2/MQTT；轮询档位扩充见修订记录。 |
 | [0015](0015-local-first-privacy-and-diagnostics.md) | 2026-11-07 | 已接受 | 不收集远端遥测，仅提供本机脱敏诊断报告与崩溃摘要。 |
 | [0016](0016-central-hub-lan-readonly-verification.md) | 2026-11-07 | 已接受 | 实测确认脱离 HA 无法局域网直连覆盖 BLE/Mesh 网关子设备。 |
 | [0017](0017-homekit-third-backend-evaluation.md) | 2026-11-07 | 已接受 | 不引入原生 HomeKit 后端，HomeKit 配件通过 HA HomeKit Device 集成接入。 |

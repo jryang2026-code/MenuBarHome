@@ -706,6 +706,10 @@ final class MenuBarPanelController: NSObject {
             userInfo: nil,
             repeats: false
         )
+        // One second of leeway lets the system coalesce this wake with timers it already runs. It can
+        // only land late, and the 0.5 s loop it starts re-derives every value from `fireDate`, so the
+        // worst case is entering the last minute one second late.
+        wake.tolerance = 1
         subMinuteWakeTimer = wake
         RunLoop.main.add(wake, forMode: .common)
     }
@@ -749,6 +753,9 @@ final class MenuBarPanelController: NSObject {
             userInfo: nil,
             repeats: true
         )
+        // 100 ms of leeway on a 0.5 s refresh is invisible on screen, and it lets the system batch
+        // this wake with the timers it already has to run (idle wakeups, #26).
+        timer.tolerance = 0.1
         labelTimer = timer
         RunLoop.main.add(timer, forMode: .common)
     }

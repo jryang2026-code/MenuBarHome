@@ -331,17 +331,24 @@ public final class HomeStore {
     }
 
     public var menuBarDisplayMode: MenuBarDisplayMode {
-        didSet { userDefaults.set(menuBarDisplayMode.rawValue, forKey: "menubar_display_mode") }
+        didSet {
+            userDefaults.set(menuBarDisplayMode.rawValue, forKey: "menubar_display_mode")
+            refreshPollingContext()
+        }
     }
 
     public var menuBarTargetId: String {
-        didSet { HomePreferences.menuBarTargetId.save(menuBarTargetId, to: userDefaults) }
+        didSet {
+            HomePreferences.menuBarTargetId.save(menuBarTargetId, to: userDefaults)
+            refreshPollingContext()
+        }
     }
 
     public var enableSafetyAlerts: Bool {
         didSet {
             HomePreferences.enableSafetyAlerts.save(enableSafetyAlerts, to: userDefaults)
             syncMiotTypePrunePolicy()
+            refreshPollingContext()
         }
     }
 
@@ -1027,6 +1034,11 @@ public final class HomeStore {
             }
         }
     }
+
+    /// When the user last touched the panel; `PollingPolicy` stretches the closed-panel interval the
+    /// longer ago this was. Stamped at launch as well, so an app that only ever sits in the menu bar
+    /// still stretches overnight instead of polling every 60 s until someone opens it.
+    @ObservationIgnored var lastPanelInteractionAt = Date()
     var pollingContextSync: Task<Void, Never>?
     var debounceTasks: [String: Task<Void, Never>] = [:]
     struct DebouncedWriteState {

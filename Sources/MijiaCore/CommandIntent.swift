@@ -11,6 +11,7 @@ public enum IntentOperation: Codable, Equatable, Sendable {
     case targetTemperature(Double)
     case activateScene            // target is a HomeScene id
     case fanSpeed(String)         // fan preset or air-conditioner fan mode; normalized to the device's own option
+    case fanPercentage(Int)      // 1...100
     case oscillation(Bool)        // fan swing (摇头)
 
     // Relative adjustments ("再暗一点", "调高两度"). IntentValidator.normalize resolves them against the
@@ -424,6 +425,9 @@ public enum IntentValidator {
             guard s.temperatureWritable, delta.isFinite else { return nil }
             return .targetTemperature(min(s.maxTemp, max(s.minTemp, s.targetTemperature + delta)))
 
+        case (.fanPercentage(let percent), .fan(let s)) where s.speedWritable && s.percentage != nil:
+            return .fanPercentage(max(1, min(100, percent)))
+
         case (.fanSpeed(let raw), .fan(let s)):
             return FanSpeedMatcher.match(raw, in: s.availablePresetModes).map(IntentOperation.fanSpeed)
 
@@ -523,6 +527,8 @@ public enum IntentReply {
                 let temperature = formatTemperature(L10n.temperatureNumber(t)) + L10n.temperatureSymbol
                 return L10n.format("%@设为 %@", "Set %@ to %@", joined, temperature)
             case .activateScene: return L10n.format("执行场景「%@」", "Activated scene \"%@\"", joined)
+            case .fanPercentage(let percent):
+                return L10n.format("%@风速调为 %@%", "Set %@ fan speed to %@%", joined, String(percent))
             case .fanSpeed(let v):
                 let label = fanSpeedLabel(v)
                 let spaced = !isEn && label.first?.isNumber == true ? " " + label : label
