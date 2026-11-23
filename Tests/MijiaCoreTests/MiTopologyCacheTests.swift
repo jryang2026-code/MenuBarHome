@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -105,9 +106,7 @@ struct MiTopologyCacheTests {
         let (cache, dir) = makeTempCache()
         defer { try? FileManager.default.removeItem(at: dir) }
 
-        let suite = "test.topology.logout.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let sessionA = sampleSession
         let sessionB = MiSession(
@@ -132,8 +131,8 @@ struct MiTopologyCacheTests {
 
         let store = HomeStore(
             provider: DemoHomeProvider(),
-            defaultsSuiteName: suite,
-            topologyCache: cache
+            topologyCache: cache,
+            defaults: defaults
         )
 
         let idA = MiAccount(session: sessionA).id

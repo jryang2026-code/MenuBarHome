@@ -1,5 +1,6 @@
 import AppKit
 import ObjectiveC
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -113,9 +114,7 @@ struct ManualControlConfirmationPresenterTests {
             kind: .plug(PlugSpec(switchEntityId: "switch.wall_modal", isOn: false, powerWritable: true))
         )
         let provider = MockHomeProvider(snapshot: SynthesizedHome(devices: [wall], scenes: []))
-        let suiteName = "test.presenter.modal.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.controlDebounceInterval = .milliseconds(10)
         try await store.waitForTestSnapshot()
         let device = try #require(store.devices.first { $0.id == wall.id })
@@ -149,9 +148,7 @@ struct ManualControlConfirmationPresenterTests {
         var initialHome = SynthesizedHome(devices: [wall], scenes: [])
         initialHome.deviceBackends = [wall.id: .xiaomiCloud]
         let provider = MockHomeProvider(snapshot: initialHome)
-        let suiteName = "test.presenter.modal.race.\(UUID().uuidString)"
-        let store = HomeStore(provider: provider, defaultsSuiteName: suiteName)
-        defer { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         store.toastAutoDismissInterval = nil
         try await store.waitForTestSnapshot()
 

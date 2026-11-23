@@ -1,19 +1,18 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
 /// #20: keys from CodexBar / environment variables are only used after an explicit import,
 /// and the first request to a cloud AI service waits for the user's OK.
 struct AssistantConsentTests {
-    private static func makeDefaults() throws -> (UserDefaults, String) {
-        let suite = "test.assistant.consent.\(UUID().uuidString)"
-        return (try #require(UserDefaults(suiteName: suite)), suite)
+    private static func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     @Test("Ambient keys are not used until imported; import records its source and can be undone")
     func ambientKeyNeedsExplicitImport() throws {
-        let (defaults, suite) = try Self.makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = Self.makeDefaults()
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("codexbar-import-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: tempURL) }
         try #"{"providers":[{"id":"openrouter","apiKey":"sk-or-from-codexbar"}]}"#
@@ -45,8 +44,7 @@ struct AssistantConsentTests {
 
     @Test("Nothing to import for custom, look-alike or plain-http endpoints")
     func importRefusesUnsafeTargets() throws {
-        let (defaults, suite) = try Self.makeDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = Self.makeDefaults()
         let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("codexbar-refuse-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: tempURL) }
         try #"{"providers":[{"id":"openrouter","apiKey":"sk-or"},{"id":"openai","apiKey":"sk-openai"}]}"#
@@ -60,11 +58,11 @@ struct AssistantConsentTests {
     }
 
     @MainActor
-    private func makeStore(suite: String, baseURL: String) async throws -> (HomeStore, CallLog) {
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private func makeStore(baseURL: String) async throws -> (HomeStore, CallLog) {
+        let defaults = InMemoryUserDefaults()
         AssistantConfig(baseURL: baseURL, model: "deepseek-chat", apiKey: "sk-deepseek").save(to: defaults)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: AssistantTests.devices, scenes: AssistantTests.scenes))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         let log = CallLog()
@@ -80,9 +78,7 @@ struct AssistantConsentTests {
     @Test("The first cloud request waits for consent; allowing runs it and is remembered")
     @MainActor
     func cloudConsentAllow() async throws {
-        let suite = "test.assistant.consent.allow.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, log) = try await makeStore(suite: suite, baseURL: "https://api.deepseek.com/v1")
+        let (store, log) = try await makeStore(baseURL: "https://api.deepseek.com/v1")
 
         #expect(await store.runAssistantCommand("我要睡觉了") == nil)
         #expect(store.pendingCloudConsent == PendingCloudConsent(utterance: "我要睡觉了", endpoint: "api.deepseek.com", providerTitle: "DeepSeek"))
@@ -109,9 +105,7 @@ struct AssistantConsentTests {
     @Test("Declining sends nothing; local commands and local endpoints never ask")
     @MainActor
     func cloudConsentDeclineAndLocal() async throws {
-        let suite = "test.assistant.consent.decline.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, log) = try await makeStore(suite: suite, baseURL: "https://api.deepseek.com/v1")
+        let (store, log) = try await makeStore(baseURL: "https://api.deepseek.com/v1")
 
         _ = await store.runAssistantCommand("我要睡觉了")
         store.declinePendingCloudRequest()
@@ -128,9 +122,7 @@ struct AssistantConsentTests {
         #expect(store.pendingCloudConsent == nil)
         #expect(await log.count == 0)
 
-        let localSuite = "test.assistant.consent.local.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: localSuite)?.removePersistentDomain(forName: localSuite) }
-        let (localStore, localLog) = try await makeStore(suite: localSuite, baseURL: "http://127.0.0.1:8080/v1")
+        let (localStore, localLog) = try await makeStore(baseURL: "http://127.0.0.1:8080/v1")
         _ = await localStore.runAssistantCommand("我要睡觉了")
         #expect(localStore.pendingCloudConsent == nil)
         #expect(await localLog.count >= 1)

@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -440,13 +441,11 @@ struct EnergyHistoryTests {
     @Test("A provider snapshot feeds the store's history once, and the recording is not a rollback")
     @MainActor
     func storeSnapshotFeedsHistory() async throws {
-        let suite = "test.energy.history.store.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let plug = testPlug("plug_tv", "电视插座", kwh: 4)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [plug], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         // First snapshot only sets a baseline: subscribing alone must never invent consumption.

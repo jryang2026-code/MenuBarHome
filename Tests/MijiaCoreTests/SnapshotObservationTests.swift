@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -36,12 +37,9 @@ struct SnapshotObservationTests {
     @Test("Identical snapshots do not invalidate displayed state, including aliases", arguments: [false, true])
     @MainActor
     func repeatedSnapshots(useAlias: Bool) async throws {
-        let suite = "test.snapshot.observation.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
         let provider = Provider()
         defer { provider.continuation.finish() }
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         let light = SmartDevice(
             id: "study", name: "书房灯", roomId: "study", roomName: "书房",
             model: "test.light", isOnline: true,
@@ -87,12 +85,9 @@ struct SnapshotObservationTests {
     @Test("Duplicate connection status does not invalidate observation")
     @MainActor
     func repeatedStatus() async throws {
-        let suite = "test.status.observation.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
         let provider = Provider()
         defer { provider.continuation.finish() }
-        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        let store = HomeStore(provider: provider, defaults: InMemoryUserDefaults())
         try await drain(provider, store: store, marker: "same")
         let changes = Counter()
         withObservationTracking { _ = store.connectionStatus } onChange: { changes.increment() }

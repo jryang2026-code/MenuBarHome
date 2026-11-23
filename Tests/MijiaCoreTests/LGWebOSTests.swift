@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -176,11 +177,10 @@ struct LGWebOSTests {
     @Test("HomeStore LG discovery failure message explains rejected host hints including saved fallback")
     @MainActor
     func storeDiscoveryFailureMessageExplainsRejectedHost() async throws {
-        let suite = "test.lg.discovery.msg.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])), defaultsSuiteName: suite)
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [], scenes: [])),
+            defaults: InMemoryUserDefaults()
+        )
         try await store.waitForTestSnapshot()
 
         let explicitRejected = store.lgWebOSDiscoveryFailureMessage(hostHint: "8.8.8.8")

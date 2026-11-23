@@ -143,13 +143,12 @@ struct DeviceTypeSelectionStoreTests {
 
         let mem = MemoryVaultStorage()
         mem.readResult = .unavailable
-        let suite = "test.devicetype.uncertain.\(UUID().uuidString)"
-        let uncertainDefaults = try #require(UserDefaults(suiteName: suite))
+        let uncertainDefaults = InMemoryUserDefaults()
         uncertainDefaults.set(true, forKey: "has_completed_onboarding")
         let uncertain = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.light], scenes: [])),
-            defaultsSuiteName: suite,
-            credentialVault: CredentialVault(storage: mem.storage)
+            credentialVault: CredentialVault(storage: mem.storage),
+            defaults: uncertainDefaults
         )
         try await uncertain.waitForTestSnapshot()
         #expect(uncertain.isIdentityUncertain)
