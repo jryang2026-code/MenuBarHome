@@ -820,6 +820,7 @@ struct HAConnectionDisableTests {
 
         let mock = MockHomeProvider(snapshot: snapshot)
         let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         store.hasHASource = true
         store.serverURLString = Self.haURL
         store.syncInMemoryConfiguredCapabilities()

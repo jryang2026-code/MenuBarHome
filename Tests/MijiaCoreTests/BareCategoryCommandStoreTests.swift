@@ -42,6 +42,7 @@ struct BareCategoryCommandStoreTests {
         let suite = "test.bare.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: SynthesizedHome(rooms: rooms, devices: devices))
         let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        store.assistantAutoResetTiming = .never
         do {
             try await store.waitForTestSnapshot()
         } catch {

@@ -971,8 +971,14 @@ export const DeviceDeduplicator = {
       .sort((a, b) => environmentReadingPriority(a.kind) - environmentReadingPriority(b.kind))
       .flatMap((dev) => { const r = deviceEnvironmentReading(dev);
         return r ? [r] : []; }); const scenes: HomeScene[] = [...(haInput?.home.scenes ?? [])];
-    const activeBackends = new Set<HomeBackend>(); if (haInput) activeBackends.add("homeAssistant");
-    if (miInput) activeBackends.add("xiaomiCloud"); return {
+    const sourceSnapshots = [
+      ["homeAssistant", haInput],
+      ["xiaomiCloud", miInput],
+    ] as const;
+    const activeBackends = new Set<HomeBackend>(
+      sourceSnapshots.flatMap(([backend, snapshot]) => snapshot ? [backend] : []),
+    );
+    return {
       home: {
         devices: mergedDevices,
         rooms: mergedRooms,

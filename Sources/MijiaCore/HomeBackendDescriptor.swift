@@ -28,24 +28,15 @@ public struct HomeBackendDescriptor: Sendable {
 
     public static func activeBackends(
         homeBackend: HomeBackend,
-        hasHASource: Bool,
-        hasMiSource: Bool,
-        isHAEnabled: Bool = true,
-        isMiEnabled: Bool = true
+        configuredSources: Set<HomeBackend>,
+        disabledSources: Set<HomeBackend> = []
     ) -> Set<HomeBackend> {
         if homeBackend == .demo {
             return [.demo]
         }
-        let effectiveHA = hasHASource && isHAEnabled
-        let effectiveMi = hasMiSource && isMiEnabled
-        var active: Set<HomeBackend> = []
-        if isHAEnabled && (effectiveHA || (!hasMiSource && homeBackend == .homeAssistant)) {
-            active.insert(.homeAssistant)
-        }
-        if isMiEnabled && (effectiveMi || (!hasHASource && !hasMiSource && homeBackend == .xiaomiCloud)) {
-            active.insert(.xiaomiCloud)
-        }
-        return active
+        let liveSources = configuredSources.subtracting([.demo])
+        let candidates = liveSources.isEmpty ? [homeBackend] : liveSources
+        return candidates.subtracting(disabledSources)
     }
 }
 
@@ -97,12 +88,19 @@ extension HomeBackend {
 
 extension HomeStore {
     public var activeBackends: Set<HomeBackend> {
-        HomeBackendDescriptor.activeBackends(
+        let configuredSources: Set<HomeBackend> = Set([
+            hasHASource ? .homeAssistant : nil,
+            hasMiSource ? .xiaomiCloud : nil,
+        ].compactMap { $0 })
+        let isMiEnabled = hasMiSource ? hasEnabledMiSource : isMiOnboardingBackendEnabled
+        let disabledSources: Set<HomeBackend> = Set([
+            isHAConnectionEnabled ? nil : .homeAssistant,
+            isMiEnabled ? nil : .xiaomiCloud,
+        ].compactMap { $0 })
+        return HomeBackendDescriptor.activeBackends(
             homeBackend: homeBackend,
-            hasHASource: hasHASource,
-            hasMiSource: hasMiSource,
-            isHAEnabled: isHAConnectionEnabled,
-            isMiEnabled: hasMiSource ? hasEnabledMiSource : isMiOnboardingBackendEnabled
+            configuredSources: configuredSources,
+            disabledSources: disabledSources
         )
     }
 }
