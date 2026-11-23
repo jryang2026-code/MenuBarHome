@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import CoreGraphics
 import Foundation
+import Security
 import UserNotifications
 import MijiaCore
 
@@ -771,10 +772,12 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         rememberPendingAlert(alert, scope: store?.connectionScopeIdentifier)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = UNMutableNotificationContent()
+        let content = notificationContent(for: .safetyAlert(alert))
         content.title = alert.title
         content.body = alert.body
-        content.sound = .default
+        if content.interruptionLevel != .passive {
+            content.sound = .default
+        }
         if alert.turnOffCommand != nil {
             content.categoryIdentifier = Self.safetyCategoryId
         }
@@ -790,7 +793,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// Weekly home health report summary (#182); the full report is exported from Settings.
     private func deliverWeeklyHealthReport(_ report: WeeklyHealthReport) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-        let content = UNMutableNotificationContent()
+        let content = notificationContent(for: .weeklyHealthReport)
         content.title = L10n.tr("家庭健康周报", "Weekly Home Health Report")
         content.body = report.notificationSummary()
         let request = UNNotificationRequest(
@@ -809,7 +812,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     public func deliverExternalActionNotification(title: String, body: String) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = UNMutableNotificationContent()
+        let content = notificationContent(for: .externalAction)
         content.title = title
         content.body = body
         let request = UNNotificationRequest(
@@ -823,13 +826,15 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = UNMutableNotificationContent()
+        let content = notificationContent(for: .missedTimer)
         content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
         content.body = L10n.tr(
             "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
             "Missed while the app was closed or the Mac was asleep: \"\(entry.reply)\". It did not run. Click Run Now to run it."
         )
-        content.sound = .default
+        if content.interruptionLevel != .passive {
+            content.sound = .default
+        }
         content.categoryIdentifier = Self.missedTimerCategoryId
 
         let request = UNNotificationRequest(
@@ -838,6 +843,27 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
             trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    private static let hasTimeSensitiveEntitlement: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil) else { return false }
+        let key = "com.apple.developer.usernotifications.time-sensitive" as CFString
+        return SecTaskCopyValueForEntitlement(task, key, nil) as? Bool == true
+    }()
+
+    private func notificationContent(for category: NotificationCategory) -> UNMutableNotificationContent {
+        let policy = NotificationDeliveryPolicy.resolve(
+            for: category,
+            isFocusActive: MacContextObserver.focusActive() == true
+        )
+        let content = UNMutableNotificationContent()
+        content.interruptionLevel = switch policy.interruptionLevel {
+        case .passive: .passive
+        case .active: .active
+        case .timeSensitive: Self.hasTimeSensitiveEntitlement ? .timeSensitive : .active
+        }
+        content.relevanceScore = policy.relevanceScore
+        return content
     }
 
     private func rememberPendingAlert(_ alert: SafetyAlert, scope: String?) {
@@ -910,6 +936,6 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        completionHandler(notification.request.content.interruptionLevel == .passive ? [.list] : [.banner, .sound])
     }
 }

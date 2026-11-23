@@ -921,7 +921,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case .activateScene: return "scene:activate"
         case .fanSpeed(let v): return "fan:\(v)"
         case .oscillation(let on): return on ? "swing:on" : "swing:off"
-        case .brightnessStep, .temperatureStep: return nil
+        case .brightnessStep, .temperatureStep, .fanPercentage: return nil
         }
     }
 
@@ -990,7 +990,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
         case .oscillation(let on):
             guard case .fan(let spec) = dev.kind, spec.swingWritable, spec.isOscillating != nil else { return false }
             return !spec.isOn || spec.isOscillating != on
-        case .brightnessStep, .temperatureStep:
+        case .brightnessStep, .temperatureStep, .fanPercentage:
             return false
         }
     }
@@ -1030,7 +1030,7 @@ public struct UserHabitMemory: Codable, Equatable, Sendable {
             return on
                 ? L10n.format("%@·摇头", "%@ · Swing On", dev.name)
                 : L10n.format("%@·停止摇头", "%@ · Swing Off", dev.name)
-        case .brightnessStep, .temperatureStep: return nil
+        case .brightnessStep, .temperatureStep, .fanPercentage: return nil
         }
     }
 

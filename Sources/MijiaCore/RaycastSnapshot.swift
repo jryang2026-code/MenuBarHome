@@ -516,6 +516,10 @@ extension HomeStore {
     }
     public var companionSnapshotFileURL: URL { raycastSnapshotTestURL ?? RaycastSnapshotExporter.defaultSnapshotURL }
 
+    /// Runs one companion request under the generation it started with, so every write it makes is
+    /// refused once the companion was disconnected. The `@TaskLocal` inheritance is intentional:
+    /// unstructured tasks this command starts, such as the undo window or a delayed follow-up, keep
+    /// the same generation and stop writing with it instead of outliving the disconnect.
     public func withCompanionCommandGeneration<T>(_ generation: UInt64, body: @MainActor () async -> T) async -> T {
         await Self.$companionCommandContext.withValue((ObjectIdentifier(self), generation), operation: body)
     }

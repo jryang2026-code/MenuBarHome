@@ -25,7 +25,7 @@
    - **`power` 路由语义**：`power` 对普通设备复用 `togglePrimary`，但窗帘 / 窗户 / 卷帘门 / 晾衣架改走显式的「开到 100% / 关到 0%」：三态磁贴的 `togglePrimary` 对移动中的窗帘语义是暂停，若 `on` / `off` 也照此执行，「关闭」会变成「停在半路」，与链接的字面承诺不符。按钮类触发与阀门仍走 `togglePrimary`。
 5. **`focus` 不算控制**：`menumijia://focus?device=<id>` 只切换房间筛选并展开抽屉，不写设备，因此不弹外部链接确认；但仍受锁屏拦截。
 6. **不猜档位**：`fan?preset=` 必须是设备 `availablePresetModes` 里的值，否则报错并列出可选档位，避免把固件没有的模式发下去；`percent` 与 `preset` 只能二选一，同时出现视为歧义直接拒绝，`percent` 越界也不会被同时给出的 `preset` 掩盖。
-7. **MCP 服务不向模型暴露 `bridgeToken`**：`scripts/mijia-mcp`（或 `scripts/mijia mcp`）以 stdio JSON-RPC 2.0 暴露只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与精确值工具，下发指令时在本机进程内部读取 `bridgeToken` 拼装 `menumijia://` 链接并轮询 `lastCommandFeedback`，但所有返回给模型上下文的 JSON 都剥离 `bridgeToken`。
+7. **MCP 服务不向模型暴露 `bridgeToken`**：`scripts/mijia-mcp`（或 `scripts/mijia mcp`）以 stdio JSON-RPC 2.0 暴露只读资源（`mijia://status`、`mijia://devices`、`mijia://scenes`）与精确值工具，下发指令时在本机进程内部读取 `bridgeToken` 拼装 `menumijia://` 链接并轮询 `lastCommandFeedback`，但所有返回给模型上下文的 JSON 都剥离 `bridgeToken`。会改变设备状态的工具一律标注 `destructiveHint: true`（MCP 规范默认值），让客户端自行弹确认；`--read-only` 启动参数则把 `tools/list` 收窄到 `list_devices` / `get_home_status` / `focus_device`，写工具调用在本地直接拒绝，用于只读 AI 会话的最小授权隔离。
 
 ## 后果
 

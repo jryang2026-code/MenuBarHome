@@ -427,7 +427,7 @@ export function handlePanelKey(host: MenuMijiaWindowsApp, event: KeyboardEvent):
       // Hiding must drop the footer dialog and any expanded list the state already forgot, or the next open
       // shows ghost DOM (#280 review).
       if (collapseActivityStackOnHide(host)) host.render();
-      invokeTauriVoid("hide_panel");
+      invokeTauriVoid("hide_panel", { returnFocus: true });
       return true;
     }
     return true;

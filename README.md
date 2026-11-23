@@ -18,7 +18,8 @@ English | [简体中文](README.zh-CN.md)
 <p align="center">
   <b>Run your whole home from your computer, without reaching for your phone.</b><br>
   A Mi Home control center that lives in the Mac menu bar, with a Windows 11 tray edition too.<br>
-  Scan one QR code with the Mi Home app and you're connected. No Home Assistant setup required.
+  Scan one QR code with the Mi Home app and you're connected. No Home Assistant setup required.<br>
+  <sub>Formerly known as <b>MenuBarMijia</b>.</sub>
 </p>
 
 <p align="center">
@@ -64,7 +65,7 @@ You're writing, coding, or on a call, and the light needs to go off. Normally th
 - **Hold to talk, let go to run it.** No wake word, no waiting for a reply. Everyday commands like switching, dimming, setting the temperature, or timers are understood on your Mac, with no AI key needed.
 - **Undo the oops.** All Off leaves plugs, robot vacuums, and cameras alone by default. If you switched off something you needed, tap Undo and everything comes back.
 - **Follows your Mac.** Lights off when you lock the screen, desk lamp on when you plug in a display, lighting set before a calendar meeting starts. Every rule starts switched off, so you choose what runs.
-- **Native and quiet.** The macOS app is written in Swift with no bundled browser engine, and sits at about 0.1% CPU with the panel open and idle.
+- **Native and quiet.** The macOS app is written in Swift with no bundled browser engine, and uses about 1.2% CPU (~113 MB RSS) when idle in the background with the panel closed (see [FAQ](docs/faq.md)).
 
 ---
 
@@ -85,15 +86,42 @@ brew install --cask jryang2026-code/tap/menubarhome
 
 **macOS · DMG**
 
-Download the latest DMG from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
+Download `MenuBarHome-<version>.dmg` (for example, `MenuBarHome-1.4.0.dmg`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest) and drag `MenuBarHome.app` into Applications.
 
-> The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS blocks the first launch, go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+> The project isn't enrolled in the paid Apple Developer Program, so the app isn't notarized. If macOS Gatekeeper blocks the first launch:
+> 1. Double-click `/Applications/MenuBarHome.app` and click **Done** (or **OK**) to dismiss the warning dialog.
+> 2. On macOS 15 or later, open **System Settings → Privacy & Security** and scroll down to the Security section.
+> 3. Click **Open Anyway** next to the message about `MenuBarHome`, click **Open Anyway** again in the confirmation dialog, and authenticate with Touch ID or your password.
+> 4. **Alternative:** if it still won't open or the **Open Anyway** button doesn't appear, clear the quarantine attribute in Terminal:
+>    ```bash
+>    xattr -dr com.apple.quarantine /Applications/MenuBarHome.app
+>    ```
+
+Verify the DMG download against `MenuBarHome-1.4.0.dmg.sha256` from the same release:
+
+```bash
+shasum -a 256 MenuBarHome-1.4.0.dmg
+# Or verify automatically if the .sha256 file is in the same directory:
+shasum -a 256 -c MenuBarHome-1.4.0.dmg.sha256
+```
 
 **Windows 11**
 
-Download the `.exe` or `.msi` installer from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
+Download `MenuBarHome-<version>-windows-x64-setup.exe` (for example, `MenuBarHome-1.4.0-windows-x64-setup.exe`) or `MenuBarHome-<version>-windows-x64.msi` (for example, `MenuBarHome-1.4.0-windows-x64.msi`) from [GitHub Releases](https://github.com/jryang2026-code/MenuBarHome/releases/latest).
 
-> The installer isn't signed with a commercial Authenticode certificate. If SmartScreen says "Windows protected your PC", click **More info → Run anyway**. SHA-256 digests are published on every release if you'd like to verify the download.
+> The installer isn't signed with a commercial Authenticode certificate. If Windows SmartScreen blocks it:
+> 1. When the blue **Windows protected your PC** prompt appears, click **More info**.
+> 2. Click **Run anyway** at the bottom of the dialog to continue installation.
+
+Verify the Windows installer in PowerShell against the corresponding `.sha256` file on the release page:
+
+```powershell
+# For the EXE installer (compare with MenuBarHome-1.4.0-windows-x64-setup.exe.sha256)
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64-setup.exe
+
+# For the MSI installer (compare with MenuBarHome-1.4.0-windows-x64.msi.sha256)
+Get-FileHash -Algorithm SHA256 .\MenuBarHome-1.4.0-windows-x64.msi
+```
 
 ### 2. Connect your home
 
@@ -267,9 +295,11 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 }
 ```
 
+Every control tool carries `destructiveHint: true`, so MCP clients that honour the annotations ask before running one. To give an AI session read-only access, add `--read-only` to the same entry (`"args": ["--read-only"]`, or run `scripts/mijia mcp --read-only`): `tools/list` then advertises only `list_devices`, `get_home_status` and `focus_device`, and any control call comes back as an error naming the flag instead of touching a device.
+
 ### Raycast
 
-`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows a toast with the app's result.
+`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows an animated toast while the app works, then updates it to the result.
 
 </details>
 
@@ -379,5 +409,6 @@ Thanks to all contributors who have submitted PRs, reported issues, and helped r
 
 ## FAQ
 
+- [What if macOS Gatekeeper or Windows SmartScreen blocks the app, and how do I verify the download?](docs/faq.md#what-if-macos-gatekeeper-or-windows-smartscreen-blocks-the-app-and-how-do-i-verify-the-download)
 - [How much memory and CPU does it use, and how do I measure it?](docs/faq.md)
 - [What about Windows 11?](docs/faq.md#what-about-windows-11)

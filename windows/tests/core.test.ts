@@ -1950,6 +1950,7 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
         expectedNormalized: { targetId: string; kind: string; value: boolean | number | string } | null;
         expectedExecutable: boolean;
         expectedEntityId: string | null;
+        expectedFanPercent?: number;
       }>;
       delayCases: Array<{ utterance: string; seconds: number | null; remainder: string | null }>;
       cancelCases: Array<{ utterance: string; isCancel: boolean }>;
@@ -2018,6 +2019,7 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
         case "lightEffect": return { targetId: item.targetId, operation: { kind: "lightEffect", effect: String(item.value) } };
         case "hvacMode": return { targetId: item.targetId, operation: { kind: "hvacMode", mode: String(item.value) } };
         case "targetTemperature": return { targetId: item.targetId, operation: { kind: "targetTemperature", celsius: Number(item.value) } };
+        case "fanPercentage": return { targetId: item.targetId, operation: { kind: "fanPercentage", percent: Number(item.value) } };
         case "fanSpeed": return { targetId: item.targetId, operation: { kind: "fanSpeed", speed: String(item.value) } };
         case "oscillation": return { targetId: item.targetId, operation: { kind: "oscillation", enabled: Boolean(item.value) } };
         default: throw new Error(`Unknown kind: ${item.kind}`);
@@ -2037,6 +2039,9 @@ describe("LocalIntentParser, DelayPhrase, UndoPhrase, and ModelIntentResolver", 
       const cmds = IntentValidator.commandsForIntent(intent, dev);
       assert.equal(cmds.length > 0, item.expectedExecutable, item.name);
       assert.equal(cmds[0]?.entityId ?? null, item.expectedEntityId, item.name);
+      if (item.expectedFanPercent !== undefined) {
+        assert.deepEqual(cmds, [{ kind: "setFanPercentage", entityId: item.expectedEntityId, percent: item.expectedFanPercent }], item.name);
+      }
     }
 
     for (const item of corpus.delayCases) {

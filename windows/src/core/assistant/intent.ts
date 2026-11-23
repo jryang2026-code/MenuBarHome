@@ -426,6 +426,10 @@ export const IntentValidator = {
         const next = !Number.isFinite(stepped) ? (op.delta >= 0 ? hi : lo) : Math.max(lo, Math.min(hi, stepped));
         return { kind: "targetTemperature", celsius: Object.is(next, -0) ? 0 : next };
       }
+      case "fanPercentage":
+        return k.kind === "fan" && k.speedWritable !== false && k.percentage !== null && Number.isFinite(op.percent)
+          ? { kind: "fanPercentage", percent: Math.max(1, Math.min(100, Math.round(op.percent))) }
+          : null;
       case "fanSpeed": {
         const list =
           k.kind === "fan"
@@ -562,6 +566,12 @@ export const IntentValidator = {
         return k.kind === "climate" && k.temperatureWritable !== false
           ? [{ kind: "setClimateTemperature", entityId: k.entityId, temperature: op.celsius }]
           : [];
+      case "fanPercentage": {
+        const normalized = this.normalize(op, device);
+        return k.kind === "fan" && normalized?.kind === "fanPercentage"
+          ? [{ kind: "setFanPercentage", entityId: k.entityId, percent: normalized.percent }]
+          : [];
+      }
       case "fanSpeed":
         if (k.kind === "fan" && k.availablePresetModes.length > 0)
           return [{ kind: "setFanPresetMode", entityId: k.entityId, presetMode: op.speed }];
@@ -661,6 +671,8 @@ export const IntentReply = {
       }
       case "targetTemperature":
         return `已${targetNames}设为 ${op.celsius}°C`;
+      case "fanPercentage":
+        return `已将${targetNames}风速调为 ${op.percent}%`;
       case "fanSpeed":
         return `已${targetNames}风速调为 ${this.fanSpeedLabel(op.speed)}`;
       case "oscillation":
@@ -699,6 +711,7 @@ function impliedCategories(ops: readonly IntentOperation[]): Set<IntentCategory>
         return new Set(["climate", "heater"]);
       case "fanSpeed":
         return new Set(["fan", "airPurifier", "climate"]);
+      case "fanPercentage":
       case "oscillation":
         return new Set(["fan"]);
       case "power":
@@ -720,6 +733,7 @@ function dispatchRank(op: IntentOperation): number {
     case "brightnessStep": return 4;
     case "colorTemperature": return 5;
     case "activateScene": return 6;
+    case "fanPercentage":
     case "fanSpeed": return 7;
     case "oscillation": return 8;
   }
@@ -1094,6 +1108,7 @@ function extractEnglishNumericOps(state: { rest: string }): IntentOperation[] {
   }
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
+    [/(?<=\bfan)\s+(?:speed\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "fanPercentage", percent: v })],
     [/(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])/g, (v) => ({ kind: "brightness", percent: Math.round(v) })],
     [/(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])/g, (v) => ({ kind: "targetTemperature", celsius: v })],
@@ -1473,7 +1488,7 @@ export const LocalIntentParser = {
     }
 
     const briPhrases: ReadonlyArray<readonly [string, number]> = [
-      ["minimum brightness", 10], ["dimmest", 10], ["dim", 20],
+      ["minimum brightness", 1], ["dimmest", 1], ["dim", 20],
       ["maximum brightness", 100], ["max brightness", 100], ["full brightness", 100], ["brightest", 100],
     ];
     for (const [p, val] of briPhrases) {
@@ -1483,7 +1498,7 @@ export const LocalIntentParser = {
     const ctPhrases: ReadonlyArray<readonly [string, number]> = [
       ["warm light", 2700], ["warm white", 2700], ["yellow light", 2700],
       ["natural light", 4000], ["neutral white", 4000],
-      ["white light", 6500], ["cool white", 6500], ["cold light", 6500],
+      ["white light", 6500], ["cool white", 4000], ["cold light", 4000],
     ];
     for (const [p, val] of ctPhrases) {
       if (consumeEnglishPhrase(p, state)) rawOps.push({ kind: "colorTemperature", kelvin: val });
