@@ -398,7 +398,7 @@ extension MenuBarPanelController {
         defaults: UserDefaults = .standard,
         adaptiveContentHeight: CGFloat? = nil
     ) -> NSSize {
-        let available = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+        let available = (screen ?? NSScreen.screens.first)?.visibleFrame.height ?? 900
         switch theme {
         case .classic:
             let raw = defaults.string(forKey: PanelHeight.storageKey)
@@ -419,46 +419,202 @@ extension MenuBarPanelController {
         return window.convertToScreen(button.convert(button.bounds, to: nil))
     }
 
+    /// The display that owns the panel: the status item's own window first, then the screen under the
+    /// pointer, and only then the first screen. `NSScreen.main` is the *keyboard-focus* display, which
+    /// on a multi-display desk is routinely a different display from the menu-bar item.
     private var statusScreen: NSScreen? {
-        statusItem?.button?.window?.screen ?? NSScreen.main
+        Self.screen(hosting: statusItem?.button?.window)
+    }
+
+    /// Host window → pointer → first screen. Injectable so the order is testable without a live item.
+    static func screen(
+        hosting window: NSWindow?,
+        mouseLocation: NSPoint = NSEvent.mouseLocation,
+        screens: [NSScreen] = NSScreen.screens
+    ) -> NSScreen? {
+        if let screen = window?.screen { return screen }
+        if let screen = screens.first(where: { $0.frame.contains(mouseLocation) }) { return screen }
+        return screens.first
     }
 
     /// Raw geometry for a theme: the classic card hangs centred under the item, the Liquid Glass
     /// column is right-aligned on the item's screen.
     static func frame(for size: NSSize, anchor: NSRect?, screen: NSScreen?, theme: PanelTheme) -> NSRect {
-        let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        switch theme {
-        case .classic: return classicFrame(for: size, within: visible, anchor: anchor)
-        case .liquidGlass: return liquidFrame(for: size, within: visible, anchor: anchor)
+        placement(
+            theme: theme,
+            input: PanelPlacementInput(screen: screen, anchor: anchor, size: size)
+        ).frame
+    }
+
+    // MARK: - Placement
+
+    /// One immutable placement pass: everything AppKit can say about the display, the status item and
+    /// the menu bar, so the decision itself stays a pure function.
+    struct PanelPlacementInput: Equatable {
+        var screenFrame: NSRect
+        var visibleFrame: NSRect
+        /// `NSScreen.auxiliaryTopLeftArea` / `auxiliaryTopRightArea`: empty on displays without a notch.
+        var auxiliaryTopLeftArea: NSRect
+        var auxiliaryTopRightArea: NSRect
+        var anchor: NSRect?
+        var size: NSSize
+        /// True when the menu bar is hidden or auto-hidden, so its band reserves no screen space.
+        var menuBarHidden: Bool
+
+        init(
+            screenFrame: NSRect,
+            visibleFrame: NSRect,
+            auxiliaryTopLeftArea: NSRect = .zero,
+            auxiliaryTopRightArea: NSRect = .zero,
+            anchor: NSRect?,
+            size: NSSize,
+            menuBarHidden: Bool = false
+        ) {
+            self.screenFrame = screenFrame
+            self.visibleFrame = visibleFrame
+            self.auxiliaryTopLeftArea = auxiliaryTopLeftArea
+            self.auxiliaryTopRightArea = auxiliaryTopRightArea
+            self.anchor = anchor
+            self.size = size
+            self.menuBarHidden = menuBarHidden
         }
+
+        /// Live AppKit inputs; the status item's screen must already be resolved by `screen(hosting:)`.
+        @MainActor
+        init(screen: NSScreen?, anchor: NSRect?, size: NSSize, menuBarHidden: Bool? = nil) {
+            let resolved = screen ?? NSScreen.screens.first
+            let fallback = NSRect(x: 0, y: 0, width: 1440, height: 900)
+            self.init(
+                screenFrame: resolved?.frame ?? fallback,
+                visibleFrame: resolved?.visibleFrame ?? fallback,
+                auxiliaryTopLeftArea: resolved?.auxiliaryTopLeftArea ?? .zero,
+                auxiliaryTopRightArea: resolved?.auxiliaryTopRightArea ?? .zero,
+                anchor: anchor,
+                size: size,
+                menuBarHidden: menuBarHidden ?? MenuBarPanelController.menuBarIsHidden(for: resolved)
+            )
+        }
+    }
+
+    /// Resolved placement: `origin` is the decision, `size` reflects the screen clamping.
+    struct PanelPlacement: Equatable {
+        var origin: NSPoint
+        var size: NSSize
+
+        var frame: NSRect { NSRect(origin: origin, size: size) }
+    }
+
+    /// Pure placement for both themes, shared by the live controller and the unit tests.
+    static func placement(theme: PanelTheme, input: PanelPlacementInput) -> PanelPlacement {
+        switch theme {
+        case .classic: return classicPlacement(input)
+        case .liquidGlass: return liquidPlacement(input)
+        }
+    }
+
+    /// Whether the system currently retracts the menu bar, so the item's window has no on-screen band
+    /// to hang the panel from and anchoring to it would float the panel above the usable area.
+    static func menuBarIsHidden(for screen: NSScreen?) -> Bool {
+        guard let screen else { return false }
+        return menuBarIsHidden(
+            systemOptions: NSApp.currentSystemPresentationOptions,
+            menuBarVisible: NSMenu.menuBarVisible(),
+            screenFrame: screen.frame,
+            visibleFrame: screen.visibleFrame
+        )
+    }
+
+    /// `.hideMenuBar` is unconditional. Auto-hide only counts while the bar is actually retracted: a
+    /// temporarily revealed bar still gives the item a real anchor, so the panel must follow it.
+    static func menuBarIsHidden(
+        systemOptions: NSApplication.PresentationOptions,
+        menuBarVisible: Bool,
+        screenFrame: NSRect,
+        visibleFrame: NSRect
+    ) -> Bool {
+        if systemOptions.contains(.hideMenuBar) { return true }
+        guard !menuBarVisible else { return false }
+        if systemOptions.contains(.autoHideMenuBar) { return true }
+        return visibleFrame.maxY >= screenFrame.maxY - 0.5
     }
 
     /// Puts the card's top edge just under the status item, centred on it, clamped into the visible
     /// frame of whichever screen hosts the item (a menu bar on a secondary display included).
-    private static func classicFrame(for size: NSSize, within visible: NSRect, anchor: NSRect?) -> NSRect {
-        let width = min(size.width, visible.width - screenMargin * 2)
-        let height = min(size.height, visible.height - screenMargin * 2)
-        var x = (anchor?.midX ?? visible.midX) - width / 2
+    private static func classicPlacement(_ input: PanelPlacementInput) -> PanelPlacement {
+        let visible = input.visibleFrame
+        let width = min(input.size.width, visible.width - screenMargin * 2)
+        let height = min(input.size.height, visible.height - screenMargin * 2)
+        var x = (input.anchor?.midX ?? visible.midX) - width / 2
         x = min(max(x, visible.minX + screenMargin), visible.maxX - width - screenMargin)
-        let top = anchor?.minY ?? visible.maxY
+        x = clearOfNotch(x, width: width, input: input, trailingInset: screenMargin)
+        // A retracted menu bar leaves the item window off-screen: pin the card to the usable top
+        // instead of following a nonexistent band, which is what floated or clipped it.
+        let top = input.menuBarHidden ? visible.maxY : (input.anchor?.minY ?? visible.maxY)
         let y = max(top - height - topGap, visible.minY + screenMargin)
-        return NSRect(x: x.rounded(), y: y.rounded(), width: width, height: height)
+        return PanelPlacement(
+            origin: NSPoint(x: x.rounded(), y: y.rounded()),
+            size: NSSize(width: width, height: height)
+        )
     }
 
     /// Right-aligns the 380 pt adaptive pilot column on the status item's screen, anchored below
     /// the menu bar and clamped into `[280, 560]` pt within `visibleFrame`.
-    static func liquidFrame(for size: NSSize, within visible: NSRect, anchor: NSRect?) -> NSRect {
+    private static func liquidPlacement(_ input: PanelPlacementInput) -> PanelPlacement {
+        let visible = input.visibleFrame
         let maxUsableWidth = max(1, visible.width - screenMargin - rightInset)
-        let width = min(size.width, maxUsableWidth)
-        let x = max(visible.minX + screenMargin, visible.maxX - width - rightInset)
+        let width = min(input.size.width, maxUsableWidth)
+        var x = max(visible.minX + screenMargin, visible.maxX - width - rightInset)
+        x = clearOfNotch(x, width: width, input: input, trailingInset: rightInset)
         let bottom = visible.minY + screenMargin
         // An anchor outside the visible frame (a hidden or detached item) falls back to the top edge.
-        let anchorTop = anchor?.minY ?? visible.maxY
+        let anchorTop = input.menuBarHidden ? visible.maxY : (input.anchor?.minY ?? visible.maxY)
         let minTopClearance = min(pilotMinHeight, max(0, visible.height - topGap - screenMargin))
         let top = (anchorTop >= bottom + minTopClearance && anchorTop <= visible.maxY + 1 ? anchorTop : visible.maxY) - topGap
-        let height = clampAdaptiveHeight(size.height, availableHeight: max(0, top - bottom))
-        return NSRect(x: x.rounded(), y: (top - height).rounded(), width: width.rounded(), height: height.rounded())
+        let height = clampAdaptiveHeight(input.size.height, availableHeight: max(0, top - bottom))
+        return PanelPlacement(
+            origin: NSPoint(x: x.rounded(), y: (top - height).rounded()),
+            size: NSSize(width: width.rounded(), height: height.rounded())
+        )
+    }
+
+    /// Compatibility wrapper for the pilot column's geometry with an explicit visible frame.
+    static func liquidFrame(for size: NSSize, within visible: NSRect, anchor: NSRect?) -> NSRect {
+        liquidPlacement(
+            PanelPlacementInput(
+                screenFrame: visible,
+                visibleFrame: visible,
+                anchor: anchor,
+                size: size
+            )
+        ).frame
+    }
+
+    /// The notch band between the two auxiliary areas, when this display has a camera housing.
+    private static func notchSpan(_ input: PanelPlacementInput) -> ClosedRange<CGFloat>? {
+        let left = input.auxiliaryTopLeftArea
+        let right = input.auxiliaryTopRightArea
+        guard !left.isEmpty, !right.isEmpty, right.minX > left.maxX else { return nil }
+        return left.maxX ... right.minX
+    }
+
+    /// Keeps the panel out from under the notch: a candidate that would overlap the band moves to the
+    /// trailing edge (the side the pilot column already uses) instead of sitting under the housing.
+    private static func clearOfNotch(
+        _ x: CGFloat,
+        width: CGFloat,
+        input: PanelPlacementInput,
+        trailingInset: CGFloat
+    ) -> CGFloat {
+        guard let notch = notchSpan(input) else { return x }
+        guard x < notch.upperBound, x + width > notch.lowerBound else { return x }
+        let visible = input.visibleFrame
+        let minX = visible.minX + screenMargin
+        let maxX = max(minX, visible.maxX - width - screenMargin)
+        let trailing = min(max(visible.maxX - width - trailingInset, minX), maxX)
+        if trailing >= notch.upperBound { return trailing }
+        // Wider than the space right of the notch: start just beside it when that still fits.
+        if notch.upperBound <= maxX { return notch.upperBound }
+        return x
     }
 
     static func makeBackdropWindow(frame: NSRect) -> NSPanel {
