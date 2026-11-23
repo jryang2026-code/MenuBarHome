@@ -23,6 +23,8 @@ extension HomeStore {
     static let capabilityMiotDidScopesKey = "capability_miot_did_scopes_v1"
     static let pausedQuickActionsKey = "paused_quick_actions_v1"
     static let pausedQuickActionScopesKey = "paused_quick_action_scopes_v1"
+    /// Device groups were quick actions in older releases, so their pause markers share this store.
+    static let pausedQuickActionGroupIDPrefix = "group:"
 
     private struct StoredDeviceGroupItem: Decodable {
         let id: String
@@ -1497,8 +1499,21 @@ extension HomeStore {
     }
 
     func pausedQuickActionMessage(for action: QuickAction) -> String {
-        let categories = QuickActionReferenceKind(rawValue: action.rawValue)?.targetCategories ?? []
-        let hasDisabledScope = (pausedQuickActionScopes[action.rawValue] ?? []).contains { scope in
+        pausedQuickActionMessage(forPausedID: action.rawValue, title: action.title)
+    }
+
+    /// The toast a paused quick action or device group shows when someone runs it. A pause that no
+    /// automatic pass can clear names the manual resume instead of a cause the user cannot act on.
+    func pausedQuickActionMessage(forPausedID id: String, title: String) -> String {
+        if pausedQuickActionRequiresManualResume(id) {
+            return L10n.format(
+                "「%@」已暂停且不再记录原连接，需要手动恢复：设置 › 常规 › 自动化与外部控制",
+                "“%@” stays paused without the connection it lost, so it cannot resume on its own; resume it manually in Settings › General › Automation & External Control",
+                title
+            )
+        }
+        let categories = QuickActionReferenceKind(rawValue: id)?.targetCategories ?? []
+        let hasDisabledScope = (pausedQuickActionScopes[id] ?? []).contains { scope in
             guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope),
                   isCapabilityScopeConfigured(connection, scope: scope) else { return false }
             return !capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
@@ -1507,6 +1522,112 @@ extension HomeStore {
             return L10n.tr("该快捷动作因设备类型关闭已暂停", "This quick action is paused while a device type is turned off")
         }
         return L10n.tr("该快捷动作因连接停用已暂停", "This quick action is paused while its connection is disabled")
+    }
+
+    /// A paused group or quick action that no automatic pass can clear. `requireManualResumeAfterHARemoval`
+    /// writes a group with no scope so it never resumes against an HA server it was never paused for,
+    /// and releases before #389 left the same shape behind; either way only the user can release it.
+    func pausedQuickActionRequiresManualResume(_ id: String) -> Bool {
+        guard pausedQuickActionIDs.contains(id), id.hasPrefix(Self.pausedQuickActionGroupIDPrefix) else {
+            return false
+        }
+        let scopes = pausedQuickActionScopes[id] ?? []
+        return scopes.isEmpty || scopes.contains { scope in
+            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope) else { return false }
+            // A configured HA scope is only waiting for its connection, which settles on its own.
+            return connection == .homeAssistant && !isCapabilityScopeConfigured(connection, scope: scope)
+        }
+    }
+
+    /// A paused rule that no automatic pass can resume: it was paused for HA but no longer records
+    /// the `ha:` scope it lost, so the automation switch is the manual path.
+    public func pausedRuleRequiresManualResume(_ rule: AutomationRule) -> Bool {
+        !rule.isEnabled
+            && rule.pausedCapabilities.contains(.connection(.homeAssistant))
+            && !rule.pausedScopes.contains { $0.hasPrefix("ha:") }
+    }
+
+    /// A paused quick action keeps its raw id: `QuickAction` cases and legacy `group:` ids share the store.
+    public struct PausedQuickAction: Identifiable, Equatable, Sendable {
+        public let id: String
+        public let title: String
+        public init(id: String, title: String) {
+            self.id = id
+            self.title = title
+        }
+    }
+
+    /// Paused quick actions and groups the user has to release by hand; the settings list shows them.
+    public var pausedQuickActionsRequiringManualResume: [PausedQuickAction] {
+        pausedQuickActionIDs
+            .filter(pausedQuickActionRequiresManualResume)
+            .sorted()
+            .map { PausedQuickAction(id: $0, title: pausedQuickActionTitle($0)) }
+    }
+
+    private func pausedQuickActionTitle(_ id: String) -> String {
+        guard id.hasPrefix(Self.pausedQuickActionGroupIDPrefix) else {
+            return QuickAction(rawValue: id)?.title ?? id
+        }
+        let groupId = String(id.dropFirst(Self.pausedQuickActionGroupIDPrefix.count))
+        return loadDeviceGroupReferences().groups.first { $0.id == groupId }?.name ?? groupId
+    }
+
+    /// Resumes one paused quick action or group on the user's word. Its pause markers cannot settle
+    /// once the connection they were paused for is gone, so the user replaces them; the targets are
+    /// still re-checked with the availability rule auto-resume uses, never a fresh write gate.
+    @discardableResult
+    public func resumePausedQuickAction(id: String) -> Bool {
+        guard pausedQuickActionIDs.contains(id) else { return false }
+        let indexed = currentIndexedDevicesList()
+        let groupById = Dictionary(
+            loadDeviceGroupReferences().groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+        )
+        let availableSet = Set(CapabilityReferenceEngine.partitionDevices(
+            devices: indexed, selection: capabilitySelection, safetyPolicy: effectiveSafetyRetentionPolicy()
+        ).availableDeviceIds)
+        let title = pausedQuickActionTitle(id)
+        guard pausedQuickActionTargetsAreAvailable(
+            id, indexed: indexed, availableSet: availableSet, groupById: groupById
+        ) else {
+            showToast(
+                L10n.format(
+                    "「%@」的目标仍不可用，暂时无法恢复",
+                    "“%@” cannot resume yet; its targets are still unavailable",
+                    title
+                ),
+                isError: true
+            )
+            return false
+        }
+        pausedQuickActionIDs.remove(id)
+        pausedQuickActionScopes.removeValue(forKey: id)
+        if pausedQuickActionIDs.isEmpty {
+            userDefaults.removeObject(forKey: Self.pausedQuickActionsKey)
+        } else {
+            userDefaults.set(pausedQuickActionIDs.sorted(), forKey: Self.pausedQuickActionsKey)
+        }
+        persistPausedQuickActionScopes()
+        return true
+    }
+
+    /// One availability rule for paused quick actions and groups: auto-resume and the manual resume
+    /// button share it, so a manual resume cannot revive a target the automatic path still refuses.
+    private func pausedQuickActionTargetsAreAvailable(
+        _ id: String,
+        indexed: [CapabilityIndexedDevice],
+        availableSet: Set<String>,
+        groupById: [String: DeviceGroupReference]
+    ) -> Bool {
+        if id.hasPrefix(Self.pausedQuickActionGroupIDPrefix) {
+            let groupId = String(id.dropFirst(Self.pausedQuickActionGroupIDPrefix.count))
+            guard let group = groupById[groupId], !group.memberDeviceIds.isEmpty else { return false }
+            return group.memberDeviceIds.allSatisfy(availableSet.contains)
+        }
+        guard let kind = QuickActionReferenceKind(rawValue: id) else { return true }
+        let categories = kind.targetCategories
+        return categories.allSatisfy(capabilitySelection.enabledCategories.contains)
+            && indexed.contains { availableSet.contains($0.id) && categories.contains($0.category) }
     }
 
     private func persistPausedQuickActionScopes() {
@@ -2202,27 +2323,15 @@ extension HomeStore {
         if !pausedQuickActionIDs.isEmpty {
             var remainingQA: Set<String> = []
             for qaId in pausedQuickActionIDs {
-                let isGroup = qaId.hasPrefix("group:")
+                let isGroup = qaId.hasPrefix(Self.pausedQuickActionGroupIDPrefix)
                 let scopes = pausedQuickActionScopes[qaId] ?? []
                 guard (!isGroup || !scopes.isEmpty),
-                      pausedItemScopesAreSettled(scopes, requiresOriginalHA: isGroup) else {
+                      pausedItemScopesAreSettled(scopes, requiresOriginalHA: isGroup),
+                      pausedQuickActionTargetsAreAvailable(
+                          qaId, indexed: indexed, availableSet: availableSet, groupById: groupById
+                      ) else {
                     remainingQA.insert(qaId)
                     continue
-                }
-                if isGroup {
-                    let grpId = String(qaId.dropFirst("group:".count))
-                    guard let grp = groupById[grpId], !grp.memberDeviceIds.isEmpty,
-                          grp.memberDeviceIds.allSatisfy(availableSet.contains) else {
-                        remainingQA.insert(qaId)
-                        continue
-                    }
-                } else if let kind = QuickActionReferenceKind(rawValue: qaId) {
-                    let cats = kind.targetCategories
-                    guard cats.allSatisfy(capabilitySelection.enabledCategories.contains),
-                          indexed.contains(where: { availableSet.contains($0.id) && cats.contains($0.category) }) else {
-                        remainingQA.insert(qaId)
-                        continue
-                    }
                 }
             }
             if remainingQA != pausedQuickActionIDs {
