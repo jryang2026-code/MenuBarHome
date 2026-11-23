@@ -411,6 +411,19 @@ export function getHostUnsupportedScanner(host: ConnectionsAndDiagHost): Unsuppo
   return getHostConnDiagSession(host).scanner;
 }
 
+export function getCachedUnsupportedDeviceCountOnHost(host: ConnectionsAndDiagHost): number {
+  const scanner = host.connDiagSession?.scanner;
+  if (!scanner || scanner.lastScannedAtMs === null || scanner.devices.length === 0) return 0;
+  const rawAccounts = resolveHostMiAccounts(host);
+  const miAccounts = filterEnabledMiAccounts(rawAccounts, resolveHostMiSelectionState(host, rawAccounts));
+  return scanner.cachedUnsupportedCount({
+    connectionMode: host.settings.connectionMode,
+    dualSourceEnabled: isDualSourceEnabled(host),
+    miAccounts,
+    haBaseURL: host.settings.haBaseURL,
+  });
+}
+
 function resetHostUnsupportedScanner(host: ConnectionsAndDiagHost): void {
   const session = getHostConnDiagSession(host);
   session.scanner.reset();

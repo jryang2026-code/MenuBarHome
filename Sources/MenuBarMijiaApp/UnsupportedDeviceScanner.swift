@@ -88,6 +88,35 @@ final class UnsupportedDeviceScanner {
         }
     }
 
+    /// Cached unsupported device count for the store's current context without triggering a scan.
+    func cachedUnsupportedCount(for store: HomeStore) -> Int {
+        guard lastScannedAt != nil, !devices.isEmpty else { return 0 }
+        if let recorded = lastScanContext, recorded != ScanContext(store: store) {
+            return 0
+        }
+        return devices.count
+    }
+
+    #if DEBUG
+    static func makeForTesting() -> UnsupportedDeviceScanner {
+        UnsupportedDeviceScanner()
+    }
+
+    /// Seeds cached scan state in unit tests without hitting the network.
+    func seedCachedScanForTesting(
+        devices: [UnsupportedDevice],
+        store: HomeStore? = nil,
+        scannedAt: Date? = Date()
+    ) {
+        scanGeneration &+= 1
+        self.devices = devices
+        self.lastScannedAt = scannedAt
+        self.lastScanContext = store.map { ScanContext(store: $0) }
+        self.errorMessage = nil
+        self.isScanning = false
+    }
+    #endif
+
     func scan(store: HomeStore) async {
         invalidateIfContextChanged(for: store)
         guard !isScanning else { return }

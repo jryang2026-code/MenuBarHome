@@ -43,6 +43,7 @@ import { structuralSensorHistoryKey, syncSensorHistoryHost } from "./sensorHisto
 import { availableQuickActions } from "../core/quickActions.js";
 import { normalizeSearch } from "../core/panelSearch.js";
 import { renderSliderDeck } from "./panelView.js";
+import { getCachedUnsupportedDeviceCountOnHost } from "./connectionsAndDiagView.js";
 import { buildPanelDeviceGridModel, renderLongTailBarHtml } from "./panelSplitTiles.js";
 import { isWorkstationLocked } from "./transport.js";
 import {
@@ -1183,6 +1184,13 @@ export function patchCloudPresentation(host: MenuMijiaWindowsApp): boolean {
     const domOfflineDrawer = host.root.querySelector<HTMLElement>("[data-offline-drawer]");
     const wantsOfflineDrawer = gridModel.offlineDevices.length > 0;
     if (Boolean(domOfflineDrawer) !== wantsOfflineDrawer) return false;
+    const domUnsupportedRow = host.root.querySelector<HTMLElement>("[data-unsupported-devices-row]");
+    const cachedUnsupportedCount = getCachedUnsupportedDeviceCountOnHost(host);
+    const wantsUnsupportedRow = cachedUnsupportedCount > 0;
+    if (Boolean(domUnsupportedRow) !== wantsUnsupportedRow) return false;
+    if (domUnsupportedRow && domUnsupportedRow.dataset.unsupportedCount !== String(cachedUnsupportedCount)) {
+      return false;
+    }
     if (wantsOfflineDrawer) {
       const domOfflineToggle = domOfflineDrawer?.querySelector<HTMLElement>("[data-offline-drawer-toggle]");
       if (

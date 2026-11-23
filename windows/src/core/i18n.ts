@@ -1080,6 +1080,9 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
     "Check that these homes have devices in the Mi Home app (shared homes included). If devices are still missing, copy diagnostics to report it.",
   ],
   "重新同步": ["重新同步", "Sync Again"],
+  "1 台设备暂不支持显示": ["1 台设备暂不支持显示", "1 device not supported yet"],
+  "{count} 台设备暂不支持显示": ["{count} 台设备暂不支持显示", "{count} devices not supported yet"],
+  "在设置中查看未能显示的设备": ["在设置中查看未能显示的设备", "View devices not shown in Settings"],
 };
 
 /** Every catalog key, for tests and tooling. */

@@ -17,7 +17,7 @@ import { quickActions } from "./demo.js";
 import { isVoiceInputEnabled, quickActionScopeDevices, reconcileUndoBannerHoverAfterRender } from "./speechGuard.js";
 import { renderProactiveInlinePill } from "./proactive.js";
 import { renderEditLayoutToolbar, renderHiddenDevicesTray } from "./roomOrderEditor.js";
-import { effectivePanelHomeTitle } from "./connectionsAndDiagView.js";
+import { effectivePanelHomeTitle, getCachedUnsupportedDeviceCountOnHost } from "./connectionsAndDiagView.js";
 import { syncEnergyHostOnRender } from "./energySettingsView.js";
 import { syncSensorHistoryHost } from "./sensorHistoryView.js";
 import { getPanelThemeProfile } from "./panelTheme.js";
@@ -242,6 +242,7 @@ export function renderPanel(host: MenuMijiaWindowsApp): void {
           ${renderEditLayoutToolbar(host)}
           ${host.renderDeviceGrid()}
           ${renderHiddenDevicesTray(host)}
+          ${renderUnsupportedDevicesQuietRow(host)}
         </main>`;
   const verboseFooter = isVerboseConnectionFooter(resolveConnectionStatus(host));
   const footerHtml = `
@@ -675,4 +676,30 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
   const allPills = [...builtIns, ...haScenes];
   if (allPills.length === 0) return "";
   return `<section class="cc-quick-strip">${allPills.join("")}</section>`;
+}
+
+export function unsupportedDevicesQuietRowText(count: number): string {
+  if (count <= 0) return "";
+  if (count === 1) return t("1 台设备暂不支持显示");
+  return t("{count} 台设备暂不支持显示", { count });
+}
+
+export function renderUnsupportedDevicesQuietRow(host: MenuMijiaWindowsApp): string {
+  if (host.isEditingLayout || normalizeSearch(host.panelSearch.query)) return "";
+  const count = getCachedUnsupportedDeviceCountOnHost(host);
+  if (count <= 0) return "";
+  const label = unsupportedDevicesQuietRowText(count);
+  const hint = t("在设置中查看未能显示的设备");
+  return `<button
+    type="button"
+    class="cc-unsupported-quiet-row"
+    id="btn-unsupported-devices-row"
+    data-unsupported-devices-row
+    data-unsupported-count="${count}"
+    title="${host.escapeHtml(hint)}"
+    aria-label="${host.escapeHtml(label)}"
+  >
+    <span class="cc-unsupported-quiet-label">${host.escapeHtml(label)}</span>
+    <span class="cc-unsupported-quiet-chevron" aria-hidden="true">${SF_ICONS.chevronRight}</span>
+  </button>`;
 }

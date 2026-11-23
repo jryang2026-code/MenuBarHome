@@ -622,3 +622,43 @@ struct ClassicOfflineDrawerHeader: View {
             : L10n.tr("点击展开查看离线或未通电设备", "Click to show offline or unpowered devices"))
     }
 }
+
+/// Quiet row at the bottom of the device list surfacing the cached unsupported-device count (#15).
+struct UnsupportedDevicesQuietRow: View {
+    let count: Int
+    let action: () -> Void
+
+    static func labelText(count: Int) -> String {
+        guard count > 0 else { return "" }
+        if count == 1 {
+            return L10n.tr("1 台设备暂不支持显示", "1 device not supported yet")
+        }
+        return L10n.format("%@ 台设备暂不支持显示", "%@ devices not supported yet", "\(count)")
+    }
+
+    var body: some View {
+        if count > 0 {
+            let label = Self.labelText(count: count)
+            Button(action: action) {
+                HStack(spacing: 4) {
+                    Text(label)
+                        .font(.system(size: DesignTokens.TypeSize.caption))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: DesignTokens.TypeSize.footnote, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity, minHeight: DesignTokens.minHitTarget, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(label))
+            .accessibilityHint(Text(L10n.tr("在设置中查看未能显示的设备", "View devices not shown in Settings")))
+            .panelHelp(L10n.tr("在设置中查看未能显示的设备", "View devices not shown in Settings"))
+            .accessibilityIdentifier("unsupported-devices-quiet-row")
+        }
+    }
+}

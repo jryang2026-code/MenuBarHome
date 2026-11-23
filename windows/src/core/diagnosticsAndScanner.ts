@@ -570,6 +570,19 @@ export class UnsupportedDeviceScanner { public devices: UnsupportedDevice[] = []
     }
   }
 
+  /**
+   * Returns the cached unsupported device count for `options` without triggering any network scan.
+   * Returns 0 when no scan has completed yet or the active context changed.
+   */
+  cachedUnsupportedCount(options?: ScanUnsupportedOptions): number {
+    if (this.lastScannedAtMs === null || this.devices.length === 0) return 0;
+    if (options && this.lastContextKey !== null) {
+      const nextKey = UnsupportedDeviceScanner.contextKey(options);
+      if (this.lastContextKey !== nextKey) return 0;
+    }
+    return this.devices.length;
+  }
+
   static contextKey(options: ScanUnsupportedOptions): string { const accounts = options.miAccounts
       ? options.miAccounts.map((a) => a.id)
       : (options.miSessions ?? []).map((s) => makeMiAccount(s).id);
