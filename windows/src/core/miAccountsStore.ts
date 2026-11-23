@@ -1,5 +1,5 @@
 import { discoverMiHome } from "./miCloud/discovery.js";
-import { PowerReadBackError, type ExecuteOptions, type HomeProvider } from "./homeProvider.js";
+import { PowerReadBackError, type ExecuteOptions, type HomeCommandProvider } from "./homeProvider.js";
 import { readMiotPower } from "./models.js";
 import { tr3, type LanguagePreference } from "./i18n.js";
 import { MI_SESSION_WARNING_LEAD_MS,
@@ -1528,7 +1528,7 @@ export async function executeMultiAccountMiotCommand(command: DeviceCommand,
     : new MiCloudError("notLoggedIn", "No active Xiaomi account available for command");
 }
 
-export class MultiAccountMiCloudProvider implements HomeProvider {
+export class MultiAccountMiCloudProvider implements HomeCommandProvider {
   constructor(
     private readonly dependencies: {
       readonly accounts: readonly MiAccount[];
