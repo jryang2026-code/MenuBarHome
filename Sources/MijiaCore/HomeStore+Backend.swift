@@ -756,6 +756,9 @@ extension HomeStore {
             }
             removeActivitiesForMissingDevices()
             seedDefaultFavoritesIfNeeded()
+            if activeDualProvider != nil || provider is DualSourceHomeProvider {
+                syncMiotTypePrunePolicy()
+            }
             isApplyingProviderSnapshot = false
             let sampleNow = Date()
             scheduleRaycastSnapshotExport()
@@ -1068,6 +1071,7 @@ extension HomeStore {
             pinBox: pinnedDeviceSourcesBox
         )
         activeDualProvider = composite
+        syncMiotTypePrunePolicy()
         return composite
     }
 
