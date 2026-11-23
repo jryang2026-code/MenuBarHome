@@ -222,4 +222,15 @@ extension HomeStore {
             return activeDeviceCount > 0 ? L10n.tr("\(activeDeviceCount)开", "\(activeDeviceCount) On") : nil
         }
     }
+
+    /// The menu-bar label is set to show a number that only a poll can refresh. Decided from the
+    /// display preference rather than the current value, so it stays true while a reading is briefly
+    /// missing (an offline target, an empty home) and `PollingPolicy` never stretches a label the user
+    /// keeps on screen. Mirrors the branches of `menuBarText`, minus "icon only".
+    public var menuBarShowsLiveReading: Bool {
+        if menuBarTargetId.hasPrefix("temp:") || menuBarTargetId.hasPrefix("temp_hum:") { return true }
+        if menuBarTargetId.hasPrefix("power:") || menuBarTargetId == "active:count" { return true }
+        if menuBarTargetId == "icon:only" { return false }
+        return menuBarDisplayMode != .iconOnly
+    }
 }
