@@ -78,6 +78,9 @@ MCP_INSTRUCTIONS = (
     "锁屏拦截与高风险设备（电暖器、插座、摄像机、扫地机、热水器、开窗器、晾衣架、车库门）"
     "二次确认均在应用内生效。"
 )
+MCP_READ_ONLY_INSTRUCTIONS = (
+    "本次会话以只读模式（--read-only）启动：只暴露只读工具，任何试图改变设备状态的调用都会被拒绝。"
+)
 
 
 class CliError(Exception):
@@ -826,6 +829,7 @@ class McpContext:
     now: Callable[[], float]
     sleep: Callable[[float], None]
     timeout: float
+    read_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -1064,6 +1068,8 @@ def _mcp_focus_device(ctx: McpContext, arguments: dict) -> dict:
     return _dispatch_tool_link(ctx, snapshot, "focus", [("device", str(device["id"]))])
 
 
+# MCP 规范把 destructiveHint 定义为「可能改变环境状态」，规范默认值就是 True。写工具若标成 False，
+# 客户端会把它当成纯增量操作而跳过确认；凡是真正改动设备状态的工具一律标 True，只读工具保持 False。
 READ_ONLY_ANNOTATIONS = {
     "readOnlyHint": True,
     "destructiveHint": False,
@@ -1072,13 +1078,13 @@ READ_ONLY_ANNOTATIONS = {
 }
 CONTROL_IDEMPOTENT_ANNOTATIONS = {
     "readOnlyHint": False,
-    "destructiveHint": False,
+    "destructiveHint": True,
     "idempotentHint": True,
     "openWorldHint": False,
 }
 CONTROL_NON_IDEMPOTENT_ANNOTATIONS = {
     "readOnlyHint": False,
-    "destructiveHint": False,
+    "destructiveHint": True,
     "idempotentHint": False,
     "openWorldHint": False,
 }
@@ -1265,6 +1271,10 @@ MCP_TOOLS: tuple[McpToolSpec, ...] = (
 MCP_TOOLS_BY_NAME: dict[str, McpToolSpec] = {spec.name: spec for spec in MCP_TOOLS}
 
 
+def _is_write_tool(spec: McpToolSpec) -> bool:
+    return not spec.annotations.get("readOnlyHint", False)
+
+
 def _jsonrpc_result(req_id: object, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
@@ -1321,7 +1331,7 @@ def handle_mcp_message(ctx: McpContext, message: object) -> dict | None:
                     "resources": {"subscribe": False, "listChanged": False},
                 },
                 "serverInfo": dict(MCP_SERVER_INFO),
-                "instructions": MCP_INSTRUCTIONS,
+                "instructions": MCP_INSTRUCTIONS + (MCP_READ_ONLY_INSTRUCTIONS if ctx.read_only else ""),
             },
         )
 
@@ -1394,6 +1404,7 @@ def handle_mcp_message(ctx: McpContext, message: object) -> dict | None:
                         "annotations": spec.annotations,
                     }
                     for spec in MCP_TOOLS
+                    if not (ctx.read_only and _is_write_tool(spec))
                 ]
             },
         )
@@ -1408,6 +1419,15 @@ def handle_mcp_message(ctx: McpContext, message: object) -> dict | None:
         if not isinstance(arguments, dict):
             return _jsonrpc_error(req_id, -32602, "Invalid params: tool arguments must be an object")
         spec = MCP_TOOLS_BY_NAME[name]
+        if ctx.read_only and _is_write_tool(spec):
+            return _jsonrpc_result(
+                req_id,
+                _tool_result(
+                    f"只读模式（--read-only）已拒绝写工具 {name}：本次 MCP 会话只允许读取设备状态。"
+                    "需要控制设备时，请重启服务并去掉 --read-only。",
+                    is_error=True,
+                ),
+            )
         try:
             _validate_tool_arguments(spec, arguments)
             result = spec.handler(ctx, arguments)
@@ -1583,6 +1603,11 @@ def build_parser() -> argparse.ArgumentParser:
     mcp.add_argument(
         "--timeout", type=float, default=DEFAULT_TIMEOUT, help=f"等待结果的秒数（默认 {DEFAULT_TIMEOUT:g}）"
     )
+    mcp.add_argument(
+        "--read-only",
+        action="store_true",
+        help="只读模式：tools/list 只暴露只读工具，写工具调用直接拒绝",
+    )
     return parser
 
 
@@ -1620,7 +1645,14 @@ def main(
         path = snapshot_path(args.snapshot, env)
         timeout = validate_timeout(args.timeout)
         if args.command == "mcp":
-            ctx = McpContext(path=path, opener=opener, now=now, sleep=sleep, timeout=timeout)
+            ctx = McpContext(
+                path=path,
+                opener=opener,
+                now=now,
+                sleep=sleep,
+                timeout=timeout,
+                read_only=args.read_only,
+            )
             return serve_mcp_stdio(ctx, stdin=stdin, stdout=stdout)
 
         snapshot = load_snapshot(path)

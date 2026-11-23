@@ -295,9 +295,11 @@ Exit codes: `0` success, `1` the app reported a failure, `2` local error (snapsh
 }
 ```
 
+Every control tool carries `destructiveHint: true`, so MCP clients that honour the annotations ask before running one. To give an AI session read-only access, add `--read-only` to the same entry (`"args": ["--read-only"]`, or run `scripts/mijia mcp --read-only`): `tools/list` then advertises only `list_devices`, `get_home_status` and `focus_device`, and any control call comes back as an error naming the flag instead of touching a device.
+
 ### Raycast
 
-`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows a toast with the app's result.
+`raycast/` is a standard Raycast extension with three commands: **Search Devices**, **Scenes & Quick Actions**, and **Ask MenuBarHome**. Import it with Raycast → Extensions → `+` → **Import Extension**, or run `cd raycast && npm ci && npm run dev` while Raycast is open. Power, brightness, colour temperature, thermostat target and fan speed are sent as exact values (`menumijia://power`, `brightness`, `color-temp`, `temperature`, `fan`), so a slider never flips a device by guessing its state; each command shows an animated toast while the app works, then updates it to the result.
 
 </details>
 
