@@ -816,7 +816,9 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             try Task.checkCancellation()
             let session = try Self.makeEphemeralGo2RTCSession()
             let desired = Self.desiredGo2RTCConfig(ffmpegBin: ffmpegBin, session: session)
-            try Self.writeSecretFile(desired, to: Self.go2rtcConfigURL())
+            let configURL = Self.go2rtcConfigURL()
+            let baseConfigURL = appSupportBin.appendingPathComponent("go2rtc-base.yaml")
+            try Self.writeSecretFile(desired, to: configURL)
             let logURL = appSupportBin.appendingPathComponent("go2rtc.log")
             _ = FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
             Self.restrictSecretFile(logURL)
@@ -828,9 +830,16 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 binaryModifiedAt: identity.modifiedAt
             )
             await supervisor.start { onExit in
+                // go2rtc rewrites the first config in place when registering streams.
+                // Keep a separate final config so an interrupted write cannot restore public listeners.
+                let persisted = try? String(contentsOf: configURL, encoding: .utf8)
+                if persisted.map(Self.baseConfig) != Self.baseConfig(desired) {
+                    try Self.writeSecretFile(desired, to: configURL)
+                }
+                try Self.writeSecretFile(desired, to: baseConfigURL)
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: exePath)
-                proc.arguments = ["-c", Self.go2rtcConfigURL().path]
+                proc.arguments = ["-c", configURL.path, "-c", baseConfigURL.path]
                 proc.currentDirectoryURL = appSupportBin
                 let logHandle = try? FileHandle(forWritingTo: logURL)
                 proc.standardOutput = logHandle ?? FileHandle.nullDevice
