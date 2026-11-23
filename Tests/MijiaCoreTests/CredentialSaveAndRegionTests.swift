@@ -1,6 +1,7 @@
 import Foundation
-import Testing
 import KeychainTestSupport
+import PreferencesTestSupport
+import Testing
 @testable import MijiaCore
 
 /// 审计 #7 / #9 / #10：保存失败必须回到 UI、跨区扫码按登录响应里的真实地区落库、开发用
@@ -10,9 +11,10 @@ struct CredentialSaveResultTests {
         CredentialVault(storage: storage.storage)
     }
 
-    private func suiteDefaults() throws -> (name: String, defaults: UserDefaults) {
-        let name = "test.credential-result.\(UUID().uuidString)"
-        return (name, try #require(UserDefaults(suiteName: name)))
+    /// One instance for the Keychain helper and for the store a test opens on the same domain: a
+    /// second `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+    private func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     @Test("A refused LG pairing-key write is reported instead of silently dropped")
@@ -20,8 +22,7 @@ struct CredentialSaveResultTests {
         let storage = MemoryVaultStorage()
         storage.writeSucceeds = false
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let config = LGWebOSConfig(host: "192.0.2.10", clientKey: "pairing-key")
         #expect(config.save(to: defaults, vault: vault) == false)
@@ -33,8 +34,7 @@ struct CredentialSaveResultTests {
     @Test("A stored LG pairing key round-trips through the injected vault")
     func lgPairingKeyRoundTripsThroughVault() throws {
         let vault = memoryVault()
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let config = LGWebOSConfig(host: "192.0.2.10", clientKey: "pairing-key")
         #expect(config.save(to: defaults, vault: vault))
@@ -48,14 +48,13 @@ struct CredentialSaveResultTests {
         let storage = MemoryVaultStorage()
         storage.writeSucceeds = false
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -72,14 +71,13 @@ struct CredentialSaveResultTests {
     func lgPairingSuccessStillToasts() throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -94,14 +92,13 @@ struct CredentialSaveResultTests {
     func lgPairingRefusalRollsBackClientConfig() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -140,14 +137,13 @@ struct CredentialSaveResultTests {
     func lgPairingCommitsInSingleWriteWithoutDidSetFailure() throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -167,14 +163,13 @@ struct CredentialSaveResultTests {
         storage.readResult = .unavailable
         storage.writeSucceeds = false
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -200,14 +195,13 @@ struct CredentialSaveResultTests {
     func lgConfigUpdateRefusalPreservesExistingClientConfig() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -235,14 +229,13 @@ struct CredentialSaveResultTests {
         storage.readResult = .unavailable
         storage.writeSucceeds = false
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
         store.switchBackend(.demo)
@@ -261,14 +254,13 @@ struct CredentialSaveResultTests {
     func lgResetTrustRefusalKeepsKeyAndShowsError() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -306,14 +298,13 @@ struct CredentialSaveResultTests {
     func lgResetTrustRefusalPreservesCertificateKeyAndConnection() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -384,14 +375,13 @@ struct CredentialSaveResultTests {
     func staleLGClientCallbacksCannotOverwriteCurrentDeviceOrKey() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -467,14 +457,13 @@ struct CredentialSaveResultTests {
     func lgResetTrustPartialWriteNeverSplitsCertAndKey() async throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
 
@@ -530,8 +519,7 @@ struct CredentialSaveResultTests {
     func assistantConfigSaveReportsFailure() throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let saved = AssistantConfig(
             baseURL: "https://openrouter.ai/api/v1",
@@ -558,14 +546,13 @@ struct CredentialSaveResultTests {
     func storeAssistantSaveReportsFailure() throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         storage.writeSucceeds = false
         let config = AssistantConfig(baseURL: "https://openrouter.ai/api/v1", model: "m", apiKey: "sk-x")
@@ -577,8 +564,7 @@ struct CredentialSaveResultTests {
     func openRouterSaveIsTransactionalOnPartialFailure() throws {
         let storage = MemoryVaultStorage()
         let vault = memoryVault(storage)
-        let (suite, defaults) = try suiteDefaults()
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let initial = AssistantConfig(
             baseURL: "https://openrouter.ai/api/v1",
@@ -746,6 +732,12 @@ struct HAEnvironmentTokenTests {
         KeychainHelper.environmentTokenOptInKey: "1",
     ]
 
+    /// The helper only reads and writes this instance, so an in-memory domain keeps the developer's
+    /// own sign-out marker out of the assertion (#309).
+    private func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
+    }
+
     @Test("A saved credential always wins over the development environment token")
     func savedCredentialWins() {
         #expect(KeychainHelper.resolvedToken(stored: "saved-token", environment: env, signedOut: false) == "saved-token")
@@ -765,9 +757,7 @@ struct HAEnvironmentTokenTests {
 
     @Test("Saving and clearing the token toggles the sign-out marker on the default suite")
     func saveTokenTogglesSignOutMarker() throws {
-        let suite = "test.env-token.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = CredentialVault(storage: MemoryVaultStorage().storage)
 
         #expect(KeychainHelper.saveToken("saved-token", defaults: defaults, vault: vault))

@@ -1,5 +1,6 @@
 import Foundation
 import KeychainTestSupport
+import PreferencesTestSupport
 import Testing
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
@@ -30,9 +31,9 @@ struct FirstRunOnboardingSettingsTests {
 
     @Test("P1-3: Settings HA save entry leaves onboarding flag and launch-at-login untouched when identity is uncertain")
     func settingsSaveGuardPreservesOnboardingAndLaunchAtLoginWhenIdentityUncertain() throws {
-        let suite = "test.p4a.p1-3-settings-save.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        // One instance for the seed, the store and the guard: a second `UserDefaults(suiteName:)`
+        // reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
 
         let mem = MemoryVaultStorage()
         let vault = CredentialVault(storage: mem.storage)
@@ -44,8 +45,8 @@ struct FirstRunOnboardingSettingsTests {
         let loginSystem = SpyLaunchAtLoginSystem()
         let store = HomeStore(
             provider: MockHomeProvider(),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.launchAtLoginSystem = loginSystem
         store.toastAutoDismissInterval = nil
