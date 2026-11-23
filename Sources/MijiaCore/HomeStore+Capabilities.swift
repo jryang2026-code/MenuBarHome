@@ -623,8 +623,10 @@ extension HomeStore {
         for index in rules.indices where !rules[index].isEnabled {
             guard rules[index].pausedScopes.contains(where: { $0.hasPrefix("ha:") })
                 || rules[index].pausedCapabilities.contains(.connection(.homeAssistant)) else { continue }
-            // Clear every auto-resume marker together, including pauses from prior HA addresses.
-            rules[index].pausedCapabilities = []
+            // Drop every auto-resume scope together, including pauses from prior HA addresses, but keep
+            // the HA capability: it is the only trace left for `pausedRuleRequiresManualResume` and the
+            // exact shape the auto-resume guard refuses, so the rule's switch stays the manual path.
+            rules[index].pausedCapabilities = [.connection(.homeAssistant)]
             rules[index].pausedScopes = []
             rulesChanged = true
         }
@@ -1575,18 +1577,40 @@ extension HomeStore {
 
     /// Resumes one paused quick action or group on the user's word. Its pause markers cannot settle
     /// once the connection they were paused for is gone, so the user replaces them; the targets are
-    /// still re-checked with the availability rule auto-resume uses, never a fresh write gate.
+    /// still re-checked with the availability rule auto-resume uses, never a fresh write gate. A group
+    /// the user deleted has no targets left to check, so the same word drops its stale marker.
     @discardableResult
     public func resumePausedQuickAction(id: String) -> Bool {
         guard pausedQuickActionIDs.contains(id) else { return false }
         let indexed = currentIndexedDevicesList()
+        let (groupRefs, corruptedGroupStores) = loadDeviceGroupReferences()
         let groupById = Dictionary(
-            loadDeviceGroupReferences().groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
+            groupRefs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }
         )
+        let title = pausedQuickActionTitle(id)
+        if id.hasPrefix(Self.pausedQuickActionGroupIDPrefix) {
+            let groupId = String(id.dropFirst(Self.pausedQuickActionGroupIDPrefix.count))
+            if groupById[groupId] == nil {
+                // A deleted group leaves its marker with nothing left to resume, so the manual action is
+                // the only cleanup path. An unreadable group store cannot prove the group is gone.
+                guard corruptedGroupStores.isEmpty else {
+                    showToast(
+                        L10n.format(
+                            "「%@」的分组记录无法读取，暂时无法恢复",
+                            "“%@” cannot resume yet; its device group record is unreadable",
+                            title
+                        ),
+                        isError: true
+                    )
+                    return false
+                }
+                clearPausedQuickActionMarkers(id)
+                return true
+            }
+        }
         let availableSet = Set(CapabilityReferenceEngine.partitionDevices(
             devices: indexed, selection: capabilitySelection, safetyPolicy: effectiveSafetyRetentionPolicy()
         ).availableDeviceIds)
-        let title = pausedQuickActionTitle(id)
         guard pausedQuickActionTargetsAreAvailable(
             id, indexed: indexed, availableSet: availableSet, groupById: groupById
         ) else {
@@ -1600,6 +1624,12 @@ extension HomeStore {
             )
             return false
         }
+        clearPausedQuickActionMarkers(id)
+        return true
+    }
+
+    /// Drops one pause marker from both stores. The only writes a manual resume makes.
+    private func clearPausedQuickActionMarkers(_ id: String) {
         pausedQuickActionIDs.remove(id)
         pausedQuickActionScopes.removeValue(forKey: id)
         if pausedQuickActionIDs.isEmpty {
@@ -1608,7 +1638,6 @@ extension HomeStore {
             userDefaults.set(pausedQuickActionIDs.sorted(), forKey: Self.pausedQuickActionsKey)
         }
         persistPausedQuickActionScopes()
-        return true
     }
 
     /// One availability rule for paused quick actions and groups: auto-resume and the manual resume

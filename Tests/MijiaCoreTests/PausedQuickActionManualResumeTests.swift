@@ -89,6 +89,64 @@ struct PausedQuickActionManualResumeTests {
         #expect(store.toastNotice?.isError == true)
     }
 
+    @Test("Manual resume clears a marker whose device group was deleted")
+    func manualResumeClearsDeletedGroup() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        // The group was deleted after it was paused, so there is nothing left to check availability for.
+        defaults.removeObject(forKey: "device_groups")
+        defaults.removeObject(forKey: ViewPreferenceKeys.groupMap)
+        #expect(store.pausedQuickActionRequiresManualResume("group:hall"))
+
+        #expect(store.resumePausedQuickAction(id: "group:hall"))
+
+        #expect(!store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.pausedQuickActionsRequiringManualResume.isEmpty)
+        #expect(defaults.stringArray(forKey: HomeStore.pausedQuickActionsKey) == nil)
+    }
+
+    @Test("Manual resume keeps a group marker while the group store is unreadable")
+    func manualResumeRefusesCorruptGroupStore() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults)
+        // An unreadable store cannot prove the group is gone, so the missing group is not a deletion.
+        defaults.set("{not json", forKey: "device_groups")
+
+        #expect(!store.resumePausedQuickAction(id: "group:hall"))
+
+        #expect(store.pausedQuickActionIDs.contains("group:hall"))
+        #expect(store.toastNotice?.isError == true)
+    }
+
+    @Test("The HA removal keeps a rule's manual marker and it never auto-resumes")
+    func haRemovalRuleStaysManual() async throws {
+        let defaults = InMemoryUserDefaults()
+        let store = try await Self.makeStore(defaults: defaults, pausedIDs: [])
+        let haScope = store.homeAssistantScopeIdentifier
+        let rule = AutomationRule(
+            trigger: .away, action: .devices(ids: [Self.light.id], isOn: false), isEnabled: false,
+            pausedCapabilities: [.connection(.homeAssistant)], pausedScopes: [haScope]
+        )
+        store.automationRuleStore.save([rule])
+
+        // The control: with its `ha:` scope intact this pass resumes the rule on its own.
+        store.revalidatePausedItems()
+        #expect(store.automationRuleStore.load().first?.isEnabled == true)
+
+        store.automationRuleStore.save([rule])
+        store.requireManualResumeAfterHARemoval()
+        let manual = try #require(store.automationRuleStore.load().first)
+        #expect(manual.pausedScopes.isEmpty)
+        #expect(manual.pausedCapabilities == [.connection(.homeAssistant)])
+        #expect(store.pausedRuleRequiresManualResume(manual))
+
+        // HA is back with a usable target, which is exactly when the old marker resumed by itself.
+        store.revalidatePausedItems()
+
+        #expect(store.automationRuleStore.load() == [manual])
+        #expect(store.pausedRuleRequiresManualResume(manual))
+    }
+
     @Test("A rule paused for HA without its ha scope stays paused and reports the manual switch")
     func legacyRuleReportsManualSwitch() async throws {
         let store = try await Self.makeStore(defaults: InMemoryUserDefaults(), pausedIDs: [])
