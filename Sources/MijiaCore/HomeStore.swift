@@ -373,6 +373,8 @@ public final class HomeStore {
         didSet {
             HomePreferences.hiddenDeviceIds.save(hiddenDeviceIds, to: userDefaults)
             scheduleRaycastSnapshotExport()
+            // Hiding a device has to remove it from Spotlight now, not at the next poll (#575).
+            scheduleSpotlightIndexUpdate()
         }
     }
 

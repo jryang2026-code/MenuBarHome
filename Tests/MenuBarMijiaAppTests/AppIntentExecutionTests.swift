@@ -679,6 +679,29 @@ struct AppIntentExecutionTests {
         #expect(passes.last?.items.isEmpty == true)
     }
 
+    @Test("Hiding a device refreshes the plan immediately instead of waiting for a poll")
+    func hidingADeviceRefreshesTheSpotlightPlan() async throws {
+        let suite = "test.spotlight.hidden.\(UUID().uuidString)"
+        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let provider = ControlledIntentProvider(autoComplete: true)
+        let store = HomeStore(provider: provider, defaultsSuiteName: suite)
+        await provider.sendSnapshot(SynthesizedHome(devices: [Self.lamp]))
+        try await store.waitForTestSnapshot()
+
+        var plans: [[SpotlightIndexEntry]] = []
+        store.onSpotlightIndexUpdate = { update in
+            if case .plan(let entries) = update { plans.append(entries) }
+        }
+        store.spotlightIndexEnabled = true
+        #expect(plans.last?.contains { $0.entityId == Self.lamp.id } == true)
+
+        store.hiddenDeviceIds.insert(Self.lamp.id)
+        #expect(plans.last?.contains { $0.entityId == Self.lamp.id } == false)
+
+        store.hiddenDeviceIds.remove(Self.lamp.id)
+        #expect(plans.last?.contains { $0.entityId == Self.lamp.id } == true)
+    }
+
     @Test("A refused index write is retried instead of being remembered as applied")
     func spotlightIndexerRetriesFailedWrites() async throws {
         let indexer = SpotlightIndexer()
