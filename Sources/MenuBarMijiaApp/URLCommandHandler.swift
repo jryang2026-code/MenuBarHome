@@ -24,11 +24,14 @@ final class URLCommandHandler {
         case temperature(SmartDevice, Double)
         case fan(SmartDevice, Int?, String?)
         case focus(SmartDevice)
+        case focusRoom(RoomArea)
 
         /// Navigation-only commands run without the external-link confirmation sheet.
         var controlsDevice: Bool {
-            if case .focus = self { return false }
-            return true
+            switch self {
+            case .focus, .focusRoom: return false
+            default: return true
+            }
         }
     }
 
@@ -306,6 +309,9 @@ final class URLCommandHandler {
         case .focus(let deviceId):
             guard let device = Self.device(deviceId, in: store) else { return nil }
             return .focus(device)
+        case .focusRoom(let roomId):
+            guard let room = store.rooms.first(where: { $0.id == roomId }) else { return nil }
+            return .focusRoom(room)
         }
     }
 
@@ -320,6 +326,9 @@ final class URLCommandHandler {
         case .toggle(let device), .power(let device, _), .brightness(let device, _),
              .colorTemp(let device, _), .temperature(let device, _), .fan(let device, _, _), .focus(let device):
             return store.capabilityControlRejectionMessage(forDeviceId: device.id)
+        case .focusRoom:
+            // Navigating to a room writes nothing, so the capability gate has nothing to refuse.
+            return nil
         case .scene(let scene):
             return store.capabilitySceneControlRejectionMessage(forSceneIdOrName: scene.id)
         case .builtInScene, .ask:
@@ -334,6 +343,8 @@ final class URLCommandHandler {
         case .power(let id, _), .brightness(let id, _),
              .colorTemp(let id, _), .temperature(let id, _), .fan(let id, _, _), .focus(let id):
             return store.capabilityControlRejectionMessage(forDeviceId: id)
+        case .focusRoom:
+            return nil
         case .scene(let name):
             if name.lowercased().hasPrefix("quick:") || BuiltInURLScene.resolve(name) != nil {
                 return nil
@@ -403,6 +414,8 @@ final class URLCommandHandler {
             )
         case .focus(let device):
             return L10n.format("打开「%@」详情", "Open \"%@\" details", device.name)
+        case .focusRoom(let room):
+            return L10n.format("打开「%@」房间", "Open room \"%@\"", L10n.displayRoomName(room.name))
         }
     }
 
@@ -623,6 +636,18 @@ final class URLCommandHandler {
                store.activeCompanionCommandGeneration.map(store.companionCanExecute(generation:)) ?? true {
                 openMenuBarWindowIfNeeded()
             }
+        case .focusRoom(let room):
+            if store.isControlBlockedByScreenLock {
+                finish(store.screenLockBlockedMessage, isError: true, envelope: envelope, store: store)
+                return
+            }
+            _ = store.selectRoom(room.id)
+            finish(
+                L10n.format("已切换到「%@」", "Showing \"%@\"", L10n.displayRoomName(room.name)),
+                envelope: envelope,
+                store: store
+            )
+            openMenuBarWindowIfNeeded()
         }
     }
 
@@ -640,6 +665,7 @@ final class URLCommandHandler {
             if let percent { return "fan:\(deviceId):\(percent)" }
             return "fan:\(deviceId):\(preset ?? "")"
         case .focus(let deviceId): return "focus:\(deviceId)"
+        case .focusRoom(let roomId): return "focus-room:\(roomId)"
         }
     }
 

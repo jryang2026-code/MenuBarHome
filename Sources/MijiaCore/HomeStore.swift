@@ -127,7 +127,10 @@ public final class HomeStore {
         didSet { updateValueFreshness() }
     }
     public internal(set) var rooms: [RoomArea] = [] {
-        didSet { scheduleRaycastSnapshotExport() }
+        didSet {
+            scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
+        }
     }
     /// Mi Home 家庭 list from the cloud backend; empty elsewhere.
     public internal(set) var homes: [HomeOption] = []
@@ -188,6 +191,7 @@ public final class HomeStore {
         didSet {
             syncIndexedDevices(from: devices)
             scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
         }
     }
     /// Generic drawer rows under 更多设置, keyed by card id (#5). Values follow the snapshot except
@@ -216,6 +220,7 @@ public final class HomeStore {
                 syncIndexedScenes(from: scenes)
             }
             scheduleRaycastSnapshotExport()
+            scheduleSpotlightIndexUpdate()
         }
     }
     public internal(set) var hasReceivedInitialSnapshot = false
@@ -333,6 +338,15 @@ public final class HomeStore {
 
     public var showQuickActionsBar: Bool {
         didSet { HomePreferences.showQuickActionsBar.save(showQuickActionsBar, to: userDefaults) }
+    }
+
+    /// Mirror devices, rooms and scenes into the system Spotlight index (#575). Off by default.
+    public var spotlightIndexEnabled: Bool {
+        didSet {
+            HomePreferences.spotlightIndexEnabled.save(spotlightIndexEnabled, to: userDefaults)
+            // Turning it off has to clear what earlier runs indexed, not just stop future writes.
+            scheduleSpotlightIndexUpdate()
+        }
     }
 
     public var favoriteDeviceIds: Set<String> {
@@ -1270,6 +1284,8 @@ public final class HomeStore {
     var companionRevokedForSession = false
     @ObservationIgnored var isPersistingCompanionToggle = false
     public var onCompanionIntegrationChanged: (@MainActor (Bool) -> Void)?
+    /// Installed by the app's `SpotlightIndexer`; tests leave it nil so no system index is touched (#575).
+    @ObservationIgnored public var onSpotlightIndexUpdate: (@MainActor (SpotlightIndexUpdate) -> Void)?
     @ObservationIgnored var miAccountsProviderFactory: (@MainActor ([MiAccount]) -> MiAccountsProvider)?
     @ObservationIgnored var haProviderFactory: (@MainActor (String, String) -> any HomeProvider)?
     @ObservationIgnored var explicitlyDisabledConnections: Set<ConnectionCapabilityID> = []
@@ -1431,6 +1447,7 @@ public final class HomeStore {
         self.awayGap = MacAwayGap(includesAway: ud.bool(forKey: MacAwayGap.storageKey))
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
+        self.spotlightIndexEnabled = HomePreferences.spotlightIndexEnabled.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
         self.menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(HomePreferences.menuBarPinnedReadouts.load(from: ud))
         self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)

@@ -73,6 +73,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case allOffScope
     case advancedDeviceWrites
     case allowURLControl
+    case spotlightIndex
 
     // 关于与诊断
     case aboutVersion
@@ -101,7 +102,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
             return .assistant
         case .blockControlWhileLocked, .safetyAlerts, .sensorAlerts, .alertsOnlyWhenAway,
              .doorbellAutoView, .doorbellChime, .doorbellAutoCloseSeconds, .notificationPermission,
-             .allOffScope, .advancedDeviceWrites, .allowURLControl:
+             .allOffScope, .advancedDeviceWrites, .allowURLControl, .spotlightIndex:
             return .privacy
         case .aboutVersion, .softwareUpdate, .setupGuide, .privacyNotes, .copyDiagnostics,
              .scanUnsupportedDevices, .signOut, .quitApp:
@@ -443,6 +444,10 @@ enum SettingsSearch {
                   zhTitle: "允许外部链接直接控制设备", enTitle: "Allow External Links to Control Devices Directly",
                   synonyms: ["url", "直控", "外部链接", "链接", "跳过确认", "二次确认", "高级控制权限",
                              "menumijia", "deeplink", "confirmation", "direct control"]),
+            entry(.spotlightIndex, section: safetySection, zhTitle: "在系统搜索里找到设备与房间",
+                  enTitle: "Show Devices and Rooms in Spotlight Search",
+                  synonyms: ["spotlight", "聚焦", "系统搜索", "系统检索", "搜索", "索引", "设备名", "房间名",
+                             "隐私", "search", "index", "system search", "privacy"]),
 
             entry(.aboutVersion, section: aboutSection, zhTitle: "版本与更新",
                   enTitle: "Version & Updates",

@@ -72,6 +72,11 @@ final class MacContextObserver: MacContextProviding {
     private func tick() {
         let now = Date()
         let (powerSource, batteryPercent) = Self.readPowerState()
+        let focusActive = Self.focusActive()
+        // A Focus that has ended must not leave its filter profile behind: the next Focus may carry
+        // no MenuBarHome filter at all, and a stale profile would keep silencing non-safety
+        // notifications (#575). Safety alerts are unaffected either way — the policy refuses.
+        if focusActive != true { FocusFilterStorage.clear() }
         let snapshot = MacContextSnapshot(
             cameraInUse: Self.cameraInUse(),
             microphoneInUse: Self.microphoneInUse(),
@@ -79,7 +84,7 @@ final class MacContextObserver: MacContextProviding {
             batteryPercent: batteryPercent,
             wifiSSID: wifiSSID(),
             isWiFiAuthorized: isWiFiAuthorized,
-            isFocusActive: Self.focusActive(),
+            isFocusActive: focusActive,
             isUserPresent: Self.isUserPresent(),
             meetings: calendarMeetings(now: now)
         )

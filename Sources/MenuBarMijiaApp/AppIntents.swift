@@ -174,6 +174,57 @@ struct RoomEntityQuery: EntityStringQuery {
     }
 }
 
+// MARK: - Quick Actions (#575)
+
+/// A built-in quick action as a Shortcut parameter. The `id` is `BuiltInURLScene`'s raw value, so a
+/// saved shortcut keeps working even if the display title is re-translated.
+struct QuickActionEntity: AppEntity, Hashable {
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "快捷动作"
+    static let defaultQuery = QuickActionEntityQuery()
+
+    let id: String
+    let name: String
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(name)")
+    }
+
+    init(scene: BuiltInURLScene) {
+        self.id = scene.rawValue
+        self.name = scene.displayTitle
+    }
+
+    /// For a shortcut saved by an earlier build whose raw value no longer exists: resolving it
+    /// reports "unsupported" instead of failing to decode the shortcut.
+    init(id: String, name: String) {
+        self.id = id
+        self.name = name
+    }
+}
+
+struct QuickActionEntityQuery: EntityStringQuery {
+    /// `undo` is deliberately absent: "undo the last action" is only meaningful right after an
+    /// action, so offering it in Shortcuts would mostly report "nothing to undo".
+    static let catalog: [BuiltInURLScene] = [.lightsOff, .softNightLight, .climateSleepOff, .allOff]
+
+    func entities(for identifiers: [String]) async throws -> [QuickActionEntity] {
+        let wanted = Set(identifiers)
+        return Self.catalog.filter { wanted.contains($0.rawValue) }.map { QuickActionEntity(scene: $0) }
+    }
+
+    func suggestedEntities() async throws -> [QuickActionEntity] {
+        Self.catalog.map { QuickActionEntity(scene: $0) }
+    }
+
+    func entities(matching string: String) async throws -> [QuickActionEntity] {
+        let needle = string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return try await suggestedEntities() }
+        return Self.catalog
+            .filter { $0.displayTitle.lowercased().contains(needle) || $0.rawValue.lowercased().contains(needle) }
+            .map { QuickActionEntity(scene: $0) }
+    }
+}
+
 // MARK: - Intents
 
 struct ToggleDeviceIntent: AppIntent {
@@ -333,6 +384,180 @@ struct GetRoomClimateIntent: AppIntent {
     }
 }
 
+// MARK: - Parameterized Control (#575)
+
+/// Bounds shared by the parameterized intents and their tests.
+///
+/// The `inclusiveRange` on each `@Parameter` already stops Shortcuts from sending 250 %, but Siri and
+/// a hand-built shortcut can still deliver a stale or hand-typed value; `perform()` therefore
+/// re-checks the number and reports a sentence instead of forwarding it to a device.
+enum IntentParameterBounds {
+    static let brightness = AppURLParser.brightnessRange
+    static let colorTemperature = AppURLParser.colorTempRange
+
+    static func brightnessPercent(_ raw: Int) -> Int? {
+        brightness.contains(raw) ? raw : nil
+    }
+
+    static func colorTemperatureKelvin(_ raw: Int) -> Int? {
+        colorTemperature.contains(raw) ? raw : nil
+    }
+}
+
+struct SetBrightnessIntent: AppIntent {
+    static let title: LocalizedStringResource = "调亮度"
+    static let description: IntentDescription? = IntentDescription(
+        "把一台灯具调到指定亮度；与面板、URL 链接共用同一个写入门、锁屏拦截和高风险确认。"
+    )
+
+    @Parameter(title: "设备")
+    var device: DeviceEntity
+
+    @Parameter(title: "亮度（%）", inclusiveRange: (0, 100))
+    var percent: Int
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let message = try await execute(in: HomeStore.shared)
+        await notifyExternalAction(message)
+        return .result(dialog: intentDialog(message))
+    }
+
+    @MainActor
+    func execute(in store: HomeStore) async throws -> String {
+        try await store.waitForInitialSnapshot()
+        guard let percent = IntentParameterBounds.brightnessPercent(percent) else {
+            return L10n.tr("亮度需要在 0–100 之间", "Brightness must be between 0 and 100")
+        }
+        // `executeRaycastBrightness` is the exact path `menumijia://brightness` takes: capability
+        // write gate, screen-lock block, hazard confirmation and optimistic write all live there.
+        let outcome = await store.executeRaycastBrightness(deviceId: device.id, percent: percent)
+        return outcome.message
+    }
+}
+
+struct SetColorTemperatureIntent: AppIntent {
+    static let title: LocalizedStringResource = "调色温"
+    static let description: IntentDescription? = IntentDescription(
+        "把一台灯具调到指定色温（开尔文）；与面板、URL 链接共用同一个写入门和确认流程。"
+    )
+
+    @Parameter(title: "设备")
+    var device: DeviceEntity
+
+    @Parameter(title: "色温（K）", inclusiveRange: (1_000, 20_000))
+    var kelvin: Int
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let message = try await execute(in: HomeStore.shared)
+        await notifyExternalAction(message)
+        return .result(dialog: intentDialog(message))
+    }
+
+    @MainActor
+    func execute(in store: HomeStore) async throws -> String {
+        try await store.waitForInitialSnapshot()
+        guard let kelvin = IntentParameterBounds.colorTemperatureKelvin(kelvin) else {
+            return L10n.tr("色温需要在 1000–20000 K 之间", "Colour temperature must be between 1000 and 20000 K")
+        }
+        let outcome = await store.executeRaycastColorTemp(deviceId: device.id, kelvin: kelvin)
+        return outcome.message
+    }
+}
+
+struct RunQuickActionIntent: AppIntent {
+    static let title: LocalizedStringResource = "执行快捷动作"
+    static let description: IntentDescription? = IntentDescription(
+        "执行全屋关灯、柔和夜灯、关温控风扇或一键全关，与面板快捷动作共用同一条控制路径。"
+    )
+
+    @Parameter(title: "快捷动作")
+    var action: QuickActionEntity
+
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let message = try await execute(in: HomeStore.shared)
+        await notifyExternalAction(message)
+        return .result(dialog: intentDialog(message))
+    }
+
+    @MainActor
+    func execute(in store: HomeStore) async throws -> String {
+        try await store.waitForInitialSnapshot()
+        guard let builtIn = BuiltInURLScene(rawValue: action.id) else {
+            return L10n.tr("不支持的快捷动作", "Unsupported quick action")
+        }
+        let outcome = await store.executeBuiltInURLScene(builtIn)
+        return outcome.message
+    }
+}
+
+// MARK: - Focus Filter (#575)
+
+/// Lets a Focus mode (System Settings → 专注模式 → 添加过滤条件 → MenuBarHome) quieten ordinary
+/// notifications and optionally run a quick action when it starts.
+///
+/// Safety alerts and the doorbell are never suppressed: `NotificationDeliveryPolicy` decides that
+/// per category and refuses to honour any profile for them, so a misconfigured filter cannot hide a
+/// leak, smoke or gas alert or a ringing doorbell.
+struct MenuBarHomeFocusFilter: SetFocusFilterIntent {
+    static let title: LocalizedStringResource = "MenuBarHome 专注模式"
+    static let description: IntentDescription? = IntentDescription(
+        "在这个专注模式下不推送非安全通知，可在开始时执行一个快捷动作。安全告警与门铃绝不会被静音。"
+    )
+
+    @Parameter(title: "静音非安全通知", default: true)
+    var suppressNonSafetyNotifications: Bool
+
+    @Parameter(title: "开始时执行的快捷动作")
+    var quickAction: QuickActionEntity?
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(Self.title)")
+    }
+
+    static var parameterSummary: some ParameterSummary {
+        Summary("静音非安全通知 \(\.$suppressNonSafetyNotifications)")
+    }
+
+    func perform() async throws -> some IntentResult {
+        Self.applyProfile(suppressNonSafetyNotifications: suppressNonSafetyNotifications)
+        if let quickAction {
+            // The system does not wait for a scene to finish, and neither does the user: the Focus
+            // is already on. The action runs in the background and keeps every write gate.
+            Task { @MainActor in
+                _ = await Self.runStartAction(quickAction, in: HomeStore.shared)
+            }
+        }
+        return .result()
+    }
+
+    /// Records what this Focus mode asked for. Split from `perform()` so the parameter-to-profile
+    /// mapping can be asserted against a throwaway suite instead of the real defaults.
+    @discardableResult
+    static func applyProfile(
+        suppressNonSafetyNotifications: Bool,
+        defaults: UserDefaults = .standard
+    ) -> FocusFilterProfile {
+        let profile = FocusFilterProfile(
+            isEnabled: true,
+            suppressNonSafetyNotifications: suppressNonSafetyNotifications
+        )
+        FocusFilterStorage.save(profile, defaults: defaults)
+        return profile
+    }
+
+    /// Runs the configured quick action for a Focus that just started.
+    ///
+    /// A Focus can start before the first snapshot arrives (cold launch from a login item), so this
+    /// waits a bounded five seconds instead of failing, then goes through `executeBuiltInURLScene`,
+    /// which owns the screen-lock block, the capability gate and the high-risk confirmation.
+    @MainActor
+    static func runStartAction(_ action: QuickActionEntity, in store: HomeStore) async -> String? {
+        try? await store.waitForInitialSnapshot(timeout: .seconds(5))
+        guard let builtIn = BuiltInURLScene(rawValue: action.id) else { return nil }
+        return await store.executeBuiltInURLScene(builtIn).message
+    }
+}
+
 // MARK: - App Shortcuts
 
 struct MenuBarMijiaAppShortcuts: AppShortcutsProvider {
@@ -364,6 +589,24 @@ struct MenuBarMijiaAppShortcuts: AppShortcutsProvider {
                 phrases: ["用 \(.applicationName) 查询房间温湿度"],
                 shortTitle: "房间温湿度",
                 systemImageName: "thermometer"
+            ),
+            AppShortcut(
+                intent: SetBrightnessIntent(),
+                phrases: ["用 \(.applicationName) 调亮度"],
+                shortTitle: "调亮度",
+                systemImageName: "sun.max"
+            ),
+            AppShortcut(
+                intent: SetColorTemperatureIntent(),
+                phrases: ["用 \(.applicationName) 调色温"],
+                shortTitle: "调色温",
+                systemImageName: "thermometer.sun"
+            ),
+            AppShortcut(
+                intent: RunQuickActionIntent(),
+                phrases: ["用 \(.applicationName) 执行快捷动作"],
+                shortTitle: "快捷动作",
+                systemImageName: "bolt.fill"
             )
         ]
     }

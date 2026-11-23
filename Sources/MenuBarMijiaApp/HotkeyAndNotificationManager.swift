@@ -828,7 +828,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         rememberPendingAlert(alert, scope: store?.connectionScopeIdentifier)
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = notificationContent(for: .safetyAlert(alert))
+        guard let content = notificationContent(for: .safetyAlert(alert)) else { return }
         content.title = alert.title
         content.body = alert.body
         if content.interruptionLevel != .passive {
@@ -849,7 +849,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     /// Weekly home health report summary (#182); the full report is exported from Settings.
     private func deliverWeeklyHealthReport(_ report: WeeklyHealthReport) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
-        let content = notificationContent(for: .weeklyHealthReport)
+        guard let content = notificationContent(for: .weeklyHealthReport) else { return }
         content.title = L10n.tr("家庭健康周报", "Weekly Home Health Report")
         content.body = report.notificationSummary()
         let request = UNNotificationRequest(
@@ -868,7 +868,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     public func deliverExternalActionNotification(title: String, body: String) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = notificationContent(for: .externalAction)
+        guard let content = notificationContent(for: .externalAction) else { return }
         content.title = title
         content.body = body
         let request = UNNotificationRequest(
@@ -895,7 +895,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
                 picture = await DoorbellNotificationThumbnail.picture(for: device, store: store)
             }
 
-            let content = self.notificationContent(for: .doorbell)
+            guard let content = self.notificationContent(for: .doorbell) else { return }
             content.title = event.title
             content.body = event.body
             content.threadIdentifier = "doorbell"
@@ -940,7 +940,7 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private func deliverMissedTimerNotification(for entry: ScheduledCommand) {
         guard Bundle.main.bundleURL.pathExtension == "app" else { return }
 
-        let content = notificationContent(for: .missedTimer)
+        guard let content = notificationContent(for: .missedTimer) else { return }
         content.title = L10n.tr("已错过定时任务", "Missed Scheduled Command")
         content.body = L10n.tr(
             "应用关闭或电脑睡眠时错过的定时：「\(entry.reply)」。没有自动执行，可点通知按钮立即补执行。",
@@ -965,11 +965,15 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         return SecTaskCopyValueForEntitlement(task, key, nil) as? Bool == true
     }()
 
-    private func notificationContent(for category: NotificationCategory) -> UNMutableNotificationContent {
+    /// `nil` means the user's Focus filter asked for silence for this category (#575). Safety alerts
+    /// and the doorbell never reach that branch: `NotificationDeliveryPolicy` refuses to suppress them.
+    private func notificationContent(for category: NotificationCategory) -> UNMutableNotificationContent? {
         let policy = NotificationDeliveryPolicy.resolve(
             for: category,
-            isFocusActive: MacContextObserver.focusActive() == true
+            isFocusActive: MacContextObserver.focusActive() == true,
+            focusFilter: FocusFilterStorage.load()
         )
+        guard !policy.isSuppressed else { return nil }
         let content = UNMutableNotificationContent()
         content.interruptionLevel = switch policy.interruptionLevel {
         case .passive: .passive

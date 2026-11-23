@@ -1522,6 +1522,8 @@ extension HomeStore {
         revokeCloudConsent()
         HAPlaintextConsent.revokeAll(defaults: userDefaults)
         haPlaintextPrompt = nil
+        // The Spotlight index must not outlive the credentials that produced it (#575).
+        clearSpotlightIndex()
         if complete {
             _ = ConnectionRemovalStore.clearAll(defaults: userDefaults)
             syncPendingConnectionRemovals()
