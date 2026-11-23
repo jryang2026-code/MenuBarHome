@@ -292,16 +292,16 @@ struct MiCloudPollingTests {
             [true, true, true],
             [false, true, true],
         ]
-        var received: [PollingContext] = []
+        var receivedStyles: [[Bool]] = []
         for _ in 0..<300 {
-            received = await mock.pollingContexts
-            if received.count >= expected.count { break }
+            let received = await mock.pollingContexts
+            receivedStyles = received.suffix(expected.count).map {
+                [$0.panelVisible, $0.systemActive, $0.lowPower]
+            }
+            if receivedStyles == expected { break }
             try await Task.sleep(for: .milliseconds(10))
         }
-        let receivedStyles = received.suffix(expected.count).map {
-            [$0.panelVisible, $0.systemActive, $0.lowPower]
-        }
-        #expect(Array(receivedStyles) == expected)
+        #expect(receivedStyles == expected)
     }
 
     @MainActor
