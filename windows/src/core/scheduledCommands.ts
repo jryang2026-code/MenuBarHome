@@ -80,6 +80,7 @@ function parseOperation(value: unknown): IntentOperation | null {
   if (!isRecord(value)) return null;
   switch (value.kind) {
     case "power": return typeof value.isOn === "boolean" ? { kind: value.kind, isOn: value.isOn } : null;
+    case "fanPercentage":
     case "brightness": return finite(value.percent) ? { kind: value.kind, percent: value.percent } : null;
     case "brightnessStep": return finite(value.delta) ? { kind: value.kind, delta: value.delta } : null;
     case "colorTemperature": return finite(value.kelvin) ? { kind: value.kind, kelvin: value.kelvin } : null;

@@ -491,6 +491,7 @@ struct GoldenCorpusTests {
         let expectedNormalized: ExpectedIntent?
         let expectedExecutable: Bool
         let expectedEntityId: String?
+        let expectedFanPercent: Int?
     }
 
     private struct DelayCase: Decodable {
@@ -523,6 +524,8 @@ struct GoldenCorpusTests {
             return ExpectedIntent(targetId: intent.targetId, kind: "hvacMode", value: .string(mode))
         case .targetTemperature(let t):
             return ExpectedIntent(targetId: intent.targetId, kind: "targetTemperature", value: .number(t))
+        case .fanPercentage(let percent):
+            return ExpectedIntent(targetId: intent.targetId, kind: "fanPercentage", value: .number(Double(percent)))
         case .fanSpeed(let s):
             return ExpectedIntent(targetId: intent.targetId, kind: "fanSpeed", value: .string(s))
         case .oscillation(let on):
@@ -862,6 +865,9 @@ struct GoldenCorpusTests {
             let effect = HomeStore.assistantEffect(of: decodedIntent.operation, on: device)
             #expect((effect != nil) == item.expectedExecutable, "\(item.name)")
             #expect(effect?.command.targetEntityId == item.expectedEntityId, "\(item.name)")
+            if let percent = item.expectedFanPercent, let entityId = item.expectedEntityId {
+                #expect(effect?.command == .setFanPercentage(entityId: entityId, percent: percent), "\(item.name)")
+            }
         }
 
         for item in corpus.delayCases {
@@ -1378,6 +1384,7 @@ struct GoldenCorpusTests {
         case ("lightEffect", .string(let effect)): return DeviceIntent(targetId: target, operation: .lightEffect(effect))
         case ("hvacMode", .string(let mode)): return DeviceIntent(targetId: target, operation: .hvacMode(mode))
         case ("targetTemperature", .number(let v)): return DeviceIntent(targetId: target, operation: .targetTemperature(v))
+        case ("fanPercentage", .number(let v)): return DeviceIntent(targetId: target, operation: .fanPercentage(Int(v)))
         case ("fanSpeed", .string(let speed)): return DeviceIntent(targetId: target, operation: .fanSpeed(speed))
         case ("oscillation", .bool(let on)): return DeviceIntent(targetId: target, operation: .oscillation(on))
         case ("activateScene", _): return DeviceIntent(targetId: target, operation: .activateScene)

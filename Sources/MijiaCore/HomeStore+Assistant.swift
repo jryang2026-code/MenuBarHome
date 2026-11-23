@@ -2040,6 +2040,7 @@ extension HomeStore {
         case .setClimateMode(_, let mode): return .hvacMode(mode)
         case .setClimateTemperature(_, let temperature): return .targetTemperature(temperature)
         case .setClimateFanMode(_, let mode), .setFanPresetMode(_, let mode): return .fanSpeed(mode)
+        case .setFanPercentage(_, let percent): return .fanPercentage(percent)
         case .setFanOscillating(_, let on): return .oscillation(on)
         case .vacuumAction(_, .start): return .power(true)
         case .vacuumAction(_, .returnToBase): return .power(false)
@@ -2258,6 +2259,19 @@ extension HomeStore {
                 command: .setSwitch(entityId: s.entityId, isOn: on),
                 restore: [restore]
             )
+
+        case (.fanPercentage(let percent), .fan(let s)):
+            guard s.speedWritable, let previousPercent = s.percentage,
+                  let change = fanPercentageChange(device, percent: percent) else { return nil }
+            // The plan runs restore commands in reverse order.
+            var restore: [DeviceCommand] = [.setFanPower(entityId: s.entityId, isOn: s.isOn)]
+            if let preset = s.presetMode, preset != change.favoritePreset {
+                restore.append(.setFanPresetMode(entityId: s.entityId, presetMode: preset))
+            }
+            if previousPercent > 0 {
+                restore.append(.setFanPercentage(entityId: s.entityId, percent: previousPercent))
+            }
+            return AssistantEffect(updated: change.updated, command: change.command, restore: restore)
 
         case (.fanSpeed(let preset), .fan(var s)):
             var restore: [DeviceCommand] = []
