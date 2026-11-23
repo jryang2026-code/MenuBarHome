@@ -42,6 +42,7 @@ import {
   miotFallbackAllows,
   profileOverride,
 } from "./facets.js";
+import { CLAIM_LADDER, DEVICE_CLAIMS, claimAllows, preferredClaimServices } from "./deviceClaims.js";
 import { facetAlertText, facetValue, genericSymbolName, genericTypeTitle } from "../miotFacetText.js";
 import { percentFromRaw } from "./percentScale.js";
 import { resolveSpeakerActionIds } from "./speakerActions.js";
@@ -361,16 +362,8 @@ function curtainTrackName(description: string | undefined, fallback: string): st
   }
 }
 
-/** Services the shared appliance card reads by default, matching macOS `applianceServiceNames`. */
-export const APPLIANCE_SERVICE_NAMES: readonly string[] = [
-  "water-heater",
-  "boiler",
-  "washer",
-  "dryer",
-  "clothes-dryer",
-  "cleanfly-dryer",
-  "dishwasher",
-];
+/** Services the shared appliance card reads by default, from `Shared/deviceClaims.json` (#26). */
+export const APPLIANCE_SERVICE_NAMES: readonly string[] = DEVICE_CLAIMS.applianceServices;
 
 /** Families whose `status` and `run-status` words belong to the shared activity vocabulary. */
 const ACTIVITY_SERVICES = new Set(["washer", "dryer", "clothes-dryer", "cleanfly-dryer", "dishwasher"]);
@@ -717,68 +710,15 @@ export function interpretLockStatus(description: string): string | null {
   return null;
 }
 
-/** Services that count as this device type's own primary service. */
+/** Services that count as this device type's own primary service (`Shared/deviceClaims.json`). */
 export function preferredMiotServices(deviceType: string): string[] {
   const appliance = DEVICE_PROFILES.appliances[deviceType];
   if (appliance) return [...appliance.primary];
-  if (deviceType === "outlet") return ["outlet", "switch"];
-  if (deviceType === "stb") return ["stb", "television"];
-  if (deviceType === "camera" || deviceType === "cateye" || deviceType === "video-doorbell") {
-    return ["camera-control", "video-doorbell"];
-  }
-  if (deviceType === "kettle" || deviceType === "ble-kettle") return ["kettle", "ble-kettle", "water-dispenser"];
-  return [deviceType];
+  return [...preferredClaimServices(deviceType)];
 }
 
 /** The service a card is built from, or undefined when the device is unsupported. */
 export function primaryMiotService(spec: MiotDeviceSpec): MiotService | undefined {
-  const priority = [
-    "air-conditioner",
-    "heater",
-    "thermostat",
-    "electric-blanket",
-    "dehumidifier",
-    "diffuser",
-    "television",
-    "stb",
-    "speaker",
-    "light",
-    "fan",
-    "air-purifier",
-    "air-fresh",
-    "humidifier",
-    "video-doorbell",
-    "vacuum",
-    "curtain",
-    "window-opener",
-    "airer",
-    "water-heater",
-    "washer",
-    "dryer",
-    "clothes-dryer",
-    "dishwasher",
-    "fridge",
-    "camera-control",
-    "outlet",
-    "switch",
-    "electronic-valve",
-    "kettle",
-    "ble-kettle",
-    "water-dispenser",
-    "cooker",
-    "air-fryer",
-    "oven",
-    "microwave-oven",
-    "health-pot",
-    "lock",
-    "motion-sensor",
-    "occupancy-sensor",
-    "magnet-sensor",
-    "submersion-sensor",
-    "illumination-sensor",
-    "air-monitor",
-    "temperature-humidity-sensor",
-  ];
   const devShort = miotShortName(spec.type);
   // A device type the profile table lists as an appliance takes the first service the table
   // names, even though the type itself has no same-name service (#4).
@@ -791,19 +731,18 @@ export function primaryMiotService(spec: MiotDeviceSpec): MiotService | undefine
     return undefined;
   }
   const preferredServices = preferredMiotServices(devShort);
-  // A shut-off valve without a power meter is not a breaker and stays unsupported (#265), and a
-  // `water-heater` service belongs to a water heater rather than claiming another device (#300).
-  const claims = (short: string) =>
-    (short !== "electronic-valve" || isMainsBreaker(spec)) &&
-    (short !== "water-heater" || devShort === "water-heater");
+  // The claim conditions live in the shared document (#265, #300): a shut-off valve without a
+  // power meter is not a breaker and stays unsupported, and a `water-heater` service belongs to a
+  // water heater rather than claiming another device.
+  const claims = (short: string) => claimAllows(short, spec);
   let primaryService: MiotService | undefined = spec.services.find((s) => {
     const sShort = miotShortName(s.type);
-    return preferredServices.includes(sShort) && priority.includes(sShort) && claims(sShort);
+    return preferredServices.includes(sShort) && CLAIM_LADDER.includes(sShort) && claims(sShort);
   });
   if (!primaryService) {
-    for (const p of priority) {
-      if (!miotFallbackAllows(devShort, p) || !claims(p)) continue;
-      const found = spec.services.find((s) => miotShortName(s.type) === p);
+    for (const service of CLAIM_LADDER) {
+      if (!miotFallbackAllows(devShort, service) || !claims(service)) continue;
+      const found = spec.services.find((s) => miotShortName(s.type) === service);
       if (found) {
         primaryService = found;
         break;
