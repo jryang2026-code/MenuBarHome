@@ -2807,6 +2807,30 @@ private struct PrivacySettingsTab: View {
                     .fixedSize(horizontal: false, vertical: true)
                 }
                 .settingsRow(anchor: .allowURLControl)
+
+                Divider().overlay(Color.primary.opacity(0.06))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    SettingsToggleRow(
+                        title: L10n.tr(
+                            "在系统搜索（Spotlight）里找到设备、房间与场景",
+                            "Show devices, rooms and scenes in Spotlight search"
+                        ),
+                        isOn: Binding(
+                            get: { store.spotlightIndexEnabled },
+                            set: { store.spotlightIndexEnabled = $0 }
+                        )
+                    )
+
+                    Text(L10n.tr(
+                        "关闭时不会向系统索引写入任何内容，退出账号或断开连接会同时清空已写入的条目。索引只包含设备名、房间名和场景名，不含设备 ID、地址、账号或令牌。",
+                        "When off, nothing is written to the system index; signing out or removing a connection clears what was written. The index holds device, room and scene names only — no device IDs, addresses, accounts or tokens."
+                    ))
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .settingsRow(anchor: .spotlightIndex)
             }
         }
         .task { await HotkeyAndNotificationManager.shared.refreshNotificationPermission() }
