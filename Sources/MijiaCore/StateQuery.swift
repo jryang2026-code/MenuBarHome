@@ -25,6 +25,7 @@ struct StateQuery {
 
     static func parse(_ text: String) -> StateQuery? {
         let polite = LocalIntentParser.removingPoliteWrappers(text)
+        let asksWhether = polite.contains("是不是")
         let question = polite.replacingOccurrences(of: "是不是", with: "")
         let range = NSRange(question.startIndex..., in: question)
         for (kind, pattern) in patterns {
@@ -33,13 +34,13 @@ struct StateQuery {
                 return StateQuery(kind: kind, target: String(question[targetRange]))
             }
         }
-        if question != polite,
+        if asksWhether,
            let match = question.wholeMatch(of: /^(.+?)(?:开着|亮着|关着|打开了|关闭了|开了|关了)$/) {
             return StateQuery(kind: .status, target: String(match.output.1))
         }
         let statusWords = #"开着|亮着|关着|开了|关了|关好|关上|什么状态|温度|湿度|几度|几档"#
         let mixedStatusQuestion = #"(?:"# + statusWords + #")(?:了)?(?:吗|没有|没)"#
-        if (question != polite && question.range(of: statusWords, options: .regularExpression) != nil)
+        if (asksWhether && question.range(of: statusWords, options: .regularExpression) != nil)
             || question.range(of: mixedStatusQuestion, options: .regularExpression) != nil
             || question.range(of: #"扫地(?:机|机器人)在哪$"#, options: .regularExpression) != nil {
             return StateQuery(kind: .unsupported, target: "")

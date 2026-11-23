@@ -65,6 +65,7 @@ export async function handleNaturalCommand(host: MenuMijiaWindowsApp, rawInput: 
     const delaySpec = !fromScheduled ? DelayPhrase.extract(trimmed) : null;
     const query = parseStateQuery(delaySpec?.remainder ?? trimmed);
     if (query) {
+      if (host.isResolvingIntent) host.advanceAssistantEpoch();
       if (delaySpec) {
         host.replyBanner = { text: t("定时查询仅支持查看当前状态"), source: t("0ms 本地直达"), isError: true };
         host.render();

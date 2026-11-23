@@ -838,6 +838,7 @@ extension HomeStore {
         let delayed = DelayPhrase.extract(spoken)
         let utterance = delayed?.remainder ?? spoken
         if let query = LocalIntentParser.stateQuery(in: utterance) {
+            if case .thinking = assistantState { advanceAssistantEpoch() }
             pendingCloudConsent = nil
             assistantSuggestions = []
             guard delayed == nil else {

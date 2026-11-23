@@ -348,6 +348,31 @@ describe("P5a-W acceptance 3: late in-flight results dispatch nothing", () => {
     assert.equal(app.isResolvingIntent, false, "the discarded run must not leave the spinner up");
   });
 
+  it("discards an earlier model command when a snapshot query answers", async () => {
+    const app = mountDemoApp();
+    enableAiForRequest(app);
+    await app.handleNaturalCommand("关闭书房台灯");
+    const transport = deferredTransport();
+    Object.defineProperty(app, "transport", { value: transport.stub, configurable: true });
+
+    const pending = app.handleNaturalCommand("魔法彩虹泡泡机启动");
+    await setImmediate();
+    assert.equal(transport.calls.length, 1);
+
+    await app.handleNaturalCommand("书房台灯开着吗");
+    transport.release(0, chatCompletion({
+      reply: "已打开书房台灯",
+      actions: [{ device: "light.study_desk", op: "power", value: true }],
+    }));
+    await pending;
+
+    const desk = app.devices.find((d) => d.id === "light.study_desk");
+    assert.equal(desk?.kind.kind === "light" ? desk.kind.isOn : null, false);
+    assert.equal(app.replyBanner?.text, "书房台灯：关着");
+    assert.equal(app.isResolvingIntent, false);
+    assert.equal(transport.calls.length, 1);
+  });
+
   it("discards an in-flight result that lands while the provider removal persists", async () => {
     const app = mountDemoApp();
     enableAiForRequest(app);

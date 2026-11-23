@@ -40,18 +40,19 @@ export function isPoliteActionQuestion(text: string): boolean {
 export function parseStateQuery(utterance: string): StateQuery | null {
   const text = normalizeChineseUtterance(utterance);
   const polite = removingPoliteWrappers(text);
+  const asksWhether = polite.includes("是不是");
   const question = polite.replaceAll("是不是", "");
   for (const [kind, pattern] of patterns) {
     const target = pattern.exec(question)?.[1];
     if (target) return { kind, target };
   }
-  if (question !== polite) {
+  if (asksWhether) {
     const target = /^(.+?)(?:开着|亮着|关着|打开了|关闭了|开了|关了)$/.exec(question)?.[1];
     if (target) return { kind: "status", target };
   }
   const statusWords = "开着|亮着|关着|开了|关了|关好|关上|什么状态|温度|湿度|几度|几档";
   const mixedStatusQuestion = new RegExp(`(?:${statusWords})(?:了)?(?:吗|没有|没)`);
-  const unsupported = (question !== polite && new RegExp(statusWords).test(question))
+  const unsupported = (asksWhether && new RegExp(statusWords).test(question))
     || mixedStatusQuestion.test(question) || /扫地(?:机|机器人)在哪$/.test(question);
   return unsupported ? { kind: "unsupported", target: "" } : null;
 }

@@ -199,6 +199,27 @@ struct AssistantToggleAndProviderRemovalTests {
         }
     }
 
+    @Test("A snapshot query supersedes an earlier model command")
+    @MainActor
+    func stateQueryDiscardsEarlierModelCommand() async throws {
+        let (store, mock, vault, _, defaults) = try await makeStore()
+        #expect(store.setAIAssistantEnabled(true))
+        configureDeepSeek(store, vault: vault, defaults: defaults)
+        let transport = DeferredTransport()
+        store.assistantTransportOverride = { request in try await transport.stub(request) }
+
+        let task = Task { await store.runAssistantCommand("我要睡觉了") }
+        await waitUntil { transport.count == 1 }
+        let reply = await store.runAssistantCommand("书房台灯开着吗")
+        transport.release(Self.chat(Self.powerOnPlan))
+
+        #expect(reply?.reply == "书房台灯：关着")
+        #expect(await task.value == nil)
+        #expect(await mock.executedCommands.isEmpty)
+        #expect(store.assistantState == .done("书房台灯：关着"))
+        #expect(transport.count == 1)
+    }
+
     @Test("A companion ask disconnected while the model answers drives nothing (P6a-M)")
     @MainActor
     func lateResultAfterCompanionDisconnectDiscarded() async throws {

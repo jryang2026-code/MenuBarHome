@@ -169,6 +169,7 @@
     {"utterance": "书房台灯是不是开着", "expected": [], "expectedReply": "书房台灯：开着，亮度 50%", "candidates": []},
     {"utterance": "客厅温度多少", "expected": [], "expectedReply": "客厅空调：27.5°C", "candidates": []},
     {"utterance": "可以帮我关掉风扇吗", "expected": [{"targetId": "dev_fan", "kind": "power", "value": false}]},
+    {"utterance": "请帮我把书房台灯关上", "expected": [{"targetId": "dev_desk", "kind": "power", "value": false}]},
     {"utterance": "请问关闭书房台灯", "expected": [{"targetId": "dev_desk", "kind": "power", "value": false}]},
     {"utterance": "客厅灯是不是关了再打开书房吸顶灯", "expected": null},
     {"utterance": "未注册的灯开着吗", "expected": null},
