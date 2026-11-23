@@ -267,9 +267,11 @@ macOS 版是 Swift 6 原生应用，Windows 11 版是另一套 Tauri v2 实现�
 }
 ```
 
+所有控制类工具都标了 `destructiveHint: true`，遵守注解的 MCP 客户端会在执行前弹确认。只想让 AI 会话只读时，在同一份配置里加 `--read-only`（即 `"args": ["--read-only"]`，或直接跑 `scripts/mijia mcp --read-only`）：此时 `tools/list` 只暴露 `list_devices`、`get_home_status`、`focus_device`，任何控制调用都会直接返回错误并点名该参数，不会碰到设备。
+
 ### Raycast 扩展
 
-`raycast/` 是标准 Raycast 扩展，提供三个命令：**搜索设备**、**场景与快捷动作**、**问 MenuBarHome**。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；每条命令都会用 toast 显示应用的执行结果。
+`raycast/` 是标准 Raycast 扩展，提供三个命令：**搜索设备**、**场景与快捷动作**、**问 MenuBarHome**。在 Raycast 的扩展页按 `+` → **Import Extension** 选择 `raycast/` 即可，或在 Raycast 打开时运行 `cd raycast && npm ci && npm run dev`。开关、亮度、色温、目标温度与风速都按精确值下发（`menumijia://power`、`brightness`、`color-temp`、`temperature`、`fan`），滑条不会靠猜当前状态去翻转设备；每条命令都会先弹出「正在执行」的 toast，拿到结果后再更新为成功或失败。
 
 </details>
 
