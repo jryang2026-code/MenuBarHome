@@ -14,20 +14,22 @@ export const CN_POWER_VERBS: Readonly<Record<string, boolean>> = {
 };
 
 export const CN_BRIGHTNESS_WORDS: Readonly<Record<string, number>> = {
-  调暗: 20, 变暗: 20, 最暗: 10,
+  调暗: 20, 变暗: 20, 最暗: 1,
   调亮: 100, 变亮: 100, 最亮: 100,
 };
 
 export const CN_COLOR_TEMPERATURE_WORDS: Readonly<Record<string, number>> = {
-  暖光: 2700, 暖色: 2700, 黄光: 2700,
+  暖光: 2700, 暖白: 2700, 暖白光: 2700, 暖色: 2700, 黄光: 2700,
   自然光: 4000,
-  白光: 6500, 冷光: 6500,
+  冷光: 4000, 冷白: 4000, 冷白光: 4000,
+  白光: 6500, 日光: 6500, 正白光: 6500,
+  烛光: 1900, 蜡烛光: 1900,
 };
 
 export const CN_LIGHT_EFFECT_WORDS: Readonly<Record<string, string>> = {
   月光模式: "Night", 月光灯: "Night", 月光: "Night",
   夜灯模式: "Night", 夜灯: "Night",
-  日光模式: "Day", 日光灯: "Day", 日光: "Day",
+  日光模式: "Day", 日光灯: "Day",
 };
 
 export const CN_BRIGHTNESS_STEP_WORDS: Readonly<Record<string, number>> = {
@@ -195,6 +197,7 @@ const CN_NUMERAL_DIGITS: Readonly<Record<string, number>> = {
 export function spokenChineseNumber(raw: string): number | null {
   const s = raw.trim();
   if (!s) return null;
+  if (s === "一百" || s === "百") return 100;
   if (/^[0-9]+$/.test(s)) {
     const n = Number(s);
     return Number.isSafeInteger(n) ? n : null;
@@ -232,6 +235,15 @@ export function extractChineseNumericOps(state: { rest: string }): IntentOperati
   if (stepMatched) {
     state.rest = state.rest.replace(stepRegex, CONSUMED_MARKER);
   }
+
+  // Leave the fan name intact and consume its percentage before bare percentages become brightness.
+  const fanRegex = /(?:风速|(?<=风扇))(?:调到|调至|调为|设为|设置为|到|为)?(?:百分之([0-9]{1,3}|[零一二两三四五六七八九十百]+)(?![0-9%％])|([0-9]{1,3}|[零一二两三四五六七八九十百]+)[%％])/g;
+  state.rest = state.rest.replace(fanRegex, (phrase, prefixed: string | undefined, suffixed: string | undefined) => {
+    const percent = spokenChineseNumber(prefixed ?? suffixed ?? "");
+    if (percent === null) return phrase;
+    ops.push({ kind: "fanPercentage", percent });
+    return CONSUMED_MARKER;
+  });
 
   const numericPatterns: ReadonlyArray<readonly [RegExp, (val: number) => IntentOperation]> = [
     [/(\d{4})[kK]/g, (v) => ({ kind: "colorTemperature", kelvin: Math.round(v) })],
