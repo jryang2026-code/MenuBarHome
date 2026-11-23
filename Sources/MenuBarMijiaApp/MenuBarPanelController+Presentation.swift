@@ -597,8 +597,10 @@ extension MenuBarPanelController {
         return left.maxX ... right.minX
     }
 
-    /// Keeps the panel out from under the notch: a candidate that would overlap the band moves to the
-    /// trailing edge (the side the pilot column already uses) instead of sitting under the housing.
+    /// Keeps the panel out from under the notch when the item itself is hidden by the housing, or when
+    /// there is no anchor and the centred fallback lands under it. A visible item keeps its centred
+    /// card even when the card's width reaches into the notch's column: the card hangs below the
+    /// menu-bar band, where nothing obscures it.
     private static func clearOfNotch(
         _ x: CGFloat,
         width: CGFloat,
@@ -607,6 +609,10 @@ extension MenuBarPanelController {
     ) -> CGFloat {
         guard let notch = notchSpan(input) else { return x }
         guard x < notch.upperBound, x + width > notch.lowerBound else { return x }
+        if let anchor = input.anchor,
+           anchor.maxX <= notch.lowerBound || anchor.minX >= notch.upperBound {
+            return x
+        }
         let visible = input.visibleFrame
         let minX = visible.minX + screenMargin
         let maxX = max(minX, visible.maxX - width - screenMargin)

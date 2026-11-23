@@ -159,8 +159,8 @@ struct MenuBarPanelPlacementTests {
 
     // MARK: - Notch
 
-    @Test("A centred card that would sit under the notch moves to the trailing edge")
-    func classicClearsNotch() {
+    @Test("An item hidden by the notch opens the card at the trailing edge")
+    func classicClearsNotchForHiddenItem() {
         let anchor = NSRect(x: 744, y: 957, width: 24, height: 24)
         let placed = MenuBarPanelController.placement(
             theme: .classic,
@@ -168,6 +168,29 @@ struct MenuBarPanelPlacementTests {
         )
         #expect(placed.frame.minX >= Fixture.notchRight.minX, "the card starts right of the notch")
         #expect(placed.frame.maxX == Fixture.visible.maxX - 8)
+    }
+
+    @Test("A missing item still clears the notch instead of centring under it")
+    func classicClearsNotchWithoutAnchor() {
+        let placed = MenuBarPanelController.placement(
+            theme: .classic,
+            input: input(left: Fixture.notchLeft, right: Fixture.notchRight, anchor: nil, size: Fixture.classicSize)
+        )
+        #expect(placed.frame.minX >= Fixture.notchRight.minX)
+    }
+
+    @Test("A visible item beside the notch keeps its centred card, even when the card reaches the notch column")
+    func classicKeepsCentredCardBesideNotch() {
+        // The item is visible left of the housing; the 376 pt card spans 424...800 and crosses the
+        // notch column, but it hangs below the menu-bar band, so it must not jump to the trailing edge.
+        let anchor = NSRect(x: 600, y: 957, width: 24, height: 24)
+        let placed = MenuBarPanelController.placement(
+            theme: .classic,
+            input: input(left: Fixture.notchLeft, right: Fixture.notchRight, anchor: anchor, size: Fixture.classicSize)
+        )
+        #expect(placed.frame.minX == 424, "612 - 188")
+        #expect(placed.frame.maxX > Fixture.notchLeft.maxX, "the card spans into the notch column")
+        #expect(placed.frame.minX < Fixture.notchRight.minX)
     }
 
     @Test("A card already clear of the notch keeps its centred position")
