@@ -133,17 +133,26 @@ extension HomeStore {
 
     /// Publishes the enabled types and safety switches to the Mi and Home Assistant providers. Mi
     /// reads its box before every plan, so a closed type stops being polled on the next refresh
-    /// (P3a-M); Home Assistant reads its box for every frame (P3b-M).
+    /// (P3a-M); Home Assistant reads its box for every frame (P3b-M). In dual-source mode, starred
+    /// canonical IDs are expanded with each source's native IDs so paired cards keep their offline
+    /// alerts even when the canonical ID belongs to the other source (#303, #325).
     func syncMiotTypePrunePolicy() {
-        let safetyPolicy = effectiveSafetyRetentionPolicy()
+        let baseSafetyPolicy = effectiveSafetyRetentionPolicy()
+        let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
+        var miSafetyPolicy = baseSafetyPolicy
+        var haSafetyPolicy = baseSafetyPolicy
+        if let dual, !baseSafetyPolicy.starredDeviceIds.isEmpty {
+            miSafetyPolicy.starredDeviceIds.formUnion(dual.miSourceIDs(forCanonicalIDs: baseSafetyPolicy.starredDeviceIds))
+            haSafetyPolicy.starredDeviceIds.formUnion(dual.haSourceIDs(forCanonicalIDs: baseSafetyPolicy.starredDeviceIds))
+        }
         miotTypePruneBox.update(MiotTypePrunePolicy(
             selection: capabilitySelection,
-            safetyPolicy: safetyPolicy,
+            safetyPolicy: miSafetyPolicy,
             sourceScope: miSessionScopeIdentifier ?? ""
         ))
         haTypePruneBox.update(HATypePrunePolicy(
             selection: capabilitySelection,
-            safetyPolicy: safetyPolicy,
+            safetyPolicy: haSafetyPolicy,
             sourceScope: homeAssistantScopeIdentifier
         ))
     }
@@ -161,9 +170,12 @@ extension HomeStore {
             miotTypePruneReports[key] = report
         }
         var changed = false
-        for entry in report.hiddenIndexedDevices where indexedDevicesById[entry.id] != entry {
-            indexedDevicesById[entry.id] = entry
-            changed = true
+        for entry in report.hiddenIndexedDevices {
+            let mergedEntry = Self.mergedHiddenIndexedDevice(entry, existing: indexedDevicesById[entry.id])
+            if indexedDevicesById[entry.id] != mergedEntry {
+                indexedDevicesById[entry.id] = mergedEntry
+                changed = true
+            }
         }
         if changed { persistIndexedDevices() }
         if enableSafetyAlerts,
@@ -176,6 +188,30 @@ extension HomeStore {
                 }
             }
         }
+    }
+
+    private static func mergedHiddenIndexedDevice(
+        _ incoming: CapabilityIndexedDevice,
+        existing: CapabilityIndexedDevice?
+    ) -> CapabilityIndexedDevice {
+        guard let existing, existing.connection != incoming.connection else { return incoming }
+        var readKeys = incoming.readKeys
+        for key in existing.readKeys where !readKeys.contains(key) { readKeys.append(key) }
+        var safetyReadKeys = incoming.safetyReadKeys
+        for key in existing.safetyReadKeys where !safetyReadKeys.contains(key) { safetyReadKeys.append(key) }
+        return CapabilityIndexedDevice(
+            id: incoming.id,
+            name: incoming.name,
+            category: incoming.category,
+            connection: incoming.connection,
+            sourceScope: incoming.sourceScope,
+            isSourceAvailable: incoming.isSourceAvailable || existing.isSourceAvailable,
+            upstreamHiddenOrDisabled: incoming.upstreamHiddenOrDisabled && existing.upstreamHiddenOrDisabled,
+            participatesInAllOff: incoming.participatesInAllOff || existing.participatesInAllOff,
+            safetySignals: existing.safetySignals.union(incoming.safetySignals),
+            readKeys: readKeys,
+            safetyReadKeys: safetyReadKeys
+        )
     }
 
     /// Drops one account's (or the Home Assistant address's) retained safety set. Its index entries
@@ -1203,13 +1239,23 @@ extension HomeStore {
             if let anySplit = indexedDevicesById.keys.sorted().first(where: { $0.hasPrefix("\(parsed.did).s") }) {
                 return anySplit
             }
+            if let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider) {
+                if let canonical = dual.canonicalID(forSourceID: splitId, backend: .xiaomiCloud),
+                   indexedDevicesById[canonical] != nil {
+                    return canonical
+                }
+                if let canonical = dual.canonicalID(forSourceID: parsed.did, backend: .xiaomiCloud),
+                   indexedDevicesById[canonical] != nil {
+                    return canonical
+                }
+            }
             return parsed.did
         }
         if indexedDevicesById[entityId] != nil { return entityId }
         // A closed Home Assistant type keeps its cards' entities as read keys (P3b-M), so a stored
         // entity command still meets「该设备类型已关闭」 instead of slipping past the gate.
         return indexedDevicesById.values
-            .filter { $0.connection == .homeAssistant && $0.readKeys.contains(entityId) }
+            .filter { $0.readKeys.contains(entityId) }
             .map(\.id).min()
     }
 

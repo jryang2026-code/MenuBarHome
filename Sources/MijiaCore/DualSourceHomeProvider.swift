@@ -224,6 +224,91 @@ private final class DisabledXiaomiAccountsGate: @unchecked Sendable {
     }
 }
 
+/// Monotonic (insert/update only, never delete) source-native id ↔ canonical card id table for
+/// `DualSourceHomeProvider` (#303, #325). Shared via `NSLock` so `HomeStore` can expand
+/// `starredDeviceIds` synchronously when publishing type-pruning policies, even after a device
+/// type is closed or one source disconnects.
+private final class CanonicalSourceIDBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var haToCanonical: [String: String] = [:]
+    private var miToCanonical: [String: String] = [:]
+
+    init(initialAssignments: [String: String] = [:]) {
+        for (key, canonicalID) in initialAssignments where !canonicalID.isEmpty {
+            if key.hasPrefix("ha:") {
+                let sourceID = String(key.dropFirst(3))
+                if !sourceID.isEmpty { haToCanonical[sourceID] = canonicalID }
+            } else if key.hasPrefix("mi:") {
+                let sourceID = String(key.dropFirst(3))
+                if !sourceID.isEmpty { miToCanonical[sourceID] = canonicalID }
+            } else if key.hasPrefix("pair:") {
+                let body = key.dropFirst(5)
+                if let sep = body.firstIndex(of: "|") {
+                    let haID = String(body[..<sep])
+                    let miID = String(body[body.index(after: sep)...])
+                    if !haID.isEmpty, haToCanonical[haID] == nil { haToCanonical[haID] = canonicalID }
+                    if !miID.isEmpty, miToCanonical[miID] == nil { miToCanonical[miID] = canonicalID }
+                }
+            }
+        }
+    }
+
+    func merge(haCanonicalIDs: [String: String], miCanonicalIDs: [String: String]) {
+        guard !haCanonicalIDs.isEmpty || !miCanonicalIDs.isEmpty else { return }
+        lock.withLock {
+            for (sourceID, canonicalID) in haCanonicalIDs where !sourceID.isEmpty && !canonicalID.isEmpty {
+                haToCanonical[sourceID] = canonicalID
+            }
+            for (sourceID, canonicalID) in miCanonicalIDs where !sourceID.isEmpty && !canonicalID.isEmpty {
+                miToCanonical[sourceID] = canonicalID
+            }
+        }
+    }
+
+    func canonicalID(forSourceID sourceID: String, backend: HomeBackend) -> String? {
+        lock.withLock {
+            switch backend {
+            case .homeAssistant: return haToCanonical[sourceID]
+            case .xiaomiCloud: return miToCanonical[sourceID]
+            case .demo: return nil
+            }
+        }
+    }
+
+    func sourceIDs(forCanonicalIDs canonicalIDs: Set<String>, backend: HomeBackend) -> Set<String> {
+        guard !canonicalIDs.isEmpty else { return [] }
+        return lock.withLock {
+            let map: [String: String]
+            switch backend {
+            case .homeAssistant: map = haToCanonical
+            case .xiaomiCloud: map = miToCanonical
+            case .demo: return []
+            }
+            var result: Set<String> = []
+            for (sourceID, canonicalID) in map where canonicalIDs.contains(canonicalID) {
+                result.insert(sourceID)
+            }
+            return result
+        }
+    }
+
+    func canonicalToSourceIDs(for backend: HomeBackend) -> [String: Set<String>] {
+        lock.withLock {
+            let map: [String: String]
+            switch backend {
+            case .homeAssistant: map = haToCanonical
+            case .xiaomiCloud: map = miToCanonical
+            case .demo: return [:]
+            }
+            var reverse: [String: Set<String>] = [:]
+            for (sourceID, canonicalID) in map {
+                reverse[canonicalID, default: []].insert(sourceID)
+            }
+            return reverse
+        }
+    }
+}
+
 /// Keeps both providers connected and publishes one merged home. Commands are routed by their
 /// target address, so an entity id decides the source without a second lookup table.
 public actor DualSourceHomeProvider: HomeProvider {
@@ -287,10 +372,9 @@ public actor DualSourceHomeProvider: HomeProvider {
     private var lastStatus: ConnectionStatus?
 
     private var canonical: CanonicalDeviceRegistry
+    private let canonicalSourceIDs: CanonicalSourceIDBox
     private var rooms = RoomIdentityRegistry()
     private var routes: [String: DeviceMergeRoute] = [:]
-    private var haCanonicalIDs: [String: String] = [:]
-    private var miCanonicalIDs: [String: String] = [:]
     private var activeCameraRoutes: [String: DeviceMergeRoute] = [:]
     /// Merged card id → recent emitted press timestamps per backend. Keeping a bounded history
     /// rather than only the latest timestamp lets a delayed poll from the slower source still
@@ -357,6 +441,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         self.homeAssistant = homeAssistant
         self.xiaomiCloud = xiaomiCloud
         self.canonical = CanonicalDeviceRegistry(assignments: initialCanonicalIDs)
+        self.canonicalSourceIDs = CanonicalSourceIDBox(initialAssignments: initialCanonicalIDs)
         self.knownPreferenceIDs = knownPreferenceIDs
         self.pinnedBackends = pinnedBackends
         self.persistCanonicalIDs = persistCanonicalIDs
@@ -449,6 +534,28 @@ public actor DualSourceHomeProvider: HomeProvider {
         emitSourceStatuses()
         emitLocalNetworkPermission()
         recompute()
+    }
+
+    /// Canonical card id → known Mi source device ids (monotonic across pruning and source drops, #303).
+    public nonisolated var canonicalToMiSourceIDs: [String: Set<String>] {
+        canonicalSourceIDs.canonicalToSourceIDs(for: .xiaomiCloud)
+    }
+
+    /// Canonical card id → known Home Assistant native device ids (monotonic across pruning and source drops, #325).
+    public nonisolated var canonicalToHASourceIDs: [String: Set<String>] {
+        canonicalSourceIDs.canonicalToSourceIDs(for: .homeAssistant)
+    }
+
+    public nonisolated func miSourceIDs(forCanonicalIDs canonicalIDs: Set<String>) -> Set<String> {
+        canonicalSourceIDs.sourceIDs(forCanonicalIDs: canonicalIDs, backend: .xiaomiCloud)
+    }
+
+    public nonisolated func haSourceIDs(forCanonicalIDs canonicalIDs: Set<String>) -> Set<String> {
+        canonicalSourceIDs.sourceIDs(forCanonicalIDs: canonicalIDs, backend: .homeAssistant)
+    }
+
+    public nonisolated func canonicalID(forSourceID sourceID: String, backend: HomeBackend) -> String? {
+        canonicalSourceIDs.canonicalID(forSourceID: sourceID, backend: backend)
     }
 
     /// Synchronously seals off reads, writes, and events for `backend` before async provider
@@ -680,8 +787,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         case .doorbellRang(var ring):
             // Both sources report presses with their own device id; translate onto the merged
             // card so the paired card's popup and the activity feed can find it (#23).
-            let sourceCanonicalIDs = backend == .homeAssistant ? haCanonicalIDs : miCanonicalIDs
-            if let cardID = sourceCanonicalIDs[ring.deviceId] {
+            if let cardID = canonicalSourceIDs.canonicalID(forSourceID: ring.deviceId, backend: backend) {
                 ring.deviceId = cardID
             }
             // The same physical press can arrive from both sources with different entity ids
@@ -699,10 +805,10 @@ public actor DualSourceHomeProvider: HomeProvider {
             break
 
         case .miotTypePruneChanged(let report):
-            continuation?.yield(.miotTypePruneChanged(report))
+            continuation?.yield(.miotTypePruneChanged(canonicalizedPruneReport(report, from: backend)))
 
         case .haTypePruneChanged(let report):
-            continuation?.yield(.haTypePruneChanged(report))
+            continuation?.yield(.haTypePruneChanged(canonicalizedPruneReport(report, from: backend)))
 
         case .localNetworkPermissionChanged(let blocked):
             if backend == .homeAssistant { haLocalNetworkBlocks = blocked }
@@ -728,6 +834,63 @@ public actor DualSourceHomeProvider: HomeProvider {
             emitLocalNetworkPermission()
             recompute()
         }
+    }
+
+    private func canonicalizedPruneReport(
+        _ report: MiotTypePruneReport,
+        from backend: HomeBackend
+    ) -> MiotTypePruneReport {
+        guard !report.isEmpty else { return report }
+        let hiddenIndexedDevices = report.hiddenIndexedDevices.map { entry -> CapabilityIndexedDevice in
+            guard let canonicalID = canonicalSourceIDs.canonicalID(forSourceID: entry.id, backend: backend),
+                  canonicalID != entry.id else {
+                return entry
+            }
+            return CapabilityIndexedDevice(
+                id: canonicalID,
+                name: entry.name,
+                category: entry.category,
+                connection: entry.connection,
+                sourceScope: entry.sourceScope,
+                isSourceAvailable: entry.isSourceAvailable,
+                upstreamHiddenOrDisabled: entry.upstreamHiddenOrDisabled,
+                participatesInAllOff: entry.participatesInAllOff,
+                safetySignals: entry.safetySignals,
+                readKeys: entry.readKeys,
+                safetyReadKeys: entry.safetyReadKeys
+            )
+        }
+        let hiddenDeviceIds = Set(report.hiddenDeviceIds.map { id in
+            canonicalSourceIDs.canonicalID(forSourceID: id, backend: backend) ?? id
+        })
+        let safetyDevices = report.safetyDevices.map { device -> SmartDevice in
+            guard let canonicalID = canonicalSourceIDs.canonicalID(forSourceID: device.id, backend: backend),
+                  canonicalID != device.id else {
+                return device
+            }
+            var rewritten = SmartDevice(
+                id: canonicalID,
+                name: device.name,
+                roomId: device.roomId,
+                roomName: device.roomName,
+                model: device.model,
+                isOnline: device.isOnline,
+                kind: device.kind,
+                isSharedHome: device.isSharedHome,
+                accountId: device.accountId,
+                accountLabel: device.accountLabel,
+                telemetryStale: device.telemetryStale,
+                auxiliarySafetyObservations: device.auxiliarySafetyObservations
+            )
+            rewritten.providerSafetySignals = device.providerSafetySignals
+            return rewritten
+        }
+        return MiotTypePruneReport(
+            scope: report.scope,
+            hiddenIndexedDevices: hiddenIndexedDevices,
+            hiddenDeviceIds: hiddenDeviceIds,
+            safetyDevices: safetyDevices
+        )
     }
 
     private func sourceStreamFinished(_ backend: HomeBackend) {
@@ -1611,8 +1774,7 @@ public actor DualSourceHomeProvider: HomeProvider {
         }
         rooms = result.rooms
         routes = result.routes
-        haCanonicalIDs = result.haCanonicalIDs
-        miCanonicalIDs = result.miCanonicalIDs
+        canonicalSourceIDs.merge(haCanonicalIDs: result.haCanonicalIDs, miCanonicalIDs: result.miCanonicalIDs)
         for (deviceID, activeRoute) in activeCameraRoutes {
             let nextRoute = result.routes[deviceID]
             if nextRoute?.backend != activeRoute.backend || nextRoute?.sourceDeviceID != activeRoute.sourceDeviceID {
@@ -1731,7 +1893,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             case .xiaomiCloud:
                 await xiaomiCloud?.retryLAN(deviceId: route.sourceDeviceID)
             case .homeAssistant:
-                let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+                let miSourceIDs = Array(canonicalSourceIDs.sourceIDs(forCanonicalIDs: [deviceId], backend: .xiaomiCloud))
                 let ha = homeAssistant
                 let mi = xiaomiCloud
                 await withTaskGroup(of: Void.self) { group in
@@ -1747,7 +1909,7 @@ public actor DualSourceHomeProvider: HomeProvider {
             }
             return
         }
-        let miSourceIDs = miCanonicalIDs.compactMap { $0.value == deviceId ? $0.key : nil }
+        let miSourceIDs = Array(canonicalSourceIDs.sourceIDs(forCanonicalIDs: [deviceId], backend: .xiaomiCloud))
         let ha = homeAssistant
         let mi = xiaomiCloud
         await withTaskGroup(of: Void.self) { group in

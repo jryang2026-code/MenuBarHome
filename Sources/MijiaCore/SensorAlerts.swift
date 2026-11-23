@@ -30,13 +30,33 @@ enum SensorAlerts {
         var ledger = ledger
         var alerts: [SafetyAlert] = []
         for device in devices {
-            for observation in device.freshSafetyObservations {
-                let previous = ledger[observation.sourceId]
+            let observations = device.freshSafetyObservations
+            var countByKind: [SensorAlertKind: Int] = [:]
+            for observation in observations {
+                countByKind[observation.kind, default: 0] += 1
+            }
+            var deviceKindAlarming: [String: Bool] = [:]
+            for observation in observations {
+                let deviceKindKey = "device:\(device.id)#\(observation.kind.rawValue)"
+                let rawPrevious = ledger[observation.sourceId]
+                let effectivePrevious: Bool?
+                if countByKind[observation.kind] == 1, let previousDeviceKind = ledger[deviceKindKey] {
+                    // Track a single-probe sensor's edge by canonical (device.id, kind) so a
+                    // dual-source handover between HA and Mi neither double-fires an active alarm
+                    // nor swallows a fresh alarm after clearing on the other source (#325).
+                    effectivePrevious = previousDeviceKind
+                } else {
+                    effectivePrevious = rawPrevious
+                }
                 ledger[observation.sourceId] = observation.alarming
-                let firstSample = previous == nil && observation.kind.notifiesOnFirstSample
-                let rose = observation.alarming && (previous == false || firstSample)
+                deviceKindAlarming[deviceKindKey] = (deviceKindAlarming[deviceKindKey] ?? false) || observation.alarming
+                let firstSample = effectivePrevious == nil && observation.kind.notifiesOnFirstSample
+                let rose = observation.alarming && (effectivePrevious == false || firstSample)
                 guard rose, policy.allows(observation.kind) else { continue }
                 alerts.append(makeAlert(device: device, observation: observation, now: now, calendar: calendar))
+            }
+            for (deviceKindKey, isAlarming) in deviceKindAlarming {
+                ledger[deviceKindKey] = isAlarming
             }
         }
         return (alerts, ledger)
