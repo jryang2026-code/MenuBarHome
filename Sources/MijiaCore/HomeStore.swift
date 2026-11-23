@@ -1722,7 +1722,7 @@ public final class HomeStore {
     /// Test seam for "now" when a timer wakes up, so a Mac that slept through it can be simulated.
     var assistantNow: @Sendable () -> Date = { Date() }
     /// A timer that wakes up later than this (the Mac slept, the app was frozen) waits for the user (#22).
-    static let lateTimerGrace: TimeInterval = 60
+    nonisolated static let lateTimerGrace: TimeInterval = 60
 
     // MARK: - Raycast Companion Bridge State
 
@@ -1747,6 +1747,6 @@ public final class HomeStore {
     @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)
     @ObservationIgnored var resumeScheduler: DebouncedResumeScheduler = .live
     @ObservationIgnored var lastWakeIdentityReadAt: ContinuousClock.Instant?
-    @ObservationIgnored var wakeIdentityProviderGeneration: UInt64?
+    var wakeIdentityProviderGeneration: UInt64?
     @ObservationIgnored var onDebouncedResumeHook: (@MainActor (Set<ResumeReason>) async -> Void)?
 }

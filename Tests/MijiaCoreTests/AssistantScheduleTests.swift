@@ -197,6 +197,28 @@ struct AssistantScheduleTests {
         #expect(await mock.executedCommands == [.setLightPower(entityId: "light.study_ceiling", isOn: false)])
     }
 
+    @Test(arguments: SafetyWakeEvent.allCases)
+    @MainActor
+    func systemEventNotifiesAnOverdueTimerWithoutWaitingForItsSleep(event: SafetyWakeEvent) async throws {
+        let (store, mock, gate) = try await makeStore()
+        var notified: [UUID] = []
+        store.onMissedScheduledCommand = { notified.append($0.id) }
+        _ = await store.runAssistantCommand("10分钟后关闭书房吸顶灯")
+        let entry = try #require(store.scheduledCommands.first)
+        await waitUntil { gate.waiting == 1 }
+        store.assistantNow = { entry.fireDate + 61 }
+
+        store.reevaluateScheduledCommands(after: event)
+        store.reevaluateScheduledCommands(after: event)
+        #expect(notified == [entry.id])
+        #expect(store.scheduledCommands.isEmpty)
+        #expect(store.missedScheduledCommands.map(\.id) == [entry.id])
+
+        gate.release()
+        await waitUntil { store.scheduledTaskExits == 1 }
+        #expect(await mock.executedCommands.isEmpty)
+    }
+
     @Test("A timer that wakes up only a few seconds late still runs")
     @MainActor
     func timerSlightlyLateRuns() async throws {

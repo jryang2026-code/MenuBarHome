@@ -421,6 +421,14 @@ public enum WeeklyHealthReportSchedule {
         return nil
     }
 
+    static func nextCheck(now: Date, lastDeliveredAt: Date?, calendar: Calendar) -> Date? {
+        if isDue(now: now, lastDeliveredAt: lastDeliveredAt, calendar: calendar) { return now }
+        let components = DateComponents(hour: hour, minute: 0, second: 0, weekday: weekday)
+        return calendar.nextDate(
+            after: max(now, lastDeliveredAt ?? now), matching: components, matchingPolicy: .nextTime
+        )
+    }
+
     public static func isDue(now: Date, lastDeliveredAt: Date?, calendar: Calendar = .current) -> Bool {
         let probe = now.addingTimeInterval(1) // `nextDate(after:)` is exclusive; include the exact slot
         guard let slot = latestSlot(atOrBefore: probe, calendar: calendar), slot <= now else { return false }

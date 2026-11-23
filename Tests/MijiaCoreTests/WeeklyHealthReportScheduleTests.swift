@@ -33,6 +33,19 @@ struct WeeklyHealthReportScheduleTests {
         #expect(WeeklyHealthReportSchedule.isDue(now: date(8, 20, 30), lastDeliveredAt: date(1, 20, 1), calendar: calendar))
     }
 
+    @Test func nextCheckUsesCurrentLocalSlotAndCatchUpWindow() {
+        let slot = date(1, 20)
+        let monday = date(2, 9)
+        #expect(WeeklyHealthReportSchedule.nextCheck(now: slot - 0.25, lastDeliveredAt: nil, calendar: calendar) == slot)
+        #expect(WeeklyHealthReportSchedule.nextCheck(now: monday, lastDeliveredAt: nil, calendar: calendar) == monday)
+        #expect(WeeklyHealthReportSchedule.nextCheck(now: monday, lastDeliveredAt: slot, calendar: calendar) == date(8, 20))
+        #expect(WeeklyHealthReportSchedule.nextCheck(now: date(4, 9), lastDeliveredAt: nil, calendar: calendar) == date(8, 20))
+
+        var shifted = calendar
+        shifted.timeZone = TimeZone(secondsFromGMT: 0)!
+        #expect(WeeklyHealthReportSchedule.nextCheck(now: slot, lastDeliveredAt: nil, calendar: shifted) == slot + 8 * 3600)
+    }
+
     @MainActor
     @Test("The store hands out a due report once, and only while the weekly report is on")
     func storeDeliversOnce() async throws {

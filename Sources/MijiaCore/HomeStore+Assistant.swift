@@ -1404,6 +1404,21 @@ extension HomeStore {
         restoreScheduledCommands()
     }
 
+    public func reevaluateScheduledCommands(after event: SafetyWakeEvent) {
+        let now = assistantNow()
+        for entry in scheduledCommands {
+            guard let delay = event.rearmedCommandDelay(now: now, fireDate: entry.fireDate) else { continue }
+            if scheduledCommandIsMissed(now: now, fireDate: entry.fireDate),
+               timerScopeMatches(entry), let token = scheduledTaskTokens[entry.id] {
+                scheduledTasks[entry.id]?.cancel()
+                moveToMissed(entry, taskToken: token)
+            } else {
+                startScheduledTask(for: entry, delay: delay)
+            }
+        }
+        notifyMissedScheduledCommandsIfNeeded()
+    }
+
     func startScheduledTask(for entry: ScheduledCommand, delay: TimeInterval) {
         guard scheduledCommandsEnabled else { return }
         let generation = scheduledCommandsGeneration
@@ -1429,7 +1444,7 @@ extension HomeStore {
             }
             // Task.sleep keeps counting while the Mac sleeps, so after a closed lid it returns the moment
             // the Mac wakes. A timer that is more than a minute late is not run silently (#22).
-            if self.assistantNow().timeIntervalSince(entry.fireDate) > Self.lateTimerGrace {
+            if scheduledCommandIsMissed(now: self.assistantNow(), fireDate: entry.fireDate) {
                 self.moveToMissed(entry, taskToken: token)
                 return
             }
