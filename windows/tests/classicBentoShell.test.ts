@@ -114,6 +114,7 @@ describe("Classic Single-Card Glass Shell, 4-Size Bento Grid & Inline Accordion 
     app.layout.tileSizes[key("light.study_desk")] = "hero";
     app.layout.tileSizes[key("tv.living_oled")] = "full";
     app.layout.tileSizes[key("humidifier.bedroom_mist")] = "full";
+    app.isLongTailExpanded = true;
     app.render();
 
     const smallTile = element('[data-tile-id="plug.entry_socket"]');

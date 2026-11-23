@@ -409,6 +409,46 @@ struct HATypePruneProviderTests {
         await collecting.value
     }
 
+    @Test(.timeLimit(.minutes(1)))
+    func haAdapterPublishesTheProviderSnapshotAndLiveStateChanges() async throws {
+        let socket = FixtureSocket(root: HATypePruningTests.home)
+        let provider = HAWebSocketProvider(
+            baseURLString: "http://192.0.2.10:8123", token: "test-token",
+            rediscover: { _ in [] }, allowsToken: { _ in true }
+        )
+        await provider.setTestSeams(connectOverride: nil, webSocketFactory: { _ in socket })
+        let adapter: any HomeAdapter = HAHomeAdapter(provider: provider)
+        #expect(await adapter.id == HomeAdapterID(backend: .homeAssistant, scope: "ha:http://192.0.2.10:8123"))
+        #expect(adapter.capabilities == HAWebSocketProvider.capabilities)
+        #expect(await adapter.snapshot() == nil)
+
+        var events = adapter.events().makeAsyncIterator()
+        var initialHome: SynthesizedHome?
+        while let event = await events.next() {
+            if case .snapshotUpdated(let home) = event {
+                initialHome = home
+                break
+            }
+        }
+        let initial = try #require(initialHome)
+        #expect(await adapter.snapshot() == initial)
+        await socket.push(#"{"type":"event","event":{"event_type":"state_changed","data":{"new_state":{"entity_id":"binary_sensor.kitchen_leak","state":"on","attributes":{"device_class":"moisture"}}}}}"#)
+        var updatedHome: SynthesizedHome?
+        while let event = await events.next() {
+            if case .snapshotUpdated(let home) = event {
+                updatedHome = home
+                break
+            }
+        }
+        let updated = try #require(updatedHome)
+        #expect(updated != initial)
+        #expect(await adapter.snapshot() == updated)
+        await provider.updateCredentials(baseURLString: "http://192.0.2.11:8123", token: "")
+        #expect(await adapter.snapshot() == nil)
+        #expect(await adapter.id.scope == "ha:http://192.0.2.11:8123")
+        await provider.shutdown()
+    }
+
     @Test("A hidden alarm publishes without visible changes and becomes stale when credentials change", .timeLimit(.minutes(1)))
     func providerPublishesRetainedSafetyAlarmWhenVisibleHomeUnchanged() async throws {
         let socket = FixtureSocket(root: HATypePruningTests.home)
