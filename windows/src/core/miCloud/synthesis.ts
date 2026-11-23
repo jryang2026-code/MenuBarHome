@@ -732,16 +732,22 @@ export function primaryMiotService(spec: MiotDeviceSpec): MiotService | undefine
   }
   const preferredServices = preferredMiotServices(devShort);
   // The claim conditions live in the shared document (#265, #300): a shut-off valve without a
-  // power meter is not a breaker and stays unsupported, and a `water-heater` service belongs to a
-  // water heater rather than claiming another device.
-  const claims = (short: string) => claimAllows(short, spec);
-  let primaryService: MiotService | undefined = spec.services.find((s) => {
-    const sShort = miotShortName(s.type);
-    return preferredServices.includes(sShort) && CLAIM_LADDER.includes(sShort) && claims(sShort);
-  });
+  // power meter is not a breaker and stays unsupported, and a `water-heater` service belongs to
+  // a water heater rather than claiming another device. The alias list's own order decides, as it
+  // does on macOS, so a dual-service doorbell reads `camera-control` first regardless of the order
+  // its spec happens to publish.
+  let primaryService: MiotService | undefined;
+  for (const service of preferredServices) {
+    if (!CLAIM_LADDER.includes(service) || !claimAllows(service, spec)) continue;
+    const found = spec.services.find((s) => miotShortName(s.type) === service);
+    if (found) {
+      primaryService = found;
+      break;
+    }
+  }
   if (!primaryService) {
     for (const service of CLAIM_LADDER) {
-      if (!miotFallbackAllows(devShort, service) || !claims(service)) continue;
+      if (!miotFallbackAllows(devShort, service) || !claimAllows(service, spec)) continue;
       const found = spec.services.find((s) => miotShortName(s.type) === service);
       if (found) {
         primaryService = found;

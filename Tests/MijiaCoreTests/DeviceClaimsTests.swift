@@ -59,6 +59,7 @@ struct DeviceClaimsTests {
         #expect(MiotSynthesizer.preferredServices(forDeviceType: "outlet") == ["outlet", "switch"])
         #expect(MiotSynthesizer.preferredServices(forDeviceType: "camera") == ["camera-control", "video-doorbell"])
         #expect(MiotSynthesizer.preferredServices(forDeviceType: "cateye") == ["camera-control", "video-doorbell"])
+        #expect(MiotSynthesizer.preferredServices(forDeviceType: "video-doorbell") == ["camera-control", "video-doorbell"])
         #expect(MiotSynthesizer.preferredServices(forDeviceType: "kettle") == ["kettle", "ble-kettle", "water-dispenser"])
         #expect(MiotSynthesizer.preferredServices(forDeviceType: "stb") == ["stb", "television"])
         // A type the document does not alias claims its own name, as before.
@@ -92,6 +93,26 @@ struct DeviceClaimsTests {
         let other = spec("kettle", services: [service("water-heater", properties: [("on", "bool")])])
         #expect(!MiotSynthesizer.claims("water-heater", spec: other))
         #expect(MiotSynthesizer.primary(for: other) == nil)
+    }
+
+    @Test("A video doorbell claims its camera-control service even without a doorbell service")
+    func videoDoorbellAliasStillTriesCameraControl() {
+        let bell = spec("video-doorbell", services: [service("camera-control", properties: [("on", "bool")])])
+        #expect(MiotSynthesizer.primary(for: bell)?.0.shortName == "camera-control")
+    }
+
+    @Test("A door that also publishes a vacuum service still claims its camera, not the vacuum")
+    func fallbackRungStaysInsideTheCompatibilityTable() {
+        let door = spec(
+            "door",
+            services: [
+                service("vacuum", properties: [("on", "bool")]),
+                service("video-doorbell", properties: [("on", "bool")]),
+            ]
+        )
+        // `vacuum` sits earlier in the ladder, but `fallbackClaims` only lets `door` claim a lock or
+        // a video doorbell, so the ladder order cannot turn it into a vacuum card.
+        #expect(MiotSynthesizer.primary(for: door)?.0.shortName == "video-doorbell")
     }
 
     @Test("The appliance service list comes from the document")

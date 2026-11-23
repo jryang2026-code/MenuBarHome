@@ -6,7 +6,8 @@
     "cateye": ["camera-control", "video-doorbell"],
     "kettle": ["kettle", "ble-kettle", "water-dispenser"],
     "outlet": ["outlet", "switch"],
-    "stb": ["stb", "television"]
+    "stb": ["stb", "television"],
+    "video-doorbell": ["camera-control", "video-doorbell"]
   },
   "ladder": [
     { "service": "air-conditioner" },

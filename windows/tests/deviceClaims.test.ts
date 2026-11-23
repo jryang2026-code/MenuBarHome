@@ -55,6 +55,7 @@ describe("shared MIoT claim rules (Shared/deviceClaims.json)", () => {
     assert.deepEqual(preferredClaimServices("camera"), ["camera-control", "video-doorbell"]);
     assert.deepEqual(preferredClaimServices("kettle"), ["kettle", "ble-kettle", "water-dispenser"]);
     assert.deepEqual(preferredClaimServices("stb"), ["stb", "television"]);
+    assert.deepEqual(preferredClaimServices("video-doorbell"), ["camera-control", "video-doorbell"]);
     assert.deepEqual(preferredClaimServices("fish-tank"), ["fish-tank"]);
     assert.deepEqual(preferredMiotServices("stb"), ["stb", "television"]);
     assert.deepEqual(preferredMiotServices("bath-heater"), ["ptc-bath-heater", "bath-heater"]);
@@ -92,5 +93,23 @@ describe("shared MIoT claim rules (Shared/deviceClaims.json)", () => {
   it("lets a light service claim light-like types on the last fallback rung (#296)", () => {
     assert.deepEqual([...claimFallbackTokens("light")], ["light", "lamp"]);
     assert.deepEqual([...claimFallbackTokens("switch")], []);
+  });
+
+  it("claims a video doorbell's camera-control service and ignores unlisted fallback rungs", () => {
+    // The alias list's own order decides, so a spec that publishes the doorbell service first still
+    // resolves to `camera-control`, exactly as macOS does.
+    const bell = spec("video-doorbell", [
+      service("video-doorbell", [{ name: "on", format: "bool" }]),
+      service("camera-control", [{ name: "on", format: "bool" }]),
+    ]);
+    assert.equal(primaryMiotService(bell)?.type, urn("service", "camera-control"));
+
+    // `vacuum` sits earlier in the ladder, but `fallbackClaims` only lets a `door` claim a lock or a
+    // video doorbell, so the shared ladder order cannot turn it into a vacuum card.
+    const door = spec("door", [
+      service("vacuum", [{ name: "on", format: "bool" }]),
+      service("video-doorbell", [{ name: "on", format: "bool" }]),
+    ]);
+    assert.equal(primaryMiotService(door)?.type, urn("service", "video-doorbell"));
   });
 });
