@@ -1709,6 +1709,9 @@ public final class HomeStore {
     /// The running silent refresh, exposed so tests can await it.
     var proactiveRefreshTask: Task<Void, Never>?
     var assistantResetTask: Task<Void, Never>?
+    /// Test seam for the auto-reset after a finished reply: `.production` keeps the shipping
+    /// 3.2 s / 8 s clock, suites that assert the reply use `.never`.
+    var assistantAutoResetTiming: AssistantAutoResetTiming = .production
     /// Test seam replacing the network resolver built from `assistantConfig`.
     var assistantResolverOverride: ModelIntentResolver?
     /// Test seam replacing only the HTTP transport while still resolving `assistantConfig` from `userDefaults`.

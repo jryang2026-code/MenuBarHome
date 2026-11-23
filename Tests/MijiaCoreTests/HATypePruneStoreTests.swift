@@ -41,6 +41,7 @@ struct HATypePruneStoreTests {
         snapshot.isInitialLoadComplete = true
         let mock = MockHomeProvider(snapshot: snapshot)
         let store = HomeStore(provider: mock, credentialVault: vault, defaults: defaults)
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         store.toastAutoDismissInterval = nil
         var selection = store.capabilitySelection

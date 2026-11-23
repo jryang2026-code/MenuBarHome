@@ -130,6 +130,7 @@ struct ManualControlSafetyTests {
     private func makeStore(_ devices: [SmartDevice]) async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: devices))
         let store = HomeStore(provider: mock, defaultsSuiteName: "test.manualcontrol.\(UUID().uuidString)")
+        store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
         #expect(store.devices.count == devices.count)
         return (store, mock)
