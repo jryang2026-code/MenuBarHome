@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "preferredServices": {
+    "ble-kettle": ["kettle", "ble-kettle", "water-dispenser"],
+    "camera": ["camera-control", "video-doorbell"],
+    "cateye": ["camera-control", "video-doorbell"],
+    "kettle": ["kettle", "ble-kettle", "water-dispenser"],
+    "outlet": ["outlet", "switch"],
+    "stb": ["stb", "television"],
+    "video-doorbell": ["camera-control", "video-doorbell"]
+  },
+  "ladder": [
+    { "service": "air-conditioner" },
+    { "service": "heater" },
+    { "service": "thermostat" },
+    { "service": "electric-blanket" },
+    { "service": "dehumidifier" },
+    { "service": "diffuser" },
+    { "service": "television", "renderers": ["windows"] },
+    { "service": "stb", "renderers": ["windows"] },
+    { "service": "speaker" },
+    { "service": "light" },
+    { "service": "fan" },
+    { "service": "air-purifier" },
+    { "service": "air-fresh" },
+    { "service": "humidifier" },
+    { "service": "vacuum" },
+    { "service": "curtain" },
+    { "service": "window-opener" },
+    { "service": "airer" },
+    { "service": "fridge" },
+    { "service": "camera-control" },
+    { "service": "video-doorbell" },
+    { "service": "outlet" },
+    { "service": "switch" },
+    {
+      "service": "electronic-valve",
+      "claimableWhen": {
+        "serviceHasProperty": { "service": "power-consumption", "property": "electric-power" }
+      }
+    },
+    { "service": "kettle" },
+    { "service": "ble-kettle" },
+    { "service": "water-dispenser" },
+    { "service": "cooker" },
+    { "service": "air-fryer" },
+    { "service": "oven" },
+    { "service": "microwave-oven" },
+    { "service": "health-pot" },
+    { "service": "water-heater", "claimableWhen": { "deviceTypeIsService": true } },
+    { "service": "washer" },
+    { "service": "dryer" },
+    { "service": "clothes-dryer" },
+    { "service": "dishwasher" },
+    { "service": "lock" },
+    { "service": "motion-sensor" },
+    { "service": "occupancy-sensor" },
+    { "service": "magnet-sensor" },
+    { "service": "submersion-sensor" },
+    { "service": "illumination-sensor" },
+    { "service": "air-monitor" },
+    { "service": "temperature-humidity-sensor" }
+  ],
+  "applianceServices": [
+    "water-heater",
+    "boiler",
+    "washer",
+    "dryer",
+    "clothes-dryer",
+    "cleanfly-dryer",
+    "dishwasher"
+  ],
+  "fallbackTypeTokens": [
+    { "service": "light", "tokens": ["light", "lamp"] }
+  ]
+}

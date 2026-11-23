@@ -74,6 +74,9 @@ function classify(spec: MiotDeviceSpec): Entry {
 }
 
 describe("MIoT coverage baseline (shared golden)", () => {
+  // `windowsDivergences` is a debt table: `scripts/check_device_rules.py` fails when it grows past
+  // its committed budget and when an entry matches the macOS classification (a stale entry). The
+  // one entry left is the MIoT television card, which macOS has no builder for (#26).
   const fixtures = resolve(process.cwd(), "../Tests/Fixtures");
   const rawSpecs = JSON.parse(readFileSync(resolve(fixtures, "miot_coverage_specs.json"), "utf8")) as Record<string, unknown>;
   const golden = JSON.parse(readFileSync(resolve(fixtures, "miot_coverage_golden.json"), "utf8")) as Golden;

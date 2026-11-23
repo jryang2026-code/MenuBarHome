@@ -3,6 +3,7 @@ import type { FacetControl, FacetKind, FacetOption, FacetRange, FacetTarget } fr
 import { makeMiotActionAddress, makeMiotAddress, miotShortName } from "./spec.js";
 import type { MiotAction, MiotDeviceSpec, MiotProperty, MiotService, MiotValueListItem } from "./spec.js";
 import { attachFedToday, findPortionArgumentIndex } from "./feedAction.js";
+import { claimFallbackTokens } from "./deviceClaims.js";
 
 /**
  * The confirmation table behind `ManualControlPolicy` (#26). Patterns use the same glob syntax as
@@ -121,11 +122,12 @@ export const MANUAL_CONTROL_FALLBACK_RULES: ManualControlRules = {
 
 /**
  * Whether a device whose type names none of its own services may be drawn from `service` (#296),
- * mirroring `MiotSynthesizer.fallbackAllows` on macOS. A `light` service may still claim light-like
- * types; it must not claim a hood, airer, bath heater or ceiling fan.
+ * mirroring `MiotSynthesizer.fallbackAllows` on macOS. `deviceProfiles.json`'s `fallbackClaims`
+ * owns the allowed pairs; `Shared/deviceClaims.json` adds the one token rule (#26): a `light`
+ * service may still claim light-like types, never a hood, airer, bath heater or ceiling fan.
  */
 export function miotFallbackAllows(deviceType: string, service: string): boolean {
-  if (service === "light" && (deviceType.includes("light") || deviceType.includes("lamp"))) return true;
+  if (claimFallbackTokens(service).some((token) => deviceType.includes(token))) return true;
   return DEVICE_PROFILES.fallbackClaims[deviceType]?.includes(service) ?? false;
 }
 
