@@ -530,6 +530,7 @@ export class MenuMijiaWindowsApp {
   public pointerIsDown = false;
   public isListeningVoice = false;
   public readonly scheduledCommandStore = new ScheduledCommandStore(localStorage);
+  public readonly initialCredentialsReady: Promise<void>;
   public timerCredentialsReady = false;
   public timerSnapshot: { identity: string; sourceRevision: number } | null = null;
   public get scheduledCommands(): ScheduledCommand[] {
@@ -704,7 +705,7 @@ export class MenuMijiaWindowsApp {
       // flashing the full guide and closing it a frame later.
       this.onboardingAwaitingCredentials = !this.loadedSettings.hasLegacyCredentials;
     }
-    this.initializeCredentials();
+    this.initialCredentialsReady = initializeCredentials(this);
     if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {
       this.submitServiceEndpoints();
     }
@@ -894,7 +895,7 @@ export class MenuMijiaWindowsApp {
         }
       }
     }
-    this.initializeCredentials({ overwriteExisting: true });
+    void initializeCredentials(this, { overwriteExisting: true });
     if (!this.isStandaloneSettingsWindow) {
       if (prevTheme !== this.settings.panelTheme || prevHeight !== this.settings.panelHeight) {
         this.lastAppliedPanelHeightKey = null;
@@ -928,10 +929,6 @@ export class MenuMijiaWindowsApp {
       }
     }
     this.render();
-  }
-
-  private initializeCredentials(options?: { readonly overwriteExisting?: boolean }): void {
-    initializeCredentials(this, options);
   }
 
   public retryIdentityMigration(): Promise<void> {

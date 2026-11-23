@@ -5,8 +5,10 @@ import { setImmediate } from "node:timers/promises";
 import type { Window } from "happy-dom";
 
 import { setLanguage } from "../src/core/i18n.js";
+import { HomeAssistantSynthesizer, homeAssistantIdentity } from "../src/core/homeAssistant.js";
 import { MenuMijiaWindowsApp } from "../src/ui/app.js";
 import { STORAGE_KEY } from "../src/ui/appConstants.js";
+import { recordSafetyAlerts } from "../src/ui/activityStackView.js";
 import { onOpenURL, type AppURLCommandHost } from "../src/core/appUrlCommand.js";
 import {
   enqueueIncomingOpenUrl,
@@ -178,6 +180,85 @@ describe("Audit #32: bindAllOffControl scoped in RenderEventScope", () => {
       Object.defineProperty(window, "setTimeout", { configurable: true, value: origSetTimeout });
       Object.defineProperty(window, "clearTimeout", { configurable: true, value: origClearTimeout });
     }
+  });
+});
+
+describe("Windows notification navigation", () => {
+  it("sends hazard and ordinary notifications in the background, and focuses a card only through a valid click payload", async () => {
+    const calls: { name: string; args: unknown }[] = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (name: string, args: unknown) => {
+          calls.push({ name, args });
+          return null;
+        },
+      },
+    });
+    const app = startDemoApp({ enableRaycastIntegration: false, allowDirectURLControl: false });
+    const deviceId = "light.living_ceiling";
+    const alert = { deviceId, title: "Alarm", body: "Check the device", category: "sensor", priority: "high" } as const;
+    recordSafetyAlerts(app, [
+      { ...alert, id: "smoke:1", sensorKind: "smoke" },
+      { ...alert, id: "lock:1", sensorKind: "lock" },
+    ]);
+    await flushAsync();
+    assert.deepEqual(
+      calls.filter(({ name }) => name === "send_desktop_notification").map(({ args }) => args),
+      [
+        { deviceId, kind: "smoke", title: alert.title, body: alert.body },
+        { deviceId, kind: "safety", title: alert.title, body: alert.body },
+      ],
+    );
+    const revealCalls = () => calls.filter(({ name }) => name === "show_panel_for_url").length;
+    assert.equal(revealCalls(), 0);
+    await enqueueIncomingOpenUrl(app, `menumijia://notification/toggle/${deviceId}`);
+    await enqueueIncomingOpenUrl(app, `menumijia://notification/smoke/${deviceId}?on=true`);
+    assert.equal(revealCalls(), 0);
+
+    let writes = 0;
+    app.applyCommand = async () => { writes += 1; return true; };
+    await enqueueIncomingOpenUrl(app, `menumijia://notification/smoke/${deviceId}`);
+    assert.equal(revealCalls(), 1);
+    assert.equal(app.panelSearch.selectedDeviceId, deviceId);
+    assert.equal(writes, 0);
+  });
+
+  it("waits for the cached Home Assistant cards when a toast launches a closed app", async () => {
+    const haBaseURL = "http://localhost:8123";
+    const haToken = "test-home-token";
+    const snapshot = JSON.parse(readFileSync("../Tests/Fixtures/ha_snapshot.json", "utf8"));
+    const home = HomeAssistantSynthesizer.synthesize(snapshot);
+    const deviceId = home.devices.find(({ isOnline }) => isOnline)!.id;
+    let loadToken!: (token: string) => void;
+    const tokenRead = new Promise<string>((resolve) => { loadToken = resolve; });
+    let revealCalls = 0;
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {
+        invoke: async (name: string, args?: { name?: string }) => {
+          if (name === "secure_store_get" && args?.name === "ha_token") return tokenRead;
+          if (name === "drain_pending_open_urls") return [`menumijia://notification/leak/${deviceId}`];
+          if (name === "show_panel_for_url") revealCalls += 1;
+          if (name === "ha_snapshot") return snapshot;
+          return null;
+        },
+      },
+    });
+    const app = startDemoApp({
+      connectionMode: "homeAssistant",
+      haBaseURL,
+      cachedHAHome: { identity: homeAssistantIdentity(haBaseURL, haToken), home },
+    });
+    await flushAsync();
+    assert.equal(app.devices.length, 0);
+    assert.equal(revealCalls, 0);
+
+    loadToken(haToken);
+    await app.initialCredentialsReady;
+    await flushAsync();
+    assert.equal(app.panelSearch.selectedDeviceId, deviceId);
+    assert.equal(revealCalls, 1);
   });
 });
 

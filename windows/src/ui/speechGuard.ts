@@ -1573,6 +1573,23 @@ export function enqueueIncomingOpenUrl(
           while (state.urlQueue.length > 0) {
             const item = state.urlQueue.shift()!;
             try {
+              if (item.url.startsWith("menumijia://notification/")) {
+                // Toast links are external input and can only navigate to an existing card.
+                const match = /^menumijia:\/\/notification\/(?:safety|doorbell|leak|smoke|gas)\/([a-zA-Z0-9_.:@-]{1,128})$/.exec(item.url);
+                const deviceId = match?.[1];
+                if (match?.[0] !== item.url || !deviceId || deviceId === "." || deviceId === "..") continue;
+                if (item.sourceRevision !== host.sourceRevision) continue;
+                const adapter = createUrlCommandHostAdapter(host, item.sourceRevision);
+                if (!host.timerCredentialsReady && !adapter.isDeviceVisibleInPanel?.(deviceId)) {
+                  await host.initialCredentialsReady;
+                  if (item.sourceRevision !== host.sourceRevision || !host.root.isConnected) continue;
+                }
+                if (adapter.isDeviceVisibleInPanel?.(deviceId)) {
+                  adapter.focusDeviceFromUrl(deviceId);
+                }
+                await adapter.revealPanelForExternalUrl();
+                continue;
+              }
               if (state.companionEpoch !== item.companionEpoch) {
                 reportStaleExternalUrl(
                   host,

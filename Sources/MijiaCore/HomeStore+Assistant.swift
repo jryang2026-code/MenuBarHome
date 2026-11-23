@@ -1841,7 +1841,8 @@ extension HomeStore {
         habitSummary: String? = nil,
         automationGeneration: UInt64? = nil,
         timerGeneration: UInt64? = nil,
-        onAutomationCompletion: ((Int, Int, Int) -> Void)? = nil
+        automationCanContinue: (() -> Bool)? = nil,
+        onAutomationCompletion: ((Int, Int, Int, Bool) -> Void)? = nil
     ) async -> IntentPlan {
         if origin.blocksWhileScreenLocked, isControlBlockedByScreenLock {
             showToast(screenLockBlockedMessage, isError: true)
@@ -1872,7 +1873,10 @@ extension HomeStore {
 
         func runtimeAllowsWrites() -> Bool {
             if let timerGeneration { return scheduledCommandsCanWrite(generation: timerGeneration) }
-            if let automationGeneration { return automationCanWrite(generation: automationGeneration) }
+            if let automationGeneration {
+                return automationCanWrite(generation: automationGeneration)
+                    && automationCanContinue?() != false
+            }
             return true
         }
 
@@ -1900,8 +1904,6 @@ extension HomeStore {
                 outcomes.append(contentsOf: await task.value)
             }
         }
-        guard context == controlContextID else { return plan }
-
         var restoreCommands: [DeviceCommand] = []
         var failedNames: [String] = []
         var offlineNames: [String] = []
@@ -1926,7 +1928,11 @@ extension HomeStore {
             }
         }
 
-        onAutomationCompletion?(outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count)
+        onAutomationCompletion?(
+            outcomes.count, succeededIntents.count, outcomes.count - succeededIntents.count,
+            !offlineNames.isEmpty
+        )
+        guard context == controlContextID else { return plan }
         if outcomes.isEmpty, !runtimeAllowsWrites() { return plan }
 
         // Only explicit user actions become habits, and only for intents that actually succeeded (#34/#113).

@@ -397,6 +397,10 @@ describe("Wave 4 · PC Context Automation Rule Editor UI & Live Runtime", () => 
     await setImmediate();
     assert.equal(sent.length, 0);
     assert.equal(app.replyBanner?.isError, true);
+    const entry = getHostActivityCenter(app).automationEngine.history.load().find((item) => item.ruleId === ruleId);
+    assert.equal(entry?.trigger, "manual");
+    assert.equal(entry?.result === "skipped" && entry.reason, "screenLocked");
+    assert.match(element(`[data-auto-rule-row="${ruleId}"]`).textContent ?? "", /屏幕已锁定/);
 
     locked = false;
     await click(`[data-auto-rule-run="${ruleId}"]`);

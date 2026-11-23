@@ -403,6 +403,14 @@ pub(crate) fn forward_to_primary_instance(
     let deadline = Instant::now() + total_timeout;
     loop {
         if let Some(endpoint) = read_ipc_endpoint(dir) {
+            #[cfg(all(windows, not(test)))]
+            if endpoint.pid != 0 && startup_url.and_then(parse_toast_activation).is_some() {
+                // The shell gave this protocol launch permission to activate. Pass it to
+                // the already-running tray instance before it handles the click.
+                unsafe {
+                    let _ = windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(endpoint.pid);
+                }
+            }
             let delivered = match startup_url {
                 Some(url) => forward_url_to_endpoint(&endpoint, url, attempt_timeout),
                 None => forward_activate_to_endpoint(&endpoint, attempt_timeout),
@@ -808,7 +816,7 @@ pub(crate) fn drain_pending_open_urls() -> Vec<String> {
 
 #[tauri::command]
 pub(crate) fn show_panel_for_url(app: AppHandle) {
-    present_panel(&app, None);
+    present_panel_for_user(&app, None);
 }
 
 pub(crate) fn format_protocol_open_command(exe_path: &Path) -> Result<String, String> {

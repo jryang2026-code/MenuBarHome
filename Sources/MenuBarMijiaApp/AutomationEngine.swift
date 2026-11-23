@@ -47,6 +47,8 @@ final class AutomationEngine {
     static let shared = AutomationEngine()
 
     private let ruleStore: AutomationRuleStore
+    private var runStates: [UUID: AutomationRunState] = [:]
+    private var runTasks: [UUID: Task<Void, Never>] = [:]
     private let deduper: AutomationTriggerDeduper
     private let injectedContextProvider: (any MacContextProviding)?
     /// Every time-of-day decision in this engine (trigger windows, calendar lead times) reads this
@@ -293,6 +295,7 @@ final class AutomationEngine {
                     verdict=skip
                     """
                 )
+                store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
                 return false
             }
             let result = rule.conditions.evaluate(
@@ -309,19 +312,21 @@ final class AutomationEngine {
                 verdict=\(result.isSatisfied ? "run" : "skip", privacy: .public)
                 """
             )
+            if !result.isSatisfied { store.recordAutomationRun(rule, at: now, reason: .conditionFalse) }
             return result.isSatisfied
         }
-        guard !eligible.isEmpty else { return }
-        guard deduper.shouldFire(trigger, at: now) else {
-            logger.notice(
-                "rule-cooldown trigger=\(trigger.rawValue, privacy: .public) suppressed"
-            )
-            return
-        }
+        var shouldFire: Bool?
         for rule in eligible {
-            guard generation == observationGeneration, store.eventAutomationEnabled else { break }
-            guard ruleStore.load().contains(rule) else { continue }
-            await execute(rule, store: store)
+            guard generation == observationGeneration, store.eventAutomationEnabled,
+                  ruleStore.load().contains(rule) else {
+                store.recordAutomationRun(rule, at: now, reason: .writeGateDenied)
+                continue
+            }
+            await run(rule, store: store, at: now, cooldown: {
+                let allowed = shouldFire ?? self.deduper.shouldFire(trigger, at: now)
+                shouldFire = allowed
+                return allowed
+            })
         }
     }
 
@@ -360,32 +365,25 @@ final class AutomationEngine {
             guard generation == observationGeneration, contextID == contextObservationID,
                   store.eventAutomationEnabled else { break }
             guard ruleStore.load().contains(rule) else { continue }
-            // Same time-window gate as `handle(trigger:)`, also checked before the cooldown is consumed.
-            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar) else { continue }
-            // Same Wi-Fi condition `handle(trigger:)` applies, checked before the cooldown is
-            // consumed. A "left network" rule is judged against the network it just left, since
-            // the current SSID is already gone.
+            let events = MacContextAutomation.events(
+                for: rule, previous: previous, current: effective, at: now, calendar: calendar
+            )
+            guard !events.isEmpty else { continue }
             let conditionSSID = rule.trigger == .wifiNetworkLeft
                 ? (previous?.wifiSSID ?? context.wifiSSID)
                 : context.wifiSSID
-            guard rule.conditions.evaluate(
-                wifiSSID: conditionSSID,
-                isAuthorized: context.isWiFiAuthorized
-            ).isSatisfied else { continue }
-            let events = MacContextAutomation.events(
-                for: rule,
-                previous: previous,
-                current: effective,
-                at: now,
-                calendar: calendar
-            )
-            // Calendar rules return every eligible meeting; skip an already-fired event and let a
-            // later meeting in the same lead window fire instead of being masked by it.
-            guard events.contains(where: {
-                now >= (resumeSuppressionUntil[$0.dedupeKey] ?? .distantPast)
-                    && deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
-            }) else { continue }
-            await execute(rule, store: store)
+            guard rule.conditions.isWithinTimeWindow(at: now, calendar: calendar),
+                  rule.conditions.evaluate(wifiSSID: conditionSSID, isAuthorized: context.isWiFiAuthorized)
+                    .isSatisfied else {
+                store.recordAutomationRun(rule, at: now, reason: .conditionFalse)
+                continue
+            }
+            await run(rule, store: store, at: now, cooldown: {
+                events.contains {
+                    now >= (self.resumeSuppressionUntil[$0.dedupeKey] ?? .distantPast)
+                        && self.deduper.shouldFire($0.dedupeKey, at: now, cooldown: $0.cooldown)
+                }
+            })
         }
     }
 
@@ -550,7 +548,50 @@ final class AutomationEngine {
         return displays.prefix(Int(count)).filter { CGDisplayIsBuiltin($0) == 0 }.count
     }
 
-    private func execute(_ rule: AutomationRule, store: HomeStore) async {
+    private func run(
+        _ rule: AutomationRule, store: HomeStore, at time: Date, cooldown: () -> Bool
+    ) async {
+        guard cooldown() else {
+            store.recordAutomationRun(rule, at: time, reason: .cooldown)
+            return
+        }
+        var state = runStates[rule.id] ?? AutomationRunState()
+        let token = UUID()
+        guard state.start(token, mode: rule.mode) else {
+            store.recordAutomationRun(rule, at: time, reason: .singleAlreadyRunning)
+            return
+        }
+        let previous = runTasks[rule.id]
+        let generation = observationGeneration
+        runStates[rule.id] = state
+        let task = Task {
+            await previous?.value
+            @MainActor func blocked() -> AutomationSkipReason? {
+                guard self.runStates[rule.id]?.owns(token) == true else { return .superseded }
+                guard generation == self.observationGeneration, store.eventAutomationEnabled,
+                      self.ruleStore.load().contains(rule) else { return .writeGateDenied }
+                return nil
+            }
+            let reason: AutomationSkipReason?
+            if let denied = blocked() {
+                reason = denied
+            } else {
+                reason = await self.execute(rule, store: store, blocked: blocked)
+            }
+            store.recordAutomationRun(rule, at: time, reason: reason)
+            self.runStates[rule.id]?.finish(token)
+            if self.runStates[rule.id]?.isRunning == false {
+                self.runStates[rule.id] = nil
+                self.runTasks[rule.id] = nil
+            }
+        }
+        runTasks[rule.id] = task
+        await task.value
+    }
+
+    private func execute(
+        _ rule: AutomationRule, store: HomeStore, blocked: @escaping () -> AutomationSkipReason?
+    ) async -> AutomationSkipReason? {
         if rule.highRiskConfirmation(devices: store.devices) != nil, !rule.highRiskApproved {
             var stored = ruleStore.load()
             if let idx = stored.firstIndex(where: { $0.id == rule.id }) {
@@ -562,24 +603,36 @@ final class AutomationEngine {
                 L10n.tr("高风险自动化规则需在设置中重新确认启用", "High-risk automation rule requires re-confirmation in Settings"),
                 isError: true
             )
-            return
+            return .writeGateDenied
         }
         switch rule.action {
         // Quick actions aggregate devices in the store and already show their own toast plus undo
         // banner; the longer automation window keeps the banner usable after unlocking (#59).
         case .quickAction(let action):
             // Automation is not a user action, so it never trains habits (#34/#113).
-            _ = await store.runAutomationQuickAction(action)?.value
+            var wrote = false
+            let task = store.runAutomationQuickAction(action, canContinue: { blocked() == nil }) { wrote = $0 }
+            let outcome = await task?.value
+            if wrote { return nil }
+            if let denied = blocked() { return denied }
+            switch outcome {
+            case .refusedByMiSession: return .writeGateDenied
+            case .partial, .completed: return .error
+            case nil:
+                return store.automationQuickActionSkipReason(action)
+            }
         case .devices, .scene:
             let intents = rule.action.intents()
-            guard !intents.isEmpty else { return }
+            guard !intents.isEmpty else { return .noActionNeeded }
             let summary = rule.action.summary(devices: store.devices, scenes: store.scenes)
             let title = L10n.format("自动化：%@", "Automation: %@", summary)
             let outcome = await store.runAutomation(
                 intents: intents,
-                title: title
+                title: title,
+                canContinue: { blocked() == nil }
             )
-            if outcome.attemptedCount == 0 { return }
+            if outcome.succeededCount == 0, let denied = blocked() { return denied }
+            if outcome.attemptedCount == 0 { return outcome.skipReason }
             if outcome.succeededCount == 0 {
                 let message = outcome.errorMessage ?? L10n.tr("控制执行失败", "Execution failed")
                 store.showToast(message, isError: true)
@@ -595,6 +648,7 @@ final class AutomationEngine {
             } else {
                 store.showToast(title)
             }
+            return outcome.skipReason
         }
     }
 }
