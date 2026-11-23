@@ -24,8 +24,9 @@ public struct NotificationDeliveryPolicy: Equatable, Sendable {
         let ordinaryLevel: NotificationInterruptionLevel = isFocusActive ? .passive : .active
         switch category {
         case .safetyAlert(let alert):
-            let kind = SensorAlertKind.parse(fromAlertId: alert.id)
-            let level: NotificationInterruptionLevel = kind?.honorsAwayLimit == false
+            // The sensor severity table is the only place that decides which alerts stay loud in
+            // Focus; non-sensor safety alerts (battery, offline, long-run) keep the ordinary level.
+            let level: NotificationInterruptionLevel = alert.severity == .alert
                 ? .timeSensitive
                 : ordinaryLevel
             return Self(interruptionLevel: level, relevanceScore: 1)

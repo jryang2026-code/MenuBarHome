@@ -32,6 +32,7 @@ import {
   loadSensorAlertPolicy,
   renderWeeklyHealthMarkdown,
   sensorAlertEnabledByDefault,
+  sensorAlertIsHazard,
   tr3,
   weeklyHealthNotificationSummary,
   type HealthClimateRange,
@@ -46,6 +47,7 @@ import {
   type WeeklyHealthReport,
 } from "../core/safetyAndHealth.js";
 import { ManualControlPolicy } from "../core/assistant.js";
+import { sensorAlertSeverity, type AlertSeverity } from "../core/alertSeverity.js";
 import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
@@ -2051,7 +2053,7 @@ export function buildActivityFeed(
     ) {
       continue;
     }
-    const isDanger = recorded.alert.priority === "high";
+    const isDanger = alertItemSeverity(recorded.alert) === "alert";
     items.push({
       id: itemId,
       kind: "safety",
@@ -2154,6 +2156,19 @@ const sensorKindFromAlertId = (id: string): SensorAlertKind | null => {
   return match ? (match[1] as SensorAlertKind) : null;
 };
 
+/** Panel tone reads the shared severity table for sensor alerts; other safety rows keep their priority. */
+const alertItemSeverity = (alert: SafetyAlert): AlertSeverity => {
+  const kind = alert.sensorKind ?? sensorKindFromAlertId(alert.id);
+  if (kind !== null) return sensorAlertSeverity(kind);
+  return alert.priority === "high" ? "alert" : "warning";
+};
+
+const isAlertSeveritySensorItem = (item: ActivityFeedItem): boolean => {
+  if (item.kind !== "safety") return false;
+  const kind = sensorKindFromAlertId(rawSafetyAlertId(item));
+  return kind !== null && sensorAlertSeverity(kind) === "alert";
+};
+
 /**
  * macOS `ActivityStackPolicy` parity: smoke, gas, leak, doorbell, missed timers and long-run alerts
  * never fold. Contact, motion, vibration and lock stay pinned only while their alert setting is on and
@@ -2164,7 +2179,7 @@ export function isPinnedActivityItem(host: MenuMijiaWindowsApp, item: ActivityFe
   const raw = rawSafetyAlertId(item);
   const kind = sensorKindFromAlertId(raw);
   if (kind === null) return raw.startsWith("longrun:") || item.actionAttr === "data-activity-safety-off";
-  if (kind === "smoke" || kind === "gas" || kind === "leak") return true;
+  if (sensorAlertIsHazard(kind)) return true;
   const center = getHostActivityCenter(host);
   const policy = center.sensorPolicyOverride ?? loadSensorAlertPolicy(center.storage, center.lastSampledLockState ?? false);
   const enabled = policy.enabled[kind] ?? sensorAlertEnabledByDefault(kind);
@@ -2172,13 +2187,20 @@ export function isPinnedActivityItem(host: MenuMijiaWindowsApp, item: ActivityFe
 }
 
 export function partitionActivityFeed(host: MenuMijiaWindowsApp, items: readonly ActivityFeedItem[]): TieredActivityFeed {
-  return items.reduce<TieredActivityFeed>(
-    (tiered, item) => {
-      (isPinnedActivityItem(host, item) ? tiered.pinned : tiered.ordinary).push(item);
-      return tiered;
-    },
-    { pinned: [], ordinary: [] },
-  );
+  const pinnedAlerts: ActivityFeedItem[] = [];
+  const pinnedOthers: ActivityFeedItem[] = [];
+  const ordinary: ActivityFeedItem[] = [];
+  for (const item of items) {
+    if (!isPinnedActivityItem(host, item)) {
+      ordinary.push(item);
+    } else if (isAlertSeveritySensorItem(item)) {
+      pinnedAlerts.push(item);
+    } else {
+      pinnedOthers.push(item);
+    }
+  }
+  // macOS `ActivityStackPolicy.partition` parity: an `alert` sensor draws above every other pinned row.
+  return { pinned: [...pinnedAlerts, ...pinnedOthers], ordinary };
 }
 
 /**

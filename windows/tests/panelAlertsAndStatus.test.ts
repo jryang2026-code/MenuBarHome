@@ -773,3 +773,22 @@ describe("WP5b-1 · hide, Escape and focus guards", () => {
     host.pendingCloudRender = false;
   });
 });
+
+describe("alert severity · panel tone and order", () => {
+  it("draws alert sensor cards before warnings and tones them red", () => {
+    const host = startDemo();
+    saveSensorAlertPolicy({ enabled: { contact: true, motion: true }, onlyWhenAway: false }, defaultSafetyStorage());
+    // Contact is recorded last, so the feed's newest-first order would otherwise put a warning first.
+    recordSafetyAlerts(host, [smoke, sensor("contact"), sensor("motion")]);
+    host.render();
+    const ids = [...document.querySelectorAll<HTMLElement>('[data-activity-card^="safety:sensor:"]')].map(
+      (card) => card.getAttribute("data-activity-card"),
+    );
+    assert.ok(ids.includes(`safety:${smoke.id}`), "smoke card is rendered");
+    assert.ok(ids.indexOf(`safety:${smoke.id}`) < ids.indexOf(`safety:${sensor("contact").id}`), "alert sorts above warning");
+    assert.ok(ids.indexOf(`safety:${smoke.id}`) < ids.indexOf(`safety:${sensor("motion").id}`), "alert sorts above warning");
+    assert.match(el(`[data-activity-card="safety:${smoke.id}"]`).className, /is-error/);
+    assert.match(el(`[data-activity-card="safety:${sensor("contact").id}"]`).className, /is-warning/);
+    assert.match(el(`[data-activity-card="safety:${sensor("motion").id}"]`).className, /is-warning/);
+  });
+});

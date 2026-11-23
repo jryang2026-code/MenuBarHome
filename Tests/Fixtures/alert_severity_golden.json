@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "severities": {
+    "leak": "alert",
+    "smoke": "alert",
+    "gas": "alert",
+    "lock": "alert",
+    "contact": "warning",
+    "motion": "warning",
+    "vibration": "warning"
+  }
+}
