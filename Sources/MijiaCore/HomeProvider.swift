@@ -79,6 +79,55 @@ public enum HomeProviderError: LocalizedError, Equatable, Sendable {
     }
 }
 
+public enum AdapterErrorCode: String, Sendable {
+    case authExpired
+    case unreachable
+    case rateLimited
+    case unsupported
+    case deviceOffline
+    case unknown
+
+    public init(classifying error: any Error) {
+        if case .unsupported? = error as? MiotCommandError {
+            self = .unsupported
+            return
+        }
+        if case .serviceCallFailed(let status, _)? = error as? HomeProviderError {
+            self.init(httpStatus: status)
+            return
+        }
+        if case .http(let status)? = error as? MiCloudError {
+            self.init(httpStatus: status)
+            return
+        }
+        switch ControlFailure.classify(error) {
+        case .sessionExpired, .signedOut, .tokenRejected: self = .authExpired
+        case .network: self = .unreachable
+        case .rateLimited: self = .rateLimited
+        case .deviceOffline: self = .deviceOffline
+        default: self = .unknown
+        }
+    }
+
+    init(httpStatus: Int) {
+        switch httpStatus {
+        case 401, 403: self = .authExpired
+        case 408, 502, 503, 504: self = .unreachable
+        case 429: self = .rateLimited
+        case 501: self = .unsupported
+        default: self = .unknown
+        }
+    }
+}
+
+public enum HomeProviderCapability: String, Sendable {
+    case readSnapshot
+    case pushEvents
+    case control
+    case scenes
+    case cameras
+}
+
 public protocol HomeProvider: Sendable {
     func events() -> AsyncStream<HomeProviderEvent>
     func execute(_ command: DeviceCommand) async throws
@@ -173,6 +222,10 @@ private final class URLSessionHAWebSocketConnection: HAWebSocketConnection, @unc
 }
 
 public actor HAWebSocketProvider: HomeProvider {
+    public static let capabilities: Set<HomeProviderCapability> = [
+        .readSnapshot, .pushEvents, .control, .scenes, .cameras,
+    ]
+
     private let logger = Logger(subsystem: "com.jryang1997.MenuBarMijia", category: "HAWebSocket")
     private var baseURLString: String
     private var token: String

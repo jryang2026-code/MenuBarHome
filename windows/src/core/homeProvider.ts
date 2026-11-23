@@ -29,6 +29,9 @@ export interface HomeProvider {
   execute(command: DeviceCommand, options?: ExecuteOptions): Promise<boolean | null>;
 }
 
+/** Capabilities of the built-in Windows backends, including operations outside the command wrapper. */
+export type HomeProviderCapability = "readSnapshot" | "pushEvents" | "control" | "scenes" | "cameras";
+
 /**
  * The write went out but its read-back gave no usable power state, so the row on screen is no
  * longer a trusted reading. `reason` is the error to show.
@@ -48,6 +51,10 @@ export class DemoHomeProvider implements HomeProvider {
 }
 
 export class HomeAssistantProvider implements HomeProvider {
+  static readonly capabilities: ReadonlySet<HomeProviderCapability> = new Set([
+    "readSnapshot", "control", "scenes", "cameras",
+  ]);
+
   /** `ready` settles once the endpoint the client talks to has been accepted by the native side. */
   constructor(
     private readonly client: Pick<HomeAssistantClient, "execute"> & { readonly baseURL?: string },
@@ -77,6 +84,10 @@ export interface MiCloudProviderDependencies {
 }
 
 export class MiCloudProvider implements HomeProvider {
+  static readonly capabilities: ReadonlySet<HomeProviderCapability> = new Set([
+    "readSnapshot", "control", "cameras",
+  ]);
+
   constructor(private readonly dependencies: MiCloudProviderDependencies) {}
 
   async execute(command: DeviceCommand, options: ExecuteOptions = {}): Promise<boolean | null> {

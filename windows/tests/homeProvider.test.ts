@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { adapterErrorCode, MIOT_DEVICE_OFFLINE_CODE } from "../src/core/controlFailure.js";
+import { DeviceDeduplicator, type DualSourceInputSnapshot } from "../src/core/dualSourceProvider.js";
 import {
   DemoHomeProvider,
   HomeAssistantProvider,
@@ -7,12 +9,43 @@ import {
   PowerReadBackError,
   type HomeProvider,
 } from "../src/core/homeProvider.js";
-import { parseMiotDeviceSpec, propKeyString } from "../src/core/miCloudClient.js";
+import { MiCloudError, parseMiotDeviceSpec, propKeyString } from "../src/core/miCloudClient.js";
 import type { MiotActionCall, MiotPropKey, MiotPropWrite } from "../src/core/miCloudClient.js";
 import type { MiotDeviceSpec } from "../src/core/miCloudClient.js";
 import type { DeviceCommand, SmartDevice } from "../src/core/models.js";
 
 // Each backend behind the one `HomeProvider.execute` call, without the app (ADR-0020).
+
+it("reports the active source set for zero, one, and two snapshots", () => {
+  const snapshot: DualSourceInputSnapshot = {
+    home: { devices: [], rooms: [], environmentReadings: [], scenes: [] },
+  };
+  assert.deepEqual(DeviceDeduplicator.merge({}).activeBackends, new Set());
+  assert.deepEqual(DeviceDeduplicator.merge({ homeAssistant: snapshot }).activeBackends, new Set(["homeAssistant"]));
+  assert.deepEqual(DeviceDeduplicator.merge({ xiaomiCloud: snapshot }).activeBackends, new Set(["xiaomiCloud"]));
+  assert.deepEqual(
+    DeviceDeduplicator.merge({ homeAssistant: snapshot, xiaomiCloud: snapshot }).activeBackends,
+    new Set(["homeAssistant", "xiaomiCloud"]),
+  );
+});
+
+it("declares the existing capabilities of both Windows backends", () => {
+  assert.deepEqual(HomeAssistantProvider.capabilities, new Set(["readSnapshot", "control", "scenes", "cameras"]));
+  assert.deepEqual(MiCloudProvider.capabilities, new Set(["readSnapshot", "control", "cameras"]));
+});
+
+it("maps Home Assistant and Xiaomi errors to the same adapter codes", () => {
+  assert.equal(adapterErrorCode("Home Assistant authentication rejected"), "authExpired");
+  assert.equal(adapterErrorCode("Home Assistant connection failed: no resolved addresses"), "unreachable");
+  assert.equal(adapterErrorCode(new Error("setMiotProperty is a Xiaomi-only command")), "unsupported");
+  assert.equal(adapterErrorCode(new MiCloudError("sessionExpired", "session expired")), "authExpired");
+  assert.equal(adapterErrorCode(new MiCloudError("http", "HTTP 503", 503)), "unreachable");
+  assert.equal(adapterErrorCode(new MiCloudError("http", "HTTP 429", 429)), "rateLimited");
+  assert.equal(adapterErrorCode(new MiCloudError("http", "unsupported operation", 501)), "unsupported");
+  assert.equal(adapterErrorCode(new MiCloudError("api", "device offline", MIOT_DEVICE_OFFLINE_CODE)), "deviceOffline");
+  assert.equal(adapterErrorCode(new Error("Unsupported property: power")), "unsupported");
+  assert.equal(adapterErrorCode(new MiCloudError("badResponse", "invalid result")), "unknown");
+});
 
 function spec(raw: unknown): MiotDeviceSpec {
   const parsed = parseMiotDeviceSpec(raw);
