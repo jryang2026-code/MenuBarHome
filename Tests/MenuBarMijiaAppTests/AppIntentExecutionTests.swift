@@ -725,10 +725,10 @@ struct AppIntentExecutionTests {
         await indexer.apply([lamp], signature: signature)
         #expect(passes.count == 2)
 
-        // Now that the write succeeded, an unchanged plan is skipped by `accept`.
-        indexer.debounce = .milliseconds(10)
+        // Now that the write succeeded, an unchanged plan is skipped by `accept`: it schedules
+        // nothing, so the debounce has nothing to flush.
         indexer.accept([lamp])
-        try? await Task.sleep(for: .milliseconds(80))
+        #expect(await indexer.flushPending() == false)
         #expect(passes.count == 2)
     }
 
@@ -743,7 +743,6 @@ struct AppIntentExecutionTests {
     @Test("An unchanged snapshot never rewrites the index")
     func spotlightIndexerSkipsUnchangedPlan() async throws {
         let indexer = SpotlightIndexer()
-        indexer.debounce = .milliseconds(10)
         var written = 0
         indexer.writePass = { _ in
             written += 1
@@ -754,12 +753,15 @@ struct AppIntentExecutionTests {
             kind: .device, entityId: "lamp", title: "Lamp", roomName: "Study",
             keywords: [], domainIdentifier: "menubarmijia.homeAssistant"
         )
+        // The debounce is driven by `flushPending()` instead of the wall clock: a loaded runner has
+        // no timer left to lose a race against.
         indexer.accept([entry])
-        await waitUntil { written == 1 }
+        #expect(await indexer.flushPending() == true)
+        #expect(written == 1)
 
         // A poll that only changed a reading produces the same plan, so nothing is scheduled.
         indexer.accept([entry])
-        try? await Task.sleep(for: .milliseconds(120))
+        #expect(await indexer.flushPending() == false)
         #expect(written == 1)
 
         let renamed = SpotlightIndexEntry(
@@ -767,7 +769,7 @@ struct AppIntentExecutionTests {
             keywords: [], domainIdentifier: "menubarmijia.homeAssistant"
         )
         indexer.accept([renamed])
-        await waitUntil { written == 2 }
+        #expect(await indexer.flushPending() == true)
         #expect(written == 2)
     }
 }

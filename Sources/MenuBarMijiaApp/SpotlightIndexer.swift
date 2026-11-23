@@ -34,7 +34,15 @@ final class SpotlightIndexer {
     /// refused pass is retried instead of being remembered as current.
     var writePass: ((Pass) async -> Bool)?
 
+    /// The pass the debounce will write. Kept as data as well as a timer, so a test can run it
+    /// without waiting for the clock.
+    private struct PendingPass {
+        var entries: [SpotlightIndexEntry]
+        var signature: String
+    }
+
     private var pending: Task<Void, Never>?
+    private var pendingPass: PendingPass?
     private var lastSignature: String?
     private var indexedIdentifiers: Set<String> = []
     private var retry: Task<Void, Never>?
@@ -68,6 +76,7 @@ final class SpotlightIndexer {
             // interval. A pass that was already scheduled must not put the names back.
             pending?.cancel()
             pending = nil
+            pendingPass = nil
             let signature = SpotlightIndexPlan.contentSignature(of: [])
             Task { @MainActor [weak self] in
                 // `forceClear` because a stale index from an earlier launch must go too, even when
@@ -84,19 +93,37 @@ final class SpotlightIndexer {
         guard signature != lastSignature else { return }
         pending?.cancel()
         let delay = debounce
+        pendingPass = PendingPass(entries: entries, signature: signature)
         pending = Task { @MainActor [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
-            await self.apply(entries, signature: signature)
+            await self.flushPending()
         }
+    }
+
+    /// Writes the debounced pass right now, if one is scheduled, and returns whether it ran.
+    ///
+    /// The debounce timer calls this once it has slept; tests call it directly to drive the debounce
+    /// without a real clock. Taking the pending pass is synchronous, so a released timer and a test
+    /// cannot both write the same plan.
+    @discardableResult
+    func flushPending() async -> Bool {
+        pending?.cancel()
+        pending = nil
+        guard let work = pendingPass else { return false }
+        pendingPass = nil
+        await apply(work.entries, signature: work.signature)
+        return true
     }
 
     /// Writes one plan now, remembering what it wrote so the next pass deletes exactly the entities
     /// that left the home. An empty plan is a deliberate clear (setting off, signed out, source
     /// removed) and must leave nothing behind.
     func apply(_ entries: [SpotlightIndexEntry], signature: String, forceClear: Bool = false) async {
+        // A pass written now supersedes whatever the debounce still had queued.
         pending?.cancel()
         pending = nil
+        pendingPass = nil
         let removals = SpotlightIndexPlan.removals(previous: indexedIdentifiers, current: entries)
         let clearsAll = entries.isEmpty && (forceClear || !indexedIdentifiers.isEmpty)
         let pass = Pass(items: entries, removals: removals, clearsAll: clearsAll)
