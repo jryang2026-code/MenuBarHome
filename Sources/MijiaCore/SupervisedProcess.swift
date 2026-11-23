@@ -56,11 +56,6 @@ struct SupervisedProcessPIDFile: Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    var exists: Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0
-    }
-
     func liveProcess(
         inspect: (Int32) -> SupervisedProcessIdentity.Snapshot? = SupervisedProcessIdentity.snapshot
     ) -> SupervisedProcessIdentity.Snapshot? {

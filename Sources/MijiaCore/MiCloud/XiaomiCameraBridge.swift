@@ -128,6 +128,30 @@ struct Go2RTCOwnershipProbe: Equatable, Sendable {
     var processVerified: Bool = false
 }
 
+/// The launcher can rebuild the YAML while the bridge actor is suspended.
+final class Go2RTCRegisteredStreams: @unchecked Sendable {
+    private let lock = NSLock()
+    private var streams: [String: String] = [:]
+
+    func register(_ registrations: [String: String]) {
+        lock.withLock { streams.merge(registrations) { _, replacement in replacement } }
+    }
+
+    func remove(_ names: [String]) {
+        lock.withLock { for name in names { streams.removeValue(forKey: name) } }
+    }
+
+    func writeConfig(base: String, to url: URL) throws {
+        try lock.withLock {
+            let streamLines = streams.sorted { $0.key < $1.key }.map { name, source in
+                "  \(XiaomiCameraBridge.yamlDoubleQuoted(name)): \(XiaomiCameraBridge.yamlDoubleQuoted(source))"
+            }
+            let config = streams.isEmpty ? base : ([base, "streams:"] + streamLines).joined(separator: "\n")
+            try XiaomiCameraBridge.writeSecretFile(config, to: url)
+        }
+    }
+}
+
 /// One UDP relay per camera session. The relay thread remembers a single go2rtc address,
 /// so two cameras on one hub cannot share a port. Stopping one session leaves the other.
 struct HubRelaySessions {
@@ -165,6 +189,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     })
     private var startupCleanupTask: Task<Void, Never>?
     private var activeOwner: Go2RTCOwnerRecord?
+    private var activeRegistrations: Go2RTCRegisteredStreams?
     /// True only when the running go2rtc build exposes the PTZ endpoint. The official v1.9.15
     /// binary returns 404 there, so the drag surface stays off and video behaviour is unchanged.
     private var ptzEndpointAvailable = false
@@ -238,7 +263,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
 
     static func hasLiveOwnedProcess(in binDir: URL) -> Bool {
         let pidFile = go2rtcPIDFile(in: binDir)
-        if pidFile.exists { return pidFile.liveProcess() != nil }
+        if pidFile.liveProcess() != nil { return true }
         guard let record = readOwner(in: binDir),
               processIsAlive(record.pid) else {
             return false
@@ -255,7 +280,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             let pidFile = Self.go2rtcPIDFile()
             if await pidFile.cleanOrphan() {
                 self.logger.info("Cleaned up orphaned go2rtc")
-            } else if !pidFile.exists, let record = Self.readOwner(),
+            } else if pidFile.liveProcess() == nil, let record = Self.readOwner(),
                       let process = SupervisedProcessIdentity.snapshot(pid: record.pid),
                       process.parentPID == 1,
                       Self.processMatchesBinary(pid: record.pid, expectedBinaryPath: record.binaryPath) {
@@ -357,9 +382,11 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         guard let owner = activeOwner else {
             throw HomeProviderError.serviceCallFailed(500, "Local streaming service did not start")
         }
+        let registrations = activeRegistrations
+        let mjpegSource = "ffmpeg:\(rawName)#video=mjpeg"
         try await putStream(http: session, owner: owner.session, name: rawName, src: xiaomiURL)
         try checkRuntime(epoch)
-        try await putStream(http: session, owner: owner.session, name: mjpegName, src: "ffmpeg:\(rawName)#video=mjpeg")
+        try await putStream(http: session, owner: owner.session, name: mjpegName, src: mjpegSource)
         try checkRuntime(epoch)
 
         // `mp4` (empty) selects go2rtc's H.264 + H.265 fMP4 profile, so the camera's own
@@ -368,6 +395,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
               let mjpegURL = Self.streamURL(session: owner.session, path: "/api/stream.mjpeg", query: "src=\(Self.urlEncode(mjpegName))") else {
             throw HomeProviderError.serviceCallFailed(500, "Invalid go2rtc stream URL")
         }
+        registrations?.register([rawName: xiaomiURL, mjpegName: mjpegSource])
         registeredStreams = true
         return XiaomiCameraStreamEndpoints(mp4: mp4URL, mjpeg: mjpegURL)
     }
@@ -419,6 +447,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         relayGenerations.removeAll()
         await processShutdownOverride?()
         activeOwner = nil
+        activeRegistrations = nil
         ptzEndpointAvailable = false
         Self.scrubStaleConfigOnLaunch()
         if shutdownSeq == seq { shutdownTask = nil }
@@ -500,6 +529,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
     }
 
     private func stopBridgeInternal(http: URLSession, names: [String]) async {
+        activeRegistrations?.remove(names)
         if let owner = activeOwner {
             for name in names {
                 if let url = Self.streamURL(session: owner.session, path: "/api/streams", query: "src=\(Self.urlEncode(name))") {
@@ -721,6 +751,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 }
                 guard await supervisor.stop(ifRunningPID: pid) else { continue }
                 activeOwner = nil
+                activeRegistrations = nil
                 ptzEndpointAvailable = false
                 break
             }
@@ -817,8 +848,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
             let session = try Self.makeEphemeralGo2RTCSession()
             let desired = Self.desiredGo2RTCConfig(ffmpegBin: ffmpegBin, session: session)
             let configURL = Self.go2rtcConfigURL()
-            let baseConfigURL = appSupportBin.appendingPathComponent("go2rtc-base.yaml")
-            try Self.writeSecretFile(desired, to: configURL)
+            let registrations = Go2RTCRegisteredStreams()
             let logURL = appSupportBin.appendingPathComponent("go2rtc.log")
             _ = FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
             Self.restrictSecretFile(logURL)
@@ -830,16 +860,12 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 binaryModifiedAt: identity.modifiedAt
             )
             await supervisor.start { onExit in
-                // go2rtc rewrites the first config in place when registering streams.
-                // Keep a separate final config so an interrupted write cannot restore public listeners.
-                let persisted = try? String(contentsOf: configURL, encoding: .utf8)
-                if persisted.map(Self.baseConfig) != Self.baseConfig(desired) {
-                    try Self.writeSecretFile(desired, to: configURL)
-                }
-                try Self.writeSecretFile(desired, to: baseConfigURL)
+                // go2rtc updates its YAML in place. Rebuild it from confirmed registrations
+                // before each launch in case a crash interrupted its write.
+                try registrations.writeConfig(base: desired, to: configURL)
                 let proc = Process()
                 proc.executableURL = URL(fileURLWithPath: exePath)
-                proc.arguments = ["-c", configURL.path, "-c", baseConfigURL.path]
+                proc.arguments = ["-c", configURL.path]
                 proc.currentDirectoryURL = appSupportBin
                 let logHandle = try? FileHandle(forWritingTo: logURL)
                 proc.standardOutput = logHandle ?? FileHandle.nullDevice
@@ -858,6 +884,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
                 if ready, await supervisor.currentPID == pid {
                     activeOwner = record
                     activeOwner?.pid = pid
+                    activeRegistrations = registrations
                     return
                 }
                 if await supervisor.stop(ifRunningPID: pid) { break }

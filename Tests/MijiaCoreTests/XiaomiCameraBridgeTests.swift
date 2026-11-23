@@ -57,9 +57,28 @@ struct XiaomiCameraBridgeTests {
         let selfExe = try #require(XiaomiCameraBridge.executablePath(for: getpid()))
         let liveRecord = Self.makeSampleOwnerRecord(pid: getpid(), binaryPath: selfExe)
         try XiaomiCameraBridge.writeSecretFile(liveRecord.serialized(), to: ownerURL)
+        try XiaomiCameraBridge.writeSecretFile("{", to: dir.appendingPathComponent("go2rtc.pid"))
         #expect(XiaomiCameraBridge.scrubStaleConfigInDirectory(dir) == false)
         let preserved = try String(contentsOf: cfgURL, encoding: .utf8)
         #expect(preserved.contains("streams:"))
+    }
+
+    @Test("Restart rebuilds damaged YAML from confirmed streams and drops closed cameras")
+    func rebuildsDamagedConfig() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let config = directory.appendingPathComponent("go2rtc.yaml")
+        let base = "api:\n  listen: 127.0.0.1:43123\n  local_auth: true"
+        try XiaomiCameraBridge.writeSecretFile(base + "\nstreams:\n  interrupted: [", to: config)
+        let registrations = Go2RTCRegisteredStreams()
+        registrations.register(["cam_raw_keep": "rtsp://127.0.0.1:9/test"])
+        registrations.register(["cam_raw_closed": "rtsp://127.0.0.1:9/closed"])
+        registrations.remove(["cam_raw_closed"])
+
+        try registrations.writeConfig(base: base, to: config)
+        let restored = try String(contentsOf: config, encoding: .utf8)
+        #expect(restored == base + "\nstreams:\n  \"cam_raw_keep\": \"rtsp://127.0.0.1:9/test\"")
     }
 
     @Test("Stale relay generation cannot tear down a newer generation's relay")
