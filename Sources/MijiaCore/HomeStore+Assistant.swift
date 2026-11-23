@@ -835,6 +835,24 @@ extension HomeStore {
         let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !spoken.isEmpty else { return nil }
         let startedAt = Date()
+        let delayed = DelayPhrase.extract(spoken)
+        let utterance = delayed?.remainder ?? spoken
+        if let query = LocalIntentParser.stateQuery(in: utterance) {
+            if case .thinking = assistantState { advanceAssistantEpoch() }
+            pendingCloudConsent = nil
+            assistantSuggestions = []
+            guard delayed == nil else {
+                setAssistantState(.failed(L10n.tr("定时查询仅支持查看当前状态", "State queries only read the current snapshot")))
+                return nil
+            }
+            let plan = query.answer(devices: categoryVisibleDevices)
+            if let plan {
+                setAssistantState(.done(plan.reply))
+            } else {
+                setAssistantState(.failed(L10n.tr("当前快照没有可回答的状态", "No matching state in the current snapshot")))
+            }
+            return plan
+        }
         if DelayPhrase.isCancel(spoken) {
             let count = cancelScheduledCommands()
             setAssistantState(
@@ -848,8 +866,6 @@ extension HomeStore {
             await undoLastAssistantAction()
             return nil
         }
-        let delayed = DelayPhrase.extract(spoken)
-        let utterance = delayed?.remainder ?? spoken
         setAssistantState(.thinking)
         assistantThinkingEpoch = assistantGeneration
 

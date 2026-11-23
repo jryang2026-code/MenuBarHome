@@ -39,6 +39,8 @@ import {
 } from "./chineseIntentTables.js";
 import { deviceCategory, isAssistantControllable, type IntentCategory } from "./deviceCategory.js";
 
+import { answerStateQuery, isPoliteActionQuestion, parseStateQuery, removingPoliteWrappers } from "./stateQuery.js";
+
 // MARK: - Spoken Delay & Undo Phrases
 
 export interface ParsedDelay {
@@ -1324,6 +1326,10 @@ export const LocalIntentParser = {
   ): IntentPlan | null {
     const text = normalizeChineseUtterance(utterance);
     if (!text) return null;
+    const query = parseStateQuery(utterance);
+    if (query) return answerStateQuery(query, devices);
+    const politeAction = removingPoliteWrappers(text);
+    const deviceText = isPoliteActionQuestion(text) ? politeAction.slice(0, -1) : politeAction;
 
     const rawSceneCore = strippedRawSceneText(utterance);
     const sceneCore = strippedSceneText(text);
@@ -1347,7 +1353,8 @@ export const LocalIntentParser = {
       if (englishPlan) return englishPlan;
     }
 
-    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance);
+    const devicePlan = parseChineseDeviceCommand(text, devices, scenes, options, utterance)
+      ?? (deviceText !== text ? parseChineseDeviceCommand(deviceText, devices, scenes, options, utterance) : null);
     if (devicePlan) return devicePlan;
 
     if (Array.from(sceneCore).length >= 2) {

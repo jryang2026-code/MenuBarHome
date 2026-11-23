@@ -297,6 +297,35 @@ describe("F16 Windows app naturalCommand undo-timer dispatch order", () => {
     await closeTestWindow(dom);
   });
 
+  it("answers from the snapshot before shortcuts, write gates or timers", async () => {
+    const root = document.querySelector<HTMLElement>("#app");
+    assert.ok(root);
+    const app = new MenuMijiaWindowsApp(root);
+    app.settings.connectionMode = "homeAssistant";
+    const light = makeLight({ isOn: true });
+    app.devices = [light];
+    app.layout.aliases[light.id] = "阅读灯";
+    const utterance = "ydd开着吗";
+    app.settings.learnedShortcuts.push({
+      phrase: utterance,
+      reply: "intent should never execute",
+      intents: [{ targetId: light.id, operation: { kind: "power", isOn: false } }],
+      learnedAt: new Date().toISOString(),
+    });
+    let executions = 0;
+    app.executeIntents = async () => { executions += 1; return true; };
+
+    await app.handleNaturalCommand(utterance);
+    assert.match(app.replyBanner?.text ?? "", /^阅读灯：开着/);
+    assert.deepEqual(app.pendingSuggestions, []);
+    assert.equal(app.pendingCloudConsent, null);
+
+    await app.handleNaturalCommand("10分钟后阅读灯关了吗");
+    assert.equal(app.replyBanner?.text, "定时查询仅支持查看当前状态");
+    assert.deepEqual(app.scheduledCommands, []);
+    assert.equal(executions, 0);
+  });
+
   it("cancels pending timer on 撤销定时 without undoing the last device command", async () => {
     const root = document.querySelector<HTMLElement>("#app");
     assert.ok(root);

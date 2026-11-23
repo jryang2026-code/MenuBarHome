@@ -108,8 +108,8 @@ public enum LocalIntentParser {
         .union(CharacterSet(charactersIn: "，。！？、；：,!?;:~～\"'“”‘’"))
 
     private static let tradToSimpMap: [Character: Character] = {
-        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計線轉殺發驅誘號訊壺飲飯鍋養網長報蟲爐蘇曬")
-        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计线转杀发驱诱号讯壶饮饭锅养网长报虫炉苏晒")
+        let trad = Array("開關啟啓閉滅調變設為換執動進運場燈電氣機風熱涼溫濕溼乾淨掃視攝頭監閥門總鎖簾紗捲葉車庫揚聲魚寵餵煙霧應傳臥廳書廚陽臺檯衛間裡裏內頂帶環點黃藍綠紅檔擋級強靜愛搖擺別製備個盞隻條請幫煩給將兩過時鐘鍾後銷剛暫還計線轉殺發驅誘號訊壺飲飯鍋養網長報蟲爐蘇曬嗎問謝著麼")
+        let simp = Array("开关启启闭灭调变设为换执动进运场灯电气机风热凉温湿湿干净扫视摄头监阀门总锁帘纱卷叶车库扬声鱼宠喂烟雾应传卧厅书厨阳台台卫间里里内顶带环点黄蓝绿红档档级强静爱摇摆别制备个盏只条请帮烦给将两过时钟钟后销刚暂还计线转杀发驱诱号讯壶饮饭锅养网长报虫炉苏晒吗问谢着么")
         precondition(trad.count == simp.count && Set(trad).count == trad.count)
         var map: [Character: Character] = [:]
         for (idx, ch) in trad.enumerated() {
@@ -124,6 +124,34 @@ public enum LocalIntentParser {
         return String(replaced.map { tradToSimpMap[$0] ?? $0 })
     }
 
+    private static func normalizedText(_ utterance: String) -> String {
+        let normalized = toSimplifiedChinese(utterance)
+        return String(String.UnicodeScalarView(normalized.unicodeScalars.filter { !ignorable.contains($0) }))
+            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+    }
+
+    static func stateQuery(in utterance: String) -> StateQuery? {
+        StateQuery.parse(normalizedText(utterance))
+    }
+
+    static func removingPoliteWrappers(_ text: String) -> String {
+        text.replacingOccurrences(
+            of: #"^(?:请问一下|请问|请|帮我|麻烦你|麻烦|能不能|能否|可以|谢谢|我想要|那个(?=麻烦))+"#,
+            with: "", options: .regularExpression
+        ).replacingOccurrences(of: #"谢谢$"#, with: "", options: .regularExpression)
+    }
+
+    static func isPoliteActionQuestion(_ text: String) -> Bool {
+        let action = removingPoliteWrappers(text)
+        guard action.hasSuffix("吗"),
+              text.range(of: #"^(?:请问(?:一下)?|请)?(?:可以|能不能|能否)"#, options: .regularExpression) != nil else {
+            return false
+        }
+        return action.range(
+            of: #"^(?:把|将|打开|开启|关闭|关掉|关上|开|关|调|设|切)"#, options: .regularExpression
+        ) != nil
+    }
+
     // MARK: - Entry Point
 
     public static func parse(
@@ -133,10 +161,11 @@ public enum LocalIntentParser {
         panelRoom: BareCategoryCommand.Room? = nil,
         usageOrder: [String] = []
     ) -> IntentPlan? {
-        let normalizedUtterance = toSimplifiedChinese(utterance)
-        let text = String(String.UnicodeScalarView(normalizedUtterance.unicodeScalars.filter { !ignorable.contains($0) }))
-            .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        let text = normalizedText(utterance)
         guard !text.isEmpty else { return nil }
+        if let query = StateQuery.parse(text) { return query.answer(devices: devices) }
+        let politeAction = removingPoliteWrappers(text)
+        let deviceText = isPoliteActionQuestion(text) ? String(politeAction.dropLast()) : politeAction
 
         let rawSceneCore = strippedRawSceneText(utterance)
         let sceneCore = strippedSceneText(text)
@@ -158,6 +187,13 @@ public enum LocalIntentParser {
             panelRoom: panelRoom,
             usageOrder: usageOrder
         ) {
+            return plan
+        }
+        if deviceText != text,
+           let plan = parseDeviceCommand(
+               deviceText, rawUtterance: utterance, devices: devices, scenes: scenes,
+               panelRoom: panelRoom, usageOrder: usageOrder
+           ) {
             return plan
         }
         if sceneCore.count >= 2 {
