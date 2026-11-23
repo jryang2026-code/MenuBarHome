@@ -344,13 +344,45 @@ fn format_windows_toast_xml(
 }
 
 #[cfg(any(windows, test))]
+const LEGACY_TOAST_AUMID: &str = "com.jryang.menubarmijia";
+
+#[cfg(any(windows, test))]
 pub(crate) const WINDOWS_TOAST_POWERSHELL_SCRIPT: &str =
-    "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
+    "$ErrorActionPreference = 'Stop'; \
+     [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] > $null; \
      [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] > $null; \
      $doc = New-Object Windows.Data.Xml.Dom.XmlDocument; \
      $doc.LoadXml([string]$env:MMB_TOAST_XML); \
      $toast = [Windows.UI.Notifications.ToastNotification]::new($doc); \
-     [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier([string]$env:MMB_TOAST_AUMID).Show($toast)";
+     $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier([string]$env:MMB_TOAST_AUMID); \
+     if ([int]$notifier.Setting -ne 0) { throw 'Windows toast notifications are disabled' }; \
+     $notifier.Show($toast)";
+
+#[cfg(any(windows, test))]
+fn powershell_toast_aumid(aumid: &str, winrt_result: Option<Result<(), ()>>) -> Option<&str> {
+    match winrt_result {
+        Some(Ok(())) => None,
+        Some(Err(())) => Some(aumid),
+        None => Some(LEGACY_TOAST_AUMID),
+    }
+}
+
+#[cfg(any(windows, test))]
+fn powershell_toast_command(aumid: &str, xml: &str) -> std::process::Command {
+    let mut command = std::process::Command::new("powershell.exe");
+    command
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            WINDOWS_TOAST_POWERSHELL_SCRIPT,
+        ])
+        .env("MMB_TOAST_XML", xml)
+        .env("MMB_TOAST_AUMID", aumid);
+    command
+}
 
 #[cfg(windows)]
 fn is_toast_registered(aumid: &str) -> bool {
@@ -381,12 +413,17 @@ fn show_winrt_toast(aumid: &str, xml: &str, kind: ToastKind) -> windows::core::R
         NotificationSetting, ToastNotification, ToastNotificationManager, ToastNotificationPriority,
     };
     use windows::Win32::System::WinRT::{RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED};
+    use windows_sys::Win32::Foundation::E_ACCESSDENIED;
 
     unsafe { RoInitialize(RO_INIT_MULTITHREADED)? };
     let result = (|| {
         let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(aumid))?;
-        if notifier.Setting()? != NotificationSetting::Enabled {
-            return Ok(());
+        let setting = notifier.Setting()?;
+        if setting != NotificationSetting::Enabled {
+            return Err(windows::core::Error::new(
+                windows::core::HRESULT(E_ACCESSDENIED),
+                format!("Windows toast notifications are disabled (setting {})", setting.0),
+            ));
         }
         let doc = XmlDocument::new()?;
         doc.LoadXml(&HSTRING::from(xml))?;
@@ -411,24 +448,27 @@ pub(crate) async fn send_desktop_notification(
     let kind = kind.unwrap_or_default();
     #[cfg(windows)]
     {
+        use windows_sys::Win32::System::Diagnostics::Debug::OutputDebugStringW;
+
         let aumid = app.config().identifier.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            if !cfg!(debug_assertions) && !tauri::is_dev() && is_toast_registered(&aumid) {
-                let xml = format_windows_toast_xml(&title, &body, kind, device_id.as_deref())?;
-                return show_winrt_toast(&aumid, &xml, kind).map_err(|err| format!("系统通知发送失败：{err}"));
-            }
-            let xml = format_windows_toast_xml(&title, &body, kind, None)?;
-            let status = std::process::Command::new("powershell.exe")
-                .args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-WindowStyle",
-                    "Hidden",
-                    "-Command",
-                    WINDOWS_TOAST_POWERSHELL_SCRIPT,
-                ])
-                .env("MMB_TOAST_XML", &xml)
-                .env("MMB_TOAST_AUMID", &aumid)
+            let use_winrt =
+                !cfg!(debug_assertions) && !tauri::is_dev() && is_toast_registered(&aumid);
+            let activation_device_id = if use_winrt { device_id.as_deref() } else { None };
+            let xml = format_windows_toast_xml(&title, &body, kind, activation_device_id)?;
+            let winrt_result = use_winrt.then(|| {
+                show_winrt_toast(&aumid, &xml, kind).map_err(|err| {
+                    let message: Vec<u16> = format!("WinRT 系统通知发送失败，尝试 PowerShell：{err}\n")
+                        .encode_utf16()
+                        .chain([0])
+                        .collect();
+                    unsafe { OutputDebugStringW(message.as_ptr()) };
+                })
+            });
+            let Some(fallback_aumid) = powershell_toast_aumid(&aumid, winrt_result) else {
+                return Ok(());
+            };
+            let status = powershell_toast_command(fallback_aumid, &xml)
                 .creation_flags(crate::CREATE_NO_WINDOW)
                 .status()
                 .map_err(|err| format!("启动系统通知失败：{err}"))?;
@@ -571,6 +611,31 @@ mod tests {
         assert!(WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("$doc.LoadXml([string]$env:MMB_TOAST_XML)"));
         assert!(!WINDOWS_TOAST_POWERSHELL_SCRIPT.contains("{}"));
         assert!(format_windows_toast_xml("   ", "\n\t", ToastKind::Safety, None).is_err());
+    }
+
+    #[test]
+    fn windows_toast_fallback_uses_registered_or_legacy_aumid() {
+        let registered = "example.registered";
+        assert_eq!(powershell_toast_aumid(registered, Some(Ok(()))), None);
+
+        let xml = format_windows_toast_xml("漏水", "厨房", ToastKind::Leak, Some("sensor.leak"))
+            .expect("valid alarm xml");
+        for (winrt_result, expected_aumid) in [
+            (Some(Err(())), registered),
+            (None, "com.jryang.menubarmijia"),
+        ] {
+            let aumid = powershell_toast_aumid(registered, winrt_result).expect("fallback aumid");
+            let command = powershell_toast_command(aumid, &xml);
+            let env: std::collections::HashMap<_, _> = command.get_envs().collect();
+            assert_eq!(
+                env[std::ffi::OsStr::new("MMB_TOAST_AUMID")],
+                Some(std::ffi::OsStr::new(expected_aumid)),
+            );
+            assert_eq!(
+                env[std::ffi::OsStr::new("MMB_TOAST_XML")],
+                Some(std::ffi::OsStr::new(&xml)),
+            );
+        }
     }
 
     #[test]
