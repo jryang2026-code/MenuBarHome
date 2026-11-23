@@ -1318,13 +1318,13 @@ struct LocalMiIOClientTests {
         let token = try #require(MiIOPacket.validateToken(validTokenHex))
         let host = "192.168.1.20"
         let did = "lumi.sensor.v1"
-        let (replyReceived, signalReplyReceived) = AsyncStream<Void>.makeStream()
+        let replyReceived = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let transport = MockUDPTransport { packet, _, _ in
             let reply = try self.encodeRPCReply(packet, token: token, resultOrError: #""result":[]"#)
             // Model a completed receive whose continuation resumes after the wave cancels.
             let (waitForCancellation, holdReply) = AsyncStream<Void>.makeStream()
             defer { holdReply.finish() }
-            signalReplyReceived.finish()
+            replyReceived.continuation.yield(())
             for await _ in waitForCancellation {}
             return reply
         }
@@ -1334,7 +1334,10 @@ struct LocalMiIOClientTests {
         let start = ContinuousClock.now
         let clock = LocalMiIOClient.DiscoveryClock(
             now: { start },
-            sleep: { _ in for await _ in replyReceived {} }
+            sleep: { _ in
+                var events = replyReceived.stream.makeAsyncIterator()
+                await events.next()
+            }
         )
         let client = LocalMiIOClient(transport: transport)
         let discovered = try await client.discoverEndpoints(
