@@ -12,6 +12,8 @@ extension HomeStore {
         userDefaults.set(enabled, forKey: kind.defaultsKey)
         // Turning an alert off ends its exclusive reads; a closed type keeps only the ones still on.
         syncMiotTypePrunePolicy()
+        // The last enabled kind turned off is what lets an idle poll stretch (ADR-0023 §4).
+        refreshPollingContext()
     }
 
     public var awayGapIncludesAway: Bool {
@@ -28,6 +30,14 @@ extension HomeStore {
             }
         }
         return false
+    }
+
+    /// An enabled alert is read out of the polled snapshots, so the poll cannot slow down for being
+    /// idle: a closed device type still keeps its flood and smoke sensors in `typeHiddenSafetyDevices`
+    /// (ADR-0023 §4). Off when the alerts are off, or when every alert kind is.
+    public var safetyAlertsRelyOnPolling: Bool {
+        guard enableSafetyAlerts else { return false }
+        return SensorAlertKind.allCases.contains { isSensorAlertEnabled($0) }
     }
 
     public func nextSafetyAlertCheck(now: Date) -> Date? {

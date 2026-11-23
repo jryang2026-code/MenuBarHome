@@ -9,7 +9,7 @@ import {
 } from "./miCloudClient.js";
 
 /**
- * Current panel and workstation activity context. Mirrors `Sources/MijiaCore/PollingPolicy.swift:4-22`.
+ * Current panel and workstation activity context. Mirrors `Sources/MijiaCore/PollingPolicy.swift:4-44`.
  */
 interface PollingContext {
   /** The control center panel is visible on screen. */
@@ -18,6 +18,18 @@ interface PollingContext {
   readonly systemActive: boolean;
   /** OS power-saver / low-power mode is active. */
   readonly lowPower: boolean;
+  /**
+   * Epoch ms of the last panel open/close, or `null`/omitted when the caller does not track it
+   * (which keeps the closed-panel interval flat).
+   */
+  readonly lastPanelInteractionAtMs?: number | null;
+  /**
+   * An enabled safety alert reads its sensor through this poll (ADR-0023 §4), so a closed panel keeps
+   * 60 s however long the user is away. Defaults to `true`: an untracked caller must never decay.
+   */
+  readonly safetyAlertsRelyOnPolling?: boolean;
+  /** The tray/menu-bar label renders a polled reading. Defaults to `true`, same reasoning. */
+  readonly menuBarShowsLiveReading?: boolean;
 }
 
 export function describePollingContext(context: PollingContext): string {
@@ -28,17 +40,57 @@ export function describePollingContext(context: PollingContext): string {
 const PANEL_OPEN_INTERVAL_MS = 6_000;
 const PANEL_CLOSED_INTERVAL_MS = 60_000;
 const LOW_POWER_FACTOR = 3;
+/** A closed panel nobody has touched for 30 min polls every `IDLE_INTERVAL_MS`. */
+const IDLE_THRESHOLD_MS = 30 * 60_000;
+const IDLE_INTERVAL_MS = 120_000;
+/** Two hours of no interaction; the last step before polling is purely for freshness. */
+const LONG_IDLE_THRESHOLD_MS = 2 * 60 * 60_000;
+const LONG_IDLE_INTERVAL_MS = 300_000;
 const DEVICE_REFRESH_EVERY_POLLS = 20;
 const RATE_LIMIT_BACKOFF_SCHEDULE_MS = [60_000, 120_000, 240_000, 480_000, 900_000] as const;
 
 /**
+ * The closed-panel interval after idle stretching, before Low Power Mode. Off while a poll still
+ * carries an enabled safety alert or a live label reading: both get worse, not just staler, with a
+ * 2–5 min gap.
+ */
+function stretchedIntervalMs(
+  context: PollingContext,
+  panelClosedMs: number,
+  nowMs: number,
+): number {
+  if (context.safetyAlertsRelyOnPolling ?? true) return panelClosedMs;
+  if (context.menuBarShowsLiveReading ?? true) return panelClosedMs;
+  const lastInteractionMs = context.lastPanelInteractionAtMs;
+  if (lastInteractionMs === null || lastInteractionMs === undefined) return panelClosedMs;
+  if (!Number.isFinite(lastInteractionMs)) return panelClosedMs;
+  const idleMs = nowMs - lastInteractionMs;
+  if (idleMs >= LONG_IDLE_THRESHOLD_MS) return LONG_IDLE_INTERVAL_MS;
+  if (idleMs >= IDLE_THRESHOLD_MS) return IDLE_INTERVAL_MS;
+  return panelClosedMs;
+}
+
+/**
  * Xiaomi / cloud background polling cadence and rate-limit policy.
- * Mirrors `Sources/MijiaCore/PollingPolicy.swift:24-49` and `MiCloudProvider.swift:202-227`.
+ * Mirrors `Sources/MijiaCore/PollingPolicy.swift:46-104` and `MiCloudProvider.swift:202-227`.
+ *
+ * | Situation | Interval |
+ * | --- | --- |
+ * | Panel open | 6 s |
+ * | Panel closed | 60 s |
+ * | Panel closed, 30 min since the last touch | 120 s |
+ * | Panel closed, 2 h since the last touch | 300 s |
+ * | Panel closed in Low Power Mode | 180 s, or the idle step when that one is longer |
+ * | Asleep, display asleep, locked | no polling |
  */
 export const PollingPolicy = {
   panelOpenIntervalMs: PANEL_OPEN_INTERVAL_MS,
   panelClosedIntervalMs: PANEL_CLOSED_INTERVAL_MS,
   lowPowerFactor: LOW_POWER_FACTOR,
+  idleThresholdMs: IDLE_THRESHOLD_MS,
+  idleIntervalMs: IDLE_INTERVAL_MS,
+  longIdleThresholdMs: LONG_IDLE_THRESHOLD_MS,
+  longIdleIntervalMs: LONG_IDLE_INTERVAL_MS,
   /** Full topology discovery (`deviceList + homeRooms + sharedHomes + lightGroupMembers`) runs once every 20 polls. */
   deviceRefreshEveryPolls: DEVICE_REFRESH_EVERY_POLLS,
   /** Exponential backoff steps on HTTP 429 / Xiaomi rate limit, capped at 900 s (15 min). */
@@ -46,15 +98,19 @@ export const PollingPolicy = {
 
   /**
    * Returns the wait in milliseconds between polls, or `null` when polling must pause (locked/asleep).
+   * Low Power Mode scales the configured closed interval; the idle step is a floor taken on top of it.
+   * The longer of the two wins, and they never multiply into 360 s / 900 s.
    */
   intervalMs(
     context: PollingContext,
     panelOpenMs: number = PANEL_OPEN_INTERVAL_MS,
     panelClosedMs: number = PANEL_CLOSED_INTERVAL_MS,
+    nowMs: number = Date.now(),
   ): number | null {
     if (!context.systemActive) return null;
     if (context.panelVisible) return panelOpenMs;
-    return context.lowPower ? panelClosedMs * LOW_POWER_FACTOR : panelClosedMs;
+    const lowPowerIntervalMs = context.lowPower ? panelClosedMs * LOW_POWER_FACTOR : panelClosedMs;
+    return Math.max(lowPowerIntervalMs, stretchedIntervalMs(context, panelClosedMs, nowMs));
   },
 
   /**
