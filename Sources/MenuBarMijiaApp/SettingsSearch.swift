@@ -16,6 +16,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case temperatureUnit
     case dashboardTitle
     case menuBarReadout
+    case menuBarPinnedReadouts
     case compactGrid
     case hideOfflineDevices
     case hideGroupedLights
@@ -86,7 +87,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     /// The category page that renders this row.
     var tab: SettingsTab {
         switch self {
-        case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .compactGrid,
+        case .language, .temperatureUnit, .dashboardTitle, .menuBarReadout, .menuBarPinnedReadouts, .compactGrid,
              .hideOfflineDevices, .hideGroupedLights, .quickScenesBar, .voiceInput,
              .soundFeedback, .launchAtLogin, .globalHotkey, .weeklyReport, .hiddenDevices,
              .scheduledCommands, .automationRules, .raycast, .energyHistory,
@@ -278,6 +279,8 @@ enum SettingsSearch {
                   synonyms: ["标题", "名字", "命名", "title", "name", "naming"]),
             entry(.menuBarReadout, section: generalSection, zhTitle: "菜单栏旁显示", enTitle: "Menu Bar Readout",
                   synonyms: ["菜单栏", "温度显示", "状态栏", "menu bar", "readout", "status item"]),
+            entry(.menuBarPinnedReadouts, section: generalSection, zhTitle: "菜单栏钉选读数", enTitle: "Pinned Menu Bar Readouts",
+                  synonyms: ["钉选", "菜单栏", "温湿度", "开关状态", "pin", "pinned", "readout", "menu bar", "status item"]),
             entry(.compactGrid, section: generalSection, zhTitle: "双列紧凑磁贴视图", enTitle: "2-Column Compact Grid",
                   synonyms: ["紧凑", "双列", "网格", "磁贴", "密度", "compact", "grid", "tile", "density"]),
             entry(.hideOfflineDevices, section: generalSection,

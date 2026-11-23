@@ -613,7 +613,7 @@ struct SettingsToggleRow: View {
 
 enum GeneralSettingsDisclosure {
     static let advancedDisplayAnchors: Set<SettingsAnchor> = [
-        .panelTheme, .panelHeight, .compactGrid, .climatePanelModule, .hideGroupedLights
+        .panelTheme, .panelHeight, .compactGrid, .climatePanelModule, .hideGroupedLights, .menuBarPinnedReadouts
     ]
 
     struct State: Equatable, Sendable {
@@ -629,7 +629,8 @@ enum GeneralSettingsDisclosure {
             panelHeight: PanelHeight,
             isCompactGridMode: Bool,
             climatePanelModule: Bool,
-            hideGroupedLights: Bool
+            hideGroupedLights: Bool,
+            hasPinnedMenuBarReadouts: Bool = false
         ) {
             guard !hasAppliedInitialDefaults else { return }
             hasAppliedInitialDefaults = true
@@ -638,7 +639,8 @@ enum GeneralSettingsDisclosure {
                 panelHeight: panelHeight,
                 isCompactGridMode: isCompactGridMode,
                 climatePanelModule: climatePanelModule,
-                hideGroupedLights: hideGroupedLights
+                hideGroupedLights: hideGroupedLights,
+                hasPinnedMenuBarReadouts: hasPinnedMenuBarReadouts
             ) {
                 isExpanded = true
             }
@@ -670,13 +672,15 @@ enum GeneralSettingsDisclosure {
         panelHeight: PanelHeight,
         isCompactGridMode: Bool,
         climatePanelModule: Bool,
-        hideGroupedLights: Bool
+        hideGroupedLights: Bool,
+        hasPinnedMenuBarReadouts: Bool = false
     ) -> Bool {
         if panelTheme != .classic { return true }
         if panelHeight != .standard { return true }
         if !isCompactGridMode { return true }
         if !climatePanelModule { return true }
         if !hideGroupedLights { return true }
+        if hasPinnedMenuBarReadouts { return true }
         return false
     }
 }
@@ -1089,6 +1093,49 @@ private struct GeneralSettingsTab: View {
                         .font(.system(size: DesignTokens.TypeSize.caption))
                         .foregroundStyle(DesignTokens.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
+
+                        Divider().overlay(Color.primary.opacity(0.06))
+
+                        VStack(alignment: .leading, spacing: DesignTokens.Settings.rowSpacing) {
+                            SettingsValueRow(title: L10n.tr("菜单栏钉选读数 1", "Pinned Readout 1")) {
+                                Picker(L10n.tr("菜单栏钉选读数 1", "Pinned Readout 1"), selection: Binding(
+                                    get: { store.menuBarPinnedReadouts.first ?? "" },
+                                    set: { store.setMenuBarPinnedReadout($0, at: 0) }
+                                )) {
+                                    Text(L10n.tr("不钉选", "None")).tag("")
+                                    ForEach(store.availablePinnedMenuBarOptions) { option in
+                                        Text(option.title).tag(option.id)
+                                    }
+                                }
+                                .labelsHidden()
+                            }
+
+                            if !store.menuBarPinnedReadouts.isEmpty {
+                                SettingsValueRow(title: L10n.tr("菜单栏钉选读数 2", "Pinned Readout 2")) {
+                                    let first = store.menuBarPinnedReadouts.first ?? ""
+                                    let second = store.menuBarPinnedReadouts.count > 1 ? store.menuBarPinnedReadouts[1] : ""
+                                    Picker(L10n.tr("菜单栏钉选读数 2", "Pinned Readout 2"), selection: Binding(
+                                        get: { second },
+                                        set: { store.setMenuBarPinnedReadout($0, at: 1) }
+                                    )) {
+                                        Text(L10n.tr("不钉选", "None")).tag("")
+                                        ForEach(store.availablePinnedMenuBarOptions.filter { $0.id != first }) { option in
+                                            Text(option.title).tag(option.id)
+                                        }
+                                    }
+                                    .labelsHidden()
+                                }
+                            }
+
+                            Text(L10n.tr(
+                                "可选最多 2 项传感器温湿度或开关状态固定显示在菜单栏图标旁；默认不钉选，沿用上方的「菜单栏旁显示」设置。",
+                                "Pin up to 2 sensor readings or switch states next to the menu bar icon. Nothing is pinned by default, keeping the Menu Bar Readout setting above."
+                            ))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .settingsRow(anchor: .menuBarPinnedReadouts)
                     }
                     .padding(.top, 6)
                 } label: {
@@ -1142,7 +1189,8 @@ private struct GeneralSettingsTab: View {
                 panelHeight: PanelHeight(rawValue: panelHeightRaw) ?? .standard,
                 isCompactGridMode: store.isCompactGridMode,
                 climatePanelModule: climatePanelModule,
-                hideGroupedLights: store.hideGroupedLights
+                hideGroupedLights: store.hideGroupedLights,
+                hasPinnedMenuBarReadouts: !store.menuBarPinnedReadouts.isEmpty
             )
             advancedDisplay.expandIfNeeded(forHighlight: searchFocus?.highlight)
             launchAtLogin.refresh()

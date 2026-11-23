@@ -44,6 +44,46 @@ extension HomeStore {
         return opts
     }
 
+    /// Sensor readings (temp / humidity) and switchable devices available to pin in the menu bar.
+    public var availablePinnedMenuBarOptions: [MenuBarMetricOption] {
+        let _ = effectiveLanguage
+        var opts: [MenuBarMetricOption] = []
+        for env in sortedByRoom(environmentReadings, roomName: \.roomName) {
+            let place = Self.roomQualifiedLabel(env.label, room: env.roomName)
+            if env.temperature != nil {
+                opts.append(MenuBarMetricOption(id: "temp:\(env.id)", title: L10n.tr("\(place) · 温度", "\(place) · Temp")))
+            }
+            if env.humidity != nil {
+                opts.append(MenuBarMetricOption(id: "hum:\(env.id)", title: L10n.tr("\(place) · 湿度", "\(place) · Humidity")))
+            }
+            if env.temperature != nil && env.humidity != nil {
+                opts.append(MenuBarMetricOption(id: "temp_hum:\(env.id)", title: L10n.tr("\(place) · 温湿度", "\(place) · Temp & Humidity")))
+            }
+        }
+        for dev in sortedByRoom(categoryVisibleDevices.filter(\.isPinnableMenuBarSwitch), roomName: \.roomName) {
+            let place = Self.roomQualifiedLabel(dev.name, room: dev.roomName)
+            opts.append(MenuBarMetricOption(id: "switch:\(dev.id)", title: L10n.tr("\(place) · 开关状态", "\(place) · On/Off")))
+        }
+        return opts
+    }
+
+    /// Updates one pinned readout slot (0 or 1). Passing an empty string clears that slot.
+    public func setMenuBarPinnedReadout(_ targetId: String, at slot: Int) {
+        guard slot >= 0, slot < MenuBarPinnedReadout.maxPinnedCount else { return }
+        var next = menuBarPinnedReadouts
+        let trimmed = targetId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            if slot < next.count {
+                next.remove(at: slot)
+            }
+        } else if slot < next.count {
+            next[slot] = trimmed
+        } else {
+            next.append(trimmed)
+        }
+        menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(next)
+    }
+
     /// `房间 · 设备`, or just the room when the device carries no name of its own (a cleared
     /// sensor name already falls back to the room).
     static func roomQualifiedLabel(_ label: String, room: String) -> String {
@@ -163,14 +203,31 @@ extension HomeStore {
         return base.filter(\.isOnline) + base.filter { !$0.isOnline }
     }
 
+    public func menuBarIconState(isListening: Bool = false) -> MenuBarIconState {
+        MenuBarIconState.resolve(MenuBarIconStateInput(
+            isListening: isListening,
+            miSessionBlocksControl: miSessionBlocksControl,
+            activeDeviceCount: activeDeviceCount,
+            hasSafetyAlert: menuBarShowsHazard,
+            panelHealth: panelHealth
+        ))
+    }
+
     public var menuBarSymbolName: String {
-        if miSessionBlocksControl { return "house.slash" }
-        return activeDeviceCount > 0 ? "house.fill" : "house"
+        menuBarIconState().symbolName
     }
 
     public var menuBarText: String? {
         if deviceValuesAreStale {
             return L10n.tr("可能过期", "Possibly stale")
+        }
+        if !menuBarPinnedReadouts.isEmpty {
+            let _ = effectiveLanguage
+            return MenuBarPinnedReadout.format(
+                pinnedIDs: menuBarPinnedReadouts,
+                environmentReadings: environmentReadings,
+                devices: devices
+            )
         }
         let sensorReading = { (prefix: String) -> EnvironmentReading? in
             guard self.menuBarTargetId.hasPrefix(prefix) else { return nil }
@@ -228,6 +285,7 @@ extension HomeStore {
     /// missing (an offline target, an empty home) and `PollingPolicy` never stretches a label the user
     /// keeps on screen. Mirrors the branches of `menuBarText`, minus "icon only".
     public var menuBarShowsLiveReading: Bool {
+        if !menuBarPinnedReadouts.isEmpty { return true }
         if menuBarTargetId.hasPrefix("temp:") || menuBarTargetId.hasPrefix("temp_hum:") { return true }
         if menuBarTargetId.hasPrefix("power:") || menuBarTargetId == "active:count" { return true }
         if menuBarTargetId == "icon:only" { return false }

@@ -188,8 +188,9 @@ final class MenuBarPanelController: NSObject {
     private var contextMenuDismissalEventNumber: Int?
     private var acceptsStandalonePostMenuMouseUp = false
     /// What the status button currently shows; kept after a sync so diagnostics and tests can read it.
-    private(set) var labelSymbol: String?
-    private var labelShowsHazard = false
+    private(set) var labelIconState: MenuBarIconState?
+    var labelSymbol: String? { labelIconState?.symbolName }
+    private(set) var widthState = MenuBarWidthState()
     private(set) var labelText: String?
     private(set) var tooltipText: String?
     private var observers: [any NSObjectProtocol] = []
@@ -252,8 +253,8 @@ final class MenuBarPanelController: NSObject {
         if let statusItem, statusItem.button?.window == nil {
             NSStatusBar.system.removeStatusItem(statusItem)
             self.statusItem = nil
-            labelSymbol = nil
-            labelShowsHazard = false
+            labelIconState = nil
+            widthState = MenuBarWidthState()
             labelText = nil
             tooltipText = nil
         }
@@ -310,8 +311,8 @@ final class MenuBarPanelController: NSObject {
         statusItem = nil
         store = nil
         didInstall = false
-        labelSymbol = nil
-        labelShowsHazard = false
+        labelIconState = nil
+        widthState = MenuBarWidthState()
         labelText = nil
         tooltipText = nil
     }
@@ -734,9 +735,9 @@ final class MenuBarPanelController: NSObject {
         _ = speech.isHoldToTalk
         _ = speech.draft
         if let store {
-            _ = store.menuBarSymbolName
+            _ = store.menuBarIconState(isListening: speech.isListening)
+            _ = store.menuBarPinnedReadouts
             _ = store.menuBarText
-            _ = store.menuBarShowsHazard
             _ = MenuBarStatusSummary.text(for: store)
             _ = store.undoBanner?.id
             _ = store.toastNotice?.id
@@ -771,34 +772,42 @@ final class MenuBarPanelController: NSObject {
         updateLabelTimer()
     }
 
-    /// Pushes icon, text, tooltip and accessibility label onto the status button.
+    /// Pushes icon, text, tooltip and accessibility label onto the status button without animation.
     func syncStatusItem() {
-        guard let button = statusItem?.button, let store else { return }
+        guard let statusItem, let button = statusItem.button, let store else { return }
         let speech = SpeechInputController.shared
-        let symbol = speech.isListening ? "waveform" : store.menuBarSymbolName
+        let iconState = store.menuBarIconState(isListening: speech.isListening)
         let text = speech.isListening ? Self.speechLabel(speech.draft) : store.menuBarText
         let summary = MenuBarStatusSummary.text(for: store)
-        let hazard = store.menuBarShowsHazard
 
-        if symbol != labelSymbol || hazard != labelShowsHazard {
-            labelSymbol = symbol
-            labelShowsHazard = hazard
-            if let image = Self.statusBarImage(symbolName: symbol) {
-                if hazard {
-                    image.isTemplate = false
-                    let red = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
-                    let painted = image.withSymbolConfiguration(red) ?? image
-                    painted.isTemplate = false
-                    button.image = painted
-                } else {
-                    image.isTemplate = true
-                    button.image = image
-                }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+
+        var contentChanged = false
+        if iconState != labelIconState {
+            labelIconState = iconState
+            if let image = Self.statusBarImage(for: iconState) {
+                button.image = image
             }
+            contentChanged = true
         }
         if text != labelText {
             labelText = text
             button.attributedTitle = Self.statusTitle(text, isSpeech: speech.isListening)
+            contentChanged = true
+        }
+        if contentChanged {
+            let measured = Self.measuredStatusItemWidth(button: button, text: text)
+            widthState = MenuBarWidthStabilizer.update(
+                state: widthState,
+                text: text,
+                measuredWidth: measured
+            )
+            let targetLength = widthState.reservedWidth.map { CGFloat($0) } ?? NSStatusItem.variableLength
+            if abs(statusItem.length - targetLength) > 0.5 {
+                statusItem.length = targetLength
+            }
         }
         if summary != tooltipText {
             tooltipText = summary
@@ -806,6 +815,79 @@ final class MenuBarPanelController: NSObject {
             button.setAccessibilityLabel(summary)
             button.setAccessibilityHelp(summary)
         }
+    }
+
+    /// Resolves the status-bar image for `MenuBarIconState`:
+    /// - `.none`: native template SF Symbol (adapts to light/dark/tinted menu bars)
+    /// - `.attention`: template SF Symbol + subtle bottom-right cutout dot (still `isTemplate = true`)
+    /// - `.safetyAlert`: existing high-contrast `.systemRed` palette symbol
+    static func statusBarImage(for state: MenuBarIconState) -> NSImage? {
+        guard let base = statusBarImage(symbolName: state.symbolName) else { return nil }
+        switch state.badge {
+        case .none:
+            base.isTemplate = true
+            return base
+        case .attention:
+            return badgedTemplateImage(base: base)
+        case .safetyAlert:
+            base.isTemplate = false
+            let red = NSImage.SymbolConfiguration(paletteColors: [.systemRed])
+            let painted = base.withSymbolConfiguration(red) ?? base
+            painted.isTemplate = false
+            return painted
+        }
+    }
+
+    /// Composites a template SF Symbol with a subtle 4.5 pt bottom-right dot separated by a 1 pt
+    /// clear halo so the entire icon remains `isTemplate = true` and adapts to any menu-bar tint.
+    private static func badgedTemplateImage(base: NSImage) -> NSImage {
+        let baseSize = base.size.width > 0 && base.size.height > 0 ? base.size : NSSize(width: 18, height: 18)
+        let canvasSize = NSSize(width: max(18, ceil(baseSize.width) + 2), height: max(18, ceil(baseSize.height)))
+        let composite = NSImage(size: canvasSize, flipped: false) { rect in
+            let symbolOrigin = NSPoint(
+                x: floor((rect.width - baseSize.width) / 2),
+                y: floor((rect.height - baseSize.height) / 2)
+            )
+            base.draw(
+                in: NSRect(origin: symbolOrigin, size: baseSize),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1.0
+            )
+            let dotDiameter: CGFloat = 4.5
+            let haloInset: CGFloat = 1.0
+            let dotRect = NSRect(
+                x: rect.maxX - dotDiameter - 0.5,
+                y: 1.5,
+                width: dotDiameter,
+                height: dotDiameter
+            )
+            let haloRect = dotRect.insetBy(dx: -haloInset, dy: -haloInset)
+            if let context = NSGraphicsContext.current {
+                context.saveGraphicsState()
+                context.compositingOperation = .copy
+                NSColor.clear.setFill()
+                NSBezierPath(ovalIn: haloRect).fill()
+                context.restoreGraphicsState()
+            }
+            NSColor.black.setFill()
+            NSBezierPath(ovalIn: dotRect).fill()
+            return true
+        }
+        composite.isTemplate = true
+        return composite
+    }
+
+    /// Intrinsic width of the status button for the current icon + attributed title.
+    private static func measuredStatusItemWidth(button: NSStatusBarButton, text: String?) -> Double {
+        guard let text, !text.isEmpty else { return 0 }
+        if let cellWidth = button.cell?.cellSize(forBounds: NSRect(x: 0, y: 0, width: 1000, height: 22)).width,
+           cellWidth > 0 {
+            return Double(ceil(cellWidth))
+        }
+        let imageWidth = button.image?.size.width ?? 18
+        let titleWidth = button.attributedTitle.size().width
+        return Double(ceil(imageWidth + titleWidth + 14))
     }
 
     /// Resolves the status-bar SF Symbol image with a safe fallback so an unavailable symbol name
@@ -826,14 +908,14 @@ final class MenuBarPanelController: NSObject {
         return trimmed
     }
 
-    /// Same typography as the SwiftUI label: 12 pt rounded, semibold for the live transcript and
-    /// medium with monospaced digits for the device readout.
+    /// Same typography as the SwiftUI label: 12 pt rounded semibold for the live transcript and
+    /// medium with monospaced digits for all device readouts so digit updates never shift width.
     private static func statusTitle(_ text: String?, isSpeech: Bool) -> NSAttributedString {
         guard let text, !text.isEmpty else { return NSAttributedString(string: "") }
         let size: CGFloat = 12
         let weight: NSFont.Weight = isSpeech ? .semibold : .medium
-        var font: NSFont
-        if !isSpeech, text.contains(where: { $0.isNumber }) {
+        let font: NSFont
+        if !isSpeech {
             font = .monospacedDigitSystemFont(ofSize: size, weight: weight)
         } else {
             let base = NSFont.systemFont(ofSize: size, weight: weight)

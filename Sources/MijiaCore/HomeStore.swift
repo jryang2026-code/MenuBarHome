@@ -380,6 +380,18 @@ public final class HomeStore {
         }
     }
 
+    public var menuBarPinnedReadouts: [String] {
+        didSet {
+            let normalized = MenuBarPinnedReadout.normalize(menuBarPinnedReadouts)
+            if normalized != menuBarPinnedReadouts {
+                menuBarPinnedReadouts = normalized
+                return
+            }
+            HomePreferences.menuBarPinnedReadouts.save(normalized, to: userDefaults)
+            refreshPollingContext()
+        }
+    }
+
     public var enableSafetyAlerts: Bool {
         didSet {
             HomePreferences.enableSafetyAlerts.save(enableSafetyAlerts, to: userDefaults)
@@ -1411,6 +1423,7 @@ public final class HomeStore {
         self.isCompactGridMode = HomePreferences.isCompactGridMode.load(from: ud)
         self.showQuickActionsBar = HomePreferences.showQuickActionsBar.load(from: ud)
         self.menuBarTargetId = HomePreferences.menuBarTargetId.load(from: ud)
+        self.menuBarPinnedReadouts = MenuBarPinnedReadout.normalize(HomePreferences.menuBarPinnedReadouts.load(from: ud))
         self.lastManuallyUsedLightId = ud.string(forKey: Self.lastManualLightIdKey)
         self.safetyMonitor = SafetyMonitor(defaults: ud)
 
