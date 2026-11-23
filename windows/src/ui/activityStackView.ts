@@ -557,7 +557,13 @@ export function pruneOrphanedDeviceActivities(
 
 export async function dispatchDesktopNotification(
   host: MenuMijiaWindowsApp,
-  payload: { readonly id: string; readonly title: string; readonly body: string },
+  payload: {
+    readonly id: string;
+    readonly title: string;
+    readonly body: string;
+    readonly kind?: "doorbell" | "safety" | "leak" | "smoke" | "gas";
+    readonly deviceId?: string;
+  },
   nowMs = Date.now(),
 ): Promise<DesktopNotificationRecord> {
   const center = getHostActivityCenter(host);
@@ -570,6 +576,8 @@ export async function dispatchDesktopNotification(
         await invoke("send_desktop_notification", {
           title: payload.title,
           body: payload.body,
+          kind: payload.kind,
+          deviceId: payload.deviceId,
         });
         channel = "tauri";
       } catch {
@@ -643,7 +651,13 @@ export function recordSafetyAlerts(
     if (alert.priority === "high") {
       void dispatchDesktopNotification(
         host,
-        { id: alert.id, title: alert.title, body: alert.body },
+        {
+          id: alert.id,
+          title: alert.title,
+          body: alert.body,
+          kind: alert.sensorKind && sensorAlertIsHazard(alert.sensorKind) ? alert.sensorKind : "safety",
+          deviceId: alert.deviceId,
+        },
         nowMs,
       );
     }
@@ -1449,6 +1463,8 @@ export async function ingestHostHASnapshotForDoorbell(
       host,
       {
         id: `doorbell:${ring.key}`,
+        kind: "doorbell",
+        deviceId: ring.deviceId,
         title: tr3(
           "{name} 有人按铃",
           "{name} 有人按鈴",
