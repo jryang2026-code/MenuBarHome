@@ -154,6 +154,25 @@ extension HomeStore {
         return true
     }
 
+    /// Saves the onboarding AI card's draft and decides whether that also turns the assistant on.
+    /// Only the card's own Save is an explicit opt-in (P5a-M Codex review). The guide's Done button
+    /// also saves a non-empty draft, and that draft is prefilled with the stored key when the guide
+    /// is reopened from Settings, so Done may enable only when the draft really changes the config
+    /// (#318 review). A refused write leaves the switch alone.
+    @discardableResult
+    public func saveOnboardingAssistantConfig(_ config: AssistantConfig, explicit: Bool) -> Bool {
+        let previous = assistantConfig
+        guard saveAssistantConfig(config) else { return false }
+        let after = assistantConfig
+        let changed = previous.baseURL != after.baseURL
+            || previous.model != after.model
+            || previous.apiKey != after.apiKey
+        if (explicit || changed), !aiAssistantEnabled {
+            _ = setAIAssistantEnabled(true)
+        }
+        return true
+    }
+
     public var userHabitMemory: UserHabitMemory {
         get { UserHabitMemory.load(from: userDefaults) }
         set { newValue.save(to: userDefaults) }
@@ -407,7 +426,7 @@ extension HomeStore {
             guard controlContext == controlContextID else { return }
             // Superseded runs keep the previous suggestions; showing a fake failure would
             // describe a request the user already cancelled (P5a-M).
-            if error as? AssistantError == .superseded || suggestionEpoch != proactiveEpoch { return }
+            if isAssistantRunSuperseded(error, epoch: epoch) || suggestionEpoch != proactiveEpoch { return }
             setAssistantState(.failed(AssistantError.userMessage(for: error)))
         }
     }
@@ -622,10 +641,11 @@ extension HomeStore {
     }
 
     /// Clears the spinner a discarded run left behind without clobbering a newer reply.
-    private func clearThinkingAssistantState() {
-        if case .thinking = assistantState {
-            setAssistantState(.idle)
-        }
+    /// Passing the run's `epoch` limits this to the spinner that run started itself.
+    private func clearThinkingAssistantState(epoch: Int? = nil) {
+        guard case .thinking = assistantState else { return }
+        if let epoch, epoch != assistantThinkingEpoch { return }
+        setAssistantState(.idle)
     }
 
     /// The on-device resolver when the user has not chosen a provider and Apple's model is usable.
@@ -818,6 +838,7 @@ extension HomeStore {
         let delayed = DelayPhrase.extract(spoken)
         let utterance = delayed?.remainder ?? spoken
         setAssistantState(.thinking)
+        assistantThinkingEpoch = assistantGeneration
 
         let catalogDevices = categoryVisibleDevices
         var plan: IntentPlan
@@ -878,19 +899,19 @@ extension HomeStore {
                 // A superseded run stays quiet: the user already switched AI off or changed the
                 // provider, and a stale failure would only describe a cancelled request.
                 if isAssistantRunSuperseded(error, epoch: assistantGeneration) {
-                    clearThinkingAssistantState()
+                    clearThinkingAssistantState(epoch: assistantGeneration)
                     return nil
                 }
                 setAssistantState(.failed(AssistantError.userMessage(for: error)))
                 return nil
             }
             guard assistantGeneration == assistantEpoch, aiAssistantEnabled else {
-                clearThinkingAssistantState()
+                clearThinkingAssistantState(epoch: assistantGeneration)
                 return nil
             }
             // A companion command disconnected while the model was answering must not act.
             if let companion, !companionCanExecute(generation: companion) {
-                clearThinkingAssistantState()
+                clearThinkingAssistantState(epoch: assistantGeneration)
                 return nil
             }
         }

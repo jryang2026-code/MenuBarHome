@@ -1667,6 +1667,9 @@ public final class HomeStore {
     /// late result can neither drive a device nor claim the suggestion cache — the macOS mirror
     /// of Windows' `assistantEpoch`.
     @ObservationIgnored public internal(set) var assistantEpoch: Int = 0
+    /// `assistantEpoch` of the command that put the bar into `.thinking`, so a discarded older
+    /// command clears only its own spinner, never a newer command's (#322).
+    @ObservationIgnored var assistantThinkingEpoch: Int?
     /// Generation of the 主动建议 branch alone (P5b-M). Bumped when the suggestions switch flips,
     /// so a closed switch drops in-flight suggestion runs without touching `assistantEpoch` and
     /// therefore without cancelling a command the user started.
