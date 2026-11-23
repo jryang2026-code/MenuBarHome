@@ -107,6 +107,27 @@ struct AutomationEngineTests {
         #expect(afterSecond.count == firstCommands.count)
     }
 
+    @Test("A lock-triggered background automation retains its exemption and logs the write")
+    func lockTriggeredRunIsLogged() async throws {
+        let defaults = makeDefaults()
+        let rule = AutomationRule(trigger: .away, action: .quickAction(.lightsOff))
+        AutomationRuleStore(defaults: defaults).save([rule])
+        let (store, mock) = try await makeStore(defaults: defaults)
+        store.setScreenLocked(true)
+        let engine = AutomationEngine(defaults: defaults)
+        engine.attach(store: store)
+
+        let time = Date(timeIntervalSince1970: 1_800_000_000)
+        await engine.handle(trigger: .away, at: time)
+        #expect(await mock.executedCommands.count == 1)
+        let entry = try #require(store.automationRunHistory.first)
+        #expect(entry.ruleId == rule.id)
+        #expect(entry.time == time)
+        #expect(entry.trigger == .away)
+        #expect(entry.result == .executed)
+        #expect(entry.reason == nil)
+    }
+
     @Test("Rules added while the cooldown clock is idle still fire immediately")
     func emptyRuleListDoesNotBurnCooldown() async throws {
         let defaults = makeDefaults()
@@ -357,6 +378,7 @@ struct AutomationEngineTests {
         await engine.handle(trigger: .back, at: noon)
         #expect(await mock.executedCommands.isEmpty)
         #expect(Self.cooldownStamps(defaults).isEmpty)
+        #expect(store.automationRunHistory.first?.reason == .conditionFalse)
         #expect(store.devices.first?.isActiveOn == true)
 
         let outside = try Self.date(calendar, year: 2026, hour: 21, minute: 59, second: 30)

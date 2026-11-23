@@ -1256,6 +1256,7 @@ public final class HomeStore {
     public var onHAConnectionDisabled: (@MainActor (Set<String>) -> Void)?
     /// Fires once when the camera type closes, with the camera cards still on the panel (P3c-CM).
     public var onCameraCategoryDisabled: (@MainActor ([SmartDevice]) -> Void)?
+    public internal(set) var automationRunHistory: [AutomationRunEntry] = []
     @ObservationIgnored var automationGeneration: UInt64 = 0
     @ObservationIgnored var reconciledAutomationGeneration: UInt64 = 0
     public var onAutomationRulesChanged: (@MainActor () -> Void)?
@@ -1304,6 +1305,10 @@ public final class HomeStore {
     ) {
         let ud = defaults ?? defaultsSuiteName.flatMap { UserDefaults(suiteName: $0) } ?? .standard
         self.userDefaults = ud
+        if let data = ud.data(forKey: Self.automationRunHistoryKey),
+           let history = try? JSONDecoder().decode([AutomationRunEntry].self, from: data) {
+            self.automationRunHistory = Array(history.prefix(Self.automationRunHistoryLimit))
+        }
         self.usesInjectedProvider = (provider != nil || dualSource != nil)
         self.credentialVault = credentialVault
         self.miAccountsProviderFactory = miAccountsProviderFactory

@@ -154,7 +154,9 @@ extension HomeStore {
         recordsHabits: Bool,
         respectScreenLock: Bool,
         automationGeneration: UInt64?,
-        companionGeneration: UInt64? = nil
+        companionGeneration: UInt64? = nil,
+        automationCanContinue: (() -> Bool)? = nil,
+        onAutomationWrite: ((Bool) -> Void)? = nil
     ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
         if pausedQuickActionIDs.contains(action.rawValue) {
@@ -296,8 +298,10 @@ extension HomeStore {
             defer { runningBatches[bannerId] = nil }
             guard let outcome = await runBatchCommands(
                 commands, context: context, batchId: bannerId, writes: writes,
-                automationGeneration: automationGeneration, companionGeneration: companionGeneration
+                automationGeneration: automationGeneration, companionGeneration: companionGeneration,
+                automationCanContinue: automationCanContinue
             ) else { return .partial }
+            onAutomationWrite?(!outcome.acceptedByDevice.isEmpty)
             // Undo needs this report after this task ends: a device a newer write took before its
             // send keeps its own state and must not receive a restore command.
             if undoBanner?.id == bannerId { undoBanner?.attemptedDeviceIds = outcome.attemptedDeviceIds }
@@ -775,13 +779,15 @@ extension HomeStore {
         batchId: UUID,
         writes: [String: OptimisticWrite],
         automationGeneration: UInt64? = nil,
-        companionGeneration: UInt64? = nil
+        companionGeneration: UInt64? = nil,
+        automationCanContinue: (() -> Bool)? = nil
     ) async -> BatchCommandOutcome? {
         var outcome = BatchCommandOutcome()
         for item in commands {
             guard context == controlContextID,
                   let batch = runningBatches[batchId], !batch.isStopped else { return nil }
             if automationGeneration.map(automationCanWrite(generation:)) == false
+                || automationCanContinue?() == false
                 || companionGeneration.map(companionCanExecute(generation:)) == false {
                 outcome.generationInvalidated = true
                 break
