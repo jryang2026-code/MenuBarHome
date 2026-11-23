@@ -22,8 +22,7 @@ extension HomeStore {
         guard enableSafetyAlerts else { return false }
         // A closed type keeps its hazard sensors evaluating, so the menu bar must still colour.
         for device in devices + typeHiddenSafetyDevices {
-            guard case .sensor(let spec) = device.kind else { continue }
-            for observation in spec.observations
+            for observation in device.freshSafetyObservations
             where observation.alarming && observation.kind.colorsMenuBar && isSensorAlertEnabled(observation.kind) {
                 return true
             }
@@ -35,9 +34,14 @@ extension HomeStore {
     public func evaluateSafetyAlerts(now: Date = Date()) -> [SafetyAlert] {
         guard enableSafetyAlerts else { return [] }
         let enabled = Dictionary(uniqueKeysWithValues: SensorAlertKind.allCases.map { ($0, isSensorAlertEnabled($0)) })
+        let unavailableActionIds = Set(devices.lazy
+            .filter { !self.capabilitySelection.enabledCategories.contains($0.capabilityCategoryID) }
+            .map(\.id))
+        let retained = typeHiddenSafetyDevices
         let alerts = safetyMonitor.evaluate(
-            devices: devices + typeHiddenSafetyDevices,
+            devices: devices + retained,
             favorites: favoriteDeviceIds,
+            unavailableActionIds: unavailableActionIds.union(retained.map(\.id)),
             sensorPolicy: SensorAlertPolicy(
                 enabled: enabled,
                 onlyWhenAway: sensorAlertsOnlyWhenAway,
@@ -59,6 +63,12 @@ extension HomeStore {
         )
     }
 
+    private func safetyAlertActionTarget(_ id: String) -> SmartDevice? {
+        guard let device = devices.first(where: { $0.id == id }),
+              capabilityWriteRejection(for: device) == nil else { return nil }
+        return device
+    }
+
     /// Runs the 立即关闭 action of a safety notification. A notification is a person acting now, so the
     /// lock-screen preference applies (#143). `deliveredInScope` is the connection scope the alert was
     /// delivered in: Home Assistant entity ids repeat across servers (`light.heater`), so a device that
@@ -68,7 +78,7 @@ extension HomeStore {
         guard let cmd = alert.turnOffCommand else { return nil }
         if rejectControlWhileLocked() { return nil }
         guard let deliveredScope = scope, deliveredScope == connectionScopeIdentifier,
-              devices.contains(where: { $0.id == alert.deviceId }) else {
+              safetyAlertActionTarget(alert.deviceId) != nil else {
             showToast(staleSafetyAlertMessage, isError: true)
             return nil
         }
@@ -78,7 +88,7 @@ extension HomeStore {
             // the send, when the current provider and devices are the ones that will be used.
             guard context == controlContextID else { return }
             guard deliveredScope == connectionScopeIdentifier,
-                  let device = devices.first(where: { $0.id == alert.deviceId }) else {
+                  let device = safetyAlertActionTarget(alert.deviceId) else {
                 showToast(staleSafetyAlertMessage, isError: true)
                 return
             }

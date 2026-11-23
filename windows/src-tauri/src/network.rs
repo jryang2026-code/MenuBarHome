@@ -738,6 +738,24 @@ mod subpath_tests {
             ha_websocket_path("/hass/api").unwrap(),
             "/hass/api/websocket".to_string()
         );
+        // #292 N4: the two-segment suffix is stripped directly, not only through
+        // `parse_ha_endpoint_parts`, and only as a complete trailing pair.
+        assert_eq!(
+            ha_websocket_path("/hass/api/websocket").unwrap(),
+            "/hass/api/websocket".to_string()
+        );
+        assert_eq!(
+            ha_websocket_path("/hass/api/websocket/").unwrap(),
+            "/hass/api/websocket".to_string()
+        );
+        assert_eq!(
+            ha_websocket_path("/api/websocket").unwrap(),
+            "/api/websocket".to_string()
+        );
+        assert_eq!(
+            ha_websocket_path("/api/websocket/api").unwrap(),
+            "/api/websocket/api/websocket".to_string()
+        );
         assert!(ha_websocket_path("/hass/tab\there").is_err());
         assert!(ha_websocket_path("/hass/new\nline").is_err());
         assert!(ha_websocket_path("/ha\0ss").is_err());

@@ -229,8 +229,77 @@ export function clearOnboardingSession(host: object): void {
   onboardingSessionByHost.delete(host);
 }
 
+/**
+ * Rebuilds the guide and then moves focus to `selector` (P2-8, #293). The sheet is rewritten as a
+ * whole, so the pressed radio or a revealed step must be re-focused *after* the render: the panel
+ * pipeline restores the pre-render focus target during the render itself.
+ */
+function renderGuideFocused(host: OnboardingRenderViewHost, selector: string): void {
+  host.render();
+  host.root.querySelector<HTMLElement>(selector)?.focus({ preventScroll: true });
+}
+
+/**
+ * One polite live region that outlives every guide rebuild (P2-9, #293).
+ *
+ * `mountOnboardingGuide` replaces `sheet.innerHTML` on each state change, so a `role="status"` node
+ * created by that markup is brand new each time: screen readers announce a region when its *content*
+ * changes, and a freshly inserted node with text already inside is not reliably announced. This node
+ * is mounted once beside the panel root instead, and only its `textContent` changes afterwards.
+ */
+const guideAnnouncerByRoot = new WeakMap<HTMLElement, HTMLElement>();
+const guideAnnouncementTimerByNode = new WeakMap<HTMLElement, number>();
+
+function guideAnnouncer(root: HTMLElement): HTMLElement {
+  const existing = guideAnnouncerByRoot.get(root);
+  if (existing?.isConnected) return existing;
+  const doc = root.ownerDocument;
+  const node = doc.createElement("p");
+  node.className = "cc-visually-hidden";
+  node.setAttribute("data-onboarding-announcer", "");
+  node.setAttribute("role", "status");
+  node.setAttribute("aria-live", "polite");
+  node.setAttribute("aria-atomic", "true");
+  (root.parentElement ?? doc.body).appendChild(node);
+  guideAnnouncerByRoot.set(root, node);
+  return node;
+}
+
+function cancelGuideAnnouncementTimer(node: HTMLElement): void {
+  const timer = guideAnnouncementTimerByNode.get(node);
+  if (timer === undefined) return;
+  window.clearTimeout(timer);
+  guideAnnouncementTimerByNode.delete(node);
+}
+
+/** Writes a message into the persistent announcer; repeated text is cleared first so it re-announces. */
+function announceGuideStatus(host: OnboardingRenderViewHost, message: string): void {
+  if (host.activeSheet !== "onboarding") return;
+  const node = guideAnnouncer(host.root);
+  cancelGuideAnnouncementTimer(node);
+  if (node.textContent === message) {
+    node.textContent = "";
+    const timer = window.setTimeout(() => {
+      guideAnnouncementTimerByNode.delete(node);
+      if (node.isConnected && host.activeSheet === "onboarding") node.textContent = message;
+    }, 0);
+    guideAnnouncementTimerByNode.set(node, timer);
+    return;
+  }
+  node.textContent = message;
+}
+
+function clearGuideAnnouncement(host: OnboardingRenderViewHost): void {
+  const node = guideAnnouncerByRoot.get(host.root);
+  if (!node) return;
+  cancelGuideAnnouncementTimer(node);
+  node.textContent = "";
+}
+
 export interface OnboardingRenderViewHost extends SettingsEventsHost {
   readonly qrStatusText?: string;
+  /** Set while startup credential hydration has not settled; the sheet is a loading state (P2-6). */
+  readonly onboardingAwaitingCredentials?: boolean;
   dualSourceCoordinator?: DualSourceCoordinator | null;
   dualSourceEnabledOverride?: boolean | null;
   submitServiceEndpoints?(force?: boolean): void;
@@ -317,6 +386,22 @@ function mapHaErrorToPlainLanguage(rawError: string): string {
   }
   if (rawError.includes("not been approved") || rawError.includes("未授权的网络来源")) {
     return t("明文 HTTP 连接已被拒绝。设备还未同步。请改用 HTTPS 或在提示中允许此地址。");
+  }
+  // P2-13 (#293): the native layer already reports these as distinct strings, so the guide can tell
+  // a timeout from a failed host lookup without inventing new error classes or network probes.
+  if (/timed out|timeout|operation timed out/i.test(rawError)) {
+    return t("连接超时。设备还未同步。请确认家庭服务器已开机并在同一网络，然后重试。");
+  }
+  if (/address lookup failed|dns/i.test(rawError)) {
+    return t("找不到这个地址对应的主机。设备还未同步。请检查地址拼写，或改用局域网 IP 地址。");
+  }
+  // `authenticated()` wraps both the TLS upgrade and the WebSocket HTTP upgrade of
+  // `tungstenite::client_tls` into the one string "Home Assistant handshake failed", so this error
+  // can be a certificate problem, a 404/5xx from a wrong path or reverse proxy, or a proxy that does
+  // not forward the Upgrade header. Never claim which one it was, and never suggest falling back to
+  // plaintext: the generic copy names both checks instead.
+  if (/handshake failed/i.test(rawError) && !/authentication handshake failed/i.test(rawError)) {
+    return t("安全连接或 WebSocket 握手未能完成。设备还未同步。请确认地址指向 Home Assistant 根路径（反向代理需转发 WebSocket Upgrade）、证书有效且系统时间正确。");
   }
   return t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
 }
@@ -425,12 +510,34 @@ function applyAssistantDraftToHost(host: OnboardingRenderViewHost, session: Onbo
 export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
   if (host.activeSheet !== "onboarding") {
     clearOnboardingSession(host);
+    clearGuideAnnouncement(host);
     return;
   }
   const sheet = host.root.querySelector<HTMLElement>(".cc-sheet:not(.cc-settings-sheet)");
   if (!sheet) return;
 
   const esc = (v: string) => (typeof host.escapeHtml === "function" ? host.escapeHtml(v) : escapeHtmlFallback(v));
+  // P2-9 (#293): mount the persistent live region before any content can change, so the first
+  // announcement is a text change to an existing node rather than a freshly inserted one.
+  guideAnnouncer(host.root);
+  // P2-6 (#293): startup credential hydration is still reading the vault, so a returning user whose
+  // Mi session or HA token lives there would look like a fresh install. Keep the sheet as a minimal
+  // loading state — no session, no card selection, no focus target — until it settles.
+  if (host.onboardingAwaitingCredentials) {
+    sheet.innerHTML = `
+      <div class="cc-sheet-header">
+        <div class="cc-sheet-badge">${esc(t("首次设置 · MenuBarHome"))}</div>
+      </div>
+      <div class="cc-onboarding-scroll cc-onboarding-loading" data-onboarding-loading>
+        <h2 class="cc-sheet-title">${esc(t("正在读取已保存的连接…"))}</h2>
+        <p class="cc-sheet-desc">${esc(
+          t("读取本机凭据后即可继续，已连接过米家或 Home Assistant 的电脑不会重新出现引导。"),
+        )}</p>
+      </div>
+    `;
+    announceGuideStatus(host, t("正在读取已保存的连接…"));
+    return;
+  }
   const session = ensureSession(host);
   const draft = session.assistantDraft;
   const activePreset = findPreset(draft.selectedPreset);
@@ -486,7 +593,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
             <div class="cc-qr-status">${esc(qrStatus)}</div>
             ${
               qrTicket
-                ? `<div class="cc-qr-frame"><img src="${esc(qrTicket.qrImageURL)}" alt="Xiaomi QR" /></div>`
+                ? `<div class="cc-qr-frame"><img src="${esc(qrTicket.qrImageURL)}" alt="${esc(t("米家登录二维码"))}" /></div>`
                 : ""
             }
           </div>
@@ -571,18 +678,25 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       </button>
     </div>
 
-    <div class="cc-onboarding-scroll" style="overflow-y: auto; max-height: calc(100vh - 150px); padding-right: 2px;">
+    <div class="cc-onboarding-scroll">
       <h2 class="cc-sheet-title">${esc(t("你家用哪个平台管理智能设备？"))}</h2>
       <p class="cc-sheet-desc">${esc(t("先选择家庭平台，未连接前不会自动扫描局域网或发起网络请求。"))}</p>
 
       <div class="cc-field" data-onboarding-step="1">
-        <div class="cc-onboarding-cards" role="radiogroup" aria-label="${esc(t("你家用哪个平台管理智能设备？"))}">
+        <div
+          class="cc-onboarding-cards"
+          role="radiogroup"
+          aria-label="${esc(t("你家用哪个平台管理智能设备？"))}"
+          data-onboarding-mode-group
+        >
           <button
             type="button"
+            role="radio"
             class="cc-onboarding-card ${session.selectedMode === "xiaomiCloud" ? "is-active" : ""}"
             data-onboarding-card="xiaomiCloud"
             data-onboarding-mode="xiaomiCloud"
-            aria-pressed="${session.selectedMode === "xiaomiCloud"}"
+            aria-checked="${session.selectedMode === "xiaomiCloud"}"
+            tabindex="${session.selectedMode === "xiaomiCloud" || session.selectedMode === null ? "0" : "-1"}"
           >
             <span class="cc-onboarding-card-title">
               <span>${esc(t("米家"))}</span>
@@ -592,10 +706,12 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
           </button>
           <button
             type="button"
+            role="radio"
             class="cc-onboarding-card ${session.selectedMode === "homeAssistant" ? "is-active" : ""}"
             data-onboarding-card="homeAssistant"
             data-onboarding-mode="homeAssistant"
-            aria-pressed="${session.selectedMode === "homeAssistant"}"
+            aria-checked="${session.selectedMode === "homeAssistant"}"
+            tabindex="${session.selectedMode === "homeAssistant" ? "0" : "-1"}"
           >
             <span class="cc-onboarding-card-title">
               <span>Home Assistant</span>
@@ -605,10 +721,12 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
           </button>
           <button
             type="button"
+            role="radio"
             class="cc-onboarding-card ${session.selectedMode === "demo" ? "is-active" : ""}"
             data-onboarding-card="demo"
             data-onboarding-mode="demo"
-            aria-pressed="${session.selectedMode === "demo"}"
+            aria-checked="${session.selectedMode === "demo"}"
+            tabindex="${session.selectedMode === "demo" ? "0" : "-1"}"
           >
             <span class="cc-onboarding-card-title">
               <span>${esc(t("先逛逛（不连接设备）"))}</span>
@@ -722,8 +840,32 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       if (mode === "demo") {
         switchConnectionModeInOnboarding(host, "demo");
       }
-      host.render();
+      // P2-8 (#293): the whole sheet is rebuilt, so the pressed radio has to be re-focused by hand.
+      renderGuideFocused(host, `[data-onboarding-mode="${mode}"]`);
     });
+  });
+
+  // P2-8/P2-9 (#293): a radiogroup is expected to answer the arrow keys, not just clicks.
+  sheet.querySelector<HTMLElement>("[data-onboarding-mode-group]")?.addEventListener("keydown", (event) => {
+    const key = event.key;
+    if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(key)) return;
+    const radios = Array.from(sheet.querySelectorAll<HTMLElement>("[data-onboarding-mode]"));
+    if (radios.length === 0) return;
+    const current = radios.findIndex((radio) => radio.getAttribute("aria-checked") === "true");
+    const forward = key === "ArrowDown" || key === "ArrowRight";
+    const next =
+      key === "Home"
+        ? 0
+        : key === "End"
+          ? radios.length - 1
+          : current < 0
+            ? forward
+              ? 0
+              : radios.length - 1
+            : (current + (forward ? 1 : -1) + radios.length) % radios.length;
+    event.preventDefault();
+    event.stopPropagation();
+    radios[next]?.click();
   });
 
   sheet.querySelector<HTMLElement>("#btn-onboarding-add-second-platform")?.addEventListener("click", (event) => {
@@ -732,21 +874,22 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     session.selectedMode = target;
     session.addingSecondPlatform = true;
     session.haConnectError = null;
-    host.render();
+    // The step the user just asked for is the new focus target, not the removed card.
+    renderGuideFocused(host, `[data-onboarding-step="2"] input, [data-onboarding-step="2"] button`);
   });
 
   sheet.querySelector("#btn-onboarding-back")?.addEventListener("click", () => {
     session.selectedMode = null;
     session.addingSecondPlatform = false;
     session.haConnectError = null;
-    host.render();
+    renderGuideFocused(host, "[data-onboarding-mode]");
   });
 
   sheet.querySelector("#btn-onboarding-use-demo")?.addEventListener("click", () => {
     session.selectedMode = "demo";
     session.haConnectError = null;
     switchConnectionModeInOnboarding(host, "demo");
-    host.render();
+    renderGuideFocused(host, "[data-onboarding-demo-banner] button");
   });
 
   sheet.querySelectorAll<HTMLSelectElement>("[data-mi-region]").forEach((select) => {
@@ -879,6 +1022,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
     session.statusNote = { text: t("正在连接并验证 Home Assistant…"), isError: false };
     const capturedToken = host.sourceEpoch.capture();
     host.render();
+    announceGuideStatus(host, t("正在连接并验证 Home Assistant…"));
     const refreshPromise = shouldEnableDual ? host.refreshDevices(false) : host.refreshHADevices(false);
     void Promise.resolve(refreshPromise)
       .then(() => {
@@ -910,14 +1054,17 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
           session.haConnectError = null;
           session.haConnectedCount = verifiedHaHome.devices.length;
           session.statusNote = null;
-        } else {
-          rollbackAttempt();
-          session.haConnectError = err
-            ? mapHaErrorToPlainLanguage(err)
-            : t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
-          session.statusNote = null;
+          host.render();
+          announceGuideStatus(host, t("已连接 Home Assistant · {count} 台设备", { count: session.haConnectedCount }));
+          return;
         }
+        rollbackAttempt();
+        session.haConnectError = err
+          ? mapHaErrorToPlainLanguage(err)
+          : t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
+        session.statusNote = null;
         host.render();
+        announceGuideStatus(host, session.haConnectError);
       })
       .catch(() => {
         if (onboardingSessionByHost.get(host) !== session || !capturedToken.isCurrent()) {
@@ -934,6 +1081,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         session.haConnectError = t("无法访问此地址。设备还未同步。请确认电脑和家庭服务器在同一网络，或修改地址。");
         session.statusNote = null;
         host.render();
+        announceGuideStatus(host, session.haConnectError);
       });
   });
 
@@ -1016,6 +1164,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         isError: true,
       };
       host.render();
+      announceGuideStatus(host, session.statusNote.text);
       return;
     }
     host.saveSettings(true);
@@ -1024,6 +1173,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
       isError: false,
     };
     host.render();
+    announceGuideStatus(host, session.statusNote.text);
   });
 
   sheet.querySelector("#btn-onboarding-import-env")?.addEventListener("click", () => {
@@ -1053,6 +1203,7 @@ export function mountOnboardingGuide(host: OnboardingRenderViewHost): void {
         };
       }
       host.render();
+      announceGuideStatus(host, session.statusNote.text);
     })();
   });
 

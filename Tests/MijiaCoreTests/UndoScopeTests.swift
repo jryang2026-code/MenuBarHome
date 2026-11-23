@@ -248,22 +248,25 @@ private actor GatedUndoProvider: HomeProvider {
         continuation.yield(.snapshotUpdated(snapshot))
     }
     nonisolated func events() -> AsyncStream<HomeProviderEvent> { stream }
-    /// Bounded poll: a missed command must fail the test instead of suspending a checked
-    /// continuation forever (a suspended continuation also ignores the suite's time limit, which
-    /// turned a missed undo into a 45-minute CI hang).
-    func waitForCommands(_ count: Int, timeout: Duration = .seconds(10)) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
+    /// Polls until the command lands, with the suite's time limit as the only bound.
+    ///
+    /// A wall-clock deadline cannot do this job: the batch that sends these commands is main-actor
+    /// work, and a parallel run of ~200 `@MainActor` suites starves that actor while this actor's
+    /// own polls are stretched by the saturated thread pool. A fixed 10 s bound then trips on a
+    /// loaded runner even though nothing is wrong with the code under test (#382 run 45083482160:
+    /// the two waits here recorded their issue 25 s after starting, so even the deadline check
+    /// itself ran late). Sleeping without a deadline waits for the event itself, and a real hang
+    /// still fails: `try` propagates cancellation, so the suite time limit ends the test instead of
+    /// leaving a checked continuation suspended (the 45-minute hang #255 fixed).
+    func waitForCommands(_ count: Int) async -> Bool {
         while commands.count < count {
-            guard ContinuousClock.now < deadline else { return false }
-            try? await Task.sleep(for: .milliseconds(5))
+            do { try await Task.sleep(for: .milliseconds(5)) } catch { return false }
         }
         return true
     }
-    func waitUntilPaused(timeout: Duration = .seconds(10)) async -> Bool {
-        let deadline = ContinuousClock.now + timeout
+    func waitUntilPaused() async -> Bool {
         while gate == nil {
-            guard ContinuousClock.now < deadline else { return false }
-            try? await Task.sleep(for: .milliseconds(5))
+            do { try await Task.sleep(for: .milliseconds(5)) } catch { return false }
         }
         return true
     }

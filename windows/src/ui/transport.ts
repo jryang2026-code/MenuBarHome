@@ -5,6 +5,13 @@ export function createTransport(): HttpTransport {
   return async (req: HttpRequest): Promise<HttpResponse> => {
     if (window.__TAURI_INTERNALS__?.invoke) {
       if (req.haConnection) {
+        // `ha_http` is a read-only bridge: the native command carries no method/body/redirect
+        // arguments. Refuse a write instead of silently sending it as a GET, and honour an
+        // already-aborted lease before spending an IPC round trip.
+        req.haConnection.signal.throwIfAborted();
+        if ((req.method ?? "GET") !== "GET" || req.body !== undefined) {
+          throw new Error("Home Assistant native transport only supports GET requests");
+        }
         try {
           return await window.__TAURI_INTERNALS__.invoke<HttpResponse>("ha_http", {
             baseUrl: req.haConnection.baseUrl,

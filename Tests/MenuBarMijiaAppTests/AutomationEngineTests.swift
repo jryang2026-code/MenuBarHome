@@ -22,12 +22,12 @@ struct AutomationEngineTests {
         HomeScene(id: "scene_work", name: "办公模式", entityId: "scene.work")
     ]
 
-    private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
+    private func makeStore(defaults: UserDefaults = InMemoryUserDefaults()) async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(
             devices: [Self.studyLight],
             scenes: Self.scenes
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.engine.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         return (store, mock)
     }
@@ -214,7 +214,7 @@ struct AutomationEngineTests {
             kind: .light(LightSpec(entityId: "light.corridor", isOn: true))
         )
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [Self.studyLight, secondLight]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.engine.fail.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         AutomationRuleStore(defaults: defaults).save([
@@ -253,7 +253,7 @@ struct AutomationEngineTests {
             kind: .plug(PlugSpec(switchEntityId: "switch.heater", isOn: false))
         )
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [heaterPlug]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.automation.engine.highrisk.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
 
         let ruleStore = AutomationRuleStore(defaults: defaults)
@@ -321,7 +321,7 @@ struct AutomationEngineTests {
             ))
         )
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [invertedLight, offlineFridge]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: "test.cards.guards.\(UUID().uuidString)")
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.expandedDeviceId = invertedLight.id
 

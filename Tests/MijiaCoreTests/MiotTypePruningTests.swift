@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -118,6 +119,45 @@ struct MiotTypePruningTests {
         #expect(!plan.readKeys.isEmpty, "its motion and lock reads stay in the plan")
         let signals = try #require(plan.hiddenIndexedDevices.first?.safetySignals)
         #expect(signals.isSuperset(of: [.motion, .lock]))
+    }
+
+    @Test("Only a Mi camera with a real ring event is retained for doorbell reads")
+    func onlyActualMiDoorbellIsRetained() throws {
+        let camera = MiDeviceRecord(did: "camera-1", name: "Camera", model: "careco.camera.650", isOnline: true)
+        let doorbell = MiDeviceRecord(did: "doorbell-1", name: "Doorbell", model: "test.doorbell", isOnline: true)
+        var specs = try Self.specs(camera.model)
+        specs[doorbell.model] = MiotDeviceSpec(
+            type: "urn:miot-spec-v2:device:video-doorbell:0000A03A:test:1",
+            services: [MiotService(
+                iid: 2,
+                type: "urn:miot-spec-v2:service:video-doorbell:00007867:test:1",
+                events: [MiotEvent(iid: 1, type: "urn:miot-spec-v2:event:doorbell-ring:00005013:test:1")]
+            )]
+        )
+        let plan = Self.plan([camera, doorbell], specs, Self.policy([.light], signals: [.doorbell]))
+        #expect(plan.safetyRecords.map(\.did) == [doorbell.did])
+    }
+
+    @Test("An offline Mi camera carries its spec-level alarm into the type-selection preview")
+    @MainActor
+    func offlineMiServiceAlarmAppearsInPreview() throws {
+        let door = MiDeviceRecord(did: "door-1", name: "门铃", model: "chuangmi.door.515a01", isOnline: false)
+        let specs = try Self.specs(door.model)
+        let actual = Self.plan([door], specs, Self.policy([.light], signals: [.motion]))
+        let home = MiotSynthesizer.synthesize(devices: [door], rooms: [], specs: specs, values: [:])
+        let device = try #require(home.devices.first)
+        let store = HomeStore(provider: MockHomeProvider(snapshot: home), defaults: InMemoryUserDefaults())
+        store.enableSafetyAlerts = true
+        store.doorbellAutoPopup = false
+        store.doorbellChime = false
+        store.setSensorAlertEnabled(.motion, true)
+        store.devices = home.devices
+
+        let impact = store.previewDeviceCategorySelection([.light])
+        #expect(!device.isOnline)
+        #expect(device.safetyObservations.isEmpty)
+        #expect(actual.safetyRetainedDeviceIds.contains(device.id))
+        #expect(impact.retainedSafetyDevices.first { $0.id == device.id }?.signals == [.motion])
     }
 
     @Test("A real lock keeps its identity signals; child-lock appliances are not locks")

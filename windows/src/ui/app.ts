@@ -420,6 +420,12 @@ export class MenuMijiaWindowsApp {
   public isShowingAssistantBar = true;
   public readonly isStandaloneSettingsWindow: boolean = false;
   public activeSheet: "none" | "onboarding" | "settings" = "none";
+  /**
+   * True while the guide is mounted only as a loading state: startup credential hydration has not
+   * settled, so an empty `localStorage` copy cannot yet tell a fresh install from a returning user
+   * whose session or token lives in the credential store (P2-6, #293).
+   */
+  public onboardingAwaitingCredentials = false;
   /** Open Settings category (#78); a re-render keeps it, `openSettingsSheet(tab)` routes it. */
   public settingsTab: SettingsTab = "general";
   public replyBanner: ReplyBannerState | null = null;
@@ -657,6 +663,11 @@ export class MenuMijiaWindowsApp {
     }
     if (!this.isStandaloneSettingsWindow && migration.shouldShowOnboarding) {
       this.activeSheet = "onboarding";
+      // P2-6 (#293): with an empty localStorage copy the synchronous verdict cannot tell a fresh
+      // install from a returning user whose Mi session or HA token only exists in the credential
+      // store. Paint a loading state and let `hydrateCredentials` settle the decision, instead of
+      // flashing the full guide and closing it a frame later.
+      this.onboardingAwaitingCredentials = !this.loadedSettings.hasLegacyCredentials;
     }
     this.initializeCredentials();
     if (hasAnyConnectedOrSelectedDataSource(this) || this.settings.hasCompletedOnboarding) {

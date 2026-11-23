@@ -790,7 +790,7 @@ extension HomeStore {
         if let reason = haCommandWriteRejection(for: command.targetEntityId) {
             throw CapabilityControlBlockedError(reason: reason)
         }
-        if LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
+        if homeBackend != .demo, LGWebOSProtocol.isLGEntity(command.targetEntityId), let lgClient = lgWebOSClient {
             try await lgClient.execute(command)
         } else {
             // The guard sits on the Mi provider call, not on every command: a LAN TV write does

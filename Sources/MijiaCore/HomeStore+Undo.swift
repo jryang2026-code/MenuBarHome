@@ -94,6 +94,7 @@ extension HomeStore {
         recentSafetyAlerts = []
         recentDoorbellRings = []
         dismissedActivityIds = []
+        corruptRemovalDiscardFailure = nil
     }
 
     // MARK: - Scenes & Built-In QuickActions with 5-Second Undo
@@ -156,10 +157,7 @@ extension HomeStore {
     ) -> Task<BulkWriteOutcome, Never>? {
         if respectScreenLock, rejectControlWhileLocked() { return nil }
         if pausedQuickActionIDs.contains(action.rawValue) {
-            showToast(
-                L10n.tr("该快捷动作因连接停用已暂停", "This quick action is paused while its connection is disabled"),
-                isError: true
-            )
+            showToast(pausedQuickActionMessage(for: action), isError: true)
             return nil
         }
         // Every quick action targets Mi rows only, so a blocked session means no target can be

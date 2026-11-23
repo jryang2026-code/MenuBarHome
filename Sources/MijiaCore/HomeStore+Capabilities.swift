@@ -133,20 +133,26 @@ extension HomeStore {
 
     /// Publishes the enabled types and safety switches to the Mi and Home Assistant providers. Mi
     /// reads its box before every plan, so a closed type stops being polled on the next refresh
-    /// (P3a-M); Home Assistant reads its box for every frame (P3b-M).
+    /// (P3a-M); Home Assistant reads its box for every frame (P3b-M). In dual-source mode, starred
+    /// canonical IDs are expanded with each source's native IDs so paired cards keep their offline
+    /// alerts even when the canonical ID belongs to the other source (#303, #325).
     func syncMiotTypePrunePolicy() {
-        var safetyPolicy = currentSafetyRetentionPolicy()
-        // The doorbell is its own switch, not part of the safety master switch (#308), so a closed
-        // camera type keeps ring detection and its chime even with safety alerts off.
-        if doorbellAutoPopup || doorbellChime { safetyPolicy.enabledSignals.insert(.doorbell) }
+        let baseSafetyPolicy = effectiveSafetyRetentionPolicy()
+        let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider)
+        var miSafetyPolicy = baseSafetyPolicy
+        var haSafetyPolicy = baseSafetyPolicy
+        if let dual, !baseSafetyPolicy.starredDeviceIds.isEmpty {
+            miSafetyPolicy.starredDeviceIds.formUnion(dual.miSourceIDs(forCanonicalIDs: baseSafetyPolicy.starredDeviceIds))
+            haSafetyPolicy.starredDeviceIds.formUnion(dual.haSourceIDs(forCanonicalIDs: baseSafetyPolicy.starredDeviceIds))
+        }
         miotTypePruneBox.update(MiotTypePrunePolicy(
             selection: capabilitySelection,
-            safetyPolicy: safetyPolicy,
+            safetyPolicy: miSafetyPolicy,
             sourceScope: miSessionScopeIdentifier ?? ""
         ))
         haTypePruneBox.update(HATypePrunePolicy(
             selection: capabilitySelection,
-            safetyPolicy: safetyPolicy,
+            safetyPolicy: haSafetyPolicy,
             sourceScope: homeAssistantScopeIdentifier
         ))
     }
@@ -164,9 +170,12 @@ extension HomeStore {
             miotTypePruneReports[key] = report
         }
         var changed = false
-        for entry in report.hiddenIndexedDevices where indexedDevicesById[entry.id] != entry {
-            indexedDevicesById[entry.id] = entry
-            changed = true
+        for entry in report.hiddenIndexedDevices {
+            let mergedEntry = Self.mergedHiddenIndexedDevice(entry, existing: indexedDevicesById[entry.id])
+            if indexedDevicesById[entry.id] != mergedEntry {
+                indexedDevicesById[entry.id] = mergedEntry
+                changed = true
+            }
         }
         if changed { persistIndexedDevices() }
         if enableSafetyAlerts,
@@ -179,6 +188,30 @@ extension HomeStore {
                 }
             }
         }
+    }
+
+    private static func mergedHiddenIndexedDevice(
+        _ incoming: CapabilityIndexedDevice,
+        existing: CapabilityIndexedDevice?
+    ) -> CapabilityIndexedDevice {
+        guard let existing, existing.connection != incoming.connection else { return incoming }
+        var readKeys = incoming.readKeys
+        for key in existing.readKeys where !readKeys.contains(key) { readKeys.append(key) }
+        var safetyReadKeys = incoming.safetyReadKeys
+        for key in existing.safetyReadKeys where !safetyReadKeys.contains(key) { safetyReadKeys.append(key) }
+        return CapabilityIndexedDevice(
+            id: incoming.id,
+            name: incoming.name,
+            category: incoming.category,
+            connection: incoming.connection,
+            sourceScope: incoming.sourceScope,
+            isSourceAvailable: incoming.isSourceAvailable || existing.isSourceAvailable,
+            upstreamHiddenOrDisabled: incoming.upstreamHiddenOrDisabled && existing.upstreamHiddenOrDisabled,
+            participatesInAllOff: incoming.participatesInAllOff || existing.participatesInAllOff,
+            safetySignals: existing.safetySignals.union(incoming.safetySignals),
+            readKeys: readKeys,
+            safetyReadKeys: safetyReadKeys
+        )
     }
 
     /// Drops one account's (or the Home Assistant address's) retained safety set. Its index entries
@@ -233,9 +266,11 @@ extension HomeStore {
 
     @discardableResult
     func persistCapabilitySelection(
+        proposed: CapabilitySelection? = nil,
         removingScopes: Set<String> = [],
         patch: CapabilitySelectionPatch? = nil
     ) -> Bool {
+        let selection = proposed ?? capabilitySelection
         let configured = configuredConnectionScopes()
         let effectivePatch: CapabilitySelectionPatch = if let patch {
             patch
@@ -244,7 +279,7 @@ extension HomeStore {
                 from: lastPersistedCapabilitySelection ?? capabilitySelection,
                 baseDisabledConnections: lastPersistedDisabledConnections,
                 baseDisabledScopes: lastPersistedDisabledScopes,
-                to: capabilitySelection,
+                to: selection,
                 targetDisabledConnections: explicitlyDisabledConnections,
                 targetDisabledScopes: explicitlyDisabledScopes,
                 configuredScopes: configured,
@@ -252,7 +287,7 @@ extension HomeStore {
             )
         }
         let result = CapabilitySelectionStore.saveMergingConflicts(
-            selection: capabilitySelection,
+            selection: selection,
             configuredScopes: configured,
             explicitlyDisabledConnections: explicitlyDisabledConnections,
             removingScopes: removingScopes,
@@ -265,7 +300,7 @@ extension HomeStore {
             if let persisted = result.persistedState {
                 applyPersistedCapabilityState(
                     persisted,
-                    configuredScopes: configured
+                    candidateScopes: configured.union(selection.enabledConnectionScopes)
                 )
             } else {
                 lastPersistedCapabilitySelection = capabilitySelection
@@ -285,7 +320,7 @@ extension HomeStore {
 
     private func applyPersistedCapabilityState(
         _ persisted: CapabilitySelectionPersistedState,
-        configuredScopes: Set<String>
+        candidateScopes: Set<String>
     ) {
         explicitlyDisabledConnections = persisted.disabledConnections
         explicitlyDisabledScopes = persisted.disabledScopes
@@ -293,10 +328,7 @@ extension HomeStore {
             dropMiotTypePruneReport(scope: scope)
         }
         let enabledConnections = persisted.enabledConnections.subtracting(persisted.disabledConnections)
-        let candidateScopes = configuredScopes
-            .union(capabilitySelection.enabledConnectionScopes)
-            .subtracting(persisted.disabledScopes)
-        let enabledScopes = candidateScopes.filter { scope in
+        let enabledScopes = candidateScopes.subtracting(persisted.disabledScopes).filter { scope in
             CapabilityReferenceEngine.connectionCapability(forScope: scope)
                 .map { enabledConnections.contains($0) && !persisted.disabledConnections.contains($0) } ?? true
         }
@@ -956,10 +988,20 @@ extension HomeStore {
     // MARK: - Host Control Write Gate
 
     public func evaluateDeviceControlGate(deviceId: String, expectedGeneration: Int? = nil) -> ControlTargetGateVerdict {
-        let indexed = resolvedIndexedDevice(for: deviceId)
+        deviceControlGate(for: resolvedIndexedDevice(for: deviceId), deviceId: deviceId, expectedGeneration: expectedGeneration)
+    }
+
+    private func deviceControlGate(
+        for indexed: CapabilityIndexedDevice?, deviceId: String, expectedGeneration: Int? = nil
+    ) -> ControlTargetGateVerdict {
+        var selection = capabilitySelection
+        if let indexed, homeBackend == .demo, provider is DemoHomeProvider,
+           indexed.sourceScope == "demo", deviceBackends[indexed.id] == .demo {
+            selection.enabledCategories.insert(indexed.category)
+        }
         return CapabilityReferenceEngine.evaluateControlTargetGate(
             targetKind: .device, targetId: deviceId, expectedGeneration: expectedGeneration,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
+            currentGeneration: capabilityGeneration, selection: selection,
             devices: indexed.map { [$0] } ?? [], scenes: []
         )
     }
@@ -1022,13 +1064,7 @@ extension HomeStore {
     /// O(1) single-device write gate for hot list loops (`allOffTargets`, `controllableDevices`,
     /// `buildRaycastSnapshot`) without scanning `devices` or sorting the full device index.
     func capabilityWriteRejection(for device: SmartDevice) -> ControlTargetRejectionReason? {
-        let indexed = makeIndexedDevice(from: device)
-        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
-            targetKind: .device, targetId: device.id, expectedGeneration: nil,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: [indexed], scenes: []
-        )
-        return verdict.allowed ? nil : verdict.rejectionReason
+        deviceControlGate(for: makeIndexedDevice(from: device), deviceId: device.id).rejectionReason
     }
 
     /// Capability rejection for a command target, resolved from the live rows as well as the persisted
@@ -1036,12 +1072,7 @@ extension HomeStore {
     /// (Bugbot #275: write gate skipped without index entry).
     func capabilityWriteRejection(forDeviceId deviceId: String) -> ControlTargetRejectionReason? {
         guard let indexed = resolvedIndexedDevice(for: deviceId) else { return nil }
-        let verdict = CapabilityReferenceEngine.evaluateControlTargetGate(
-            targetKind: .device, targetId: deviceId, expectedGeneration: nil,
-            currentGeneration: capabilityGeneration, selection: capabilitySelection,
-            devices: [indexed], scenes: []
-        )
-        return verdict.allowed ? nil : verdict.rejectionReason
+        return deviceControlGate(for: indexed, deviceId: deviceId).rejectionReason
     }
 
     /// Fail-closed write gate for Home Assistant domain entities (`light.*`, `switch.*`, `scene.*`,
@@ -1181,7 +1212,7 @@ extension HomeStore {
     func rejectDeviceWriteIfCapabilityDisabled(deviceId: String) -> ControlTargetRejectionReason? {
         guard let indexed = resolvedIndexedDevice(for: deviceId),
               indexed.connection != nil || !capabilitySelection.enabledCategories.contains(indexed.category) else { return nil }
-        let verdict = evaluateDeviceControlGate(deviceId: deviceId)
+        let verdict = deviceControlGate(for: indexed, deviceId: deviceId)
         guard !verdict.allowed, let reason = verdict.rejectionReason else { return nil }
         showToast(reason.userMessage, isError: true)
         return reason
@@ -1206,13 +1237,23 @@ extension HomeStore {
             if let anySplit = indexedDevicesById.keys.sorted().first(where: { $0.hasPrefix("\(parsed.did).s") }) {
                 return anySplit
             }
+            if let dual = activeDualProvider ?? (provider as? DualSourceHomeProvider) {
+                if let canonical = dual.canonicalID(forSourceID: splitId, backend: .xiaomiCloud),
+                   indexedDevicesById[canonical] != nil {
+                    return canonical
+                }
+                if let canonical = dual.canonicalID(forSourceID: parsed.did, backend: .xiaomiCloud),
+                   indexedDevicesById[canonical] != nil {
+                    return canonical
+                }
+            }
             return parsed.did
         }
         if indexedDevicesById[entityId] != nil { return entityId }
         // A closed Home Assistant type keeps its cards' entities as read keys (P3b-M), so a stored
         // entity command still meets「该设备类型已关闭」 instead of slipping past the gate.
         return indexedDevicesById.values
-            .filter { $0.connection == .homeAssistant && $0.readKeys.contains(entityId) }
+            .filter { $0.readKeys.contains(entityId) }
             .map(\.id).min()
     }
 
@@ -1418,6 +1459,19 @@ extension HomeStore {
         }
     }
 
+    func pausedQuickActionMessage(for action: QuickAction) -> String {
+        let categories = QuickActionReferenceKind(rawValue: action.rawValue)?.targetCategories ?? []
+        let hasDisabledScope = (pausedQuickActionScopes[action.rawValue] ?? []).contains { scope in
+            guard let connection = CapabilityReferenceEngine.connectionCapability(forScope: scope),
+                  isCapabilityScopeConfigured(connection, scope: scope) else { return false }
+            return !capabilitySelection.isSourceEnabled(connection: connection, scope: scope)
+        }
+        if !hasDisabledScope, !categories.isSubset(of: capabilitySelection.enabledCategories) {
+            return L10n.tr("该快捷动作因设备类型关闭已暂停", "This quick action is paused while a device type is turned off")
+        }
+        return L10n.tr("该快捷动作因连接停用已暂停", "This quick action is paused while its connection is disabled")
+    }
+
     private func persistPausedQuickActionScopes() {
         if pausedQuickActionScopes.isEmpty {
             userDefaults.removeObject(forKey: Self.pausedQuickActionScopesKey)
@@ -1572,28 +1626,28 @@ extension HomeStore {
     }
 
     private func safetySignals(for device: SmartDevice) -> Set<SafetySignalKind> {
+        if let providerSignals = device.providerSafetySignals { return providerSignals }
         var signals: Set<SafetySignalKind> = [.starredOffline]
         switch device.kind {
         case .plug: signals.formUnion([.longRunningPlug, .highPower])
         case .climate: signals.insert(.longRunningClimate)
-        case .camera: signals.insert(.doorbell)
         case .sensor(let spec):
             if spec.battery != nil { signals.insert(.lowBattery) }
-            // Same rule as `DeviceSynthesizer.haSafetySignals`: without the observations a closed
-            // sensor type would preview as hidden even though its leak alert keeps reading it.
-            for observation in spec.observations { signals.insert(SafetySignalKind(sensorAlertKind: observation.kind)) }
         default: break
+        }
+        for observation in device.safetyObservations {
+            signals.insert(SafetySignalKind(sensorAlertKind: observation.kind))
         }
         return signals
     }
 
-    func currentSafetyRetentionPolicy() -> SafetyRetentionPolicy {
-        guard enableSafetyAlerts else { return SafetyRetentionPolicy() }
-        var enabled: Set<SafetySignalKind> = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
-        // `isSensorAlertEnabled` applies each alert's own default: contact and motion ship off, so a
-        // closed type must not keep reading them just because the user never touched the switch.
-        for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
-            enabled.insert(SafetySignalKind(sensorAlertKind: kind))
+    func effectiveSafetyRetentionPolicy() -> SafetyRetentionPolicy {
+        var enabled: Set<SafetySignalKind> = []
+        if enableSafetyAlerts {
+            enabled = [.lowBattery, .longRunningPlug, .longRunningClimate, .highPower, .starredOffline]
+            for kind in SensorAlertKind.allCases where isSensorAlertEnabled(kind) {
+                enabled.insert(SafetySignalKind(sensorAlertKind: kind))
+            }
         }
         if doorbellAutoPopup || doorbellChime { enabled.insert(.doorbell) }
         return SafetyRetentionPolicy(enabledSignals: enabled, starredDeviceIds: favoriteDeviceIds)
@@ -1756,7 +1810,7 @@ extension HomeStore {
         let graph = buildCapabilityReferenceGraph(indexedDevices: indexed, expectedGeneration: expectedGeneration)
         return CapabilityReferenceEngine.evaluateDeactivation(
             current: capabilitySelection, proposed: proposed, manifest: .shared,
-            devices: indexed, safetyPolicy: currentSafetyRetentionPolicy(), references: graph
+            devices: indexed, safetyPolicy: effectiveSafetyRetentionPolicy(), references: graph
         )
     }
 
@@ -2037,7 +2091,7 @@ extension HomeStore {
         var rules = ruleStore.load()
         var rulesChanged = false
         let availableSet = Set(CapabilityReferenceEngine.partitionDevices(
-            devices: indexed, selection: capabilitySelection, safetyPolicy: currentSafetyRetentionPolicy()
+            devices: indexed, selection: capabilitySelection, safetyPolicy: effectiveSafetyRetentionPolicy()
         ).availableDeviceIds)
 
         for idx in rules.indices where !rules[idx].isEnabled
@@ -2128,7 +2182,7 @@ extension HomeStore {
 
     private func allowedDeactivationVerdict(for selection: CapabilitySelection) -> CapabilityDeactivationVerdict {
         let partition = CapabilityReferenceEngine.partitionDevices(
-            devices: currentIndexedDevicesList(), selection: selection, safetyPolicy: currentSafetyRetentionPolicy()
+            devices: currentIndexedDevicesList(), selection: selection, safetyPolicy: effectiveSafetyRetentionPolicy()
         )
         return CapabilityDeactivationVerdict(
             disposition: .allowed, cascadedCapabilities: [], itemsToPause: [],

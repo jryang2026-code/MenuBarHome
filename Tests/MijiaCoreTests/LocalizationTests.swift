@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -558,11 +559,11 @@ struct LocalizationTests {
     @Test("HomeStore persists appLanguagePreference and miCloudRegion")
     @MainActor
     func homeStoreLanguageAndRegionPersistence() throws {
-        let suiteName = "LocalizationTests.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
+        // One instance for the store and for the assertions: a second `UserDefaults(suiteName:)`
+        // reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
 
-        let store = HomeStore(provider: MockHomeProvider(), defaultsSuiteName: suiteName)
+        let store = HomeStore(provider: MockHomeProvider(), defaults: defaults)
         #expect(store.appLanguagePreference == .system)
         #expect(store.miCloudRegion == .cn)
 

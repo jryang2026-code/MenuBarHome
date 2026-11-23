@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -186,9 +187,8 @@ struct HabitShareTests {
     @MainActor
     func assistantContextMatchesSentence() async throws {
         let now = Self.evening()
-        let suite = "test.habitshare.context.\(UUID().uuidString)"
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: Self.devices, scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         for _ in 0..<50 where store.devices.count < 3 {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -215,27 +215,25 @@ struct HabitShareTests {
     @Test("Sharing defaults off and is written false; learning still gates recording, not local chips")
     @MainActor
     func freshStoreKeepsSharingOff() async throws {
-        let suite = "test.habitshare.fresh.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
+        // One instance for the store and for the assertions: a second `UserDefaults(suiteName:)`
+        // reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         let ceiling = Self.light("dev_study_ceiling", "书房吸顶灯", "书房", on: true)
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [ceiling], scenes: []))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         #expect(store.isHabitLearningEnabled)
         #expect(store.habitSharing == .off)
         #expect(defaults.object(forKey: "assistant_habit_share_enabled") != nil)
         #expect(defaults.bool(forKey: "assistant_habit_share_enabled") == false)
 
         store.habitSharing = .on
-        let second = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let second = HomeStore(provider: mock, defaults: defaults)
         #expect(second.habitSharing == .on)
         #expect(defaults.bool(forKey: "assistant_habit_share_enabled") == true)
 
-        let weirdSuite = "test.habitshare.weird.\(UUID().uuidString)"
-        let weirdDefaults = UserDefaults(suiteName: weirdSuite)!
-        weirdDefaults.removePersistentDomain(forName: weirdSuite)
+        let weirdDefaults = InMemoryUserDefaults()
         weirdDefaults.set("nope", forKey: "assistant_habit_share_enabled")
-        let weird = HomeStore(provider: mock, defaultsSuiteName: weirdSuite)
+        let weird = HomeStore(provider: mock, defaults: weirdDefaults)
         #expect(weird.habitSharing == .off)
         #expect(!(weirdDefaults.object(forKey: "assistant_habit_share_enabled") is String))
         #expect(weirdDefaults.bool(forKey: "assistant_habit_share_enabled") == false)

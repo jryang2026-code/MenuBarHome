@@ -325,7 +325,14 @@ public actor HAWebSocketProvider: HomeProvider {
     public var currentBaseURLString: String { baseURLString }
 
     public func updateCredentials(baseURLString: String, token: String) {
-        self.baseURLString = Self.normalizeBaseURL(baseURLString)
+        let normalizedURL = Self.normalizeBaseURL(baseURLString)
+        publishStaleRetainedDevices()
+        if self.baseURLString == normalizedURL {
+            snapshot.resetForReconnect()
+        } else {
+            snapshot = HAHomeSnapshot()
+        }
+        self.baseURLString = normalizedURL
         self.token = token
         updateLocalNetworkDenied(false)
         guard !isShutDown else { return }
@@ -623,7 +630,7 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         self.activeWebSocket = ws
         onAuthenticated()
-        snapshot = HAHomeSnapshot()
+        snapshot.resetForReconnect()
         lastEmittedHome = nil
         coalesceTask?.cancel()
         coalesceTask = nil
@@ -889,6 +896,10 @@ public actor HAWebSocketProvider: HomeProvider {
             throw HomeProviderError.networkError(HAPlaintextConsent.waitingMessage(baseURLString))
         }
         let (domain, service, payload) = Self.mapCommandToService(command)
+        if let entityId = payload["entity_id"] as? String,
+           let category = snapshot.closedCategory(for: entityId, policy: typePrunePolicyLoader()) {
+            throw CapabilityControlBlockedError(reason: .categoryDisabled(category))
+        }
         guard let url = URL(string: "\(baseURLString)/api/services/\(domain)/\(service)") else {
             throw HomeProviderError.invalidURL(baseURLString)
         }

@@ -1316,6 +1316,84 @@ enum HAConnectionSaveGuard {
     }
 }
 
+enum CorruptRemovalRecoveryGuidance {
+    struct ActionSet: Equatable, Sendable {
+        let primaryRetryTitle: String
+        let showsChooseAlternateFolderButton: Bool
+        let chooseAlternateFolderTitle: String
+    }
+
+    struct Copy: Equatable, Sendable {
+        let title: String
+        let detail: String
+        let steps: [String]
+        let actions: ActionSet
+    }
+
+    static func resolve(failure: ConnectionRemovalQuarantineFailure) -> Copy {
+        let locationSuffix = failure.directoryPath.map { "（\($0)）" } ?? ""
+        let locationSuffixEn = failure.directoryPath.map { " (\($0))" } ?? ""
+        switch failure.kind {
+        case .fullFsyncUnsupported:
+            let title = failure.usedAlternateDirectory
+                ? L10n.tr("所选文件夹所在卷不支持所需同步（F_FULLFSYNC）", "Selected folder's volume does not support required sync (F_FULLFSYNC)")
+                : L10n.tr("当前存储卷不支持所需同步（F_FULLFSYNC）", "Current volume does not support required sync (F_FULLFSYNC)")
+            let detail = L10n.tr(
+                "放弃损坏记录前必须在私有目录完成 F_FULLFSYNC 落盘同步与逐字节回读校验。目标位置\(locationSuffix)不支持该同步（常见于网络主目录、SMB/NAS 挂载或部分外置磁盘）。为避免丢失原始损坏数据，原记录已保留，重复操作同一卷仍会失败。",
+                "Before discarding a damaged record, a private backup must pass F_FULLFSYNC disk flushing and byte-for-byte read-back. The target location\(locationSuffixEn) does not support F_FULLFSYNC (common on network homes, SMB/NAS mounts, or some external drives). The original record was kept untouched; retrying the same volume will keep failing."
+            )
+            let steps = [
+                L10n.tr(
+                    "1. 点击下方「选择本地文件夹并重试…」，改用本机内置磁盘（APFS / HFS+）上的个人文件夹作为备用隔离位置。",
+                    "1. Click \"Choose Local Folder & Retry…\" below and pick a folder on your Mac's internal APFS/HFS+ volume as an alternate quarantine location."
+                ),
+                L10n.tr(
+                    "2. 或将用户目录 / Application Support 迁回支持 F_FULLFSYNC 的本地卷后，再点击「重试原位置」。",
+                    "2. Or move your user home / Application Support back to a local F_FULLFSYNC-capable volume, then click \"Retry Default Location\"."
+                ),
+            ]
+            return Copy(
+                title: title,
+                detail: detail,
+                steps: steps,
+                actions: ActionSet(
+                    primaryRetryTitle: L10n.tr("重试原位置", "Retry Default Location"),
+                    showsChooseAlternateFolderButton: true,
+                    chooseAlternateFolderTitle: L10n.tr("选择本地文件夹并重试…", "Choose Local Folder & Retry…")
+                )
+            )
+        case .transientOrVerificationFailed:
+            let title = failure.usedAlternateDirectory
+                ? L10n.tr("所选备用位置写入或校验未通过", "Selected alternate location failed write or verification")
+                : L10n.tr("隔离备份写入或校验未通过", "Could not write or verify quarantine backup")
+            let detail = L10n.tr(
+                "写入私有隔离文件、目录同步或逐字节回读校验失败，原记录已保留。可能是磁盘空间不足、目标目录并非当前用户独占（0700/0600 或存在符号链接）或临时 I/O 错误。",
+                "Writing the private quarantine file, syncing directories, or verifying byte-for-byte read-back failed. The original record was kept untouched. This may be caused by low disk space, non-private permissions (not 0700/0600 owned by you, or a symlink), or a transient I/O error."
+            )
+            let steps = [
+                L10n.tr(
+                    "1. 检查目标目录磁盘空间与权限\(locationSuffix)后，点击「重试放弃记录」。",
+                    "1. Check disk space and permissions\(locationSuffixEn), then click \"Retry Discard\"."
+                ),
+                L10n.tr(
+                    "2. 若原目录持续无法写入，可点击「选择本地文件夹并重试…」改存到本机其他私有文件夹。",
+                    "2. If the default location keeps failing, click \"Choose Local Folder & Retry…\" to use another local folder."
+                ),
+            ]
+            return Copy(
+                title: title,
+                detail: detail,
+                steps: steps,
+                actions: ActionSet(
+                    primaryRetryTitle: L10n.tr("重试放弃记录", "Retry Discard"),
+                    showsChooseAlternateFolderButton: true,
+                    chooseAlternateFolderTitle: L10n.tr("选择本地文件夹并重试…", "Choose Local Folder & Retry…")
+                )
+            )
+        }
+    }
+}
+
 enum ConnectionSettingsDisclosure {
     static let advancedConnectionAnchors: Set<SettingsAnchor> = [.miMultiAccounts, .dualSourceFusion]
 
@@ -1787,6 +1865,72 @@ private struct ConnectionSettingsTab: View {
         }
     }
 
+    private func reloadHATokenDraftIfCleanAfterDiscard(_ succeeded: Bool) {
+        guard succeeded, tokenDraft == haBaselineToken else { return }
+        let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
+        tokenDraft = initialHAToken.token
+        tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
+        haBaselineToken = tokenDraft
+    }
+
+    @MainActor
+    private func pickAlternateQuarantineFolder() -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = L10n.tr("选择此位置", "Use This Folder")
+        panel.message = L10n.tr(
+            "请选择本机内置磁盘（APFS / HFS+）上的文件夹；应用将在其中创建私有隔离目录（0700）并完成 F_FULLFSYNC 落盘校验。",
+            "Choose a folder on your Mac's internal APFS/HFS+ drive. A private quarantine directory (0700) will be created inside it and verified with F_FULLFSYNC."
+        )
+        guard panel.runModal() == .OK else { return nil }
+        return panel.url
+    }
+
+    private func corruptRemovalRecoveryCard(_ failure: ConnectionRemovalQuarantineFailure) -> some View {
+        let guidance = CorruptRemovalRecoveryGuidance.resolve(failure: failure)
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(guidance.title)
+                .font(.system(size: DesignTokens.TypeSize.caption, weight: .semibold))
+                .foregroundStyle(.orange)
+            Text(guidance.detail)
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(.primary.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            ForEach(guidance.steps, id: \.self) { step in
+                Text(step)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                    .foregroundStyle(DesignTokens.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) {
+                Button(guidance.actions.primaryRetryTitle) {
+                    reloadHATokenDraftIfCleanAfterDiscard(store.discardCorruptConnectionRemovalRecord())
+                }
+                .buttonStyle(PillActionButtonStyle())
+                if guidance.actions.showsChooseAlternateFolderButton {
+                    Button(guidance.actions.chooseAlternateFolderTitle) {
+                        guard let picked = pickAlternateQuarantineFolder() else { return }
+                        reloadHATokenDraftIfCleanAfterDiscard(
+                            store.discardCorruptConnectionRemovalRecord(inAlternateParentDirectory: picked)
+                        )
+                    }
+                    .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .orange))
+                }
+            }
+            .padding(.top, 2)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(Color.orange.opacity(0.25), lineWidth: 1)
+        )
+    }
+
     private var corruptRemovalDiscardRow: some View {
         HStack(alignment: .center, spacing: 8) {
             Text(L10n.tr(
@@ -1805,12 +1949,7 @@ private struct ConnectionSettingsTab: View {
         .alert(L10n.tr("放弃损坏的移除记录？", "Discard the damaged removal record?"), isPresented: $confirmsDiscardCorruptRemoval) {
             Button(L10n.tr("取消", "Cancel"), role: .cancel) {}
             Button(L10n.tr("放弃记录", "Discard Record"), role: .destructive) {
-                let reloadsToken = tokenDraft == haBaselineToken
-                guard store.discardCorruptConnectionRemovalRecord(), reloadsToken else { return }
-                let initialHAToken = HAConnectionSaveGuard.loadInitialToken(from: store)
-                tokenDraft = initialHAToken.token
-                tokenLookupWasUnavailable = initialHAToken.lookupWasUnavailable
-                haBaselineToken = tokenDraft
+                reloadHATokenDraftIfCleanAfterDiscard(store.discardCorruptConnectionRemovalRecord())
             }
         } message: {
             Text(L10n.tr(
@@ -1836,7 +1975,11 @@ private struct ConnectionSettingsTab: View {
                         .foregroundStyle(.primary.opacity(0.9))
                         .fixedSize(horizontal: false, vertical: true)
                         if store.canDiscardCorruptConnectionRemovalRecord {
-                            corruptRemovalDiscardRow
+                            if let failure = store.corruptRemovalDiscardFailure {
+                                corruptRemovalRecoveryCard(failure)
+                            } else {
+                                corruptRemovalDiscardRow
+                            }
                         }
                     }
                 }

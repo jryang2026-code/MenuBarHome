@@ -257,6 +257,15 @@ struct MiTopologyCacheTests {
         await api.setTopology(devices: [movedRecord], rooms: rooms)
         await wake(p3)
         #expect(await c3.wait { lightBrightness($0.snapshots.last?.devices.first) == 94 })
+        // The 94 read has two routes to the new address: the cloud device list reconciles the
+        // binding to the new cloud IP, or the broadcast self-heal binds that same IP first. Only the
+        // cloud reconcile clears `usedBroadcastRecovery`, so a loaded runner that answers the
+        // broadcast before the device list lands samples a binding that still carries the marker.
+        // Wait for the reconciled binding instead of sampling it once.
+        await waitUntil {
+            let state = await p3.lanTransportState(for: "101")
+            return state.effectiveIP == "192.168.1.120" && !state.usedBroadcastRecovery
+        }
         let finalState = await p3.lanTransportState(for: "101")
         #expect(finalState.effectiveIP == "192.168.1.120" && !finalState.usedBroadcastRecovery)
         await p3.shutdown(); t3.cancel()

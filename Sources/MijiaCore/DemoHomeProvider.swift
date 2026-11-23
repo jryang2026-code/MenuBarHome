@@ -162,6 +162,16 @@ public actor MockHomeProvider: HomeProvider {
         continuation?.yield(.doorbellRang(ring))
     }
 
+    /// Emits a Mi device-type pruning report (#303 dual-source tests).
+    public func sendMiotTypePrune(_ report: MiotTypePruneReport) {
+        continuation?.yield(.miotTypePruneChanged(report))
+    }
+
+    /// Emits a Home Assistant device-type pruning report (#325 dual-source tests).
+    public func sendHATypePrune(_ report: MiotTypePruneReport) {
+        continuation?.yield(.haTypePruneChanged(report))
+    }
+
     public func sendLocalNetworkPermission(_ blocked: Set<LocalNetworkBlockedFeature>) {
         snapshot.localNetworkBlockedFeatures = blocked
         continuation?.yield(.localNetworkPermissionChanged(blocked))
@@ -203,6 +213,7 @@ public actor DemoHomeProvider: HomeProvider {
 
     public init() {
         self.snapshot = Self.defaultHome()
+        snapshot.deviceBackends = Dictionary(uniqueKeysWithValues: snapshot.devices.map { ($0.id, .demo) })
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {

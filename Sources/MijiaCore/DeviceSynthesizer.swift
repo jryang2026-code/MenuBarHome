@@ -2057,17 +2057,29 @@ extension DeviceSynthesizer {
         switch device.kind {
         case .plug: signals.formUnion([.longRunningPlug, .highPower])
         case .climate: signals.insert(.longRunningClimate)
-        case .camera: signals.insert(.doorbell)
+        case .camera:
+            if entities.contains(where: { entity in
+                entity.disabled_by == nil && entity.hidden_by == nil
+                    && states[entity.entity_id].map(DoorbellRing.isDoorbellEvent) == true
+            }) {
+                signals.insert(.doorbell)
+            }
         case .sensor(let spec):
             // `SafetyMonitor` reads a battery from the sensor card only.
             if spec.battery != nil { signals.insert(.lowBattery) }
-            for observation in spec.observations { signals.insert(SafetySignalKind(sensorAlertKind: observation.kind)) }
         default: break
+        }
+        for observation in device.safetyObservations {
+            signals.insert(SafetySignalKind(sensorAlertKind: observation.kind))
         }
         for entity in entities {
             if let kind = safetyKind(of: entity, states: states) { signals.insert(SafetySignalKind(sensorAlertKind: kind)) }
         }
         return signals
+    }
+
+    static func haCardReadKeys(for device: SmartDevice, entities: [HAEntityEntry], facets: [FacetControl]) -> Set<String> {
+        Set(entities.map(\.entity_id) + device.referencedEntityIds + facets.flatMap(\.referencedEntityIds))
     }
 
     /// Splits one synthesized round into the cards to draw, the cards a closed type keeps only for
@@ -2084,14 +2096,13 @@ extension DeviceSynthesizer {
             let rows = cardEntities[device.id] ?? []
             // The read keys are the card's entities, so a stored entity command (an undo, a timer)
             // still finds its hidden owner in the index.
-            let readKeys = Set(rows.map(\.entity_id) + device.referencedEntityIds
-                + (home.deviceFacets[device.id] ?? []).flatMap(\.referencedEntityIds)).sorted()
+            let readKeys = haCardReadKeys(for: device, entities: rows, facets: home.deviceFacets[device.id] ?? []).sorted()
             return CapabilityIndexedDevice(
                 id: device.id, name: device.name, category: device.capabilityCategoryID,
                 connection: .homeAssistant, sourceScope: policy.sourceScope,
                 isSourceAvailable: true, upstreamHiddenOrDisabled: false,
                 participatesInAllOff: HomeStore.joinsAllOffByDefault(device),
-                safetySignals: haSafetySignals(for: device, entities: rows, states: states),
+                safetySignals: device.providerSafetySignals ?? haSafetySignals(for: device, entities: rows, states: states),
                 readKeys: readKeys, safetyReadKeys: readKeys
             )
         }

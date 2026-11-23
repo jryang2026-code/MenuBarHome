@@ -1,7 +1,8 @@
 import Foundation
+import KeychainTestSupport
+import PreferencesTestSupport
 import Security
 import Testing
-import KeychainTestSupport
 @testable import MijiaCore
 
 /// 审计 #16 / #27：凭证只存钥匙串，不再明文镜像到 `UserDefaults`；旧明文键在启动时迁入钥匙串并删除；
@@ -12,11 +13,15 @@ struct KeychainCredentialTests {
         CredentialVault(storage: storage.storage)
     }
 
+    /// One instance for the Keychain helper and for the store a test opens on the same domain: a
+    /// second `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+    private func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
+    }
+
     @Test("Removing the last account uses the injected vault and keeps unrelated credentials")
     func lastAccountRemovalUsesInjectedVault() throws {
-        let suite = "test.injected-session.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = memoryVault()
         let session = MiSession(userId: "42", cUserId: "c", ssecurity: "fake", serviceToken: "fake")
         #expect(KeychainHelper.saveToken("fake-ha", defaults: defaults, vault: vault))
@@ -31,14 +36,16 @@ struct KeychainCredentialTests {
     @Test("Store credential drafts read only the injected vault")
     @MainActor
     func storeCredentialDraftsUseInjectedVault() throws {
-        let suite = "test.injected-drafts.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = memoryVault()
         #expect(KeychainHelper.saveToken("fake-ha", defaults: defaults, vault: vault))
         let config = AssistantConfig(apiKey: "fake-ai")
         config.save(to: defaults, vault: vault)
-        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite, credentialVault: vault)
+        let store = HomeStore(
+            provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()),
+            credentialVault: vault,
+            defaults: defaults
+        )
         #expect(store.loadHAToken() == "fake-ha")
         #expect(store.storedAssistantAPIKey(forBaseURL: config.baseURL) == "fake-ai")
         #expect(store.assistantConfig.apiKey == "fake-ai")
@@ -86,9 +93,7 @@ struct KeychainCredentialTests {
 
     @Test("Migration moves a plaintext credential into the Keychain and deletes the plaintext key")
     func migrationMovesSecretAndDeletesPlaintext() throws {
-        let suite = "test.keychain-migration.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = memoryVault()
         let plaintextKey = "test_plaintext"
 
@@ -111,9 +116,7 @@ struct KeychainCredentialTests {
 
     @Test("Legacy plaintext cannot replace an existing Keychain credential")
     func migrationPreservesExistingCredential() throws {
-        let suite = "test.keychain-existing.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = memoryVault()
 
         try #require(KeychainHelper.writeKeychainSecret("current-secure-value", account: "e", vault: vault))
@@ -143,9 +146,7 @@ struct KeychainCredentialTests {
 
     @Test("A failed migration keeps the plaintext and cannot replace a protected credential")
     func migrationFailurePreservesCredential() throws {
-        let suite = "test.keychain-denied.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         // The vault accepts nothing: the plaintext stays for the next launch, the existing credential stays too.
         let refusing = MemoryVaultStorage()
@@ -169,9 +170,7 @@ struct KeychainCredentialTests {
 
     @Test("Legacy session migration preserves an existing login or inserts a sanitized session")
     func sessionMigrationPreservesExistingLogin() throws {
-        let suite = "test.session-existing.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         let vault = memoryVault()
         let current = MiSession(userId: "current", cUserId: "c", ssecurity: "secure", serviceToken: "current-token")
         let currentData = try JSONEncoder().encode(current)
@@ -213,9 +212,7 @@ struct KeychainCredentialTests {
 
     @Test("Loading a ≤1.0.6 session migrates it into the v2 envelope once (#27)")
     func legacySessionIsRewrittenOnLoad() throws {
-        let suite = "com.jryang1997.MenuBarMijia.session-rewrite.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let legacy = Data(#"{"userId":"42","cUserId":"c","ssecurity":"c2VjcmV0","serviceToken":"tok","passToken":"pt","region":"cn"}"#.utf8)
         defaults.set(legacy, forKey: MiSessionStore.fallbackDefaultsKey)
@@ -256,9 +253,7 @@ struct KeychainCredentialTests {
 
     @Test("Two accounts in different regions round-trip in their saved order")
     func multipleAccountsRoundTripInOrder() throws {
-        let suite = "com.jryang1997.MenuBarMijia.multi-account.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let cn = MiSession(userId: "11112222", cUserId: "c1", ssecurity: "s1", serviceToken: "cn-token", region: "cn")
         let de = MiSession(userId: "33334444", cUserId: "c2", ssecurity: "s2", serviceToken: "de-token", region: "de")
@@ -272,9 +267,7 @@ struct KeychainCredentialTests {
 
     @Test("Upsert replaces the same user and region in place, and another region adds an account")
     func upsertReplacesSameAccount() throws {
-        let suite = "com.jryang1997.MenuBarMijia.upsert.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let first = MiSession(userId: "55556666", cUserId: "c", ssecurity: "s", serviceToken: "old-token", region: "cn")
         let refreshed = MiSession(userId: "55556666", cUserId: "c", ssecurity: "s", serviceToken: "new-token", region: "cn")
@@ -292,9 +285,7 @@ struct KeychainCredentialTests {
 
     @Test("Removing one account keeps the other, and removing the last one clears the slot")
     func removeAccountKeepsTheRest() throws {
-        let suite = "com.jryang1997.MenuBarMijia.remove-account.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let cn = MiSession(userId: "11112222", cUserId: "c1", ssecurity: "s1", serviceToken: "cn-token", region: "cn")
         let de = MiSession(userId: "33334444", cUserId: "c2", ssecurity: "s2", serviceToken: "de-token", region: "de")
@@ -310,9 +301,7 @@ struct KeychainCredentialTests {
 
     @Test("An empty region and cn are the same account, so upsert adds no duplicate")
     func emptyRegionNormalizesToChinaMainland() throws {
-        let suite = "com.jryang1997.MenuBarMijia.region-normalize.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
 
         let blank = Data(#"{"userId":"77778888","cUserId":"c","ssecurity":"c2VjcmV0","serviceToken":"blank-token","region":""}"#.utf8)
         let cn = Data(#"{"userId":"77778888","cUserId":"c","ssecurity":"c2VjcmV0","serviceToken":"cn-token","region":"cn"}"#.utf8)
