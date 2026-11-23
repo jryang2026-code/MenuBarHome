@@ -223,11 +223,13 @@ extension HomeStore {
         }
         if !menuBarPinnedReadouts.isEmpty {
             let _ = effectiveLanguage
-            return MenuBarPinnedReadout.format(
+            if let pinned = MenuBarPinnedReadout.format(
                 pinnedIDs: menuBarPinnedReadouts,
                 environmentReadings: environmentReadings,
                 devices: devices
-            )
+            ) {
+                return pinned
+            }
         }
         let sensorReading = { (prefix: String) -> EnvironmentReading? in
             guard self.menuBarTargetId.hasPrefix(prefix) else { return nil }
@@ -285,7 +287,14 @@ extension HomeStore {
     /// missing (an offline target, an empty home) and `PollingPolicy` never stretches a label the user
     /// keeps on screen. Mirrors the branches of `menuBarText`, minus "icon only".
     public var menuBarShowsLiveReading: Bool {
-        if !menuBarPinnedReadouts.isEmpty { return true }
+        if !menuBarPinnedReadouts.isEmpty,
+           MenuBarPinnedReadout.format(
+               pinnedIDs: menuBarPinnedReadouts,
+               environmentReadings: environmentReadings,
+               devices: devices
+           ) != nil {
+            return true
+        }
         if menuBarTargetId.hasPrefix("temp:") || menuBarTargetId.hasPrefix("temp_hum:") { return true }
         if menuBarTargetId.hasPrefix("power:") || menuBarTargetId == "active:count" { return true }
         if menuBarTargetId == "icon:only" { return false }

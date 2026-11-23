@@ -278,5 +278,14 @@ struct MenuBarStatusStateTests {
         store.setMenuBarPinnedReadout("", at: 0)
         #expect(store.menuBarPinnedReadouts.isEmpty)
         #expect(store.menuBarText == nil)
+
+        // An unavailable/removed pin falls back to the standard readout and does not force live polling.
+        store.menuBarTargetId = "auto:primary"
+        store.setMenuBarPinnedReadout("switch:missing_device_id", at: 0)
+        #expect(store.menuBarText == baselineText)
+
+        store.menuBarTargetId = "icon:only"
+        #expect(store.menuBarText == nil)
+        #expect(!store.menuBarShowsLiveReading)
     }
 }
