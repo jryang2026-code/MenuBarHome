@@ -149,12 +149,27 @@ describe("Windows empty-panel diagnosis UI", () => {
       `expected diagnostics copy banner, got ${JSON.stringify(instance.replyBanner)}`,
     );
 
-    // syncFailed also offers copyDiagnostics.
+    // syncFailed also offers copyDiagnostics, even on a first-sync failure where cloudValuesStale is false.
     instance.homes = [];
-    instance.cloudValuesStale = true;
+    instance.cloudValuesStale = false;
+    instance.lastMiCloudSyncFailed = true;
     instance.render();
     assert.equal(document.querySelector<HTMLElement>("#empty-mi-diagnosis")?.dataset.emptyReason, "syncFailed");
     assert.ok(document.querySelector("#btn-empty-copy-diagnostics"));
+  });
+
+  it("renders diagnosis in dual-source Home Assistant mode when 0 devices are shown", async () => {
+    const instance = await createCloudApp("sg");
+    instance.settings.connectionMode = "homeAssistant";
+    instance.settings.haBaseURL = "http://192.168.1.2:8123";
+    instance.settings.haToken = "ha-tok";
+    instance.dualSourceEnabledOverride = true;
+    instance.render();
+
+    const empty = document.querySelector<HTMLElement>("#empty-mi-diagnosis");
+    assert.ok(empty, "expected #empty-mi-diagnosis in dual-source HA mode");
+    assert.equal(empty.dataset.emptyReason, "possibleWrongRegion");
+    assert.ok(document.querySelector("#btn-empty-switch-region"));
   });
 
   it("renders sessionReauthRequired with reauth button when session is expired", async () => {

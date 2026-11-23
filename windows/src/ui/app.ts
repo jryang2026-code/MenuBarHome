@@ -440,6 +440,8 @@ export class MenuMijiaWindowsApp {
   public waitingDeviceIds = new Set<string>();
   /** A Xiaomi refresh failed after devices were already on screen. */
   public cloudValuesStale = false;
+  /** Latest Xiaomi Cloud refresh failed, even when 0 devices were ever loaded (#67, #76). */
+  public lastMiCloudSyncFailed = false;
   /** Member did → owning light-group did from the latest Xiaomi Cloud refresh (#214). */
   public groupOwnerByMemberDid = new Map<string, string>();
   /** A command waiting for the user to allow sending it to a cloud AI service (#20). */
@@ -1882,6 +1884,12 @@ export class MenuMijiaWindowsApp {
           </div>
         `;
       }
+      if (isDualSourceEnabled(this) && !this.isSyncingCloud) {
+        const diagnosis = this.emptyPanelDiagnosis();
+        if (diagnosis !== null) {
+          return this.renderDiagnosedEmptyState(diagnosis);
+        }
+      }
       return `<div class="cc-empty-state"><div class="cc-empty-title">Home Assistant</div><div class="cc-empty-subtitle">${this.isSyncingCloud ? "Connecting…" : "No connected devices. Check the saved URL, token and endpoint permission."}</div><button class="cc-btn-secondary" id="btn-empty-settings">Settings</button></div>`;
     }
     // A selected home the cloud no longer returns devices for is not an empty account (#67):
@@ -2002,7 +2010,7 @@ export class MenuMijiaWindowsApp {
       ? "authFailed"
       : this.isSyncingCloud
         ? "pending"
-        : this.cloudValuesStale
+        : this.cloudValuesStale || this.lastMiCloudSyncFailed
           ? "failed"
           : "succeeded";
 

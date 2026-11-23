@@ -759,6 +759,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       clearXiaomiRateLimitBackoff(host);
       // The setter clears only this session's own rejection key, so other accounts' records survive.
       host.miSessionExpired = false;
+      host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
       host.groupOwnerByMemberDid = memberGroupOwners(membersByGroup as Map<string, string[]>);
       const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
@@ -816,6 +817,7 @@ export async function refreshDevices(host: MenuMijiaWindowsApp, silent = false):
       }
     } catch (err) {
       if (!cloudSnapshotIsStale(host, session, stateToken, syncRun, selectedHomeAtStart)) {
+        host.lastMiCloudSyncFailed = true;
         host.markCloudValuesStale();
         appDiagnosticsLog.record({
           error: err,
@@ -1614,6 +1616,7 @@ async function refreshMultiAccountXiaomiDevices(
     const allExpired = enabledAccounts.every((acc) => merged.accountTokenStatuses[acc.id]?.kind === "expired");
     host.miSessionExpired = allExpired;
     if (merged.aggregateStatus.kind === "disconnected") {
+      host.lastMiCloudSyncFailed = true;
       host.markCloudValuesStale();
       if (merged.home.devices.length > 0) {
         applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners);
@@ -1621,6 +1624,7 @@ async function refreshMultiAccountXiaomiDevices(
       }
       if (merged.resetSelectedHome) host.saveSettings();
     } else {
+      host.lastMiCloudSyncFailed = false;
       host.markCloudValuesFresh();
       applySynthesizedSnapshotToHost(host, merged.home, merged.lightGroupOwners);
       presentationChanged = cloudPresentationFingerprint(host) !== previousPresentation;
@@ -1966,6 +1970,7 @@ async function refreshDualSourceDevices(
     }
 
     host.haConnectionError = haEnabledAtStart ? outcome.haError : null;
+    host.lastMiCloudSyncFailed = Boolean(outcome.miError);
     host.markCloudValuesFresh();
     applyDualSourceMergeToHost(host, outcome.merged);
     const lastMiSnapshot = coordinator.getLastMiSnapshot();
@@ -2018,6 +2023,7 @@ async function refreshDualSourceDevices(
     failed = true;
     const msg = error instanceof Error ? error.message : String(error);
     if (haEnabledAtStart) host.haConnectionError = msg;
+    host.lastMiCloudSyncFailed = true;
     host.markCloudValuesStale();
     if (!silent) {
       host.replyBanner = {

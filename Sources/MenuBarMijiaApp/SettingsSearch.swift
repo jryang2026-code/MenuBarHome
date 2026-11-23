@@ -38,6 +38,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
     case haToken
     case haDiscovery
     case miAccount
+    case miCloudRegion
     case lgTV
     case miMultiAccounts
     case dualSourceFusion
@@ -91,7 +92,7 @@ enum SettingsAnchor: String, CaseIterable, Hashable, Sendable {
              .scheduledCommands, .automationRules, .raycast, .energyHistory,
              .appearanceMode, .panelTheme, .panelHeight, .climatePanelModule:
             return .general
-        case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
+        case .demoMode, .localNetwork, .haServerAddress, .haToken, .haDiscovery, .miAccount, .miCloudRegion, .lgTV,
              .miMultiAccounts, .dualSourceFusion:
             return .connection
         case .askWhenUnsure, .confidenceThreshold, .assistantEnable, .assistantProvider, .assistantRemoveProvider,
@@ -185,7 +186,7 @@ struct SettingsSearchAvailability: Equatable, Sendable {
         case .localNetwork:
             if backend == .demo { return .demoMode }
             return hasLocalNetworkBlock ? nil : .noLocalNetworkBlock
-        case .haServerAddress, .haToken, .haDiscovery, .miAccount, .lgTV,
+        case .haServerAddress, .haToken, .haDiscovery, .miAccount, .miCloudRegion, .lgTV,
              .miMultiAccounts, .dualSourceFusion:
             return backend == .demo ? .demoMode : nil
         case .hiddenDevices:
@@ -344,6 +345,10 @@ enum SettingsSearch {
                   enTitle: "Xiaomi Home",
                   synonyms: ["米家", "米家云端直连", "小米", "账号", "登录", "地区", "服务器地区",
                              "mi", "xiaomi", "account", "sign in", "cloud", "region"]),
+            entry(.miCloudRegion, section: connectionSection, zhTitle: "云端服务器地区",
+                  enTitle: "Cloud Region",
+                  synonyms: ["地区", "区域", "服务器地区", "切换区域", "米家地区", "cn", "sg", "de", "us",
+                             "region", "cloud region", "server region", "switch region"]),
             entry(.lgTV, section: connectionSection, zhTitle: "LG 电视",
                   enTitle: "LG TV",
                   synonyms: ["电视", "lg", "webos", "ssap", "wake on lan", "wol", "tv", "mac",

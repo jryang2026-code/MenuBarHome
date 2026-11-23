@@ -491,6 +491,7 @@ export function signOutXiaomiAccount(host: MenuMijiaWindowsApp): void {
     const clearMultiPromise = clearHostSessionAndDualSourceState(host, { revokeAll: false });
     host.miSessionExpired = false;
     host.cloudValuesStale = false;
+    host.lastMiCloudSyncFailed = false;
     host.unresolvedRoomDids.clear();
     host.qrTicket = null;
     host.qrStatusText = t("点击下方按钮获取安全二维码，用手机「米家 App → 扫一扫」即可同步真实全屋设备。");

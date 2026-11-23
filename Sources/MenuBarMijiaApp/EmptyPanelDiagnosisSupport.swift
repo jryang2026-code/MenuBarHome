@@ -96,7 +96,9 @@ enum EmptyPanelDiagnosisPresenter {
             } else {
                 SettingsWindowOpener.shared.show(tab: .connection, anchor: .miAccount)
             }
-        case .switchRegion, .confirmMiHome:
+        case .switchRegion:
+            SettingsWindowOpener.shared.show(tab: .connection, anchor: .miCloudRegion)
+        case .confirmMiHome:
             SettingsWindowOpener.shared.show(tab: .connection, anchor: .miAccount)
         case .copyDiagnostics:
             copyDiagnosticsToClipboard(store: store)
