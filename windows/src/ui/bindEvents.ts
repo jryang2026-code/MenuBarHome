@@ -40,7 +40,6 @@ import {
   retryTimedOutHaStopOnHost,
   setHaConnectionEnabledOnHost,
 } from "./connectionsAndDiagView.js";
-import { highlightSettingsAnchor } from "./settingsSearch.js";
 import { bindSensorHistoryEvents } from "./sensorHistoryView.js";
 import { syncSettingsSaveHint } from "./settingsEvents.js";
 import {
@@ -831,13 +830,11 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
     });
 
     host.root.querySelector("#btn-empty-switch-region")?.addEventListener("click", () => {
-      host.openSettingsSheet("connection");
-      highlightSettingsAnchor(host.root, "miCloudRegion");
+      host.openSettingsSheet("connection", "miCloudRegion");
     });
 
     host.root.querySelector("#btn-empty-confirm-mi-home")?.addEventListener("click", () => {
-      host.openSettingsSheet("connection");
-      highlightSettingsAnchor(host.root, "miAccount");
+      host.openSettingsSheet("connection", "miAccount");
     });
 
     host.root.querySelector("#btn-empty-copy-diagnostics")?.addEventListener("click", () => {

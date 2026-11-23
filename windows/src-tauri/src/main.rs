@@ -339,7 +339,7 @@ fn main() {
                     "settings" => {
                         let app_handle = app.clone();
                         tauri::async_runtime::spawn(async move {
-                            let _ = open_settings_window(app_handle, None).await;
+                            let _ = open_settings_window(app_handle, None, None).await;
                         });
                     }
                     "update" => {

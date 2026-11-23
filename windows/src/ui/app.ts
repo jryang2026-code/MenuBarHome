@@ -153,6 +153,14 @@ import {
 } from "../core/pollingPolicy.js";
 import { bindLayoutGestures } from "./layoutGestures.js";
 import { bindSettingsEvents, requestCloseSettingsSheet } from "./settingsEvents.js";
+import {
+  clearSettingsHighlight,
+  highlightSettingsAnchor,
+  normalizeSettingsAnchor,
+  resolveSettingsAnchorTab,
+  restoreActiveSettingsHighlight,
+  type SettingsAnchor,
+} from "./settingsSearch.js";
 import { normalizeSettingsTab, type SettingsTab } from "./settingsViews.js";
 import {
   bindUndoBannerHoverGuard, clearUndoHoverPause, copyUndoKindSnapshots, hasPendingMiVaultDeletion, isInsideScheduledTimerTick, isUndoHoverPaused,
@@ -652,14 +660,26 @@ export class MenuMijiaWindowsApp {
         : undefined;
     this.isStandaloneSettingsWindow =
       searchParams?.get("window") === "settings" || tauriWinMode === "settings";
+    let initialSettingsAnchor: SettingsAnchor | null = null;
     if (this.isStandaloneSettingsWindow) {
       const rawTab =
         searchParams?.get("tab") ??
         (typeof window !== "undefined"
-          ? (window as unknown as { __MENUMIJIA_SETTINGS_TAB__?: string }).__MENUMIJIA_SETTINGS_TAB__
+          ? (window as unknown as { __MENUMIJIA_SETTINGS_TAB__?: unknown }).__MENUMIJIA_SETTINGS_TAB__
           : undefined);
+      const rawAnchor =
+        searchParams?.get("anchor") ??
+        (typeof window !== "undefined"
+          ? (window as unknown as { __MENUMIJIA_SETTINGS_ANCHOR__?: unknown }).__MENUMIJIA_SETTINGS_ANCHOR__
+          : undefined);
+      initialSettingsAnchor = normalizeSettingsAnchor(rawAnchor);
       this.activeSheet = "settings";
-      this.settingsTab = normalizeSettingsTab(rawTab);
+      this.settingsTab =
+        typeof rawTab === "string" && rawTab.trim() !== ""
+          ? normalizeSettingsTab(rawTab)
+          : initialSettingsAnchor
+            ? resolveSettingsAnchorTab(initialSettingsAnchor, this.availableUpdate !== null)
+            : "general";
       this.root.ownerDocument?.documentElement?.classList.add("is-settings-window");
     }
     const migration = evaluateLegacyOnboardingMigration(this.loadedSettings);
@@ -697,10 +717,22 @@ export class MenuMijiaWindowsApp {
     });
     const onSelectSettingsTab = (event: Event) => {
       if (!this.root.isConnected || !this.isStandaloneSettingsWindow) return;
-      const detail = (event as CustomEvent<{ tab?: unknown } | undefined>).detail;
+      const detail = (event as CustomEvent<{ tab?: unknown; anchor?: unknown } | undefined>).detail;
+      const nextAnchor = normalizeSettingsAnchor(detail?.anchor);
       this.activeSheet = "settings";
-      this.settingsTab = normalizeSettingsTab(detail?.tab);
+      if (typeof detail?.tab === "string" && detail.tab.trim() !== "") {
+        this.settingsTab = normalizeSettingsTab(detail.tab);
+      } else if (nextAnchor) {
+        this.settingsTab = resolveSettingsAnchorTab(nextAnchor, this.availableUpdate !== null);
+      } else {
+        this.settingsTab = "general";
+      }
       this.render();
+      if (nextAnchor) {
+        highlightSettingsAnchor(this.root, nextAnchor);
+      } else {
+        clearSettingsHighlight(this.root);
+      }
     };
     const onCrossWindowSettingsSync = (event?: Event) => {
       if (!this.root.isConnected) return;
@@ -759,6 +791,9 @@ export class MenuMijiaWindowsApp {
     this.bindLifecycleRecovery();
     this.restoreUpdateState();
     this.render();
+    if (this.isStandaloneSettingsWindow && initialSettingsAnchor) {
+      highlightSettingsAnchor(this.root, initialSettingsAnchor);
+    }
 
     if (
       !this.isStandaloneSettingsWindow &&
@@ -924,8 +959,8 @@ export class MenuMijiaWindowsApp {
     return checkForAppUpdate(this, manual);
   }
 
-  public openSettingsSheet(tab: SettingsTab = "general"): void {
-    openSettingsSheet(this, tab);
+  public openSettingsSheet(tab: SettingsTab = "general", anchor?: SettingsAnchor): void {
+    openSettingsSheet(this, tab, anchor);
   }
 
   public openUpdatePage(): void {
@@ -956,6 +991,7 @@ export class MenuMijiaWindowsApp {
   public dispose(): void {
     disposeAppLifecycle(this);
     releaseActivityWindowLifecycle(this);
+    clearSettingsHighlight(this.root);
     this.pipeline.clearTransientState();
     this.pipeline.eventScope.abort();
     this.clearPendingHighRisk();
@@ -1840,6 +1876,9 @@ export class MenuMijiaWindowsApp {
     }
     this.root.dataset.panelTheme = normalizePanelTheme(this.settings.panelTheme);
     this.pipeline.commitRender(this);
+    if (this.activeSheet === "settings") {
+      restoreActiveSettingsHighlight(this.root);
+    }
     syncTimerLoopSchedule(this);
   }
 

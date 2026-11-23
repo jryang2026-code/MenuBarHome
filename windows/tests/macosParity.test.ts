@@ -228,10 +228,34 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     // With __TAURI_INTERNALS__.metadata present, openSettingsSheet delegates to open_settings_window.
     openSettingsSheet(app, "safety");
     assert.equal(
-      invoked.some((c) => c.cmd === "open_settings_window" && c.args?.tab === "safety"),
+      invoked.some((c) => c.cmd === "open_settings_window" && c.args?.tab === "safety" && c.args?.anchor === undefined),
       true,
     );
     assert.equal(app.activeSheet, "none");
+
+    invoked.length = 0;
+    openSettingsSheet(app, "connection", "miCloudRegion");
+    assert.equal(
+      invoked.some(
+        (c) =>
+          c.cmd === "open_settings_window" &&
+          c.args?.tab === "connection" &&
+          c.args?.anchor === "miCloudRegion",
+      ),
+      true,
+    );
+
+    invoked.length = 0;
+    openSettingsSheet(app, "connection", "unknownAnchor" as never);
+    assert.equal(
+      invoked.some(
+        (c) =>
+          c.cmd === "open_settings_window" &&
+          c.args?.tab === "connection" &&
+          c.args?.anchor === undefined,
+      ),
+      true,
+    );
 
     // Cross-window sync reloads persisted localStorage changes written by standalone settings window.
     writeSettingsForStorage({ ...app.settings, panelTheme: "fluent" });
@@ -574,5 +598,84 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
 
     patchCloudPresentation(app);
     assert.equal(element(".cc-subtitle").textContent, expectedSubtitle);
+  });
+
+  it("highlights and expands standalone settings anchor on mount and when already open, ignoring unknown anchors", async () => {
+    const win = window as unknown as Record<string, unknown>;
+    win.__MENUMIJIA_WINDOW_MODE__ = "settings";
+    win.__MENUMIJIA_SETTINGS_TAB__ = "connection";
+    win.__MENUMIJIA_SETTINGS_ANCHOR__ = "miCloudRegion";
+    seedSettings({ connectionMode: "homeAssistant" });
+
+    try {
+      app = new MenuMijiaWindowsApp(element("#app"));
+      assert.equal(app.isStandaloneSettingsWindow, true);
+      assert.equal(app.settingsTab, "connection");
+
+      const regionEl = document.querySelector<HTMLElement>('[data-settings-anchor="miCloudRegion"]');
+      const xiaomiDetails = document.querySelector<HTMLDetailsElement>('details[data-conn-section="xiaomiCloud"]');
+      assert.equal(regionEl?.getAttribute("data-settings-highlighted"), "miCloudRegion");
+      assert.equal(xiaomiDetails?.open, true);
+
+      // Async credential hydration triggers a post-mount re-render; active highlight and expansion stay intact.
+      await setImmediate();
+      assert.equal(
+        document.querySelector<HTMLElement>('[data-settings-anchor="miCloudRegion"]')?.getAttribute("data-settings-highlighted"),
+        "miCloudRegion",
+      );
+      assert.equal(document.querySelector<HTMLDetailsElement>('details[data-conn-section="xiaomiCloud"]')?.open, true);
+
+      // Already open: switches tab and highlights new anchor.
+      window.dispatchEvent(
+        new window.CustomEvent("menumijia:select-settings-tab", {
+          detail: { tab: "general", anchor: "panelTheme" },
+        }),
+      );
+      assert.equal(app.settingsTab, "general");
+      assert.equal(
+        document.querySelector<HTMLElement>('[data-settings-anchor="panelTheme"]')?.getAttribute("data-settings-highlighted"),
+        "panelTheme",
+      );
+      assertMissing(document.querySelector('[data-settings-highlighted="miCloudRegion"]'));
+
+      // Already open with anchor only (no explicit tab): resolves target tab, expands <details>, highlights anchor.
+      window.dispatchEvent(
+        new window.CustomEvent("menumijia:select-settings-tab", {
+          detail: { tab: null, anchor: "miAccount" },
+        }),
+      );
+      assert.equal(app.settingsTab, "connection");
+      assert.equal(
+        document.querySelector<HTMLElement>('[data-settings-anchor="miAccount"]')?.getAttribute("data-settings-highlighted"),
+        "miAccount",
+      );
+      assert.equal(document.querySelector<HTMLDetailsElement>('details[data-conn-section="xiaomiCloud"]')?.open, true);
+
+      // Unknown anchor clears highlight and falls back to normal tab switch.
+      window.dispatchEvent(
+        new window.CustomEvent("menumijia:select-settings-tab", {
+          detail: { tab: "about", anchor: "unknownAnchor" },
+        }),
+      );
+      assert.equal(app.settingsTab, "about");
+      assertMissing(document.querySelector("[data-settings-highlighted]"));
+
+      // Cold mount with unknown anchor behaves like normal mount without highlight.
+      app.dispose();
+      app = null;
+      document.documentElement.classList.remove("is-settings-window");
+      document.body.innerHTML = '<div id="app"></div>';
+      win.__MENUMIJIA_SETTINGS_TAB__ = "safety";
+      win.__MENUMIJIA_SETTINGS_ANCHOR__ = "nonExistentAnchor";
+
+      app = new MenuMijiaWindowsApp(element("#app"));
+      assert.equal(app.settingsTab, "safety");
+      assertMissing(document.querySelector("[data-settings-highlighted]"));
+    } finally {
+      delete win.__MENUMIJIA_WINDOW_MODE__;
+      delete win.__MENUMIJIA_SETTINGS_TAB__;
+      delete win.__MENUMIJIA_SETTINGS_ANCHOR__;
+      document.documentElement.classList.remove("is-settings-window");
+    }
   });
 });

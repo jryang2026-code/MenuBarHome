@@ -662,6 +662,16 @@ const RAW_SPECS: readonly RawAnchorSpec[] = [
   },
 ];
 
+const VALID_SETTINGS_ANCHORS = new Set<SettingsAnchor>(RAW_SPECS.map((spec) => spec.anchor));
+
+export function normalizeSettingsAnchor(raw: unknown): SettingsAnchor | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return VALID_SETTINGS_ANCHORS.has(trimmed as SettingsAnchor)
+    ? (trimmed as SettingsAnchor)
+    : null;
+}
+
 export function settingsSearchEntries(
   availability: SettingsSearchAvailability = UNRESTRICTED_SETTINGS_AVAILABILITY,
   lang: AppLanguage = currentLanguage(),
@@ -861,15 +871,7 @@ export function clearSettingsHighlight(root: HTMLElement): void {
   });
 }
 
-export function highlightSettingsAnchor(
-  root: HTMLElement,
-  anchor: SettingsAnchor,
-  durationMs: number = SETTINGS_HIGHLIGHT_DURATION_MS,
-): HTMLElement | null {
-  clearSettingsHighlight(root);
-  const target = root.querySelector<HTMLElement>(`[data-settings-anchor="${anchor}"]`);
-  if (!target) return null;
-
+function applyHighlightVisuals(target: HTMLElement, anchor: SettingsAnchor): void {
   let ancestorDetails = target.closest("details");
   while (ancestorDetails) {
     ancestorDetails.open = true;
@@ -882,6 +884,27 @@ export function highlightSettingsAnchor(
   target.style.outline = "2px solid rgba(59, 130, 246, 0.85)";
   target.style.outlineOffset = "3px";
   target.style.backgroundColor = "rgba(59, 130, 246, 0.10)";
+}
+
+/** Re-applies active highlight styling/expansion after a settings re-render without resetting timer or focus. */
+export function restoreActiveSettingsHighlight(root: HTMLElement): void {
+  const anchor = highlightStateByRoot.get(root)?.anchor ?? null;
+  if (!anchor) return;
+  const target = root.querySelector<HTMLElement>(`[data-settings-anchor="${anchor}"]`);
+  if (!target) return;
+  applyHighlightVisuals(target, anchor);
+}
+
+export function highlightSettingsAnchor(
+  root: HTMLElement,
+  anchor: SettingsAnchor,
+  durationMs: number = SETTINGS_HIGHLIGHT_DURATION_MS,
+): HTMLElement | null {
+  clearSettingsHighlight(root);
+  const target = root.querySelector<HTMLElement>(`[data-settings-anchor="${anchor}"]`);
+  if (!target) return null;
+
+  applyHighlightVisuals(target, anchor);
 
   if (typeof target.scrollIntoView === "function") {
     try {
