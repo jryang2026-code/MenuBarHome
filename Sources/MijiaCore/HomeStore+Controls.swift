@@ -2360,11 +2360,22 @@ extension HomeStore {
             }
             return .hls(url)
         }
-        return try await provider.resolveCameraStream(
-            for: device,
-            quality: cameraStreamQuality(for: deviceId),
-            channel: channel
-        )
+        let quality = cameraStreamQuality(for: deviceId)
+        if let dual = provider as? DualSourceHomeProvider {
+            var explicitlyDisabledBackends: Set<HomeBackend> = []
+            if explicitlyDisabledConnections.contains(.homeAssistant)
+                || explicitlyDisabledScopes.contains(homeAssistantScopeIdentifier) {
+                explicitlyDisabledBackends.insert(.homeAssistant)
+            }
+            if explicitlyDisabledConnections.contains(.xiaomiCloud)
+                || (!miAccounts.isEmpty && miAccounts.allSatisfy { explicitlyDisabledScopes.contains($0.id) }) {
+                explicitlyDisabledBackends.insert(.xiaomiCloud)
+            }
+            return try await dual.resolveCameraStream(
+                for: device, quality: quality, channel: channel, explicitlyDisabledBackends: explicitlyDisabledBackends
+            )
+        }
+        return try await provider.resolveCameraStream(for: device, quality: quality, channel: channel)
     }
 
     public func stopCameraStream(for deviceId: String) async {

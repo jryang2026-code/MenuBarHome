@@ -244,6 +244,112 @@ struct DualSourceFallbackGraceTests {
         )
     }
 
+    @Test(arguments: [HomeBackend.homeAssistant, .xiaomiCloud])
+    func attachingToDisabledBackendRequiresCurrentGeneration(backend: HomeBackend) async throws {
+        let provider = DualSourceHomeProvider(homeAssistant: nil, xiaomiCloud: nil)
+        let entityID = backend == .homeAssistant ? "switch.test" : "miot:\(Self.did):2"
+        let command = DeviceCommand.setSwitch(entityId: entityID, isOn: true)
+        let initial = MockHomeProvider()
+        await provider.setSourceProvider(initial, for: backend)
+        try await provider.execute(command)
+        #expect(await initial.executedCommands == [command])
+
+        let generationA = provider.markBackendDisabled(backend)
+        let generationB = provider.markBackendDisabled(backend)
+        let unversioned = MockHomeProvider()
+        await provider.setSourceProvider(unversioned, for: backend)
+        await #expect(throws: HomeProviderError.backendNotConfigured(backend)) {
+            try await provider.execute(command)
+        }
+        #expect(await unversioned.executedCommands.isEmpty)
+
+        let stale = MockHomeProvider()
+        await provider.setSourceProvider(stale, for: backend, expectedDisableGeneration: generationA)
+        await #expect(throws: HomeProviderError.backendNotConfigured(backend)) {
+            try await provider.execute(command)
+        }
+        #expect(await stale.executedCommands.isEmpty)
+
+        let current = MockHomeProvider()
+        await provider.setSourceProvider(current, for: backend, expectedDisableGeneration: generationB)
+        try await provider.execute(command)
+        #expect(await current.executedCommands == [command])
+        await provider.shutdown()
+    }
+
+    @Test(arguments: [
+        (AppLanguage.zhHans, "Home Assistant 未配置", "Home Assistant 已停用", "米家云端未配置", "米家已停用"),
+        (.zhHant, "Home Assistant 未配置", "Home Assistant 已停用", "米家雲端未配置", "米家已停用"),
+        (.en, "Home Assistant is not configured", "Home Assistant is turned off",
+         "Xiaomi Cloud is not configured", "Xiaomi Home is turned off")
+    ])
+    func cameraRejectionNamesMissingOrDisabledSource(
+        expected: (AppLanguage, String, String, String, String)
+    ) async {
+        let (language, haMissing, haDisabled, miMissing, miDisabled) = expected
+        await L10n.$overrideLanguage.withValue(language) {
+            let ha = MockHomeProvider()
+            let mi = MockHomeProvider()
+            let haOnly = DualSourceHomeProvider(homeAssistant: ha, xiaomiCloud: nil)
+            let miOnly = DualSourceHomeProvider(homeAssistant: nil, xiaomiCloud: mi)
+            let haCamera = camera(id: Self.haID, entity: "camera.door", stream: "camera.door")
+            let miCamera = camera(id: Self.did, entity: "miot:\(Self.did):2", stream: nil)
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, haMissing)) {
+                try await miOnly.resolveCameraStream(for: haCamera)
+            }
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, miMissing)) {
+                try await haOnly.resolveCameraStream(for: miCamera)
+            }
+            #expect(await ha.requestedCameraQualities.isEmpty)
+            #expect(await mi.requestedCameraQualities.isEmpty)
+            await haOnly.shutdown()
+            await miOnly.shutdown()
+
+            let disabledHA = MockHomeProvider()
+            let disabledMi = MockHomeProvider()
+            let dual = DualSourceHomeProvider(homeAssistant: disabledHA, xiaomiCloud: disabledMi)
+            dual.markBackendDisabled(.homeAssistant)
+            dual.markBackendDisabled(.xiaomiCloud)
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, haMissing)) {
+                try await dual.resolveCameraStream(for: haCamera)
+            }
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, miMissing)) {
+                try await dual.resolveCameraStream(for: miCamera)
+            }
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, haDisabled)) {
+                try await dual.resolveCameraStream(
+                    for: haCamera, quality: .auto, channel: 0, explicitlyDisabledBackends: [.homeAssistant]
+                )
+            }
+            await #expect(throws: HomeProviderError.serviceCallFailed(501, miDisabled)) {
+                try await dual.resolveCameraStream(
+                    for: miCamera, quality: .auto, channel: 0, explicitlyDisabledBackends: [.xiaomiCloud]
+                )
+            }
+            #expect(await disabledHA.requestedCameraQualities.isEmpty)
+            #expect(await disabledMi.requestedCameraQualities.isEmpty)
+            await dual.shutdown()
+        }
+    }
+
+    @Test
+    func rejectedUnversionedAttachmentLeavesSnapshotCleanupToDetach() async throws {
+        try await withTeardown { teardown in
+            let rig = await makeRig(teardown)
+            await waitForBackend(rig, cardID: Self.haID, .homeAssistant)
+            let card = try #require(await rig.collector.latestHome?.devices.first { $0.id == Self.haID })
+            _ = try await rig.provider.resolveCameraStream(for: card)
+
+            rig.provider.markBackendDisabled(.homeAssistant)
+            await rig.provider.setSourceProvider(MockHomeProvider(), for: .homeAssistant)
+            #expect(await rig.haMock.stoppedCameraIDs.isEmpty)
+
+            await rig.provider.setSourceProvider(nil, for: .homeAssistant)
+            #expect(await rig.haMock.stoppedCameraIDs == [Self.haID])
+            await waitForBackend(rig, cardID: Self.haID, .xiaomiCloud)
+        }
+    }
+
     @Test("Transient HA or Mi blips hold routing and live stream within grace, flip and close stream past grace, and skip grace on invalidation")
     func haAndMiTransientBlipsAndRealOutages() async throws {
         #expect(DualSourceHomeProvider.sourceFallbackGrace > 0 && DualSourceHomeProvider.sourceFallbackGrace <= 60)
