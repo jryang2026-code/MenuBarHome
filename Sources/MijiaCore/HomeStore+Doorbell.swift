@@ -5,6 +5,11 @@ extension HomeStore {
     public static let doorbellPopupSecondsRange = 15...300
     static let recentDoorbellRingLimit = 20
 
+    /// A press also posts a system notification once the user asked for doorbell reminders at all
+    /// (#10). Both switches default off, so the default stays exactly as before: a home that never
+    /// turned on the chime or the popup is not notified about rings either.
+    public var wantsDoorbellNotification: Bool { doorbellChime || doorbellAutoPopup }
+
     /// Records every press once. The chime and the camera window are separate choices: the chime
     /// plays whenever it is on; the camera opens only when that is on, the screen-lock rule allows
     /// it, and the ringing device has an online camera card (#308).
@@ -13,6 +18,14 @@ extension HomeStore {
         recentDoorbellRings.insert(ring, at: 0)
         if recentDoorbellRings.count > Self.recentDoorbellRingLimit {
             recentDoorbellRings.removeLast(recentDoorbellRings.count - Self.recentDoorbellRingLimit)
+        }
+        if wantsDoorbellNotification {
+            // Offline cameras and a locked screen still get the banner: it is not a control, and
+            // the visitor is at the door either way.
+            onDoorbellNotification?(DoorbellNotification(
+                ring: ring,
+                deviceName: devices.first(where: { $0.id == ring.deviceId })?.name
+            ))
         }
         var cameraId: String?
         if doorbellAutoPopup, !isControlBlockedByScreenLock,

@@ -293,6 +293,24 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// The still frame a doorbell notification may attach (#10).
+    ///
+    /// Only the camera this window is already pulling qualifies: `frame.jpeg` then takes the next
+    /// frame from go2rtc's live producer. Asking for a stream by name would make the bridge open a
+    /// new P2P session, which a notification must never do. Home Assistant cards are served by
+    /// their own snapshot proxy instead, handled by the notification's thumbnail fetcher.
+    func runningFrameJPEGURL(forDeviceId deviceId: String) -> URL? {
+        guard activeDeviceId == deviceId, let streamSource else { return nil }
+        switch streamSource {
+        case .liveMP4(let url, _, _), .mjpeg(let url), .hls(let url):
+            return Go2RTCFrameEndpoint.frameJPEGURL(fromPlaybackURL: url)
+        case .snapshot(let url):
+            return url
+        case .demo:
+            return nil
+        }
+    }
+
     /// Plays the chime and opens the ringing doorbell's camera at the top right (#308). A camera
     /// view or picture-in-picture session already on screen is left alone; a window the ring opened
     /// closes after the user's delay unless they reopened it, switched camera or went picture-in-picture.
