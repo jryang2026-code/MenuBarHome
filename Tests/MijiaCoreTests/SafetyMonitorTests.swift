@@ -41,6 +41,39 @@ struct SafetyMonitorTests {
         )
     }
 
+    @Test func timedAlertsWakeAtTheirThresholdWithoutAnotherSnapshot() {
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        let climate = SmartDevice(
+            id: "ac", name: "空调", roomId: "r", roomName: "书房", model: "ac", isOnline: true,
+            kind: .climate(ClimateSpec(
+                entityId: "climate.ac", isOn: true, hvacMode: "cool",
+                availableModes: ["off", "cool"], targetTemperature: 26
+            ))
+        )
+        let devices = [sensor(battery: 9), plug(on: true, watts: 900), climate]
+        var monitor = SafetyMonitor(defaults: defaults())
+        #expect(monitor.nextTimedCheck(devices: devices, now: start) == start)
+        #expect(monitor.evaluate(devices: devices, favorites: [], sensorPolicy: Self.policy, now: start).map(\.id)
+            == ["battery:door"])
+
+        let plugDue = start + 45 * 60
+        #expect(monitor.nextTimedCheck(devices: devices, now: start) == plugDue)
+        #expect(monitor.evaluate(devices: devices, favorites: [], sensorPolicy: Self.policy, now: plugDue).map(\.id)
+            == ["longrun:heater"])
+
+        let climateDue = start + 4 * 3600
+        #expect(monitor.nextTimedCheck(devices: devices, now: plugDue) == climateDue)
+        #expect(monitor.evaluate(devices: devices, favorites: [], sensorPolicy: Self.policy, now: climateDue).map(\.id)
+            == ["longrun:ac"])
+
+        let batteryDue = start + 86_400
+        #expect(monitor.nextTimedCheck(devices: devices, now: climateDue) == batteryDue)
+        #expect(monitor.evaluate(devices: devices, favorites: [], sensorPolicy: Self.policy, now: batteryDue).map(\.id)
+            == ["battery:door"])
+        #expect(monitor.nextTimedCheck(devices: [plug(on: true, watts: 900)], now: batteryDue) == nil)
+        #expect(monitor.nextTimedCheck(devices: [sensor(battery: 9, stale: true)], now: batteryDue) == nil)
+    }
+
     @Test("Low battery alerts once per 24 h, and the cooldown survives a relaunch")
     func lowBatteryCooldown() {
         let store = defaults()

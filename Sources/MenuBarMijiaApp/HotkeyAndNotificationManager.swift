@@ -2,6 +2,7 @@ import AppKit
 import Carbon
 import CoreGraphics
 import Foundation
+import Observation
 import Security
 import UserNotifications
 import MijiaCore
@@ -26,8 +27,10 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
     private var localFlagsMonitor: Any?
     private var windowBecomeKeyObserver: NSObjectProtocol?
     private var applicationBecomeActiveObserver: NSObjectProtocol?
-    private var defaultsChangeObserver: NSObjectProtocol?
-    private var safetyTimerTask: Task<Void, Never>?
+    private var safetyWakeObservers: [(NotificationCenter, NSObjectProtocol)] = []
+    private var safetyWakeTask: Task<Void, Never>?
+    private var automaticUpdateTask: Task<Void, Never>?
+    private var automaticUpdateRetryAt: Date?
     /// The alert and the connection scope it was delivered in. Home Assistant entity ids repeat across
     /// servers (`light.heater`), so the device id alone does not identify the home the alert was about.
     private struct PendingAlert {
@@ -82,22 +85,12 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         MenuBarPanelController.shared.install(with: store)
         setupLocalKeyboardMonitors()
         setupNotificationsIfBundled()
-        if let defaultsChangeObserver {
-            NotificationCenter.default.removeObserver(defaultsChangeObserver)
-        }
-        defaultsChangeObserver = NotificationCenter.default.addObserver(
-            forName: UserDefaults.didChangeNotification,
-            object: store.userDefaults,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                self?.syncSafetyTimer()
-            }
-        }
-        syncSafetyTimer()
+        observeSafetyWakeEvents()
+        observeSafetyWakeInputs(store)
         // The status item exists as soon as `install` returns, but the first launch has no window to
         // host yet; give SwiftUI one run-loop turn before an onboarding panel is requested.
         Task { @MainActor [weak self] in
+            self?.runSafetyWake()
             try? await Task.sleep(for: .milliseconds(350))
             guard let self, let store = self.store, store.shouldShowOnboarding else { return }
             self.ensureMenuBarExtraWindowVisible()
@@ -733,42 +726,100 @@ public final class HotkeyAndNotificationManager: NSObject, @preconcurrency UNUse
         }
     }
 
-    private func shouldRunSafetyTimer(store: HomeStore) -> Bool {
-        store.enableSafetyAlerts
-            || store.enableWeeklyHealthReport
-            || store.automaticallyChecksForUpdates
+    private func observeSafetyWakeEvents() {
+        guard safetyWakeObservers.isEmpty else { return }
+        let workspace = NSWorkspace.shared.notificationCenter
+        let sources: [(NotificationCenter, Notification.Name, SafetyWakeEvent)] = [
+            (workspace, NSWorkspace.didWakeNotification, .systemWake),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked"), .screenUnlocked),
+            (.default, .NSSystemClockDidChange, .clockChanged),
+            (.default, .NSSystemTimeZoneDidChange, .timeZoneChanged),
+        ]
+        for (center, name, event) in sources {
+            let token = center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.scheduleSafetyWake(after: event)
+                }
+            }
+            safetyWakeObservers.append((center, token))
+        }
     }
 
-    private func syncSafetyTimer() {
-        guard let store, shouldRunSafetyTimer(store: store) else {
-            safetyTimerTask?.cancel()
-            safetyTimerTask = nil
+    private func observeSafetyWakeInputs(_ store: HomeStore) {
+        withObservationTracking {
+            _ = store.nextSafetyAlertCheck(now: Date())
+            if store.enableSafetyAlerts {
+                _ = store.favoriteDeviceIds
+                _ = store.sensorAlertPreferences
+                _ = store.sensorAlertsOnlyWhenAway
+            }
+            _ = store.enableWeeklyHealthReport
+            _ = store.nextAutomaticUpdateCheck(now: Date())
+            _ = store.scheduledCommands
+            _ = store.pollingContext.panelVisible
+        } onChange: { [weak self, weak store] in
+            Task { @MainActor in
+                guard let self, let store, self.store === store else { return }
+                self.runSafetyWake()
+                self.observeSafetyWakeInputs(store)
+            }
+        }
+    }
+
+    private func runSafetyWake(after event: SafetyWakeEvent? = nil) {
+        guard let store else { return }
+        let now = Date()
+        if let event {
+            if event == .clockChanged { automaticUpdateRetryAt = nil }
+            store.reevaluateScheduledCommands(after: event)
+        }
+        for alert in store.evaluateSafetyAlerts(now: now) {
+            deliverNotification(for: alert)
+        }
+        if let report = store.takeDueWeeklyHealthReport(now: now) {
+            deliverWeeklyHealthReport(report)
+        }
+        if nextUpdateWake(store: store, now: now) == now {
+            automaticUpdateTask = Task { [weak self, weak store] in
+                await store?.checkForUpdatesIfNeeded()
+                guard let self else { return }
+                self.automaticUpdateTask = nil
+                // A failed automatic check leaves the last successful date unchanged.
+                self.automaticUpdateRetryAt = Date().addingTimeInterval(60)
+                self.scheduleSafetyWake()
+            }
+        }
+        scheduleSafetyWake()
+    }
+
+    private func nextUpdateWake(store: HomeStore, now: Date) -> Date? {
+        guard automaticUpdateTask == nil, let due = store.nextAutomaticUpdateCheck(now: now) else { return nil }
+        return max(due, automaticUpdateRetryAt ?? now)
+    }
+
+    private func scheduleSafetyWake(after event: SafetyWakeEvent? = nil) {
+        safetyWakeTask?.cancel()
+        safetyWakeTask = nil
+        guard let store else { return }
+        let now = Date()
+        let alertCheck = store.nextSafetyAlertCheck(now: now)
+        guard let wake = nextSafetyWake(
+            now: now, alertCheck: alertCheck,
+            weeklyReport: store.nextWeeklyHealthReportCheck(now: now),
+            updateCheck: nextUpdateWake(store: store, now: now), event: event
+        ) else { return }
+        if wake == now, let event {
+            runSafetyWake(after: event)
             return
         }
-        guard safetyTimerTask == nil else { return }
-        startSafetyTimer()
-    }
-
-    private func startSafetyTimer() {
-        safetyTimerTask?.cancel()
-        safetyTimerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(60))
-                guard !Task.isCancelled, let self, let store = self.store else { break }
-                guard self.shouldRunSafetyTimer(store: store) else {
-                    self.safetyTimerTask = nil
-                    break
-                }
-                if store.enableSafetyAlerts {
-                    for alert in store.evaluateSafetyAlerts(now: Date()) {
-                        self.deliverNotification(for: alert)
-                    }
-                }
-                if let report = store.takeDueWeeklyHealthReport() {
-                    self.deliverWeeklyHealthReport(report)
-                }
-                await store.checkForUpdatesIfNeeded()
-            }
+        // Coalesce housekeeping without moving a safety deadline past its threshold.
+        let tolerance = min(1, max(0, alertCheck?.timeIntervalSince(wake) ?? 1))
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(wake.timeIntervalSince(now)))
+        safetyWakeTask = Task { [weak self] in
+            do { try await clock.sleep(until: deadline, tolerance: .seconds(tolerance)) } catch { return }
+            guard !Task.isCancelled else { return }
+            self?.runSafetyWake()
         }
     }
 

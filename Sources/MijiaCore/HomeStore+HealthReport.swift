@@ -11,6 +11,12 @@ extension HomeStore {
         )
     }
 
+    public func nextWeeklyHealthReportCheck(now: Date, calendar: Calendar = .current) -> Date? {
+        guard enableWeeklyHealthReport else { return nil }
+        let last = userDefaults.object(forKey: Self.weeklyHealthReportDeliveredAtKey) as? Date
+        return WeeklyHealthReportSchedule.nextCheck(now: now, lastDeliveredAt: last, calendar: calendar)
+    }
+
     /// The report to notify about now, if the weekly report is on and this week's has not gone out.
     /// Taking it marks the week delivered.
     public func takeDueWeeklyHealthReport(now: Date = Date(), calendar: Calendar = .current) -> WeeklyHealthReport? {

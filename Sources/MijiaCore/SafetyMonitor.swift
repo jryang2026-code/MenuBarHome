@@ -10,6 +10,7 @@ struct SafetyMonitor {
     /// Plugs without a power reading (router, fridge, fish tank) never trigger it; 300 W keeps
     /// low-draw infrastructure quiet while a coffee machine or heater still alerts after 45 min.
     static let longRunningPlugMinimumWatts: Double = 300
+    private static let lowBatteryCooldown: TimeInterval = 86_400
     static let lowBatteryAlertedAtKey = "safety_low_battery_alerted_at_v1"
     static let sensorEdgeKey = "safety_sensor_edge_v1"
 
@@ -30,6 +31,39 @@ struct SafetyMonitor {
             if let number = value as? NSNumber { edge[key] = number.boolValue }
         }
         self.sensorEdge = edge
+    }
+
+    func nextTimedCheck(devices: [SmartDevice], now: Date) -> Date? {
+        var next: Date?
+        for device in devices where !device.telemetryStale {
+            if Self.lowBatteryLevel(device) != nil {
+                let due = lowBatteryAlertedAt[device.id]?.addingTimeInterval(Self.lowBatteryCooldown) ?? now
+                next = min(next ?? due, due)
+            }
+            if device.isActiveOn, !longRunAlertedForSession.contains(device.id),
+               let threshold = Self.longRunThreshold(device) {
+                let due = (activeSinceByDeviceId[device.id] ?? now).addingTimeInterval(threshold)
+                next = min(next ?? due, due)
+            }
+        }
+        return next
+    }
+
+    private static func lowBatteryLevel(_ device: SmartDevice) -> Int? {
+        guard device.isOnline, case .sensor(let sensor) = device.kind,
+              let level = sensor.battery, level > 0, level < 15 else { return nil }
+        return level
+    }
+
+    private static func longRunThreshold(_ device: SmartDevice) -> TimeInterval? {
+        switch device.kind {
+        case .plug(let plug) where plug.powerWritable && (plug.powerWatts ?? 0) > longRunningPlugMinimumWatts:
+            return 45 * 60
+        case .climate:
+            return 4 * 3600
+        default:
+            return nil
+        }
     }
 
     /// The alerts this snapshot raises. Remembers what it alerted so the next call does not repeat it.
@@ -66,9 +100,9 @@ struct SafetyMonitor {
             }
 
             // 2. Low battery check (<15% for sensors/locks, 24h cooldown)
-            if dev.isOnline, case .sensor(let s) = dev.kind, let bat = s.battery, bat > 0 && bat < 15 {
-                let lastAlert = lowBatteryAlertedAt[dev.id]
-                if lastAlert == nil || now.timeIntervalSince(lastAlert!) >= 86_400 {
+            if let bat = Self.lowBatteryLevel(dev) {
+                let due = lowBatteryAlertedAt[dev.id]?.addingTimeInterval(Self.lowBatteryCooldown) ?? now
+                if now >= due {
                     lowBatteryAlertedAt[dev.id] = now
                     persistLowBatteryAlertedAt()
                     emitted.append(
@@ -91,16 +125,15 @@ struct SafetyMonitor {
                     activeSinceByDeviceId[dev.id] = now
                     return now
                 }()
-                let elapsed = now.timeIntervalSince(startedAt)
+                guard !longRunAlertedForSession.contains(dev.id),
+                      let threshold = Self.longRunThreshold(dev),
+                      now >= startedAt.addingTimeInterval(threshold) else { continue }
 
                 let canTurnOff = !unavailableActionIds.contains(dev.id)
                 switch dev.kind {
                 // A read-only plug (unverified spec, mains breaker #265) gets no reminder: its
                 // notification button would send the very switch command the card refuses.
-                case .plug(let s) where s.powerWritable
-                    && elapsed >= 45 * 60
-                    && (s.powerWatts ?? 0) > Self.longRunningPlugMinimumWatts
-                    && !longRunAlertedForSession.contains(dev.id):
+                case .plug(let s):
                     longRunAlertedForSession.insert(dev.id)
                     let watts = DeviceSynthesizer.roundedInt(s.powerWatts ?? 0) ?? 0
                     emitted.append(
@@ -118,7 +151,7 @@ struct SafetyMonitor {
                             turnOffCommand: canTurnOff ? .setSwitch(entityId: s.switchEntityId, isOn: false) : nil
                         )
                     )
-                case .climate(let s) where elapsed >= 4 * 3600 && !longRunAlertedForSession.contains(dev.id):
+                case .climate(let s):
                     longRunAlertedForSession.insert(dev.id)
                     emitted.append(
                         SafetyAlert(

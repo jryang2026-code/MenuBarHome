@@ -18,18 +18,20 @@ extension HomeStore {
         }
     }
 
-    public func checkForUpdatesIfNeeded(now: Date = Date()) async {
-        guard automaticallyChecksForUpdates else { return }
+    public func nextAutomaticUpdateCheck(now: Date) -> Date? {
+        guard automaticallyChecksForUpdates, homeBackend != .demo, !shouldSuppressBackgroundNetworkWork else {
+            return nil
+        }
         switch updateState {
         case .idle, .upToDate:
-            break
+            return max(now, lastUpdateCheckDate?.addingTimeInterval(Self.automaticUpdateCheckInterval) ?? now)
         default:
-            return
+            return nil
         }
-        if let lastCheck = lastUpdateCheckDate,
-           now.timeIntervalSince(lastCheck) < Self.automaticUpdateCheckInterval {
-            return
-        }
+    }
+
+    public func checkForUpdatesIfNeeded(now: Date = Date()) async {
+        guard nextAutomaticUpdateCheck(now: now) == now else { return }
         await performUpdateCheck(userInitiated: false, now: now)
     }
 

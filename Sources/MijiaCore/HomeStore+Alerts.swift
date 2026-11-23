@@ -40,6 +40,11 @@ extension HomeStore {
         return SensorAlertKind.allCases.contains { isSensorAlertEnabled($0) }
     }
 
+    public func nextSafetyAlertCheck(now: Date) -> Date? {
+        guard enableSafetyAlerts else { return nil }
+        return safetyMonitor.nextTimedCheck(devices: devices + typeHiddenSafetyDevices, now: now)
+    }
+
     @discardableResult
     public func evaluateSafetyAlerts(now: Date = Date()) -> [SafetyAlert] {
         guard enableSafetyAlerts else { return [] }
@@ -60,7 +65,7 @@ extension HomeStore {
             now: now
         )
         // Every evaluation advances `SafetyMonitor` session state (`longRunAlertedForSession`,
-        // cooldowns), so both snapshot evaluation and the periodic 60 s timer record here.
+        // cooldowns), so both snapshots and scheduled checks record here.
         recordSafetyAlerts(alerts, now: now)
         return alerts
     }
