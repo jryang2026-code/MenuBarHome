@@ -183,7 +183,9 @@ extension HomeStore {
                 modalContext,
                 requireOnline: true,
                 showOfflineToast: true
-            ), resolved.isPrimaryToggleable else {
+            ) else { return nil }
+            guard resolved.isPrimaryToggleable else {
+                showPostModalDeviceChangedToast()
                 return nil
             }
             if let promptOperation,
@@ -281,7 +283,11 @@ extension HomeStore {
             let latestPos = lastCoverPositions[current.id] ?? s.reportedPositionPercent ?? s.positionPercent
             _ = activeCoverOrigin(for: current.id, fallback: latestPos)
             guard let action = (shouldOpen ? s.openDescription : s.closeDescription) else {
-                if !didPresentModal { toggleExpanded(current.id) }
+                if didPresentModal {
+                    showPostModalDeviceChangedToast()
+                } else {
+                    toggleExpanded(current.id)
+                }
                 return nil
             }
             if let latestPos {
@@ -305,7 +311,11 @@ extension HomeStore {
                   control.id == cid,
                   control.target == expectedTarget,
                   case .property(let entityId, let piid) = control.target else {
-                if !didPresentModal { toggleExpanded(current.id) }
+                if didPresentModal {
+                    showPostModalDeviceChangedToast()
+                } else {
+                    toggleExpanded(current.id)
+                }
                 return nil
             }
             s.isOn = isOn
@@ -326,6 +336,7 @@ extension HomeStore {
             command = .setSwitch(entityId: s.entityId, isOn: open)
 
         default:
+            if didPresentModal { showPostModalDeviceChangedToast() }
             return nil
         }
 
@@ -637,10 +648,15 @@ extension HomeStore {
               case .climate(let initialSpec) = initial.kind,
               initialSpec.temperatureWritable else { return }
         let nextTemp = max(initialSpec.minTemp, min(initialSpec.maxTemp, initialSpec.targetTemperature + delta))
-        guard let confirmed = confirmAndResolveManualControl(.targetTemperature(nextTemp), for: initial),
-              case .climate(var s) = confirmed.device.kind,
+        guard let confirmed = confirmAndResolveManualControl(
+            .targetTemperature(nextTemp), for: initial, requireOnline: true, showOfflineToast: true
+        ) else { return }
+        guard case .climate(var s) = confirmed.device.kind,
               s.entityId == initialSpec.entityId,
-              s.temperatureWritable else { return }
+              s.temperatureWritable else {
+            if confirmed.didPresentModal { showPostModalDeviceChangedToast() }
+            return
+        }
         let previous = confirmed.device
         var updated = previous
         s.targetTemperature = nextTemp
@@ -968,7 +984,9 @@ extension HomeStore {
             didPresentModal = ManualControlPolicy.requiresConfirmation(motorOperation, for: check)
             guard allowManualControl(motorOperation, for: check) else { return }
         }
-        guard let resolvedBeforeCancel = resolvePostModalDevice(modalContext) else { return }
+        guard let resolvedBeforeCancel = resolvePostModalDevice(
+            modalContext, requireOnline: didPresentModal, showOfflineToast: true
+        ) else { return }
         if let motorOperation,
            rejectChangedPostModalHazard(
                motorOperation,
@@ -992,9 +1010,13 @@ extension HomeStore {
                 dropSupersededCoverLock(deviceId: deviceId, restoring: reported)
             }
         }
-        guard let previous = resolvePostModalDevice(modalContext),
-              case .cover(var s) = previous.kind,
-              s.entityId == checkSpec.entityId else { return }
+        guard let previous = resolvePostModalDevice(
+            modalContext, requireOnline: didPresentModal, showOfflineToast: true
+        ) else { return }
+        guard case .cover(var s) = previous.kind, s.entityId == checkSpec.entityId else {
+            if didPresentModal { showPostModalDeviceChangedToast() }
+            return
+        }
         let priorCoverOrigin = coverCommandOrigins[deviceId]
         let latestPos = lastCoverPositions[deviceId] ?? s.reportedPositionPercent ?? s.positionPercent
         let origin = activeCoverOrigin(for: deviceId, fallback: s.positionPercent)
@@ -1119,10 +1141,15 @@ extension HomeStore {
             answeredPrompt = true
         }
 
-        guard let previous = answeredPrompt ? resolvePostModalDevice(modalContext) : initial,
-              case .cover(var s) = previous.kind,
+        guard let previous = answeredPrompt
+            ? resolvePostModalDevice(modalContext, requireOnline: true, showOfflineToast: true)
+            : initial else { return }
+        guard case .cover(var s) = previous.kind,
               s.entityId == initialSpec.entityId,
-              s.positionWritable else { return }
+              s.positionWritable else {
+            if answeredPrompt { showPostModalDeviceChangedToast() }
+            return
+        }
         let priorCoverOrigin = coverCommandOrigins[deviceId]
         let baselineCover: CoverSpec? = if case .cover(let baseSpec) = debouncedWrites[key]?.origin.kind {
             baseSpec

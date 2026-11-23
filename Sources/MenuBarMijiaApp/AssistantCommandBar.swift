@@ -593,6 +593,7 @@ struct AssistantResponseArea: View {
         let _ = store.effectiveLanguage
         VStack(alignment: .leading, spacing: 5) {
             if let reply = replyLine {
+                let spansParagraphs = reply.isError && reply.text.contains("\n")
                 HStack(alignment: .firstTextBaseline, spacing: 5) {
                     Image(systemName: reply.isChoice ? "hand.tap.fill" : (reply.isError ? "xmark.octagon.fill" : "checkmark.circle.fill"))
                         .foregroundStyle(reply.isChoice ? Color.orange : (reply.isError ? Color.red : Color.green))
@@ -601,7 +602,8 @@ struct AssistantResponseArea: View {
                     }
                     Text(reply.text)
                         .foregroundStyle(.primary.opacity(0.85))
-                        .lineLimit(2)
+                        .lineLimit(spansParagraphs ? nil : 2)
+                        .fixedSize(horizontal: false, vertical: spansParagraphs)
                 }
                 .font(.system(size: DesignTokens.TypeSize.caption, weight: .medium))
                 .padding(.horizontal, 4)

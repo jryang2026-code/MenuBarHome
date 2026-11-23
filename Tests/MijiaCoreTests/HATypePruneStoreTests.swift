@@ -108,8 +108,12 @@ struct HATypePruneStoreTests {
             restore: [.setSwitch(entityId: "switch.balcony_heater", isOn: true)],
             previous: [Self.hiddenPlug], at: Date(), habitReceipt: nil
         )
-        _ = await store.runAssistantCommand("撤销")
-        #expect(store.assistantState == .failed(closed))
+        await L10n.$overrideLanguage.withValue(.zhHant) {
+            #expect(UndoPhrase.isUndo("撤銷"))
+            _ = await store.runAssistantCommand("撤銷")
+            #expect(store.assistantState == .failed("有 1 項未能復原。\n請在設定中重新開啟「插座與開關」裝置類型。\n接著再說或輸入「撤銷」。"))
+            #expect(store.toastNotice?.message == "有 1 項未能復原。\n請在設定中重新開啟「插座與開關」裝置類型。\n接著再說或輸入「撤銷」。")
+        }
         // Companion (Raycast).
         let raycast = await store.executeRaycastPower(deviceId: Self.hiddenPlug.id, isOn: false)
         #expect(raycast.isError && raycast.message == closed)

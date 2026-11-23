@@ -188,6 +188,104 @@ struct ModalConfirmationStateTests {
         #expect(wallStore.devices.first?.name == "玄关左键" && wallStore.devices.first?.roomName == "门厅")
     }
 
+    enum PostModalChange: CaseIterable {
+        case primaryType, primaryWritable, coverPositionEntity, coverMotorEntity
+        case coverPositionOffline, coverMotorOffline, climateOffline
+    }
+
+    @Test(arguments: PostModalChange.allCases, [AppLanguage.zhHans, .zhHant, .en])
+    func changedCardCancelsWithFeedback(_ change: PostModalChange, language: AppLanguage) async throws {
+        try await L10n.$overrideLanguage.withValue(language) {
+            let climate = change == .climateOffline
+            let initial = climate ? Self.heaterClimate(isOn: true, hvacMode: "heat") : Self.garageDoor()
+            var updated = initial
+            switch change {
+            case .primaryType:
+                updated.kind = .plug(PlugSpec(switchEntityId: "switch.new", isOn: false))
+            case .primaryWritable:
+                var spec = try #require(initial.coverSpec)
+                spec.openDescription = nil
+                updated.kind = .cover(spec)
+            case .coverPositionEntity, .coverMotorEntity:
+                var spec = try #require(initial.coverSpec)
+                spec.entityId = "cover.replaced"
+                updated.kind = .cover(spec)
+            case .coverPositionOffline, .coverMotorOffline, .climateOffline:
+                updated.isOnline = false
+            }
+
+            let (store, provider) = try await Self.makeStore(SynthesizedHome(devices: [initial]))
+            var prompts = 0
+            store.manualControlConfirmationHandler = { _ in
+                prompts += 1
+                store.handleProviderEvent(.snapshotUpdated(SynthesizedHome(devices: [updated])))
+                return true
+            }
+            switch change {
+            case .primaryType, .primaryWritable:
+                #expect(store.togglePrimary(initial) == nil)
+            case .coverPositionEntity, .coverPositionOffline:
+                store.setCoverPosition(initial.id, percent: 50)
+            case .coverMotorEntity, .coverMotorOffline:
+                store.setCoverMotor(initial.id, description: "Open")
+            case .climateOffline:
+                store.stepClimateTemperature(initial.id, delta: 2)
+            }
+
+            let expected = if updated.isOnline {
+                switch language {
+                case .zhHans: "设备已变化，操作已取消"
+                case .zhHant: "裝置已變更，操作已取消"
+                default: "The device changed. The action was cancelled."
+                }
+            } else {
+                switch language {
+                case .zhHans: "\(initial.name) 当前离线（可能断电）"
+                case .zhHant: "\(initial.name) 當前離線（可能斷電）"
+                default: "\(initial.name) is offline (unplugged)"
+                }
+            }
+            #expect(prompts == 1)
+            #expect(store.toastNotice?.isError == true && store.toastNotice?.message == expected)
+            #expect(store.manualWriteSessions.isEmpty && store.debounceTasks.isEmpty)
+            #expect(store.undoBanner == nil && store.coverCommandOrigins.isEmpty)
+            #expect(await provider.executedCommands.isEmpty)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func undoConfirmationHoldsOnlyTheOriginalBanner(replaceBanner: Bool) async throws {
+        let device = Self.wallSwitch()
+        let (store, provider) = try await Self.makeStore(SynthesizedHome(devices: [device]))
+        let restore = DeviceCommand.setSwitch(entityId: "switch.wall-1", isOn: true)
+        store.scheduleUndoBanner(title: "Original", restoreCommands: [restore], previousDevices: [device], deviceCount: 1)
+        let originalID = try #require(store.undoBanner?.id)
+        let originalTimer = try #require(store.undoTimerTask)
+        var prompts = 0
+        store.manualControlConfirmationHandler = { _ in
+            prompts += 1
+            #expect(originalTimer.isCancelled && store.undoTimerTask == nil)
+            store.resumeUndoBannerCountdown()
+            #expect(store.undoTimerTask == nil)
+            if replaceBanner {
+                store.scheduleUndoBanner(title: "Replacement", restoreCommands: [], previousDevices: [], deviceCount: 1)
+            }
+            return replaceBanner
+        }
+
+        L10n.$overrideLanguage.withValue(.en) { #expect(store.undoTurnAllOff() == nil) }
+        #expect(prompts == 1 && store.undoTimerTask?.isCancelled == false)
+        #expect(store.undoConfirmationCountdown == nil)
+        #expect(await provider.executedCommands.isEmpty)
+        if replaceBanner {
+            #expect(store.undoBanner?.title == "Replacement" && store.undoBanner?.id != originalID)
+            #expect(store.toastNotice?.message == "The undo item changed. Undo was cancelled.")
+        } else {
+            #expect(store.undoBanner?.id == originalID)
+            #expect(store.toastNotice?.message == "Cancelled the action for 左键")
+        }
+    }
+
     @Test("Card and cover controls preserve post-modal cloud state, roll back to post-modal values, and fail closed on cover direction flip or in-flight reversal")
     func cardAndCoverControlsPostModalStateAndRollback() async throws {
         let gate = SleepGate()

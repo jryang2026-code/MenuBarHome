@@ -11,7 +11,10 @@ import Foundation
 extension HomeStore {
     /// Cancels the expiry task but keeps `undoBanner` on screen. Safe to call repeatedly.
     public func pauseUndoBannerCountdown() {
-        guard undoBanner != nil else { return }
+        guard let banner = undoBanner else { return }
+        if undoConfirmationCountdown?.bannerID == banner.id {
+            undoConfirmationCountdown?.shouldResume = false
+        }
         undoTimerTask?.cancel()
         undoTimerTask = nil
     }
@@ -19,6 +22,10 @@ extension HomeStore {
     /// Re-arms the expiry task for a paused banner. No-op when no banner is showing.
     public func resumeUndoBannerCountdown() {
         guard let banner = undoBanner else { return }
+        if undoConfirmationCountdown?.bannerID == banner.id {
+            undoConfirmationCountdown?.shouldResume = true
+            return
+        }
         undoTimerTask?.cancel()
         // `deviceCount` is the number of devices the action reached: `restoreCommands` can hold
         // several commands for one device (a quick action sending brightness and colour). Automation

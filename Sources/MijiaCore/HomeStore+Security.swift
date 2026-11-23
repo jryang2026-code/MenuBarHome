@@ -160,11 +160,12 @@ extension HomeStore {
         ) else {
             return false
         }
-        showToast(
-            L10n.format("已取消「%@」的操作", "Cancelled the action for %@", current.name),
-            isError: true
-        )
+        showPostModalDeviceChangedToast()
         return true
+    }
+
+    func showPostModalDeviceChangedToast() {
+        showToast(L10n.tr("设备已变化，操作已取消", "The device changed. The action was cancelled."), isError: true)
     }
 
     /// Runs the manual confirmation gate for `operation` on `initial` and resolves the verified

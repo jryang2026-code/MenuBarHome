@@ -1028,10 +1028,12 @@ extension HomeStore {
         )
         if !last.restore.isEmpty,
            prePartition.eligibleCommands.isEmpty,
-           let firstBlocked = prePartition.firstBlockedReason {
-            let msg = firstBlocked.userMessage
-            showToast(msg, isError: true)
-            setAssistantState(.failed(msg))
+           !prePartition.blockedReasons.isEmpty {
+            reportAssistantCapabilityUndo(
+                blockedCount: prePartition.blockedCommands.count,
+                reasons: prePartition.blockedReasons,
+                actionId: last.actionId
+            )
             return
         }
         let hasLGRestore = prePartition.eligibleCommands.contains { lgClientServes($0) }
@@ -1057,10 +1059,12 @@ extension HomeStore {
         )
         if !last.restore.isEmpty,
            postPartition.eligibleCommands.isEmpty,
-           let firstBlocked = postPartition.firstBlockedReason {
-            let msg = firstBlocked.userMessage
-            showToast(msg, isError: true)
-            setAssistantState(.failed(msg))
+           !postPartition.blockedReasons.isEmpty {
+            reportAssistantCapabilityUndo(
+                blockedCount: postPartition.blockedCommands.count,
+                reasons: postPartition.blockedReasons,
+                actionId: last.actionId
+            )
             return
         }
         if rejectControlWhileLocked() {
@@ -1089,14 +1093,14 @@ extension HomeStore {
             excludingDeviceIds: confirmation.excludedDeviceIds
         )
         if applicable.isEmpty, !last.restore.isEmpty {
-            if !postPartition.blockedCommands.isEmpty, let firstReason = postPartition.firstBlockedReason {
+            if !postPartition.blockedReasons.isEmpty {
                 let blockedCount = max(postPartition.blockedDeviceIds.count, postPartition.blockedCommands.count)
                 let remainingReceipt = last.habitReceipt.flatMap {
                     Self.partitionHabitReceipt($0, failedDeviceIds: postPartition.blockedDeviceIds).remaining
                 }
                 lastAssistantUndo = AssistantUndoEntry(
                     actionId: last.actionId,
-                    reply: last.reply,
+                    reply: remainingAssistantUndoReply(count: blockedCount),
                     restore: postPartition.blockedCommands,
                     previous: last.previous.filter { postPartition.blockedDeviceIds.contains($0.id) },
                     at: assistantNow(),
@@ -1105,7 +1109,7 @@ extension HomeStore {
                 if let savedBanner {
                     scheduleUndoBanner(
                         actionId: savedBanner.actionId,
-                        title: savedBanner.title,
+                        title: remainingUndoTitle(count: blockedCount),
                         restoreCommands: postPartition.blockedCommands,
                         previousDevices: savedBanner.previousDevices.filter { postPartition.blockedDeviceIds.contains($0.id) },
                         deviceCount: blockedCount,
@@ -1114,9 +1118,9 @@ extension HomeStore {
                         isAllOff: savedBanner.isAllOff
                     )
                 }
-                let msg = partialCapabilityUndoMessage(blockedCount: blockedCount, reason: firstReason)
-                showToast(msg, isError: true)
-                setAssistantState(.failed(msg))
+                reportAssistantCapabilityUndo(
+                    blockedCount: blockedCount, reasons: postPartition.blockedReasons, actionId: last.actionId
+                )
                 return
             }
             setAssistantState(.failed(L10n.tr("设备状态已变化，无法撤销", "Device state changed; cannot undo")))
@@ -1146,7 +1150,8 @@ extension HomeStore {
             } else {
                 lastAssistantUndo = AssistantUndoEntry(
                     actionId: last.actionId,
-                    reply: last.reply,
+                    reply: remainingCommands.count < last.restore.count
+                        ? remainingAssistantUndoReply(count: remainingCount) : last.reply,
                     restore: remainingCommands,
                     previous: last.previous.filter { remainingDeviceIds.contains($0.id) },
                     at: assistantNow(),
@@ -1170,7 +1175,8 @@ extension HomeStore {
             } else {
                 scheduleUndoBanner(
                     actionId: savedBanner.actionId,
-                    title: savedBanner.title,
+                    title: remainingCommands.count < savedBanner.restoreCommands.count
+                        ? remainingUndoTitle(count: remainingCount) : savedBanner.title,
                     restoreCommands: remainingCommands,
                     previousDevices: savedBanner.previousDevices.filter { remainingDeviceIds.contains($0.id) },
                     deviceCount: remainingCount,
@@ -1184,22 +1190,32 @@ extension HomeStore {
             setAssistantState(.failed(screenLockBlockedMessage))
             return
         }
-        let capabilityBlockedReason = postPartition.firstBlockedReason ?? outcome.capabilityBlockedReason
-        if outcome.failedCommands.isEmpty, let reason = capabilityBlockedReason {
-            let msg = partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason)
-            showToast(msg, isError: true)
-            setAssistantState(.failed(msg))
-            return
-        }
-        if let reason = outcome.capabilityBlockedReason, outcome.nonCapabilityFailedNames.isEmpty {
-            let msg = partialCapabilityUndoMessage(blockedCount: remainingCount, reason: reason)
-            showToast(msg, isError: true)
-            setAssistantState(.failed(msg))
+        let capabilityBlockedReasons = postPartition.blockedReasons + outcome.capabilityBlockedReasons
+        if !capabilityBlockedReasons.isEmpty, outcome.nonCapabilityFailedNames.isEmpty {
+            reportAssistantCapabilityUndo(
+                blockedCount: remainingCount, reasons: capabilityBlockedReasons, actionId: last.actionId
+            )
             return
         }
         let sep = L10n.isEnglish ? ", " : "、"
         let list = outcome.failedNames.joined(separator: sep)
         setAssistantState(.failed(L10n.tr("撤销未完成：\(list) 未响应，可再次撤销重试", "Undo incomplete: \(list) did not respond; retry undo")))
+    }
+
+    private func reportAssistantCapabilityUndo(
+        blockedCount: Int,
+        reasons: [ControlTargetRejectionReason],
+        actionId: UUID
+    ) {
+        let hasBanner = undoBanner?.actionId == actionId
+        let hasAssistantUndo = lastAssistantUndo?.actionId == actionId
+        showToast(capabilityUndoMessage(
+            blockedCount: blockedCount, reasons: reasons,
+            forAssistant: !hasBanner, canRetry: hasBanner || hasAssistantUndo
+        ), isError: true)
+        setAssistantState(.failed(capabilityUndoMessage(
+            blockedCount: blockedCount, reasons: reasons, forAssistant: true, canRetry: hasAssistantUndo
+        )))
     }
 
     // MARK: - Scheduled Commands
