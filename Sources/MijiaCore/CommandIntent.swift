@@ -184,11 +184,17 @@ public struct PendingCloudConsent: Equatable, Sendable {
     /// host[:port] of the AI service, shown to the user and remembered once allowed.
     public let endpoint: String
     public let providerTitle: String
+    let companionGeneration: UInt64?
 
     public init(utterance: String?, endpoint: String, providerTitle: String) {
+        self.init(utterance: utterance, endpoint: endpoint, providerTitle: providerTitle, companionGeneration: nil)
+    }
+
+    init(utterance: String?, endpoint: String, providerTitle: String, companionGeneration: UInt64?) {
         self.utterance = utterance
         self.endpoint = endpoint
         self.providerTitle = providerTitle
+        self.companionGeneration = companionGeneration
     }
 }
 

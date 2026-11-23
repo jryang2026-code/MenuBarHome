@@ -383,12 +383,15 @@ public enum RaycastSnapshotExporter {
             .appendingPathComponent("raycast-snapshot.json", isDirectory: false)
     }()
 
-    public static func loadOrCreateBridgeToken(in defaults: UserDefaults = .standard) -> String {
-        if let existing = defaults.string(forKey: bridgeTokenDefaultsKey)?
+    static func loadBridgeToken(in defaults: UserDefaults) -> String? {
+        guard let existing = defaults.string(forKey: bridgeTokenDefaultsKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines),
-           existing.count >= URLDirectControl.minimumBridgeTokenLength {
-            return existing
-        }
+              existing.count >= URLDirectControl.minimumBridgeTokenLength else { return nil }
+        return existing
+    }
+
+    public static func loadOrCreateBridgeToken(in defaults: UserDefaults = .standard) -> String {
+        if let existing = loadBridgeToken(in: defaults) { return existing }
         let generated = (UUID().uuidString + UUID().uuidString)
             .replacingOccurrences(of: "-", with: "")
             .lowercased()
@@ -433,12 +436,20 @@ public enum RaycastSnapshotExporter {
         }
     }
 
-    /// Invalidates all queued writes synchronously and queues file removal on `writeQueue`, so a
-    /// late write can never recreate the file after disconnect/disable.
-    public static func removeInBackground(at fileURL: URL = defaultSnapshotURL) {
-        _ = invalidateExports(for: fileURL)
-        writeQueue.async {
-            try? FileManager.default.removeItem(at: fileURL)
+    static func isMissingSnapshotError(_ error: NSError) -> Bool {
+        error.domain == NSCocoaErrorDomain
+            && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError)
+    }
+
+    /// Invalidates queued exports and waits for any in-flight write before deleting its output.
+    static func removeSnapshot(at fileURL: URL) throws {
+        invalidateExports(for: fileURL)
+        try writeQueue.sync {
+            do {
+                try FileManager.default.removeItem(at: fileURL)
+            } catch let error as NSError where isMissingSnapshotError(error) {
+                // Already removed.
+            }
         }
     }
 
@@ -480,6 +491,13 @@ extension HomeStore {
         )
     }
 
+    public static var companionIdentityUnavailableMessage: String {
+        L10n.tr(
+            "暂时无法读取历史设置或凭据，伴生命令和快照导出已暂停。",
+            "Companion commands and snapshot export are paused while settings or credentials are unavailable."
+        )
+    }
+
     public static var companionInvalidTokenMessage: String {
         L10n.tr(
             "伴生令牌已失效，请重新获取最新本地快照后重试",
@@ -489,34 +507,51 @@ extension HomeStore {
 
     /// Authoritative companion integration toggle (`FeatureID.companionIntegration`).
     /// Fresh installs default off; upgraded users preserve existing behavior (on).
-    public var companionIntegrationEnabled: Bool { capabilitySelection.enabledFeatures.contains(.companionIntegration) }
+    public var companionIntegrationEnabled: Bool {
+        !companionRevokedForSession && capabilitySelection.enabledFeatures.contains(.companionIntegration)
+    }
     public var raycastIntegrationEnabled: Bool { companionIntegrationEnabled }
-    public func companionCanExecute(generation: UInt64) -> Bool { companionIntegrationEnabled && companionGeneration == generation }
+    public func companionCanExecute(generation: UInt64) -> Bool {
+        companionIntegrationEnabled && !isIdentityUncertain && companionGeneration == generation
+    }
     public var companionSnapshotFileURL: URL { raycastSnapshotTestURL ?? RaycastSnapshotExporter.defaultSnapshotURL }
 
     public func withCompanionCommandGeneration<T>(_ generation: UInt64, body: @MainActor () async -> T) async -> T {
-        let previous = activeCompanionCommandGeneration
-        activeCompanionCommandGeneration = generation
-        defer { activeCompanionCommandGeneration = previous }
-        return await body()
+        await Self.$companionCommandContext.withValue((ObjectIdentifier(self), generation), operation: body)
     }
 
     /// Local random bridge token for `menumijia://...?token=...`; `nil` while integration is off.
     public var raycastBridgeToken: String? {
-        guard companionIntegrationEnabled else { return nil }
+        guard companionIntegrationEnabled, !isIdentityUncertain else { return nil }
         return RaycastSnapshotExporter.loadOrCreateBridgeToken(in: userDefaults)
     }
 
     /// Turns companion integration on or off and persists atomically; rolls back on write failure (P6a-M).
     @discardableResult
     public func setCompanionIntegrationEnabled(_ enabled: Bool) -> Bool {
-        if enabled == companionIntegrationEnabled {
-            if enabled { exportRaycastSnapshotIfNeeded() }
+        if isIdentityUncertain {
+            guard !enabled else {
+                showToast(L10n.tr("仍无法读取历史配置或凭据，请检查钥匙串授权后重试", "Still unable to read settings or credentials; check Keychain access and try again"), isError: true)
+                return false
+            }
+            companionRevokedForSession = true
+            if applyCompanionIntegrationTransition(enabled: false) {
+                showToast(L10n.tr(
+                    "已在本次运行中关闭伴生集成并删除快照，开关状态仅本次生效",
+                    "Companion integration was turned off for this session and the snapshot was removed. The switch state applies to this session only."
+                ))
+                return true
+            }
+            return false
+        }
+        let wasEnabled = companionIntegrationEnabled
+        let wasSelected = capabilitySelection.enabledFeatures.contains(.companionIntegration)
+        if enabled && wasEnabled {
+            exportRaycastSnapshotIfNeeded()
             return true
         }
-        guard !isIdentityUncertain else {
-            showToast(L10n.tr("仍无法读取历史配置或凭据，请检查钥匙串授权后重试", "Still unable to read settings or credentials; check Keychain access and try again"), isError: true)
-            return false
+        if !enabled && !wasSelected {
+            return revokeCompanionIntegration()
         }
         let previous = capabilitySelection
         var next = capabilitySelection
@@ -531,49 +566,67 @@ extension HomeStore {
             return false
         }
         isPersistingCompanionToggle = false
+        let isSelected = capabilitySelection.enabledFeatures.contains(.companionIntegration)
+        if isSelected == enabled { companionRevokedForSession = false }
         let actualEnabled = companionIntegrationEnabled
-        if actualEnabled != previous.enabledFeatures.contains(.companionIntegration) {
-            applyCompanionIntegrationTransition(enabled: actualEnabled)
-        }
-        return actualEnabled == enabled
+        let transitioned = wasEnabled != actualEnabled || wasSelected != isSelected
+        let applied = transitioned ? applyCompanionIntegrationTransition(enabled: actualEnabled) : true
+        return applied && actualEnabled == enabled
     }
 
-    func applyCompanionIntegrationTransition(enabled: Bool) {
-        userDefaults.set(enabled, forKey: RaycastSnapshotExporter.integrationEnabledKey)
+    @discardableResult
+    func applyCompanionIntegrationTransition(enabled: Bool) -> Bool {
+        if !isIdentityUncertain {
+            userDefaults.set(enabled, forKey: RaycastSnapshotExporter.integrationEnabledKey)
+        }
         companionGeneration &+= 1
         capabilityGeneration &+= 1
         raycastExportTask?.cancel()
         raycastExportTask = nil
         if enabled {
-            _ = RaycastSnapshotExporter.loadOrCreateBridgeToken(in: userDefaults)
+            lastRaycastCommandFeedback = nil
+            _ = raycastBridgeToken
             exportRaycastSnapshotIfNeeded()
             onCompanionIntegrationChanged?(true)
-            return
+            return true
         }
+        return revokeCompanionIntegration()
+    }
+
+    private func revokeCompanionIntegration() -> Bool {
         lastExportedRaycastSnapshot = nil
         lastRaycastCommandFeedback = nil
-        userDefaults.removeObject(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey)
-        let targetURL = companionSnapshotFileURL
-        _ = RaycastSnapshotExporter.invalidateExports(for: targetURL)
-        if let testURL = raycastSnapshotTestURL {
-            try? FileManager.default.removeItem(at: testURL)
-        } else if !isTestEnvironment {
-            RaycastSnapshotExporter.removeInBackground(at: targetURL)
+        if pendingCloudConsent?.companionGeneration != nil {
+            pendingCloudConsent = nil
         }
-        onCompanionIntegrationChanged?(false)
+        userDefaults.removeObject(forKey: RaycastSnapshotExporter.bridgeTokenDefaultsKey)
+        defer { onCompanionIntegrationChanged?(false) }
+        guard raycastSnapshotTestURL != nil || !isTestEnvironment else { return true }
+        do {
+            try RaycastSnapshotExporter.removeSnapshot(at: companionSnapshotFileURL)
+            return true
+        } catch {
+            showToast(L10n.tr(
+                "伴生命令已停用，旧令牌已作废，但本地快照删除失败。请检查文件权限后重试断开。",
+                "Companion commands are disabled and the old token is revoked, but the local snapshot could not be deleted. Check file permissions and try disconnecting again."
+            ), isError: true)
+            return false
+        }
     }
 
     @discardableResult
     public func setRaycastIntegration(enabled: Bool) -> Bool { setCompanionIntegrationEnabled(enabled) }
 
-    /// Disconnects companion integration: revokes token, deletes snapshot, drops pending commands; never edits external configs.
+    /// Revokes the local companion integration and reports whether its snapshot was removed.
     @discardableResult
     public func disconnectCompanionIntegration() -> Bool {
         guard setCompanionIntegrationEnabled(false) else { return false }
-        showToast(L10n.tr(
-            "已断开伴生集成，旧令牌与本地快照已失效；不会自动修改外部应用配置",
-            "Disconnected companion integration. Old tokens and the local snapshot are revoked; external app configs are not modified."
-        ))
+        if !isIdentityUncertain {
+            showToast(L10n.tr(
+                "已断开伴生集成，旧令牌已作废，本地快照已清除",
+                "Disconnected companion integration. The old token is revoked and the local snapshot is cleared."
+            ))
+        }
         return true
     }
 
@@ -584,7 +637,38 @@ extension HomeStore {
     /// Read-only diagnostic check of the local companion integration and snapshot file.
     public func checkCompanionIntegrationStatus() -> CompanionCheckReport {
         let fileURL = companionSnapshotFileURL, path = fileURL.path
+        let fm = FileManager.default
+        if companionIntegrationEnabled, isIdentityUncertain {
+            return CompanionCheckReport(
+                status: .needsAttention,
+                summary: Self.companionIdentityUnavailableMessage,
+                snapshotPath: path,
+                snapshotPresent: (try? fm.attributesOfItem(atPath: path)) != nil
+            )
+        }
         guard companionIntegrationEnabled else {
+            do {
+                _ = try fm.attributesOfItem(atPath: path)
+                return CompanionCheckReport(
+                    status: .needsAttention,
+                    summary: L10n.tr(
+                        "伴生集成已关闭，但本地快照仍在。请点击「断开」清除残留文件。",
+                        "Companion integration is off, but the local snapshot remains. Click Disconnect to remove it."
+                    ),
+                    snapshotPath: path, snapshotPresent: true
+                )
+            } catch let error as NSError where RaycastSnapshotExporter.isMissingSnapshotError(error) {
+                // The snapshot is absent.
+            } catch {
+                return CompanionCheckReport(
+                    status: .needsAttention,
+                    summary: L10n.tr(
+                        "无法确认本地快照是否已清除。请检查文件权限后重新检测。",
+                        "The local snapshot could not be checked. Check file permissions and try again."
+                    ),
+                    snapshotPath: path
+                )
+            }
             return CompanionCheckReport(
                 status: .disabled,
                 summary: L10n.tr(
@@ -594,7 +678,7 @@ extension HomeStore {
                 snapshotPath: path
             )
         }
-        let fm = FileManager.default, exists = fm.fileExists(atPath: path)
+        let exists = fm.fileExists(atPath: path)
         guard exists, let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode(RaycastSnapshot.self, from: data),
               decoded.schemaVersion == RaycastSnapshot.currentSchemaVersion else {
@@ -604,7 +688,7 @@ extension HomeStore {
                 snapshotPath: path, snapshotPresent: exists
             )
         }
-        let tokenMatches = URLDirectControl.isValidBridgeToken(decoded.bridgeToken, expectedToken: raycastBridgeToken)
+        let tokenMatches = URLDirectControl.isValidBridgeToken(decoded.bridgeToken, expectedToken: RaycastSnapshotExporter.loadBridgeToken(in: userDefaults))
         let perms = ((try? fm.attributesOfItem(atPath: path)[.posixPermissions]) as? NSNumber)?.intValue ?? 0
         let ownerOnly = (perms & 0o777) == 0o600
         let devicesCount = decoded.devices.count, scenesCount = decoded.scenes.count
@@ -668,8 +752,8 @@ extension HomeStore {
 
     /// Executes a built-in quick action or undo scene requested via `menumijia://scene?name=...`.
     public func executeBuiltInURLScene(_ builtIn: BuiltInURLScene) async -> (message: String, isError: Bool) {
-        if let activeGeneration = activeCompanionCommandGeneration,
-           !companionCanExecute(generation: activeGeneration) {
+        let generation = activeCompanionCommandGeneration
+        if let generation, !companionCanExecute(generation: generation) {
             return (Self.companionDisabledMessage, true)
         }
         switch builtIn {
@@ -677,7 +761,10 @@ extension HomeStore {
             guard let action = builtIn.quickAction else {
                 return (L10n.tr("不支持的快捷动作", "Unsupported quick action"), true)
             }
-            guard let task = executeQuickAction(action) else {
+            guard let task = executeQuickAction(
+                action, undoBannerDuration: nil, recordsHabits: true, respectScreenLock: true,
+                automationGeneration: nil, companionGeneration: generation
+            ) else {
                 return (
                     L10n.tr("当前无需执行「\(action.title)」", "No devices need \"\(action.title)\""),
                     false
@@ -858,7 +945,7 @@ extension HomeStore {
     /// one export 0.3 s after the last change, so the main actor does not encode and write the file
     /// on every `didSet`.
     public func scheduleRaycastSnapshotExport() {
-        guard companionIntegrationEnabled, !isApplyingProviderSnapshot else { return }
+        guard companionIntegrationEnabled, !isIdentityUncertain, !isApplyingProviderSnapshot else { return }
         raycastExportTask?.cancel()
         let generation = companionGeneration
         let sleep = raycastExportSleep
@@ -876,7 +963,8 @@ extension HomeStore {
         now: Date = Date(),
         expectedGeneration: UInt64? = nil
     ) {
-        guard companionIntegrationEnabled || customURL != nil, !isApplyingProviderSnapshot else { return }
+        guard !isIdentityUncertain, companionIntegrationEnabled || customURL != nil,
+              !isApplyingProviderSnapshot else { return }
         if let expectedGeneration, !companionCanExecute(generation: expectedGeneration) {
             return
         }
