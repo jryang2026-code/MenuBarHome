@@ -94,6 +94,7 @@ extension HomeStore {
         recentSafetyAlerts = []
         recentDoorbellRings = []
         dismissedActivityIds = []
+        corruptRemovalDiscardFailure = nil
     }
 
     // MARK: - Scenes & Built-In QuickActions with 5-Second Undo

@@ -1168,6 +1168,10 @@ public final class HomeStore {
     public internal(set) var pendingConnectionRemovals: [ConnectionRemovalRecord] = []
     /// True when `connection_removal_v1` failed strict parsing (fail-closed, never treated as empty).
     public internal(set) var hasCorruptConnectionRemovalState: Bool = false
+    /// Last failure while persisting/verifying the quarantine backup before discarding a corrupt removal record (#381).
+    public internal(set) var corruptRemovalDiscardFailure: ConnectionRemovalQuarantineFailure?
+    /// Test seam overriding quarantine directory & sync primitives so tests never touch real Application Support.
+    @ObservationIgnored var corruptRemovalQuarantineHooks: ConnectionRemovalStore.QuarantinePersistenceHooks = .live
     /// Scopes currently executing drain + slot deletion on this instance.
     public internal(set) var isRemovingConnectionScopes: Set<String> = []
     /// Test seam invoked right after drain completes and before credential slots are mutated.
