@@ -4,6 +4,19 @@ import Observation
 // Assistant side of HomeStore: command bar, model/local intent resolution,
 // spoken delays, voice undo and applying intents to devices.
 // Stored state lives in HomeStore.swift (extensions cannot hold stored properties).
+
+/// Test seam for how long a finished assistant reply stays on screen. Production always uses
+/// `.production`; suites whose assertions run after a command pin `.never` so a loaded runner
+/// cannot turn the reply into `.idle` before the assert reads it.
+enum AssistantAutoResetTiming: Sendable {
+    /// 3.2 s after a reply, 8 s while a risky action waits for a tap.
+    case production
+    /// Replaces both production delays.
+    case fixed(Duration)
+    /// Keeps the reply (and its receipt) until something else changes the state.
+    case never
+}
+
 extension HomeStore {
     public var assistantConfig: AssistantConfig {
         get { AssistantConfig.load(from: userDefaults, vault: credentialVault) }
@@ -2326,18 +2339,31 @@ extension HomeStore {
         assistantState = state
         lastAssistantReceipt = receipt
         assistantResetTask?.cancel()
+        assistantResetTask = nil
         switch state {
         case .done, .failed, .awaitingChoice:
-            // A "tap a suggestion" hint stays longer so it can be read next to the chips.
-            let delay: Double = if case .awaitingChoice = state { 8 } else { 3.2 }
+            guard let delay = assistantResetDelay(for: state) else { return }
             assistantResetTask = Task { [weak self] in
-                try? await Task.sleep(for: .seconds(delay))
+                try? await Task.sleep(for: delay)
                 guard !Task.isCancelled, let self, self.assistantState == state else { return }
                 self.assistantState = .idle
                 self.lastAssistantReceipt = nil
             }
         case .idle, .thinking:
             break
+        }
+    }
+
+    /// A "tap a suggestion" hint stays longer so it can be read next to the chips.
+    private func assistantResetDelay(for state: AssistantState) -> Duration? {
+        switch assistantAutoResetTiming {
+        case .production:
+            if case .awaitingChoice = state { return .seconds(8) }
+            return .seconds(3.2)
+        case .fixed(let delay):
+            return delay
+        case .never:
+            return nil
         }
     }
 }
