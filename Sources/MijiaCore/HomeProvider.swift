@@ -232,7 +232,8 @@ public actor HAWebSocketProvider: HomeProvider {
     private var session: URLSession?
     private var isShutDown = false
 
-    private var continuation: AsyncStream<HomeProviderEvent>.Continuation?
+    private var emitEvent: (@Sendable (HomeAdapterEvent) -> Void)?
+    private var finishEvents: (@Sendable () -> Void)?
     private var loopTask: Task<Void, Never>?
     private var pingTask: Task<Void, Never>?
     private var receiveTask: Task<Void, Error>?
@@ -377,9 +378,14 @@ public actor HAWebSocketProvider: HomeProvider {
     /// The address the provider is using; it only changes through `updateCredentials`.
     public var currentBaseURLString: String { baseURLString }
 
+    var latestSnapshot: SynthesizedHome? {
+        isShutDown ? nil : lastEmittedHome
+    }
+
     public func updateCredentials(baseURLString: String, token: String) {
         let normalizedURL = Self.normalizeBaseURL(baseURLString)
         publishStaleRetainedDevices()
+        lastEmittedHome = nil
         if self.baseURLString == normalizedURL {
             snapshot.resetForReconnect()
         } else {
@@ -420,8 +426,9 @@ public actor HAWebSocketProvider: HomeProvider {
         failPendingStartupReplies(with: CancellationError())
         failPendingStreamRequests()
         invalidateSession()
-        continuation?.finish()
-        continuation = nil
+        finishEvents?()
+        emitEvent = nil
+        finishEvents = nil
     }
 
     private func failPendingStreamRequests() {
@@ -445,19 +452,27 @@ public actor HAWebSocketProvider: HomeProvider {
     }
 
     public nonisolated func events() -> AsyncStream<HomeProviderEvent> {
-        AsyncStream { continuation in
-            Task {
-                await self.attachContinuation(continuation)
-            }
-        }
+        eventStream { $0.providerEvent }
     }
 
-    private func attachContinuation(_ cont: AsyncStream<HomeProviderEvent>.Continuation) {
+    nonisolated func eventStream<Event: Sendable>(
+        _ transform: @escaping @Sendable (HomeAdapterEvent) -> Event
+    ) -> AsyncStream<Event> {
+        let (stream, continuation) = AsyncStream<Event>.makeStream()
+        Task { await self.attachContinuation(continuation, transform: transform) }
+        return stream
+    }
+
+    private func attachContinuation<Event: Sendable>(
+        _ continuation: AsyncStream<Event>.Continuation,
+        transform: @escaping @Sendable (HomeAdapterEvent) -> Event
+    ) {
         guard !isShutDown else {
-            cont.finish()
+            continuation.finish()
             return
         }
-        self.continuation = cont
+        emitEvent = { continuation.yield(transform($0)) }
+        finishEvents = { continuation.finish() }
         restartLoop()
     }
 
@@ -504,16 +519,16 @@ public actor HAWebSocketProvider: HomeProvider {
         while !Task.isCancelled {
             if token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 updateLocalNetworkDenied(false)
-                continuation?.yield(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
+                emitEvent?(.statusChanged(.disconnected(L10n.tr("请在设置中配置访问令牌", "Configure your access token in Settings"))))
                 return
             }
             guard allowsToken(baseURLString) else {
                 updateLocalNetworkDenied(false)
                 onPlaintextConsentNeeded?(baseURLString)
-                continuation?.yield(.statusChanged(.disconnected(HAPlaintextConsent.waitingMessage(baseURLString))))
+                emitEvent?(.statusChanged(.disconnected(HAPlaintextConsent.waitingMessage(baseURLString))))
                 return
             }
-            continuation?.yield(.statusChanged(.connecting))
+            emitEvent?(.statusChanged(.connecting))
             do {
                 if let connectOverride {
                     switch try await connectOverride() {
@@ -523,13 +538,13 @@ public actor HAWebSocketProvider: HomeProvider {
                         backoffSeconds = 0.8
                         consecutiveFailures = 0
                         updateLocalNetworkDenied(false)
-                        continuation?.yield(.statusChanged(.connected))
+                        emitEvent?(.statusChanged(.connected))
                         throw error
                     case .authenticatedStayConnected:
                         backoffSeconds = 0.8
                         consecutiveFailures = 0
                         updateLocalNetworkDenied(false)
-                        continuation?.yield(.statusChanged(.connected))
+                        emitEvent?(.statusChanged(.connected))
                         return
                     }
                 } else {
@@ -556,7 +571,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket unauthorized: \(msg, privacy: .public)")
                     publishStaleRetainedDevices()
-                    continuation?.yield(.statusChanged(.disconnected(msg)))
+                    emitEvent?(.statusChanged(.disconnected(msg)))
                     return
                 } else {
                     consecutiveFailures += 1
@@ -564,7 +579,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     let msg = Self.describeConnectionError(error, baseURLString: baseURLString, isGeneralNetworkSatisfied: networkSatisfied)
                     logger.error("WebSocket disconnected: \(msg, privacy: .public)")
                     publishStaleRetainedDevices()
-                    continuation?.yield(.statusChanged(.disconnected(msg)))
+                    emitEvent?(.statusChanged(.disconnected(msg)))
                 }
                 try? await reconnectSleep(.seconds(backoffSeconds))
                 backoffSeconds = min(backoffSeconds * 1.8, 10.0)
@@ -604,7 +619,7 @@ public actor HAWebSocketProvider: HomeProvider {
     private func updateLocalNetworkDenied(_ denied: Bool) {
         guard isLocalNetworkDenied != denied else { return }
         isLocalNetworkDenied = denied
-        continuation?.yield(.localNetworkPermissionChanged(denied ? [.homeAssistant] : []))
+        emitEvent?(.localNetworkPermissionChanged(denied ? [.homeAssistant] : []))
     }
 
     /// After two failures in a row, looks for Home Assistant elsewhere on the network at most every
@@ -695,7 +710,7 @@ public actor HAWebSocketProvider: HomeProvider {
         logger.info("Connected to Home Assistant WebSocket: \(self.baseURLString, privacy: .public)")
 
         updateLocalNetworkDenied(false)
-        continuation?.yield(.statusChanged(.connected))
+        emitEvent?(.statusChanged(.connected))
 
         let startedPingTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -771,7 +786,7 @@ public actor HAWebSocketProvider: HomeProvider {
                 } else if msg["type"]?.stringValue == "event" {
                     let shouldSynthesize = snapshot.ingestStateChangedEvent(msg, typePrunePolicy: typePrunePolicyLoader())
                     for ring in snapshot.takeDoorbellRings() {
-                        continuation?.yield(.doorbellRang(ring))
+                        emitEvent?(.doorbellRang(ring))
                     }
                     if shouldSynthesize {
                         scheduleOrRunLiveSynthesis()
@@ -781,7 +796,7 @@ public actor HAWebSocketProvider: HomeProvider {
                     publish(home)
                 }
                 for ring in snapshot.takeDoorbellRings() {
-                    continuation?.yield(.doorbellRang(ring))
+                    emitEvent?(.doorbellRang(ring))
                 }
             }
         } catch {
@@ -835,20 +850,20 @@ public actor HAWebSocketProvider: HomeProvider {
         }
         let report = snapshot.takeTypePruneReport()
         if let report {
-            continuation?.yield(.haTypePruneChanged(report))
+            emitEvent?(.haTypePruneChanged(report))
         }
         if !force, report == nil, home == lastEmittedHome {
             return
         }
         lastEmittedHome = home
-        continuation?.yield(.snapshotUpdated(home))
+        emitEvent?(.snapshotUpdated(home))
     }
 
     /// A lost connection stops feeding the type-retained devices, so their last reading must not keep
     /// raising alerts while Home Assistant is away (P3b-M).
     private func publishStaleRetainedDevices() {
         if let report = snapshot.staleTypePruneReport() {
-            continuation?.yield(.haTypePruneChanged(report))
+            emitEvent?(.haTypePruneChanged(report))
         }
     }
 

@@ -1084,7 +1084,7 @@ struct DualSourceIntegrationTests {
         defer { store.stop() }
 
         store.setNetworkSatisfiedForResume(false)
-        let haProvider = store.makeHAProvider(baseURLString: "http://192.168.1.50:8123", token: "ha-tok")
+        let haProvider = store.makeHAProvider(baseURLString: "http://192.168.1.50:8123", token: "ha-tok").provider
         let offlineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
         await haProvider.setTestSeams(
             connectOverride: { .failedBeforeAuth(offlineErr) },
@@ -1127,7 +1127,7 @@ struct DualSourceIntegrationTests {
         defer { store.stop() }
 
         // Notice: `store.setNetworkSatisfiedForResume(...)` has NEVER been called yet (reachability is unknown).
-        let haProvider = store.makeHAProvider(baseURLString: "http://homeassistant.local:8123", token: "ha-tok")
+        let haProvider = store.makeHAProvider(baseURLString: "http://homeassistant.local:8123", token: "ha-tok").provider
         let offlineErr = NSError(domain: NSURLErrorDomain, code: URLError.notConnectedToInternet.rawValue)
         await haProvider.setTestSeams(
             connectOverride: { .failedBeforeAuth(offlineErr) },

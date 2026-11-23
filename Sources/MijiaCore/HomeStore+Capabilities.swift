@@ -441,7 +441,7 @@ extension HomeStore {
 
     var hasManagedHAProvider: Bool {
         activeDualProvider != nil
-            || provider is HAWebSocketProvider
+            || provider.haWebSocketProvider != nil
             || haProviderFactory != nil
             || provider is DualSourceHomeProvider
     }
@@ -470,7 +470,7 @@ extension HomeStore {
             persistCapabilitySelection(removingScopes: [haScope])
             if homeBackend != .demo, hasManagedHAProvider {
                 pendingRevalidationScopes.insert(haScope)
-                if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
+                if activeDualProvider != nil || provider.haWebSocketProvider != nil || haProviderFactory != nil {
                     rebuildLiveProvider()
                 } else {
                     // `provider is DualSourceHomeProvider` is the only remaining way into
@@ -861,7 +861,7 @@ extension HomeStore {
         tearDownHACameras(cameraTeardownIds)
 
         let shutdownBefore = providerShutdownTask
-        if activeDualProvider != nil || provider is HAWebSocketProvider || haProviderFactory != nil {
+        if activeDualProvider != nil || provider.haWebSocketProvider != nil || haProviderFactory != nil {
             rebuildLiveProvider()
             if activeBackends.isEmpty {
                 connectionStatus = .disconnected(L10n.tr("连接已停用", "Connection turned off"))
