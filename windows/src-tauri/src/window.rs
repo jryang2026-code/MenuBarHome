@@ -52,6 +52,7 @@ fn is_same_tray_click_focus_loss(
 pub(crate) struct PanelVisibilityState {
     pub(crate) seq: u64,
     pub(crate) closing: bool,
+    return_focus_to_tray: bool,
     focus_loss: Option<FocusLossMark>,
     tray_press: Option<TrayPressMark>,
 }
@@ -60,14 +61,24 @@ impl PanelVisibilityState {
     pub(crate) fn begin_present(&mut self) -> u64 {
         self.seq = self.seq.wrapping_add(1);
         self.closing = false;
+        self.return_focus_to_tray = false;
         self.focus_loss = None;
         self.tray_press = None;
         self.seq
     }
 
     pub(crate) fn begin_hide(&mut self, is_visible: bool) -> Option<u64> {
+        self.begin_hide_with_focus(is_visible, false)
+    }
+
+    pub(crate) fn begin_hide_with_focus(
+        &mut self,
+        is_visible: bool,
+        return_focus: bool,
+    ) -> Option<u64> {
         if !is_visible {
             self.closing = false;
+            self.return_focus_to_tray = false;
             self.focus_loss = None;
             return None;
         }
@@ -75,21 +86,27 @@ impl PanelVisibilityState {
             return None;
         }
         self.closing = true;
+        self.return_focus_to_tray = return_focus;
         self.seq = self.seq.wrapping_add(1);
         Some(self.seq)
     }
 
     pub(crate) fn complete_hide(&mut self, requested_seq: u64) -> bool {
+        self.complete_hide_with_focus(requested_seq).is_some()
+    }
+
+    pub(crate) fn complete_hide_with_focus(&mut self, requested_seq: u64) -> Option<bool> {
         if !should_complete_hide(self.closing, self.seq, requested_seq) {
-            return false;
+            return None;
         }
         self.closing = false;
         self.focus_loss = None;
-        true
+        Some(std::mem::take(&mut self.return_focus_to_tray))
     }
 
     pub(crate) fn abort_hide(&mut self) {
         self.closing = false;
+        self.return_focus_to_tray = false;
         self.focus_loss = None;
     }
 
@@ -98,6 +115,11 @@ impl PanelVisibilityState {
     }
 
     pub(crate) fn note_focus_loss(&mut self, now_ms: u64, cursor: Option<(i32, i32)>) {
+        // If focus moved elsewhere during the dismiss animation (e.g. a mouse click outside),
+        // do not yank keyboard focus back to the taskbar when the hide completes.
+        if self.closing {
+            self.return_focus_to_tray = false;
+        }
         self.focus_loss = Some(FocusLossMark {
             at_ms: now_ms,
             cursor,
@@ -290,20 +312,80 @@ pub(crate) fn handle_tray_mouse_down(app: &AppHandle, anchor: Option<PhysicalPos
     });
 }
 
-fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
-    let should_hide = PANEL_VISIBILITY
-        .lock()
-        .map(|mut state| state.complete_hide(seq))
-        .unwrap_or(false);
-    if !should_hide {
+#[cfg(all(windows, not(test)))]
+fn return_focus_to_tray(app: &AppHandle) {
+    use windows_sys::Win32::Foundation::{HWND, RECT, S_OK};
+    use windows_sys::Win32::UI::Shell::{
+        Shell_NotifyIconGetRect, Shell_NotifyIconW, NIM_SETFOCUS, NOTIFYICONDATAW,
+        NOTIFYICONIDENTIFIER,
+    };
+
+    let Some(tray) = app.tray_by_id("main-tray") else {
         return;
+    };
+    let Ok(raw_hwnd) = tray.with_inner_tray_icon(|inner| inner.window_handle() as usize) else {
+        return;
+    };
+    if raw_hwnd == 0 {
+        return;
+    }
+    let tray_hwnd = raw_hwnd as HWND;
+
+    // `tray-icon` assigns its private `uID` from a process-wide counter starting at 1, and
+    // `TrayIconBuilder::new()` may consume one before `TrayIcon::new`. Probe `Shell_NotifyIconGetRect`
+    // first to locate the exact `uID`, then fall back to trying the first few IDs directly.
+    let mut resolved_uid: Option<u32> = None;
+    for candidate in 1..=8 {
+        let mut ident: NOTIFYICONIDENTIFIER = unsafe { std::mem::zeroed() };
+        ident.cbSize = std::mem::size_of::<NOTIFYICONIDENTIFIER>() as u32;
+        ident.hWnd = tray_hwnd;
+        ident.uID = candidate;
+        let mut rect: RECT = unsafe { std::mem::zeroed() };
+        if unsafe { Shell_NotifyIconGetRect(&ident, &mut rect) } == S_OK {
+            resolved_uid = Some(candidate);
+            break;
+        }
+    }
+
+    let send_focus = |uid: u32| -> bool {
+        let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        nid.hWnd = tray_hwnd;
+        nid.uID = uid;
+        unsafe { Shell_NotifyIconW(NIM_SETFOCUS, &nid) != 0 }
+    };
+
+    if let Some(uid) = resolved_uid {
+        let _ = send_focus(uid);
+        return;
+    }
+    for candidate in 1..=8 {
+        if send_focus(candidate) {
+            break;
+        }
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn return_focus_to_tray(_app: &AppHandle) {}
+
+fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
+    let Some(return_focus) = PANEL_VISIBILITY
+        .lock()
+        .ok()
+        .and_then(|mut state| state.complete_hide_with_focus(seq))
+    else {
+        return;
+    };
+    if return_focus {
+        return_focus_to_tray(app);
     }
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
     }
 }
 
-fn request_hide_panel_on_main_thread(app: &AppHandle) {
+fn request_hide_panel_on_main_thread_with_focus(app: &AppHandle, return_focus: bool) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -311,7 +393,7 @@ fn request_hide_panel_on_main_thread(app: &AppHandle) {
     let Some(seq) = PANEL_VISIBILITY
         .lock()
         .ok()
-        .and_then(|mut state| state.begin_hide(is_visible))
+        .and_then(|mut state| state.begin_hide_with_focus(is_visible, return_focus))
     else {
         return;
     };
@@ -323,6 +405,9 @@ fn request_hide_panel_on_main_thread(app: &AppHandle) {
         if let Ok(mut state) = PANEL_VISIBILITY.lock() {
             state.abort_hide();
         }
+        if return_focus {
+            return_focus_to_tray(app);
+        }
         let _ = window.hide();
         return;
     }
@@ -333,6 +418,10 @@ fn request_hide_panel_on_main_thread(app: &AppHandle) {
     });
 }
 
+fn request_hide_panel_on_main_thread(app: &AppHandle) {
+    request_hide_panel_on_main_thread_with_focus(app, false);
+}
+
 pub(crate) fn complete_hide_panel(app: &AppHandle, seq: u64) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -340,16 +429,20 @@ pub(crate) fn complete_hide_panel(app: &AppHandle, seq: u64) {
     });
 }
 
-pub(crate) fn request_hide_panel(app: &AppHandle) {
+pub(crate) fn request_hide_panel_with_focus(app: &AppHandle, return_focus: bool) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        request_hide_panel_on_main_thread(&app_clone);
+        request_hide_panel_on_main_thread_with_focus(&app_clone, return_focus);
     });
 }
 
+pub(crate) fn request_hide_panel(app: &AppHandle) {
+    request_hide_panel_with_focus(app, false);
+}
+
 #[tauri::command]
-pub(crate) fn hide_panel(app: AppHandle) {
-    request_hide_panel(&app);
+pub(crate) fn hide_panel(app: AppHandle, return_focus: Option<bool>) {
+    request_hide_panel_with_focus(&app, return_focus.unwrap_or(false));
 }
 
 #[tauri::command]
@@ -462,24 +555,80 @@ pub(crate) fn load_panel_placement() {
     }
 }
 
-/// Full monitor bounds plus the work area that excludes docked taskbars. A runtime that cannot report
-/// a work area falls back to the full bounds, which behaves like a taskbar-free monitor.
+#[cfg(all(windows, not(test)))]
+fn autohide_taskbar_edge_and_thickness() -> Option<(TaskbarEdge, i32)> {
+    use windows_sys::Win32::UI::Shell::{
+        SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETSTATE,
+        ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
+
+    let class_name: [u16; 14] = [
+        b'S' as u16, b'h' as u16, b'e' as u16, b'l' as u16, b'l' as u16, b'_' as u16,
+        b'T' as u16, b'r' as u16, b'a' as u16, b'y' as u16, b'W' as u16, b'n' as u16,
+        b'd' as u16, 0,
+    ];
+    let taskbar_hwnd = unsafe { FindWindowW(class_name.as_ptr(), std::ptr::null()) };
+    let mut abd: APPBARDATA = unsafe { std::mem::zeroed() };
+    abd.cbSize = std::mem::size_of::<APPBARDATA>() as u32;
+    abd.hWnd = taskbar_hwnd;
+
+    let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut abd) };
+    if (state & (ABS_AUTOHIDE as usize)) == 0 {
+        return None;
+    }
+
+    if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut abd) } == 0 {
+        return None;
+    }
+
+    let normalized_edge = match abd.uEdge {
+        ABE_LEFT => 0,
+        ABE_TOP => 1,
+        ABE_RIGHT => 2,
+        ABE_BOTTOM => 3,
+        _ => return None,
+    };
+    taskbar_edge_from_appbar(
+        normalized_edge,
+        abd.rc.left,
+        abd.rc.top,
+        abd.rc.right,
+        abd.rc.bottom,
+    )
+}
+
+#[cfg(any(not(windows), test))]
+fn autohide_taskbar_edge_and_thickness() -> Option<(TaskbarEdge, i32)> {
+    None
+}
+
+/// Full monitor bounds plus the work area that excludes docked (or auto-hidden) taskbars. A
+/// runtime that cannot report a work area falls back to the full bounds, which behaves like a
+/// taskbar-free monitor.
 pub(crate) fn monitor_rects(monitor: &Monitor) -> (Rect, Rect) {
     let position = monitor.position();
     let size = monitor.size();
     let full = Rect::new(position.x, position.y, size.width as i32, size.height as i32);
     let area = monitor.work_area();
-    let work = Rect::new(
+    let raw_work = Rect::new(
         area.position.x,
         area.position.y,
         area.size.width as i32,
         area.size.height as i32,
     );
-    if work.width <= 0 || work.height <= 0 {
-        (full, full)
+    let base_work = if raw_work.width <= 0 || raw_work.height <= 0 {
+        full
     } else {
-        (full, work)
-    }
+        raw_work
+    };
+    let work = match autohide_taskbar_edge_and_thickness() {
+        Some((edge, thickness)) => {
+            inset_work_area_for_autohide_taskbar(full, base_work, edge, thickness)
+        }
+        None => base_work,
+    };
+    (full, work)
 }
 
 pub(crate) fn main_column_inset(scale: f64) -> i32 {
@@ -806,12 +955,38 @@ pub(crate) fn sanitize_settings_tab(raw: Option<&str>) -> &'static str {
     }
 }
 
+#[cfg(all(windows, not(test)))]
+fn apply_dark_titlebar(window: &WebviewWindow, dark: bool) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{
+        DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    };
+
+    let Ok(raw_hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = (raw_hwnd.0 as usize) as HWND;
+    let enabled: i32 = if dark { 1 } else { 0 };
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            &enabled as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn apply_dark_titlebar(_window: &WebviewWindow, _dark: bool) {}
+
 #[tauri::command]
 pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) -> Result<bool, String> {
     let sanitized = sanitize_settings_tab(tab.as_deref());
     let has_explicit_tab = tab.as_deref().is_some_and(|raw| !raw.trim().is_empty());
     request_hide_panel(&app);
     if let Some(window) = app.get_webview_window("settings") {
+        apply_dark_titlebar(&window, matches!(window.theme(), Ok(tauri::Theme::Dark)));
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
@@ -844,8 +1019,15 @@ pub(crate) async fn open_settings_window(app: AppHandle, tab: Option<String>) ->
     .initialization_script(&init_script)
     .build()
     .map_err(|err| format!("无法打开设置窗口：{err}"))?;
+    apply_dark_titlebar(
+        &settings_win,
+        matches!(settings_win.theme(), Ok(tauri::Theme::Dark)),
+    );
     let win_for_events = settings_win.clone();
     settings_win.on_window_event(move |event| match event {
+        WindowEvent::ThemeChanged(theme) => {
+            apply_dark_titlebar(&win_for_events, matches!(theme, tauri::Theme::Dark));
+        }
         WindowEvent::CloseRequested { api, .. } => {
             if consume_settings_allow_close(&SETTINGS_ALLOW_CLOSE) {
                 return;
