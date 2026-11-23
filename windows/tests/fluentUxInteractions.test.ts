@@ -233,6 +233,7 @@ describe("Fluent UX & Interaction Holistic Contract", () => {
 
     assert.equal(callOrder.length, 2);
     assert.equal(callOrder[1]?.cmd, "hide_panel");
+    assert.notEqual(callOrder[1]?.args?.returnFocus, true);
 
     callOrder.length = 0;
     app.setPendingHighRisk({

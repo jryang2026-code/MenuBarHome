@@ -1384,7 +1384,7 @@ export function bindGlobalKeys(
       }
       if (collapseActivityStackOnHide(host)) host.render();
       resumeUndoHoverPause(host);
-      invokeTauriVoid("hide_panel");
+      invokeTauriVoid("hide_panel", { returnFocus: true });
     } else if (e.key === "/" && !e.ctrlKey && !e.metaKey && !e.altKey && document.activeElement?.tagName !== "INPUT") {
       e.preventDefault();
       host.isShowingAssistantBar = true;

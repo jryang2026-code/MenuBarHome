@@ -525,6 +525,24 @@ mod tests {
         assert_eq!(tray.decide_tray_release(false, 14_060, None), TrayToggleAction::Noop);
         tray.note_tray_press_down(false, 14_150, None);
         assert_eq!(tray.decide_tray_release(false, 14_190, None), TrayToggleAction::Present);
+
+        // Keyboard Escape requests focus return on hide completion, while mouse focus-loss
+        // or regular hide paths leave focus untouched.
+        let mut focus_vis = PanelVisibilityState::default();
+        assert_eq!(focus_vis.begin_present(), 1);
+        let esc_seq = focus_vis.begin_hide_with_focus(true, true).expect("esc hide starts");
+        assert_eq!(focus_vis.complete_hide_with_focus(esc_seq), Some(true));
+
+        let _ = focus_vis.begin_present();
+        let esc_interrupted = focus_vis
+            .begin_hide_with_focus(true, true)
+            .expect("esc hide before mouse click outside");
+        focus_vis.note_focus_loss(15_000, desktop_pt);
+        assert_eq!(focus_vis.complete_hide_with_focus(esc_interrupted), Some(false));
+
+        let _ = focus_vis.begin_present();
+        let mouse_seq = focus_vis.begin_hide_with_focus(true, false).expect("non-esc hide");
+        assert_eq!(focus_vis.complete_hide_with_focus(mouse_seq), Some(false));
     }
 
     fn extra(origins: &[&str]) -> HashSet<String> {

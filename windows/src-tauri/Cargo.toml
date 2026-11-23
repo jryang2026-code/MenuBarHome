@@ -29,12 +29,14 @@ keyring = { version = "3", features = ["windows-native"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Devices_Display",
     "Win32_Foundation",
+    "Win32_Graphics_Dwm",
     "Win32_NetworkManagement_WiFi",
     "Win32_Networking_WinSock",
     "Win32_Security_Credentials",
     "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_SystemServices",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

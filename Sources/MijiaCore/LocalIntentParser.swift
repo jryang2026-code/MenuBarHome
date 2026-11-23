@@ -12,20 +12,22 @@ public enum LocalIntentParser {
     ]
 
     private static let brightnessWords: [String: Int] = [
-        "调暗": 20, "变暗": 20, "最暗": 10,
+        "调暗": 20, "变暗": 20, "最暗": 1,
         "调亮": 100, "变亮": 100, "最亮": 100
     ]
 
     private static let colorTemperatureWords: [String: Int] = [
-        "暖光": 2700, "暖色": 2700, "黄光": 2700,
+        "暖光": 2700, "暖白": 2700, "暖白光": 2700, "暖色": 2700, "黄光": 2700,
         "自然光": 4000,
-        "白光": 6500, "冷光": 6500
+        "冷光": 4000, "冷白": 4000, "冷白光": 4000,
+        "白光": 6500, "日光": 6500, "正白光": 6500,
+        "烛光": 1900, "蜡烛光": 1900
     ]
 
     private static let lightEffectWords: [String: String] = [
         "月光模式": "Night", "月光灯": "Night", "月光": "Night",
         "夜灯模式": "Night", "夜灯": "Night",
-        "日光模式": "Day", "日光灯": "Day", "日光": "Day"
+        "日光模式": "Day", "日光灯": "Day"
     ]
 
     /// Relative brightness ("暗一点"), resolved against the light's current level.
@@ -614,7 +616,7 @@ public enum LocalIntentParser {
             case .brightness, .brightnessStep, .colorTemperature, .lightEffect: return [.light]
             case .hvacMode, .targetTemperature, .temperatureStep: return [.climate, .heater]
             case .fanSpeed: return [.fan, .airPurifier, .climate]
-            case .oscillation: return [.fan]
+            case .fanPercentage, .oscillation: return [.fan]
             case .power, .activateScene: continue
             }
         }
@@ -647,7 +649,7 @@ public enum LocalIntentParser {
         case .brightness, .brightnessStep: return 4
         case .colorTemperature: return 5
         case .activateScene: return 6
-        case .fanSpeed: return 7
+        case .fanSpeed, .fanPercentage: return 7
         case .oscillation: return 8
         }
     }
@@ -656,6 +658,7 @@ public enum LocalIntentParser {
         let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         if let n = Int(trimmed) { return n }
+        if trimmed == "一百" || trimmed == "百" { return 100 }
         let digits: [Character: Int] = ["零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9]
         let chars = Array(trimmed)
         if chars.count == 2, chars[0] == "零", let ones = digits[chars[1]] {
@@ -704,6 +707,19 @@ public enum LocalIntentParser {
                 text = regex.stringByReplacingMatches(
                     in: text, range: NSRange(location: 0, length: ns.length), withTemplate: String(consumed)
                 )
+            }
+        }
+        // Leave the fan name intact and consume its percentage before bare percentages become brightness.
+        let fanPattern = #"(?:风速|(?<=风扇))(?:调到|调至|调为|设为|设置为|到|为)?(?:百分之([0-9]{1,3}|[零一二两三四五六七八九十百]+)(?![0-9%％])|([0-9]{1,3}|[零一二两三四五六七八九十百]+)[%％])"#
+        if let regex = try? NSRegularExpression(pattern: fanPattern) {
+            let source = text as NSString
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
+            for match in matches.reversed() {
+                let numberRange = match.range(at: match.range(at: 1).location == NSNotFound ? 2 : 1)
+                guard let percent = spokenNumber(source.substring(with: numberRange)),
+                      let range = Range(match.range, in: text) else { continue }
+                ops.append(.fanPercentage(percent))
+                text.replaceSubrange(range, with: String(consumed))
             }
         }
         let patterns: [(String, (Double) -> IntentOperation)] = [
@@ -886,7 +902,7 @@ public enum LocalIntentParser {
         }
 
         let briPhrases: [(String, Int)] = [
-            ("minimum brightness", 10), ("dimmest", 10), ("dim", 20),
+            ("minimum brightness", 1), ("dimmest", 1), ("dim", 20),
             ("maximum brightness", 100), ("max brightness", 100), ("full brightness", 100), ("brightest", 100)
         ]
         for (p, val) in briPhrases where consumeEnglishPhrase(p, from: &rest) {
@@ -896,7 +912,7 @@ public enum LocalIntentParser {
         let ctPhrases: [(String, Int)] = [
             ("warm light", 2700), ("warm white", 2700), ("yellow light", 2700),
             ("natural light", 4000), ("neutral white", 4000),
-            ("white light", 6500), ("cool white", 6500), ("cold light", 6500)
+            ("white light", 6500), ("cool white", 4000), ("cold light", 4000)
         ]
         for (p, val) in ctPhrases where consumeEnglishPhrase(p, from: &rest) {
             ops.append(.colorTemperature(val))
@@ -1074,6 +1090,7 @@ public enum LocalIntentParser {
         }
 
         let patterns: [(String, (Double) -> IntentOperation)] = [
+            (#"(?<=\bfan)\s+(?:speed\s+)?(?:to\s+)?([0-9]{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .fanPercentage(Int($0)) }),
             (#"(?<![a-z0-9])(\d{4})\s*k(?![a-z0-9])"#, { .colorTemperature(Int($0)) }),
             (#"(?<![a-z0-9])(\d{1,3})\s*(?:%|percent)(?![a-z0-9])"#, { .brightness(Int($0)) }),
             (#"(?<![a-z0-9])(\d{1,2}(?:\.\d)?)\s*(?:degrees?\s*celsius|degrees?|deg|℃|°c|°)(?![a-z0-9])"#, { .targetTemperature($0) })
