@@ -320,6 +320,11 @@ export async function hydrateCredentials(
         pendingPersistDuringHydration.delete(host);
         void persistCredentials(host);
       }
+      // Every caller — including `retryIdentityMigration`, which replaces `host.settings` from
+      // storage just before this — reaches this point, so the DOM event consumers follow the
+      // settled `eventAutomationEnabled` (a startup default, a reloaded value, or the fresh-install
+      // switch `applyFreshInstallFeatureSwitches` just wrote) instead of the value bound at startup.
+      syncAutomationLifecycle(host);
     }
   }
 

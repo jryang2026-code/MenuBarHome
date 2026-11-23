@@ -314,6 +314,7 @@ const CATALOG: Readonly<Record<string, readonly [string, string]>> = {
   "撤销未完成，{count} 项待恢复。{message}": ["撤销未完成，{count} 项待恢复。{message}", "Undo incomplete, {count} to restore. {message}"],
   "已撤销：{summary}": ["已撤销：{summary}", "Undone: {summary}"],
   "已关闭 {count} 台开启中的设备": ["已关闭 {count} 台开启中的设备", "Switched off {count} devices"],
+  "{result}，另有 {count} 台已跳过": ["{result}，另有 {count} 台已跳过", "{result}. Skipped {count} other devices."],
   "设备未响应": ["设备未响应", "Device did not respond"],
   "设备未响应或离线": ["设备未响应或离线", "Device did not respond or is offline"],
   "设备未返回执行结果": ["设备未返回执行结果", "The device returned no write verdict"],
@@ -1098,6 +1099,11 @@ function fill(template: string, params: Readonly<Record<string, string | number>
   return template.replace(/\{(\w+)\}/g, (whole, name: string) =>
     Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole,
   );
+}
+
+export function allOffResultText(count: number, skipped: number): string {
+  const result = t("已关闭 {count} 台开启中的设备", { count });
+  return skipped > 0 ? t("{result}，另有 {count} 台已跳过", { result, count: skipped }) : result;
 }
 
 /**

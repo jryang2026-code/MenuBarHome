@@ -18,7 +18,7 @@ import { CAPABILITY_SELECTION_STORAGE_KEY, haConnectionScope } from "./haTranspo
 import type { LanguagePreference } from "./i18n.js";
 import { MiAccountScope, makeMiAccount, miAccountId, type MiAccount } from "./miAccountsStore.js";
 import { normalizeMiCloudRegion, type MiSession } from "./miCloudClient.js";
-import { joinsAllOff, type DeviceIntent, type DeviceKind, type FacetControl, type HomeScene, type SmartDevice, type ScheduledCommand } from "./models.js";
+import { allOffTargets, joinsAllOff, type DeviceIntent, type DeviceKind, type FacetControl, type HomeScene, type SmartDevice, type ScheduledCommand } from "./models.js";
 import { planQuickAction, quickActionTitle, type QuickActionId } from "./quickActions.js";
 import type { PausedScheduledCommand, ScheduledCommandStore } from "./scheduledCommands.js";
 
@@ -1655,6 +1655,28 @@ export function evaluateDeviceEntityWriteGate(options: {
   readonly rejectUnknown?: boolean;
 }): string | null {
   return evaluateDeviceEntityWriteGateVerdict(options)?.message ?? null;
+}
+
+export function planWritableAllOff(
+  devices: readonly SmartDevice[],
+  overrides: Readonly<Record<string, boolean>>,
+  context: HostCapabilityContextInput | null,
+): { targets: SmartDevice[]; skipped: number } {
+  const candidates = allOffTargets(devices, overrides);
+  if (!context || candidates.length === 0) return { targets: candidates, skipped: 0 };
+  const { indexedDevices } = buildIndexedCapabilityDevices(context);
+  const byId = new Map(indexedDevices.map((device) => [device.id, device]));
+  const activeIds = new Set(context.devices.map((device) => device.id));
+  const targets = candidates.filter(({ id }) => {
+    const device = byId.get(id);
+    return activeIds.has(id) && device !== undefined && evaluateControlTargetGate({
+      targetKind: "device",
+      targetId: id,
+      selection: context.state.selection,
+      devices: [device],
+    }).allowed;
+  });
+  return { targets, skipped: candidates.length - targets.length };
 }
 
 export function evaluateIntentsWriteGateVerdict(options: {

@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -6,10 +7,8 @@ struct DemoNetworkPolicyTests {
     @MainActor
     @Test("Demo mode blocks manual and automatic updates as well as queued downloads")
     func updatesRemainOffline() async throws {
-        let suite = "test.demo.updates.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
-        defer { defaults.removePersistentDomain(forName: suite) }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("demo-update-\(UUID().uuidString)")
         let target = root.appendingPathComponent("MenuBarHome.app")
         try FileManager.default.createDirectory(at: target.appendingPathComponent("Contents"), withIntermediateDirectories: true)
@@ -27,8 +26,9 @@ struct DemoNetworkPolicyTests {
             throw URLError(.notConnectedToInternet)
         }
         let store = HomeStore(
-            provider: MockHomeProvider(), defaultsSuiteName: suite,
-            updater: AppUpdater(currentVersion: "1.0.0", targetBundleURL: target, stagingBaseDirectory: root, driver: driver)
+            provider: MockHomeProvider(),
+            updater: AppUpdater(currentVersion: "1.0.0", targetBundleURL: target, stagingBaseDirectory: root, driver: driver),
+            defaults: defaults
         )
         store.automaticallyChecksForUpdates = true
         await store.checkForUpdatesIfNeeded()

@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -329,9 +330,7 @@ struct AssistantLocalModelTests {
     @Test("A stock install resolves through the on-device model and never calls the cloud")
     @MainActor
     func localModelSelectedForStockConfig() async throws {
-        let suite = "test.assistant.local.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, mock) = try await makeStore(suite: suite)
+        let (store, mock) = try await makeStore()
 
         let spy = LocalResolverSpy(plan: IntentPlan(
             intents: [
@@ -365,9 +364,7 @@ struct AssistantLocalModelTests {
     @Test("A configured provider keeps the cloud route even when the on-device model is available")
     @MainActor
     func configuredProviderKeepsCloud() async throws {
-        let suite = "test.assistant.local.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, _) = try await makeStore(suite: suite)
+        let (store, _) = try await makeStore()
 
         // A loopback Ollama-style endpoint is a user choice and needs no key or consent.
         store.assistantConfig = AssistantConfig(
@@ -396,9 +393,7 @@ struct AssistantLocalModelTests {
     @Test("An unavailable on-device model keeps the old missing-key behavior")
     @MainActor
     func unavailableLocalModelKeepsOldBehavior() async throws {
-        let suite = "test.assistant.local.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, _) = try await makeStore(suite: suite)
+        let (store, _) = try await makeStore()
 
         let spy = LocalResolverSpy(plan: IntentPlan(intents: [], reply: "", source: .model))
         store.localAssistantAvailabilityOverride = .unavailable("no Apple Intelligence")
@@ -420,9 +415,7 @@ struct AssistantLocalModelTests {
     @Test("On-device failures surface through the existing assistant status")
     @MainActor
     func localFailureUsesExistingStatus() async throws {
-        let suite = "test.assistant.local.\(UUID().uuidString)"
-        defer { UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite) }
-        let (store, _) = try await makeStore(suite: suite)
+        let (store, _) = try await makeStore()
 
         store.localAssistantAvailabilityOverride = .available
         store.localAssistantResolverOverride = ThrowingLocalResolver()
@@ -442,12 +435,12 @@ struct AssistantLocalModelTests {
     // MARK: - Fixtures
 
     @MainActor
-    private func makeStore(suite: String) async throws -> (HomeStore, MockHomeProvider) {
+    private func makeStore() async throws -> (HomeStore, MockHomeProvider) {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(
             devices: AssistantTests.devices,
             scenes: AssistantTests.scenes
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
         try await store.waitForTestSnapshot()
         store.setAIAssistantEnabled(true)
         return (store, mock)

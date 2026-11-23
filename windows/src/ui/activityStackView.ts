@@ -49,7 +49,7 @@ import { ManualControlPolicy } from "../core/assistant.js";
 import { isSwitchMarkedAsLight } from "../core/switchLightMarks.js";
 import { getScopedEnergyHistory } from "../core/energyHistory.js";
 import { resolveSensorHistoryScope, sharedSensorHistoryStore } from "../core/sensorHistory.js";
-import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type SmartDevice } from "../core/models.js";
+import { isDeviceActiveOn, type DeviceCommand, type FacetControl, type HomeScene, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { ReplyBannerState } from "./appTypes.js";
 import { SF_ICONS } from "./appConstants.js";
@@ -277,6 +277,23 @@ function isLiveSnapshotReadyForTelemetry(host: MenuMijiaWindowsApp): boolean {
     }
   }
   return true;
+}
+
+/**
+ * A home with scenes but no device cards never passes `isLiveSnapshotReadyForTelemetry`, yet
+ * activating a scene needs no device telemetry. It still needs a scene list that belongs to the
+ * current source (`timerSnapshot` marks a snapshot of this `sourceRevision`, as the telemetry and
+ * sensor-history gates read it) and a reachable backend for the scene's own connection, so a
+ * pending source switch, a failed Home Assistant connection or a dead Xiaomi session pauses the
+ * rule instead of resuming it.
+ */
+function isSceneSourceAvailable(host: MenuMijiaWindowsApp, scene: HomeScene): boolean {
+  const mode = host.settings.connectionMode;
+  if (mode === "demo") return false;
+  if ((host.timerSnapshot?.sourceRevision ?? -1) !== host.sourceRevision) return false;
+  return (scene.sourceBackend ?? mode) === "homeAssistant"
+    ? !host.haConnectionError
+    : !host.miSessionExpired && !host.cloudValuesStale;
 }
 
 export function computeActivityScopeKey(
@@ -1473,10 +1490,13 @@ export function setEventAutomationRunning(host: MenuMijiaWindowsApp, enabled: bo
       if (!rule.isEnabled) return rule;
       const sensorId = rule.triggerOptions.sensorCondition?.deviceId;
       const action = rule.action;
-      const available = live && (!sensorId || onlineDeviceIds.has(sensorId)) &&
+      const scene = action.kind === "scene"
+        ? host.scenes.find((s) => s.id === action.sceneId || s.entityId === action.sceneId)
+        : undefined;
+      const sourceReady = live || (scene !== undefined && !sensorId && isSceneSourceAvailable(host, scene));
+      const available = sourceReady && (!sensorId || onlineDeviceIds.has(sensorId)) &&
         (action.kind !== "devices" || (action.deviceIds.length > 0 && action.deviceIds.every((id) => onlineDeviceIds.has(id)))) &&
-        (action.kind !== "scene" || host.scenes.some((scene) =>
-          scene.id === action.sceneId || scene.entityId === action.sceneId)) &&
+        (action.kind !== "scene" || scene !== undefined) &&
         (action.kind !== "quickAction" || demo || (
           QUICK_ACTION_TARGET_CATEGORIES[action.quickAction].every((category) => enabledCategories.includes(category)) &&
           onlineDevices.some(quickActionSupport[action.quickAction])

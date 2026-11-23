@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -165,9 +166,8 @@ struct PanelActivityStoreTests {
 
     @Test("A snapshot records safety alerts even when no notification handler is installed")
     func snapshotRecordsWithoutAHandler() async throws {
-        let suite = try makeSuite("record")
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [leak(alarming: false)]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: makeDefaults("record"))
         try await store.waitForTestSnapshot()
         #expect(store.enableSafetyAlerts)
         #expect(store.recentSafetyAlerts.isEmpty)
@@ -279,7 +279,7 @@ struct PanelActivityStoreTests {
     @Test("A removed device cannot revive its previous alert when it returns")
     func removedDeviceDoesNotReviveOldAlert() async throws {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [lamp]))
-        let store = HomeStore(provider: mock, defaultsSuiteName: try makeSuite("removal"))
+        let store = HomeStore(provider: mock, defaults: makeDefaults("removal"))
         try await store.waitForTestSnapshot()
         store.enableSafetyAlerts = false
         store.recordSafetyAlerts([alert("battery:lamp")], now: start)
@@ -408,25 +408,21 @@ struct PanelActivityStoreTests {
         )
     }
 
-    private func makeSuite(_ name: String) throws -> String {
-        let suite = "test.panel.activities.\(name).\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+    private func makeDefaults(_ name: String) -> InMemoryUserDefaults {
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.demo.rawValue, forKey: "home_backend")
-        return suite
+        return defaults
     }
 
     private func makeStore(devices: [SmartDevice] = []) async throws -> HomeStore {
         let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: devices))
-        let store = HomeStore(provider: mock, defaultsSuiteName: try makeSuite("store"))
+        let store = HomeStore(provider: mock, defaults: makeDefaults("store"))
         try await store.waitForTestSnapshot()
         return store
     }
 
     private func makeExpiredMiStore(devices: [SmartDevice] = []) async throws -> HomeStore {
-        let suite = "test.panel.activities.mi.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defaults.removePersistentDomain(forName: suite)
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         #expect(MiSessionStore.save(
             MiSession(
@@ -440,7 +436,7 @@ struct PanelActivityStoreTests {
         ))
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: devices)),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         try await store.waitForTestSnapshot()
         return store

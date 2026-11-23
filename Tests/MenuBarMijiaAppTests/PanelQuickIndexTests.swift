@@ -1,6 +1,7 @@
 import AppKit
 import Carbon
 import Foundation
+import PreferencesTestSupport
 import SwiftUI
 import Testing
 @testable import MijiaCore
@@ -180,7 +181,6 @@ extension PanelPresentationTests {
 @MainActor
 private final class QuickIndexHarness {
     enum FixtureError: Error {
-        case missingDefaults
         case missingCommand
     }
 
@@ -253,18 +253,15 @@ private final class QuickIndexHarness {
 
     let store: HomeStore
     let mock: MockHomeProvider
-    private let suite: String
     private let savedStandard: [(String, Any?)]
     private let window: NSWindow
     private var hosting: NSHostingView<AnyView>?
 
     init(home: SynthesizedHome, favorites: [String] = []) async throws {
         _ = NSApplication.shared
-        let suite = "PanelQuickIndexTests-\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else {
-            throw FixtureError.missingDefaults
-        }
-        self.suite = suite
+        // One instance for the seed and for the store: a second `UserDefaults(suiteName:)` reads
+        // through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         self.savedStandard = Self.isolatedStandardKeys.map {
             ($0, UserDefaults.standard.object(forKey: $0))
         }
@@ -289,7 +286,7 @@ private final class QuickIndexHarness {
 
         let mock = MockHomeProvider(snapshot: home)
         self.mock = mock
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         self.store = store
         try await store.waitForTestSnapshot()
         if !favorites.isEmpty {
@@ -402,6 +399,5 @@ private final class QuickIndexHarness {
                 UserDefaults.standard.removeObject(forKey: key)
             }
         }
-        UserDefaults.standard.removePersistentDomain(forName: suite)
     }
 }

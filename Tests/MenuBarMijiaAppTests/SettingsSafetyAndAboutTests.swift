@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MenuBarMijiaApp
 @testable import MijiaCore
@@ -136,9 +137,7 @@ struct SettingsSafetyAndAboutTests {
 
     @Test("All Off Scope lists configurable devices, keeps closed writable valves configurable, and updates included count")
     func allOffScopeInclusionAndOverrides() async throws {
-        let suite = "test.wp3c.alloff.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let room = RoomArea(id: "living", name: "客厅", sortOrder: 0)
         let light = SmartDevice(
@@ -188,7 +187,7 @@ struct SettingsSafetyAndAboutTests {
             rooms: [room],
             devices: [light, hiddenLight, plug, vacuum, closedWritableValve, readOnlyValve, curtain]
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.hideDevice(hiddenLight.id)
 
@@ -205,9 +204,7 @@ struct SettingsSafetyAndAboutTests {
 
     @Test("All Off Scope shows global included devices while panel All Off only targets active online included devices in the selected room slice")
     func allOffIncludedDevicesVersusRoomSliceTargets() async throws {
-        let suite = "test.wp3c.alloff.slice.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
 
         let rooms = [
             RoomArea(id: "living", name: "客厅", sortOrder: 0),
@@ -243,7 +240,7 @@ struct SettingsSafetyAndAboutTests {
             rooms: rooms,
             devices: [livingOnLight, livingOffLight, livingOfflineLight, livingHiddenLight, bedroomOnLight]
         ))
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         store.hideDevice(livingHiddenLight.id)
 
@@ -384,12 +381,10 @@ struct SettingsSafetyAndAboutTests {
         #expect(opener.requestedTab == .general)
         #expect(opener.requestedAnchor == nil)
 
-        let suite = "test.wp3c.onboarding.guard.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
 
-        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(rooms: [], devices: [])), defaultsSuiteName: suite)
+        let store = HomeStore(provider: MockHomeProvider(snapshot: SynthesizedHome(rooms: [], devices: [])), defaults: defaults)
         #expect(!store.isShowingOnboarding)
 
         let unsaved = SettingsUnsavedChanges()

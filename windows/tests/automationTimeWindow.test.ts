@@ -138,8 +138,13 @@ async function dispatch(
   event: SystemContextEvent,
   rules: readonly AutomationRule[],
   nowMs: number,
+  resumedAtMs?: number,
 ) {
-  return engine.dispatchEvent(host, event, { rules, nowMs });
+  return engine.dispatchEvent(host, event, {
+    rules,
+    nowMs,
+    ...(resumedAtMs !== undefined ? { resumedAtMs } : {}),
+  });
 }
 
 async function awayCommands(
@@ -399,6 +404,24 @@ describe("automation time window", () => {
       assert.equal(commands.length, 0, kind);
       await dispatch(engine, host, { kind }, [rule], at(1, 30, 0, 13));
       assert.equal(commands.length, 1, kind);
+    }
+  });
+
+  it("skips the resumed late-night window on panel wake as well as on tick, then fires the next night", async () => {
+    const lateOptions = { lateNightWindow: { startHour: 20, endHour: 8 } };
+    for (const kind of ["tick", "panelWake"] as const) {
+      const engine = new AutomationEngine(new MemoryKV());
+      const rule = loadStored(
+        storedRule({ id: `late-resume-${kind}`, trigger: "lateNightUsage", triggerOptions: lateOptions }),
+      );
+      const { host, commands } = trackingHost([makeLight()]);
+      // Automation was switched back on at 23:30 on day 12, inside the late-night window.
+      const resumedAtMs = at(23, 30, 0, 12);
+      await dispatch(engine, host, { kind }, [rule], at(23, 31, 0, 12), resumedAtMs);
+      assert.equal(commands.length, 0, `${kind}: the resumed night is skipped`);
+      // The very next night is a new window, so the same rule fires again.
+      await dispatch(engine, host, { kind }, [rule], at(23, 31, 0, 13), resumedAtMs);
+      assert.equal(commands.length, 1, `${kind}: the next night still fires`);
     }
   });
 

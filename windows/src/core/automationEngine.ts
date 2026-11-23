@@ -1459,7 +1459,7 @@ export class AutomationEngine {
       }
 
       case "panelWake": {
-        if (!this.context.isLocked) this.evaluateLateNightRules(rules, nowMs, matchedRules);
+        if (!this.context.isLocked) this.evaluateLateNightRules(rules, nowMs, matchedRules, options.resumedAtMs);
         break;
       }
 

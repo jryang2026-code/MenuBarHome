@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 import KeychainTestSupport
 @testable import MijiaCore
@@ -39,35 +40,31 @@ struct LGTrustResetRaceTests {
     private struct Fixture {
         let store: HomeStore
         let client: LGWebOSClient
-        let defaults: UserDefaults
+        let defaults: InMemoryUserDefaults
         let vault: CredentialVault?
-        let suite: String
     }
 
     private func makeFixture(withVault: Bool) async throws -> Fixture {
         let vault: CredentialVault? = withVault ? CredentialVault(storage: MemoryVaultStorage().storage) : nil
-        let suite = "test.lg-trust-reset-race.\(UUID().uuidString)"
-        // Seed onboarding before the store exists, then reuse the store's own handle: a second
-        // `UserDefaults(suiteName:)` instance reads through `cfprefsd` and can serve a stale cache
-        // under CI load, making the assertions below flake.
-        try #require(UserDefaults(suiteName: suite)).set(true, forKey: "has_completed_onboarding")
+        // One instance for the seed and for the store: a second `UserDefaults(suiteName:)` instance
+        // reads through `cfprefsd` and can serve a stale cache under CI load (#309).
+        let defaults = InMemoryUserDefaults()
+        defaults.set(true, forKey: "has_completed_onboarding")
         let store = HomeStore(
             provider: MockHomeProvider(snapshot: SynthesizedHome(devices: [])),
-            defaultsSuiteName: suite,
-            credentialVault: vault
+            credentialVault: vault,
+            defaults: defaults
         )
         store.toastAutoDismissInterval = nil
         let initial = LGWebOSConfig(isEnabled: true, host: "192.0.2.10", clientKey: "saved-key")
         #expect(store.updateLGWebOSConfig(initial))
         let client = try #require(store.lgWebOSClient)
-        let defaults = store.userDefaults
-        return Fixture(store: store, client: client, defaults: defaults, vault: vault, suite: suite)
+        return Fixture(store: store, client: client, defaults: defaults, vault: vault)
     }
 
     @Test("A reset keeps LG control disabled when the user disabled it mid-reset, and never restores the old key")
     func resetKeepsDisableMadeDuringReset() async throws {
         let f = try await makeFixture(withVault: true)
-        defer { f.defaults.removePersistentDomain(forName: f.suite) }
         let window = ResetWindow()
         window.install(on: f.store)
 
@@ -99,7 +96,6 @@ struct LGTrustResetRaceTests {
     @Test("A reset on the plain-defaults path keeps unrelated edits made mid-reset")
     func resetKeepsOtherEditsWithoutVault() async throws {
         let f = try await makeFixture(withVault: false)
-        defer { f.defaults.removePersistentDomain(forName: f.suite) }
         let window = ResetWindow()
         window.install(on: f.store)
 
@@ -132,7 +128,6 @@ struct LGTrustResetRaceTests {
     @Test("A pairing-key callback that arrives while the reset is in flight cannot restore trust")
     func lateKeyCallbackDuringResetIsIgnored() async throws {
         let f = try await makeFixture(withVault: true)
-        defer { f.defaults.removePersistentDomain(forName: f.suite) }
         let window = ResetWindow()
         window.install(on: f.store)
 
@@ -156,7 +151,6 @@ struct LGTrustResetRaceTests {
     @Test("A reset stops and asks for a retry when the TV host changed mid-reset, without restoring the old key")
     func resetStopsWhenHostChangedMidReset() async throws {
         let f = try await makeFixture(withVault: true)
-        defer { f.defaults.removePersistentDomain(forName: f.suite) }
         let window = ResetWindow()
         window.install(on: f.store)
 
