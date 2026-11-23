@@ -1,0 +1,99 @@
+{
+  "schemaVersion": 1,
+  "defaultBudget": 16,
+  "slotCosts": {
+    "small": 1,
+    "half": 2,
+    "hero": 4,
+    "full": 4,
+    "panel": 4
+  },
+  "cases": [
+    {
+      "name": "ten half tiles match previous 8-device overview cap",
+      "budget": 16,
+      "items": [
+        { "id": "d1", "size": "half", "isPinned": false },
+        { "id": "d2", "size": "half", "isPinned": false },
+        { "id": "d3", "size": "half", "isPinned": false },
+        { "id": "d4", "size": "half", "isPinned": false },
+        { "id": "d5", "size": "half", "isPinned": false },
+        { "id": "d6", "size": "half", "isPinned": false },
+        { "id": "d7", "size": "half", "isPinned": false },
+        { "id": "d8", "size": "half", "isPinned": false },
+        { "id": "d9", "size": "half", "isPinned": false },
+        { "id": "d10", "size": "half", "isPinned": false }
+      ],
+      "keepingVisibleIds": [],
+      "expectedVisibleIds": ["d1", "d2", "d3", "d4", "d5", "d6", "d7", "d8"],
+      "expectedHiddenIds": ["d9", "d10"],
+      "expectedUsedSlots": 16,
+      "expectedEffectiveBudget": 16
+    },
+    {
+      "name": "full climate tile consumes 4 slots leaving room for 6 half tiles",
+      "budget": 16,
+      "items": [
+        { "id": "ac", "size": "full", "isPinned": false },
+        { "id": "d1", "size": "half", "isPinned": false },
+        { "id": "d2", "size": "half", "isPinned": false },
+        { "id": "d3", "size": "half", "isPinned": false },
+        { "id": "d4", "size": "half", "isPinned": false },
+        { "id": "d5", "size": "half", "isPinned": false },
+        { "id": "d6", "size": "half", "isPinned": false },
+        { "id": "d7", "size": "half", "isPinned": false }
+      ],
+      "keepingVisibleIds": [],
+      "expectedVisibleIds": ["ac", "d1", "d2", "d3", "d4", "d5", "d6"],
+      "expectedHiddenIds": ["d7"],
+      "expectedUsedSlots": 16,
+      "expectedEffectiveBudget": 16
+    },
+    {
+      "name": "oversized item is skipped so smaller items behind it fill remaining slots",
+      "budget": 6,
+      "items": [
+        { "id": "p1", "size": "half", "isPinned": true },
+        { "id": "p2", "size": "half", "isPinned": true },
+        { "id": "big", "size": "hero", "isPinned": false },
+        { "id": "s1", "size": "small", "isPinned": false },
+        { "id": "s2", "size": "small", "isPinned": false },
+        { "id": "s3", "size": "small", "isPinned": false }
+      ],
+      "keepingVisibleIds": [],
+      "expectedVisibleIds": ["p1", "p2", "s1", "s2"],
+      "expectedHiddenIds": ["big", "s3"],
+      "expectedUsedSlots": 6,
+      "expectedEffectiveBudget": 6
+    },
+    {
+      "name": "pinned items always appear even when exceeding default budget",
+      "budget": 6,
+      "items": [
+        { "id": "p1", "size": "full", "isPinned": true },
+        { "id": "p2", "size": "full", "isPinned": true },
+        { "id": "u1", "size": "small", "isPinned": false }
+      ],
+      "keepingVisibleIds": [],
+      "expectedVisibleIds": ["p1", "p2"],
+      "expectedHiddenIds": ["u1"],
+      "expectedUsedSlots": 8,
+      "expectedEffectiveBudget": 8
+    },
+    {
+      "name": "keepingVisibleIds preserves focused item beyond budget without displacing fitted items",
+      "budget": 4,
+      "items": [
+        { "id": "d1", "size": "half", "isPinned": false },
+        { "id": "d2", "size": "half", "isPinned": false },
+        { "id": "d3", "size": "half", "isPinned": false },
+        { "id": "focused", "size": "half", "isPinned": false }
+      ],
+      "keepingVisibleIds": ["focused"],
+      "expectedVisibleIds": ["d1", "d2", "focused"],
+      "expectedHiddenIds": ["d3"],
+      "expectedUsedSlots": 6,
+      "expectedEffectiveBudget": 4
+    }
+  ]
+}
