@@ -40,7 +40,7 @@ extension HomeStore {
     /// Whether passive background network work (auto update checks, debounced resume refresh) must
     /// stay silent: true on uncertain identity reads and on unconfigured live installs (P4a-M).
     var shouldSuppressBackgroundNetworkWork: Bool {
-        if isIdentityUncertain { return true }
+        if isIdentityUncertain || wakeIdentityProviderGeneration != nil { return true }
         if usesInjectedProvider { return false }
         return !hasEnabledConfiguredSource
     }
@@ -151,8 +151,29 @@ extension HomeStore {
     }
 
     func retryIdentityMigration(migrateLegacyMiEnvelope: Bool) -> Bool {
-        syncPendingConnectionRemovals()
-        if let vault = credentialVault {
+        retryIdentityMigration(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope, fromWake: false)
+    }
+
+    func rereadIdentityOnWake() {
+        _ = retryIdentityMigration(migrateLegacyMiEnvelope: false, fromWake: true)
+    }
+
+    private func retryIdentityMigration(migrateLegacyMiEnvelope: Bool, fromWake: Bool) -> Bool {
+        syncPendingConnectionRemovals(quarantineCorruptPayload: !fromWake)
+        let vault = credentialVault ?? (userDefaults === UserDefaults.standard ? .shared : nil)
+        if fromWake {
+            if let vault, !vault.reloadForIdentityRecovery() { return false }
+            if let vault {
+                // A failed launch migration can leave a plaintext credential in its old slot.
+                // Leave that credential for the explicit recovery path.
+                if userDefaults.object(forKey: KeychainHelper.legacyPlaintextTokenKey) != nil,
+                   vault.lookup(KeychainHelper.tokenAccount) == .missing { return false }
+                if userDefaults.object(forKey: LGWebOSConfig.clientKeyDefaultsKey) != nil,
+                   vault.lookup(LGWebOSConfig.clientKeyAccount) == .missing { return false }
+                if userDefaults.object(forKey: MiSessionStore.fallbackDefaultsKey) != nil,
+                   vault.lookup(MiSessionStore.keychainAccount) == .missing { return false }
+            }
+        } else if let vault = credentialVault {
             _ = vault.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
         } else if !isTestEnvironment && userDefaults === UserDefaults.standard {
             _ = CredentialVault.shared.lookup(CredentialVault.vaultAccount, retryingUnavailable: true)
@@ -168,10 +189,21 @@ extension HomeStore {
             ? []
             : reloadedAccountsResult.accounts.filter { !pendingMi.contains($0.id) }
         let needsHAToken = homeBackend != .demo && (!usesInjectedProvider || credentialVault != nil)
+        if fromWake, needsHAToken, !hasPendingHARemoval, let vault,
+           case .value(let data) = vault.lookup(KeychainHelper.tokenAccount),
+           String(data: data, encoding: .utf8) == nil {
+            return false
+        }
         let reloadedHAToken = (!hasPendingHARemoval && needsHAToken)
             ? KeychainHelper.loadToken(defaults: userDefaults, vault: credentialVault)
             : ""
         let reloadedHasHA = !reloadedHAToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let reloadedLGConfig = fromWake ? LGWebOSConfig.load(from: userDefaults, vault: vault) : lgConfig
+        if fromWake, reloadedLGConfig.isEnabled, reloadedLGConfig.hasConfiguredHost, let vault,
+           case .value(let data) = vault.lookup(LGWebOSConfig.clientKeyAccount),
+           String(data: data, encoding: .utf8) == nil {
+            return false
+        }
         let hasExplicitOnboardingFlag = userDefaults.object(forKey: "has_completed_onboarding") != nil
         let resolution = Self.resolveLaunchCapabilities(
             defaults: userDefaults,
@@ -179,13 +211,21 @@ extension HomeStore {
             accountsResult: reloadedAccountsResult,
             hasHASource: reloadedHasHA,
             serverURLString: serverURLString,
-            lgHasConfiguredHost: lgConfig.hasConfiguredHost,
+            lgHasConfiguredHost: reloadedLGConfig.hasConfiguredHost,
             isTestEnvironment: isTestEnvironment,
             checkHATokenVault: needsHAToken,
             legacyVoiceInput: enableVoiceInput,
             pendingMiRemovalScopes: pendingMi,
             connectionRemovalReadError: hasCorruptConnectionRemovalState
         )
+        if fromWake, resolution.retryDiagnostic == nil {
+            wakeIdentityProviderGeneration = providerGeneration
+            if reloadedLGConfig != lgConfig {
+                suppressNextLGConfigDidSetSave = true
+                lgConfig = reloadedLGConfig
+                suppressNextLGConfigDidSetSave = false
+            }
+        }
         capabilitySelection = resolution.selection
         capabilityResolutionMode = resolution.mode
         identityMigrationDiagnostic = resolution.retryDiagnostic
@@ -197,6 +237,7 @@ extension HomeStore {
         lastPersistedDisabledScopes = explicitlyDisabledScopes
 
         guard resolution.retryDiagnostic == nil else {
+            if fromWake { return false }
             showToast(
                 L10n.tr(
                     "仍无法读取历史配置或凭据，请检查钥匙串授权后重试",
@@ -232,6 +273,8 @@ extension HomeStore {
         syncHistoryConnectionScopes()
         syncMiotTypePrunePolicy()
         scheduleMiSessionExpiryTransition()
+        if fromWake { return true }
+        wakeIdentityProviderGeneration = nil
         if !usesInjectedProvider && homeBackend != .demo {
             rebuildLiveProvider(migrateLegacyMiEnvelope: migrateLegacyMiEnvelope)
             startLGWebOSIfNeeded()

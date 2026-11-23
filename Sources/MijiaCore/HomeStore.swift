@@ -1733,5 +1733,7 @@ public final class HomeStore {
     @ObservationIgnored var resumeDebounceInterval: Duration = .milliseconds(300)
     @ObservationIgnored var resumeMaxDelay: Duration = .seconds(5)
     @ObservationIgnored var resumeScheduler: DebouncedResumeScheduler = .live
+    @ObservationIgnored var lastWakeIdentityReadAt: ContinuousClock.Instant?
+    @ObservationIgnored var wakeIdentityProviderGeneration: UInt64?
     @ObservationIgnored var onDebouncedResumeHook: (@MainActor (Set<ResumeReason>) async -> Void)?
 }

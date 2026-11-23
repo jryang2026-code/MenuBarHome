@@ -14,9 +14,11 @@ extension HomeStore {
             || pendingMiRemovalScopes.contains(ConnectionRemovalStore.miScope(accountId: accountId))
     }
 
-    func syncPendingConnectionRemovals() {
+    func syncPendingConnectionRemovals(quarantineCorruptPayload: Bool = true) {
         let state = ConnectionRemovalStore.readState(defaults: userDefaults)
-        if state.readError { ConnectionRemovalStore.quarantineCorruptPayloadIfNeeded(defaults: userDefaults) }
+        if state.readError && quarantineCorruptPayload {
+            ConnectionRemovalStore.quarantineCorruptPayloadIfNeeded(defaults: userDefaults)
+        }
         if hasCorruptConnectionRemovalState != state.readError { hasCorruptConnectionRemovalState = state.readError }
         if pendingConnectionRemovals != state.records { pendingConnectionRemovals = state.records }
     }
