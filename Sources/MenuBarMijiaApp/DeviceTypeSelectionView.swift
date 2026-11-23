@@ -116,8 +116,8 @@ struct DeviceTypeSelectionView: View {
             }
             if !impact.retainedSafetyDevices.isEmpty {
                 impactLine("shield.checkered", L10n.format(
-                    "提醒照常：%@",
-                    "Alerts keep working: %@",
+                    "继续读取安全信号：%@",
+                    "Continues reading safety signals: %@",
                     Self.list(impact.retainedSafetyDevices.map { device in
                         L10n.format("%@（%@）", "%@ (%@)", device.name, device.signals.map(\.selectionTitle).joined(separator: L10n.tr("、", ", ")))
                     })

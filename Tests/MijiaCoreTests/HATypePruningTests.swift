@@ -53,6 +53,7 @@ struct HATypePruningTests {
         "entities": .array([
             object(["entity_id": "light.ceiling", "device_id": "dev_light"]),
             object(["entity_id": "cover.balcony", "device_id": "dev_cover"]),
+            object(["entity_id": "number.curtain_travel_time", "device_id": "dev_cover"]),
             object(["entity_id": "binary_sensor.kitchen_leak", "device_id": "dev_leak"]),
             object(["entity_id": "sensor.kitchen_leak_battery", "device_id": "dev_leak"]),
             object(["entity_id": "valve.gas_main", "device_id": "dev_valve"]),
@@ -78,6 +79,43 @@ struct HATypePruningTests {
             state("script.goodnight", "off", ["friendly_name": .string("晚安")]),
         ]),
     ]
+
+    static let cameras: [String: JSONValue] = [
+        "devices": .array([
+            object(["id": "dev_camera", "name": "Camera"]),
+            object(["id": "dev_doorbell", "name": "Doorbell"]),
+        ]),
+        "entities": .array([
+            object(["entity_id": "camera.front", "device_id": "dev_camera"]),
+            object(["entity_id": "switch.camera_power", "device_id": "dev_camera"]),
+            object(["entity_id": "camera.doorbell", "device_id": "dev_doorbell"]),
+            object(["entity_id": "event.doorbell_press", "device_id": "dev_doorbell"]),
+        ]),
+        "states": .array([
+            state("camera.front", "idle"),
+            state("switch.camera_power", "on"),
+            state("camera.doorbell", "idle"),
+            state("event.doorbell_press", "unknown", ["device_class": .string("doorbell")]),
+        ]),
+    ]
+
+    @Test("The first classified doorbell frame refreshes the retention report, while later presses do not")
+    func lateDoorbellClassificationRefreshesRetention() throws {
+        var fixture = Self.cameras
+        let states = try #require(fixture["states"]?.arrayValue)
+        fixture["states"] = .array(states.filter { $0["entity_id"]?.stringValue != "event.doorbell_press" })
+        let policy = Self.policy(closed: [.camera], signals: [.doorbell])
+        var (snapshot, _, report) = try Self.load(fixture, policy: policy)
+        #expect(report?.safetyDevices.isEmpty == true)
+
+        let attributes = ["device_class": JSONValue.string("doorbell")]
+        let first = Self.stateChanged("event.doorbell_press", "2026-11-20T12:00:00Z", attributes)
+        #expect(try snapshot.receive(first, typePrunePolicy: policy) != nil)
+        #expect(snapshot.takeTypePruneReport()?.safetyDevices.map(\.id) == ["dev_doorbell"])
+        let next = Self.stateChanged("event.doorbell_press", "2026-11-20T12:01:00Z", attributes)
+        #expect(try snapshot.receive(next, typePrunePolicy: policy) == nil)
+        #expect(snapshot.takeDoorbellRings().count == 2)
+    }
 
     static func policy(
         closed: Set<DeviceCategoryID>,
@@ -291,6 +329,22 @@ struct HATypePruningTests {
         }
     }
 
+    @Test("Provider ownership rejects closed cards before the host has received its pruning report")
+    func writeFallbackUsesCurrentTypeSelection() throws {
+        var (snapshot, _, report) = try Self.load(Self.home, policy: Self.policy(closed: []))
+        #expect(report?.hiddenIndexedDevices.isEmpty == true)
+        let changedPolicy = Self.policy(closed: [.cover])
+        #expect(snapshot.closedCategory(for: "cover.balcony", policy: changedPolicy) == .cover)
+        #expect(snapshot.closedCategory(for: "number.curtain_travel_time", policy: changedPolicy) == .cover)
+        #expect(snapshot.closedCategory(for: "cover.newly_added", policy: changedPolicy) == nil)
+        #expect(snapshot.closedCategory(for: "scene.balcony_close", policy: changedPolicy) == nil)
+        #expect(snapshot.closedCategory(for: "light.ceiling", policy: changedPolicy) == nil)
+        #expect(snapshot.closedCategory(for: "cover.balcony", policy: Self.policy(closed: [])) == nil)
+
+        snapshot.resetForReconnect()
+        #expect(snapshot.closedCategory(for: "number.curtain_travel_time", policy: changedPolicy) == .cover)
+    }
+
     @Test("A starred card of a closed type is kept only while the offline alert is on")
     func starredOfflineKeepsTheCard() throws {
         let kept = Self.policy(closed: [.cover], signals: [.starredOffline], starred: ["dev_cover"])
@@ -330,7 +384,32 @@ struct HATypePruneProviderTests {
         await collecting.value
     }
 
-    @Test("A hidden safety-retained alarm publishes both report and snapshot when visible devices are unchanged", .timeLimit(.minutes(1)))
+    @Test("The REST writer rejects a known closed entity before sending a service request", .timeLimit(.minutes(1)))
+    func restWriterChecksRegisteredOwnership() async throws {
+        let socket = FixtureSocket(root: HATypePruningTests.cameras)
+        let box = HATypePrunePolicyBox(policy: HATypePruningTests.policy(closed: []))
+        let provider = HAWebSocketProvider(
+            baseURLString: "http://192.0.2.10:8123", token: "t",
+            rediscover: { _ in [] }, allowsToken: { _ in true },
+            typePrunePolicyLoader: { box.get() }
+        )
+        await provider.setTestSeams(connectOverride: nil, webSocketFactory: { _ in socket })
+        let log = PruneEventLog()
+        let collecting = Task { for await event in provider.events() { await log.append(event) } }
+        await log.waitForSnapshots(1)
+
+        box.update(HATypePruningTests.policy(closed: [.camera]))
+        await #expect(throws: CapabilityControlBlockedError(reason: .categoryDisabled(.camera))) {
+            try await provider.execute(.setSwitch(
+                entityId: "switch.camera_power|select.camera_removed_night_mode", isOn: false
+            ))
+        }
+
+        await provider.shutdown()
+        await collecting.value
+    }
+
+    @Test("A hidden alarm publishes without visible changes and becomes stale when credentials change", .timeLimit(.minutes(1)))
     func providerPublishesRetainedSafetyAlarmWhenVisibleHomeUnchanged() async throws {
         let socket = FixtureSocket(root: HATypePruningTests.home)
         let box = HATypePrunePolicyBox(policy: HATypePruningTests.policy(closed: [.sensor], signals: [.leak]))
@@ -357,8 +436,11 @@ struct HATypePruneProviderTests {
             Issue.record("Expected alarming retained leak sensor")
         }
 
+        await provider.updateCredentials(baseURLString: "http://192.0.2.10:8123", token: "")
         await provider.shutdown()
         await collecting.value
+        let stale = try #require(await log.reports.last?.safetyDevices.first)
+        #expect(stale.telemetryStale)
     }
 }
 
