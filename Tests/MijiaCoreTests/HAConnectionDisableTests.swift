@@ -659,7 +659,8 @@ struct HAConnectionDisableTests {
         #expect(store.loadHAToken().isEmpty)
         let disabled = try #require(rules.load().first)
         #expect(disabled.id == rule.id && disabled.action == rule.action && !disabled.isEnabled)
-        #expect(disabled.pausedScopes.isEmpty && disabled.pausedCapabilities.isEmpty)
+        #expect(disabled.pausedScopes.isEmpty && disabled.pausedCapabilities == [.connection(.homeAssistant)])
+        #expect(store.pausedRuleRequiresManualResume(disabled))
         store.eventTask?.cancel()
         store = HomeStore(provider: nil, credentialVault: vault, haProviderFactory: { _, _ in stub }, defaults: defaults)
 

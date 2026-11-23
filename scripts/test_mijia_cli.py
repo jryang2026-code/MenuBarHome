@@ -613,7 +613,13 @@ class MijiaMcpTests(unittest.TestCase):
     def sleep(self, seconds: float) -> None:
         self.clock += seconds
 
-    def make_ctx(self, app: FakeApp | None = None, timeout: float = 1.5) -> tuple[mijia.McpContext, FakeApp]:
+    def make_ctx(
+        self,
+        app: FakeApp | None = None,
+        timeout: float = 1.5,
+        *,
+        read_only: bool = False,
+    ) -> tuple[mijia.McpContext, FakeApp]:
         app = app or FakeApp(self.path)
         ctx = mijia.McpContext(
             path=self.path,
@@ -621,6 +627,7 @@ class MijiaMcpTests(unittest.TestCase):
             now=self.now,
             sleep=self.sleep,
             timeout=timeout,
+            read_only=read_only,
         )
         return ctx, app
 
@@ -713,6 +720,114 @@ class MijiaMcpTests(unittest.TestCase):
         self.assertFalse(status["isError"])
         self.assertEqual(status["structuredContent"]["deviceCount"], 5)
         self.assertNotIn(TOKEN, json.dumps(status, ensure_ascii=False))
+
+    READ_ONLY_TOOL_NAMES = frozenset({"focus_device", "get_home_status", "list_devices"})
+    CONTROL_TOOL_NAMES = frozenset(
+        {
+            "ask_home",
+            "run_scene",
+            "set_device_power",
+            "set_fan",
+            "set_light_brightness",
+            "set_light_color_temp",
+            "set_temperature",
+            "toggle_device",
+        }
+    )
+
+    def list_tools(self, ctx: mijia.McpContext) -> dict[str, dict]:
+        resp = mijia.handle_mcp_message(ctx, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        assert resp is not None
+        return {tool["name"]: tool for tool in resp["result"]["tools"]}
+
+    def test_control_tools_are_marked_destructive_so_clients_confirm(self) -> None:
+        ctx, _ = self.make_ctx()
+        tools = self.list_tools(ctx)
+        self.assertEqual(set(tools), self.READ_ONLY_TOOL_NAMES | self.CONTROL_TOOL_NAMES)
+        # 默认会话仍然暴露全部工具，只是写工具的注解不再声称“纯增量”
+        for name in self.CONTROL_TOOL_NAMES:
+            annotations = tools[name]["annotations"]
+            self.assertFalse(annotations["readOnlyHint"], name)
+            self.assertTrue(annotations["destructiveHint"], name)
+        for name in self.READ_ONLY_TOOL_NAMES:
+            annotations = tools[name]["annotations"]
+            self.assertTrue(annotations["readOnlyHint"], name)
+            self.assertFalse(annotations["destructiveHint"], name)
+        self.assertTrue(tools["set_device_power"]["annotations"]["idempotentHint"])
+        self.assertFalse(tools["toggle_device"]["annotations"]["idempotentHint"])
+
+    def test_read_only_mode_hides_control_tools_and_rejects_their_calls(self) -> None:
+        ctx, app = self.make_ctx(read_only=True)
+        self.assertEqual(set(self.list_tools(ctx)), self.READ_ONLY_TOOL_NAMES)
+
+        init = mijia.handle_mcp_message(
+            ctx, {"jsonrpc": "2.0", "id": 2, "method": "initialize", "params": {}}
+        )
+        assert init is not None
+        self.assertIn("--read-only", init["result"]["instructions"])
+
+        blocked = mijia.handle_mcp_message(
+            ctx,
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "set_device_power", "arguments": {"device": "sftd", "on": True}},
+            },
+        )
+        assert blocked is not None
+        self.assertTrue(blocked["result"]["isError"])
+        self.assertIn("--read-only", blocked["result"]["content"][0]["text"])
+        self.assertEqual(app.opened, [])
+
+        # 只读工具与资源在只读模式下照常可用，也不泄漏令牌
+        devices = mijia.handle_mcp_message(
+            ctx,
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "list_devices", "arguments": {"room": "书房"}},
+            },
+        )
+        assert devices is not None
+        self.assertFalse(devices["result"]["isError"])
+        self.assertNotIn(TOKEN, json.dumps(devices, ensure_ascii=False))
+        resources = mijia.handle_mcp_message(
+            ctx, {"jsonrpc": "2.0", "id": 5, "method": "resources/list"}
+        )
+        assert resources is not None
+        self.assertEqual(len(resources["result"]["resources"]), 3)
+
+    def test_mijia_mcp_executable_read_only_flag_reaches_the_server(self) -> None:
+        lines = [
+            json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+            json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "toggle_device", "arguments": {"device": "不存在的设备"}},
+                }
+            ),
+        ]
+        completed = subprocess.run(
+            [sys.executable, str(MCP_SCRIPT), "--read-only", "--snapshot", str(self.path)],
+            input="\n".join(lines) + "\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=10,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        replies = [json.loads(line) for line in completed.stdout.strip().splitlines()]
+        self.assertEqual([reply["id"] for reply in replies], [1, 2, 3])
+        self.assertEqual({tool["name"] for tool in replies[1]["result"]["tools"]}, self.READ_ONLY_TOOL_NAMES)
+        self.assertTrue(replies[2]["result"]["isError"])
+        self.assertIn("--read-only", replies[2]["result"]["content"][0]["text"])
+        self.assertNotIn(TOKEN, completed.stdout)
 
     def test_control_tools_dispatch_exact_links_and_report_feedback(self) -> None:
         res, app = self.call_tool("set_device_power", {"device": "sftd", "on": True})
