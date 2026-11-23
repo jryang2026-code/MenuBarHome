@@ -1548,6 +1548,7 @@ extension HomeStore {
         guard KeychainHelper.saveToken("", defaults: userDefaults, vault: credentialVault) else {
             return false
         }
+        haCredentialGeneration &+= 1
         (activeDualProvider ?? (provider as? DualSourceHomeProvider))?.markBackendDisabled(.homeAssistant)
         clearHATeardownState()
         let (_, cameraTeardownIds) = homeBackend == .demo ? (Set<String>(), Set<String>()) : collectHADisabledDeviceIds()
@@ -1726,6 +1727,7 @@ extension HomeStore {
             )
             return false
         }
+        haCredentialGeneration &+= 1
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
         let hadHASource = hasHASource
         if trimmedToken.isEmpty { requireManualResumeAfterHARemoval() }

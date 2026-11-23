@@ -1,5 +1,5 @@
 import { acquireHaTransportLease, invokeHaWithLease, isHaBlockedRequestError } from "./haTransportGate.js";
-import { HomeAssistantSynthesizer, type HAInvoke } from "./homeAssistant.js";
+import { HomeAssistantSynthesizer, homeAssistantIdentity, type HAInvoke } from "./homeAssistant.js";
 import { currentLanguage,
   resolveLanguage,
   tr3,
@@ -533,6 +533,15 @@ interface ScanUnsupportedResult { readonly devices: UnsupportedDevice[];
   readonly scannedAtMs: number;
 }
 
+function fnv1aHex(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 async function fetchRawSpecByUrn(specType: string,
   transport: HttpTransport,
 ): Promise<MiotDeviceSpec | null> { try {
@@ -570,14 +579,33 @@ export class UnsupportedDeviceScanner { public devices: UnsupportedDevice[] = []
     }
   }
 
+  /**
+   * Returns the cached unsupported device count for `options` without triggering any network scan.
+   * Returns 0 when no scan has completed yet or the active context changed.
+   */
+  cachedUnsupportedCount(options?: ScanUnsupportedOptions): number {
+    if (this.lastScannedAtMs === null || this.devices.length === 0) return 0;
+    if (options && this.lastContextKey !== null) {
+      const nextKey = UnsupportedDeviceScanner.contextKey(options);
+      if (this.lastContextKey !== nextKey) return 0;
+    }
+    return this.devices.length;
+  }
+
   static contextKey(options: ScanUnsupportedOptions): string { const accounts = options.miAccounts
       ? options.miAccounts.map((a) => a.id)
       : (options.miSessions ?? []).map((s) => makeMiAccount(s).id);
+    const haUrl = (options.haBaseURL ?? "").trim().replace(/\/+$/, "").toLowerCase();
+    const haToken = (options.haToken ?? "").trim();
+    const haIdentity = haToken
+      ? (homeAssistantIdentity(options.haBaseURL ?? "", haToken) ?? `${haUrl}|${fnv1aHex(haToken)}`)
+      : haUrl;
     return JSON.stringify({
       mode: options.connectionMode ?? "xiaomiCloud",
       dual: Boolean(options.dualSourceEnabled),
       mi: accounts,
-      ha: (options.haBaseURL ?? "").trim().replace(/\/+$/, "").toLowerCase(),
+      ha: haIdentity,
+      haDisabled: Boolean(options.haDisabled),
     });
   }
 

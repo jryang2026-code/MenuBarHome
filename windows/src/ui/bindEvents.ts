@@ -853,6 +853,11 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       host.openSettingsSheet("connection");
     });
 
+    host.root.querySelector("#btn-unsupported-devices-row")?.addEventListener("click", () => {
+      host.openSettingsSheet("connection");
+      highlightSettingsAnchor(host.root, "scanUnsupportedDevices");
+    });
+
     // A home whose devices the cloud hid leaves the panel empty until the user goes back to all homes.
     host.root.querySelector("#btn-empty-all-homes")?.addEventListener("click", () => {
       host.settings.selectedHomeId = null;

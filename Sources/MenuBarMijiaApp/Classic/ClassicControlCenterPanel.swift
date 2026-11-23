@@ -595,6 +595,15 @@ public struct ClassicControlCenterPanel: View {
                                     }
                                 }
                             }
+
+                            if !search.isSearching, !isEditingLayout {
+                                let unsupportedCount = UnsupportedDeviceScanner.shared.cachedUnsupportedCount(for: store)
+                                if unsupportedCount > 0 {
+                                    UnsupportedDevicesQuietRow(count: unsupportedCount) {
+                                        SettingsWindowOpener.shared.show(tab: .about, anchor: .scanUnsupportedDevices)
+                                    }
+                                }
+                            }
                         }
                         .coordinateSpace(name: TileSpace.name)
                         // Cards stop hit-testing in edit mode; the container must still catch the press.
