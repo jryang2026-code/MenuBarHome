@@ -351,6 +351,35 @@ struct AutomationSettingsSection: View {
                     .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                Picker(L10n.tr("执行模式", "Execution mode"), selection: Binding(
+                    get: { rule.mode },
+                    set: { mode in
+                        guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                        current.mode = mode
+                        update(current)
+                    }
+                )) {
+                    ForEach(AutomationExecutionMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                DisclosureGroup(L10n.tr("最近运行", "Recent runs")) {
+                    let entries = store.automationRunHistory.filter { $0.ruleId == rule.id }
+                    if entries.isEmpty {
+                        Text(L10n.tr("暂无运行记录", "No runs yet"))
+                    }
+                    ForEach(entries) { entry in
+                        let result = entry.reason.map {
+                            L10n.format("已跳过 · %@", "Skipped · %@", $0.title)
+                        } ?? L10n.tr("已执行", "Executed")
+                        VStack(alignment: .leading) {
+                            Text(entry.time, format: .dateTime.month().day().hour().minute().second())
+                            Text("\(entry.trigger.title) · \(result)")
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+                .font(.system(size: DesignTokens.TypeSize.caption))
             }
 
             Spacer(minLength: 6)
