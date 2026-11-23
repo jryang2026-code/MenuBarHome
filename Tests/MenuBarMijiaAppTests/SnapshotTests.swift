@@ -3,6 +3,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import KeychainTestSupport
+import PreferencesTestSupport
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
 
@@ -336,7 +337,6 @@ struct SnapshotFixture {
     struct MissingDefaults: Error {}
 
     let store: HomeStore
-    private let suiteName: String
     private let previousAppearance: String?
     private let previousTemperatureUnit: String?
     private let previousRoomOrder: String?
@@ -385,11 +385,9 @@ struct SnapshotFixture {
         AppDiagnosticsLog.shared.replaceTimestampsForTesting([])
         #endif
 
-        let suiteName = "MenuBarMijiaSnapshotTests-\(UUID().uuidString)"
-        self.suiteName = suiteName
-        guard let defaults = UserDefaults(suiteName: suiteName) else {
-            throw MissingDefaults()
-        }
+        // One instance for the seed, the store and the assertions: a second
+        // `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+        let defaults = InMemoryUserDefaults()
         defaults.set(true, forKey: "has_completed_onboarding")
         defaults.set(AppLanguagePreference.zhHans.rawValue, forKey: "app_language")
         defaults.set(TemperatureUnitPreference.celsius.rawValue, forKey: TemperatureUnitPreference.storageKey)
@@ -406,7 +404,7 @@ struct SnapshotFixture {
                 includeCamera: includeCamera,
                 includeDualLensCamera: includeDualLensCamera
             )),
-            defaultsSuiteName: suiteName
+            defaults: defaults
         )
 
         var attempts = 0
@@ -518,7 +516,6 @@ struct SnapshotFixture {
         LayoutUIState.shared.resetForTesting()
         AppDiagnosticsLog.shared.replaceTimestampsForTesting(previousErrorTimestamps)
         #endif
-        store.userDefaults.removePersistentDomain(forName: suiteName)
     }
 }
 

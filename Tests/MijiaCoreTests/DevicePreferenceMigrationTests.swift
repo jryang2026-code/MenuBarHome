@@ -1,4 +1,5 @@
 import Foundation
+import PreferencesTestSupport
 import Testing
 @testable import MijiaCore
 
@@ -7,31 +8,25 @@ import Testing
 @MainActor
 @Suite(.serialized)
 struct DevicePreferenceMigrationTests {
-    /// A brand-new UUID suite holds nothing to clear, so it is never cleared before the test writes:
-    /// `removePersistentDomain` is applied asynchronously by cfprefsd and, with hundreds of suites
-    /// racing on a loaded runner, the clear lands *after* the test's own `set` and wipes the keys it
-    /// just wrote (#24 flake). Each test drops its domain with a `defer` at the end instead.
-    private func makeSuiteDefaults() -> (defaults: UserDefaults, suite: String) {
-        let suite = "test.prefmigration.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        return (defaults, suite)
+    /// One instance for the seed, the migrator and the store a test opens on the same domain: a
+    /// second `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+    private func makeDefaults() -> InMemoryUserDefaults {
+        InMemoryUserDefaults()
     }
 
     /// What a new process decodes from the persisted suite: the property-list object graph
-    /// (`NSDictionary` / `NSArray`) handed to a fresh `UserDefaults` instance. The in-process
-    /// defaults cache keeps the original Swift values, so only this shape proves a relaunch still
-    /// reads the adoption ledger (#24).
-    private func relaunchedSuite(suite: String, from defaults: UserDefaults) throws -> (defaults: UserDefaults, suite: String) {
-        let domain = try #require(defaults.persistentDomain(forName: suite))
-        let data = try PropertyListSerialization.data(fromPropertyList: domain, format: .binary, options: 0)
+    /// (`NSDictionary` / `NSArray`) handed to a fresh defaults instance. The in-process defaults
+    /// cache keeps the original Swift values, so only this shape proves a relaunch still reads the
+    /// adoption ledger (#24).
+    private func relaunchedDefaults(from defaults: InMemoryUserDefaults) throws -> InMemoryUserDefaults {
+        let data = try PropertyListSerialization.data(fromPropertyList: defaults.storedValues(), format: .binary, options: 0)
         let decoded = try PropertyListSerialization.propertyList(from: data, options: [], format: nil)
         let persisted = try #require(decoded as? [String: Any])
-        let restartedSuite = "test.prefmigration.relaunch.\(UUID().uuidString)"
-        let restarted = try #require(UserDefaults(suiteName: restartedSuite))
+        let restarted = InMemoryUserDefaults()
         for (key, value) in persisted {
             restarted.set(value, forKey: key)
         }
-        return (restarted, restartedSuite)
+        return restarted
     }
 
     private func setAliases(_ aliases: [String: String], defaults: UserDefaults) {
@@ -62,8 +57,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("Hidden wins over visible, and the canonical card stays visible when the orphan was (#24)")
     func hiddenPreferenceMerges() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
 
         let outcome = DevicePreferenceMigrator.adopt(
@@ -81,8 +75,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("A favorited orphan keeps the card starred and inherits its position in the order (#24)")
     func favoritePreferenceMerges() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         defaults.set(["a", "111000111", "b"], forKey: ViewPreferenceKeys.favoriteOrder)
 
@@ -96,8 +89,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("An alias merges only when the canonical side has none of its own (#24)")
     func aliasMergesWithoutOverwriting() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         setAliases(["111000111": "门厅筒灯"], defaults: defaults)
 
         let copied = DevicePreferenceMigrator.adopt(
@@ -117,8 +109,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("Tile sizes merge per page and never overwrite the canonical side (#24)")
     func tileSizesMergePerScope() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         setTileSizes(["mi_page|111000111": "half", "111000111": "full"], defaults: defaults)
 
         let outcome = DevicePreferenceMigrator.adopt(
@@ -140,8 +131,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("Running the adoption twice changes nothing the second time (#24)")
     func adoptionIsIdempotent() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         setAliases(["111000111": "门厅筒灯"], defaults: defaults)
@@ -171,8 +161,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("Edits made after the adoption stick: the orphan never re-applies them (#24)")
     func userEditsAfterAdoptionStick() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteOrder)
@@ -199,8 +188,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("An adoption with nothing to copy still counts, so a later cleared alias is not refilled (#24)")
     func emptyAdoptionStillCounts() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         setAliases(["ha-light-b": "客厅主灯", "222000222": "旧名字"], defaults: defaults)
         let first = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-b", orphanedID: "222000222", defaults: defaults)
         #expect(!first.changed)
@@ -212,8 +200,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("A crash between the preference writes and the ledger write stays idempotent (#24)")
     func crashBeforeLedgerWriteIsIdempotent() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteOrder)
@@ -234,8 +221,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("A relaunch decodes the persisted adoption ledger and keeps the user's edits (#24)")
     func persistedLedgerSurvivesARelaunch() throws {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         _ = DevicePreferenceMigrator.adopt(canonicalID: "ha-light-a", orphanedID: "111000111", defaults: defaults)
         #expect(defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111", "ha-light-a"])
@@ -243,19 +229,17 @@ struct DevicePreferenceMigrationTests {
         // The user unhides the merged card. The orphaned entry stays on disk for a Mi-only home.
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
 
-        let relaunched = try relaunchedSuite(suite: suite, from: defaults)
-        defer { UserDefaults.standard.removePersistentDomain(forName: relaunched.suite) }
+        let relaunched = try relaunchedDefaults(from: defaults)
         let again = DevicePreferenceMigrator.adopt(
-            canonicalID: "ha-light-a", orphanedID: "111000111", defaults: relaunched.defaults
+            canonicalID: "ha-light-a", orphanedID: "111000111", defaults: relaunched
         )
         #expect(again == .none, "The ledger written before the relaunch must still be readable")
-        #expect(relaunched.defaults.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
+        #expect(relaunched.stringArray(forKey: ViewPreferenceKeys.hiddenDeviceIds) == ["111000111"])
     }
 
     @Test("Bookkeeping that cannot be read never re-applies preferences the user cleared (#24)")
     func unreadableLedgerNeverReapplies() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
         // A damaged or foreign ledger: present, but not pairs this build can name. Treating it as
@@ -273,8 +257,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("A ledger written by the previous build still counts and is upgraded on the next merge (#24)")
     func legacyDictionaryLedgerStillCounts() {
-        let (defaults, suite) = makeSuiteDefaults()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
         // The shape the first version of this fix wrote: canonical id -> orphaned ids.
         defaults.set(["ha-light-a": ["111000111"]], forKey: ViewPreferenceKeys.adoptedPreferencePairs)
@@ -315,9 +298,7 @@ struct DevicePreferenceMigrationTests {
 
     @Test("A dual-source snapshot merges the orphaned side's preferences onto the canonical card (#24)")
     func storeMergesOrphanedPreferencesOnSnapshot() async throws {
-        let suite = "test.prefadoption.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         // HA-side history (a favorite) plus Mi-side history (hidden, an alias, a tile): both sides
         // are known, so the canonical id stays the HA id and the Mi id's prefs must merge onto it.
         defaults.set(["ha-light-a"], forKey: ViewPreferenceKeys.favoriteDeviceIds)
@@ -331,7 +312,7 @@ struct DevicePreferenceMigrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             provider: HomeStore.makeComposite(homeAssistant: haMock, xiaomiCloud: miMock, defaults: defaults),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { store.stop() }
         // The first merged snapshot may still be HA-only (the Mi event lands a beat later), and
@@ -359,18 +340,15 @@ struct DevicePreferenceMigrationTests {
         #expect(store.devices == devicesAfterFirst)
 
         // Awaited teardown, not just the `defer { store.stop() }`: `stop()` unwinds the dual-source
-        // provider on an unstructured `Task`, while the `defer` that drops the suite's persistent
-        // domain runs the moment this sync part of the test returns. The Mi snapshot it just took
-        // could still write the suite while cfprefsd is tearing it down, racing the next suite
-        // (#274). The `defer` stays as the fallback for an early `#require` throw.
+        // provider on an unstructured `Task`, so the Mi snapshot it just took can still land after
+        // this sync part of the test returns and leak into the next case (#274). The `defer` stays
+        // as the fallback for an early `#require` throw.
         await store.shutdown()
     }
 
     @Test("Unhiding or unstarring the merged card sticks across snapshots and a relaunch (#24)")
     func storeKeepsUserEditsAfterAdoption() async throws {
-        let suite = "test.prefadoption.edits.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = makeDefaults()
         // HA-side history (a tile) and Mi-side history (hidden, starred): the HA id stays canonical.
         setTileSizes(["ha_page|ha-light-a": "half"], defaults: defaults)
         defaults.set(["111000111"], forKey: ViewPreferenceKeys.hiddenDeviceIds)
@@ -382,7 +360,7 @@ struct DevicePreferenceMigrationTests {
         let miMock = MockHomeProvider(snapshot: miHome)
         let store = HomeStore(
             provider: HomeStore.makeComposite(homeAssistant: haMock, xiaomiCloud: miMock, defaults: defaults),
-            defaultsSuiteName: suite
+            defaults: defaults
         )
         defer { store.stop() }
         try await store.waitForTestSnapshot()
@@ -404,15 +382,14 @@ struct DevicePreferenceMigrationTests {
 
         // A relaunch decodes the persisted suite (property-list object graph) into a fresh defaults
         // instance and must not redo the finished adoption either.
-        let persisted = try relaunchedSuite(suite: suite, from: defaults)
-        defer { UserDefaults.standard.removePersistentDomain(forName: persisted.suite) }
+        let persisted = try relaunchedDefaults(from: defaults)
         let relaunched = HomeStore(
             provider: HomeStore.makeComposite(
                 homeAssistant: MockHomeProvider(snapshot: pairableHome(id: "ha-light-a", did: "111000111")),
                 xiaomiCloud: MockHomeProvider(snapshot: miHome),
-                defaults: persisted.defaults
+                defaults: persisted
             ),
-            defaultsSuiteName: persisted.suite
+            defaults: persisted
         )
         defer { relaunched.stop() }
         try await relaunched.waitForTestSnapshot()
@@ -422,8 +399,8 @@ struct DevicePreferenceMigrationTests {
 
         // Both stores are awaited so neither dual-source provider outlives the test: the two `defer
         // { .stop() }` calls unwind them on unstructured tasks that would otherwise still be
-        // tearing down while the suite domains above are dropped (#274). `relaunched` goes first
-        // because it reads the snapshot `store` produced.
+        // writing preferences after the case returns (#274). `relaunched` goes first because it
+        // reads the snapshot `store` produced.
         await relaunched.shutdown()
         await store.shutdown()
     }

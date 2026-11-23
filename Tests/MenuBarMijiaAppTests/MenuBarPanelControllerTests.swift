@@ -1,4 +1,5 @@
 import AppKit
+import PreferencesTestSupport
 import Speech
 import SwiftUI
 import Testing
@@ -100,25 +101,26 @@ struct MenuBarPanelControllerTests {
         SnapshotWindow.pinOverlayScrollers()
     }
 
-    private func makeCameraController(suite: String) throws -> CameraLivePanelController {
+    /// One instance for the store, the panel controller and the camera window: a second
+    /// `UserDefaults(suiteName:)` reads through cfprefsd and can serve a stale cache (#309).
+    private func makeCameraController(defaults: UserDefaults) -> CameraLivePanelController {
         let controller = CameraLivePanelController()
         controller.presentsActively = false
-        controller.frameDefaults = try #require(UserDefaults(suiteName: suite))
+        controller.frameDefaults = defaults
         return controller
     }
 
-    private func makeStore() async throws -> (HomeStore, String) {
-        let suite = "test.panel.controller.\(UUID().uuidString)"
+    private func makeStore() async throws -> (HomeStore, InMemoryUserDefaults) {
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         #expect(!store.devices.isEmpty, "MockHomeProvider should deliver a snapshot right away")
-        return (store, suite)
+        return (store, defaults)
     }
 
-    private func makeExpiredMiSessionStore() async throws -> (HomeStore, String) {
-        let suite = "test.panel.controller.expired.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
+    private func makeExpiredMiSessionStore() async throws -> (HomeStore, InMemoryUserDefaults) {
+        let defaults = InMemoryUserDefaults()
         defaults.set(HomeBackend.xiaomiCloud.rawValue, forKey: "home_backend")
         let session = MiSession(
             userId: "42",
@@ -129,12 +131,12 @@ struct MenuBarPanelControllerTests {
         )
         #expect(MiSessionStore.save(session, defaults: defaults))
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         for _ in 0..<200 where !store.miSessionShowsExpired {
             try await Task.sleep(for: .milliseconds(10))
         }
         #expect(store.miSessionShowsExpired)
-        return (store, suite)
+        return (store, defaults)
     }
 
     private func makeController(store: HomeStore) -> MenuBarPanelController {
@@ -149,8 +151,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Installing creates one status item with a button and uninstall releases it")
     func installCreatesStatusItem() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -609,8 +610,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Primary click keeps the status item highlighted while its panel is visible")
     func primaryStatusItemHighlightTracksPanelVisibility() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let statusItem = TestStatusItem()
         let controller = MenuBarPanelController(statusItem: statusItem)
         controller.presentsActively = false
@@ -634,8 +634,7 @@ struct MenuBarPanelControllerTests {
     func programmaticCloseReleasesStatusItemHighlight(theme: PanelTheme, animated: Bool) async throws {
         let preferences = PanelPreferenceScope(theme: theme)
         defer { preferences.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let item = TestStatusItem()
         let controller = MenuBarPanelController(statusItem: item)
         controller.presentsActively = animated
@@ -831,8 +830,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Recreating the status item at launch finish keeps a single working item")
     func recoverStatusItemKeepsOneItem() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -847,8 +845,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Status item button carries the summary as tooltip and accessibility label")
     func statusItemShowsSummary() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -864,8 +861,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Listening shows the waveform icon and the transcript instead of the store text")
     func listeningLabelMirrorsSpeech() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let speech = SpeechInputController.shared
         let previousDraft = speech.draft
@@ -890,8 +886,7 @@ struct MenuBarPanelControllerTests {
         // The slide-in dismissal this test drives belongs to the liquid-glass window.
         let themeScope = PanelPreferenceScope(theme: .liquidGlass)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
         controller.presentsActively = true
@@ -945,8 +940,7 @@ struct MenuBarPanelControllerTests {
     func outOfProcessSecondClickSlidesLiquidGlassPanelClosed() async throws {
         let themeScope = PanelPreferenceScope(theme: .liquidGlass)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let statusItem = TestStatusItem()
         let hostWindow = NSWindow(
             contentRect: NSRect(x: 100, y: 900, width: 80, height: 24),
@@ -1157,8 +1151,7 @@ struct MenuBarPanelControllerTests {
     func showPanelCreatesVisibleWindow(theme: PanelTheme) async throws {
         let themeScope = PanelPreferenceScope(theme: theme)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1200,8 +1193,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Hiding orders the window out, unmounts the SwiftUI tree, removes mouse monitors, and posts the hide notification")
     func hidePanelUnmountsContent() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1234,8 +1226,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Scanning from the Settings toast opens the panel that owns the QR view")
     func settingsToastScanRevealsPanel() async throws {
-        let (store, suite) = try await makeExpiredMiSessionStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeExpiredMiSessionStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1255,8 +1246,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("An expired Mi session paints house.slash in the status item")
     func expiredMiSessionUsesSlashedIcon() async throws {
-        let (store, suite) = try await makeExpiredMiSessionStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeExpiredMiSessionStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1274,8 +1264,7 @@ struct MenuBarPanelControllerTests {
     func classicPanelFrameFollowsPanelHeight(height: PanelHeight) async throws {
         let themeScope = PanelPreferenceScope(theme: .classic, height: height)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1306,8 +1295,7 @@ struct MenuBarPanelControllerTests {
     func classicPanelFollowsPanelHeightPreferenceChange() async throws {
         let themeScope = PanelPreferenceScope(theme: .classic, height: .compact)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1329,8 +1317,7 @@ struct MenuBarPanelControllerTests {
     func switchingPanelThemeClosesAndRebuilds() async throws {
         let themeScope = PanelPreferenceScope(theme: .classic, height: .standard)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1378,8 +1365,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Another window taking key status closes the panel; the panel and its own children do not")
     func otherWindowBecameKeyClosesPanel() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1418,8 +1404,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("An outside mouse click closes the panel without an application deactivation")
     func outsideMouseClickClosesPanel() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
         controller.showPanel()
@@ -1450,8 +1435,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Losing key status to another app closes the panel, but dictation keeps it")
     func appDeactivationClosesPanel() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1472,8 +1456,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Showing the panel reports panel visibility to the store so polling can follow it")
     func showAndHideUpdatePollingContext() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
@@ -1487,8 +1470,7 @@ struct MenuBarPanelControllerTests {
     func classicDarkModeRendersDarkBackground() async throws {
         let themeScope = PanelPreferenceScope(theme: .classic)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let prevAppearance = UserDefaults.standard.string(forKey: AppAppearance.storageKey)
         defer {
@@ -1540,8 +1522,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Short global hotkey press toggles the panel; holding opens voice assistant without closing on release")
     func globalHotkeyShortPressAndLongHoldVoice() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         _ = NSApplication.shared
         let sharedController = MenuBarPanelController.shared
@@ -1594,8 +1575,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Status item native long press opens voice assistant and suppresses trailing synthetic click")
     func statusItemLongPressOpensVoiceAndSuppressesTrailingClick() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let controller = makeController(store: store)
         defer {
@@ -1681,16 +1661,15 @@ struct MenuBarPanelControllerTests {
 
     @Test("CameraLivePanelController attaches NSHostingView contentView and elevates above MenuBarPanel")
     func cameraLivePanelAttachesHostingViewAndOrdersAboveMenuBarPanel() async throws {
-        let suite = "MenuBarPanelTests-camera-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite)
+        let defaults = InMemoryUserDefaults()
+        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaults: defaults)
         try await store.waitForTestSnapshot()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1710,16 +1689,15 @@ struct MenuBarPanelControllerTests {
     @Test("Camera diagnostics name the stream mode and whether its audio can be enabled (#29)")
     func cameraDiagnosticsReportStreamModeAndAudioSupport() async throws {
         _ = NSApplication.shared
-        let suite = "MenuBarPanelTests-camera-diagnostics-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaultsSuiteName: suite)
+        let defaults = InMemoryUserDefaults()
+        let store = HomeStore(provider: MockHomeProvider(snapshot: DemoHomeProvider.defaultHome()), defaults: defaults)
         try await store.waitForTestSnapshot()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.isMuted = true
         cameraController.install(with: store)
@@ -1756,14 +1734,13 @@ struct MenuBarPanelControllerTests {
     @Test("Camera pin toggle changes the window level and rotation cycles in quarter turns")
     func cameraLivePanelPinAndRotation() async throws {
         _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeStore()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1802,14 +1779,13 @@ struct MenuBarPanelControllerTests {
     @Test("Camera maximize fills the screen and restores the previous frame")
     func cameraLivePanelMaximizeAndRestore() async throws {
         _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeStore()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1845,13 +1821,12 @@ struct MenuBarPanelControllerTests {
     @Test("Picture in Picture keeps the maximized frame, so one click restores the small window")
     func pictureInPictureRestoreThenMaximizeReturnsTheSmallFrame() async throws {
         _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeStore()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1881,13 +1856,12 @@ struct MenuBarPanelControllerTests {
     @Test("Reopening a hidden maximized window replaces the frame, so the next maximize fills the screen")
     func hiddenMaximizedWindowPresentsThenMaximizeFillsTheScreen() async throws {
         _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeStore()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1915,17 +1889,16 @@ struct MenuBarPanelControllerTests {
     @Test("Closing the camera mini-window hides it at once and releases the stream")
     func cameraLivePanelCloseReleasesStreamImmediately() async throws {
         _ = NSApplication.shared
-        let suite = "MenuBarPanelTests-camera-close-\(UUID().uuidString)"
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let defaults = InMemoryUserDefaults()
         let mock = MockHomeProvider(snapshot: DemoHomeProvider.defaultHome())
-        let store = HomeStore(provider: mock, defaultsSuiteName: suite)
+        let store = HomeStore(provider: mock, defaults: defaults)
         try await store.waitForTestSnapshot()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -1963,14 +1936,13 @@ struct MenuBarPanelControllerTests {
     @Test("Moving, resizing, or interacting with a doorbell camera window cancels auto-dismiss (#308)")
     func doorbellCameraUserTakeoverCancelsAutoDismiss() async throws {
         _ = NSApplication.shared
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, defaults) = try await makeStore()
         let camera = try #require(store.devices.first(where: {
             if case .camera = $0.kind { return true }
             return false
         }))
 
-        let cameraController = try makeCameraController(suite: suite)
+        let cameraController = makeCameraController(defaults: defaults)
         cameraController.presentsActively = false
         cameraController.install(with: store)
         defer {
@@ -2100,8 +2072,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Disabling voice input blocks panel, status-item, and hotkey voice entry points with zero recognition tasks, audio taps, timers, or command submissions while preserving ordinary click and hotkey panel toggle")
     func voiceInputDisabledBlocksAllEntryPointsWhileKeepingClickAndHotkeyToggle() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         _ = NSApplication.shared
         let speech = SpeechInputController.shared
@@ -2205,8 +2176,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Turning off voice input while recording stops recognition and audio engine, removes tap, cancels silence and hold-release timers, and blocks late results")
     func disablingVoiceInputWhileRecordingStopsAudioTapTimersAndBlocksLateResults() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let speech = SpeechInputController.shared
         var latestEventHandler: (@Sendable (String?, Bool, Bool) -> Void)?
@@ -2338,8 +2308,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Turning off voice input while awaiting microphone or speech authorization prevents late grant from starting capture or submitting")
     func disablingVoiceInputDuringPendingAuthorizationBlocksLateGrant() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let speech = SpeechInputController.shared
         var micContinuation: CheckedContinuation<Bool, Never>?
@@ -2434,8 +2403,7 @@ struct MenuBarPanelControllerTests {
 
     @Test("Re-enabling voice input restores recording and command submission while typed commands remain unaffected")
     func reenablingVoiceInputRestoresRecordingAndTypedCommandsStayWorking() async throws {
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
 
         let speech = SpeechInputController.shared
         var latestEventHandler: (@Sendable (String?, Bool, Bool) -> Void)?
@@ -2524,8 +2492,7 @@ struct MenuBarPanelControllerTests {
 
         let themeScope = PanelPreferenceScope(theme: .liquidGlass, height: .compact)
         defer { themeScope.restore() }
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         store.hasCompletedOnboarding = true
         store.dismissLaunchAtLoginSuggestion()
 
@@ -2607,8 +2574,7 @@ struct MenuBarPanelControllerTests {
             PanelConnectionDetailState.shared.isPresented = false
         }
 
-        let (store, suite) = try await makeStore()
-        defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+        let (store, _) = try await makeStore()
         let controller = makeController(store: store)
         defer { controller.uninstall() }
 
