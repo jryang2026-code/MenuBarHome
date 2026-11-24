@@ -6,6 +6,8 @@ mod companion;
 mod desktop_shell;
 mod job_object;
 mod credentials;
+mod miio;
+mod miio_crypto;
 mod network;
 mod placement;
 mod system_events;
@@ -18,6 +20,10 @@ use companion::*;
 use credentials::*;
 use desktop_shell::*;
 use home_assistant::{ha_execute, ha_http, ha_set_connection, ha_snapshot, HaConnections};
+use miio::{
+    miio_call_action, miio_discover, miio_get_props, miio_handshake, miio_set_props,
+    miio_shutdown, MiIOState,
+};
 use network::*;
 use placement::{
     drag_settle_finished, fit_panel_height, key_state_is_down, move_is_user_driven,
@@ -229,6 +235,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(HaConnections::default())
+        .manage(MiIOState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -249,6 +256,12 @@ fn main() {
             ha_http,
             ha_snapshot,
             ha_execute,
+            miio_handshake,
+            miio_get_props,
+            miio_set_props,
+            miio_call_action,
+            miio_discover,
+            miio_shutdown,
             native_http,
             set_service_endpoints,
             secure_store_get,

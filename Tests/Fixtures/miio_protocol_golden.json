@@ -1,0 +1,144 @@
+{
+  "_comment": "Shared miIO LAN protocol golden corpus consumed by both Swift (MijiaCoreTests) and Rust (menubarmijia-windows) tests.",
+  "helloPacket": "21310020ffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "packetVectors": [
+    {
+      "name": "get_properties_default_unknown",
+      "deviceId": 305419896,
+      "stamp": 256,
+      "unknown": 0,
+      "token": "0123456789abcdef0123456789abcdef",
+      "key": "4662bdea8654776d486072ff7074945e",
+      "iv": "f9f4439c9506696e49b54f75308ed4f6",
+      "payload": "{\"id\":101,\"method\":\"get_properties\",\"params\":[{\"did\":\"1001\",\"piid\":1,\"siid\":2}]}",
+      "ciphertext": "28c4e4cb1affe80f2713bdaac87e130e3f2291741911cd55c2d391b8e9f20fb411691e3482434bd8a3b2f40018c99fb31196d2afd15e5bb9f4ac421e4e04e5c2d58f943fcc63de1d9a0837d60a1982de4e1f763b379ae4e657211504baae8873",
+      "checksum": "556b3290cf36936d3fef3af5268a6070",
+      "packet": "21310080000000001234567800000100556b3290cf36936d3fef3af5268a607028c4e4cb1affe80f2713bdaac87e130e3f2291741911cd55c2d391b8e9f20fb411691e3482434bd8a3b2f40018c99fb31196d2afd15e5bb9f4ac421e4e04e5c2d58f943fcc63de1d9a0837d60a1982de4e1f763b379ae4e657211504baae8873"
+    },
+    {
+      "name": "set_properties_nonzero_unknown",
+      "deviceId": 94483139,
+      "stamp": 1698898176,
+      "unknown": 1,
+      "token": "0123456789abcdef0123456789abcdef",
+      "key": "4662bdea8654776d486072ff7074945e",
+      "iv": "f9f4439c9506696e49b54f75308ed4f6",
+      "payload": "{\"id\":102,\"method\":\"set_properties\",\"params\":[{\"did\":\"1001\",\"piid\":1,\"siid\":2,\"value\":true}]}",
+      "ciphertext": "7891bc3b197f6a275202d6c76900b68bb1108daf41489b1e974299cf01e238527484116f53ca6dc3bd0506878ed295dad6a210017b6b95bded94f12e11b59df9af7fbf6807afa880942d8381511c6e1c8a6c1528e872b792f615a50d9ed15b6d",
+      "checksum": "c17ffacff55d562baf69f6a8f33768e5",
+      "packet": "213100800000000105a1b2c365432100c17ffacff55d562baf69f6a8f33768e57891bc3b197f6a275202d6c76900b68bb1108daf41489b1e974299cf01e238527484116f53ca6dc3bd0506878ed295dad6a210017b6b95bded94f12e11b59df9af7fbf6807afa880942d8381511c6e1c8a6c1528e872b792f615a50d9ed15b6d"
+    },
+    {
+      "name": "empty_payload",
+      "deviceId": 305419896,
+      "stamp": 256,
+      "unknown": 0,
+      "token": "0123456789abcdef0123456789abcdef",
+      "key": "4662bdea8654776d486072ff7074945e",
+      "iv": "f9f4439c9506696e49b54f75308ed4f6",
+      "payload": "",
+      "ciphertext": "",
+      "checksum": "ddb25c5f31a42d165a3492c7fbaec670",
+      "packet": "21310020000000001234567800000100ddb25c5f31a42d165a3492c7fbaec670"
+    },
+    {
+      "name": "action_alternate_token",
+      "deviceId": 2882400001,
+      "stamp": 4660,
+      "unknown": 0,
+      "token": "deadbeefcafebabe1122334455667788",
+      "key": "815491e99a7b38174f0aec4ac59d165e",
+      "iv": "26b0dbff8cefd67efdea7c9c1dd27b21",
+      "payload": "{\"id\":103,\"method\":\"action\",\"params\":{\"aiid\":1,\"did\":\"1001\",\"in\":[],\"siid\":2}}",
+      "ciphertext": "4530dbdad404ae1f11decf931b21c0553a4be4254b99dfb1439e397b7c6808f0334063bb9d08325ce8160727cae602c7f49f7f010f9eadf0d2aa8e606186fafbd6d87fe65aa6a9991f6704f66e23c299",
+      "checksum": "401eb4c7954985a62b6d7546355eeb36",
+      "packet": "2131007000000000abcdef0100001234401eb4c7954985a62b6d7546355eeb364530dbdad404ae1f11decf931b21c0553a4be4254b99dfb1439e397b7c6808f0334063bb9d08325ce8160727cae602c7f49f7f010f9eadf0d2aa8e606186fafbd6d87fe65aa6a9991f6704f66e23c299"
+    }
+  ],
+  "helloChecksumCases": [
+    {
+      "name": "md5Match",
+      "token": "0123456789abcdef0123456789abcdef",
+      "packet": "21310020000000001234567800000042b82f9c39fe0823f5eaae8a6d09f21c2d",
+      "verdict": "md5Match"
+    },
+    {
+      "name": "tokenEcho",
+      "token": "0123456789abcdef0123456789abcdef",
+      "packet": "213100200000000012345678000000420123456789abcdef0123456789abcdef",
+      "verdict": "tokenEcho"
+    },
+    {
+      "name": "inconclusiveFF",
+      "token": "0123456789abcdef0123456789abcdef",
+      "packet": "21310020000000001234567800000042ffffffffffffffffffffffffffffffff",
+      "verdict": "inconclusive"
+    },
+    {
+      "name": "inconclusive00",
+      "token": "0123456789abcdef0123456789abcdef",
+      "packet": "2131002000000000123456780000004200000000000000000000000000000000",
+      "verdict": "inconclusive"
+    },
+    {
+      "name": "mismatch",
+      "token": "0123456789abcdef0123456789abcdef",
+      "packet": "2131002000000000123456780000004211111111111111111111111111111111",
+      "verdict": "mismatch"
+    }
+  ],
+  "tokenCases": [
+    { "raw": "0123456789abcdef0123456789abcdef", "valid": true },
+    { "raw": "  DEADBEEFCAFEBABE1122334455667788 \n", "valid": true },
+    { "raw": "00000000000000000000000000000000", "valid": false },
+    { "raw": "ffffffffffffffffffffffffffffffff", "valid": false },
+    { "raw": "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", "valid": false },
+    { "raw": "0123456789abcdef", "valid": false },
+    { "raw": "0123456789abcdef0123456789abcdeg", "valid": false },
+    { "raw": "", "valid": false }
+  ],
+  "privateIpCases": [
+    { "ip": "10.0.0.1", "valid": true },
+    { "ip": "10.255.255.254", "valid": true },
+    { "ip": "172.16.0.1", "valid": true },
+    { "ip": "172.31.255.254", "valid": true },
+    { "ip": "192.168.1.50", "valid": true },
+    { "ip": " 192.168.0.1 ", "valid": true },
+    { "ip": "172.15.255.255", "valid": false },
+    { "ip": "172.32.0.1", "valid": false },
+    { "ip": "192.169.1.1", "valid": false },
+    { "ip": "127.0.0.1", "valid": false },
+    { "ip": "169.254.1.1", "valid": false },
+    { "ip": "100.64.0.1", "valid": false },
+    { "ip": "8.8.8.8", "valid": false },
+    { "ip": "0.0.0.0", "valid": false },
+    { "ip": "255.255.255.255", "valid": false },
+    { "ip": "010.0.0.1", "valid": false },
+    { "ip": "192.168.01.1", "valid": false },
+    { "ip": "localhost", "valid": false },
+    { "ip": "lamp.lan", "valid": false },
+    { "ip": "::1", "valid": false }
+  ],
+  "malformedJsonCases": [
+    {
+      "name": "trailing_nulls_and_commas",
+      "input": "{\"id\":1,\"result\":[{\"code\":0,},],}\u0000\u0000",
+      "expected": "{\"id\":1,\"result\":[{\"code\":0}]}"
+    },
+    {
+      "name": "consecutive_commas_and_missing_value",
+      "input": "{\"id\":1,\"a\":,,\"b\":00,\"c\":-007}",
+      "expected": "{\"id\":1,\"a\":null,\"b\":0,\"c\":-7}"
+    },
+    {
+      "name": "preserves_string_literals",
+      "input": "{\"msg\":\"keep,,:00,}\",\"ok\":true,}",
+      "expected": "{\"msg\":\"keep,,:00,}\",\"ok\":true}"
+    },
+    {
+      "name": "array_leading_and_consecutive_commas",
+      "input": "{\"arr\":[,1,,2,]}",
+      "expected": "{\"arr\":[null,1,null,2]}"
+    }
+  ]
+}
