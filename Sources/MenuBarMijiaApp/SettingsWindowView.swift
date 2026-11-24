@@ -3158,6 +3158,26 @@ private struct AboutSettingsTab: View {
                 .buttonStyle(PillActionButtonStyle())
             }
 
+            HStack(alignment: .top, spacing: 8) {
+                Button {
+                    openFeedbackIssue()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.bubble")
+                        Text(L10n.tr("反馈问题（预填诊断）", "Report a Problem (Diagnostics Filled In)"))
+                    }
+                }
+                .buttonStyle(PillActionButtonStyle(isSelected: true, tintColor: .accentColor))
+
+                Text(L10n.tr(
+                    "在浏览器打开 GitHub Issue，版本、系统、数据源设备数与错误码已填好；提交前可改。同一段内容也会复制到剪贴板，模板没自动填入时直接粘贴。",
+                    "Opens a GitHub issue in the browser with version, OS, per-source device counts and error codes prefilled. You review and submit it; the same block lands on the clipboard in case the form ignores the prefill."
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+
             DisclosureGroup(isExpanded: $showsDiagnosticsPreview) {
                 Text(diagnosticsPreviewMarkdown)
                     .font(.system(size: DesignTokens.TypeSize.control, design: .monospaced))
@@ -3402,6 +3422,39 @@ private struct AboutSettingsTab: View {
             try? await Task.sleep(for: .seconds(2))
             didCopy = false
         }
+    }
+
+    /// What the one-click feedback link carries into a GitHub issue (#29).
+    ///
+    /// Only counts and closed-set labels: the block cannot name a device, a home, a host or an
+    /// account, so there is nothing here to redact (the builder still runs its scrubber as a backstop).
+    private func buildFeedbackDiagnostics() -> FeedbackDiagnostics {
+        FeedbackDiagnosticsComposer.make(
+            store: store,
+            appVersion: appVersion,
+            osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
+            errorTimestamps: errorLog.errorTimestamps,
+            crashCount: DiagnosticsReportBuilder.crashSummary(
+                DiagnosticsReportBuilder.crashTimestamps(from: AppDiagnosticsLog.crashReportStamps())
+            ).count,
+            transport: DeviceTransportSummary.summarize(
+                store.deviceTransportDiagnostics,
+                localNetworkBlocks: store.effectiveLocalNetworkBlocks
+            )
+        )
+    }
+
+    /// Opens the prefilled issue in the browser and puts the same block on the pasteboard.
+    ///
+    /// Nothing is filed here: the person reads the form and presses Submit, which is also why the
+    /// clipboard copy matters — a form that ignores the prefill would otherwise lose the block.
+    private func openFeedbackIssue() {
+        let diagnostics = buildFeedbackDiagnostics()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(diagnostics.text, forType: .string)
+        guard let url = diagnostics.issueURL() else { return }
+        NSWorkspace.shared.open(url)
     }
 }
 
