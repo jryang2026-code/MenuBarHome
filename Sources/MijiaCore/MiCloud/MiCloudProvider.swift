@@ -5,7 +5,7 @@ import os
 /// rooms, loads MIoT specs, polls properties and maps `DeviceCommand`s to MIoT writes.
 public actor MiCloudProvider: HomeProvider {
     public static let capabilities: Set<HomeProviderCapability> = [
-        .readSnapshot, .control, .cameras,
+        .readSnapshot, .control, .scenes, .cameras,
     ]
 
     public typealias APIFactory = @Sendable (MiSession) -> any MiCloudAPI
@@ -19,6 +19,9 @@ public actor MiCloudProvider: HomeProvider {
     private let cameraBridge: any XiaomiCameraBridging
     private let localClient: LocalMiIOClient?
     private let topologyCache: MiTopologyCache?
+    private var manualScenes: [MiCloudScene] = []
+    private var lastSceneRefresh: Date?
+    private var runningScenes: Set<String> = []
     private let lanFailureThreshold: Int
     private let lanCooldownDuration: TimeInterval
     private let broadcastSweepMinInterval: TimeInterval
@@ -446,6 +449,10 @@ public actor MiCloudProvider: HomeProvider {
             continuation?.yield(.statusChanged(.disconnected(MiCloudError.notLoggedIn.localizedDescription)))
             return
         }
+        if self.session?.sharesCredentials(with: session) != true {
+            manualScenes = topologyCache?.load(for: session)?.manualScenes ?? []
+            lastSceneRefresh = nil
+        }
         self.session = session
         clearRejectionIfCredentialChanged(session)
         // Stop before any cloud call: this credential is the one the server refused and a Mi token
@@ -458,6 +465,7 @@ public actor MiCloudProvider: HomeProvider {
             continuation?.yield(.statusChanged(.disconnected(MiCloudError.sessionExpired.localizedDescription)))
             devices = []
             rooms = []
+            manualScenes = []
             values = [:]
             emitSnapshot()
             return
@@ -697,6 +705,8 @@ public actor MiCloudProvider: HomeProvider {
             topologyCache?.remove(accountID: MiAccount(session: session).id)
         }
         lastSavedTopology = nil
+        manualScenes = []
+        lastSceneRefresh = nil
         lanBindingsByDid.removeAll()
         lanHealthByDid.removeAll()
         didSeedLANBindingsFromCache = false
@@ -772,7 +782,11 @@ public actor MiCloudProvider: HomeProvider {
             }
             let roomsError = outcome.error
             logger.info("Mi cloud rooms: \(self.rooms.count, privacy: .public), homes: \(Self.homeOptions(from: self.rooms).count, privacy: .public)")
-            try await refreshDeviceList(api, retryUnresolved: true)
+            try await refreshDeviceList(api, retryUnresolved: true, refreshScenes: false)
+            if roomsError == nil {
+                try await refreshManualScenes(api)
+                persistTopologyIfNeeded()
+            }
             // An account whose only devices live in a home shared with it has an empty device list until
             // `homeRooms()` names that home. Reporting connected + empty hides that failure, so a broken
             // room list surfaces as the error it is (#76, #67). An account with direct devices still
@@ -810,7 +824,36 @@ public actor MiCloudProvider: HomeProvider {
     /// refresh skips them so it does not spend a request on them every time.
     private var unresolvedRoomDids: Set<String> = []
 
-    private func refreshDeviceList(_ api: any MiCloudAPI, retryUnresolved: Bool = false) async throws {
+    private func refreshManualScenes(_ api: any MiCloudAPI) async throws {
+        let started = now()
+        guard lastSceneRefresh.map({ started.timeIntervalSince($0) >= 600 }) ?? true,
+              let session else { return }
+
+        var seen = Set<String>()
+        var refreshed: [MiCloudScene] = []
+        for room in rooms where !room.homeId.isEmpty && !seen.contains(room.homeId) {
+            guard let owner = room.ownerUid,
+                  !owner.isEmpty else { continue }
+            seen.insert(room.homeId)
+            do {
+                refreshed += try await performCloudCall {
+                    try await api.manualScenes(homeId: room.homeId, ownerUid: owner)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch MiCloudError.sessionExpired {
+                throw MiCloudError.sessionExpired
+            } catch {
+                refreshed += manualScenes.filter { $0.homeId == room.homeId && $0.ownerUid == owner }
+            }
+        }
+        lastSceneRefresh = started
+        manualScenes = refreshed
+    }
+
+    private func refreshDeviceList(
+        _ api: any MiCloudAPI, retryUnresolved: Bool = false, refreshScenes: Bool = true
+    ) async throws {
         let currentRooms = rooms
         let previousUnresolved = unresolvedRoomDids
         let outcome = try await performCloudCall {
@@ -833,6 +876,7 @@ public actor MiCloudProvider: HomeProvider {
         }
         reconcileLANEndpoints(devices)
         try await refreshGroupMembers(api)
+        if refreshScenes { try await refreshManualScenes(api) }
         persistTopologyIfNeeded()
         hasLiveTopologyRefresh = true
         await loadMissingSpecs()
@@ -1404,7 +1448,7 @@ public actor MiCloudProvider: HomeProvider {
 
     private func persistTopologyIfNeeded() {
         guard let topologyCache, let session else { return }
-        if devices.isEmpty {
+        if devices.isEmpty && manualScenes.isEmpty {
             topologyCache.remove(accountID: MiAccount(session: session).id)
             lastSavedTopology = nil
             return
@@ -1417,9 +1461,10 @@ public actor MiCloudProvider: HomeProvider {
             }
         }
         guard lastSavedTopology?.devices != devices || lastSavedTopology?.rooms != rooms
+            || lastSavedTopology?.manualScenes != manualScenes
             || lastSavedTopology?.groupMembersByGroup != groupMembersByGroup
             || lastSavedTopology?.discoveredLANIPsByDid != discoveredIPs else { return }
-        let snapshot = CachedMiTopology(savedAt: now(), devices: devices, rooms: rooms, groupMembersByGroup: groupMembersByGroup, discoveredLANIPsByDid: discoveredIPs)
+        let snapshot = CachedMiTopology(savedAt: now(), devices: devices, rooms: rooms, manualScenes: manualScenes, groupMembersByGroup: groupMembersByGroup, discoveredLANIPsByDid: discoveredIPs)
         topologyCache.save(snapshot, for: session)
         lastSavedTopology = snapshot
     }
@@ -1740,6 +1785,18 @@ public actor MiCloudProvider: HomeProvider {
             specs: specsByModel,
             values: values
         )
+        if !isSessionRejected, let session {
+            let accountID = MiAccount(session: session).id
+            let homeIDs = Set(visibleRooms.map(\.homeId))
+            let visibleScenes = manualScenes.filter { homeIDs.contains($0.homeId) }
+            let nameCounts = Dictionary(grouping: visibleScenes, by: \.name).mapValues(\.count)
+            home.scenes = visibleScenes.map { scene in
+                let id = scene.entityID(accountID: accountID)
+                let name = nameCounts[scene.name, default: 0] > 1
+                    ? "\(scene.name) (\(scene.homeId)-\(scene.id))" : scene.name
+                return HomeScene(id: id, name: name, entityId: id)
+            }
+        }
         home.closesAwayGap = closesAwayGap
         home.homes = Self.homeOptions(from: rooms)
         home.lightGroupOwners = Self.deviceGroupOwners(membersByGroup: groupMembersByGroup, devices: plan.visibleRecords)
@@ -1928,6 +1985,18 @@ public actor MiCloudProvider: HomeProvider {
 
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
+        if case .activateScene = command,
+           let scope = MiCloudScene.accountID(for: entityId) {
+            guard !isShutDown, let api, let session, MiAccount(session: session).id == scope,
+                  let scene = manualScenes.first(where: { $0.entityID(accountID: scope) == entityId }),
+                  scopedDevicesAndRooms().rooms.contains(where: { $0.homeId == scene.homeId }),
+                  runningScenes.insert(entityId).inserted else {
+                throw MiotCommandError.unsupported(entityId)
+            }
+            defer { runningScenes.remove(entityId) }
+            try await performCloudCall { try await api.runManualScene(scene) }
+            return
+        }
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
         guard let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })

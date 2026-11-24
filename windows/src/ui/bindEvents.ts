@@ -22,6 +22,7 @@ import {
 import { nextSizeForTheme } from "./panelTheme.js";
 import { t } from "../core/i18n.js";
 import { formatTemperature, stepCelsius, toCelsius } from "../core/temperature.js";
+import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
 import { invokeTauriVoid } from "./transport.js";
 import { facetActionArguments, feedingConfirmationBannerText } from "../core/miCloud/feedAction.js";
 import { bindDetailDrawerEvents, coverMotorRequiresConfirmation, ensureDrawerLifecycleListeners } from "./detailDrawers.js";
@@ -1278,6 +1279,15 @@ export function toggleDeviceForHost(host: MenuMijiaWindowsApp, id: string): void
       explicit?: { readonly summary: string; readonly intent: DeviceIntent },
       bannerOverride?: string,
     ): boolean => confirmHighRiskForHost(host, deviceId, command, label, explicit, bannerOverride);
+
+    host.root.querySelectorAll<HTMLElement>("[data-mi-scene-answer]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        finishMiSceneConfirmation(host, btn.dataset.miSceneAnswer === "confirm");
+        host.clearPendingHighRisk();
+        host.replyBanner = null;
+        host.render();
+      });
+    });
 
     host.root.querySelectorAll<HTMLElement>("[data-high-risk-confirm]").forEach((btn) => {
       btn.addEventListener("click", () => {

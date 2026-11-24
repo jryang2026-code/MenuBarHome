@@ -1910,6 +1910,7 @@ extension HomeStore {
         var appliedDeviceIds: Set<String> = []
         var appliedSceneIds: Set<String> = []
         var succeededIntents: [DeviceIntent] = []
+        var cancelledCount = 0
         for outcome in outcomes {
             switch outcome {
             case .applied(let intent, let deviceId, let restore):
@@ -1919,6 +1920,8 @@ extension HomeStore {
             case .appliedScene(let intent, let sceneId):
                 succeededIntents.append(intent)
                 appliedSceneIds.insert(sceneId)
+            case .cancelled:
+                cancelledCount += 1
             case .failed(let name):
                 if !failedNames.contains(name) { failedNames.append(name) }
             case .offline(let name):
@@ -1992,11 +1995,15 @@ extension HomeStore {
             if case .appliedScene = outcome { return false }
             return true
         }) {
-            let sep = L10n.isEnglish ? ", " : "、"
-            let reason = offlineNames.isEmpty
-                ? L10n.tr("没有可执行的设备操作", "No matching device actions")
-                : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
-            setAssistantState(.failed(reason))
+            if cancelledCount > 0, offlineNames.isEmpty {
+                setAssistantState(.done(L10n.tr("已取消", "Cancelled")))
+            } else {
+                let sep = L10n.isEnglish ? ", " : "、"
+                let reason = offlineNames.isEmpty
+                    ? L10n.tr("没有可执行的设备操作", "No matching device actions")
+                    : L10n.tr("\(offlineNames.joined(separator: sep)) 当前离线", "\(offlineNames.joined(separator: sep)) offline")
+                setAssistantState(.failed(reason))
+            }
         } else {
             assistantSuggestions = plan.suggestions.isEmpty ? proactiveDisplaySuggestions() : plan.suggestions
             let receipt = receiptStartedAt.map { start in
@@ -2023,6 +2030,8 @@ extension HomeStore {
         case applied(intent: DeviceIntent, deviceId: String?, restore: [DeviceCommand])
         /// A scene ran: it counts toward habit learning but offers no device undo (#113).
         case appliedScene(intent: DeviceIntent, sceneId: String)
+        /// The user declined the confirmation (or the context changed behind it); not a failure.
+        case cancelled
         case failed(String)
         case offline(String)
         case skipped
@@ -2050,6 +2059,9 @@ extension HomeStore {
                 try await executeDeviceCommand(.activateScene(entityId: scene.entityId))
                 guard context == controlContextID else { return .skipped }
                 return .appliedScene(intent: intent, sceneId: intent.targetId)
+            } catch is CancellationError {
+                // Declining the confirmation is a user choice, not a device failure.
+                return .cancelled
             } catch {
                 return .failed(scene.name)
             }

@@ -2322,3 +2322,14 @@ struct GoldenCorpusTests {
         }
     }
 }
+
+extension GoldenCorpusTests {
+    @Test("Mi cloud manual scene decoder tolerates missing and invalid fields")
+    func miCloudSceneGolden() throws {
+        let url = try Self.locateGoldenFixture("Tests/Fixtures/mi_cloud_scenes_golden.json")
+        let json = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: url))
+        let scenes = MiCloudScene.decode(json, homeId: "home-1", ownerUid: "42")
+        #expect(scenes.map { $0.id } == ["11", "12", "13", "14", "15"])
+        #expect(scenes.map { $0.name } == ["回家", "晚安", "晨起", "夜读", "新名"])
+    }
+}

@@ -94,6 +94,7 @@ import {
 import { type LoadedSettings, type PendingHighRiskConfirmation, type PersistedSettings, type ReplyBannerState, type UndoAction, type UndoStep } from "./appTypes.js";
 import { SF_ICONS, STORAGE_KEY } from "./appConstants.js";
 import { demoDevices, demoScenes } from "./demo.js";
+import { finishMiSceneConfirmation } from "./sceneConfirmation.js";
 import { createTransport, invokeTauriVoid } from "./transport.js";
 import { evaluateLegacyOnboardingMigration, loadSettings } from "./settings.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
@@ -516,6 +517,10 @@ export class MenuMijiaWindowsApp {
   /** Advances on every source switch; read widely, including by `core/` through structural hosts. */
   public get sourceRevision(): number {
     return this.sourceEpoch.sourceRevision;
+  }
+  /** Advances on every home switch inside the same source; caches keyed on the home read it. */
+  public get homeRevision(): number {
+    return this.sourceEpoch.homeRevision;
   }
   public lastCloudRefreshAt: number | null = null;
   /**
@@ -1324,6 +1329,7 @@ export class MenuMijiaWindowsApp {
     sourceLabel: string,
     options: ExecuteIntentsOptions = {},
   ): Promise<boolean> {
+    this.clearPendingHighRisk();
     if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
       const gateMsg = evaluateIntentsWriteGate({
         intents,
@@ -1351,6 +1357,9 @@ export class MenuMijiaWindowsApp {
     intent?: DeviceIntent,
     readBackPower = false,
   ): Promise<void> {
+    // A tap on a control owns the next command: an armed Mi scene confirmation must not stay
+    // behind as a second, stale prompt (the batch entry clears it the same way).
+    this.clearPendingHighRisk();
     if (this.settings?.connectionMode !== "demo" || isDualSourceEnabled(this)) {
       const activeId = this.devices.some((d) => d.id === device.id) ? device.id : null;
       const gateMsg = evaluateDeviceEntityWriteGate({
@@ -1635,6 +1644,7 @@ export class MenuMijiaWindowsApp {
     invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
     this.pendingHighRiskTimer = window.setTimeout(() => {
       this.pendingHighRiskTimer = null;
+      finishMiSceneConfirmation(this, false);
       if (!this.pendingHighRisk) return;
       this.pendingHighRisk = null;
       invokeTauriVoid("set_pin_popover", { pin: this.shouldKeepPopoverPinned() });
@@ -1645,6 +1655,7 @@ export class MenuMijiaWindowsApp {
 
   /** Disarms the arm and cancels its timer; callers render when the row must disappear now. */
   public clearPendingHighRisk(options?: { readonly syncPin?: boolean }): void {
+    finishMiSceneConfirmation(this, false);
     const hadPending = this.pendingHighRisk !== null;
     if (this.pendingHighRiskTimer !== null) {
       window.clearTimeout(this.pendingHighRiskTimer);

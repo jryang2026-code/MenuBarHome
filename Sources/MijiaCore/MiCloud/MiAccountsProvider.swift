@@ -877,6 +877,13 @@ public actor MiAccountsProvider: HomeProvider {
 
     public func execute(_ command: DeviceCommand) async throws {
         let entityId = command.targetEntityId
+        if case .activateScene = command, let owner = MiCloudScene.accountID(for: entityId) {
+            guard let candidate = captureWriteCandidate(for: owner), !isDisconnected(owner) else {
+                throw MiotCommandError.noWritableSession(owner)
+            }
+            try await candidate.child.execute(command)
+            return
+        }
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did else {
             throw MiotCommandError.invalidAddress(entityId)
         }

@@ -1,3 +1,4 @@
+import { renderMiSceneConfirmation } from "./sceneConfirmation.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import { t } from "../core/i18n.js";
 import { deviceCanTogglePower, hasDetailDrawer, isDeviceActiveOn, type SmartDevice } from "../core/models.js";
@@ -639,7 +640,7 @@ function liveBanner(host: MenuMijiaWindowsApp): string {
           ? `<button class="cc-inline-pill" id="btn-cloud-allow">${t("允许并发送")}</button><button class="cc-inline-pill" id="btn-cloud-decline">${t("不用了")}</button>`
           : ""
       }
-      ${markAsLightPill}
+      ${markAsLightPill}${renderMiSceneConfirmation(host)}
       ${undo ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}
       ${reply?.isError ? `<button type="button" class="cc-inline-pill" id="btn-dismiss-banner" aria-label="${t("忽略")}">×</button>` : ""}
     </div>
@@ -670,14 +671,11 @@ function quickStrip(host: MenuMijiaWindowsApp): string {
     (act) =>
       `<button class="cc-quick-pill tint-${act.tint}" data-scene-cmd="${host.escapeHtml(act.command)}"><span class="cc-quick-icon">${quickActionIcon(act.id)}</span><span>${host.escapeHtml(act.title)}</span></button>`,
   );
-  const haScenes =
-    host.settings.connectionMode === "homeAssistant"
-      ? host.scenes.map(
+  const scenePills = host.scenes.map(
           (scene) =>
             `<button class="cc-quick-pill tint-blue" data-ha-scene="${host.escapeHtml(scene.id)}"><span class="cc-quick-icon">${SF_ICONS.sparkles}</span><span>${host.escapeHtml(scene.name)}</span></button>`,
-        )
-      : [];
-  const allPills = [...builtIns, ...haScenes];
+  );
+  const allPills = [...builtIns, ...scenePills];
   if (allPills.length === 0) return "";
   return `<section class="cc-quick-strip">${allPills.join("")}</section>`;
 }

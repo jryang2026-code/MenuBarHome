@@ -1,3 +1,4 @@
+import { renderMiSceneConfirmation } from "./sceneConfirmation.js";
 import { QUICK_ACTION_TARGET_CATEGORIES } from "../core/capabilityReferenceVerdict.js";
 import { supportsClimateSleepOff, supportsLightsOff, supportsSoftNightLight } from "../core/quickActions.js";
 import { isEventAutomationEnabled } from "../core/freshInstallDefaults.js";
@@ -2538,7 +2539,7 @@ function buildUpperCardFactories(host: MenuMijiaWindowsApp, nowMs = Date.now()):
       reply,
       markDevice ? ManualControlPolicy.wallSwitchMarkPromptHint(markDevice) : undefined,
     );
-    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
+    const replyFactory = wrapCard("reply:banner", "reply", isDismissible, `cc-live-banner cc-feedback-card${reply.isError ? " is-error" : ""}`, (btns) => `<div class="cc-feedback-row"><span class="cc-feedback-badge">${host.escapeHtml(reply.source)}</span><span class="cc-feedback-text">${host.escapeHtml(reply.text)}</span>${markPill}${renderMiSceneConfirmation(host)}${!manualUndoRendered && host.undoButtonVisible(nowMs) ? `<button class="cc-inline-pill" id="btn-undo">${t("撤销")}</button>` : ""}${btns}</div>${hint}`, "", reply.isError ? "alert" : "status", "btn-dismiss-banner");
     if (hasActiveHighRisk) factories.unshift(replyFactory);
     else factories.push(replyFactory);
   }

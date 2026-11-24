@@ -1551,19 +1551,32 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
 
   it("does not prematurely expire Xiaomi timers or unpause lightsOff on Home Assistant refresh while Xiaomi revalidation is pending (4623387411)", async () => {
     const writes: string[] = [];
-    const app = mountApp(makeBasicMiTransport({ name: "米家书房灯", writes }));
+    const sceneId = `${ACC_A}/mi-scene:9101:sc_night`;
+    const baseTransport = makeBasicMiTransport({ name: "米家书房灯", writes });
+    const app = mountApp(async (req) => {
+      // A real cloud scene row survives every Xiaomi round because the round fetches it. The
+      // scene API needs the home's owner uid, which the basic transport's home listing omits.
+      const path = reqPath(req);
+      if (path === "v2/homeroom/gethome_merged") {
+        return okMi({ homelist: [{ id: "9101", uid: "10001", name: "Home-A", roomlist: [] }] });
+      }
+      if (path.includes("GetSimpleSceneList")) {
+        return okMi({ manual_scene_info_list: [{ scene_id: "sc_night", scene_name: "米家晚安" }] });
+      }
+      return baseTransport(req);
+    });
     app.settings.connectionMode = "xiaomiCloud";
     app.settings.miSession = SESS_A;
     await getHostMiAccountsStore(app).upsertAccount(SESS_A);
     await refreshDevices(app, false);
-    app.scenes = [{ id: `${ACC_A}/sc_night`, accountId: ACC_A, sourceBackend: "xiaomiCloud", name: "米家晚安", entityId: "101.2.a1" }];
+    assert.ok(app.scenes.some((scene) => scene.id === sceneId), "the refresh owns the cloud scene row");
     markTimerSnapshotReady(app);
 
     const nowMs = Date.now();
     const miQueue = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
     miQueue.scheduledCommands = [
       { id: "t_mi_valid_future", command: "十分钟后关书房灯", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
-      { id: "t_mi_valid_scene", command: "十分钟后执行晚安场景", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: `${ACC_A}/sc_night`, operation: { kind: "activateScene" } }] },
+      { id: "t_mi_valid_scene", command: "十分钟后执行晚安场景", reply: "好", delaySeconds: 600, fireTimestampMs: nowMs + 600_000, intents: [{ targetId: sceneId, operation: { kind: "activateScene" } }] },
       { id: "t_mi_expired", command: "一分钟后关书房灯", reply: "好", delaySeconds: 60, fireTimestampMs: nowMs + 60_000, intents: [{ targetId: "101", operation: { kind: "power", isOn: false } }] },
     ];
     app.scheduledCommandStore.persist();
@@ -1584,7 +1597,7 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
 
     const haQueue = app.scheduledCommandStore.queue(scheduledCommandIdentity(app.settings));
     haQueue.pausedScheduledCommands = [{
-      command: { id: "t_dual_mi_scene", command: "五分钟后米家晚安", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: `${ACC_A}/sc_night`, operation: { kind: "activateScene" } }], sourceScopes: ["ha:https://ha.example.test:8123", ACC_A] },
+      command: { id: "t_dual_mi_scene", command: "五分钟后米家晚安", reply: "好", delaySeconds: 300, fireTimestampMs: nowMs + 300_000, intents: [{ targetId: sceneId, operation: { kind: "activateScene" } }], sourceScopes: ["ha:https://ha.example.test:8123", ACC_A] },
       originalPartition: "waiting",
       sourceScopes: ["ha:https://ha.example.test:8123", ACC_A],
       pausedCapabilities: ["xiaomi-cloud"],
@@ -1612,13 +1625,14 @@ describe("P2a-W Xiaomi account disable & P1b integration", () => {
     assert.equal(haQueue.missedScheduledCommands.length, 0);
 
     app.settings.connectionMode = "xiaomiCloud";
-    app.scenes = [{ id: `${ACC_A}/sc_night`, accountId: ACC_A, sourceBackend: "xiaomiCloud", name: "米家晚安", entityId: "101.2.a1" }];
     (app as unknown as { pendingReenableNowMs?: number }).pendingReenableNowMs = nowMs + 120_000;
     try {
       await refreshDevices(app, false);
     } finally {
       delete (app as unknown as { pendingReenableNowMs?: number }).pendingReenableNowMs;
     }
+    // A Xiaomi round owns its cloud scene rows, and the transport refetches the scene, so the
+    // scheduled target survives the reenable refresh without a manual fixture.
     processScheduledCommands(app, nowMs + 120_000);
     assert.equal(writes.length, 0);
     assert.deepEqual(new Set(miQueue.scheduledCommands.map((t) => t.id)), new Set(["t_mi_valid_future", "t_mi_valid_scene"]));

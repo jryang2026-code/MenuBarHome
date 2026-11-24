@@ -1,3 +1,4 @@
+import { miSceneAccount } from "./miCloud/scenes.js";
 import {
   HaBlockedRequestError,
   acquireHaTransportLease,
@@ -970,7 +971,7 @@ export const DeviceDeduplicator = {
     const mergedReadings: EnvironmentReading[] = [...mergedDevices]
       .sort((a, b) => environmentReadingPriority(a.kind) - environmentReadingPriority(b.kind))
       .flatMap((dev) => { const r = deviceEnvironmentReading(dev);
-        return r ? [r] : []; }); const scenes: HomeScene[] = [...(haInput?.home.scenes ?? [])];
+        return r ? [r] : []; }); const scenes: HomeScene[] = [...(haInput?.home.scenes ?? []), ...(miInput?.home.scenes ?? [])];
     const sourceSnapshots = [
       ["homeAssistant", haInput],
       ["xiaomiCloud", miInput],
@@ -1003,7 +1004,8 @@ export const DeviceDeduplicator = {
 } as const;
 
 export function commandTargetBackend(command: DeviceCommand): HomeBackend { const entityId = command.entityId;
-  if (command.kind === "setMiotProperty" ||
+  if ((command.kind === "activateScene" && miSceneAccount(entityId) !== null) ||
+    command.kind === "setMiotProperty" ||
     parseMiotAddress(entityId) !== null ||
     parseMiotActionAddress(entityId) !== null
   ) { return "xiaomiCloud";
@@ -1092,7 +1094,7 @@ export class DualSourceCoordinator { public canonical: CanonicalDeviceRegistry;
   }
 
   /** Last Xiaomi input committed by `refreshParallel`. Dual-source merge only forwards Home
-   * Assistant scenes to `merged.home.scenes`, so callers that need Xiaomi scenes read them here. */
+   * scenes to `merged.home.scenes`; account-specific callers can read them here. */
   getLastMiSnapshot(): DualSourceInputSnapshot | null { return this.lastMi;
   }
 

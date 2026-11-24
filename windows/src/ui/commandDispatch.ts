@@ -1,3 +1,6 @@
+import { miSceneAccount } from "../core/miCloud/scenes.js";
+import { requestMiSceneConfirmation } from "./sceneConfirmation.js";
+import { isWorkstationLockBlockingControl } from "./transport.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
 import type { UndoAction } from "./appTypes.js";
 import type { HabitRecordingReceipt } from "../core/assistant.js";
@@ -19,7 +22,7 @@ import {
   DualSourceHomeProvider,
   commandTargetBackend,
 } from "../core/dualSourceProvider.js";
-import { MultiAccountMiCloudProvider, miAccountId } from "../core/miAccountsStore.js";
+import { MultiAccountMiCloudProvider, MiAccountScope, miAccountId } from "../core/miAccountsStore.js";
 import { appDiagnosticsLog } from "../core/diagnosticsAndScanner.js";
 import {
   buildHostCapabilityContext,
@@ -53,6 +56,7 @@ import type {
   DeviceCommand,
   DeviceKind,
   FacetControl,
+  HomeScene,
   SmartDevice,
 } from "../core/models.js";
 import { applyCommandToDevices } from "../core/commandEffects.js";
@@ -837,12 +841,28 @@ function isPureSpeakerTextCommand(dev: SmartDevice | null, command: DeviceComman
   );
 }
 
+/**
+ * A Mi cloud scene id names its cloud home. Running it from another home would drive rooms the
+ * user is not looking at, so a selected home only accepts scenes that belong to it. With no home
+ * selected ("all homes") every scene of the snapshot stays runnable.
+ */
+function miSceneBelongsToSelectedHome(host: MenuMijiaWindowsApp, scene: HomeScene): boolean {
+  const selected = host.settings.selectedHomeId;
+  const homeId = scene.miScene?.homeId;
+  if (!selected || !homeId) return true;
+  const rawSelected = MiAccountScope.owner(selected) === null
+    ? selected
+    : MiAccountScope.localId(selected);
+  return homeId === rawSelected;
+}
+
 export async function applyCommand(
   host: MenuMijiaWindowsApp,
   command: DeviceCommand,
   readBackPower = false,
 ): Promise<boolean> {
   const sourceRevision = host.sourceRevision;
+  const homeRevision = host.homeRevision;
   const originalCommand = command;
   const wasUndoRestore = undoRestoreCommands.has(originalCommand);
   const capturedFacet = wasUndoRestore
@@ -868,6 +888,33 @@ export async function applyCommand(
       renderHostImmediate(host);
       return false;
     }
+  }
+  if (command.kind === "activateScene" && miSceneAccount(command.entityId) !== null) {
+    const scene = host.scenes.find((row) => row.entityId === command.entityId && row.miScene);
+    if (
+      !scene ||
+      !miSceneBelongsToSelectedHome(host, scene) ||
+      await isWorkstationLockBlockingControl(host) ||
+      sourceRevision !== host.sourceRevision ||
+      homeRevision !== host.homeRevision
+    ) {
+      return false;
+    }
+    if (!(await requestMiSceneConfirmation(host, scene, command))) {
+      // Cancel, the 8 s expiry and a home/source switch behind the prompt are deliberate
+      // cancellations. The batch runner recognizes this banner and restores the previous one,
+      // so a declined scene is not reported as a failed write.
+      host.replyBanner = {
+        text: tr3("操作已取消", "操作已取消", "Action cancelled"),
+        source: t("已取消"),
+        isError: true,
+      };
+      return false;
+    }
+    if (await isWorkstationLockBlockingControl(host) || sourceRevision !== host.sourceRevision ||
+        homeRevision !== host.homeRevision || !miSceneBelongsToSelectedHome(host, scene) ||
+        !host.scenes.some((row) => row.entityId === scene.entityId && row.miScene &&
+          row.miScene.ownerUid === scene.miScene?.ownerUid)) return false;
   }
   if (targetDeviceId !== null) {
     invalidateEchoReadBackForDevice(host, targetDeviceId);
@@ -1157,12 +1204,15 @@ async function dispatchCloudCommand(
   originalEntityId = command.entityId,
 ): Promise<boolean | null> {
   const sourceRevision = host.sourceRevision;
+  const homeRevision = host.homeRevision;
   const provider = homeProviderFor(host);
   try {
     return await provider.execute(command, {
       readBackPower,
       beforeSend: () => {
-        if (sourceRevision !== host.sourceRevision) throw new Error("Connection source changed");
+        if (sourceRevision !== host.sourceRevision || homeRevision !== host.homeRevision) {
+          throw new Error("Connection source changed");
+        }
         if (host.settings?.connectionMode !== "demo" || isDualSourceEnabled(host)) {
           const currentTargetId = deviceOwningEntityId(
             host.devices,
@@ -1195,6 +1245,13 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     const deviceId = deviceOwningEntityId(host.devices, host.deviceFacets, entityId);
     return host.devices.find((device) => device.id === deviceId);
   };
+  const sceneForEntity = (entityId: string) => host.scenes.find((scene) => scene.entityId === entityId);
+  // The entity id alone only names the account; the provider must also refuse a scene of a home
+  // the user has already left (a two-tap confirm or a URL command can outlive the switch).
+  const sceneForEntityInSelectedHome = (entityId: string) => {
+    const scene = sceneForEntity(entityId);
+    return scene && miSceneBelongsToSelectedHome(host, scene) ? scene : undefined;
+  };
   const multiState = getHostMiAccountsState(host);
   const accounts = host.miAccountsOverride ?? multiState?.accounts ?? [];
   const enabledAccounts = resolveEnabledMiAccountsForHost(host, accounts);
@@ -1206,6 +1263,7 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
       devices: host.devices,
       specResolver: host.specResolver,
       deviceForEntity,
+      sceneForEntity: sceneForEntityInSelectedHome,
       transport: host.transport,
     });
   }
@@ -1225,6 +1283,8 @@ function buildXiaomiHomeProvider(host: MenuMijiaWindowsApp): HomeCommandProvider
     client: new MiCloudClient(session, host.transport),
     specResolver: host.specResolver,
     deviceForEntity,
+    sceneForEntity: (entityId) => miSceneAccount(entityId) === miAccountId(session)
+      ? sceneForEntityInSelectedHome(entityId) : undefined,
   });
 }
 

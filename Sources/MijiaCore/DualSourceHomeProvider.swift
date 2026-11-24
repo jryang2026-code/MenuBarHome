@@ -1836,7 +1836,8 @@ public actor DualSourceHomeProvider: HomeProvider {
     // MARK: - Commands
 
     public func execute(_ command: DeviceCommand) async throws {
-        if MiotAddress.parse(command.targetEntityId) != nil {
+        if MiotAddress.parse(command.targetEntityId) != nil
+            || MiCloudScene.accountID(for: command.targetEntityId) != nil {
             guard !disabledBackendsGate.contains(.xiaomiCloud), let xiaomiCloud else {
                 throw HomeProviderError.backendNotConfigured(.xiaomiCloud)
             }

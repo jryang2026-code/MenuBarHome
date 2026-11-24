@@ -54,7 +54,7 @@ struct HomeBackendDescriptorTests {
     @Test("Built-in providers declare their capabilities")
     func providerCapabilities() {
         #expect(HAWebSocketProvider.capabilities == [.readSnapshot, .pushEvents, .control, .scenes, .cameras])
-        #expect(MiCloudProvider.capabilities == [.readSnapshot, .control, .cameras])
+        #expect(MiCloudProvider.capabilities == [.readSnapshot, .control, .scenes, .cameras])
         #expect(MiAccountsProvider.capabilities == MiCloudProvider.capabilities)
     }
 

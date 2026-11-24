@@ -6,6 +6,7 @@ public struct CachedMiTopology: Codable, Equatable, Sendable {
     public var savedAt: Date
     public var devices: [MiDeviceRecord]
     public var rooms: [MiRoom]
+    public var manualScenes: [MiCloudScene]
     public var groupMembersByGroup: [String: [String]]
     public var discoveredLANIPsByDid: [String: String]
 
@@ -14,6 +15,7 @@ public struct CachedMiTopology: Codable, Equatable, Sendable {
         savedAt: Date,
         devices: [MiDeviceRecord],
         rooms: [MiRoom],
+        manualScenes: [MiCloudScene] = [],
         groupMembersByGroup: [String: [String]] = [:],
         discoveredLANIPsByDid: [String: String] = [:]
     ) {
@@ -21,6 +23,7 @@ public struct CachedMiTopology: Codable, Equatable, Sendable {
         self.savedAt = savedAt
         self.devices = devices
         self.rooms = rooms
+        self.manualScenes = manualScenes
         self.groupMembersByGroup = groupMembersByGroup
         self.discoveredLANIPsByDid = discoveredLANIPsByDid
     }
@@ -31,6 +34,7 @@ public struct CachedMiTopology: Codable, Equatable, Sendable {
         self.savedAt = try c.decode(Date.self, forKey: .savedAt)
         self.devices = try c.decode([MiDeviceRecord].self, forKey: .devices)
         self.rooms = try c.decode([MiRoom].self, forKey: .rooms)
+        self.manualScenes = try c.decodeIfPresent([MiCloudScene].self, forKey: .manualScenes) ?? []
         self.groupMembersByGroup = try c.decodeIfPresent([String: [String]].self, forKey: .groupMembersByGroup) ?? [:]
         self.discoveredLANIPsByDid = try c.decodeIfPresent([String: String].self, forKey: .discoveredLANIPsByDid) ?? [:]
     }
@@ -56,7 +60,7 @@ public struct MiTopologyCache: Sendable {
     }
 
     public func save(_ topology: CachedMiTopology, for session: MiSession) {
-        guard !topology.devices.isEmpty, !session.ssecurity.isEmpty else { return }
+        guard !topology.devices.isEmpty || !topology.manualScenes.isEmpty, !session.ssecurity.isEmpty else { return }
         let accountID = MiAccount(session: session).id
         let key = Self.symmetricKey(accountID: accountID, ssecurity: session.ssecurity)
         let fm = FileManager.default
