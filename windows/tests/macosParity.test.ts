@@ -102,7 +102,7 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     assert.equal(loadSettings().settings.panelTheme, "classic");
   });
 
-  it("renders macOS Classic main panel header, All-Off stack, spotlight mic, 3 room tools, and 3 footer actions", () => {
+  it("renders macOS Classic main panel header, All-Off stack, spotlight mic, 快捷 capsule + 3 room tools, and 3 footer actions", () => {
     seedSettings();
     app = new MenuMijiaWindowsApp(element("#app"));
 
@@ -139,9 +139,10 @@ describe("macOS v1.4.0 UI parity, 5-tab Settings sidebar & standalone window rou
     assertMissing(document.querySelector("#btn-toggle-assistant"));
     assertMissing(document.querySelector("#btn-hide-panel"));
 
-    // Room bar has 3 right tools (reorder, active grid toggle, offline toggle) in macOS order.
+    // Room bar keeps the 3 right tools (reorder, active grid toggle, offline toggle) in macOS
+    // order, plus the W2A-9b 快捷 capsule that folds the quick strip and For You cards.
     const toolIds = [...document.querySelectorAll<HTMLElement>(".cc-room-tools > button")].map((b) => b.id);
-    assert.deepEqual(toolIds, ["btn-room-order-editor", "btn-toggle-grid", "btn-toggle-hide-offline"]);
+    assert.deepEqual(toolIds, ["btn-quick-drawer-toggle", "btn-room-order-editor", "btn-toggle-grid", "btn-toggle-hide-offline"]);
     assert.equal(element("#btn-toggle-grid").classList.contains("is-active"), true);
 
     // Classic footer has 3 icon buttons (refresh, settings, quit) and omits #btn-toggle-appearance.
