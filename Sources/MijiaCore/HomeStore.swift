@@ -446,6 +446,19 @@ public final class HomeStore {
         didSet { HomePreferences.doorbellPopupSeconds.save(doorbellPopupSeconds, to: userDefaults) }
     }
 
+    /// Per-camera opt-in for auto-opening PiP on doorbell/alarm events (P1-2). Off by default.
+    public var cameraPipAutoOpenDeviceIds: Set<String> {
+        didSet {
+            HomePreferences.cameraPipAutoOpenIds.save(cameraPipAutoOpenDeviceIds, to: userDefaults)
+            syncMiotTypePrunePolicy()
+        }
+    }
+
+    /// Up to 2 user-pinned related switch device IDs shown inside each camera's PiP window (P1-2).
+    public var cameraPipPinnedSwitchIds: [String: [String]] {
+        didSet { saveCameraPipPinnedSwitchIds() }
+    }
+
     /// Recent doorbell presses, newest first, including ones that did not open a window (#308).
     /// Cleared by `invalidateUndoContext`; a press whose card leaves the home drops out of
     /// `panelActivities`.
@@ -1456,6 +1469,8 @@ public final class HomeStore {
         self.enableWeeklyHealthReport = HomePreferences.enableWeeklyHealthReport.load(from: ud)
         self.doorbellChime = HomePreferences.doorbellChime.load(from: ud)
         self.doorbellPopupSeconds = HomePreferences.doorbellPopupSeconds.load(from: ud)
+        self.cameraPipAutoOpenDeviceIds = HomePreferences.cameraPipAutoOpenIds.load(from: ud)
+        self.cameraPipPinnedSwitchIds = Self.loadCameraPipPinnedSwitchIds(from: ud)
         self.blockControlWhileLocked = HomePreferences.blockControlWhileLocked.load(from: ud)
         self.sensorAlertsOnlyWhenAway = HomePreferences.sensorAlertsOnlyWhenAway.load(from: ud)
         self.sensorAlertPreferences = SensorAlertKind.allCases.reduce(into: [SensorAlertKind: Bool]()) { preferences, kind in

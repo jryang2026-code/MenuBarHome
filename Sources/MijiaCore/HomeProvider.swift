@@ -161,6 +161,13 @@ public protocol HomeProvider: Sendable {
         quality: XiaomiCameraStreamQuality,
         channel: Int
     ) async throws -> CameraStreamSource
+    /// `audioEnabled` requests listen-only camera audio; muted previews keep it false (`&audio=0`).
+    func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        audioEnabled: Bool
+    ) async throws -> CameraStreamSource
     /// Releases any active live stream session (such as a single-session P2P bridge) for a camera device.
     func stopCameraStream(for device: SmartDevice) async
     func readBack(deviceId: String) async -> ControlReadBack
@@ -191,6 +198,14 @@ extension HomeProvider {
         channel: Int
     ) async throws -> CameraStreamSource {
         try await resolveCameraStream(for: device, quality: quality)
+    }
+    public func resolveCameraStream(
+        for device: SmartDevice,
+        quality: XiaomiCameraStreamQuality,
+        channel: Int,
+        audioEnabled: Bool
+    ) async throws -> CameraStreamSource {
+        try await resolveCameraStream(for: device, quality: quality, channel: channel)
     }
     public func stopCameraStream(for device: SmartDevice) async {}
     /// Providers with nothing running in the background have nothing to stop.

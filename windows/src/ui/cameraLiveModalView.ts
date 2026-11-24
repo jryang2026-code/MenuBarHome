@@ -181,6 +181,15 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
               "Current source is a snapshot or MJPEG image stream (video only, no audio track)",
             ),
           }
+        : mediaKind === "video" && ctrl.liveCameraHasAudioTrack === false
+          ? {
+              code: "video-only-track",
+              tip: tr3(
+                "当前视频流不含音轨，仅传画面",
+                "目前視訊串流不含音軌，僅傳畫面",
+                "Current video stream has no audio track (video only)",
+              ),
+            }
         : mediaKind === "demo"
           ? {
               code: "demo",
@@ -192,7 +201,7 @@ export function renderCameraLiveModalView(ctrl: CameraLiveController): string {
             }
           : null;
   const audioControl =
-    mediaKind === "video"
+    mediaKind === "video" && ctrl.liveCameraHasAudioTrack !== false
       ? `<button type="button" class="cc-seg-pill ${!ctrl.liveCameraMuted ? "is-active" : ""}" id="cc-camera-mute" data-camera-audio="toggle" title="${ctrl.host.escapeHtml(muteLabel)}" aria-label="${ctrl.host.escapeHtml(muteLabel)}" aria-pressed="${ctrl.liveCameraMuted}" style="display:inline-flex;align-items:center;gap:4px;"><span data-camera-mute-icon style="width:13px;height:13px;display:inline-flex;align-items:center;justify-content:center;">${ctrl.liveCameraMuted ? SF_ICONS.speakerSlash : SF_ICONS.speakerWave}</span><span data-camera-mute-text>${ctrl.host.escapeHtml(muteLabel)}</span></button>`
       : videoOnlyReason
         ? `<span class="cc-pill-label" id="cc-camera-audio-badge" data-video-only-reason="${videoOnlyReason.code}" title="${ctrl.host.escapeHtml(videoOnlyReason.tip)}" aria-label="${ctrl.host.escapeHtml(`${t("仅画面")} · ${videoOnlyReason.tip}`)}" style="cursor:help;">${t("仅画面")}</span>`

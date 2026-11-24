@@ -46,6 +46,70 @@ struct CameraLiveSampleBufferTests {
         #expect(Self.attachesDisplayImmediately(immediate))
     }
 
+    @MainActor
+    @Test("Builds audio format descriptions and sample buffers for AAC, A-law, and Opus tracks and detects moov audio tracks")
+    func buildsAudioSampleBuffersAndDetectsAudioTracks() throws {
+        let aacTrack = FMP4AudioTrack(
+            trackID: 2,
+            codec: .aac,
+            timescale: 16_000,
+            sampleRate: 16_000,
+            channelCount: 1,
+            bitsPerSample: 16,
+            configRecord: Data([0x14, 0x08])
+        )
+        let aacFormat = try #require(CameraLiveVideoPlayer.makeAudioFormatDescription(for: aacTrack))
+        let aacSample = FMP4AudioSample(trackID: 2, data: Data([0x21, 0x10, 0x04]), decodeTime: 0, duration: 1024)
+        #expect(CameraLiveVideoPlayer.makeAudioSampleBuffer(sample: aacSample, format: aacFormat, track: aacTrack) != nil)
+
+        let alawTrack = FMP4AudioTrack(
+            trackID: 3,
+            codec: .alaw,
+            timescale: 8_000,
+            sampleRate: 8_000,
+            channelCount: 1,
+            bitsPerSample: 8
+        )
+        let alawFormat = try #require(CameraLiveVideoPlayer.makeAudioFormatDescription(for: alawTrack))
+        let alawSample = FMP4AudioSample(trackID: 3, data: Data(repeating: 0xD5, count: 160), decodeTime: 0, duration: 160)
+        #expect(CameraLiveVideoPlayer.makeAudioSampleBuffer(sample: alawSample, format: alawFormat, track: alawTrack) != nil)
+
+        // Variable-length FLAC packet (8 kHz, 160 frames = 20 ms, NOT 4096 frames = 512 ms)
+        let flacTrack = FMP4AudioTrack(
+            trackID: 4,
+            codec: .flac,
+            timescale: 8_000,
+            sampleRate: 8_000,
+            channelCount: 1,
+            bitsPerSample: 16
+        )
+        let flacFormat = try #require(CameraLiveVideoPlayer.makeAudioFormatDescription(for: flacTrack))
+        // FLAC frame header with bsCode=6 (8-bit blocksize = 159 -> 160 frames)
+        let flacData = Data([0xFF, 0xF8, 0x64, 0x08, 0x00, 0x9F, 0x00, 0x00])
+        let flacSample = FMP4AudioSample(trackID: 4, data: flacData, decodeTime: 0, duration: 160)
+        let flacBuf = try #require(CameraLiveVideoPlayer.makeAudioSampleBuffer(sample: flacSample, format: flacFormat, track: flacTrack))
+        let flacDur = CMSampleBufferGetDuration(flacBuf)
+        #expect(abs(CMTimeGetSeconds(flacDur) - 0.02) < 0.001)
+
+        let player = CameraLiveVideoPlayer()
+        let videoTrack = FMP4VideoTrack(
+            trackID: 1,
+            codec: .h264,
+            timescale: 90_000,
+            width: 640,
+            height: 360,
+            configRecord: Data(),
+            nalLengthSize: 4,
+            parameterSets: []
+        )
+        player.processDemuxEvents([.videoTrack(videoTrack)])
+        #expect(player.detectedAudioTrack == false)
+
+        let playerWithAudio = CameraLiveVideoPlayer()
+        playerWithAudio.processDemuxEvents([.videoTrack(videoTrack), .audioTrack(aacTrack)])
+        #expect(playerWithAudio.detectedAudioTrack == true)
+    }
+
     private static func attachesDisplayImmediately(_ buffer: CMSampleBuffer) -> Bool {
         guard let attachments = CMSampleBufferGetSampleAttachmentsArray(buffer, createIfNecessary: false),
               CFArrayGetCount(attachments) > 0 else {

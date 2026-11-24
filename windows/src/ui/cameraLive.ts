@@ -17,9 +17,15 @@ import {
   type MiotSpecResolver,
 } from "../core/miCloudClient.js";
 import type { CameraLens, DeviceCommand, SmartDevice } from "../core/models.js";
-import { localizeNightShot } from "../core/models.js";
+import { isActiveDevice, localizeNightShot } from "../core/models.js";
+import type { CameraEventKind } from "../core/cameraEventStore.js";
 import {
+  DEFAULT_CAMERA_PIP_AUTO_CLOSE_SECONDS,
+  isPinnableCameraSwitch,
   isPortraitDoorbellCamera,
+  MAX_PINNED_CAMERA_SWITCHES,
+  sanitizePinnedSwitchIds,
+  shouldAutoOpenCameraPipOnEvent,
   type CameraPipAction,
   type CameraPipMediaKind,
   type CameraPipSnapshot,
@@ -86,6 +92,73 @@ export function formatGo2RtcSupervisorDiagnostics(
     lines.push(`go2rtcLastError: ${redact(status.lastError.trim())}`);
   }
   return lines;
+}
+
+/**
+ * Builds a go2rtc HTTP stream URL (`/api/stream.mp4`, `/api/stream.m3u8`, `/api/stream.mjpeg`).
+ * Muted previews add `&audio=0` so audio is not requested until the user explicitly opts in (#445, P1-2).
+ */
+export function buildGo2RtcStreamUrl(
+  origin: string,
+  streamName: string,
+  options?: { readonly format?: "mp4" | "m3u8" | "mjpeg"; readonly audioEnabled?: boolean },
+): string {
+  const cleanOrigin = origin.trim().replace(/\/+$/, "");
+  const format = options?.format ?? "m3u8";
+  const audioEnabled = Boolean(options?.audioEnabled);
+  const encodedSrc = encodeURIComponent(streamName);
+  switch (format) {
+    case "mp4":
+      return audioEnabled
+        ? `${cleanOrigin}/api/stream.mp4?src=${encodedSrc}&mp4=all`
+        : `${cleanOrigin}/api/stream.mp4?src=${encodedSrc}&mp4&audio=0`;
+    case "m3u8":
+      return audioEnabled
+        ? `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}`
+        : `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}&video=all&audio=0`;
+    case "mjpeg":
+      return `${cleanOrigin}/api/stream.mjpeg?src=${encodedSrc}`;
+  }
+}
+
+/**
+ * Applies the muted-preview (`audio=0`) vs listen-only (`audio` requested) parameter to a
+ * `xiaomi://` or go2rtc HTTP stream URL (`stream.mp4` / `stream.m3u8`).
+ */
+export function withGo2RtcAudioQuery(rawUrl: string, audioEnabled: boolean): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return rawUrl;
+  }
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol === "xiaomi:") {
+    parsed.searchParams.set("audio", audioEnabled ? "1" : "0");
+    return parsed.toString();
+  }
+  if (protocol !== "http:" && protocol !== "https:") return rawUrl;
+  const path = parsed.pathname.toLowerCase();
+  if (!path.endsWith("/api/stream.mp4") && !path.endsWith("/api/stream.m3u8")) {
+    return rawUrl;
+  }
+  if (audioEnabled) {
+    if (parsed.searchParams.get("audio") === "0") {
+      parsed.searchParams.delete("audio");
+    }
+    if (path.endsWith("/api/stream.m3u8") && parsed.searchParams.get("video") === "all") {
+      parsed.searchParams.delete("video");
+    }
+    if (path.endsWith("/api/stream.mp4") && parsed.searchParams.get("mp4") === "") {
+      parsed.searchParams.set("mp4", "all");
+    }
+  } else {
+    if (path.endsWith("/api/stream.m3u8") && !parsed.searchParams.has("video")) {
+      parsed.searchParams.set("video", "all");
+    }
+    parsed.searchParams.set("audio", "0");
+  }
+  return parsed.toString();
 }
 
 export function normalizeCameraRotation(value: unknown): CameraRotationDeg {
@@ -213,6 +286,8 @@ export class CameraLiveController {
   public static readonly CAMERA_CHANNELS_STORAGE_KEY = "menubarmijia.cameraChannels";
   public static readonly CAMERA_ROTATIONS_STORAGE_KEY = "menubarmijia.cameraRotations";
   public static readonly CAMERA_LOCAL_IPS_STORAGE_KEY = "menubarmijia.cameraLocalIPs";
+  public static readonly CAMERA_AUTO_OPEN_STORAGE_KEY = "menubarmijia.cameraPipAutoOpen";
+  public static readonly CAMERA_PINNED_SWITCHES_STORAGE_KEY = "menubarmijia.cameraPipPinnedSwitches";
 
   constructor(public readonly host: CameraLiveHost) {
     this.cameraStreamURLs = { ...(host.settings.cameraStreamURLs ?? {}) };
@@ -220,6 +295,8 @@ export class CameraLiveController {
     this.cameraChannels = loadPersistedCameraChannels();
     this.cameraRotations = loadPersistedCameraRotations();
     this.cameraLocalIPs = loadPersistedCameraLocalIPs();
+    this.cameraAutoOpenIds = loadPersistedCameraAutoOpenIds();
+    this.cameraPinnedSwitches = loadPersistedCameraPinnedSwitches();
   }
 
   public activeLiveCameraId: string | null = null;
@@ -265,11 +342,18 @@ export class CameraLiveController {
   public liveCameraMode: "mjpeg" | null = null;
   public liveCameraMjpegSrc: string | null = null;
   private detachedPipActive = false;
+  public cameraAutoOpenIds: Record<string, boolean> = {};
+  public cameraPinnedSwitches: Record<string, string[]> = {};
+  public autoCloseRemainingSeconds: number | null = null;
+  private autoCloseTimer: ReturnType<typeof setInterval> | null = null;
+  private autoCloseCameraId: string | null = null;
   public get isDetachedPipActive(): boolean {
     return this.detachedPipActive;
   }
   /** Only a raw `<video>` element can carry audio; it starts muted like the macOS HLS player (#29). */
   public liveCameraMuted = true;
+  /** Detected from active `<video>` metadata (`null` if unknown / unsupported by WebView). */
+  public liveCameraHasAudioTrack: boolean | null = null;
   public liveCameraQualityApplies = true;
   public liveCameraImgEl: HTMLImageElement | null = null;
   public liveCameraRawMediaEl: HTMLImageElement | HTMLVideoElement | null = null;
@@ -487,6 +571,7 @@ export class CameraLiveController {
     this.activeLiveCameraId = dev.id;
     this.activeLiveCameraSnapshot = dev;
     this.liveCameraMuted = true;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraQualityApplies = true;
     this.liveCameraHidden = false;
     this.clearCameraKeepAlive();
@@ -604,6 +689,7 @@ export class CameraLiveController {
     }
     this.reconnectingP2PSessionId = null;
     this.clearCameraKeepAlive();
+    this.cancelAutoCloseCountdown();
     this.liveCameraHidden = false;
     const wasNegotiating = this.negotiationAbort !== null;
     this.stopLiveTransport();
@@ -611,6 +697,7 @@ export class CameraLiveController {
     this.activeLiveCameraSnapshot = null;
     this.syncModalEscapeListener();
     this.liveCameraMuted = true;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraQualityApplies = true;
     this.liveCameraStreamURL = null;
     this.liveCameraLoading = false;
@@ -869,6 +956,7 @@ export class CameraLiveController {
     }
     this.liveCameraRawMediaEl?.remove();
     this.liveCameraRawMediaEl = null;
+    this.liveCameraHasAudioTrack = null;
     this.liveCameraMode = null;
     this.liveCameraMjpegSrc = null;
     if (this.activeLiveCameraId) {
@@ -935,8 +1023,40 @@ export class CameraLiveController {
     }
     this.liveCameraRawMediaEl = rawMedia;
     if (rawMedia.tagName === "VIDEO") {
+      const updateVideoOnly = (hasAudio: boolean) => {
+        if (this.liveCameraHasAudioTrack === hasAudio) return;
+        this.liveCameraHasAudioTrack = hasAudio;
+        if (!hasAudio) {
+          (rawMedia as HTMLVideoElement).muted = true;
+          this.liveCameraMuted = true;
+        }
+        this.host.render();
+      };
       rawMedia.addEventListener("loadedmetadata", () => {
-        if (this.liveCameraRawMediaEl === rawMedia) this.applyRotationToLiveMedia();
+        if (this.liveCameraRawMediaEl !== rawMedia) return;
+        this.applyRotationToLiveMedia();
+        const tracks = (rawMedia as HTMLVideoElement & { audioTracks?: { readonly length: number } }).audioTracks;
+        if (tracks !== undefined && typeof tracks.length === "number") {
+          updateVideoOnly(tracks.length > 0);
+        }
+      });
+      rawMedia.addEventListener("timeupdate", () => {
+        if (this.liveCameraRawMediaEl !== rawMedia) return;
+        const video = rawMedia as HTMLVideoElement & {
+          webkitAudioDecodedByteCount?: number;
+          webkitVideoDecodedByteCount?: number;
+        };
+        if (typeof video.webkitAudioDecodedByteCount !== "number") return;
+        if (video.webkitAudioDecodedByteCount > 0) {
+          updateVideoOnly(true);
+        } else if (
+          !video.muted &&
+          typeof video.webkitVideoDecodedByteCount === "number" &&
+          video.webkitVideoDecodedByteCount > 0 &&
+          video.currentTime >= 0.5
+        ) {
+          updateVideoOnly(false);
+        }
       });
       rawMedia.addEventListener("volumechange", () => {
         if (this.liveCameraRawMediaEl !== rawMedia) return;
@@ -1578,6 +1698,9 @@ export class CameraLiveController {
                 quality: this.cameraStreamQualities[dev.id] ?? DEFAULT_CAMERA_STREAM_QUALITY,
                 ...(channel > 0 ? { channel } : {}),
                 ...(subdid ? { subdid } : {}),
+                // Windows P2P renders MJPEG frames via go2rtc_jpeg_frame (`p2p-mjpeg`, video-only),
+                // so keep audio suppressed (`audio=0`) on the bridge stream.
+                audioEnabled: false,
               }, token);
               if (stale()) {
                 // The close path already tore down once; this late start re-created a
@@ -1991,9 +2114,148 @@ export class CameraLiveController {
       lenses: hasDualLenses ? (k.lenses ?? []) : [],
       activeLensChannel: this.selectedCameraChannel(dev),
       playableCameras,
+      autoCloseRemainingSeconds:
+        this.autoCloseCameraId === dev.id ? this.autoCloseRemainingSeconds : null,
+      autoOpenOnEvent: this.isCameraAutoOpenEnabled(dev.id),
+      pinnedSwitches: this.pinnedSwitchesForCamera(dev.id).map((sw) => ({
+        id: sw.id,
+        name: sw.name,
+        isOn: isActiveDevice(sw),
+        isOnline: sw.isOnline,
+      })),
+      availablePinSwitches: this.host.devices
+        .filter((item) => item.id !== dev.id && isPinnableCameraSwitch(item))
+        .map((sw) => ({
+          id: sw.id,
+          name: sw.name,
+          isOn: isActiveDevice(sw),
+          isOnline: sw.isOnline,
+        })),
     };
   }
 
+  public isCameraAutoOpenEnabled(cameraId: string): boolean {
+    return this.cameraAutoOpenIds[cameraId] === true;
+  }
+
+  public setCameraAutoOpen(cameraId: string, enabled: boolean): void {
+    if (enabled) {
+      this.cameraAutoOpenIds[cameraId] = true;
+    } else {
+      delete this.cameraAutoOpenIds[cameraId];
+    }
+    savePersistedRecord(CameraLiveController.CAMERA_AUTO_OPEN_STORAGE_KEY, this.cameraAutoOpenIds);
+  }
+
+  public pinnedSwitchesForCamera(cameraId: string): SmartDevice[] {
+    const ids = sanitizePinnedSwitchIds(this.cameraPinnedSwitches[cameraId] ?? []);
+    const out: SmartDevice[] = [];
+    for (const id of ids) {
+      const dev = this.host.devices.find((d) => d.id === id && isPinnableCameraSwitch(d));
+      if (dev) out.push(dev);
+    }
+    return out;
+  }
+
+  public toggleCameraPinnedSwitch(cameraId: string, switchId: string): void {
+    const current = sanitizePinnedSwitchIds(this.cameraPinnedSwitches[cameraId] ?? []);
+    const idx = current.indexOf(switchId);
+    let next: string[];
+    if (idx >= 0) {
+      next = current.filter((id) => id !== switchId);
+    } else if (current.length < MAX_PINNED_CAMERA_SWITCHES) {
+      next = [...current, switchId];
+    } else {
+      next = [...current.slice(1), switchId];
+    }
+    if (next.length === 0) {
+      delete this.cameraPinnedSwitches[cameraId];
+    } else {
+      this.cameraPinnedSwitches[cameraId] = next;
+    }
+    savePersistedRecord(
+      CameraLiveController.CAMERA_PINNED_SWITCHES_STORAGE_KEY,
+      this.cameraPinnedSwitches,
+    );
+  }
+
+  public cancelAutoCloseCountdown(): void {
+    if (this.autoCloseTimer !== null) {
+      clearInterval(this.autoCloseTimer);
+      this.autoCloseTimer = null;
+    }
+    const hadCountdown = this.autoCloseRemainingSeconds !== null;
+    this.autoCloseRemainingSeconds = null;
+    this.autoCloseCameraId = null;
+    if (hadCountdown) {
+      this.syncCameraPipState();
+    }
+  }
+
+  public armAutoCloseCountdown(cameraId: string, seconds = DEFAULT_CAMERA_PIP_AUTO_CLOSE_SECONDS): void {
+    this.cancelAutoCloseCountdown();
+    const clamped = Math.min(300, Math.max(1, Math.round(seconds)));
+    this.autoCloseCameraId = cameraId;
+    this.autoCloseRemainingSeconds = clamped;
+    this.syncCameraPipState();
+    const timer = setInterval(() => {
+      if (this.autoCloseCameraId !== cameraId || this.activeLiveCameraId !== cameraId) {
+        this.cancelAutoCloseCountdown();
+        return;
+      }
+      const next = (this.autoCloseRemainingSeconds ?? 1) - 1;
+      if (next <= 0) {
+        this.cancelAutoCloseCountdown();
+        this.closeCameraLiveView();
+        return;
+      }
+      this.autoCloseRemainingSeconds = next;
+      this.syncCameraPipState();
+    }, 1_000);
+    if (typeof timer === "object" && timer !== null && "unref" in timer) {
+      (timer as { unref(): void }).unref();
+    }
+    this.autoCloseTimer = timer;
+  }
+
+  /**
+   * Evaluates a doorbell/alarm camera event against per-camera opt-in (OFF by default),
+   * lock-screen block, and Focus/DND policy (#475: doorbell is never suppressed).
+   * When permitted, opens the PiP at top-right without stealing keyboard focus and starts
+   * a visible auto-close countdown.
+   */
+  public handleCameraEventForAutoOpen(args: {
+    readonly cameraId: string;
+    readonly kind: CameraEventKind;
+    readonly isLocked: boolean;
+    readonly isFocusActive: boolean;
+    readonly dismissSeconds?: number;
+  }): boolean {
+    if (
+      !shouldAutoOpenCameraPipOnEvent({
+        eventKind: args.kind,
+        cameraOptIn: this.isCameraAutoOpenEnabled(args.cameraId),
+        isLocked: args.isLocked,
+        isFocusActive: args.isFocusActive,
+      })
+    ) {
+      return false;
+    }
+    const dev = this.host.devices.find(
+      (d) => d.id === args.cameraId && d.kind.kind === "camera" && d.isOnline,
+    );
+    if (!dev) return false;
+    const seconds = args.dismissSeconds ?? DEFAULT_CAMERA_PIP_AUTO_CLOSE_SECONDS;
+    if (this.activeLiveCameraId === dev.id && !this.liveCameraHidden) {
+      if (this.autoCloseCameraId === dev.id) {
+        this.armAutoCloseCountdown(dev.id, seconds);
+      }
+      return true;
+    }
+    this.openCameraLiveView(dev.id, { forceTopRight: true, stealFocus: false });
+    this.armAutoCloseCountdown(dev.id, seconds);
+    return true;
+  }
   public syncCameraPipState(): void {
     if (!this.detachedPipActive) return;
     const snap = this.buildCameraPipSnapshot();
@@ -2029,10 +2291,36 @@ export class CameraLiveController {
   }
 
   public handlePipAction(action: CameraPipAction): void {
+    if (action.type !== "frameCaptured") {
+      this.cancelAutoCloseCountdown();
+    }
     switch (action.type) {
+      case "interact":
+        return;
       case "close":
         this.closeCameraLiveView();
         return;
+      case "togglePinnedSwitch": {
+        const target = this.host.devices.find((d) => d.id === action.deviceId);
+        if (target && isPinnableCameraSwitch(target)) {
+          this.host.toggleDevice?.(target);
+        }
+        return;
+      }
+      case "setAutoOpen": {
+        const camId = this.activeLiveCameraId;
+        if (!camId) return;
+        this.setCameraAutoOpen(camId, Boolean(action.enabled));
+        this.syncCameraPipState();
+        return;
+      }
+      case "togglePinSelection": {
+        const camId = this.activeLiveCameraId;
+        if (!camId || !action.deviceId) return;
+        this.toggleCameraPinnedSwitch(camId, action.deviceId);
+        this.syncCameraPipState();
+        return;
+      }
       case "reload":
         this.reconnectCameraLiveView();
         this.syncCameraPipState();
@@ -2195,6 +2483,29 @@ function loadPersistedCameraLocalIPs(): Record<string, string> {
     if (typeof value === "string") {
       const valid = parsePrivateLanIpv4(value);
       if (valid) out[id] = valid;
+    }
+  }
+  return out;
+}
+
+function loadPersistedCameraAutoOpenIds(): Record<string, boolean> {
+  const raw = loadRawStorageMap(CameraLiveController.CAMERA_AUTO_OPEN_STORAGE_KEY);
+  const out: Record<string, boolean> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (value === true) out[id] = true;
+  }
+  return out;
+}
+
+function loadPersistedCameraPinnedSwitches(): Record<string, string[]> {
+  const raw = loadRawStorageMap(CameraLiveController.CAMERA_PINNED_SWITCHES_STORAGE_KEY);
+  const out: Record<string, string[]> = {};
+  for (const [id, value] of Object.entries(raw)) {
+    if (Array.isArray(value)) {
+      const cleaned = sanitizePinnedSwitchIds(
+        value.filter((item): item is string => typeof item === "string"),
+      );
+      if (cleaned.length > 0) out[id] = cleaned;
     }
   }
   return out;

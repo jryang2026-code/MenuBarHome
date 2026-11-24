@@ -103,7 +103,7 @@ import { CameraLiveController } from "./cameraLive.js";
 import { CameraPipWindowApp } from "./cameraPipWindow.js";
 import { renderDeviceTile as renderDeviceTileView, renderEnvironmentStrip as renderEnvironmentStripView } from "./deviceViews.js";
 import { renderContextMenu, renderHomeMenu, renderOnboardingModal, renderPrompt, renderSettingsModal } from "./menuViews.js";
-import { bindDeckEvents, bindEvents as bindEventsImpl } from "./bindEvents.js";
+import { bindDeckEvents, bindEvents as bindEventsImpl, toggleDeviceForHost } from "./bindEvents.js";
 import {
   partitionUndoStepsByHighRiskConfirmation,
   releaseActivityWindowLifecycle,
@@ -1172,17 +1172,17 @@ export class MenuMijiaWindowsApp {
   public unresolvedRoomDids = new Set<string>();
 
 
-  public async refreshDevices(silent = false): Promise<void> {
+  public async refreshDevices(silent = false, userInitiated = false): Promise<void> {
     try {
-      await refreshDevices(this, silent);
+      await refreshDevices(this, silent, userInitiated);
     } finally {
       syncTimerLoopSchedule(this);
     }
   }
 
-  public async refreshHADevices(silent = false): Promise<void> {
+  public async refreshHADevices(silent = false, userInitiated = false): Promise<void> {
     try {
-      await refreshHADevices(this, silent);
+      await refreshHADevices(this, silent, userInitiated);
     } finally {
       syncTimerLoopSchedule(this);
     }
@@ -1383,8 +1383,8 @@ export class MenuMijiaWindowsApp {
     return handleNaturalCommand(this, rawInput, fromScheduled);
   }
 
-  public async runScheduledCommand(item: ScheduledCommand): Promise<void> {
-    return runScheduledCommandWithLockGuard(this, item, () => runScheduledCommand(this, item));
+  public async runScheduledCommand(item: ScheduledCommand, userInitiated = false): Promise<void> {
+    return runScheduledCommandWithLockGuard(this, item, () => runScheduledCommand(this, item, userInitiated));
   }
 
   public async executeIntents(
@@ -1693,7 +1693,7 @@ export class MenuMijiaWindowsApp {
     this.render();
   }
 
-  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean) => Promise<boolean> {
+  public get applyCommand(): (command: DeviceCommand, readBackPower?: boolean, userInitiated?: boolean) => Promise<boolean> {
     return getHostApplyCommand(this);
   }
 
@@ -2775,6 +2775,10 @@ export class MenuMijiaWindowsApp {
     } else if (this.isKnownSavedKey(current)) {
       apiKeyEl.value = "";
     }
+  }
+
+  public toggleDevice(dev: SmartDevice): void {
+    toggleDeviceForHost(this, dev.id);
   }
 
   public escapeHtml(str: string): string {

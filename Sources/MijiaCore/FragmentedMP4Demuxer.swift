@@ -6,6 +6,15 @@ public enum FMP4VideoCodec: String, Equatable, Sendable {
     case hevc
 }
 
+/// Audio codec carried by a fragmented MP4 live stream (#445).
+public enum FMP4AudioCodec: String, Equatable, Sendable {
+    case aac
+    case alaw
+    case ulaw
+    case opus
+    case flac
+}
+
 /// Decoder configuration for one video track, read from the `moov` init segment.
 public struct FMP4VideoTrack: Equatable, Sendable {
     public var trackID: UInt32
@@ -21,6 +30,36 @@ public struct FMP4VideoTrack: Equatable, Sendable {
     public var parameterSets: [Data]
 }
 
+/// Decoder configuration for one audio track, read from the `moov` init segment (#445).
+public struct FMP4AudioTrack: Equatable, Sendable {
+    public var trackID: UInt32
+    public var codec: FMP4AudioCodec
+    public var timescale: UInt32
+    public var sampleRate: Double
+    public var channelCount: Int
+    public var bitsPerSample: Int
+    /// AudioSpecificConfig (`esds`), `dOps`, or `dfLa` payload when applicable.
+    public var configRecord: Data
+
+    public init(
+        trackID: UInt32,
+        codec: FMP4AudioCodec,
+        timescale: UInt32,
+        sampleRate: Double,
+        channelCount: Int,
+        bitsPerSample: Int,
+        configRecord: Data = Data()
+    ) {
+        self.trackID = trackID
+        self.codec = codec
+        self.timescale = timescale
+        self.sampleRate = sampleRate
+        self.channelCount = channelCount
+        self.bitsPerSample = bitsPerSample
+        self.configRecord = configRecord
+    }
+}
+
 /// One coded video frame (AVCC/HVCC length-prefixed NAL units).
 public struct FMP4Sample: Equatable, Sendable {
     public var trackID: UInt32
@@ -31,9 +70,31 @@ public struct FMP4Sample: Equatable, Sendable {
     public var isKeyframe: Bool
 }
 
+/// One coded audio access unit / frame from a fragmented MP4 live stream (#445).
+public struct FMP4AudioSample: Equatable, Sendable {
+    public var trackID: UInt32
+    public var data: Data
+    public var decodeTime: UInt64
+    public var duration: UInt32
+
+    public init(
+        trackID: UInt32,
+        data: Data,
+        decodeTime: UInt64,
+        duration: UInt32
+    ) {
+        self.trackID = trackID
+        self.data = data
+        self.decodeTime = decodeTime
+        self.duration = duration
+    }
+}
+
 public enum FMP4DemuxEvent: Equatable, Sendable {
     case videoTrack(FMP4VideoTrack)
+    case audioTrack(FMP4AudioTrack)
     case sample(FMP4Sample)
+    case audioSample(FMP4AudioSample)
 }
 
 public enum FMP4DemuxError: Error, Equatable {
@@ -50,6 +111,7 @@ public enum FMP4DemuxError: Error, Equatable {
 public struct FragmentedMP4Demuxer: Sendable {
     private var buffer = Data()
     private var tracks: [UInt32: FMP4VideoTrack] = [:]
+    private var audioTracks: [UInt32: FMP4AudioTrack] = [:]
     private var trackDefaults: [UInt32: TrackDefaults] = [:]
     private var pendingMoof: Data?
     private let maxBufferedBytes: Int
@@ -128,13 +190,24 @@ public struct FragmentedMP4Demuxer: Sendable {
 
     // MARK: - Init segment
 
+    private enum ParsedTrack {
+        case video(FMP4VideoTrack)
+        case audio(FMP4AudioTrack)
+    }
+
     private mutating func parseMoov(_ moov: Data, headerSize: Int, into events: inout [FMP4DemuxEvent]) throws {
         for child in Self.children(of: moov, from: headerSize) {
             switch child.type {
             case "trak":
-                if let track = try Self.parseTrak(moov, range: child.payload) {
-                    tracks[track.trackID] = track
-                    events.append(.videoTrack(track))
+                if let parsed = try Self.parseTrak(moov, range: child.payload) {
+                    switch parsed {
+                    case .video(let track):
+                        tracks[track.trackID] = track
+                        events.append(.videoTrack(track))
+                    case .audio(let track):
+                        audioTracks[track.trackID] = track
+                        events.append(.audioTrack(track))
+                    }
                 }
             case "mvex":
                 for trex in Self.children(of: moov, in: child.payload) where trex.type == "trex" {
@@ -153,11 +226,12 @@ public struct FragmentedMP4Demuxer: Sendable {
         }
     }
 
-    private static func parseTrak(_ data: Data, range: Range<Int>) throws -> FMP4VideoTrack? {
+    private static func parseTrak(_ data: Data, range: Range<Int>) throws -> ParsedTrack? {
         var trackID: UInt32?
         var timescale: UInt32 = 90_000
-        var isVideo = false
-        var entry: (codec: FMP4VideoCodec, width: Int, height: Int, config: Data)?
+        var handlerType: String?
+        var visualEntry: (codec: FMP4VideoCodec, width: Int, height: Int, config: Data)?
+        var audioEntry: (codec: FMP4AudioCodec, sampleRate: Double, channels: Int, bitsPerSample: Int, config: Data)?
 
         for child in children(of: data, in: range) {
             switch child.type {
@@ -182,10 +256,11 @@ public struct FragmentedMP4Demuxer: Sendable {
                         }
                     case "hdlr":
                         if m.payload.count >= 12 {
-                            isVideo = fourCC(data, m.payload.lowerBound + 8) == "vide"
+                            handlerType = fourCC(data, m.payload.lowerBound + 8)
                         }
                     case "minf":
-                        entry = findVisualSampleEntry(data, in: m.payload) ?? entry
+                        visualEntry = findVisualSampleEntry(data, in: m.payload) ?? visualEntry
+                        audioEntry = findAudioSampleEntry(data, in: m.payload) ?? audioEntry
                     default:
                         break
                     }
@@ -195,20 +270,41 @@ public struct FragmentedMP4Demuxer: Sendable {
             }
         }
 
-        guard isVideo, let trackID, let entry else { return nil }
-        guard let parsed = parseConfigRecord(entry.config, codec: entry.codec) else {
-            throw FMP4DemuxError.malformedBox(entry.codec == .h264 ? "avcC" : "hvcC")
+        guard let trackID else { return nil }
+        if handlerType == "vide", let entry = visualEntry {
+            guard let parsed = parseConfigRecord(entry.config, codec: entry.codec) else {
+                throw FMP4DemuxError.malformedBox(entry.codec == .h264 ? "avcC" : "hvcC")
+            }
+            return .video(FMP4VideoTrack(
+                trackID: trackID,
+                codec: entry.codec,
+                timescale: timescale == 0 ? 90_000 : timescale,
+                width: entry.width,
+                height: entry.height,
+                configRecord: entry.config,
+                nalLengthSize: parsed.nalLengthSize,
+                parameterSets: parsed.parameterSets
+            ))
         }
-        return FMP4VideoTrack(
-            trackID: trackID,
-            codec: entry.codec,
-            timescale: timescale == 0 ? 90_000 : timescale,
-            width: entry.width,
-            height: entry.height,
-            configRecord: entry.config,
-            nalLengthSize: parsed.nalLengthSize,
-            parameterSets: parsed.parameterSets
-        )
+        if handlerType == "soun", let entry = audioEntry {
+            let maxValidRate = 1_000_000.0
+            let rawRate = entry.sampleRate
+            let validEntryRate = rawRate.isFinite && rawRate >= 1 && rawRate <= maxValidRate ? rawRate : 0
+            let validTimescaleRate = timescale >= 1 && Double(timescale) <= maxValidRate ? Double(timescale) : 0
+            let rate = validEntryRate > 0 ? validEntryRate : validTimescaleRate
+            guard rate >= 1 && rate <= maxValidRate else { return nil }
+            let safeTimescale = timescale == 0 ? UInt32(rate.rounded()) : timescale
+            return .audio(FMP4AudioTrack(
+                trackID: trackID,
+                codec: entry.codec,
+                timescale: safeTimescale,
+                sampleRate: rate,
+                channelCount: min(max(entry.channels, 1), 32),
+                bitsPerSample: entry.bitsPerSample,
+                configRecord: entry.config
+            ))
+        }
+        return nil
     }
 
     private static func findVisualSampleEntry(
@@ -240,6 +336,172 @@ public struct FragmentedMP4Demuxer: Sendable {
             }
         }
         return nil
+    }
+
+    private static func findAudioSampleEntry(
+        _ data: Data,
+        in range: Range<Int>
+    ) -> (codec: FMP4AudioCodec, sampleRate: Double, channels: Int, bitsPerSample: Int, config: Data)? {
+        for stbl in children(of: data, in: range) where stbl.type == "stbl" {
+            for stsd in children(of: data, in: stbl.payload) where stsd.type == "stsd" {
+                let entriesStart = stsd.payload.lowerBound + 8
+                guard entriesStart <= stsd.payload.upperBound else { continue }
+                for sampleEntry in children(of: data, in: entriesStart..<stsd.payload.upperBound) {
+                    let codec: FMP4AudioCodec
+                    switch sampleEntry.type {
+                    case "mp4a": codec = .aac
+                    case "alaw": codec = .alaw
+                    case "ulaw": codec = .ulaw
+                    case "Opus": codec = .opus
+                    case "fLaC": codec = .flac
+                    default: continue
+                    }
+                    let p = sampleEntry.payload.lowerBound
+                    guard sampleEntry.payload.count >= 28 else { continue }
+                    let version = readUInt16(data, p + 8)
+                    var channels = Int(readUInt16(data, p + 16))
+                    let bitsPerSample = Int(readUInt16(data, p + 18))
+                    let rawRate = readUInt32(data, p + 24)
+                    var sampleRate = Double(rawRate >> 16) + Double(rawRate & 0xFFFF) / 65_536.0
+                    let childStart: Int
+                    switch version {
+                    case 0:
+                        childStart = p + 28
+                    case 1:
+                        childStart = p + 28 + 16
+                    case 2:
+                        guard sampleEntry.payload.count >= 64 else { continue }
+                        let rateBits = readUInt64(data, p + 32)
+                        let v2Rate = Double(bitPattern: rateBits)
+                        if v2Rate.isFinite, v2Rate > 0 {
+                            sampleRate = v2Rate
+                        }
+                        let v2Channels = Int(readUInt32(data, p + 40))
+                        if v2Channels > 0 {
+                            channels = v2Channels
+                        }
+                        childStart = p + 64
+                    default:
+                        childStart = p + 28
+                    }
+                    guard childStart <= sampleEntry.payload.upperBound else {
+                        return (codec, sampleRate, channels, bitsPerSample, Data())
+                    }
+                    let childRange = childStart..<sampleEntry.payload.upperBound
+                    var config = Data()
+                    switch codec {
+                    case .aac:
+                        if let esds = findBox(named: "esds", in: data, range: childRange) {
+                            config = parseESDSAudioSpecificConfig(data.subdata(in: esds.payload)) ?? Data()
+                        } else if let wave = findBox(named: "wave", in: data, range: childRange),
+                                  let esds = findBox(named: "esds", in: data, range: wave.payload) {
+                            config = parseESDSAudioSpecificConfig(data.subdata(in: esds.payload)) ?? Data()
+                        }
+                        if let parsed = parseAudioSpecificConfig(config) {
+                            if sampleRate <= 0 { sampleRate = parsed.sampleRate }
+                            if channels <= 0 { channels = parsed.channelCount }
+                        }
+                    case .opus:
+                        if let dops = findBox(named: "dOps", in: data, range: childRange) {
+                            config = data.subdata(in: dops.payload)
+                            if channels <= 0, config.count >= 2 {
+                                channels = Int(config[1])
+                            }
+                        }
+                        if sampleRate <= 0 { sampleRate = 48_000 }
+                    case .flac:
+                        if let dfla = findBox(named: "dfLa", in: data, range: childRange) {
+                            config = data.subdata(in: dfla.payload)
+                        }
+                    case .alaw, .ulaw:
+                        break
+                    }
+                    return (
+                        codec,
+                        sampleRate,
+                        channels,
+                        (codec == .alaw || codec == .ulaw) ? 8 : bitsPerSample,
+                        config
+                    )
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func findBox(named type: String, in data: Data, range: Range<Int>) -> BoxRef? {
+        children(of: data, in: range).first { $0.type == type }
+    }
+
+    private static let maxESDSDescriptorDepth = 8
+
+    /// Extracts the AudioSpecificConfig payload from an ISO BMFF `esds` fullbox body.
+    public static func parseESDSAudioSpecificConfig(_ esdsPayload: Data) -> Data? {
+        let bytes = [UInt8](esdsPayload)
+        guard bytes.count > 4 else { return nil }
+        return scanESDSDescriptors(bytes, start: 4, end: bytes.count, depth: 0)
+    }
+
+    private static func scanESDSDescriptors(_ bytes: [UInt8], start: Int, end: Int, depth: Int) -> Data? {
+        guard depth < maxESDSDescriptorDepth else { return nil }
+        var i = start
+        while i < end {
+            let tag = bytes[i]
+            i += 1
+            var size = 0
+            var lenBytes = 0
+            while i < end, lenBytes < 4 {
+                let b = bytes[i]
+                i += 1
+                lenBytes += 1
+                size = (size << 7) | Int(b & 0x7F)
+                if (b & 0x80) == 0 { break }
+            }
+            guard size >= 0, i + size <= end else { return nil }
+            let payloadEnd = i + size
+            switch tag {
+            case 0x05: // DecoderSpecificInfo -> AudioSpecificConfig
+                return Data(bytes[i..<payloadEnd])
+            case 0x03: // ES_Descriptor
+                guard i + 3 <= payloadEnd else { return nil }
+                let flags = bytes[i + 2]
+                var inner = i + 3
+                if (flags & 0x80) != 0 { inner += 2 }
+                if (flags & 0x40) != 0 {
+                    guard inner < payloadEnd else { return nil }
+                    inner += 1 + Int(bytes[inner])
+                }
+                if (flags & 0x20) != 0 { inner += 2 }
+                guard inner <= payloadEnd else { return nil }
+                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd, depth: depth + 1) {
+                    return found
+                }
+            case 0x04: // DecoderConfigDescriptor
+                let inner = i + 13
+                guard inner <= payloadEnd else { return nil }
+                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd, depth: depth + 1) {
+                    return found
+                }
+            default:
+                break
+            }
+            i = payloadEnd
+        }
+        return nil
+    }
+
+    private static func parseAudioSpecificConfig(_ config: Data) -> (sampleRate: Double, channelCount: Int)? {
+        guard config.count >= 2 else { return nil }
+        let b0 = config[config.startIndex]
+        let b1 = config[config.startIndex + 1]
+        let freqIndex = Int(((b0 & 0x07) << 1) | ((b1 & 0x80) >> 7))
+        let channelConfig = Int((b1 & 0x78) >> 3)
+        let rates: [Double] = [
+            96_000, 88_200, 64_000, 48_000, 44_100, 32_000,
+            24_000, 22_050, 16_000, 12_000, 11_025, 8_000, 7_350
+        ]
+        let sampleRate = freqIndex < rates.count ? rates[freqIndex] : 0
+        return (sampleRate, channelConfig)
     }
 
     /// Parses an `avcC` / `hvcC` body into its NAL length size and parameter sets.
@@ -350,7 +612,9 @@ public struct FragmentedMP4Demuxer: Sendable {
                     break
                 }
             }
-            guard tracks[trackID] != nil else { continue }
+            let isVideoTrack = tracks[trackID] != nil
+            let isAudioTrack = audioTracks[trackID] != nil
+            guard isVideoTrack || isAudioTrack else { continue }
 
             // Sample data offsets are relative to the moof start; the mdat payload follows it.
             let mdatPayloadOffset = moof.count + mdatHeaderSize
@@ -409,14 +673,23 @@ public struct FragmentedMP4Demuxer: Sendable {
                     // decode clock. The fragment budget above already bounds how many can appear.
                     if size > 0 {
                         let sampleData = mdat.subdata(in: (mdatHeaderSize + start)..<(mdatHeaderSize + end))
-                        events.append(.sample(FMP4Sample(
-                            trackID: trackID,
-                            data: sampleData,
-                            decodeTime: decodeTime,
-                            duration: duration,
-                            compositionOffset: cto,
-                            isKeyframe: sampleFlags & 0x0001_0000 == 0
-                        )))
+                        if isVideoTrack {
+                            events.append(.sample(FMP4Sample(
+                                trackID: trackID,
+                                data: sampleData,
+                                decodeTime: decodeTime,
+                                duration: duration,
+                                compositionOffset: cto,
+                                isKeyframe: sampleFlags & 0x0001_0000 == 0
+                            )))
+                        } else if isAudioTrack {
+                            events.append(.audioSample(FMP4AudioSample(
+                                trackID: trackID,
+                                data: sampleData,
+                                decodeTime: decodeTime,
+                                duration: duration
+                            )))
+                        }
                     }
                     decodeTime &+= UInt64(duration)
                     dataOffset = end + mdatPayloadOffset

@@ -9,6 +9,7 @@ import { readMiotPower, type DeviceCommand, type SmartDevice, type SynthesizedHo
 export interface ExecuteOptions {
   /** Read the power property back after a power write, on a backend that can read one property. */
   readonly readBackPower?: boolean;
+  readonly userInitiated?: boolean;
   /**
    * Called once everything the send needs is resolved, right before the first request. Throwing
    * here cancels the send, so the caller can refuse a command whose source changed while the
@@ -92,7 +93,7 @@ export class HomeAssistantProvider implements HomeProvider {
       throw new HaBlockedRequestError(scope);
     }
     options.beforeSend?.();
-    await this.client.execute(command);
+    await this.client.execute(command, options.userInitiated);
     return null;
   }
 }
