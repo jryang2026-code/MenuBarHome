@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import PreferencesTestSupport
+import StateTestSupport
 import Testing
 @testable import MijiaCore
 @testable import MenuBarMijiaApp
@@ -18,6 +19,7 @@ private actor MockCameraLifecycleProvider: HomeProvider {
     private(set) var resolveAudioFlags: [Bool] = []
     private(set) var stoppedDeviceIDs: [String] = []
     private var resolveCount = 0
+    private var resolveErrorOnAudioEnabled: (any Error)?
     var streamToReturn: CameraStreamSource
 
     init(
@@ -66,6 +68,9 @@ private actor MockCameraLifecycleProvider: HomeProvider {
         if index >= 2 {
             secondResolveWaiter?.resume()
             secondResolveWaiter = nil
+        }
+        if audioEnabled, let resolveErrorOnAudioEnabled {
+            throw resolveErrorOnAudioEnabled
         }
         return streamToReturn
     }
@@ -609,12 +614,26 @@ struct CameraLiveLifecycleTests {
 
         await go2rtcProvider.setStreamToReturn(.liveMP4(listenMP4, mjpegFallback: nil, ptz: nil))
         controller.toggleMute()
-        for _ in 0..<200 where await go2rtcProvider.resolveAudioFlags.count < 2 { await Task.yield() }
+        let listenSource = CameraStreamSource.liveMP4(listenMP4, mjpegFallback: nil, ptz: nil)
+        try await awaitState { controller.streamSource == listenSource }
         #expect(controller.isMuted == false)
         #expect(await go2rtcProvider.resolveAudioFlags == [false, true])
 
         controller.updateActiveStreamAudioAvailable(true)
         #expect(controller.currentAudioStatus == .audio(isMuted: false))
+
+        // 2b. If listen-only renegotiation fails on a video-only Xiaomi camera, restore audio=0 preview
+        let mutedSource = CameraStreamSource.liveMP4(mutedMP4, mjpegFallback: nil, ptz: nil)
+        await go2rtcProvider.setStreamToReturn(mutedSource)
+        controller.closePanel()
+        controller.present(device: cam)
+        try await awaitState { controller.streamSource == mutedSource }
+        struct MissingAudioError: Error {}
+        await go2rtcProvider.setResolveErrorOnAudioEnabled(MissingAudioError())
+        controller.toggleMute()
+        try await awaitState { controller.currentAudioStatus == .videoOnly && controller.isMuted && controller.streamSource == mutedSource }
+        #expect(controller.errorMessage == nil)
+        await go2rtcProvider.setResolveErrorOnAudioEnabled(nil)
 
         controller.closePanel()
         #expect(controller.isMuted == true)
@@ -659,6 +678,10 @@ struct CameraLiveLifecycleTests {
 private extension MockCameraLifecycleProvider {
     func setStreamToReturn(_ source: CameraStreamSource) {
         streamToReturn = source
+    }
+
+    func setResolveErrorOnAudioEnabled(_ error: (any Error)?) {
+        resolveErrorOnAudioEnabled = error
     }
 }
 

@@ -122,6 +122,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
     @MainActor
     private func installLiveSynchronizer() {
         let synchronizer = AVSampleBufferRenderSynchronizer()
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         synchronizer.setRate(0, time: .invalid)
         synchronizer.addRenderer(renderer)
         renderSynchronizer = synchronizer
@@ -517,7 +518,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         case .opus:
             asbd.mFormatID = kAudioFormatOpus
             asbd.mSampleRate = track.sampleRate > 0 ? track.sampleRate : 48_000
-            asbd.mFramesPerPacket = 960
+            asbd.mFramesPerPacket = 0
             if magicCookie.count >= 10, magicCookie.prefix(8) != Data("OpusHead".utf8) {
                 magicCookie = opusHeadCookie(fromDOps: magicCookie, channels: UInt8(clamping: channels))
             }
@@ -608,6 +609,44 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             }
             let _ = srCode
         }
+        return sampleDurationFrameCount(sample: sample, track: track)
+    }
+
+    static func opusPacketFrameCount(data: Data, sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
+        let bytes = [UInt8](data)
+        if let toc = bytes.first {
+            let config = Int(toc >> 3)
+            let code = Int(toc & 0x03)
+            let frameSamples48k: Int
+            switch config {
+            case 0...11:
+                frameSamples48k = [480, 960, 1920, 2880][config & 0x03]
+            case 12...15:
+                frameSamples48k = (config & 0x01) == 0 ? 480 : 960
+            default:
+                frameSamples48k = [120, 240, 480, 960][config & 0x03]
+            }
+            let frameCount: Int
+            switch code {
+            case 0:
+                frameCount = 1
+            case 1, 2:
+                frameCount = 2
+            default:
+                frameCount = bytes.count >= 2 ? Int(bytes[1] & 0x3F) : 1
+            }
+            if frameCount > 0 {
+                let sampleRate = track.sampleRate.isFinite && track.sampleRate > 0 ? track.sampleRate : 48_000
+                let scaled = (Double(frameCount * frameSamples48k) * sampleRate / 48_000.0).rounded()
+                if scaled >= 1 && scaled <= Double(UInt32.max) {
+                    return UInt32(scaled)
+                }
+            }
+        }
+        return sampleDurationFrameCount(sample: sample, track: track)
+    }
+
+    private static func sampleDurationFrameCount(sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
         if sample.duration > 0, track.timescale > 0, track.sampleRate.isFinite, track.sampleRate > 0 {
             let scaled = (Double(sample.duration) * track.sampleRate / Double(track.timescale)).rounded()
             if scaled >= 1 && scaled <= Double(UInt32.max) {
@@ -670,9 +709,15 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             )
             return createStatus == noErr ? sampleBuffer : nil
         case .aac, .opus, .flac:
-            let variableFrames: UInt32 = track.codec == .flac
-                ? flacPacketFrameCount(data: sample.data, sample: sample, track: track)
-                : 0
+            let variableFrames: UInt32
+            switch track.codec {
+            case .flac:
+                variableFrames = flacPacketFrameCount(data: sample.data, sample: sample, track: track)
+            case .opus:
+                variableFrames = opusPacketFrameCount(data: sample.data, sample: sample, track: track)
+            default:
+                variableFrames = 0
+            }
             var packetDesc = AudioStreamPacketDescription(
                 mStartOffset: 0,
                 mVariableFramesInPacket: variableFrames,
