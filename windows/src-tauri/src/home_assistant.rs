@@ -303,6 +303,7 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(35);
 const PING_INTERVAL: Duration = Duration::from_secs(25);
 const PONG_TIMEOUT: Duration = Duration::from_secs(3);
 const FAST_BACKOFF_WAIT_LIMIT: Duration = Duration::from_secs(10);
+const USER_RECONNECT_BYPASS_INTERVAL: Duration = Duration::from_secs(5);
 const REQUEST_TIMED_OUT: &str = "Home Assistant request timed out";
 const PING_TIMED_OUT: &str = "Home Assistant ping timed out";
 const NETWORK_CHANGED: &str = "Home Assistant network changed";
@@ -325,6 +326,30 @@ impl Default for WebSocketTimings {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReconnectDecision {
+    Wait,
+    Bypass,
+    Reject,
+}
+
+fn reconnect_decision(
+    remaining: Duration,
+    fast_wait_limit: Duration,
+    user_initiated: bool,
+    since_last_bypass: Option<Duration>,
+) -> ReconnectDecision {
+    if remaining <= fast_wait_limit {
+        ReconnectDecision::Wait
+    } else if user_initiated
+        && since_last_bypass.is_none_or(|elapsed| elapsed >= USER_RECONNECT_BYPASS_INTERVAL)
+    {
+        ReconnectDecision::Bypass
+    } else {
+        ReconnectDecision::Reject
+    }
+}
+
 fn jitter_unit_now() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -344,6 +369,7 @@ type Reply = oneshot::Sender<Result<Value, String>>;
 struct HaRequest {
     packet: Value,
     token: String,
+    user_initiated: bool,
     reply: Reply,
 }
 
@@ -417,6 +443,7 @@ async fn run_websocket_with_timings(
 ) {
     let mut backoff = ReconnectBackoff::new(std::time::Instant::now());
     let mut seen_epoch = *network_epoch.borrow_and_update();
+    let mut last_bypass: Option<std::time::Instant> = None;
 
     enum IdleWake {
         Request(HaRequest),
@@ -453,14 +480,19 @@ async fn run_websocket_with_timings(
             backoff.reset(std::time::Instant::now());
         }
 
-        let remaining = backoff.remaining(std::time::Instant::now());
-        if remaining > timings.fast_backoff_wait_limit {
-            // Away-from-home slow backoff (30s..300s): fail fast without dialing the network
-            // until the backoff window expires or a network change resets it.
+        let now = std::time::Instant::now();
+        let remaining = backoff.remaining(now);
+        let decision = reconnect_decision(
+            remaining,
+            timings.fast_backoff_wait_limit,
+            first.user_initiated,
+            last_bypass.map(|last| now.saturating_duration_since(last)),
+        );
+        if decision == ReconnectDecision::Reject {
             let _ = first.reply.send(Err(BACKING_OFF.into()));
             continue;
         }
-        if !remaining.is_zero() {
+        if decision == ReconnectDecision::Wait && !remaining.is_zero() {
             let wake_at = Instant::from_std(backoff.ready_at());
             let woken_by_network = match select(
                 pin!(tokio::time::sleep_until(wake_at)),
@@ -479,6 +511,10 @@ async fn run_websocket_with_timings(
         }
         if first.reply.is_closed() {
             continue;
+        }
+
+        if decision == ReconnectDecision::Bypass {
+            last_bypass = Some(std::time::Instant::now());
         }
 
         enum DialOutcome {
@@ -527,7 +563,9 @@ async fn run_websocket_with_timings(
             }
             DialOutcome::Result(Err(error)) => {
                 let _ = first.reply.send(Err(error));
-                backoff.record_failure(std::time::Instant::now(), jitter_unit_now());
+                if decision != ReconnectDecision::Bypass {
+                    backoff.record_failure(std::time::Instant::now(), jitter_unit_now());
+                }
             }
         }
     }
@@ -718,10 +756,16 @@ impl HaTask {
         sender: &mpsc::Sender<HaRequest>,
         token: &str,
         packet: Value,
+        user_initiated: bool,
     ) -> Result<Value, String> {
         let (reply, response) = oneshot::channel();
         let request = async {
-            sender.send(HaRequest { packet, token: token.to_owned(), reply }).await
+            sender.send(HaRequest {
+                packet,
+                token: token.to_owned(),
+                user_initiated,
+                reply,
+            }).await
                 .map_err(|_| CANCELLED)?;
             response.await.map_err(|_| CANCELLED)?
         };
@@ -730,22 +774,33 @@ impl HaTask {
             .map_err(|_| REQUEST_TIMED_OUT)?
     }
 
-    async fn snapshot(&self, url: String, token: &str) -> Result<HaSnapshot, String> {
+    async fn snapshot(
+        &self,
+        url: String,
+        token: &str,
+        user_initiated: bool,
+    ) -> Result<HaSnapshot, String> {
         let sender = self.websocket(url, token)?;
         Ok(HaSnapshot {
-            areas: self.request(&sender, token, json!({"type":"config/area_registry/list"})).await?,
-            devices: self.request(&sender, token, json!({"type":"config/device_registry/list"})).await?,
-            entities: self.request(&sender, token, json!({"type":"config/entity_registry/list"})).await?,
-            states: self.request(&sender, token, json!({"type":"get_states"})).await?,
+            areas: self.request(&sender, token, json!({"type":"config/area_registry/list"}), user_initiated).await?,
+            devices: self.request(&sender, token, json!({"type":"config/device_registry/list"}), false).await?,
+            entities: self.request(&sender, token, json!({"type":"config/entity_registry/list"}), false).await?,
+            states: self.request(&sender, token, json!({"type":"get_states"}), false).await?,
         })
     }
 
-    async fn execute(&self, url: String, token: &str, command: HaServiceCall) -> Result<(), String> {
+    async fn execute(
+        &self,
+        url: String,
+        token: &str,
+        command: HaServiceCall,
+        user_initiated: bool,
+    ) -> Result<(), String> {
         let sender = self.websocket(url, token)?;
         self.request(&sender, token, json!({
             "type":"call_service", "domain":command.domain, "service":command.service,
             "target":{"entity_id":command.entity_id}, "service_data":command.data
-        })).await?;
+        }), user_initiated).await?;
         Ok(())
     }
 }
@@ -870,9 +925,10 @@ pub(crate) async fn ha_snapshot(
     base_url: String,
     generation: u64,
     token: String,
+    user_initiated: Option<bool>,
 ) -> Result<HaSnapshot, String> {
     let task = connections.acquire(&base_url, generation)?;
-    task.snapshot(endpoint(&base_url, &token)?, &token).await
+    task.snapshot(endpoint(&base_url, &token)?, &token, user_initiated.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -882,10 +938,11 @@ pub(crate) async fn ha_execute(
     generation: u64,
     token: String,
     command: HaServiceCall,
+    user_initiated: Option<bool>,
 ) -> Result<(), String> {
     let task = connections.acquire(&base_url, generation)?;
     validate_call(&command)?;
-    task.execute(endpoint(&base_url, &token)?, &token, command).await
+    task.execute(endpoint(&base_url, &token)?, &token, command, user_initiated.unwrap_or_default()).await
 }
 
 #[cfg(test)]
@@ -893,6 +950,37 @@ mod tests {
     use super::*;
     use std::net::TcpStream;
     use tungstenite::WebSocket;
+    #[test]
+    fn short_backoff_uses_the_normal_wait_even_for_user_requests() {
+        for user_initiated in [false, true] {
+            assert_eq!(
+                reconnect_decision(
+                    FAST_BACKOFF_WAIT_LIMIT,
+                    FAST_BACKOFF_WAIT_LIMIT,
+                    user_initiated,
+                    None,
+                ),
+                ReconnectDecision::Wait,
+            );
+        }
+    }
+
+    #[test]
+    fn only_user_requests_can_bypass_long_backoff_once_per_interval() {
+        let remaining = FAST_BACKOFF_WAIT_LIMIT + Duration::from_millis(1);
+        for (user_initiated, elapsed, decision) in [
+            (false, None, ReconnectDecision::Reject),
+            (true, None, ReconnectDecision::Bypass),
+            (true, Some(Duration::from_millis(4999)), ReconnectDecision::Reject),
+            (true, Some(Duration::from_secs(5)), ReconnectDecision::Bypass),
+        ] {
+            assert_eq!(
+                reconnect_decision(remaining, FAST_BACKOFF_WAIT_LIMIT, user_initiated, elapsed),
+                decision,
+            );
+        }
+    }
+
     #[test]
     fn rejects_missing_tokens_and_non_http_origins() {
         assert!(endpoint("http://localhost:8123", "").is_err());
@@ -1295,7 +1383,7 @@ mod tests {
                 let task = connections.acquire(&base, gen1).unwrap();
                 let url = format!("{}/api/websocket", base.replacen("http:", "ws:", 1));
                 let operation = tauri::async_runtime::spawn(async move {
-                    task.snapshot(url, "fixture-token").await
+                    task.snapshot(url, "fixture-token", false).await
                 });
                 tokio::time::timeout(Duration::from_secs(2), ready).await.unwrap().unwrap();
                 tokio::time::timeout(Duration::from_secs(2), connections.configure(None))
@@ -1459,24 +1547,24 @@ mod tests {
             let generation = connections.configure(Some(scope.clone())).await.unwrap();
             let (snapshot, control) = futures_util::future::join(
                 async {
-                    connections.acquire(&base, generation).unwrap().snapshot(url.clone(), TOKEN).await
+                    connections.acquire(&base, generation).unwrap().snapshot(url.clone(), TOKEN, false).await
                 },
                 async {
                     connections.acquire(&base, generation).unwrap()
-                        .execute(url.clone(), TOKEN, command("light.study")).await
+                        .execute(url.clone(), TOKEN, command("light.study"), false).await
                 },
             ).await;
             assert_eq!(snapshot.unwrap().states.as_array().unwrap().len(), 6);
             assert!(control.is_ok());
 
             let task = connections.acquire(&base, generation).unwrap();
-            assert!(task.execute(url.clone(), TOKEN, command("light.dropped")).await.is_err());
-            task.execute(url.clone(), TOKEN, command("light.after_drop")).await.unwrap();
+            assert!(task.execute(url.clone(), TOKEN, command("light.dropped"), false).await.is_err());
+            task.execute(url.clone(), TOKEN, command("light.after_drop"), false).await.unwrap();
             drop(task);
 
             let generation = connections.configure(Some(scope)).await.unwrap();
             let error = connections.acquire(&base, generation).unwrap()
-                .execute(url, ROTATED, command("light.study")).await.unwrap_err();
+                .execute(url, ROTATED, command("light.study"), false).await.unwrap_err();
             assert_eq!(error, "Home Assistant authentication rejected");
             connections.configure(None).await.unwrap();
         });
@@ -1518,7 +1606,7 @@ mod tests {
             let scope = connection_scope(&base).unwrap();
             let generation = connections.configure(Some(scope)).await.unwrap();
             let task = connections.acquire(&base, generation).unwrap();
-            task.execute(url.clone(), TOKEN, command("light.before")).await.unwrap();
+            task.execute(url.clone(), TOKEN, command("light.before"), false).await.unwrap();
 
             // Trigger network change; idle socket must drop immediately without waiting for timeout.
             connections.handle_network_or_resume();
@@ -1529,7 +1617,7 @@ mod tests {
 
             // Next request re-establishes immediately (0ms backoff after network reset).
             let started = Instant::now();
-            task.execute(url, TOKEN, command("light.after")).await.unwrap();
+            task.execute(url, TOKEN, command("light.after"), false).await.unwrap();
             assert!(
                 started.elapsed() < Duration::from_secs(2),
                 "re-establish after network change took too long: {:?}",
@@ -1578,6 +1666,7 @@ mod tests {
             tx.send(HaRequest {
                 packet: json!({"type": "get_states"}),
                 token: TOKEN.into(),
+                user_initiated: false,
                 reply: reply_tx,
             })
             .await
