@@ -341,7 +341,8 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
                     if supported {
                         ensureAudioRendererIfNeeded()
                     }
-                    logger.info("camera fMP4 audio track \(newAudioTrack.codec.rawValue, privacy: .public) \(Int(newAudioTrack.sampleRate))Hz ch=\(newAudioTrack.channelCount) supported=\(supported)")
+                    let safeHz = newAudioTrack.sampleRate.isFinite ? Int(min(max(newAudioTrack.sampleRate, 0), 1_000_000)) : 0
+                    logger.info("camera fMP4 audio track \(newAudioTrack.codec.rawValue, privacy: .public) \(safeHz)Hz ch=\(newAudioTrack.channelCount) supported=\(supported)")
                 }
             case .sample(let sample):
                 guard let track, sample.trackID == track.trackID else { continue }
@@ -522,7 +523,7 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             }
         case .flac:
             asbd.mFormatID = kAudioFormatFLAC
-            asbd.mFramesPerPacket = 4096
+            asbd.mFramesPerPacket = 0
         }
 
         var format: CMAudioFormatDescription?
@@ -569,6 +570,51 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
         let family: UInt8 = dops.count >= 11 ? dops[10] : 0
         head.append(contentsOf: [1, ch, preSkipLo, preSkipHi, rateB0, rateB1, rateB2, rateB3, gainLo, gainHi, family])
         return head
+    }
+
+    /// Reads the blocksize from a FLAC frame header (RFC 9639) with `sample.duration` fallback
+    /// so variable-length go2rtc G.711-to-FLAC packets report exact duration instead of 4096.
+    static func flacPacketFrameCount(data: Data, sample: FMP4AudioSample, track: FMP4AudioTrack) -> UInt32 {
+        let bytes = [UInt8](data)
+        if bytes.count >= 6, bytes[0] == 0xFF, (bytes[1] & 0xFC) == 0xF8 {
+            let bsCode = (bytes[2] >> 4) & 0x0F
+            let srCode = bytes[2] & 0x0F
+            let chMode = (bytes[3] >> 4) & 0x0F
+            var offset = 4
+            if offset < bytes.count {
+                let first = bytes[offset]
+                let extra: Int
+                if (first & 0x80) == 0 { extra = 1 }
+                else if (first & 0xE0) == 0xC0 { extra = 2 }
+                else if (first & 0xF0) == 0xE0 { extra = 3 }
+                else if (first & 0xF8) == 0xF0 { extra = 4 }
+                else if (first & 0xFC) == 0xF8 { extra = 5 }
+                else if (first & 0xFE) == 0xFC { extra = 6 }
+                else { extra = 7 }
+                offset += extra
+            }
+            let _ = chMode
+            switch bsCode {
+            case 1: return 192
+            case 2...5: return UInt32(576 << (bsCode - 2))
+            case 6:
+                if offset < bytes.count { return UInt32(bytes[offset]) + 1 }
+            case 7:
+                if offset + 1 < bytes.count {
+                    return (UInt32(bytes[offset]) << 8 | UInt32(bytes[offset + 1])) + 1
+                }
+            case 8...15: return UInt32(256 << (bsCode - 8))
+            default: break
+            }
+            let _ = srCode
+        }
+        if sample.duration > 0, track.timescale > 0, track.sampleRate.isFinite, track.sampleRate > 0 {
+            let scaled = (Double(sample.duration) * track.sampleRate / Double(track.timescale)).rounded()
+            if scaled >= 1 && scaled <= Double(UInt32.max) {
+                return UInt32(scaled)
+            }
+        }
+        return 0
     }
 
     static func makeAudioSampleBuffer(
@@ -624,9 +670,12 @@ final class CameraLiveVideoPlayer: NSObject, URLSessionDataDelegate, @unchecked 
             )
             return createStatus == noErr ? sampleBuffer : nil
         case .aac, .opus, .flac:
+            let variableFrames: UInt32 = track.codec == .flac
+                ? flacPacketFrameCount(data: sample.data, sample: sample, track: track)
+                : 0
             var packetDesc = AudioStreamPacketDescription(
                 mStartOffset: 0,
-                mVariableFramesInPacket: 0,
+                mVariableFramesInPacket: variableFrames,
                 mDataByteSize: UInt32(sample.data.count)
             )
             let createStatus = CMAudioSampleBufferCreateReadyWithPacketDescriptions(

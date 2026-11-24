@@ -881,10 +881,12 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
     }
 
     var currentAudioStatus: CameraLiveAudioStatus {
-        CameraLiveAudioStatus(
+        let hasCustomURL = activeDeviceId.flatMap { store?.cameraCustomStreamURL(for: $0) }?.isEmpty == false
+        return CameraLiveAudioStatus(
             streamSource: streamSource,
             detectedAudioTrack: detectedAudioTrack,
-            isMuted: isMuted
+            isMuted: isMuted,
+            allowsMutedPreviewOptIn: !hasCustomURL
         )
     }
 
@@ -897,12 +899,15 @@ public final class CameraLivePanelController: NSObject, NSWindowDelegate {
         let nextMuted = !isMuted
         isMuted = nextMuted
         videoPlayer?.setMuted(nextMuted)
-        if !nextMuted, let source = streamSource, Self.isMutedPreviewSource(source) {
+        if !nextMuted, let source = streamSource, isAppMutedPreviewSource(source) {
             reloadStream(preservingMute: true)
         }
     }
 
-    private static func isMutedPreviewSource(_ source: CameraStreamSource) -> Bool {
+    private func isAppMutedPreviewSource(_ source: CameraStreamSource) -> Bool {
+        if let activeDeviceId, let custom = store?.cameraCustomStreamURL(for: activeDeviceId), !custom.isEmpty {
+            return false
+        }
         switch source {
         case .liveMP4(let url, _, _), .hls(let url):
             return XiaomiCameraBridge.isMutedPreviewURL(url)
@@ -1652,12 +1657,17 @@ enum CameraLiveAudioStatus: Equatable {
     case videoOnly
     case audio(isMuted: Bool)
 
-    init(streamSource: CameraStreamSource?, detectedAudioTrack: Bool? = nil, isMuted: Bool) {
+    init(
+        streamSource: CameraStreamSource?,
+        detectedAudioTrack: Bool? = nil,
+        isMuted: Bool,
+        allowsMutedPreviewOptIn: Bool = true
+    ) {
         switch streamSource {
         case nil:
             self = .hidden
         case .hls(let url)?:
-            if XiaomiCameraBridge.isMutedPreviewURL(url) || detectedAudioTrack == true {
+            if (allowsMutedPreviewOptIn && XiaomiCameraBridge.isMutedPreviewURL(url)) || detectedAudioTrack == true {
                 self = .audio(isMuted: isMuted)
             } else if detectedAudioTrack == false {
                 self = .videoOnly
@@ -1665,7 +1675,7 @@ enum CameraLiveAudioStatus: Equatable {
                 self = .hidden
             }
         case .liveMP4(let url, _, _)?:
-            if XiaomiCameraBridge.isMutedPreviewURL(url) || detectedAudioTrack == true {
+            if (allowsMutedPreviewOptIn && XiaomiCameraBridge.isMutedPreviewURL(url)) || detectedAudioTrack == true {
                 self = .audio(isMuted: isMuted)
             } else if detectedAudioTrack == false {
                 self = .videoOnly

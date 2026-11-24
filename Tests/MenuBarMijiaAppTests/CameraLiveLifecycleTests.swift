@@ -618,6 +618,22 @@ struct CameraLiveLifecycleTests {
 
         controller.closePanel()
         #expect(controller.isMuted == true)
+
+        // 3. Custom URL containing audio=0 must not re-negotiate or expose fake opt-in when video-only
+        let customDefaults = UserDefaults(suiteName: "CameraCustomAudio-\(UUID().uuidString)")!
+        let customProvider = MockCameraLifecycleProvider(streamToReturn: .demo(deviceId: cam.id))
+        let customStore = HomeStore(provider: customProvider, defaults: customDefaults)
+        customStore.devices = [cam]
+        customStore.setCameraCustomStreamURL("http://192.168.1.10:1984/api/stream.mp4?src=cam&audio=0", for: cam.id)
+        controller.install(with: customStore)
+        controller.present(device: cam)
+        for _ in 0..<200 where controller.streamSource == nil { await Task.yield() }
+        #expect(controller.currentAudioStatus == .hidden)
+        controller.updateActiveStreamAudioAvailable(false)
+        #expect(controller.currentAudioStatus == .videoOnly)
+        controller.toggleMute()
+        #expect(await customProvider.resolveAudioFlags.isEmpty)
+        controller.closePanel()
     }
 
     @Test("Camera audio player and controller never touch microphone capture or input audio APIs")

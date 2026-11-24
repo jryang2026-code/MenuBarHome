@@ -172,7 +172,7 @@ struct XiaomiCameraStreamQualityTests {
             streamName: "cam_raw_1",
             audioEnabled: false
         ))
-        #expect(mutedHLS.absoluteString == "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&audio=0")
+        #expect(mutedHLS.absoluteString == "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0")
         #expect(XiaomiCameraBridge.isMutedPreviewURL(mutedHLS))
 
         let listenOnlyHLS = try #require(XiaomiCameraBridge.go2rtcStreamURL(

@@ -1225,7 +1225,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     );
     assert.equal(
       buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "m3u8", audioEnabled: false }),
-      "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&audio=0",
+      "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0",
     );
     assert.equal(
       buildGo2RtcStreamUrl("http://127.0.0.1:43123", "cam_raw_1", { format: "m3u8", audioEnabled: true }),
@@ -1238,7 +1238,7 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     assert.match(unmutedXiaomi, /[?&]audio=1(&|$)/);
     assert.doesNotMatch(unmutedXiaomi, /[?&]audio=0(&|$)/);
 
-    const unmutedHls = withGo2RtcAudioQuery("http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&audio=0", true);
+    const unmutedHls = withGo2RtcAudioQuery("http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0", true);
     assert.equal(unmutedHls, "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1");
   });
 
@@ -1268,6 +1268,23 @@ describe("CameraLiveController dual-lens, gateway, manual IP, rotation & multi-c
     const video = element<HTMLVideoElement>("#cc-camera-video");
     Object.defineProperty(video, "audioTracks", { configurable: true, value: { length: 0 } });
     video.dispatchEvent(new window.Event("loadedmetadata"));
+    await setImmediate();
+    assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, false);
+    assert.equal(element("#cc-camera-audio-badge").getAttribute("data-video-only-reason"), "video-only-track");
+    assertMissing(document.querySelector("#cc-camera-mute"));
+    ctx.app.cameraLive.closeCameraLiveView();
+
+    // Default WebView2 fallback without audioTracks: unmuted playback with 0 decoded audio bytes falls back to video-only
+    await click('[data-body-device="cam-audio"]');
+    await click("#btn-toggle-camera-url");
+    element<HTMLInputElement>("#camera-stream-url-input").value = "https://example.com/silent-fallback.mp4";
+    await click("#btn-save-camera-url");
+    await click("#cc-camera-mute");
+    const fallbackVideo = element<HTMLVideoElement>("#cc-camera-video");
+    Object.defineProperty(fallbackVideo, "webkitAudioDecodedByteCount", { configurable: true, value: 0 });
+    Object.defineProperty(fallbackVideo, "webkitVideoDecodedByteCount", { configurable: true, value: 4096 });
+    Object.defineProperty(fallbackVideo, "currentTime", { configurable: true, value: 1.0 });
+    fallbackVideo.dispatchEvent(new window.Event("timeupdate"));
     await setImmediate();
     assert.equal(ctx.app.cameraLive.liveCameraHasAudioTrack, false);
     assert.equal(element("#cc-camera-audio-badge").getAttribute("data-video-only-reason"), "video-only-track");

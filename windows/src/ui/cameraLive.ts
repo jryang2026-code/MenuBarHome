@@ -102,7 +102,7 @@ export function buildGo2RtcStreamUrl(
     case "m3u8":
       return audioEnabled
         ? `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}`
-        : `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}&audio=0`;
+        : `${cleanOrigin}/api/stream.m3u8?src=${encodedSrc}&video=all&audio=0`;
     case "mjpeg":
       return `${cleanOrigin}/api/stream.mjpeg?src=${encodedSrc}`;
   }
@@ -133,10 +133,16 @@ export function withGo2RtcAudioQuery(rawUrl: string, audioEnabled: boolean): str
     if (parsed.searchParams.get("audio") === "0") {
       parsed.searchParams.delete("audio");
     }
+    if (path.endsWith("/api/stream.m3u8") && parsed.searchParams.get("video") === "all") {
+      parsed.searchParams.delete("video");
+    }
     if (path.endsWith("/api/stream.mp4") && parsed.searchParams.get("mp4") === "") {
       parsed.searchParams.set("mp4", "all");
     }
   } else {
+    if (path.endsWith("/api/stream.m3u8") && !parsed.searchParams.has("video")) {
+      parsed.searchParams.set("video", "all");
+    }
     parsed.searchParams.set("audio", "0");
   }
   return parsed.toString();
@@ -970,20 +976,39 @@ export class CameraLiveController {
     }
     this.liveCameraRawMediaEl = rawMedia;
     if (rawMedia.tagName === "VIDEO") {
+      const updateVideoOnly = (hasAudio: boolean) => {
+        if (this.liveCameraHasAudioTrack === hasAudio) return;
+        this.liveCameraHasAudioTrack = hasAudio;
+        if (!hasAudio) {
+          (rawMedia as HTMLVideoElement).muted = true;
+          this.liveCameraMuted = true;
+        }
+        this.host.render();
+      };
       rawMedia.addEventListener("loadedmetadata", () => {
         if (this.liveCameraRawMediaEl !== rawMedia) return;
         this.applyRotationToLiveMedia();
         const tracks = (rawMedia as HTMLVideoElement & { audioTracks?: { readonly length: number } }).audioTracks;
         if (tracks !== undefined && typeof tracks.length === "number") {
-          const hasAudio = tracks.length > 0;
-          if (this.liveCameraHasAudioTrack !== hasAudio) {
-            this.liveCameraHasAudioTrack = hasAudio;
-            if (!hasAudio) {
-              (rawMedia as HTMLVideoElement).muted = true;
-              this.liveCameraMuted = true;
-            }
-            this.host.render();
-          }
+          updateVideoOnly(tracks.length > 0);
+        }
+      });
+      rawMedia.addEventListener("timeupdate", () => {
+        if (this.liveCameraRawMediaEl !== rawMedia) return;
+        const video = rawMedia as HTMLVideoElement & {
+          webkitAudioDecodedByteCount?: number;
+          webkitVideoDecodedByteCount?: number;
+        };
+        if (typeof video.webkitAudioDecodedByteCount !== "number") return;
+        if (video.webkitAudioDecodedByteCount > 0) {
+          updateVideoOnly(true);
+        } else if (
+          !video.muted &&
+          typeof video.webkitVideoDecodedByteCount === "number" &&
+          video.webkitVideoDecodedByteCount > 0 &&
+          video.currentTime >= 0.5
+        ) {
+          updateVideoOnly(false);
         }
       });
       rawMedia.addEventListener("volumechange", () => {

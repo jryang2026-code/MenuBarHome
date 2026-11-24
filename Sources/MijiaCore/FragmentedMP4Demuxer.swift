@@ -287,14 +287,19 @@ public struct FragmentedMP4Demuxer: Sendable {
             ))
         }
         if handlerType == "soun", let entry = audioEntry {
-            let safeTimescale = timescale == 0 ? UInt32(max(1, Int(entry.sampleRate))) : timescale
-            let rate = entry.sampleRate > 0 ? entry.sampleRate : Double(safeTimescale)
+            let maxValidRate = 1_000_000.0
+            let rawRate = entry.sampleRate
+            let validEntryRate = rawRate.isFinite && rawRate >= 1 && rawRate <= maxValidRate ? rawRate : 0
+            let validTimescaleRate = timescale >= 1 && Double(timescale) <= maxValidRate ? Double(timescale) : 0
+            let rate = validEntryRate > 0 ? validEntryRate : validTimescaleRate
+            guard rate >= 1 && rate <= maxValidRate else { return nil }
+            let safeTimescale = timescale == 0 ? UInt32(rate.rounded()) : timescale
             return .audio(FMP4AudioTrack(
                 trackID: trackID,
                 codec: entry.codec,
                 timescale: safeTimescale,
                 sampleRate: rate,
-                channelCount: max(entry.channels, 1),
+                channelCount: min(max(entry.channels, 1), 32),
                 bitsPerSample: entry.bitsPerSample,
                 configRecord: entry.config
             ))
@@ -428,14 +433,17 @@ public struct FragmentedMP4Demuxer: Sendable {
         children(of: data, in: range).first { $0.type == type }
     }
 
+    private static let maxESDSDescriptorDepth = 8
+
     /// Extracts the AudioSpecificConfig payload from an ISO BMFF `esds` fullbox body.
     public static func parseESDSAudioSpecificConfig(_ esdsPayload: Data) -> Data? {
         let bytes = [UInt8](esdsPayload)
         guard bytes.count > 4 else { return nil }
-        return scanESDSDescriptors(bytes, start: 4, end: bytes.count)
+        return scanESDSDescriptors(bytes, start: 4, end: bytes.count, depth: 0)
     }
 
-    private static func scanESDSDescriptors(_ bytes: [UInt8], start: Int, end: Int) -> Data? {
+    private static func scanESDSDescriptors(_ bytes: [UInt8], start: Int, end: Int, depth: Int) -> Data? {
+        guard depth < maxESDSDescriptorDepth else { return nil }
         var i = start
         while i < end {
             let tag = bytes[i]
@@ -465,13 +473,13 @@ public struct FragmentedMP4Demuxer: Sendable {
                 }
                 if (flags & 0x20) != 0 { inner += 2 }
                 guard inner <= payloadEnd else { return nil }
-                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd) {
+                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd, depth: depth + 1) {
                     return found
                 }
             case 0x04: // DecoderConfigDescriptor
                 let inner = i + 13
                 guard inner <= payloadEnd else { return nil }
-                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd) {
+                if let found = scanESDSDescriptors(bytes, start: inner, end: payloadEnd, depth: depth + 1) {
                     return found
                 }
             default:

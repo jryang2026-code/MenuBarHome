@@ -1342,7 +1342,7 @@ public actor XiaomiCameraBridge: XiaomiCameraBridging {
         case "/api/stream.m3u8":
             return audioEnabled
                 ? "src=\(encoded)"
-                : "src=\(encoded)&audio=0"
+                : "src=\(encoded)&video=all&audio=0"
         default:
             return "src=\(encoded)"
         }

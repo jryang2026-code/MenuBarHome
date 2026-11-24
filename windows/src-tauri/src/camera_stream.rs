@@ -252,7 +252,7 @@ pub(crate) fn build_go2rtc_http_stream_url(
             if audio_enabled {
                 format!("src={encoded}")
             } else {
-                format!("src={encoded}&audio=0")
+                format!("src={encoded}&video=all&audio=0")
             }
         }
         "/api/stream.mjpeg" => format!("src={encoded}"),
@@ -409,7 +409,7 @@ mod tests {
         .expect("muted hls url");
         assert_eq!(
             hls_muted,
-            "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&audio=0"
+            "http://127.0.0.1:43123/api/stream.m3u8?src=cam_raw_1&video=all&audio=0"
         );
 
         let hls_listen = build_go2rtc_http_stream_url(

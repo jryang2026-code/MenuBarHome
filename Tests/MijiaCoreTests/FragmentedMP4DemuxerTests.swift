@@ -394,6 +394,34 @@ struct FragmentedMP4DemuxerFuzzTests {
         #expect(aSample.data == audioPayload)
         #expect(aSample.decodeTime == 1024)
         #expect(aSample.duration == 1024)
+
+        // Malformed deeply nested esds fails closed without overflowing the stack.
+        var deep = Data([0x05, 0x02, 0x14, 0x08])
+        for _ in 0..<12 {
+            deep = Data([0x04, UInt8(13 + deep.count), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) + deep
+        }
+        #expect(FragmentedMP4Demuxer.parseESDSAudioSpecificConfig(Data(count: 4) + deep) == nil)
+    }
+
+    @Test("Skips an out-of-range v2 audio sampleRate instead of trapping on Int conversion")
+    func skipsInvalidV2AudioSampleRateSafely() throws {
+        let ftyp = FMP4Fixture.box("ftyp", Data("iso5".utf8) + FMP4Fixture.u32(512) + Data("iso5iso6mp41".utf8))
+        let mvhd = FMP4Fixture.box("mvhd", Data(count: 100))
+        let aTkhd = FMP4Fixture.box("tkhd", Data(count: 12) + FMP4Fixture.u32(2) + Data(count: 64))
+        let aMdhd = FMP4Fixture.box("mdhd", Data(count: 12) + FMP4Fixture.u32(0) + Data(count: 8))
+        let aHdlr = FMP4Fixture.box("hdlr", Data(count: 8) + Data("soun".utf8) + Data(count: 12) + Data("SoundHandler\0".utf8))
+        var audioEntry = Data(count: 8)
+        audioEntry.append(FMP4Fixture.u16(2)) // version 2
+        audioEntry.append(Data(count: 22))
+        audioEntry.append(FMP4Fixture.u64(Double(1e30).bitPattern)) // huge sample rate
+        audioEntry.append(FMP4Fixture.u32(1))
+        audioEntry.append(Data(count: 20))
+        let mp4a = FMP4Fixture.box("mp4a", audioEntry)
+        let aMinf = FMP4Fixture.box("minf", FMP4Fixture.box("smhd", Data(count: 8)) + FMP4Fixture.box("stbl", FMP4Fixture.box("stsd", Data(count: 4) + FMP4Fixture.u32(1) + mp4a)))
+        let aTrak = FMP4Fixture.box("trak", aTkhd + FMP4Fixture.box("mdia", aMdhd + aHdlr + aMinf))
+        var demuxer = FragmentedMP4Demuxer()
+        let events = try demuxer.append(ftyp + FMP4Fixture.box("moov", mvhd + aTrak))
+        #expect(events.isEmpty)
     }
 }
 
