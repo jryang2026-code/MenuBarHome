@@ -2171,7 +2171,7 @@ struct MiCloudClientTests {
         #expect(config.contains(XiaomiCameraBridge.yamlDoubleQuoted(ffmpeg)))
         #expect(config.contains("webrtc:\n  listen: \"\""))
         #expect(config.contains("app:\n  modules:\n    - api\n"))
-        #expect(!config.contains("    - exec\n"))
+        #expect(config.contains("    - exec\n"))
         #expect(!config.contains("    - echo\n"))
         #expect(!config.contains("    - expr\n"))
         #expect(!config.contains("    - debug\n"))

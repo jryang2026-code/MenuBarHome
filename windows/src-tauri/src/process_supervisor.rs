@@ -1151,8 +1151,9 @@ mod tests {
         let modules = go2rtc_allowed_modules();
         assert!(modules.iter().any(|m| m == "api"));
         assert!(modules.iter().any(|m| m == "xiaomi"));
+        assert!(modules.iter().any(|m| m == "exec"));
         assert!(modules.iter().any(|m| m == "ffmpeg"));
-        assert!(!modules.iter().any(|m| matches!(m.as_str(), "exec" | "echo" | "expr" | "debug")));
+        assert!(!modules.iter().any(|m| matches!(m.as_str(), "echo" | "expr" | "debug")));
 
         let paths = Go2RtcPaths::from_bin_dir(PathBuf::from(r"C:\MenuBarMijia\bin"));
         assert_eq!(paths.config_file, PathBuf::from(r"C:\MenuBarMijia\bin\go2rtc.yaml"));
@@ -1169,6 +1170,7 @@ mod tests {
             "C:/bin/ffmpeg-silent.exe",
         );
         assert!(rendered.starts_with("app:\n  modules:\n    - api\n"));
-        assert!(!rendered.contains("    - exec\n"));
+        assert!(rendered.contains("    - exec\n"));
+        assert!(!rendered.contains("    - echo\n"));
     }
 }

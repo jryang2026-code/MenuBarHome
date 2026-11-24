@@ -16,6 +16,7 @@
     "mp4",
     "hls",
     "mjpeg",
+    "exec",
     "ffmpeg",
     "xiaomi"
   ]

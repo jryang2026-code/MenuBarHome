@@ -205,6 +205,7 @@ extension ProcessSupervisor {
             "mp4",
             "hls",
             "mjpeg",
+            "exec",
             "ffmpeg",
             "xiaomi",
         ]
@@ -261,10 +262,11 @@ extension ProcessSupervisor {
             return out
         }
 
-        /// `app.modules` restricts go2rtc to the exact modules MenuBarHome uses (excluding
-        /// `exec`, `echo`, `expr`, `debug`, `ngrok`, etc.). `webrtc: listen: ""` keeps go2rtc
-        /// from opening port 8555. `local_auth` is required because v1.9.15 skips Basic auth
-        /// for every loopback request when it is false.
+        /// `app.modules` restricts go2rtc to the exact modules MenuBarHome uses (`exec` stays
+        /// enabled because go2rtc's `ffmpeg:` source delegates to `exec:`, bounded by
+        /// `exec.allow_paths`, while `echo`, `expr`, `debug`, `ngrok`, etc. stay disabled).
+        /// `webrtc: listen: ""` keeps go2rtc from opening port 8555. `local_auth` is required
+        /// because v1.9.15 skips Basic auth for every loopback request when it is false.
         static func renderConfig(
             apiListen: String,
             rtspListen: String,
