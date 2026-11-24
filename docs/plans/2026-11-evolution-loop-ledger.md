@@ -22,14 +22,14 @@
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| W0-1 P0-1 文案去自黑 | — | Hydrogen High | 无 | 快车道main | TODO | | README / README.zh-CN / GLOSSARY / platform-matrix；Win11 GIF 需实机录制→HUMAN_GATE |
-| W0-2 #305 只读共享账号写入过滤 | #305 | Codex sol6.2 | 无 | PR | TODO | | 控制写入高风险面 |
-| W0-3 #314 间歇失败用例收敛 | #314 | Neon Mid | 无 | PR | TODO | | 与 W0-2 同触 `DualSourceFallbackGraceTests.swift`，合入时 `git merge origin/main` |
-| W0-4 macOS 小收口 | #420 #429 #397 | Flash (pi) | 无 | PR | TODO | | 菜单栏宽度磁滞、AppleMotion 测试覆写、暂停分组收尾 |
-| W0-5 双端小收口 | #428 #451 | Flash (opencode) | W0-2 合入后（同触 `MiCloudProvider.swift`） | PR | TODO | | 助手温度单位、无 uid 自有家庭场景；含语料用例 |
-| W0-6 macOS buildTV | #442 | Hydrogen High | 无 | PR | TODO | | 黄金语料语义变更；`WINDOWS_DIVERGENCE_BUDGET` 收紧到 0 |
-| W0-7 更新调度节拍对齐 | #455 | Codex sol6.2 | W0-2 完成后（同一通道串行） | PR | TODO | | 自动更新高风险面 |
-| W0-8 Windows 引导无障碍与水合 | #293 | Flash (opencode) | 无 | PR | TODO | | Windows 前端 |
+| W0-1 P0-1 文案去自黑 | — | Hydrogen High | 无 | 快车道main | DONE | main 1682695f | README / README.zh-CN / GLOSSARY / platform-matrix；Win11 GIF 需实机录制→HUMAN_GATE |
+| W0-2 #305 只读共享账号写入过滤 | #305 | Codex sol6.2 | 无 | PR | DONE | #463 → main dd95812 | 控制写入高风险面；主控审出 P1（共享设备不可控、冷启动硬拦），第 1 轮已修为“确认归属优先 + 权限拒绝转下一账号” |
+| W0-3 #314 间歇失败用例收敛 | #314 | Neon Mid | 无 | PR | DONE | #464 → main d94aa56 | 与 W0-2 同触 `DualSourceFallbackGraceTests.swift`，合入时 `git merge origin/main` |
+| W0-4 macOS 小收口 | #420 #429 #397 | Flash (pi) | 无 | PR | IN_PROGRESS | | 菜单栏宽度磁滞、AppleMotion 测试覆写、暂停分组收尾 |
+| W0-5 双端小收口 | #428 #451 | Flash (opencode) | W0-2 合入后（同触 `MiCloudProvider.swift`） | PR | IN_PROGRESS | | 助手温度单位、无 uid 自有家庭场景；含语料用例 |
+| W0-6 macOS buildTV | #442 | Hydrogen High | 无 | PR | IN_PROGRESS | | 黄金语料语义变更；`WINDOWS_DIVERGENCE_BUDGET` 收紧到 0 |
+| W0-7 更新调度节拍对齐 | #455 | Codex sol6.2 | W0-2 完成后（同一通道串行） | PR | DONE | #465 → main c895091 | 自动更新高风险面 |
+| W0-8 Windows 引导无障碍与水合 | #293 | Flash (opencode) | 无 | PR | IN_PROGRESS | | Windows 前端 |
 
 ## Wave 1：P0 内核止血（传输、焦点、零回弹）
 
