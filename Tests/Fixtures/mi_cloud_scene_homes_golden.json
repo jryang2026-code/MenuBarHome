@@ -1,0 +1,50 @@
+{
+  "_meta": {
+    "title": "Mi 场景归属语料（zh-CN）",
+    "version": 1,
+    "purpose": "驱动两端 refreshManualScenes / refreshMiScenes 的归属判定（#451）：自有 home 的 gethome_merged 条目缺 uid 时回落到登录用户，共享 home 缺 uid 保持跳过。Swift 端 GoldenCorpusTests 与 Windows 端 miCloudScenes.test.ts 用同一份语料跑。",
+    "shape": "result 是解密后的 gethome_merged envelope result；expectedSceneRequests 按 parseRooms 的房间顺序列出应发出的 (homeId, ownerUid) 查询，未列出的 home 不应查询。"
+  },
+  "sessionUserId": "20001",
+  "result": {
+    "homelist": [
+      {
+        "id": "home-2001",
+        "name": "语料之家",
+        "uid": "20001",
+        "roomlist": [
+          { "id": "room-3001", "name": "客厅", "dids": ["did-light-0001"] }
+        ]
+      },
+      {
+        "id": "home-2002",
+        "name": "语料度假屋",
+        "roomlist": [
+          { "id": "room-3002", "name": "厨房", "dids": ["did-light-0002"] }
+        ]
+      }
+    ],
+    "share_home_list": [
+      {
+        "id": "home-2003",
+        "name": "语料共享之家",
+        "roomlist": [
+          { "id": "room-3003", "name": "客房", "dids": ["did-switch-0002"] }
+        ]
+      },
+      {
+        "id": "home-2004",
+        "name": "语料共享命名之家",
+        "uid": "30001",
+        "roomlist": [
+          { "id": "room-3004", "name": "客房东翼", "dids": [] }
+        ]
+      }
+    ]
+  },
+  "expectedSceneRequests": [
+    { "homeId": "home-2001", "ownerUid": "20001" },
+    { "homeId": "home-2002", "ownerUid": "20001" },
+    { "homeId": "home-2004", "ownerUid": "30001" }
+  ]
+}

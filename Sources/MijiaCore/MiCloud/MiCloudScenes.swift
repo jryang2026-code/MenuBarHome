@@ -29,6 +29,16 @@ public struct MiCloudScene: Codable, Equatable, Sendable {
         return MiAccountScope.owner(of: entityId)
     }
 
+    /// The uid a scenes request for `room` must carry (#451): the home's own `uid` when the cloud
+    /// named one; otherwise, for a home this account owns, the logged-in user id — that account is
+    /// the owner there, so its scenes stay reachable when the room page omits `uid`. A shared home
+    /// without `uid` stays skipped: substituting the logged-in user would query someone else's home.
+    static func ownerUid(for room: MiRoom, userId: String) -> String? {
+        if let owner = room.ownerUid, !owner.isEmpty { return owner }
+        if room.isSharedHome || userId.isEmpty { return nil }
+        return userId
+    }
+
     func entityID(accountID: String) -> String {
         MiAccountScope.id("mi-scene:\(homeId):\(id)", account: accountID)
     }
