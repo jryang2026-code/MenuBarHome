@@ -92,7 +92,7 @@ struct SystemWakePolicy {
 final class SystemActivityMonitor {
     static let shared = SystemActivityMonitor()
 
-    private enum Change: Sendable {
+    enum Change: Sendable {
         case asleep(Bool), displayAsleep(Bool), locked(Bool), sessionInactive(Bool), powerState
     }
 
@@ -100,6 +100,7 @@ final class SystemActivityMonitor {
         private let lock = NSLock()
         private var observers: [(NotificationCenter, any NSObjectProtocol)] = []
         private var pathMonitor: NWPathMonitor?
+        private var darkWakeCapTask: Task<Void, Never>?
 
         func addObserver(_ center: NotificationCenter, token: any NSObjectProtocol) {
             lock.withLock { observers.append((center, token)) }
@@ -114,23 +115,38 @@ final class SystemActivityMonitor {
             previous?.cancel()
         }
 
+        func setDarkWakeCapTask(_ task: Task<Void, Never>?) {
+            let previous: Task<Void, Never>? = lock.withLock {
+                let old = darkWakeCapTask
+                darkWakeCapTask = task
+                return old
+            }
+            previous?.cancel()
+        }
+
         func invalidate() {
-            let (drainedObservers, drainedMonitor) = lock.withLock {
+            let (drainedObservers, drainedMonitor, drainedDarkWakeTask) = lock.withLock {
                 let obs = observers
                 let mon = pathMonitor
+                let cap = darkWakeCapTask
                 observers = []
                 pathMonitor = nil
-                return (obs, mon)
+                darkWakeCapTask = nil
+                return (obs, mon, cap)
             }
             for (center, token) in drainedObservers {
                 center.removeObserver(token)
             }
             drainedMonitor?.cancel()
+            drainedDarkWakeTask?.cancel()
         }
     }
 
     private weak var store: HomeStore?
     private let observerBag = ObserverCleanupBag()
+    private let scheduler: DebouncedResumeScheduler
+    private let darkWakeCap: Duration
+    private let isDisplayAwake: @MainActor () -> Bool
     private var isStarted = false
     private var asleep = false
     private var displayAsleep = false
@@ -139,44 +155,60 @@ final class SystemActivityMonitor {
     private var pendingResumeReasons: Set<ResumeReason> = []
     private var lastNetworkSatisfied: Bool?
     private var networkFingerprint: NetworkTopologyFingerprint?
-    private var wakePolicy = SystemWakePolicy()
+    private var wakePolicy: SystemWakePolicy
     private var waitingForInteractiveWake = false
     private var pendingTransportRestart = false
+    private var darkWakeCapGeneration: UInt64 = 0
+
+    var isWaitingForInteractiveWakeForTesting: Bool { waitingForInteractiveWake }
+
+    init(
+        scheduler: DebouncedResumeScheduler = .live,
+        darkWakeCap: Duration = .seconds(600),
+        isDisplayAwake: @escaping @MainActor () -> Bool = { CGDisplayIsAsleep(CGMainDisplayID()) == 0 }
+    ) {
+        self.scheduler = scheduler
+        self.darkWakeCap = max(.zero, darkWakeCap)
+        self.isDisplayAwake = isDisplayAwake
+        self.wakePolicy = SystemWakePolicy(now: scheduler.now)
+    }
 
     deinit {
         observerBag.invalidate()
     }
 
-    func start(with store: HomeStore) {
+    func start(with store: HomeStore, observeSystemEvents: Bool = true) {
         guard !isStarted else { return }
         isStarted = true
         self.store = store
-        // The app can launch from a login item while the screen is already locked; notifications
-        // only report later changes, so read the authoritative session state once up front.
-        locked = ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
-        let workspace = NSWorkspace.shared.notificationCenter
-        observe(workspace, NSWorkspace.willSleepNotification, .asleep(true))
-        observe(workspace, NSWorkspace.didWakeNotification, .asleep(false))
-        observe(workspace, NSWorkspace.screensDidSleepNotification, .displayAsleep(true))
-        observe(workspace, NSWorkspace.screensDidWakeNotification, .displayAsleep(false))
-        observe(workspace, NSWorkspace.sessionDidResignActiveNotification, .sessionInactive(true))
-        observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification, .sessionInactive(false))
-        let distributed = DistributedNotificationCenter.default()
-        observe(distributed, Notification.Name("com.apple.screenIsLocked"), .locked(true))
-        observe(distributed, Notification.Name("com.apple.screenIsUnlocked"), .locked(false))
-        // Posted on a background queue; `queue: .main` below moves it to the main thread.
-        observe(NotificationCenter.default, .NSProcessInfoPowerStateDidChange, .powerState)
+        if observeSystemEvents {
+            // The app can launch from a login item while the screen is already locked; notifications
+            // only report later changes, so read the authoritative session state once up front.
+            locked = ScreenLockPolicy.isLocked(session: CGSessionCopyCurrentDictionary() as? [String: Any])
+            let workspace = NSWorkspace.shared.notificationCenter
+            observe(workspace, NSWorkspace.willSleepNotification, .asleep(true))
+            observe(workspace, NSWorkspace.didWakeNotification, .asleep(false))
+            observe(workspace, NSWorkspace.screensDidSleepNotification, .displayAsleep(true))
+            observe(workspace, NSWorkspace.screensDidWakeNotification, .displayAsleep(false))
+            observe(workspace, NSWorkspace.sessionDidResignActiveNotification, .sessionInactive(true))
+            observe(workspace, NSWorkspace.sessionDidBecomeActiveNotification, .sessionInactive(false))
+            let distributed = DistributedNotificationCenter.default()
+            observe(distributed, Notification.Name("com.apple.screenIsLocked"), .locked(true))
+            observe(distributed, Notification.Name("com.apple.screenIsUnlocked"), .locked(false))
+            // Posted on a background queue; `queue: .main` below moves it to the main thread.
+            observe(NotificationCenter.default, .NSProcessInfoPowerStateDidChange, .powerState)
 
-        let monitor = NWPathMonitor()
-        monitor.pathUpdateHandler = { [weak self] path in
-            let satisfied = path.status == .satisfied
-            let fingerprint = NetworkTopologyFingerprint(path: path)
-            Task { @MainActor [weak self] in
-                self?.handleNetworkPathUpdate(isSatisfied: satisfied, fingerprint: fingerprint)
+            let monitor = NWPathMonitor()
+            monitor.pathUpdateHandler = { [weak self] path in
+                let satisfied = path.status == .satisfied
+                let fingerprint = NetworkTopologyFingerprint(path: path)
+                Task { @MainActor [weak self] in
+                    self?.handleNetworkPathUpdate(isSatisfied: satisfied, fingerprint: fingerprint)
+                }
             }
+            observerBag.setPathMonitor(monitor)
+            monitor.start(queue: DispatchQueue(label: "com.jryang1997.MenuBarMijia.NetworkMonitor", qos: .utility))
         }
-        observerBag.setPathMonitor(monitor)
-        monitor.start(queue: DispatchQueue(label: "com.jryang1997.MenuBarMijia.NetworkMonitor", qos: .utility))
 
         publish()
     }
@@ -184,6 +216,7 @@ final class SystemActivityMonitor {
     func stop() {
         guard isStarted else { return }
         isStarted = false
+        cancelDarkWakeCap()
         observerBag.invalidate()
         store = nil
         asleep = false
@@ -193,6 +226,7 @@ final class SystemActivityMonitor {
         pendingResumeReasons.removeAll()
         lastNetworkSatisfied = nil
         networkFingerprint = nil
+        wakePolicy = SystemWakePolicy(now: scheduler.now)
         waitingForInteractiveWake = false
         pendingTransportRestart = false
     }
@@ -206,24 +240,30 @@ final class SystemActivityMonitor {
         observerBag.addObserver(center, token: token)
     }
 
-    private func apply(_ change: Change) {
+    func apply(_ change: Change) {
         guard isStarted else { return }
         switch change {
         case .asleep(true):
             asleep = true
             waitingForInteractiveWake = false
+            cancelDarkWakeCap()
             wakePolicy.sleep()
             pendingResumeReasons.removeAll()
         case .asleep(false):
             guard asleep else { return }
             asleep = false
-            let displayAwake = CGDisplayIsAsleep(CGMainDisplayID()) == 0
+            let displayAwake = isDisplayAwake()
             switch wakePolicy.wake(userActivityObserved: displayAwake && !sessionInactive) {
             case .dark:
                 waitingForInteractiveWake = true
+                scheduleDarkWakeCap()
             case .probe:
+                waitingForInteractiveWake = false
+                cancelDarkWakeCap()
                 pendingResumeReasons.insert(.systemWake)
             case .reconnect:
+                waitingForInteractiveWake = false
+                cancelDarkWakeCap()
                 pendingResumeReasons.insert(.systemWake)
                 pendingTransportRestart = true
             }
@@ -237,22 +277,14 @@ final class SystemActivityMonitor {
             if value { pendingResumeReasons.removeAll() }
             locked = value
         case .sessionInactive(let value):
-            if !value, CGDisplayIsAsleep(CGMainDisplayID()) == 0 { recordInteractiveWake() }
+            if !value, isDisplayAwake() { recordInteractiveWake() }
             if sessionInactive && !value { pendingResumeReasons.insert(.sessionActive) }
             if value { pendingResumeReasons.removeAll() }
             sessionInactive = value
         case .powerState:
             break
         }
-        let isActive = !(transportSuspended || displayAsleep || locked || sessionInactive)
-        publish()
-        if isActive, !pendingResumeReasons.isEmpty {
-            let reasons = pendingResumeReasons
-            pendingResumeReasons.removeAll()
-            for reason in reasons {
-                store?.scheduleDebouncedResume(reason: reason)
-            }
-        }
+        publishAndFlushResumeIfActive()
     }
 
     private func handleNetworkPathUpdate(isSatisfied: Bool, fingerprint: NetworkTopologyFingerprint) {
@@ -273,9 +305,38 @@ final class SystemActivityMonitor {
     }
 
     private func recordInteractiveWake() {
+        cancelDarkWakeCap()
         guard waitingForInteractiveWake else { return }
         waitingForInteractiveWake = false
         pendingResumeReasons.insert(.systemWake)
+    }
+
+    private func scheduleDarkWakeCap() {
+        darkWakeCapGeneration &+= 1
+        let generation = darkWakeCapGeneration
+        let cap = darkWakeCap
+        let sleep = scheduler.sleep
+        let task = Task { [weak self] in
+            do {
+                try await sleep(cap)
+                try Task.checkCancellation()
+            } catch {
+                return
+            }
+            self?.completeDarkWakeCap(generation: generation)
+        }
+        observerBag.setDarkWakeCapTask(task)
+    }
+
+    private func cancelDarkWakeCap() {
+        darkWakeCapGeneration &+= 1
+        observerBag.setDarkWakeCapTask(nil)
+    }
+
+    private func completeDarkWakeCap(generation: UInt64) {
+        guard isStarted, !asleep, waitingForInteractiveWake, generation == darkWakeCapGeneration else { return }
+        recordInteractiveWake()
+        publishAndFlushResumeIfActive()
     }
 
     private var transportSuspended: Bool { asleep || waitingForInteractiveWake }
@@ -291,5 +352,17 @@ final class SystemActivityMonitor {
         store?.setScreenLocked(locked)
         store?.setSystemActive(!(transportSuspended || displayAsleep || locked || sessionInactive))
         store?.setLowPowerMode(ProcessInfo.processInfo.isLowPowerModeEnabled)
+    }
+
+    private func publishAndFlushResumeIfActive() {
+        let isActive = !(transportSuspended || displayAsleep || locked || sessionInactive)
+        publish()
+        if isActive, !pendingResumeReasons.isEmpty {
+            let reasons = pendingResumeReasons
+            pendingResumeReasons.removeAll()
+            for reason in reasons {
+                store?.scheduleDebouncedResume(reason: reason)
+            }
+        }
     }
 }
