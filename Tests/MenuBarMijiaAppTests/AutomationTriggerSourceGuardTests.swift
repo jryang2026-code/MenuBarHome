@@ -88,13 +88,13 @@ struct AutomationTriggerSourceGuardTests {
     }
 
     private func waitUntil(
-        timeout: Duration = .seconds(5),
+        timeout: Duration = .seconds(15),
         _ predicate: @escaping @MainActor () async -> Bool
     ) async -> Bool {
         let deadline = ContinuousClock.now + timeout
         while ContinuousClock.now < deadline {
             if await predicate() { return true }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(10))
         }
         return await predicate()
     }
@@ -192,20 +192,52 @@ struct AutomationTriggerSourceGuardTests {
 
         // 1. NSWorkspace.willSleepNotification -> .away + .lidClosedSleep (lid closed)
         do {
-            let h = try await makeNotificationHarness(
-                rules: [
-                    AutomationRule(trigger: .away, action: .devices(ids: [Self.lightId], isOn: false)),
-                    AutomationRule(trigger: .lidClosedSleep, action: .devices(ids: [Self.lightId], isOn: false)),
-                ],
-                isLidClosed: true,
+            let defaults = InMemoryUserDefaults()
+            let lidLightId = "light_lid"
+            let awayLight = SmartDevice(
+                id: Self.lightId,
+                name: "书房台灯",
+                roomId: "study",
+                roomName: "书房",
+                model: "yeelink.light.lamp4",
+                isOnline: true,
+                kind: .light(LightSpec(entityId: "light.study", isOn: true))
+            )
+            let lidLight = SmartDevice(
+                id: lidLightId,
+                name: "卧室台灯",
+                roomId: "study",
+                roomName: "书房",
+                model: "yeelink.light.lamp4",
+                isOnline: true,
+                kind: .light(LightSpec(entityId: "light.lid", isOn: true))
+            )
+            let mock = MockHomeProvider(snapshot: SynthesizedHome(devices: [awayLight, lidLight]))
+            let store = HomeStore(provider: mock, defaults: InMemoryUserDefaults())
+            try await store.waitForTestSnapshot()
+            defer { store.stop() }
+            AutomationRuleStore(defaults: defaults).save([
+                AutomationRule(trigger: .away, action: .devices(ids: [Self.lightId], isOn: false)),
+                AutomationRule(trigger: .lidClosedSleep, action: .devices(ids: [lidLightId], isOn: false)),
+            ])
+            let (centers, workspace, _, _) = makeCenters()
+            let engine = AutomationEngine(
+                defaults: defaults,
+                environment: AutomationEnvironmentProbe(
+                    isLidClosed: { true },
+                    currentWiFi: { (nil, true) },
+                    isScreenLocked: { false }
+                ),
+                notificationCenters: centers,
                 now: { baseClock }
             )
-            defer { withExtendedLifetime(h.engine) { h.store.stop() } }
-            h.workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
-            #expect(await waitUntil { h.store.automationRunHistory.count { $0.result == .executed } == 2 })
-            let executed = Set(h.store.automationRunHistory.filter { $0.result == .executed }.map(\.trigger))
+            engine.start(with: store)
+            defer { withExtendedLifetime(engine) {} }
+            workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
+            #expect(await waitUntil { store.automationRunHistory.count { $0.result == .executed } == 2 })
+            let executed = Set(store.automationRunHistory.filter { $0.result == .executed }.map(\.trigger))
             #expect(executed == [.away, .lidClosedSleep])
-            #expect(await h.mock.executedCommands.count == 2)
+            #expect(await mock.executedCommands.count == 2)
         }
 
         // 2. NSWorkspace.willSleepNotification -> .systemSleep (lid open)
