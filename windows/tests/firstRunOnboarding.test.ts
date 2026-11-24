@@ -126,7 +126,7 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.ok(document.querySelector('[data-onboarding-card="homeAssistant"]'));
     assert.ok(document.querySelector('[data-onboarding-card="demo"]'));
 
-    const forbidden = new Set(["native_http", "ha_snapshot", "set_service_endpoints"]);
+    const forbidden = new Set(["native_http", "ha_snapshot", "set_service_endpoints", "discover_home_assistant"]);
     assert.deepEqual(
       tauriCalls.filter((c) => forbidden.has(c.name)),
       [],
@@ -138,9 +138,10 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.ok(document.querySelector("[data-onboarding-mi-warning]"), "Mi card shows non-official risk note");
     assert.ok(document.querySelector("[data-onboarding-mi-region-details]"), "Mi card keeps region selector expandable");
 
-    // Selecting HA card shows manual address entry only (LAN auto-discovery moved to a follow-up host command slice).
+    // Selecting HA card renders the on-demand discovery button without triggering any automatic LAN scan.
     await click('[data-onboarding-card="homeAssistant"]');
-    assert.equal(document.querySelector("#btn-onboarding-discover-ha"), null);
+    assert.ok(document.querySelector("#btn-onboarding-discover-ha"));
+    assert.match(el("#btn-onboarding-discover-ha").textContent ?? "", /在局域网中查找/);
     assert.ok(document.querySelector("#onboarding-ha-url"));
     assert.deepEqual(
       tauriCalls.filter((c) => forbidden.has(c.name)),
@@ -1008,6 +1009,82 @@ describe("P4a-W / WP4a · First-run 3-card onboarding, on-demand LAN gate, and l
     assert.equal(vaultApp.settings.miSession?.userId, "10086");
     assert.equal(readStoredMigrationComplete(), true);
     assert.doesNotMatch(el(".cc-footer-label").textContent ?? "", /凭据读取失败/);
+  });
+
+  it("discovers HA on demand via host command, fills URL on pick without auto-connecting or sending token, and cancels on navigation", async () => {
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const pendingDiscovery: Array<(value: unknown) => void> = [];
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      value: {
+        invoke: async (name: string, args: Record<string, unknown> = {}) => {
+          calls.push({ name, args });
+          if (name === "discover_home_assistant") {
+            return new Promise((resolve) => {
+              pendingDiscovery.push(resolve);
+            });
+          }
+          return null;
+        },
+      },
+      configurable: true,
+    });
+
+    const app = new MenuMijiaWindowsApp(el("#app"));
+    await setImmediate();
+    await setImmediate();
+
+    await click('[data-onboarding-card="homeAssistant"]');
+    typeInput("#onboarding-ha-token", "secret-ha-token-never-sent");
+    assert.equal(calls.filter((c) => c.name === "discover_home_assistant").length, 0);
+
+    await click("#btn-onboarding-discover-ha");
+    assert.equal(calls.filter((c) => c.name === "discover_home_assistant").length, 1);
+    const discoverCall = calls.find((c) => c.name === "discover_home_assistant");
+    assert.equal(JSON.stringify(discoverCall?.args ?? {}).includes("secret-ha-token-never-sent"), false);
+    assert.equal(el<HTMLButtonElement>("#btn-onboarding-discover-ha").disabled, true);
+
+    // Navigating back cancels the in-flight discovery and ignores late replies.
+    await click("#btn-onboarding-back");
+    assert.ok(calls.some((c) => c.name === "cancel_ha_discovery"));
+    pendingDiscovery.shift()?.([
+      { name: "Stale Home", host: "192.168.1.99", port: 8123, baseUrl: "http://192.168.1.99:8123" },
+    ]);
+    await setImmediate();
+    await setImmediate();
+
+    await click('[data-onboarding-card="homeAssistant"]');
+    assert.equal(document.querySelector("[data-onboarding-ha-candidate]"), null);
+
+    // Trigger again and receive deduplicated HTTP + HTTPS candidates.
+    await click("#btn-onboarding-discover-ha");
+    pendingDiscovery.shift()?.([
+      { name: "Home", host: "192.168.1.50", port: 8123, baseUrl: "http://192.168.1.50:8123", version: "2026.2.1" },
+      { name: "Studio", host: "studio.local", port: 8443, baseUrl: "https://studio.local:8443" },
+    ]);
+    await setImmediate();
+    await setImmediate();
+
+    const candidateButtons = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-onboarding-ha-candidate]"));
+    assert.equal(candidateButtons.length, 2);
+
+    // Picking an HTTP candidate fills the URL field without auto-connecting or calling set_service_endpoints.
+    candidateButtons[0]!.click();
+    await setImmediate();
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-url").value, "http://192.168.1.50:8123");
+    assert.equal(el("[data-onboarding-ha-http-warning]").hidden, true);
+    assert.equal(calls.some((c) => c.name === "ha_snapshot" || c.name === "set_service_endpoints"), false);
+
+    // Picking the HTTPS candidate updates the field as well.
+    document.querySelectorAll<HTMLButtonElement>("[data-onboarding-ha-candidate]")[1]!.click();
+    await setImmediate();
+    assert.equal(el<HTMLInputElement>("#onboarding-ha-url").value, "https://studio.local:8443");
+    assert.equal(calls.some((c) => c.name === "ha_snapshot" || c.name === "set_service_endpoints"), false);
+
+    // English label check
+    setLanguage("en");
+    app.render();
+    await setImmediate();
+    assert.match(el("#btn-onboarding-discover-ha").textContent ?? "", /Find on my network/);
   });
 });
 

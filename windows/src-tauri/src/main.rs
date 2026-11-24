@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod home_assistant;
+mod ha_discovery;
 mod camera;
 mod camera_events;
 mod camera_pip;
@@ -27,6 +28,7 @@ use camera_pip::*;
 use companion::*;
 use credentials::*;
 use desktop_shell::*;
+use ha_discovery::{cancel_ha_discovery, discover_home_assistant, HaDiscoveryState};
 use home_assistant::{ha_execute, ha_http, ha_set_connection, ha_snapshot, HaConnections};
 use miio::{
     miio_call_action, miio_discover, miio_get_props, miio_handshake, miio_set_props,
@@ -243,6 +245,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(HaConnections::default())
+        .manage(HaDiscoveryState::default())
         .manage(MiIOState::default())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -264,6 +267,8 @@ fn main() {
             ha_http,
             ha_snapshot,
             ha_execute,
+            discover_home_assistant,
+            cancel_ha_discovery,
             miio_handshake,
             miio_get_props,
             miio_set_props,

@@ -902,4 +902,11 @@ export const ZH_HANT_CATALOG: Readonly<Record<string, string>> = {
   "1 处门窗开着": "1 處門窗開著",
   "{count} 处门窗开着": "{count} 處門窗開著",
   "室内 {temp}°": "室內 {temp}°",
+  "在局域网中查找": "在區域網路中尋找",
+  "正在查找…": "正在尋找…",
+  "未在局域网发现 Home Assistant，请手动填写地址": "未在區域網路發現 Home Assistant，請手動填寫位址",
+  "局域网查找失败，请检查网络连接或手动填写地址": "區域網路尋找失敗，請檢查網路連線或手動填寫位址",
+  "当前环境不支持局域网发现，请手动输入地址": "目前環境不支援區域網路發現，請手動輸入位址",
+  "已发现 {count} 个 Home Assistant，点击填入地址": "已發現 {count} 個 Home Assistant，點擊填入位址",
+  "已填入地址：{url}": "已填入位址：{url}",
 };
