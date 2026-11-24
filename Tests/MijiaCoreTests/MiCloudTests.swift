@@ -2192,10 +2192,10 @@ struct MiCloudClientTests {
             let allowedModules: [String]
         }
 
-        let repoRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
+        var repoRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        for _ in 0..<8 where !FileManager.default.fileExists(atPath: repoRoot.appendingPathComponent("Shared/go2rtcConfig.json").path) {
+            repoRoot.deleteLastPathComponent()
+        }
         let sharedURL = repoRoot.appendingPathComponent("Shared/go2rtcConfig.json")
         let data = try Data(contentsOf: sharedURL)
         let spec = try JSONDecoder().decode(SharedSpec.self, from: data)
