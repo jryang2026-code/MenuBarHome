@@ -223,12 +223,12 @@ struct MiAccountsProviderTests {
     func duplicateDidAppearsOnce() async throws {
         let values: [MiotPropKey: JSONValue] = [MiotFixtures.key("shared", 2, 1): .bool(true)]
         let cnApi = StubMiCloudAPI(
-            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true, isShared: false)],
             rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["shared"], homeId: "home-cn", homeName: "国内家")],
             values: values
         )
         let deApi = StubMiCloudAPI(
-            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true, isShared: false)],
             rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared"], homeId: "home-de", homeName: "海外家")],
             values: values
         )
@@ -670,12 +670,12 @@ struct MiAccountsProviderTests {
     func disablingAccountAfterEligibilityCheckSkipsStaleWriteCandidate() async throws {
         let values: [MiotPropKey: JSONValue] = [MiotFixtures.key("shared", 2, 1): .bool(true)]
         let cnApi = StubMiCloudAPI(
-            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true, isShared: false)],
             rooms: [MiRoom(id: "r-cn", name: "客厅", dids: ["shared"], homeId: "home-cn", homeName: "国内家")],
             values: values
         )
         let deApi = StubMiCloudAPI(
-            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true)],
+            devices: [MiDeviceRecord(did: "shared", name: "客厅灯", model: "yeelink.light.ceiling22", isOnline: true, isShared: false)],
             rooms: [MiRoom(id: "r-de", name: "客厅", dids: ["shared"], homeId: "home-de", homeName: "海外家")],
             values: values
         )

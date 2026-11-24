@@ -189,7 +189,8 @@ struct MultiAccountHomeStoreTests {
             did: "shared-plug",
             name: "共享插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: false
         )
         let cnApi = FailoverStubMiCloudAPI(
             devices: [sharedRecord],
@@ -282,7 +283,8 @@ struct MultiAccountHomeStoreTests {
             did: "shared-speaker-plug",
             name: "共享播报插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: false
         )
         var spec = try #require(MiotFixtures.specs["cuco.plug.v3"])
         spec.services.append(
@@ -415,7 +417,8 @@ struct MultiAccountHomeStoreTests {
             did: "shared-plug",
             name: "共享插座",
             model: "cuco.plug.v3",
-            isOnline: true
+            isOnline: true,
+            isShared: false
         )
         let cnApi = FailoverStubMiCloudAPI(
             devices: [lanBulb, sharedPlug],

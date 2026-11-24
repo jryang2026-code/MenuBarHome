@@ -228,7 +228,7 @@ struct DualSourceFallbackGraceTests {
 
     private func makeCamAPI(isOnline: Bool = true, specType: String? = nil, includePlug: Bool = false) -> StubMiCloudAPI {
         var devices = [
-            MiDeviceRecord(did: Self.did, name: "门口", model: "chuangmi.camera.061a01", isOnline: isOnline, specType: specType, localIp: "192.0.2.45")
+            MiDeviceRecord(did: Self.did, name: "门口", model: "chuangmi.camera.061a01", isOnline: isOnline, specType: specType, localIp: "192.0.2.45", isShared: false)
         ]
         var dids = [Self.did]
         var values: [MiotPropKey: JSONValue] = isOnline ? [MiotPropKey(did: Self.did, siid: 2, piid: 1): .bool(true)] : [:]
@@ -548,7 +548,7 @@ struct DualSourceFallbackGraceTests {
 
             let api1 = StubMiCloudAPI(
                 devices: [
-                    MiDeviceRecord(did: Self.did, name: "门口", model: "chuangmi.camera.061a01", isOnline: true, localIp: "192.0.2.45"),
+                    MiDeviceRecord(did: Self.did, name: "门口", model: "chuangmi.camera.061a01", isOnline: true, localIp: "192.0.2.45", isShared: false),
                     MiDeviceRecord(did: sharedPlugDID, name: "共享插座", model: "cuco.plug.v3", isOnline: true),
                     MiDeviceRecord(did: exclusiveCamDID, name: "玄关独享摄像机", model: "chuangmi.camera.061a01", isOnline: true, localIp: "192.0.2.47"),
                 ],
@@ -752,6 +752,83 @@ struct DualSourceFallbackGraceTests {
             await #expect(throws: MiotCommandError.noWritableSession(Self.did)) {
                 try await provider.execute(.setSwitch(entityId: "miot:\(Self.did):2", isOn: true))
             }
+        }
+    }
+
+    @Test("Same-spec writes skip accounts without confirmed device ownership", arguments: [true, false, nil] as [Bool?])
+    func sameSpecWriteRoutesToConfirmedOwner(shareFlag: Bool?) async throws {
+        try await withTeardown { teardown in
+            let accountA = MiAccount(session: MiSession(userId: "10001", cUserId: "c-a", ssecurity: "ssec-a", serviceToken: "tok-a", region: "cn"))
+            let accountB = MiAccount(session: MiSession(userId: "10002", cUserId: "c-b", ssecurity: "ssec-b", serviceToken: "tok-b", region: "cn"))
+            let accountC = MiAccount(session: MiSession(userId: "10003", cUserId: "c-c", ssecurity: "ssec-c", serviceToken: "tok-c", region: "cn"))
+            let powerKey = MiotPropKey(did: Self.did, siid: 2, piid: 1)
+            func makeAPI(isShared: Bool?, sharedHome: Bool = false, ownerUid: String? = nil) -> StubMiCloudAPI {
+                StubMiCloudAPI(
+                    devices: [MiDeviceRecord(
+                        did: Self.did, name: "门口", model: "chuangmi.camera.061a01",
+                        isOnline: true, specType: Self.camSpec.type, isShared: isShared
+                    )],
+                    rooms: [MiRoom(
+                        id: "r1", name: "门口", dids: [Self.did], homeId: "h1",
+                        isSharedHome: sharedHome, ownerUid: ownerUid
+                    )],
+                    values: [powerKey: .bool(true)]
+                )
+            }
+            let apiA = makeAPI(isShared: false)
+            let apiB = makeAPI(isShared: shareFlag, sharedHome: shareFlag == false)
+            let apiC = makeAPI(isShared: nil, ownerUid: accountC.session.userId)
+            await apiB.setSetPropsFailure(.deviceError(code: -1, message: "Read only"))
+            let provider = MiAccountsProvider(
+                accounts: [accountA, accountB, accountC],
+                apiFactory: { session in
+                    switch session.userId {
+                    case accountA.session.userId: return apiA
+                    case accountB.session.userId: return apiB
+                    default: return apiC
+                    }
+                },
+                specSource: SharedSpecSource(),
+                cameraBridge: StubXiaomiCameraBridge(),
+                localClientFactory: { nil },
+                pollInterval: .seconds(3600),
+                closedPollInterval: .seconds(3600),
+                selectedHomeLoader: { nil },
+                clearSelectedHome: {}
+            )
+            let collector = RouteCollector()
+            let pump = Task { for await event in provider.events() { await collector.append(event) } }
+            teardown.add {
+                await provider.shutdown()
+                pump.cancel()
+                await pump.value
+            }
+            await waitUntil {
+                guard let home = await collector.latestHome else { return false }
+                return [accountA, accountB, accountC].allSatisfy { home.accountStatuses[$0.id]?.isConnected == true }
+            }
+            await apiA.setGetPropsFailure(.http(502))
+            await provider.refreshNow()
+            await waitUntil { await collector.accountIsDisconnected(accountA.id) }
+
+            let command = DeviceCommand.setSwitch(entityId: "miot:\(Self.did):2", isOn: false)
+            let expected = [[MiotPropWrite(did: Self.did, siid: 2, piid: 1, value: .bool(false))]]
+            try await provider.execute(command)
+            #expect(await apiA.setPropsCalls.isEmpty)
+            #expect(await apiB.setPropsCalls.isEmpty)
+            #expect(await apiC.setPropsCalls == expected)
+
+            await provider.updateAccounts([accountB, accountC])
+            provider.markAccountDisabled(accountC.id)
+            await #expect(throws: MiotCommandError.noWritableSession(Self.did)) {
+                try await provider.execute(command)
+            }
+            #expect(await apiB.setPropsCalls.isEmpty)
+
+            await provider.updateAccounts([accountB])
+            await apiB.setSetPropsFailure(nil)
+            try await provider.execute(command)
+            #expect(await apiB.setPropsCalls == expected)
         }
     }
 

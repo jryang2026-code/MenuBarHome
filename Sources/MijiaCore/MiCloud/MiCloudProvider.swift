@@ -1948,13 +1948,26 @@ public actor MiCloudProvider: HomeProvider {
 
     // MARK: Commands
 
+    private func commandRecord(for did: String) -> MiDeviceRecord? {
+        devices.first(where: { $0.did == did && $0.splitParentDid == nil })
+            ?? devices.first(where: { $0.did == did })
+            ?? devices.first(where: { $0.miotDid == did })
+    }
+
+    private func hasConfirmedWriteOwnership(of record: MiDeviceRecord) -> Bool {
+        guard hasLiveTopologyRefresh, let session, !record.isShared else { return false }
+        let deviceRooms = rooms.filter { $0.dids.contains(record.did) || $0.dids.contains(record.miotDid) }
+        guard !deviceRooms.contains(where: { room in
+            room.isSharedHome || (room.ownerUid.map { !$0.isEmpty && $0 != session.userId } ?? false)
+        }) else { return false }
+        return record.reportedIsShared == false
+            || deviceRooms.contains { $0.ownerUid == session.userId && !session.userId.isEmpty }
+    }
+
     func mapsToAction(_ command: DeviceCommand) -> Bool {
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
-              let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
-                  ?? devices.first(where: { $0.did == did })
-                  ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
-                  ?? devices.first(where: { $0.miotDid == did }),
+              let record = commandRecord(for: did),
               let spec = specsByModel[record.model],
               let write = try? MiotCommandMapper.map(command, spec: spec) else {
             return !command.isIdempotentForAccountFallback
@@ -1967,15 +1980,13 @@ public actor MiCloudProvider: HomeProvider {
         }
     }
 
-    func canExecute(_ command: DeviceCommand) -> Bool {
+    func canExecute(_ command: DeviceCommand, requireConfirmedOwnership: Bool) -> Bool {
         guard !isShutDown, !isSessionRejected, api != nil else { return false }
         let entityId = command.targetEntityId
         guard let did = MiotAddress.parseAction(entityId)?.did ?? MiotAddress.parse(entityId)?.did,
-              let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
-                  ?? devices.first(where: { $0.did == did })
-                  ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
-                  ?? devices.first(where: { $0.miotDid == did }),
+              let record = commandRecord(for: did),
               record.isOnline,
+              !requireConfirmedOwnership || hasConfirmedWriteOwnership(of: record),
               let spec = specsByModel[record.model],
               (try? MiotCommandMapper.map(command, spec: spec)) != nil else {
             return false
@@ -1984,6 +1995,10 @@ public actor MiCloudProvider: HomeProvider {
     }
 
     public func execute(_ command: DeviceCommand) async throws {
+        try await execute(command, requireConfirmedOwnership: false)
+    }
+
+    func execute(_ command: DeviceCommand, requireConfirmedOwnership: Bool) async throws {
         let entityId = command.targetEntityId
         if case .activateScene = command,
            let scope = MiCloudScene.accountID(for: entityId) {
@@ -1999,11 +2014,11 @@ public actor MiCloudProvider: HomeProvider {
         }
         guard let (did, _) = MiotAddress.parse(entityId) else { throw MiotCommandError.invalidAddress(entityId) }
         guard let api else { throw MiCloudError.notLoggedIn }
-        guard let record = devices.first(where: { $0.did == did && $0.splitParentDid == nil })
-            ?? devices.first(where: { $0.did == did })
-            ?? devices.first(where: { $0.miotDid == did && $0.splitParentDid == nil })
-            ?? devices.first(where: { $0.miotDid == did }),
-              let spec = specsByModel[record.model] else {
+        let record = commandRecord(for: did)
+        if requireConfirmedOwnership, record.map(hasConfirmedWriteOwnership) != true {
+            throw MiotCommandError.noWritableSession(did)
+        }
+        guard let record, let spec = specsByModel[record.model] else {
             throw MiotCommandError.unsupported("设备规格未加载")
         }
         let write = try MiotCommandMapper.map(command, spec: spec)
@@ -2039,6 +2054,9 @@ public actor MiCloudProvider: HomeProvider {
         }
 
         if !executedViaLAN {
+            if requireConfirmedOwnership, commandRecord(for: did).map(hasConfirmedWriteOwnership) != true {
+                throw MiotCommandError.noWritableSession(did)
+            }
             do {
                 try await performCloudCall {
                     switch write {

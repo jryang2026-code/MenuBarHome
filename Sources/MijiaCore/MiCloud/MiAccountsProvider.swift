@@ -889,6 +889,8 @@ public actor MiAccountsProvider: HomeProvider {
         }
         let owners = preferredOwners(for: did)
         guard !owners.isEmpty else { throw MiotCommandError.unsupported(entityId) }
+        // With a single known account, let the cloud arbitrate writes to shared devices.
+        let requireConfirmedOwnership = owners.count > 1
 
         let initialCandidates = owners.compactMap { captureWriteCandidate(for: $0) }
         if initialCandidates.isEmpty {
@@ -904,7 +906,7 @@ public actor MiAccountsProvider: HomeProvider {
             guard isWriteCandidateStillValid(candidate),
                   !isDisconnected(candidate.ownerId),
                   hasFreshOnlineDevice(accountId: candidate.ownerId, did: did),
-                  await candidate.child.canExecute(command),
+                  await candidate.child.canExecute(command, requireConfirmedOwnership: requireConfirmedOwnership),
                   isWriteCandidateStillValid(candidate) else {
                 continue
             }
@@ -942,8 +944,10 @@ public actor MiAccountsProvider: HomeProvider {
             }
             guard isWriteCandidateStillValid(candidate) else { continue }
             do {
-                try await candidate.child.execute(command)
+                try await candidate.child.execute(command, requireConfirmedOwnership: requireConfirmedOwnership)
                 return
+            } catch MiotCommandError.noWritableSession {
+                continue
             } catch MiCloudError.sessionExpired {
                 lastFallbackError = MiCloudError.sessionExpired
             } catch MiCloudError.notLoggedIn {
