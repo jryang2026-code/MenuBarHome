@@ -1407,13 +1407,11 @@ async fn supervise_go2rtc_restart(
             return;
         };
 
-        let cancelled_during_wait = tokio::select! {
-            biased;
-            _ = retry_token.cancelled() => true,
-            _ = preparation.cancelled() => true,
-            _ = tokio::time::sleep(delay) => false,
-        };
-        if cancelled_during_wait {
+        let waited = retry_token
+            .run_until_cancelled(preparation.run_until_cancelled(tokio::time::sleep(delay)))
+            .await
+            .flatten();
+        if waited.is_none() {
             return;
         }
 
@@ -1494,12 +1492,10 @@ async fn supervise_go2rtc_restart(
         }
         store_go2rtc_session(record);
 
-        let ready = tokio::select! {
-            biased;
-            _ = retry_token.cancelled() => None,
-            _ = preparation.cancelled() => None,
-            ok = wait_for_owned_api(&http, &session) => Some(ok),
-        };
+        let ready = retry_token
+            .run_until_cancelled(preparation.run_until_cancelled(wait_for_owned_api(&http, &session)))
+            .await
+            .flatten();
 
         match ready {
             Some(true) => {

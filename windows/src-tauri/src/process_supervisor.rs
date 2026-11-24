@@ -304,11 +304,12 @@ impl<C: MonotonicClock + 'static> AsyncProcessSupervisor<C> {
                 if token.is_cancelled() || external_cancel.is_cancelled() {
                     break;
                 }
-                let launch_result = tokio::select! {
-                    biased;
-                    _ = token.cancelled() => break,
-                    _ = external_cancel.cancelled() => break,
-                    res = launcher() => res,
+                let Some(launch_result) = token
+                    .run_until_cancelled(external_cancel.run_until_cancelled(launcher()))
+                    .await
+                    .flatten()
+                else {
+                    break;
                 };
 
                 let decision = match launch_result {
@@ -317,17 +318,15 @@ impl<C: MonotonicClock + 'static> AsyncProcessSupervisor<C> {
                         if let Ok(mut guard) = core.lock() {
                             guard.mark_started(pid, clock.now());
                         }
-                        let exit_outcome = tokio::select! {
-                            biased;
-                            _ = token.cancelled() => {
-                                child.stop();
-                                break;
-                            }
-                            _ = external_cancel.cancelled() => {
-                                child.stop();
-                                break;
-                            }
-                            code = child.wait_exit() => code,
+                        let Some(exit_outcome) = token
+                            .run_until_cancelled(
+                                external_cancel.run_until_cancelled(child.wait_exit()),
+                            )
+                            .await
+                            .flatten()
+                        else {
+                            child.stop();
+                            break;
                         };
                         if token.is_cancelled() || external_cancel.is_cancelled() {
                             break;
@@ -351,11 +350,15 @@ impl<C: MonotonicClock + 'static> AsyncProcessSupervisor<C> {
                 match decision {
                     ExitDecision::OpenCircuit => break,
                     ExitDecision::RestartAfter(delay) => {
-                        tokio::select! {
-                            biased;
-                            _ = token.cancelled() => break,
-                            _ = external_cancel.cancelled() => break,
-                            _ = clock.sleep(delay) => {}
+                        if token
+                            .run_until_cancelled(
+                                external_cancel.run_until_cancelled(clock.sleep(delay)),
+                            )
+                            .await
+                            .flatten()
+                            .is_none()
+                        {
+                            break;
                         }
                     }
                 }
