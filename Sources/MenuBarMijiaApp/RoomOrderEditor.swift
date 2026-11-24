@@ -566,6 +566,7 @@ private struct RoomOrderRowView: View {
             .scaleEffect(isDragging && !reduceMotion ? 1.02 : 1)
         }
         .frame(height: RoomOrderMetrics.rowHeight)
+        .tahoeHoverHitTarget()
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .animation(AppleMotion.resolve(.pressFeedback, reduceMotion: reduceMotion), value: isHovered)

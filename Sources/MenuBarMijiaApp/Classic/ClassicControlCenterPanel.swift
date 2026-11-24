@@ -691,6 +691,7 @@ public struct ClassicControlCenterPanel: View {
             }
             AssistantSuggestionsRow(store: store)
         }
+        .tahoeHoverHitTarget()
         .onHover { isDrawerHovered = $0 }
         .onDisappear { isDrawerHovered = false }
     }
@@ -814,6 +815,7 @@ public struct ClassicControlCenterPanel: View {
 
     private func focusInput() {
         guard !speech.isListening, !speech.isHoldToTalk else { return }
+        MenuBarPanelController.shared.activateForTextInputIfNeeded()
         Task { @MainActor in isSearchFieldFocused = true }
     }
 

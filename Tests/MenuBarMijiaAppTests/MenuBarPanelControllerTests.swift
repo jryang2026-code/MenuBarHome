@@ -2669,14 +2669,18 @@ struct MenuBarPanelControllerTests {
         let holdToken = transient.beginAllOffHold { cancelledCount += 1 }
         #expect(transient.isAllOffHoldActive)
 
-        // Losing key status cancels the active hold and suppresses the trailing button tap on mouse-up.
+        // Losing key status cancels the active hold, suppresses the trailing button tap on
+        // mouse-up, and dismisses the non-activating panel when no exemption applies.
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: controller.panelWindow)
         #expect(cancelledCount == 1)
         #expect(transient.isAllOffHoldActive == false)
         #expect(transient.consumeConfirmedHold(session: holdToken) == false)
         #expect(transient.shouldSuppressTap() == true)
+        #expect(controller.isPanelVisible == false)
 
-        // Hiding the panel cleans up pending cloud consent, active hold, and expanded transient drawers.
+        // Re-open to verify explicit `hidePanel()` cleans up pending cloud consent, active hold,
+        // and expanded transient drawers.
+        controller.showPanel()
         let secondHold = transient.beginAllOffHold { cancelledCount += 1 }
         _ = secondHold
         var remindersCollapsed = false
@@ -2738,6 +2742,161 @@ struct MenuBarPanelControllerTests {
         let nextPress = transient.beginAllOffHold { }
         #expect(transient.consumeConfirmedHold(session: shortPress) == false)
         #expect(transient.consumeConfirmedHold(session: nextPress))
+    }
+
+    @Test("P0-7: Panel uses .nonactivatingPanel, allows inactive tooltips, and accepts first mouse")
+    func nonActivatingPanelConfigurationAndFirstClickGuard() async throws {
+        let (store, _) = try await makeStore()
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        for theme in [PanelTheme.classic, PanelTheme.liquidGlass] {
+            let panel = MenuBarPanelController.makePanel(theme: theme)
+            #expect(panel.styleMask.contains(.borderless))
+            #expect(panel.styleMask.contains(.nonactivatingPanel))
+            #expect(panel.allowsToolTipsWhenApplicationIsInactive)
+            #expect(panel.canBecomeKey)
+            #expect(panel.canBecomeMain == false)
+            #expect(panel.becomesKeyOnlyIfNeeded == false)
+        }
+
+        controller.showPanel()
+        let hostingView = try #require(controller.panelWindow?.contentView)
+        #expect(hostingView.acceptsFirstMouse(for: nil))
+    }
+
+    @Test("P0-7: PanelResignKeyDecision enforces all 4 exemption classes and hides otherwise")
+    func resignKeyDecisionPureExemptions() {
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: false))
+                == .keepOpen(.panelNotVisible)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, isVoiceOrPressActive: true))
+                == .keepOpen(.voiceOrPressActive)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, isModalConfirmationActive: true))
+                == .keepOpen(.modalConfirmationActive)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, newKeyWindowIsPanelOwned: true))
+                == .keepOpen(.panelOwnedWindowOrMenu)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, hasVisiblePanelOwnedTransientWindow: true))
+                == .keepOpen(.panelOwnedWindowOrMenu)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, isCameraWindowActive: true))
+                == .keepOpen(.cameraWindowActive)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true, isStatusItemInteraction: true))
+                == .keepOpen(.statusItemInteraction)
+        )
+        #expect(
+            PanelResignKeyDecision.decide(.init(isPanelVisible: true))
+                == .hide
+        )
+    }
+
+    @Test("P0-7: Text input responder escalates activation on demand while non-text responders stay non-activating")
+    func textInputFocusEscalatesAppActivationOnDemand() async throws {
+        let (store, _) = try await makeStore()
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        #expect(MenuBarPanel.isTextInputResponder(NSTextField()))
+        #expect(MenuBarPanel.isTextInputResponder(NSTextView()))
+        #expect(MenuBarPanel.isTextInputResponder(NSView()) == false)
+        #expect(MenuBarPanel.isTextInputResponder(nil) == false)
+
+        var activations = 0
+        var simulatedActive = false
+        controller.isApplicationActiveProvider = { simulatedActive }
+        controller.activateApplicationForTextInput = { activations += 1 }
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow as? MenuBarPanel)
+
+        // When `presentsActively` is false (headless test mode), activation stays suppressed.
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        panel.contentView?.addSubview(textView)
+        _ = panel.makeFirstResponder(textView)
+        #expect(activations == 0)
+
+        // With active presentation enabled and app inactive, focusing a text input triggers
+        // on-demand activation, while moving first responder back to a plain view does not.
+        controller.presentsActively = true
+        _ = panel.makeFirstResponder(panel.contentView)
+        #expect(activations == 0)
+        _ = panel.makeFirstResponder(textView)
+        #expect(activations == 1)
+
+        // Once the app is already active, re-focusing text does not re-activate redundantly.
+        simulatedActive = true
+        _ = panel.makeFirstResponder(panel.contentView)
+        _ = panel.makeFirstResponder(textView)
+        #expect(activations == 1)
+        controller.presentsActively = false
+    }
+
+    @Test("P0-7: didResignKey and modal confirmation alerts obey exemptions without premature hide")
+    func resignKeyNotificationAndModalConfirmationGuard() async throws {
+        let (store, _) = try await makeStore()
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+
+        var modalActive = true
+        controller.isModalConfirmationActiveProvider = { modalActive }
+        controller.showPanel()
+        let panel = try #require(controller.panelWindow)
+
+        // Exemption ④: high-risk modal confirmation alert keeps the panel open on both resign-key
+        // and other-window-became-key notifications.
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: panel)
+        #expect(controller.isPanelVisible, "modal confirmation alert must not dismiss the panel")
+
+        let alertLike = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        defer { alertLike.orderOut(nil) }
+        controller.handleOtherWindowBecameKey(alertLike)
+        #expect(controller.isPanelVisible, "modal confirmation taking key must not dismiss the panel")
+
+        // Exemption ①: dictation keeps the panel open on resign-key.
+        modalActive = false
+        let speech = SpeechInputController.shared
+        let previousDraft = speech.draft
+        let wasListening = speech.isListening
+        speech.setPreviewState(isListening: true, isHoldToTalk: false, draft: "开灯")
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: panel)
+        #expect(controller.isPanelVisible, "dictation must exempt resign-key dismissal")
+        speech.setPreviewState(isListening: wasListening, isHoldToTalk: false, draft: previousDraft)
+
+        // Exemption ②: visible panel-owned child window (popover/sheet/menu) keeps the panel open.
+        let child = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 120),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        child.alphaValue = 0
+        child.hasShadow = false
+        defer { child.orderOut(nil) }
+        panel.addChildWindow(child, ordered: .above)
+        child.orderFront(nil)
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: panel)
+        #expect(controller.isPanelVisible, "visible panel-owned child window must exempt resign-key")
+        panel.removeChildWindow(child)
+        child.orderOut(nil)
+
+        // Without any exemption, losing key status dismisses the non-activating panel.
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: panel)
+        #expect(controller.isPanelVisible == false)
     }
 
     private static func waitUntilCondition(_ predicate: () -> Bool) async -> Bool {
