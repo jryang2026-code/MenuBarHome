@@ -703,6 +703,11 @@ struct AutomationTriggerSourceGuardTests {
         #expect(await waitUntil { await mock.executedCommands.count == 2 })
         #expect(store.devices.first(where: { $0.id == Self.lightId })?.isActiveOn == true)
 
+        // The same exit may also arrive through the generic trigger observer. Restoration is
+        // deduped at the shared restore entry point.
+        await engine.handle(trigger: .frontmostAppLeft, at: currentNow.addingTimeInterval(1))
+        #expect(await mock.executedCommands.count == 2)
+
         // Disabling the FrontmostApp rule stops the source immediately.
         movieRule.isEnabled = false
         AutomationRuleStore(defaults: defaults).save([awayRule, movieRule])

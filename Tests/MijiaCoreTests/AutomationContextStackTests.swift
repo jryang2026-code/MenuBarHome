@@ -44,4 +44,79 @@ struct AutomationContextStackTests {
         #expect(stack.pop(ruleID: id, liveValues: ["lamp": AutomationContextValue(field: .power, boolValue: false)], at: start.addingTimeInterval(AutomationContextStack.maximumAge + 1)).isEmpty)
         #expect(stack.isEmpty)
     }
+
+    @Test("A restore plan keeps its frame until the provider confirms the write")
+    func failedRestoreCanRetry() throws {
+        let stack = AutomationContextStack()
+        let rule = UUID()
+        let start = Date(timeIntervalSince1970: 100)
+        stack.push(ruleID: rule, snapshots: [snapshot("lamp", baseline: true, applied: false)], at: start)
+
+        let frame = try #require(stack.allFrames.first)
+        let plan = try #require(stack.prepareRestore(
+            frame: frame,
+            liveValues: ["lamp": AutomationContextValue(field: .power, boolValue: false)],
+            at: start.addingTimeInterval(1)
+        ))
+        #expect(plan.intents == [DeviceIntent(targetId: "lamp", operation: .power(true))])
+        stack.commitRestore(plan, restoredDeviceIDs: [])
+        #expect(stack.count == 1)
+        stack.commitRestore(plan, restoredDeviceIDs: ["lamp"])
+        #expect(stack.isEmpty)
+    }
+
+    @Test("Partial confirmation removes only the snapshots that were restored")
+    func partialRestoreRetainsUnrestoredSnapshots() throws {
+        let stack = AutomationContextStack()
+        let rule = UUID()
+        let start = Date(timeIntervalSince1970: 100)
+        stack.push(ruleID: rule, snapshots: [
+            snapshot("lamp", baseline: true, applied: false),
+            snapshot("fan", baseline: false, applied: true)
+        ], at: start)
+        let plan = try #require(stack.prepareRestore(frame: stack.allFrames[0], liveValues: [
+            "lamp": AutomationContextValue(field: .power, boolValue: false),
+            "fan": AutomationContextValue(field: .power, boolValue: true)
+        ], at: start.addingTimeInterval(1)))
+        stack.commitRestore(plan, restoredDeviceIDs: ["lamp"])
+        #expect(stack.allFrames.first?.snapshots.map(\.deviceID) == ["fan"])
+    }
+
+    @Test("Frames sharing an exit trigger can restore newest-first to the original baseline")
+    func sharedExitRestoresNewestFirst() {
+        let stack = AutomationContextStack()
+        let older = UUID()
+        let newer = UUID()
+        let start = Date(timeIntervalSince1970: 100)
+        stack.push(ruleID: older, snapshots: [snapshot("lamp", baseline: true, applied: false)], at: start)
+        stack.push(ruleID: newer, snapshots: [snapshot("lamp", baseline: false, applied: true)], at: start.addingTimeInterval(1))
+
+        let inner = stack.pop(
+            ruleID: newer,
+            liveValues: ["lamp": AutomationContextValue(field: .power, boolValue: true)],
+            at: start.addingTimeInterval(2)
+        )
+        #expect(inner == [DeviceIntent(targetId: "lamp", operation: .power(false))])
+        let outer = stack.pop(
+            ruleID: older,
+            liveValues: ["lamp": AutomationContextValue(field: .power, boolValue: false)],
+            at: start.addingTimeInterval(3)
+        )
+        #expect(outer == [DeviceIntent(targetId: "lamp", operation: .power(true))])
+        #expect(stack.isEmpty)
+    }
+
+    @Test("The frame cap keeps the newest 32 entries")
+    func frameCap() {
+        let stack = AutomationContextStack()
+        for index in 0...AutomationContextStack.maximumFrames {
+            _ = stack.push(
+                ruleID: UUID(),
+                snapshots: [snapshot("lamp-\(index)", baseline: false, applied: true)],
+                at: Date(timeIntervalSince1970: TimeInterval(index))
+            )
+        }
+        #expect(stack.count == AutomationContextStack.maximumFrames)
+        #expect(stack.allFrames.first?.snapshots.first?.deviceID == "lamp-1")
+    }
 }

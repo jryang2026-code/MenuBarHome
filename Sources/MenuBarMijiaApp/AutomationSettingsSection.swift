@@ -349,6 +349,22 @@ struct AutomationSettingsSection: View {
                         .foregroundStyle(DesignTokens.secondaryText)
                         .lineLimit(1)
                 }
+                if case .devices = rule.action, let exitTrigger = rule.trigger.pairedContextTrigger {
+                    Toggle(
+                        L10n.tr("情境结束后还原", "Restore when the context ends"),
+                        isOn: Binding(
+                            get: { rules.first(where: { $0.id == rule.id })?.restoreWhenContextEnds ?? false },
+                            set: { enabled in
+                                guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                current.restoreWhenContextEnds = enabled
+                                current.restoreTrigger = enabled ? exitTrigger : nil
+                                update(current)
+                            }
+                        )
+                    )
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                }
                 if store.pausedRuleRequiresManualResume(rule) {
                     Text(L10n.tr(
                         "已暂停且不会自动恢复，打开右侧开关即可恢复",
@@ -799,6 +815,25 @@ struct AutomationSettingsSection: View {
             conditionsEditor
 
             triggerOptionsEditor
+
+            if newActionKind == .devices, let exitTrigger = newTrigger.pairedContextTrigger {
+                Toggle(
+                    isOn: $newRestoreWhenContextEnds,
+                    label: {
+                        Text(L10n.tr("情境结束后还原", "Restore when the context ends"))
+                            .font(.system(size: DesignTokens.TypeSize.caption))
+                            .foregroundStyle(DesignTokens.secondaryText)
+                    }
+                )
+                .toggleStyle(.checkbox)
+                Text(L10n.format(
+                    "结束触发：%@",
+                    "End trigger: %@",
+                    exitTrigger.title
+                ))
+                .font(.system(size: DesignTokens.TypeSize.caption))
+                .foregroundStyle(DesignTokens.secondaryText)
+            }
 
             actionEditor
 
@@ -1286,6 +1321,7 @@ struct AutomationSettingsSection: View {
         store.automationRuleStore.save(stored)
         rules = stored
         newDeviceIds = []
+        newRestoreWhenContextEnds = false
         store.onAutomationRulesChanged?()
     }
 

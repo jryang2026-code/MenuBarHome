@@ -324,6 +324,60 @@ struct AutomationContextEngineTests {
         #expect(await mock.executedCommands == [offCommand(), onCommand(), offCommand()])
     }
 
+    @Test("Camera context restoration runs from the context exit signal")
+    func cameraContextRestoresOriginalState() async throws {
+        let defaults = InMemoryUserDefaults()
+        let rule = AutomationRule(
+            trigger: .cameraInUse,
+            action: .devices(ids: [Self.lightId], isOn: true),
+            restoreWhenContextEnds: true,
+            restoreTrigger: .cameraNotInUse
+        )
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: defaults, lightOn: false
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await provider.emit(MacContextSnapshot(), at: start)
+        await provider.emit(MacContextSnapshot(cameraInUse: true), at: start.addingTimeInterval(10))
+        #expect(await mock.executedCommands == [onCommand()])
+        #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(10)).count == 1)
+
+        await provider.emit(MacContextSnapshot(), at: start.addingTimeInterval(20))
+        #expect(await mock.executedCommands == [onCommand(), offCommand()])
+        #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(20)).isEmpty)
+
+        // A duplicate exit delivered through the trigger observer must not restore again.
+        await engine.handle(trigger: .cameraNotInUse, at: start.addingTimeInterval(21))
+        #expect(await mock.executedCommands == [onCommand(), offCommand()])
+    }
+
+    @Test("Focus context restoration runs from the context exit signal")
+    func focusContextRestoresOriginalState() async throws {
+        let defaults = InMemoryUserDefaults()
+        let rule = AutomationRule(
+            trigger: .focusModeEnabled,
+            action: .devices(ids: [Self.lightId], isOn: true),
+            restoreWhenContextEnds: true,
+            restoreTrigger: .focusModeDisabled
+        )
+        let (engine, store, mock, provider) = try await makeEngine(
+            rules: [rule], defaults: defaults, lightOn: false
+        )
+        defer { withExtendedLifetime(engine) { store.stop() } }
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+
+        await provider.emit(MacContextSnapshot(isFocusActive: false), at: start)
+        await provider.emit(MacContextSnapshot(isFocusActive: true), at: start.addingTimeInterval(10))
+        #expect(await mock.executedCommands == [onCommand()])
+        #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(10)).count == 1)
+
+        await provider.emit(MacContextSnapshot(isFocusActive: false), at: start.addingTimeInterval(20))
+        #expect(await mock.executedCommands == [onCommand(), offCommand()])
+        #expect(AutomationContextStack(defaults: defaults, now: start.addingTimeInterval(20)).isEmpty)
+    }
+
     @Test("Power, disconnect and battery-threshold rules each run")
     func powerAndBatteryRules() async throws {
         let defaults = InMemoryUserDefaults()
