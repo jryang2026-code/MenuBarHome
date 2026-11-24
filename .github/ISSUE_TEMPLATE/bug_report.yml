@@ -5,7 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        提交前请先搜索是否已有同类 issue。**不要粘贴任何令牌、Key、密码**；诊断信息可以用应用内「复制诊断信息」生成（已自动脱敏）。
+        提交前请先搜索是否已有同类 issue。**不要粘贴任何令牌、Key、密码**。
+
+        设置 → 关于 → 「反馈问题」会带上自动填好的脱敏诊断（版本、系统、数据源设备数、错误码）；也可以点「复制排障信息」自己粘贴。
   - type: dropdown
     id: platform
     attributes:
@@ -36,10 +38,19 @@ body:
       options:
         - "小米云（扫码登录）"
         - "Home Assistant"
+        - "小米云 + Home Assistant（双源）"
         - "演示模式"
         - "不适用"
     validations:
       required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息（已脱敏）
+      description: 用应用内「反馈问题」打开时这段会自动填好；为空就把「复制排障信息」的内容粘贴进来。只含版本、系统、数据源设备数与错误码，不含设备名、DID、令牌、IP 或账号。
+      render: markdown
+    validations:
+      required: false
   - type: textarea
     id: repro
     attributes:

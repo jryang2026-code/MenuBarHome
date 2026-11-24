@@ -37,6 +37,7 @@ const BEARER_OR_API_KEY_PATTERN =
   /\b(?:Bearer\s+[A-Za-z0-9._~+/=-]{8,}|sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{16,})\b/gi;
 const URL_SCHEME_PATTERN = /\b(?:https?|wss?|rtsp|rtsps):\/\/[^\s)`"'>]+/gi;
 const MAC_ADDRESS_PATTERN = /\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/g;
+const EMAIL_PATTERN = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 const PRIVATE_OR_LAN_IPV4_PATTERN =
   /\b(?:10(?:\.\d{1,3}){3}|127(?:\.\d{1,3}){3}|169\.254(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.0\.2\.\d{1,3}|198\.51\.100\.\d{1,3}|203\.0\.113\.\d{1,3})\b/g;
 const ANY_IPV4_PATTERN = /\b(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}\b/g;
@@ -62,6 +63,7 @@ function redactSensitiveText(raw: string,
     .replace(BEARER_OR_API_KEY_PATTERN, "[redacted-token]")
     .replace(URL_SCHEME_PATTERN, "[redacted-url]")
     .replace(MAC_ADDRESS_PATTERN, "[redacted-mac]")
+    .replace(EMAIL_PATTERN, "[redacted-email]")
     .replace(PRIVATE_OR_LAN_IPV4_PATTERN, "[redacted-ip]")
     .replace(ANY_IPV4_PATTERN, "[redacted-ip]")
     .replace(PRIVATE_IPV6_PATTERN, "[redacted-ip]")
@@ -93,6 +95,7 @@ export function findSensitiveLeaks(text: string,
   check("secret_kv", SECRET_KV_PATTERN);
   check("url", URL_SCHEME_PATTERN);
   check("mac", MAC_ADDRESS_PATTERN);
+  check("email", EMAIL_PATTERN);
   check("private_ipv4", PRIVATE_OR_LAN_IPV4_PATTERN);
   check("ipv4", ANY_IPV4_PATTERN);
   check("private_ipv6", PRIVATE_IPV6_PATTERN);
@@ -1278,5 +1281,194 @@ export const DiagnosticsReportBuilder = {
     const rendered = lines.join("\n");
     assertZeroSensitiveLeaks(rendered);
     return rendered;
+  },
+} as const;
+
+// MARK: - One-click feedback (#29)
+
+/// The option texts `bug_report.yml` offers for its backend dropdown.
+///
+/// GitHub selects a form option by its text alone, so these strings must stay identical to the
+/// template, which is Chinese. They do not follow the interface language for that reason.
+export const FeedbackBackendOption = {
+  mi: "小米云（扫码登录）",
+  homeAssistant: "Home Assistant",
+  dual: "小米云 + Home Assistant（双源）",
+  demo: "演示模式",
+  none: "不适用",
+} as const;
+
+export interface FeedbackBackendCount { readonly label: string;
+  readonly deviceCount: number;
+  readonly onlineDeviceCount: number;
+}
+
+export interface FeedbackSignalCount { readonly code: string;
+  readonly count: number;
+}
+
+export interface FeedbackDiagnosticsInput {
+  readonly appVersion: string;
+  readonly osVersion: string;
+  readonly platform: "Windows" | "macOS";
+  readonly backends?: readonly FeedbackBackendCount[];
+  readonly signals?: readonly FeedbackSignalCount[];
+  /** The `backend` dropdown value, when the signed-in sources make one answer exact. */
+  readonly backendOption?: string | null;
+  readonly languagePreference?: LanguagePreference;
+  readonly forbiddenLiterals?: readonly string[];
+}
+
+const FEEDBACK_ERROR_CODE_BY_CATEGORY: Record<DiagnosticsErrorCategory, string> = {
+  miCloud: "MI_CLOUD",
+  homeAssistant: "HA",
+  camera: "CAMERA",
+  command: "COMMAND",
+  auth: "MI_AUTH",
+  rateLimit: "RATE_LIMIT",
+  network: "NETWORK",
+  unknown: "UNKNOWN",
+};
+
+/**
+ * How many devices a source carries.
+ *
+ * A device a merge recorded wins, then the device's own `sourceBackend`, then the live source. The
+ * names, ids and models never enter the count, which is the whole point of asking here.
+ */
+export function countFeedbackBackendDevices(
+  devices: readonly SmartDevice[],
+  backend: HomeBackend,
+  options: { readonly defaultBackend: HomeBackend;
+    readonly deviceBackends?: Readonly<Record<string, HomeBackend>>;
+  },
+): { readonly deviceCount: number;
+  readonly onlineDeviceCount: number;
+} { const mine = devices.filter(
+    (device) =>
+      (options.deviceBackends?.[device.id] ?? device.sourceBackend ?? options.defaultBackend) === backend,
+  );
+  return {
+    deviceCount: mine.length,
+    onlineDeviceCount: mine.filter((device) => device.isOnline).length,
+  };
+}
+
+/** The error codes the feedback block may carry: counted categories, never message text (#17). */
+export function feedbackSignals(
+  options: { readonly sessionExpired?: boolean; readonly categoryCounts?: Readonly<Record<string, number>> } = {},
+): FeedbackSignalCount[] { const counts = options.categoryCounts ?? appDiagnosticsLog.categoryCounts();
+  const signals: FeedbackSignalCount[] = [];
+  for (const [category, count] of Object.entries(counts)) { if (count > 0) {
+      signals.push({
+        code: FEEDBACK_ERROR_CODE_BY_CATEGORY[category as DiagnosticsErrorCategory] ?? "UNKNOWN",
+        count,
+      });
+    }
+  }
+  if (options.sessionExpired) { signals.push({ code: "MI_SESSION_EXPIRED", count: 1 });
+  }
+  return signals;
+}
+
+export const FeedbackDiagnosticsBuilder = {
+  /** The ceiling GitHub's issue URL survives in every browser the app can open. */
+  maxURLLength: 6000,
+  /** The issue form the link prefills. Its field ids are the only place this value appears. */
+  template: "bug_report.yml",
+
+  /**
+   * The block the issue shows under "诊断信息", one fact per line, most useful first.
+   *
+   * Privacy contract: every value is a count this app made or a label from a closed set, so no did,
+   * token, host, device name, home name, account id, IP, MAC or email can enter the block. The
+   * scrubber still runs over the string fields as a backstop for a caller that widens one of them.
+   */
+  block(input: FeedbackDiagnosticsInput): string { const pref = input.languagePreference;
+    const forbidden = input.forbiddenLiterals ?? [];
+    const clean = (value: string) => redactSensitiveText(value.trim(), forbidden);
+    const lines: string[] = [];
+    lines.push(`- ${tr3("版本", "版本", "Version", undefined, pref)}: ${clean(input.appVersion)}`,
+    );
+    lines.push(`- ${tr3("系统", "系統", "OS", undefined, pref)}: ${clean(input.osVersion)}`,
+    );
+
+    const backends = (input.backends ?? []);
+    const labels = backends.map((b) => clean(b.label)).filter((label) => label !== "");
+    if (labels.length > 0) { lines.push(
+        `- ${tr3("数据源", "資料來源", "Backends", undefined, pref)}: ${labels.join(" + ")}`,
+      );
+    }
+    for (const backend of backends) { const label = clean(backend.label);
+      if (label === "") continue;
+      lines.push(
+        `  - ${label}: ${backend.deviceCount} ${tr3("台设备", "台裝置", "devices", undefined, pref)}`
+          + ` (${tr3("在线", "在線", "online", undefined, pref)} ${backend.onlineDeviceCount})`,
+      );
+    }
+
+    const codes = (input.signals ?? [])
+      .filter((signal) => signal.count > 0)
+      .map((signal) => `${signal.code}x${signal.count}`);
+    lines.push(
+      `- ${tr3("错误码", "錯誤碼", "Error codes", undefined, pref)}: `
+        + (codes.length > 0 ? codes.join(" · ") : tr3("无", "無", "none", undefined, pref)),
+    );
+    const rendered = lines.join("\n");
+    assertZeroSensitiveLeaks(rendered);
+    return rendered;
+  },
+
+  /**
+   * A GitHub "new issue" URL that prefills `bug_report.yml` with this block.
+   *
+   * The user still presses "Submit" in the browser; nothing is sent from here. A block that would
+   * push the URL past `maxLength` loses its least useful trailing lines, because a browser or a
+   * proxy quietly cutting a long URL is worse than a short one that arrives whole.
+   */
+  issueURL(input: FeedbackDiagnosticsInput,
+    options: { readonly maxLength?: number } = {},
+  ): string | null { const pref = input.languagePreference;
+    const forbidden = input.forbiddenLiterals ?? [];
+    const maxLength = options.maxLength ?? FeedbackDiagnosticsBuilder.maxURLLength;
+    const clean = (value: string) => redactSensitiveText(value.trim(), forbidden);
+    const allLines = FeedbackDiagnosticsBuilder.block(input).split("\n");
+    const platform = clean(input.platform);
+    const version = clean(input.appVersion);
+    const os = clean(input.osVersion);
+    const option = input.backendOption ? clean(input.backendOption) : "";
+
+    for (let kept = allLines.length; kept >= 1; kept -= 1) { let block = allLines.slice(0, kept).join("\n");
+      if (kept < allLines.length) { block += "\n" + tr3(
+          "…（诊断已按链接长度截断，完整内容请用「复制诊断」）",
+          "…（診斷已依連結長度截斷，完整內容請用「複製診斷」）",
+          "… (diagnostics truncated to fit the link; use Copy Diagnostics for the full block)",
+          undefined,
+          pref,
+        );
+      }
+      const params: ReadonlyArray<readonly [string, string]> = [
+        ["template", FeedbackDiagnosticsBuilder.template],
+        ["title", tr3("[问题] MenuBarHome {version} ({platform})",
+          "[問題] MenuBarHome {version} ({platform})",
+          "[Bug] MenuBarHome {version} ({platform})",
+          { version, platform },
+          pref,
+        )],
+        ["platform", platform],
+        ["os-version", os],
+        ["app-version", version],
+        ...(option !== "" ? ([["backend", option]] as const) : []),
+        ["diagnostics", block],
+      ];
+      const query = params
+        .map(([key, value]) => `${key}=${encodeFormQueryParam(value)}`)
+        .join("&");
+      const url = `${GITHUB_UNSUPPORTED_DEVICE_ISSUE_URL}?${query}`;
+      if (url.length <= maxLength) { assertZeroSensitiveLeaks(decodeURIComponent(query));
+        return url;
+      }
+    }
+    return null;
   },
 } as const;

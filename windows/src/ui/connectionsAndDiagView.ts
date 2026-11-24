@@ -53,7 +53,7 @@ import { MiAccountScope, MiAccountsStore, clearAccountRateLimitBackoff, formatAc
 import { cancelDelayedReadBack, type OptimisticLockHost } from "../core/optimisticLock.js";
 import { clearCachedXiaomiTopology, clearXiaomiRateLimitBackoff, getXiaomiBackoffUntilMs } from "../core/pollingPolicy.js";
 import { SCHEDULED_COMMANDS_STORAGE_KEY, ScheduledCommandStore } from "../core/scheduledCommands.js";
-import { DiagnosticsReportBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, formatSpecSummaryText, summarizeModelCounts, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
+import { DiagnosticsReportBuilder, FeedbackBackendOption, FeedbackDiagnosticsBuilder, UnsupportedDeviceScanner, appDiagnosticsLog, countFeedbackBackendDevices, deriveCameraDiagnostics, derivePollingBackoffDiagnostics, feedbackSignals, formatSpecSummaryText, summarizeModelCounts, type FeedbackBackendCount, type FeedbackDiagnosticsInput, type ScanUnsupportedOptions, type UnsupportedDevice } from "../core/diagnosticsAndScanner.js";
 import type { DeviceMergeRoute, DualSourceCoordinator } from "../core/dualSourceProvider.js";
 import { environmentReadingPriority, type EnvironmentReading, type FacetControl, type HomeBackend, type HomeScene, type SmartDevice } from "../core/models.js";
 import type { MenuMijiaWindowsApp } from "./app.js";
@@ -2713,6 +2713,109 @@ export async function copyDiagnosticsReportOnHost(host: ConnectionsAndDiagHost):
   };
   if (isHostAttached(host)) host.render();
   return markdown;
+}
+
+/**
+ * The redacted block one click of 「反馈问题」 carries into a GitHub issue (#29).
+ *
+ * Only counts and closed-set labels: the store's device names, home names and HA host are known to
+ * the app and none of them is read here, so there is nothing to leak (the builder still scrubs).
+ */
+export function feedbackDiagnosticsForHost(host: ConnectionsAndDiagHost): FeedbackDiagnosticsInput {
+  const lang = activeLanguage(host.settings.interfaceLanguage);
+  const mode = host.settings.connectionMode;
+  const isDemo = mode === "demo";
+  const dualActive = isDualSourceEnabled(host);
+  const deviceBackends = getHostDualSourceState(host)?.deviceBackends ?? {};
+  const defaultBackend: HomeBackend = isDemo || mode === "homeAssistant" ? "homeAssistant" : "xiaomiCloud";
+  const hasMi = !isDemo && (dualActive || mode === "xiaomiCloud");
+  const hasHA = !isDemo && (dualActive || mode === "homeAssistant");
+
+  const backends: FeedbackBackendCount[] = [];
+  if (hasMi) {
+    backends.push({
+      label: tr3("米家云端直连", "米家雲端直連", "Xiaomi Cloud Direct", lang),
+      ...countFeedbackBackendDevices(host.devices, "xiaomiCloud", { defaultBackend, deviceBackends }),
+    });
+  }
+  if (hasHA) {
+    backends.push({
+      label: "Home Assistant",
+      ...countFeedbackBackendDevices(host.devices, "homeAssistant", { defaultBackend, deviceBackends }),
+    });
+  }
+  if (backends.length === 0) {
+    backends.push({
+      label: isDemo
+        ? tr3("离线演示", "離線展示", "Offline Demo", lang)
+        : tr3("尚未配置数据源", "尚未設定資料來源", "No data source configured", lang),
+      deviceCount: host.devices.length,
+      onlineDeviceCount: host.devices.filter((device) => device.isOnline).length,
+    });
+  }
+
+  const backendOption = isDemo
+    ? FeedbackBackendOption.demo
+    : dualActive
+      ? FeedbackBackendOption.dual
+      : mode === "homeAssistant"
+        ? FeedbackBackendOption.homeAssistant
+        : FeedbackBackendOption.mi;
+
+  const osLabel =
+    typeof navigator !== "undefined" && /Windows NT 10\.0/i.test(navigator.userAgent ?? "")
+      ? "Windows 10/11"
+      : "Windows";
+
+  return {
+    appVersion: APP_VERSION,
+    osVersion: osLabel,
+    platform: "Windows",
+    backends,
+    signals: feedbackSignals({ sessionExpired: Boolean(host.miSessionExpired) }),
+    backendOption,
+    languagePreference: host.settings.interfaceLanguage,
+    forbiddenLiterals: collectForbiddenLiterals(host, resolveHostMiAccounts(host)),
+  };
+}
+
+/**
+ * Opens the prefilled issue in the browser and puts the same block on the clipboard.
+ *
+ * Nothing is filed here: the person reads the form and presses Submit, which is also why the
+ * clipboard copy matters — a form that ignores the prefill would otherwise lose the block.
+ */
+export async function reportProblemOnHost(host: ConnectionsAndDiagHost): Promise<string | null> {
+  const input = feedbackDiagnosticsForHost(host);
+  const lang = activeLanguage(host.settings.interfaceLanguage);
+  await writeTextToClipboard(FeedbackDiagnosticsBuilder.block(input));
+  const url = FeedbackDiagnosticsBuilder.issueURL(input);
+  host.replyBanner = {
+    text: url
+      ? tr3(
+          "已把脱敏诊断复制到剪贴板，并在浏览器打开 GitHub 反馈页",
+          "已將去識別化診斷複製到剪貼簿，並在瀏覽器開啟 GitHub 回饋頁",
+          "Copied the desensitized diagnostics and opened the GitHub feedback page",
+          lang,
+        )
+      : tr3(
+          "已复制脱敏诊断；打开 GitHub 新建 Issue 页面失败",
+          "已複製去識別化診斷；開啟 GitHub 新建 Issue 頁面失敗",
+          "Copied the desensitized diagnostics; could not open the GitHub issue page",
+          lang,
+        ),
+    source: tr3("反馈问题", "回饋問題", "Report a problem", lang),
+  };
+  if (url) {
+    const invoke = typeof window !== "undefined" ? window.__TAURI_INTERNALS__?.invoke : undefined;
+    if (invoke) {
+      invokeTauriVoid("open_release_page", { url });
+    } else if (typeof window !== "undefined") {
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  }
+  if (isHostAttached(host)) host.render();
+  return url;
 }
 
 export function isConnectionsAndDiagModalOpen(host: ConnectionsAndDiagHost): boolean {
