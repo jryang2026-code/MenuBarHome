@@ -29,6 +29,15 @@ import { setLanguage, resolveLanguage } from "../core/i18n.js";
 import { applyTemperatureUnit } from "../core/temperature.js";
 import { cloudRefreshDue, cloudRefreshIntervalMs } from "../core/pollingPolicy.js";
 import { notePanelInteraction, pollingDecayInputs } from "./pollingSchedule.js";
+import {
+  MAX_CUSTOM_HOTKEY_BINDINGS,
+  decodeHotkeyTargetKey,
+  executeCustomHotkeyBinding,
+  normalizeCustomHotkeyBindings,
+  validateCustomHotkeyShortcut,
+  type HotkeyBinding,
+} from "./hotkeyBindings.js";
+import { quickActionTitle } from "../core/quickActions.js";
 import { normalizeGlobalShortcut, recordShortcutFromKeyEvent, tr3 } from "./panelPrefs.js";
 import { APP_VERSION } from "./appConstants.js";
 import { invokeTauriVoid } from "./transport.js";
@@ -798,10 +807,33 @@ export async function applyGlobalHotkey(host: MenuMijiaWindowsApp): Promise<void
     } catch {
       host.hotkeyRegistrationError = enabled ? t("这个组合已被其他应用占用，换一个再试。") : null;
     }
+    await applyCustomGlobalHotkeys(host);
     if (host.activeSheet === "settings") {
       host.render();
     }
   }
+
+export async function applyCustomGlobalHotkeys(host: MenuMijiaWindowsApp): Promise<void> {
+  const bindings = normalizeCustomHotkeyBindings(host.settings.customHotkeyBindings);
+  host.settings.customHotkeyBindings = bindings;
+  const invoke = window.__TAURI_INTERNALS__?.invoke;
+  if (!invoke) {
+    host.customHotkeyRegistrationErrors = {};
+    return;
+  }
+  try {
+    const errors = await invoke<Record<string, string>>("set_custom_global_shortcuts", {
+      bindings: bindings.map((b) => ({ id: b.id, shortcut: b.shortcut })),
+    });
+    host.customHotkeyRegistrationErrors =
+      errors && typeof errors === "object" ? { ...errors } : {};
+  } catch {
+    host.customHotkeyRegistrationErrors = {};
+  }
+  if (host.activeSheet === "settings") {
+    host.render();
+  }
+}
 
 export const RESUME_BURST_DEBOUNCE_MS = 180;
 export const RESUME_MAX_DELAY_MS = 1_000;
@@ -1397,11 +1429,84 @@ export function bindGlobalKeys(
         host.hotkeyNeedsHint = true;
         host.render();
       } else if (outcome.kind === "recorded") {
+        const conflict = validateCustomHotkeyShortcut(outcome.shortcut, {
+          panelShortcut: host.settings.globalHotkey,
+          checkPanelConflict: false,
+          existingBindings: normalizeCustomHotkeyBindings(host.settings.customHotkeyBindings),
+        });
+        if (conflict) {
+          host.hotkeyRegistrationError = conflict.message;
+          host.hotkeyNeedsHint = false;
+          host.render();
+          return;
+        }
         host.isRecordingHotkey = false;
         host.hotkeyNeedsHint = false;
+        host.hotkeyRegistrationError = null;
         host.settings.globalHotkey = outcome.shortcut;
         host.saveSettings();
         void host.applyGlobalHotkey();
+        host.render();
+      }
+      return;
+    }
+
+    if (host.isRecordingCustomHotkeyId !== null) {
+      e.preventDefault();
+      e.stopPropagation();
+      const outcome = recordShortcutFromKeyEvent(e);
+      if (outcome.kind === "cancel") {
+        host.isRecordingCustomHotkeyId = null;
+        host.customHotkeyConflictError = null;
+        host.render();
+      } else if (outcome.kind === "invalid") {
+        host.customHotkeyConflictError = tr3(
+          "需要至少一个 Ctrl / Alt / Shift / Win，或单按 F1–F20。",
+          "需要至少一個 Ctrl / Alt / Shift / Win，或單按 F1–F20。",
+          "Use at least one of Ctrl / Alt / Shift / Win, or a single F1–F20 key.",
+        );
+        host.render();
+      } else if (outcome.kind === "recorded") {
+        const recordingId = host.isRecordingCustomHotkeyId;
+        const existing = normalizeCustomHotkeyBindings(host.settings.customHotkeyBindings);
+        const conflict = validateCustomHotkeyShortcut(outcome.shortcut, {
+          panelShortcut: host.settings.globalHotkey,
+          checkPanelConflict: true,
+          existingBindings: existing,
+          excludingBindingId: recordingId === "__new__" ? null : recordingId,
+        });
+        if (conflict) {
+          host.customHotkeyConflictError = conflict.message;
+          host.render();
+          return;
+        }
+        if (recordingId === "__new__") {
+          const target = decodeHotkeyTargetKey(host.newCustomHotkeyTargetKey);
+          if (target && existing.length < MAX_CUSTOM_HOTKEY_BINDINGS) {
+            const label =
+              target.kind === "devicePower"
+                ? (host.devices.find((d) => d.id === target.deviceId)?.name ?? target.deviceId)
+                : target.kind === "scene"
+                  ? (host.scenes.find((s) => s.id === target.sceneId)?.name ?? target.sceneId)
+                  : quickActionTitle(target.actionId);
+            const nextBinding: HotkeyBinding = {
+              id: `hk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+              target,
+              targetLabel: label,
+              shortcut: outcome.shortcut,
+            };
+            host.settings.customHotkeyBindings = [...existing, nextBinding];
+            host.isAddingCustomHotkey = false;
+          }
+        } else {
+          host.settings.customHotkeyBindings = existing.map((b) =>
+            b.id === recordingId ? { ...b, shortcut: outcome.shortcut } : b,
+          );
+        }
+        host.isRecordingCustomHotkeyId = null;
+        host.customHotkeyConflictError = null;
+        host.saveSettings();
+        void applyCustomGlobalHotkeys(host);
         host.render();
       }
       return;
@@ -1479,9 +1584,18 @@ export function bindGlobalKeys(
     }
   };
 
+  const onCustomHotkey = (event: Event) => {
+    if (state.disposed || !isLifecycleHostAttached(host)) return;
+    const detail = (event as CustomEvent<{ id?: unknown }>).detail;
+    const id = typeof detail?.id === "string" ? detail.id : "";
+    if (!id) return;
+    void executeCustomHotkeyBinding(host, id);
+  };
+
   state.keyDisposers.push(
     listen(ownerWin, "blur", onBlur),
     listen(ownerWin, "keydown", onKeyDown),
+    listen(ownerWin, "menumijia:custom-hotkey", onCustomHotkey),
   );
 
   return () => {
