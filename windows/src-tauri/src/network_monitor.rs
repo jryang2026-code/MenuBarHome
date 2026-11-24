@@ -191,6 +191,7 @@ impl ReconnectBackoff {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn consecutive_failures(&self) -> u32 {
         self.consecutive_failures
     }
@@ -382,7 +383,7 @@ async fn run_network_monitor_loop(app: AppHandle, mut rx: mpsc::UnboundedReceive
 
     loop {
         let next_deadline = debouncer.next_deadline();
-        let sleep = async {
+        let sleep = async move {
             match next_deadline {
                 Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
                 None => std::future::pending::<()>().await,

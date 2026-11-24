@@ -418,20 +418,31 @@ async fn run_websocket_with_timings(
     let mut backoff = ReconnectBackoff::new(std::time::Instant::now());
     let mut seen_epoch = *network_epoch.borrow_and_update();
 
+    enum IdleWake {
+        Request(HaRequest),
+        NetworkChanged,
+        Shutdown,
+    }
+
     loop {
-        let first = {
+        let wake = {
             let next_req = pin!(requests.recv());
             let net_chg = pin!(network_epoch.changed());
             match select(next_req, net_chg).await {
-                Either::Left((Some(req), _)) => req,
-                Either::Left((None, _)) => return,
-                Either::Right((Ok(()), _)) => {
-                    seen_epoch = *network_epoch.borrow_and_update();
-                    backoff.reset(std::time::Instant::now());
-                    continue;
-                }
-                Either::Right((Err(_), _)) => return,
+                Either::Left((Some(req), _)) => IdleWake::Request(req),
+                Either::Left((None, _)) => IdleWake::Shutdown,
+                Either::Right((Ok(()), _)) => IdleWake::NetworkChanged,
+                Either::Right((Err(_), _)) => IdleWake::Shutdown,
             }
+        };
+        let first = match wake {
+            IdleWake::Request(req) => req,
+            IdleWake::NetworkChanged => {
+                seen_epoch = *network_epoch.borrow_and_update();
+                backoff.reset(std::time::Instant::now());
+                continue;
+            }
+            IdleWake::Shutdown => return,
         };
 
         if first.reply.is_closed() {
@@ -470,25 +481,30 @@ async fn run_websocket_with_timings(
             continue;
         }
 
+        enum DialOutcome {
+            Result(Result<Socket, String>),
+            NetworkReset,
+            Shutdown,
+        }
+
         let dial_outcome = {
             let auth = pin!(authenticated(url, &first.token));
             let net_chg = pin!(network_epoch.changed());
             match select(auth, net_chg).await {
-                Either::Left((result, _)) => Some(result),
-                Either::Right((Ok(()), _)) => {
-                    seen_epoch = *network_epoch.borrow_and_update();
-                    None
-                }
-                Either::Right((Err(_), _)) => return,
+                Either::Left((result, _)) => DialOutcome::Result(result),
+                Either::Right((Ok(()), _)) => DialOutcome::NetworkReset,
+                Either::Right((Err(_), _)) => DialOutcome::Shutdown,
             }
         };
 
         match dial_outcome {
-            None => {
+            DialOutcome::Shutdown => return,
+            DialOutcome::NetworkReset => {
+                seen_epoch = *network_epoch.borrow_and_update();
                 backoff.reset(std::time::Instant::now());
                 let _ = first.reply.send(Err(NETWORK_CHANGED.into()));
             }
-            Some(Ok(socket)) => {
+            DialOutcome::Result(Ok(socket)) => {
                 match serve_websocket(
                     socket,
                     first,
@@ -509,7 +525,7 @@ async fn run_websocket_with_timings(
                     }
                 }
             }
-            Some(Err(error)) => {
+            DialOutcome::Result(Err(error)) => {
                 let _ = first.reply.send(Err(error));
                 backoff.record_failure(std::time::Instant::now(), jitter_unit_now());
             }
