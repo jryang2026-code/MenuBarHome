@@ -112,6 +112,15 @@ public enum MenuBarWidthStabilizer: Sendable {
     public static let defaultShrinkCharThreshold = 2
     public static let defaultShrinkHysteresisSteps = 2
 
+    /// True while `state` still owes one unchanged reading before a shorter label commits its width.
+    ///
+    /// The status item only re-measures when its label changed, so a readout that jumps wide → shorter
+    /// and then stays put would hold the pending shrink until the next text change. A caller that sees a
+    /// pending shrink has to run one more `update` with the same text, which is what commits it.
+    public static func needsSettle(_ state: MenuBarWidthState) -> Bool {
+        state.pendingShrinkCount > 0
+    }
+
     public static func update(
         state: MenuBarWidthState,
         text: String?,

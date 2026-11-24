@@ -913,6 +913,36 @@ struct MenuBarPanelControllerTests {
         #expect(item.length == NSStatusItem.variableLength)
     }
 
+    @Test("A shorter readout that stops changing settles its pending shrink on the next tick")
+    func statusItemWidthSettlesUnchangedShrink() async throws {
+        let (store, _) = try await makeStore()
+        let speech = SpeechInputController.shared
+        let wasListening = speech.isListening
+        let previousDraft = speech.draft
+        defer { speech.setPreviewState(isListening: wasListening, isHoldToTalk: false, draft: previousDraft) }
+        speech.setPreviewState(isListening: true, isHoldToTalk: true, draft: "一二三四五六七八九十")
+
+        let controller = makeController(store: store)
+        defer { controller.uninstall() }
+        let item = try #require(controller.statusItem)
+
+        controller.syncStatusItem()
+        let wide = try #require(controller.widthState.reservedWidth)
+
+        // 10 -> 3 characters clears the shrink threshold, so this reading only arms the hysteresis.
+        speech.setPreviewState(isListening: true, isHoldToTalk: true, draft: "一二三")
+        controller.syncStatusItem()
+        #expect(controller.widthState.pendingShrinkCount == 1)
+        #expect(controller.widthState.reservedWidth == wide)
+
+        // The readout stops changing; the tick still has to commit the pending shrink (#420).
+        controller.syncStatusItem()
+        let narrow = try #require(controller.widthState.reservedWidth)
+        #expect(narrow < wide)
+        #expect(controller.widthState.pendingShrinkCount == 0)
+        #expect(abs(item.length - CGFloat(narrow)) <= 0.5)
+    }
+
     @Test("Reopening during dismissal preserves the panel and emits each visibility change once", arguments: [false, true])
     func reopenDuringDismissal(reduced: Bool) async throws {
         // The slide-in dismissal this test drives belongs to the liquid-glass window.
