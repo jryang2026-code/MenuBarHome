@@ -19,6 +19,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   5. 跨平台契约或包构建/发布链路变更（`.github/workflows/` 打包链、Windows MSI/NSIS 安装器）
 - **PR 纪律**：单 PR 代码改动控制在约 800 行以内（PNG、夹具、锁文件不计）；Codex 自动评审最多 2 轮（`bash scripts/pr-ready.sh --wait --max-codex-rounds 2 <pr>`；CI 绿后即唤醒，后续新推送未触发 `@codex review` 时返回退出码 3 以便触发或本地 `codex review` 兜底），2 轮后仅修可达的安全、数据丢失或崩溃问题，其余转 issue 后合入；已开 PR 跟进 `main` 用 `git merge origin/main`（**严禁 rebase 强推**）；多代理并行时逐个合入，见 `main` 红即停、先修 `main`；多行提交说明用 `git commit -F`。
 - **`CHANGELOG.md`**：仅发版整理，不要求每个 PR 手动维护（已在 `git tag` 的版本段严禁追加）。
+- **发版前文档同步门禁**：打 `v<VERSION>` tag 前，必须按 [`docs/agents/release-checklist.md`](docs/agents/release-checklist.md) 核对自上个 tag 以来已合入功能，逐项校验 `README.md`、`README.zh-CN.md`、`docs/platform-matrix.md`、`docs/platform-matrix.zh-CN.md`、`GLOSSARY.md` 与 `docs/assets/readme-v3/` 首屏动图/截图是否与实际代码实现一致，所有平台能力声明必须有代码依据。
 
 ## 本地门禁与验证环境
 
@@ -36,6 +37,7 @@ macOS 菜单栏（Swift / AppKit + SwiftUI）与 Windows 托盘（Tauri + TypeSc
   - 派活给其他模型时的固定说明行：[`docs/agents/delegation-brief.md`](docs/agents/delegation-brief.md)
   - Windows 摄像机实时流、go2rtc/FFmpeg 与 Tauri 打包：[`docs/agents/windows-camera.md`](docs/agents/windows-camera.md)
   - 应用内自更新链路与 Ed25519 验签：[`docs/agents/in-app-update.md`](docs/agents/in-app-update.md)
+  - 发版前检查与文档同步清单：[`docs/agents/release-checklist.md`](docs/agents/release-checklist.md)
   - 大陆镜像 Release（Gitee/GitCode 同步、token 与仓库配置）：[`docs/agents/release-mirrors.md`](docs/agents/release-mirrors.md)
   - Linux 容器与云端环境（Antigravity Cloud / Cursor Cloud）：[`docs/agents/cursor-cloud.md`](docs/agents/cursor-cloud.md)
   - 本地隔离 macOS CI VM 运维：[`docs/agents/local-macos-runner.md`](docs/agents/local-macos-runner.md)
