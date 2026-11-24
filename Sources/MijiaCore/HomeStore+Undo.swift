@@ -96,7 +96,7 @@ extension HomeStore {
         cameraEventStore.clear()
         cameraEventRevision &+= 1
         cameraEventStore.clear()
-        cameraEventStoreRevision &+= 1
+        cameraEventRevision &+= 1
         dismissedActivityIds = []
         corruptRemovalDiscardFailure = nil
     }
