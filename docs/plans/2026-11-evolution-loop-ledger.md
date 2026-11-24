@@ -4,8 +4,9 @@
 
 ## 当前交接快照
 
-- 更新时间：2026-11-25（Wave 1 收口，Wave 2A 启动）
-- `main`：`0922147`（Wave 1 全部合入，main CI 绿）
+- 更新时间：2026-11-25（Wave 2A 收口，Wave 2B 启动）
+- `main`：`0d11867`（Wave 2A 全部合入）
+- Wave 2A：14/14 DONE（#485–#503）
 - Wave 1：12/12 DONE（#471–#484 + main 187b6743）
 - Wave 0：8/8 DONE（#463 #464 #465 #466 #467 #468 #469 + main 1682695f）
 - 已完成不再派活：`#453`、`#461`（Windows Rust miIO 原生层）、`#460`（WidgetKit 签名可行性 spike）、`#462`（调研总纲）
@@ -62,9 +63,9 @@
 | W2A-1 macOS 自动化定时触发 + 持续 N 分钟 | #430 #431 | Codex sol6.2 | Wave 1 | PR | DONE | #486 → main e9c1a3a（CI 抖动证实为 runner 方差；P1 设置页回归已修） | AutomationRule/AutomationEngine；对齐 Windows 现有语义 |
 | W2A-2 macOS 自动化事件源守卫 | #432 | Hydrogen High | W2A-1 | PR | DONE | #501 → main 8df15c7 | 移植 Windows 守卫 |
 | W2A-3 P1-1 Context Stack 状态栈无痕还原 | — | Codex sol6.2 | W2A-1 | PR | DONE | #500 → main e63dc94（第 2 轮 P1 已修；macos-test 一次超时取消重跑转绿；仅电源字段，无设置 UI） | 双端；尊重人工中途接管；后台自动写入高风险 |
-| W2A-3b Context Stack 续作：设置页开关 + 亮度/色温/窗帘字段 + Windows 同构 | — | Codex sol6.2 / Neon Mid | W2A-3 | PR | IN_PROGRESS | | 来自 #500 范围收窄；P2：同一 restoreTrigger 的多条规则按规则顺序而非严格 LIFO 还原（已在 #500 d5b87885 修）；补 #500 未加的回归测试：真实基线还原、失败重试、部分还原、同触发器 LIFO |
+| W2A-3b Context Stack 续作：设置页开关 + 亮度/色温/窗帘字段 + Windows 同构 | — | Codex sol6.2 / Neon Mid | W2A-3 | PR | DONE | #502 → main 0d11867（含与 #503 语义合并） | 来自 #500 范围收窄；P2：同一 restoreTrigger 的多条规则按规则顺序而非严格 LIFO 还原（已在 #500 d5b87885 修）；补 #500 未加的回归测试：真实基线还原、失败重试、部分还原、同触发器 LIFO |
 | W2A-4 P1-1 Win 摄像头/麦克风占用 + 全屏探测事件源 | — | Neon Mid | Wave 1 | PR | DONE | #487 已合 | system_events.rs：CapabilityAccessManager、SHQueryUserNotificationState |
-| W2A-5 P1-1 macOS 前台应用事件 + 开会/观影模板 | — | Neon Mid | W2A-3 | PR | IN_PROGRESS | | |
+| W2A-5 P1-1 macOS 前台应用事件 + 开会/观影模板 | — | Neon Mid | W2A-3 | PR | DONE | #503 → main d413e80 | |
 | W2A-6 P1-2 Win 摄像机事件库 + 静帧墙 | #447 | Neon Mid | Wave 1 | PR | DONE | #488 已合（+1782 新增模块未拆） | |
 | W2A-7 P1-2 摄像机仅收听模式 + 防抢蓝牙 HFP | #445 | Hydrogen High | Wave 1 | PR | DONE | #490 + #497 已合 | 静音预览 `&audio=0` |
 | W2A-8 P1-2 PiP 置顶副窗 + 门铃自动弹出 + 钉选开关 | — | Neon Mid | W2A-6 | PR | DONE | #492 + #493 已合 | 双端 |
@@ -74,14 +75,24 @@
 | W2A-12 Win 用户主动操作绕过 HA 退避 | — | Codex sol6.2 | Wave 1 | PR | DONE | #495 + #494 已合 | 来自 #482 备忘；并入 #484 Codex P2：macOS 锁屏/仅显示器休眠时网络拓扑变化仍触发后台重连，宜延迟到恢复活跃 |
 | W2A-13 multiLanguage 官方翻译缓存 | — | Flash (pi) | Wave 1 | PR | DONE | #499 → main 1234c97 | 来自 W1-9 遗留 |
 
-## Wave 2B：P1 写入管线、热键与安全底座
+## Wave 2B：P1 写入管线、热键、氛围与安全底座
 
 | ID | 关联已有Issue | 模型分派 | 前置依赖 | 通道 | 状态 | PR/SHA | 交接备注 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| P1-5 滑块邮箱 + 429 令牌桶 + 合并写 | — | Codex sol6.2 | P0-8 | PR | TODO | | |
-| P1-6 全局热键 + 盲操 HUD + 投屏防窥 | — | Neon Mid | Wave 1 | PR | TODO | | |
-| P1-7 Capture Mood + 房间群控 | #294 | Codex sol6.2 | P1-5 | PR | TODO | | |
-| P1-8 DNS Rebinding + Job Object + 防误删 | #412 | Codex sol6.2 | Wave 1 | PR | TODO | | #412 只读 LAN 探测并入评估 |
+| W2B-1 P1-5a macOS 滑块单槽邮箱 + 100ms 多路合并写 + LAN UDP Socket 复用 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 高危设备禁 Leading |
+| W2B-2 P1-5b 双端 429 读写分账令牌桶 + Retry-After + Full Jitter | — | Codex sol6.2 | W2B-1 | PR | TODO | | 40% 预留写 |
+| W2B-3 P1-5c Windows 滑块单槽邮箱 + 合并写 | — | Neon Mid | W2B-1 | PR | TODO | | liquidGlassSlider.ts |
+| W2B-4 P1-6a 单设备/单场景全局热键（双端） | — | Neon Mid | Wave 2A | PR | TODO | | 冲突检测 + 锁屏/高危门 |
+| W2B-5 P1-6b 盲操 HUD + 投屏防窥 + macOS 键鼠/Emoji 细节 | — | Hydrogen High | W2B-4 | PR / 快车道 | TODO | | sharingType = .none |
+| W2B-6 P1-7a 跨源 Capture Mood 氛围快照 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 跨源写场景 |
+| W2B-7 P1-7b 房间同类群控胶囊 + omnibar 差异预览 | — | Neon Mid | W2B-6 | PR | TODO | | 不另起 Alt+Space 大窗 |
+| W2B-8 Win HA mDNS 自动发现 | #294 | Hydrogen High | Wave 2A | PR | TODO | | |
+| W2B-9 P1-7c 可交互通知 + 传感器 Sparkline | — | Hydrogen High | Wave 2A | PR / 快车道 | TODO | | 复用锁屏策略 |
+| W2B-10 P1-8a Connect-Time 防 DNS Rebinding（双端） | — | Codex sol6.2 | Wave 2A | PR | TODO | | 网络安全边界 |
+| W2B-11 P1-8b Win Job Object 硬配额 | — | Neon Mid | Wave 2A | PR | TODO | | 128MB/20% CPU/2 进程 |
+| W2B-12 P1-8c 30 天设备墓碑 + .bak 滚动落盘 | — | Codex sol6.2 | Wave 2A | PR | TODO | | 数据迁移高风险 |
+| W2B-13 米家离线设备只读 LAN 可达性探测 | #412 | Codex sol6.2 | Wave 2A | PR | TODO | | |
+| W2B-14 Context Stack Windows 同构 | — | Neon Mid | W2A-3b | PR | TODO | | 来自 W2A-3b 遗留（共享 context_stack_golden.json） |
 
 ## Wave 3A：P2 插件化与多厂商
 
