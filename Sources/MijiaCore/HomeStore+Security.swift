@@ -177,7 +177,8 @@ extension HomeStore {
         offersMarkAsLight: Bool = false,
         ignoresSwitchLightMark: Bool = false,
         requireOnline: Bool = false,
-        showOfflineToast: Bool = false
+        showOfflineToast: Bool = false,
+        panelConfirmed: Bool = false
     ) -> (device: SmartDevice, didPresentModal: Bool, context: ModalDeviceContext)? {
         if rejectDeviceWriteIfCapabilityDisabled(deviceId: initial.id) != nil {
             return nil
@@ -189,7 +190,7 @@ extension HomeStore {
             for: initial,
             markedLightIds: marks
         )
-        guard allowManualControl(
+        guard panelConfirmed || allowManualControl(
             operation,
             for: initial,
             offersMarkAsLight: offersMarkAsLight,

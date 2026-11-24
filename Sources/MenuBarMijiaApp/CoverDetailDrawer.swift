@@ -27,18 +27,12 @@ struct CoverDetailDrawer: View {
                     .foregroundStyle(.secondary)
             }
             if spec.positionWritable {
-                DetailSliderControl(
-                    value: position,
-                    range: 0...100,
-                    step: 1,
+                CoverPositionPanelSlider(
+                    device: device, store: store, value: position, accent: accent,
+                    statusColor: statusColor, theme: theme,
                     iconName: spec.subtype == .clothesAirer ? "hanger" : "window.vertical.open",
-                    iconColor: statusColor,
-                    trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
-                    formattedValue: "\(Int(position))%",
-                    theme: theme
-                ) { percent in
-                    store.setCoverPosition(device.id, percent: Int(percent.rounded()))
-                }
+                    label: L10n.tr("开合位置", "Position")
+                )
                 .disabled(!device.isOnline)
             }
             if spec.canMove || spec.batteryPercent != nil {
@@ -68,6 +62,9 @@ struct CoverDetailDrawer: View {
         DetailPillButton(title: Self.actionTitle(description, subtype: spec.subtype), theme: theme) {
             store.setCoverMotor(device.id, description: description)
         }
+        .panelControlGesture(.coverMotor(description), for: device, store: store,
+                             slideAlignment: .trailing, slideWidth: 64, reserveSlideSpace: true,
+                             label: Self.actionTitle(description, subtype: spec.subtype))
         .disabled(!device.isOnline)
     }
 
@@ -80,6 +77,63 @@ struct CoverDetailDrawer: View {
         case "down", "lower": return airer ? L10n.tr("降", "Lower") : L10n.tr("降下", "Down")
         case "pause", "stop", "暂停": return airer ? L10n.tr("停", "Stop") : L10n.tr("暂停", "Pause")
         default: return description
+        }
+    }
+}
+
+private struct CoverPositionPanelSlider: View {
+    let device: SmartDevice
+    let store: HomeStore
+    let value: Double
+    let accent: Color
+    let statusColor: Color
+    var theme: PanelTheme = .liquidGlass
+    let iconName: String
+    let label: String
+
+    @State private var draft: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            let shown = draft.map(Double.init) ?? value
+            DetailSliderControl(
+                value: shown, range: 0...100, step: 1, iconName: iconName,
+                iconColor: statusColor, trackColors: [accent.opacity(0.55), accent.opacity(0.92)],
+                formattedValue: "\(Int(shown))%", theme: theme
+            ) { next in
+                let target = Int(next.rounded())
+                if store.panelConfirmationLevel(for: device, action: .coverPosition(target)) != nil {
+                    draft = target
+                } else {
+                    draft = nil
+                    store.setCoverPosition(device.id, percent: target)
+                }
+            }
+            .accessibilityLabel(Text(label))
+
+            if let draft {
+                let title = L10n.format("移至 %@", "Move to %@", "\(draft)%")
+                HStack(spacing: 6) {
+                    DetailPillButton(title: title, theme: theme) {
+                        self.draft = nil
+                        store.setCoverPosition(device.id, percent: draft)
+                    }
+                    .panelControlGesture(.coverPosition(draft), for: device, store: store,
+                                         slideAlignment: .trailing, slideWidth: 64, reserveSlideSpace: true,
+                                         label: title, onSubmitted: { self.draft = nil })
+                    Button {
+                        self.draft = nil
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Text(L10n.tr("取消", "Cancel")))
+                }
+            }
+        }
+        .onChange(of: device.kind) { _, _ in draft = nil }
+        .onChange(of: store.isControlBlockedByScreenLock) { _, blocked in
+            if blocked { draft = nil }
         }
     }
 }
@@ -176,6 +230,17 @@ struct DeviceInlineSlider: View {
     let statusColor: Color
 
     var body: some View {
+        if case .coverPosition = control.target {
+            CoverPositionPanelSlider(
+                device: device, store: store, value: control.value, accent: accent,
+                statusColor: statusColor, iconName: control.iconName, label: control.label
+            )
+        } else {
+            slider
+        }
+    }
+
+    private var slider: some View {
         LiquidGlassSlider(
             value: Binding(
                 get: { control.value },

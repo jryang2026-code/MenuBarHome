@@ -15,6 +15,26 @@ final class PanelTransientUIState {
     private var cancelActiveHoldHandler: (() -> Void)?
     private var suppressTapUntilUptime: TimeInterval = 0
 
+    private var deviceControlGesture: (id: UUID, cancel: () -> Void)?
+    var isConfirmationGestureActive: Bool { isAllOffHoldActive || deviceControlGesture != nil }
+
+    func beginDeviceControlGesture(onCancel: @escaping () -> Void) -> UUID {
+        cancelDeviceControlGesture()
+        let id = UUID()
+        deviceControlGesture = (id, onCancel)
+        return id
+    }
+
+    func endDeviceControlGesture(_ id: UUID?) {
+        if deviceControlGesture?.id == id { deviceControlGesture = nil }
+    }
+
+    func cancelDeviceControlGesture() {
+        let gesture = deviceControlGesture
+        deviceControlGesture = nil
+        gesture?.cancel()
+    }
+
     var hasExpandedReminders = false
     var hasExpandedOfflineDrawer = false
     var collapseRemindersHandler: (() -> Void)?
@@ -85,6 +105,7 @@ final class PanelTransientUIState {
     /// the panel hides or loses focus (`ui.md` §4 `全关` & `键盘`).
     func resetOnPanelHide(store: HomeStore?) {
         cancelAllOffHold()
+        cancelDeviceControlGesture()
         if store?.pendingCloudConsent != nil {
             store?.declinePendingCloudRequest()
         }
@@ -100,6 +121,7 @@ final class PanelTransientUIState {
     }
 
     func resetForTesting() {
+        cancelDeviceControlGesture()
         activeHoldSessionId = nil
         isAllOffHoldActive = false
         cancelActiveHoldHandler = nil
