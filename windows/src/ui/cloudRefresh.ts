@@ -1501,7 +1501,7 @@ function applySynthesizedSnapshotToHost(
   },
   groupOwners: Map<string, string>,
 ): void {
-  host.scenes = [...host.scenes.filter((scene) => scene.sourceBackend === "xiaomiCloud" || scene.accountId !== undefined || !scene.id.startsWith("scene.")), ...home.scenes];
+  host.scenes = [...home.scenes];
   host.groupOwnerByMemberDid = groupOwners;
   const merged = mergeHomeSnapshotRespectingLocks(host, home.devices, home.deviceFacets);
   host.devices = applyOrder(host.devices.map((device) => device.id), merged.devices);
