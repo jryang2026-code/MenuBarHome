@@ -58,6 +58,17 @@ public enum AutomationTrigger: String, CaseIterable, Codable, Identifiable, Send
     /// The Mac is awake and unlocked inside `AutomationTriggerOptions.lateNightWindow`.
     case lateNightUsage
 
+    public var supportsLasting: Bool {
+        switch self {
+        case .cameraInUse, .cameraNotInUse, .microphoneInUse, .microphoneNotInUse,
+             .powerConnected, .powerDisconnected, .batteryBelowThreshold,
+             .wifiNetworkJoined, .focusModeEnabled, .focusModeDisabled, .lateNightUsage:
+            return true
+        default:
+            return false
+        }
+    }
+
     public var id: String { rawValue }
 
     public var title: String {
@@ -360,17 +371,27 @@ public struct AutomationTriggerOptions: Codable, Equatable, Sendable {
 
 /// A local wall-clock time. Weekdays use the cross-platform mapping 0=Sunday through 6=Saturday.
 public struct ScheduledTime: Codable, Equatable, Sendable {
-    public var hour: Int
-    public var minute: Int
-    public var weekdays: [Int]?
+    public let hour: Int
+    public let minute: Int
+    public let weekdays: [Int]?
 
     public init(hour: Int, minute: Int, weekdays: [Int]? = nil) {
         self.hour = min(23, max(0, hour))
         self.minute = min(59, max(0, minute))
-        let normalized = weekdays?.filter { (0...6).contains($0) }.reduce(into: [Int]()) { result, day in
-            if !result.contains(day) { result.append(day) }
-        }
-        self.weekdays = normalized?.isEmpty == true ? nil : normalized
+        self.weekdays = weekdays?.filter { (0...6).contains($0) }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case hour, minute, weekdays
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            hour: try container.decode(Int.self, forKey: .hour),
+            minute: try container.decode(Int.self, forKey: .minute),
+            weekdays: try container.decodeIfPresent([Int].self, forKey: .weekdays)
+        )
     }
 }
 
@@ -867,6 +888,14 @@ public struct AutomationTriggerDeduper {
         let seconds = (stored as? Double) ?? (stored as? NSNumber)?.doubleValue
         guard let seconds else { return nil }
         return Date(timeIntervalSince1970: seconds)
+    }
+
+    public func claimScheduledOccurrence(_ key: String, at now: Date) -> Bool {
+        guard lastFireDate(forKey: key) == nil else { return false }
+        var stamps = defaults.dictionary(forKey: Self.storageKey) ?? [:]
+        stamps[key] = now.timeIntervalSince1970
+        defaults.set(stamps, forKey: Self.storageKey)
+        return true
     }
 
     /// Returns true and records `now` when this trigger may run. A backwards clock jump is treated

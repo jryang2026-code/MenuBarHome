@@ -65,9 +65,7 @@ struct AutomationSettingsSection: View {
     @State private var newLateNightStart = 23
     @State private var newLateNightEnd = 6
     @State private var newCalendarLeadMinutes = 1
-    @State private var newScheduleHour = 8
-    @State private var newScheduleMinute = 0
-    @State private var newScheduleWeekdays: Set<Int> = []
+    @State private var newSchedule = ScheduledTime(hour: 8, minute: 0)
 
     // Conditions. Kept separate from the trigger parameters above: they apply to every trigger,
     // not just the Wi-Fi one.
@@ -355,6 +353,31 @@ struct AutomationSettingsSection: View {
                     .foregroundStyle(DesignTokens.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                 }
+                if rule.trigger == .scheduledTime || rule.trigger.supportsLasting {
+                    DisclosureGroup(L10n.tr("编辑触发设置", "Edit trigger settings")) {
+                        if rule.trigger == .scheduledTime {
+                            scheduleEditor(Binding(
+                                get: { rule.triggerOptions.scheduledTime ?? ScheduledTime(hour: 8, minute: 0) },
+                                set: { schedule in
+                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                    current.triggerOptions.scheduledTime = schedule
+                                    update(current)
+                                }
+                            ))
+                        }
+                        if rule.trigger.supportsLasting {
+                            lastingEditor(Binding(
+                                get: { rule.conditions.lastingMinutes ?? 0 },
+                                set: { minutes in
+                                    guard var current = store.automationRuleStore.load().first(where: { $0.id == rule.id }) else { return }
+                                    current.conditions.lastingMinutes = minutes == 0 ? nil : minutes
+                                    update(current)
+                                }
+                            ))
+                        }
+                    }
+                    .font(.system(size: DesignTokens.TypeSize.caption))
+                }
                 Picker(L10n.tr("执行模式", "Execution mode"), selection: Binding(
                     get: { rule.mode },
                     set: { mode in
@@ -499,7 +522,10 @@ struct AutomationSettingsSection: View {
         switch rule.trigger {
         case .scheduledTime:
             guard let schedule = options.scheduledTime else { return nil }
-            let days = schedule.weekdays?.count == 7 ? L10n.tr("每天", "Every day") : (schedule.weekdays?.map(String.init).joined(separator: ",") ?? L10n.tr("每天", "Every day"))
+            let weekdays = schedule.weekdays ?? []
+            let days = weekdays.isEmpty || Set(weekdays).count == 7
+                ? L10n.tr("每天", "Every day")
+                : weekdays.map { weekdayNames[$0] }.joined(separator: L10n.tr("、", ", "))
             let time = String(format: "%02d:%02d", schedule.hour, schedule.minute)
             return L10n.format("%@（%@）", "%@ (%@)", time, days)
         case .batteryBelowThreshold:
@@ -608,23 +634,8 @@ struct AutomationSettingsSection: View {
             .controlSize(.regular)
         }
 
-        HStack(spacing: 6) {
-            Toggle(isOn: Binding(
-                get: { newLastingMinutes > 0 },
-                set: { if !$0 { newLastingMinutes = 0 } else if newLastingMinutes == 0 { newLastingMinutes = 5 } }
-            )) {
-                Text(L10n.tr("持续", "For at least"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(.secondary)
-            }
-            .toggleStyle(.checkbox)
-            if newLastingMinutes > 0 {
-                Stepper(value: $newLastingMinutes, in: 1...1440) {
-                    Text(L10n.format("%@ 分钟", "%@ min", String(newLastingMinutes)))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                }
-                .fixedSize()
-            }
+        if newTrigger.supportsLasting {
+            lastingEditor($newLastingMinutes)
         }
 
         HStack(spacing: 6) {
@@ -761,55 +772,7 @@ struct AutomationSettingsSection: View {
                 .fixedSize()
             }
         case .scheduledTime:
-            HStack(spacing: 6) {
-                Text(L10n.tr("时间", "Time")).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(DesignTokens.secondaryText)
-                Stepper(value: $newScheduleHour, in: 0...23) { Text(String(format: "%02d", newScheduleHour)) }
-                    .fixedSize()
-                Text(":")
-                Stepper(value: $newScheduleMinute, in: 0...59) { Text(String(format: "%02d", newScheduleMinute)) }
-                    .fixedSize()
-            }
-            HStack(spacing: 4) {
-                Text(L10n.tr("工作日", "Weekdays")).font(.system(size: DesignTokens.TypeSize.caption)).foregroundStyle(DesignTokens.secondaryText)
-                ForEach(0..<7, id: \.self) { day in
-                    Toggle(String(day), isOn: Binding(
-                        get: { newScheduleWeekdays.contains(day) },
-                        set: { selected in
-                            if selected { newScheduleWeekdays.insert(day) } else { newScheduleWeekdays.remove(day) }
-                        }
-                    )).toggleStyle(.checkbox).labelsHidden()
-                }
-            }
-        case .wifiNetworkJoined, .wifiNetworkLeft:
-            TextField(
-                L10n.tr("Wi-Fi 名称（留空表示任意网络）", "Wi-Fi name (empty = any network)"),
-                text: $newWiFiSSID
-            )
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 280)
-            .controlSize(.regular)
-        case .lateNightUsage:
-            HStack(spacing: 6) {
-                Text(L10n.tr("从", "From"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                hourPicker($newLateNightStart)
-                Text(L10n.tr("到", "to"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                hourPicker($newLateNightEnd)
-            }
-        case .calendarMeetingStartingSoon:
-            HStack(spacing: 6) {
-                Text(L10n.tr("提前", "Lead"))
-                    .font(.system(size: DesignTokens.TypeSize.caption))
-                    .foregroundStyle(DesignTokens.secondaryText)
-                Stepper(value: $newCalendarLeadMinutes, in: 1...60) {
-                    Text(L10n.format("%@ 分钟", "%@ min", String(newCalendarLeadMinutes)))
-                        .font(.system(size: DesignTokens.TypeSize.caption))
-                }
-                .fixedSize()
-            }
+            scheduleEditor($newSchedule)
         default:
             EmptyView()
         }
@@ -820,6 +783,65 @@ struct AutomationSettingsSection: View {
                 .foregroundStyle(DesignTokens.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var weekdayNames: [String] {
+        ["日", "一", "二", "三", "四", "五", "六"].enumerated().map { index, day in
+            L10n.tr("周" + day, ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][index])
+        }
+    }
+
+    private func scheduleEditor(_ schedule: Binding<ScheduledTime>) -> some View {
+        let time = Binding<Date>(
+            get: {
+                let value = schedule.wrappedValue
+                return Calendar.current.date(from: DateComponents(year: 2001, month: 1, day: 1, hour: value.hour, minute: value.minute)) ?? Date()
+            },
+            set: { date in
+                let time = Calendar.current.dateComponents([.hour, .minute], from: date)
+                guard let hour = time.hour, let minute = time.minute else { return }
+                schedule.wrappedValue = ScheduledTime(hour: hour, minute: minute, weekdays: schedule.wrappedValue.weekdays)
+            }
+        )
+        return VStack(alignment: .leading, spacing: 6) {
+            DatePicker(L10n.tr("时间", "Time"), selection: time, displayedComponents: .hourAndMinute)
+            HStack(spacing: 6) {
+                ForEach(0..<7, id: \.self) { day in
+                    Toggle(weekdayNames[day], isOn: Binding(
+                        get: { schedule.wrappedValue.weekdays?.contains(day) == true },
+                        set: { selected in
+                            let value = schedule.wrappedValue
+                            var days = Set(value.weekdays ?? [])
+                            if selected { days.insert(day) } else { days.remove(day) }
+                            schedule.wrappedValue = ScheduledTime(
+                                hour: value.hour, minute: value.minute, weekdays: days.isEmpty ? nil : days.sorted()
+                            )
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                }
+            }
+            Text(L10n.tr("未选星期时每天触发", "Repeats every day if no days are selected"))
+                .foregroundStyle(DesignTokens.secondaryText)
+        }
+        .font(.system(size: DesignTokens.TypeSize.caption))
+    }
+
+    private func lastingEditor(_ minutes: Binding<Int>) -> some View {
+        HStack(spacing: 6) {
+            Toggle(L10n.tr("持续", "For at least"), isOn: Binding(
+                get: { minutes.wrappedValue > 0 },
+                set: { minutes.wrappedValue = $0 ? 5 : 0 }
+            ))
+            .toggleStyle(.checkbox)
+            if minutes.wrappedValue > 0 {
+                Stepper(value: minutes, in: 1...1440) {
+                    Text(L10n.format("%@ 分钟", "%@ min", String(minutes.wrappedValue)))
+                }
+                .fixedSize()
+            }
+        }
+        .font(.system(size: DesignTokens.TypeSize.caption))
     }
 
     private func hourPicker(_ hour: Binding<Int>) -> some View {
@@ -979,9 +1001,7 @@ struct AutomationSettingsSection: View {
             lateNightStartHour: newLateNightStart,
             lateNightEndHour: newLateNightEnd,
             calendarLeadMinutes: newCalendarLeadMinutes,
-            scheduledTime: newTrigger == .scheduledTime
-                ? ScheduledTime(hour: newScheduleHour, minute: newScheduleMinute, weekdays: newScheduleWeekdays.isEmpty ? nil : Array(newScheduleWeekdays).sorted())
-                : nil
+            scheduledTime: newTrigger == .scheduledTime ? newSchedule : nil
         )
         let wifi: AutomationWiFiCondition
         switch newWiFiMode {
@@ -1000,7 +1020,7 @@ struct AutomationSettingsSection: View {
                     startMinute: newTimeStartHour * 60,
                     endMinute: newTimeEndHour * 60
                 ),
-                lastingMinutes: newLastingMinutes > 0 ? newLastingMinutes : nil
+                lastingMinutes: newTrigger.supportsLasting && newLastingMinutes > 0 ? newLastingMinutes : nil
             )
         )
         if let confirmation = rule.highRiskConfirmation(devices: store.devices) {

@@ -35,6 +35,8 @@ public struct CalendarMeeting: Codable, Identifiable, Equatable, Sendable {
 public struct MacContextSnapshot: Equatable, Sendable {
     public var cameraInUse: Bool
     public var microphoneInUse: Bool
+    public var isCameraUsageAvailable: Bool
+    public var isMicrophoneUsageAvailable: Bool
     public var powerSource: MacPowerSource
     public var batteryPercent: Int?
     public var wifiSSID: String?
@@ -56,10 +58,14 @@ public struct MacContextSnapshot: Equatable, Sendable {
         isFocusActive: Bool? = nil,
         focusModeName: String? = nil,
         isUserPresent: Bool = true,
-        meetings: [CalendarMeeting] = []
+        meetings: [CalendarMeeting] = [],
+        isCameraUsageAvailable: Bool = true,
+        isMicrophoneUsageAvailable: Bool = true
     ) {
         self.cameraInUse = cameraInUse
         self.microphoneInUse = microphoneInUse
+        self.isCameraUsageAvailable = isCameraUsageAvailable
+        self.isMicrophoneUsageAvailable = isMicrophoneUsageAvailable
         self.powerSource = powerSource
         self.batteryPercent = batteryPercent
         self.wifiSSID = wifiSSID
@@ -106,16 +112,17 @@ public enum MacContextAutomation {
 
         switch rule.trigger {
         case .scheduledTime:
-            guard let schedule = options.scheduledTime,
-                  calendar.component(.hour, from: now) == schedule.hour,
-                  calendar.component(.minute, from: now) == schedule.minute else { return [] }
-            let weekday = calendar.component(.weekday, from: now) - 1
-            if let weekdays = schedule.weekdays, !weekdays.contains(weekday) { return [] }
-            let day = calendar.dateComponents([.year, .month, .day], from: now)
-            let key = String(format: "%04d-%02d-%02d-%02d:%02d", day.year ?? 0, day.month ?? 0, day.day ?? 0, schedule.hour, schedule.minute)
+            var wallClock = Calendar(identifier: .gregorian)
+            wallClock.timeZone = calendar.timeZone
+            let local = wallClock.dateComponents([.year, .month, .day, .weekday, .hour, .minute], from: now)
+            guard let schedule = options.scheduledTime, local.hour == schedule.hour,
+                  local.minute == schedule.minute, let weekday = local.weekday,
+                  let year = local.year, let month = local.month, let day = local.day else { return [] }
+            if let weekdays = schedule.weekdays, !weekdays.isEmpty, !weekdays.contains(weekday - 1) { return [] }
+            let key = String(format: "%04d-%02d-%02d:%02d:%02d", year, month, day, schedule.hour, schedule.minute)
             return [AutomationTriggerEvent(
                 trigger: rule.trigger,
-                dedupeKey: "scheduled.\(rule.id.uuidString).\(key)",
+                dedupeKey: "sched:\(rule.id.uuidString):\(key)",
                 cooldown: AutomationPolicy.nightlyCooldown
             )]
         case .away, .back, .externalDisplayConnected, .externalDisplayDisconnected,
