@@ -451,6 +451,7 @@ public final class HomeStore {
     /// `panelActivities`.
     public internal(set) var recentDoorbellRings: [DoorbellRing] = []
     public let cameraEventStore: CameraEventStore
+    public internal(set) var cameraEventRevision: UInt64 = 0
     /// Safety alerts the panel's activity stack shows, newest first, at most
     /// `recentSafetyAlertLimit`. Written by the snapshot path in `HomeStore+Backend.swift`, which is
     /// also where the notification handler fires, so the panel keeps its copy when no handler is

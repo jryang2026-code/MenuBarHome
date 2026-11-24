@@ -20,6 +20,7 @@ extension HomeStore {
             kind: .doorbell,
             timestamp: ring.firedAtDate ?? Date()
         )
+        cameraEventRevision &+= 1
         recentDoorbellRings.insert(ring, at: 0)
         if recentDoorbellRings.count > Self.recentDoorbellRingLimit {
             recentDoorbellRings.removeLast(recentDoorbellRings.count - Self.recentDoorbellRingLimit)

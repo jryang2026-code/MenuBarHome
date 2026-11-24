@@ -1258,6 +1258,7 @@ private struct CameraStillWall: View {
     }
 
     var body: some View {
+        let _ = store.cameraEventRevision
         if cameras.contains(where: { store.cameraEventStore.latestEvent(for: $0.id) != nil }) {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(cameras) { camera in
@@ -1303,6 +1304,6 @@ private struct CameraStillTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel(L10n.tr("查看 (camera.name) 实时画面", "View live feed for (camera.name)"))
+        .accessibilityLabel(Text(L10n.tr("查看 (camera.name) 实时画面", "View live feed for (camera.name)")))
     }
 }

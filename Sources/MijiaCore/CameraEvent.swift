@@ -85,7 +85,7 @@ public final class CameraEventStore: @unchecked Sendable {
                     try snapshotData.write(to: directory.appendingPathComponent(snapshotFile), options: .atomic)
                 }
                 events.insert(event, at: 0)
-                pruneLocked(now: now)
+                pruneLocked(now: clock())
                 try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
             } catch {
                 if let snapshotFile { try? FileManager.default.removeItem(at: directory.appendingPathComponent(snapshotFile)) }
