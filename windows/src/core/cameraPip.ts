@@ -4,7 +4,6 @@ import type { CameraLens, SmartDevice } from "./models.js";
 
 export const MAX_PINNED_CAMERA_SWITCHES = 2;
 export const DEFAULT_CAMERA_PIP_AUTO_CLOSE_SECONDS = 30;
-
 const PORTRAIT_DOORBELL_MODEL_RE = /(?:^|[._-])(doorbell|cateye|mjbell|g400)(?:$|[._-\d])/i;
 const PORTRAIT_DOORBELL_NAME_RE = /(门铃|門鈴|猫眼|貓眼|\bdoorbell\b)/i;
 
@@ -84,7 +83,6 @@ export interface CameraPipPinnedSwitchItem {
   readonly isOn: boolean;
   readonly isOnline: boolean;
 }
-
 export interface CameraPipSnapshot {
   readonly cameraId: string;
   readonly name: string;

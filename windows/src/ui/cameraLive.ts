@@ -2149,7 +2149,6 @@ export class CameraLiveController {
     this.armAutoCloseCountdown(dev.id, seconds);
     return true;
   }
-
   public syncCameraPipState(): void {
     if (!this.detachedPipActive) return;
     const snap = this.buildCameraPipSnapshot();
