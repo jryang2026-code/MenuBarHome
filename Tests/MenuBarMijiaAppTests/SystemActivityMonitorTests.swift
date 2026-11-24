@@ -44,6 +44,41 @@ struct SystemActivityMonitorTests {
         #expect(baseline != differentGateway)
     }
 
+    @Test("HA topology changes coalesce until the display is awake and the screen is unlocked")
+    @MainActor
+    func topologyChangesWaitForActivity() async throws {
+        let (store, _) = try await makeStore()
+        defer { store.stop() }
+        let monitor = SystemActivityMonitor()
+        monitor.start(with: store, observeSystemEvents: false)
+        defer { monitor.stop() }
+
+        let ethernet = NetworkTopologyFingerprint(interfaceNames: ["en1"])
+        let wifi = NetworkTopologyFingerprint(interfaceNames: ["en0"])
+        monitor.handleNetworkPathUpdate(isSatisfied: true, fingerprint: ethernet)
+        let initialRevision = store.pollingContext.haTransportRevision
+
+        monitor.apply(.locked(true))
+        monitor.handleNetworkPathUpdate(isSatisfied: true, fingerprint: wifi)
+        #expect(store.pollingContext.haTransportRevision == initialRevision)
+
+        monitor.apply(.displayAsleep(true))
+        monitor.handleNetworkPathUpdate(isSatisfied: true, fingerprint: ethernet)
+        monitor.apply(.displayAsleep(false))
+        #expect(store.pollingContext.haTransportRevision == initialRevision)
+
+        monitor.apply(.locked(false))
+        #expect(store.pollingContext.haTransportRevision == initialRevision + 1)
+        monitor.apply(.powerState)
+        #expect(store.pollingContext.haTransportRevision == initialRevision + 1)
+
+        monitor.apply(.displayAsleep(true))
+        monitor.handleNetworkPathUpdate(isSatisfied: true, fingerprint: wifi)
+        #expect(store.pollingContext.haTransportRevision == initialRevision + 1)
+        monitor.apply(.displayAsleep(false))
+        #expect(store.pollingContext.haTransportRevision == initialRevision + 2)
+    }
+
     // MARK: - SystemWakePolicy
 
     @Test("SystemWakePolicy classifies long sleep, short interactive wake, short dark wake, and wake without prior sleep")
