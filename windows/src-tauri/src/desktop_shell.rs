@@ -2,6 +2,8 @@ use super::*;
 use std::path::Path;
 
 const RUN_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_APPROVED_RUN_SUBKEY: &str =
+    r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
 const RUN_VALUE_NAME: &str = "MenuBarHome";
 const MAX_TRAY_TOOLTIP_UTF16_UNITS: usize = 120;
 const ALLOWED_PROVIDER_ENV_VARS: &[&str] = &[
@@ -49,7 +51,98 @@ pub(crate) fn format_launch_at_login_value(exe_path: &Path) -> Result<String, St
     if raw.is_empty() || raw.contains('"') || raw.contains('\0') || raw.contains('\r') || raw.contains('\n') {
         return Err("可执行文件路径格式不安全".to_string());
     }
-    Ok(format!("\"{raw}\""))
+    Ok(format!("\"{raw}\" {}", crate::companion::AUTOSTART_ARG))
+}
+
+/// Interprets a `REG_BINARY` value from `Explorer\StartupApproved\Run`.
+/// Windows marks Task Manager-disabled entries with an odd first byte (typically `0x03`)
+/// and enabled entries with an even first byte (typically `0x02`). Missing or empty values
+/// mean Windows has not disabled the `Run` entry.
+pub(crate) fn is_startup_approved_enabled(raw_bytes: Option<&[u8]>) -> bool {
+    match raw_bytes {
+        Some([first, ..]) => first % 2 == 0,
+        _ => true,
+    }
+}
+
+#[cfg(windows)]
+fn wide_null(s: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+#[cfg(windows)]
+fn delete_registry_value_if_present(subkey: &str, value_name: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+    };
+
+    let subkey_wide = wide_null(subkey);
+    let value_wide = wide_null(value_name);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let open_status = unsafe {
+        RegOpenKeyExW(HKEY_CURRENT_USER, subkey_wide.as_ptr(), 0, KEY_SET_VALUE, &mut hkey)
+    };
+    if open_status == ERROR_FILE_NOT_FOUND {
+        return Ok(());
+    }
+    if open_status != 0 {
+        return Err(format!("打开开机自启注册表项失败（Win32 错误码 {open_status}）"));
+    }
+    let del_status = unsafe { RegDeleteValueW(hkey, value_wide.as_ptr()) };
+    unsafe { let _ = RegCloseKey(hkey); }
+    if del_status != 0 && del_status != ERROR_FILE_NOT_FOUND {
+        return Err(format!("移除开机自启注册表值失败（Win32 错误码 {del_status}）"));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub(crate) fn read_startup_approved_bytes(
+    subkey: &str,
+    value_name: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    use windows_sys::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA};
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
+
+    let subkey_wide = wide_null(subkey);
+    let value_wide = wide_null(value_name);
+    let mut buf = vec![0u8; 32];
+    let mut size: u32 = buf.len() as u32;
+    let mut status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            subkey_wide.as_ptr(),
+            value_wide.as_ptr(),
+            RRF_RT_REG_BINARY,
+            std::ptr::null_mut(),
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            &mut size,
+        )
+    };
+    if status == ERROR_MORE_DATA && size > 0 {
+        buf.resize(size as usize, 0);
+        status = unsafe {
+            RegGetValueW(
+                HKEY_CURRENT_USER,
+                subkey_wide.as_ptr(),
+                value_wide.as_ptr(),
+                RRF_RT_REG_BINARY,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr() as *mut core::ffi::c_void,
+                &mut size,
+            )
+        };
+    }
+    if status == 0 {
+        buf.truncate(size as usize);
+        return Ok(Some(buf));
+    }
+    if status == ERROR_FILE_NOT_FOUND {
+        return Ok(None);
+    }
+    Err(format!("读取开机自启审批状态失败（Win32 错误码 {status}）"))
 }
 
 #[cfg(windows)]
@@ -58,76 +151,42 @@ pub(crate) fn apply_run_registry_entry(
     value_name: &str,
     exe_path: Option<&Path>,
 ) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
-    use windows_sys::Win32::System::Registry::{
-        RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
-        KEY_SET_VALUE,
+    use windows_sys::Win32::System::Registry::{RegCloseKey, RegCreateKeyW, HKEY, HKEY_CURRENT_USER};
+
+    let Some(path) = exe_path else {
+        return delete_registry_value_if_present(subkey, value_name);
     };
-
-    let subkey_wide: Vec<u16> = std::ffi::OsStr::new(subkey)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let value_wide: Vec<u16> = std::ffi::OsStr::new(value_name)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-
-    if let Some(path) = exe_path {
-        let formatted = format_launch_at_login_value(path)?;
-        let mut hkey: HKEY = std::ptr::null_mut();
-        let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey_wide.as_ptr(), &mut hkey) };
-        if status != 0 {
-            return Err(format!("打开开机自启注册表项失败（Win32 错误码 {status}）"));
-        }
-        let res = crate::companion::set_reg_sz_value(hkey, Some(value_name), &formatted);
-        unsafe {
-            let _ = RegCloseKey(hkey);
-        }
-        res
-    } else {
-        let mut hkey: HKEY = std::ptr::null_mut();
-        let open_status = unsafe {
-            RegOpenKeyExW(
-                HKEY_CURRENT_USER,
-                subkey_wide.as_ptr(),
-                0,
-                KEY_SET_VALUE,
-                &mut hkey,
-            )
-        };
-        if open_status == ERROR_FILE_NOT_FOUND {
-            return Ok(());
-        }
-        if open_status != 0 {
-            return Err(format!("打开开机自启注册表项失败（Win32 错误码 {open_status}）"));
-        }
-        let del_status = unsafe { RegDeleteValueW(hkey, value_wide.as_ptr()) };
-        unsafe {
-            let _ = RegCloseKey(hkey);
-        }
-        if del_status != 0 && del_status != ERROR_FILE_NOT_FOUND {
-            return Err(format!("移除开机自启注册表值失败（Win32 错误码 {del_status}）"));
-        }
-        Ok(())
+    let formatted = format_launch_at_login_value(path)?;
+    let subkey_wide = wide_null(subkey);
+    let mut hkey: HKEY = std::ptr::null_mut();
+    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, subkey_wide.as_ptr(), &mut hkey) };
+    if status != 0 {
+        return Err(format!("打开开机自启注册表项失败（Win32 错误码 {status}）"));
     }
+    let res = crate::companion::set_reg_sz_value(hkey, Some(value_name), &formatted);
+    unsafe { let _ = RegCloseKey(hkey); }
+    res
+}
+
+#[cfg(windows)]
+pub(crate) fn apply_launch_at_login_entries(
+    run_subkey: &str,
+    approved_subkey: &str,
+    value_name: &str,
+    exe_path: Option<&Path>,
+) -> Result<(), String> {
+    apply_run_registry_entry(run_subkey, value_name, exe_path)?;
+    // Clear any Task Manager disabled marker when enabling, and clean up stale entries when disabling.
+    delete_registry_value_if_present(approved_subkey, value_name)
 }
 
 #[cfg(windows)]
 pub(crate) fn has_run_registry_entry(subkey: &str, value_name: &str) -> Result<bool, String> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::ERROR_FILE_NOT_FOUND;
     use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
 
-    let subkey_wide: Vec<u16> = std::ffi::OsStr::new(subkey)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
-    let value_wide: Vec<u16> = std::ffi::OsStr::new(value_name)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect();
+    let subkey_wide = wide_null(subkey);
+    let value_wide = wide_null(value_name);
     let mut size: u32 = 0;
     let status = unsafe {
         RegGetValueW(
@@ -149,20 +208,43 @@ pub(crate) fn has_run_registry_entry(subkey: &str, value_name: &str) -> Result<b
     Err(format!("读取开机自启注册表项失败（Win32 错误码 {status}）"))
 }
 
+#[cfg(windows)]
+pub(crate) fn is_launch_at_login_enabled(
+    run_subkey: &str,
+    approved_subkey: &str,
+    value_name: &str,
+) -> Result<bool, String> {
+    if !has_run_registry_entry(run_subkey, value_name)? {
+        return Ok(false);
+    }
+    let approved = read_startup_approved_bytes(approved_subkey, value_name)?;
+    Ok(is_startup_approved_enabled(approved.as_deref()))
+}
+
 #[tauri::command]
 pub(crate) fn get_launch_at_login() -> Result<bool, String> {
-    has_run_registry_entry(RUN_SUBKEY, RUN_VALUE_NAME)
+    is_launch_at_login_enabled(RUN_SUBKEY, STARTUP_APPROVED_RUN_SUBKEY, RUN_VALUE_NAME)
 }
 
 /// Immediately writes or deletes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MenuBarHome`
-/// when the user toggles Launch at Login (Coding Standard #3).
+/// and clears `Explorer\StartupApproved\Run\MenuBarHome` when the user toggles Launch at Login (Coding Standard #3).
 #[tauri::command]
 pub(crate) fn set_launch_at_login(enabled: bool) -> Result<(), String> {
     if enabled {
         let exe = std::env::current_exe().map_err(|err| format!("无法获取当前程序路径：{err}"))?;
-        apply_run_registry_entry(RUN_SUBKEY, RUN_VALUE_NAME, Some(&exe))
+        apply_launch_at_login_entries(
+            RUN_SUBKEY,
+            STARTUP_APPROVED_RUN_SUBKEY,
+            RUN_VALUE_NAME,
+            Some(&exe),
+        )
     } else {
-        apply_run_registry_entry(RUN_SUBKEY, RUN_VALUE_NAME, None)
+        apply_launch_at_login_entries(
+            RUN_SUBKEY,
+            STARTUP_APPROVED_RUN_SUBKEY,
+            RUN_VALUE_NAME,
+            None,
+        )
     }
 }
 
@@ -312,6 +394,7 @@ fn is_valid_toast_device_id(id: &str) -> bool {
         && id.bytes().all(|b| b.is_ascii_alphanumeric() || b"_.:@-".contains(&b))
 }
 
+#[cfg(test)]
 pub(crate) fn parse_toast_activation(url: &str) -> Option<&str> {
     let (kind, id) = url.strip_prefix(TOAST_URL_PREFIX)?.split_once('/')?;
     if !matches!(kind, "safety" | "doorbell" | "leak" | "smoke" | "gas")
@@ -518,38 +601,119 @@ mod tests {
     }
 
     #[test]
+    fn startup_approved_binary_parser_matches_windows_task_manager_semantics() {
+        // Missing or empty StartupApproved value means enabled by default.
+        assert!(is_startup_approved_enabled(None));
+        assert!(is_startup_approved_enabled(Some(&[])));
+        // Even first byte (0x02 / 0x06) means approved / enabled.
+        assert!(is_startup_approved_enabled(Some(&[0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(is_startup_approved_enabled(Some(&[0x06, 0, 0, 0])));
+        // Odd first byte (0x03 / 0x01 / 0x07) means disabled by Task Manager.
+        assert!(!is_startup_approved_enabled(Some(&[0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
+        assert!(!is_startup_approved_enabled(Some(&[0x01])));
+        assert!(!is_startup_approved_enabled(Some(&[0x07, 0x01, 0x02])));
+    }
+
+    #[test]
     fn launch_at_login_formats_quoted_exe_and_cleans_up_registry_entry() {
         let val = format_launch_at_login_value(Path::new(r"C:\Apps\MenuBarHome\MenuBarHome.exe"))
             .expect("quoted launch value");
-        assert_eq!(val, r#""C:\Apps\MenuBarHome\MenuBarHome.exe""#);
+        assert_eq!(val, r#""C:\Apps\MenuBarHome\MenuBarHome.exe" --autostart"#);
         assert!(format_launch_at_login_value(Path::new(r#"C:\bad"path\app.exe"#)).is_err());
 
         #[cfg(windows)]
         {
             use std::os::windows::ffi::OsStrExt;
-            use windows_sys::Win32::System::Registry::{RegDeleteKeyW, HKEY_CURRENT_USER};
+            use windows_sys::Win32::System::Registry::{
+                RegCloseKey, RegCreateKeyW, RegDeleteKeyW, RegSetValueExW, HKEY,
+                HKEY_CURRENT_USER, REG_BINARY,
+            };
 
-            let subkey = format!(r"Software\MenuBarHomeTestRun-{}", std::process::id());
-            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(false));
-            apply_run_registry_entry(
-                &subkey,
+            let run_subkey = format!(r"Software\MenuBarHomeTestRun-{}", std::process::id());
+            let approved_subkey =
+                format!(r"Software\MenuBarHomeTestApproved-{}", std::process::id());
+            assert_eq!(
+                is_launch_at_login_enabled(&run_subkey, &approved_subkey, "MenuBarHome"),
+                Ok(false)
+            );
+            apply_launch_at_login_entries(
+                &run_subkey,
+                &approved_subkey,
                 "MenuBarHome",
                 Some(Path::new(r"C:\Apps\MenuBarHome\MenuBarHome.exe")),
             )
             .expect("write test Run entry");
-            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(true));
-            apply_run_registry_entry(&subkey, "MenuBarHome", None)
-                .expect("delete test Run entry");
-            assert_eq!(has_run_registry_entry(&subkey, "MenuBarHome"), Ok(false));
-            apply_run_registry_entry(&subkey, "MenuBarHome", None)
-                .expect("idempotent delete missing Run entry");
+            assert_eq!(
+                is_launch_at_login_enabled(&run_subkey, &approved_subkey, "MenuBarHome"),
+                Ok(true)
+            );
 
-            let wide: Vec<u16> = std::ffi::OsStr::new(&subkey)
+            // Simulate Task Manager disabling the entry via StartupApproved\Run = 0x03...
+            let approved_wide: Vec<u16> = std::ffi::OsStr::new(&approved_subkey)
                 .encode_wide()
                 .chain(std::iter::once(0))
                 .collect();
+            let val_wide: Vec<u16> = std::ffi::OsStr::new("MenuBarHome")
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect();
+            let mut hkey: HKEY = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { RegCreateKeyW(HKEY_CURRENT_USER, approved_wide.as_ptr(), &mut hkey) },
+                0
+            );
+            let disabled_bytes: [u8; 12] = [0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            assert_eq!(
+                unsafe {
+                    RegSetValueExW(
+                        hkey,
+                        val_wide.as_ptr(),
+                        0,
+                        REG_BINARY,
+                        disabled_bytes.as_ptr(),
+                        disabled_bytes.len() as u32,
+                    )
+                },
+                0
+            );
             unsafe {
-                let _ = RegDeleteKeyW(HKEY_CURRENT_USER, wide.as_ptr());
+                let _ = RegCloseKey(hkey);
+            }
+            assert_eq!(
+                is_launch_at_login_enabled(&run_subkey, &approved_subkey, "MenuBarHome"),
+                Ok(false)
+            );
+
+            // Re-enabling clears StartupApproved\Run so autostart actually takes effect again.
+            apply_launch_at_login_entries(
+                &run_subkey,
+                &approved_subkey,
+                "MenuBarHome",
+                Some(Path::new(r"C:\Apps\MenuBarHome\MenuBarHome.exe")),
+            )
+            .expect("re-enable clears StartupApproved");
+            assert_eq!(
+                is_launch_at_login_enabled(&run_subkey, &approved_subkey, "MenuBarHome"),
+                Ok(true)
+            );
+
+            apply_launch_at_login_entries(&run_subkey, &approved_subkey, "MenuBarHome", None)
+                .expect("delete test Run entry");
+            assert_eq!(
+                is_launch_at_login_enabled(&run_subkey, &approved_subkey, "MenuBarHome"),
+                Ok(false)
+            );
+            apply_launch_at_login_entries(&run_subkey, &approved_subkey, "MenuBarHome", None)
+                .expect("idempotent delete missing Run entry");
+
+            for key in [&run_subkey, &approved_subkey] {
+                let wide: Vec<u16> = std::ffi::OsStr::new(key)
+                    .encode_wide()
+                    .chain(std::iter::once(0))
+                    .collect();
+                unsafe {
+                    let _ = RegDeleteKeyW(HKEY_CURRENT_USER, wide.as_ptr());
+                }
             }
         }
     }

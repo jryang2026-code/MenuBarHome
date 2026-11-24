@@ -393,6 +393,29 @@ pub(crate) fn forward_activate_to_endpoint(endpoint: &IpcEndpoint, timeout: Dura
 /// A just-started primary may not have written `ipc-endpoint.json` yet, so the endpoint is polled
 /// until `total_timeout` runs out. The retry is what makes a double-click right after login land
 /// on the real instance instead of dying on a missing file.
+pub(crate) const AUTOSTART_ARG: &str = "--autostart";
+
+pub(crate) fn has_autostart_arg<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .any(|arg| arg.as_ref().trim().eq_ignore_ascii_case(AUTOSTART_ARG))
+}
+
+/// A second instance spawned by Windows logon autostart (without a protocol URL) should exit
+/// silently instead of activating and popping open the already-running tray panel.
+pub(crate) fn should_forward_second_instance(startup_url: Option<&str>, is_autostart: bool) -> bool {
+    startup_url.is_some() || !is_autostart
+}
+
+/// Every forwarding path (`/activate` and `/open-url`) grants foreground activation rights to the
+/// primary instance whenever its PID is known.
+pub(crate) fn should_allow_set_foreground(pid: u32) -> bool {
+    pid != 0
+}
+
 pub(crate) fn forward_to_primary_instance(
     dir: &Path,
     startup_url: Option<&str>,
@@ -404,9 +427,9 @@ pub(crate) fn forward_to_primary_instance(
     loop {
         if let Some(endpoint) = read_ipc_endpoint(dir) {
             #[cfg(all(windows, not(test)))]
-            if endpoint.pid != 0 && startup_url.and_then(parse_toast_activation).is_some() {
-                // The shell gave this protocol launch permission to activate. Pass it to
-                // the already-running tray instance before it handles the click.
+            if should_allow_set_foreground(endpoint.pid) {
+                // The shell gave this launch (shortcut, Explorer, protocol, or toast) permission
+                // to activate. Pass it to the already-running primary instance before forwarding.
                 unsafe {
                     let _ = windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(endpoint.pid);
                 }
@@ -478,9 +501,12 @@ fn acquire_single_instance() -> bool {
 /// Runs only outside unit tests, because both branches either exit the process or hold a real
 /// kernel object.
 #[cfg(not(test))]
-fn claim_single_instance_or_forward(startup_url: Option<&str>) -> bool {
+fn claim_single_instance_or_forward(startup_url: Option<&str>, is_autostart: bool) -> bool {
     if acquire_single_instance() {
         return true;
+    }
+    if !should_forward_second_instance(startup_url, is_autostart) {
+        return false;
     }
     if let Some(dir) = companion_local_dir() {
         // Best effort: a failed forward still exits, because a second tray instance would
@@ -499,9 +525,10 @@ fn claim_single_instance_or_forward(startup_url: Option<&str>) -> bool {
 pub(crate) fn try_forward_startup_url_and_exit() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let startup_url = extract_menumijia_arg(&args);
+    let is_autostart = has_autostart_arg(&args);
     #[cfg(not(test))]
     {
-        if !claim_single_instance_or_forward(startup_url.as_deref()) {
+        if !claim_single_instance_or_forward(startup_url.as_deref(), is_autostart) {
             std::process::exit(0);
         }
     }
@@ -1356,5 +1383,23 @@ mod tests {
             unregister_url_scheme_under_root(&subkey).expect("unregister test protocol");
             unregister_url_scheme_under_root(&subkey).expect("idempotent unregister");
         }
+    }
+
+    #[test]
+    fn autostart_arg_and_foreground_permission_rules() {
+        assert!(has_autostart_arg(["--autostart"]));
+        assert!(has_autostart_arg(["--foo", "--AUTOSTART"]));
+        assert!(!has_autostart_arg(["--foo", "menumijia://focus"]));
+
+        // Plain second launch forwards /activate; duplicate --autostart exits silently;
+        // protocol URL always forwards even if --autostart is present.
+        assert!(should_forward_second_instance(None, false));
+        assert!(!should_forward_second_instance(None, true));
+        assert!(should_forward_second_instance(Some("menumijia://focus"), true));
+        assert!(should_forward_second_instance(Some("menumijia://focus"), false));
+
+        // Any valid non-zero primary PID gets AllowSetForegroundWindow on every forward path.
+        assert!(!should_allow_set_foreground(0));
+        assert!(should_allow_set_foreground(4242));
     }
 }

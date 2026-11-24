@@ -3,11 +3,106 @@ use crate::placement::*;
 
 const SAME_CLICK_FALLBACK_MS: u64 = 65;
 const SAME_CLICK_SPATIAL_MS: u64 = 250;
-const TRAY_ICON_SLOP_PX: i32 = 36;
+/// Logical padding added around the tray icon rect for same-click focus-loss hit-testing.
+const TRAY_RECT_PAD_LOGICAL_PX: f64 = 8.0;
+/// Logical fallback slop when only cursor coordinates (no tray rect) are available.
+const TRAY_CURSOR_SLOP_LOGICAL_PX: f64 = 24.0;
 const MAX_TRAY_HOLD_MS: u64 = 5_000;
+const DEFAULT_PANEL_LOGICAL_HEIGHT: f64 = 680.0;
+const WIN32_WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+const WIN32_WS_EX_APPWINDOW: u32 = 0x0004_0000;
 
 pub(crate) static PIN_POPOVER: AtomicBool = AtomicBool::new(false);
 static SETTINGS_ALLOW_CLOSE: AtomicBool = AtomicBool::new(false);
+static PANEL_LOGICAL_HEIGHT_BITS: AtomicU64 =
+    AtomicU64::new(DEFAULT_PANEL_LOGICAL_HEIGHT.to_bits());
+
+pub(crate) fn desired_panel_logical_height() -> f64 {
+    let val = f64::from_bits(PANEL_LOGICAL_HEIGHT_BITS.load(Ordering::SeqCst));
+    if val.is_finite() && val >= 0.0 {
+        val
+    } else {
+        DEFAULT_PANEL_LOGICAL_HEIGHT
+    }
+}
+
+pub(crate) fn remember_panel_logical_height(height: f64) {
+    if height.is_finite() && height >= 0.0 {
+        PANEL_LOGICAL_HEIGHT_BITS.store(height.to_bits(), Ordering::SeqCst);
+    }
+}
+
+/// Computes the target Win32 extended style for a tray flyout: adds `WS_EX_TOOLWINDOW` and strips
+/// `WS_EX_APPWINDOW` so the flyout never appears in `Alt+Tab` / `Win+Tab` or resurrects a taskbar
+/// button after `explorer.exe` restarts.
+pub(crate) fn tool_window_ex_style(current_ex_style: u32) -> u32 {
+    (current_ex_style & !WIN32_WS_EX_APPWINDOW) | WIN32_WS_EX_TOOLWINDOW
+}
+
+fn sanitize_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+/// Computes the physical `(width, height)` for the panel on a destination monitor using the
+/// remembered logical size and the destination monitor's `scale_factor()`, never the stale
+/// `outer_size()` from a previous monitor with a different DPI.
+pub(crate) fn compute_target_physical_size(
+    logical_w: f64,
+    requested_logical_h: f64,
+    work: Rect,
+    margin: i32,
+    scale: f64,
+) -> (i32, i32) {
+    let safe_scale = sanitize_scale(scale);
+    let avail_w = (work.width - margin * 2).max(1);
+    let avail_h = (work.height - margin * 2).max(1);
+    let work_logical_w = (avail_w as f64) / safe_scale;
+    let work_logical_h = (avail_h as f64) / safe_scale;
+    let target_logical_w = logical_w.min(work_logical_w).max(1.0);
+    let target_logical_h = clamp_outer_panel_height(requested_logical_h, work_logical_h);
+    let phys_w = ((target_logical_w * safe_scale).round() as i32).clamp(1, avail_w);
+    let phys_h = fit_panel_height(work, margin, (target_logical_h * safe_scale).round() as i32);
+    (phys_w, phys_h)
+}
+
+/// Re-clamps an existing panel rect into `work` after a `ScaleFactorChanged` transition.
+/// Returns `Some((x, y, w, h))` only when the bounds actually need adjustment (idempotent).
+pub(crate) fn reclamped_bounds_for_scale(
+    current_pos: (i32, i32),
+    current_size: (i32, i32),
+    work: Rect,
+    margin: i32,
+    logical_w: f64,
+    requested_logical_h: f64,
+    scale: f64,
+) -> Option<(i32, i32, i32, i32)> {
+    let (target_w, target_h) =
+        compute_target_physical_size(logical_w, requested_logical_h, work, margin, scale);
+    let min_x = work.x + margin;
+    let min_y = work.y + margin;
+    let max_x = (work.right() - target_w - margin).max(min_x);
+    let max_y = (work.bottom() - target_h - margin).max(min_y);
+    let clamped_x = current_pos.0.clamp(min_x, max_x);
+    let clamped_y = current_pos.1.clamp(min_y, max_y);
+    if (clamped_x, clamped_y, target_w, target_h)
+        == (current_pos.0, current_pos.1, current_size.0, current_size.1)
+    {
+        None
+    } else {
+        Some((clamped_x, clamped_y, target_w, target_h))
+    }
+}
+
+pub(crate) fn physical_rect_from_tauri(rect: tauri::Rect, scale: f64) -> Rect {
+    let safe_scale = sanitize_scale(scale);
+    let pos = rect.position.to_physical::<i32>(safe_scale);
+    let size = rect.size.to_physical::<u32>(safe_scale);
+    Rect::new(pos.x, pos.y, size.width as i32, size.height as i32)
+}
 
 pub(crate) fn consume_settings_allow_close(flag: &AtomicBool) -> bool {
     flag.swap(false, Ordering::SeqCst)
@@ -36,15 +131,27 @@ fn is_same_tray_click_focus_loss(
     mark: FocusLossMark,
     now_ms: u64,
     tray_cursor: Option<(i32, i32)>,
+    tray_rect: Option<Rect>,
+    scale: f64,
 ) -> bool {
     let elapsed = now_ms.saturating_sub(mark.at_ms);
-    match (mark.cursor, tray_cursor) {
-        (Some((fx, fy)), Some((tx, ty))) => {
-            elapsed <= SAME_CLICK_SPATIAL_MS
-                && (fx - tx).abs() <= TRAY_ICON_SLOP_PX
-                && (fy - ty).abs() <= TRAY_ICON_SLOP_PX
+    let safe_scale = sanitize_scale(scale);
+    match mark.cursor {
+        Some((fx, fy)) => {
+            if let Some(rect) = tray_rect.filter(|r| r.width > 0 && r.height > 0) {
+                let pad_px = (TRAY_RECT_PAD_LOGICAL_PX * safe_scale).round() as i32;
+                elapsed <= SAME_CLICK_SPATIAL_MS
+                    && point_in_expanded_rect((fx, fy), rect, pad_px)
+            } else if let Some((tx, ty)) = tray_cursor {
+                let slop_px = (TRAY_CURSOR_SLOP_LOGICAL_PX * safe_scale).round() as i32;
+                elapsed <= SAME_CLICK_SPATIAL_MS
+                    && (fx - tx).abs() <= slop_px
+                    && (fy - ty).abs() <= slop_px
+            } else {
+                elapsed <= SAME_CLICK_FALLBACK_MS
+            }
         }
-        _ => elapsed <= SAME_CLICK_FALLBACK_MS,
+        None => elapsed <= SAME_CLICK_FALLBACK_MS,
     }
 }
 
@@ -131,11 +238,12 @@ impl PanelVisibilityState {
         is_open: bool,
         now_ms: u64,
         cursor: Option<(i32, i32)>,
+        tray_rect: Option<Rect>,
+        scale: f64,
     ) {
-        let same_click_focus_loss = self
-            .focus_loss
-            .take()
-            .is_some_and(|mark| self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor));
+        let same_click_focus_loss = self.focus_loss.take().is_some_and(|mark| {
+            self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor, tray_rect, scale)
+        });
         self.tray_press = Some(TrayPressMark {
             at_ms: now_ms,
             dismissed: is_open || same_click_focus_loss,
@@ -147,6 +255,8 @@ impl PanelVisibilityState {
         is_open: bool,
         now_ms: u64,
         cursor: Option<(i32, i32)>,
+        tray_rect: Option<Rect>,
+        scale: f64,
     ) -> TrayToggleAction {
         let active_press = self
             .tray_press
@@ -155,7 +265,9 @@ impl PanelVisibilityState {
         let saw_down = active_press.is_some();
         let was_dismiss_press = active_press.is_some_and(|press| press.dismissed);
         let recent_focus_loss = self.focus_loss.take().is_some_and(|mark| {
-            !saw_down && self.closing && is_same_tray_click_focus_loss(mark, now_ms, cursor)
+            !saw_down
+                && self.closing
+                && is_same_tray_click_focus_loss(mark, now_ms, cursor, tray_rect, scale)
         });
         if is_open {
             TrayToggleAction::Hide
@@ -297,17 +409,129 @@ pub(crate) fn note_panel_focus_loss() {
     }
 }
 
-pub(crate) fn handle_tray_mouse_down(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+fn monitor_scale_at(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) -> f64 {
+    let monitor = anchor
+        .and_then(|pos| window.monitor_from_point(pos.x, pos.y).ok().flatten())
+        .or_else(|| window.current_monitor().ok().flatten())
+        .or_else(|| window.primary_monitor().ok().flatten());
+    sanitize_scale(monitor.map(|m| m.scale_factor()).unwrap_or(1.0))
+}
+
+#[cfg(all(windows, not(test)))]
+fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER,
+    };
+
+    let safe_w = w.max(1);
+    let safe_h = h.max(1);
+    let Ok(raw_hwnd) = window.hwnd() else {
+        let _ = window.set_size(PhysicalSize::new(safe_w as u32, safe_h as u32));
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+        return;
+    };
+    let hwnd = (raw_hwnd.0 as usize) as HWND;
+    let ok = unsafe {
+        SetWindowPos(
+            hwnd,
+            std::ptr::null_mut(),
+            x,
+            y,
+            safe_w,
+            safe_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    };
+    if ok == 0 {
+        let _ = window.set_size(PhysicalSize::new(safe_w as u32, safe_h as u32));
+        let _ = window.set_position(PhysicalPosition::new(x, y));
+    }
+}
+
+#[cfg(any(not(windows), test))]
+fn set_window_bounds_sync(window: &WebviewWindow, x: i32, y: i32, w: i32, h: i32) {
+    let _ = window.set_size(PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
+    let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+#[cfg(all(windows, not(test)))]
+pub(crate) fn apply_tool_window_style(window: &WebviewWindow) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    };
+
+    let Ok(raw_hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = (raw_hwnd.0 as usize) as HWND;
+    let current = unsafe { GetWindowLongW(hwnd, GWL_EXSTYLE) } as u32;
+    let next = tool_window_ex_style(current);
+    if next != current {
+        unsafe {
+            let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, next as i32);
+            let _ = SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+}
+
+#[cfg(any(not(windows), test))]
+pub(crate) fn apply_tool_window_style(_window: &WebviewWindow) {}
+
+#[cfg(all(windows, not(test)))]
+pub(crate) fn set_window_cloaked(window: &WebviewWindow, cloaked: bool) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+
+    let Ok(raw_hwnd) = window.hwnd() else {
+        return;
+    };
+    let hwnd = (raw_hwnd.0 as usize) as HWND;
+    let value: i32 = if cloaked { 1 } else { 0 };
+    unsafe {
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAK as u32,
+            &value as *const i32 as *const core::ffi::c_void,
+            std::mem::size_of::<i32>() as u32,
+        );
+    }
+}
+
+#[cfg(any(not(windows), test))]
+pub(crate) fn set_window_cloaked(_window: &WebviewWindow, _cloaked: bool) {}
+
+pub(crate) fn handle_tray_mouse_down(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    tray_rect: Option<tauri::Rect>,
+) {
     let cursor = physical_point(anchor);
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        let is_visible = app_clone
+        let (is_visible, scale) = app_clone
             .get_webview_window("main")
-            .and_then(|window| window.is_visible().ok())
-            .unwrap_or(false);
+            .map(|window| {
+                (
+                    window.is_visible().unwrap_or(false),
+                    monitor_scale_at(&window, anchor),
+                )
+            })
+            .unwrap_or((false, 1.0));
+        let phys_rect = tray_rect.map(|r| physical_rect_from_tauri(r, scale));
         if let Ok(mut state) = PANEL_VISIBILITY.lock() {
             let is_open = is_visible && !state.closing;
-            state.note_tray_press_down(is_open, now_epoch_ms(), cursor);
+            state.note_tray_press_down(is_open, now_epoch_ms(), cursor, phys_rect, scale);
         }
     });
 }
@@ -381,6 +605,7 @@ fn complete_hide_panel_on_main_thread(app: &AppHandle, seq: u64) {
         return_focus_to_tray(app);
     }
     if let Some(window) = app.get_webview_window("main") {
+        set_window_cloaked(&window, true);
         let _ = window.hide();
     }
 }
@@ -408,6 +633,7 @@ fn request_hide_panel_on_main_thread_with_focus(app: &AppHandle, return_focus: b
         if return_focus {
             return_focus_to_tray(app);
         }
+        set_window_cloaked(&window, true);
         let _ = window.hide();
         return;
     }
@@ -472,7 +698,7 @@ pub(crate) fn set_panel_placement(app: AppHandle, anchor: PanelAnchor) -> Result
     let saved = store_panel_placement(PanelPlacement { anchor });
     if let Some(window) = app.get_webview_window("main") {
         if window.is_visible().unwrap_or(false) {
-            let _ = position_popover(&window, None);
+            let _ = position_popover(&window, None, None);
         }
     }
     saved
@@ -689,9 +915,10 @@ pub(crate) fn current_flyout_edge(
 /// Resizes the two-island Win11 flyout height while keeping the 380 px column anchored to its work-area corner.
 #[tauri::command]
 pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
+    remember_panel_logical_height(height);
     let Some(window) = app.get_webview_window("main") else { return false };
     let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
-    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let scale = sanitize_scale(monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0));
     let (full, work) = monitor
         .as_ref()
         .map(monitor_rects)
@@ -700,93 +927,137 @@ pub(crate) fn set_panel_height(app: AppHandle, height: f64) -> bool {
     // The work area already excludes the taskbar, whichever edge it is docked to (#204). `#app` reserves
     // `PANEL_PADDING` (16 px) around the islands so the visible border sits 16 px off the taskbar edge.
     let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
+    let (new_w, new_h) = compute_target_physical_size(panel_window_width(), target_h, work, margin, scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
-    let left = work.x as f64 + margin as f64;
-    let right = work.right() as f64 - margin as f64;
-    let target_w = panel_window_width().min((right - left) / scale);
-    let x = (old_pos.x as f64).clamp(left, (right - target_w * scale).max(left));
-    let new_h = (target_h * scale).round() as i32;
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(new_w as u32, new_h as u32));
+    let work_left = work.x + margin;
+    let work_right = work.right() - margin;
+    let x = old_pos.x.clamp(work_left, (work_right - new_w).max(work_left));
     let corner = current_panel_placement().anchor.corner(taskbar_edge(full, work));
     let y = resized_top(work, margin, old_pos.y, old_size.height as i32, new_h, corner);
     suppress_move_snaps();
-    let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
-    let _ = window.set_position(PhysicalPosition::new(x.round() as i32, y));
+    set_window_bounds_sync(&window, x, y, new_w, new_h);
     false
 }
 
 #[tauri::command]
 pub(crate) fn set_panel_geometry(app: AppHandle, theme: PanelTheme, height: f64) -> bool {
     set_active_panel_theme(theme);
+    remember_panel_logical_height(height);
     let Some(window) = app.get_webview_window("main") else { return false };
     let monitor = window.current_monitor().ok().flatten().or_else(|| window.primary_monitor().ok().flatten());
-    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
+    let scale = sanitize_scale(monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0));
     let (full, work) = monitor
         .as_ref()
         .map(monitor_rects)
         .unwrap_or((Rect::new(0, 0, 1920, 1080), Rect::new(0, 0, 1920, 1080)));
     let margin = 0;
     let target_h = clamp_outer_panel_height(height, work.height as f64 / scale);
+    let (new_w, new_h) = compute_target_physical_size(theme.window_width(), target_h, work, margin, scale);
     let old_pos = window.outer_position().unwrap_or(PhysicalPosition::new(0, 0));
-    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
+    let old_size = window.outer_size().unwrap_or(PhysicalSize::new(new_w as u32, new_h as u32));
     let work_left = work.x + margin;
     let work_right = work.right() - margin;
-    let target_w = theme.window_width().min(((work_right - work_left).max(1) as f64) / scale);
-    let new_w = (target_w * scale).round() as i32;
-    let new_h = (target_h * scale).round() as i32;
     let corner = current_panel_placement().anchor.corner(taskbar_edge(full, work));
     let x = resized_x(old_pos.x, old_size.width as i32, new_w, work_left, work_right, !corner.left);
     let y = resized_top(work, margin, old_pos.y, old_size.height as i32, new_h, corner);
     suppress_move_snaps();
-    let _ = window.set_size(tauri::LogicalSize::new(target_w, target_h));
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    set_window_bounds_sync(&window, x, y, new_w, new_h);
     true
 }
 
-pub(crate) fn position_popover(window: &WebviewWindow, anchor: Option<PhysicalPosition<f64>>) -> &'static str {
-    let win_size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
-    let win_w = win_size.width as i32;
-    let win_h = win_size.height as i32;
-
+pub(crate) fn position_popover(
+    window: &WebviewWindow,
+    anchor: Option<PhysicalPosition<f64>>,
+    tray_rect: Option<tauri::Rect>,
+) -> &'static str {
     // A tray click knows which display hosts the icon; the other paths follow the window's monitor.
     let monitor = anchor
         .and_then(|pos| window.monitor_from_point(pos.x, pos.y).ok().flatten())
         .or_else(|| window.current_monitor().ok().flatten())
         .or_else(|| window.primary_monitor().ok().flatten());
 
+    let logical_w = panel_window_width();
+    let requested_logical_h = desired_panel_logical_height();
+
     let Some(monitor) = monitor else {
+        let win_w = logical_w.round() as i32;
+        let win_h = if requested_logical_h > 0.0 {
+            requested_logical_h.round() as i32
+        } else {
+            DEFAULT_PANEL_LOGICAL_HEIGHT as i32
+        };
         if let Some(pos) = anchor {
             let x = (pos.x as i32 - win_w / 2).max(0);
             let y = (pos.y as i32 - win_h).max(0);
             suppress_move_snaps();
-            let _ = window.set_position(PhysicalPosition::new(x, y));
+            set_window_bounds_sync(window, x, y, win_w, win_h);
         }
         return "bottom";
     };
 
     let (full, work) = monitor_rects(&monitor);
-    let scale = monitor.scale_factor();
+    let scale = sanitize_scale(monitor.scale_factor());
     let margin = 0;
     let preference = current_panel_placement().anchor;
     let edge = taskbar_edge(full, work);
-    // A panel sized for a larger display has to fit this monitor before it is placed (#204 review).
-    let fitted_h = fit_panel_height(work, margin, win_h);
+    // Compute physical bounds from the remembered logical dimensions and the destination monitor's
+    // scale factor instead of reading the stale `outer_size()` from a previous DPI display.
+    let (win_w, win_h) = compute_target_physical_size(logical_w, requested_logical_h, work, margin, scale);
+    let phys_tray_rect = tray_rect.map(|r| physical_rect_from_tauri(r, scale));
+    let effective_anchor = tray_anchor_point(work, phys_tray_rect, physical_point(anchor), edge);
     let (x, y) = place(&PlacementInput {
         monitor: full,
         work,
-        window: (win_w, fitted_h),
+        window: (win_w, win_h),
         margin,
-        anchor: anchor.map(|pos| (pos.x.round() as i32, pos.y.round() as i32)),
+        anchor: effective_anchor,
         preference,
         main_inset: main_column_inset(scale),
         main_width: (active_panel_theme().main_width() * scale).round() as i32,
     });
     suppress_move_snaps();
-    if fitted_h != win_h {
-        let _ = window.set_size(PhysicalSize::new(win_size.width, fitted_h as u32));
-    }
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    set_window_bounds_sync(window, x, y, win_w, win_h);
     flyout_edge_name(edge, preference)
+}
+
+/// Secondary clamp invoked on `WindowEvent::ScaleFactorChanged` so a cross-DPI transition never
+/// leaves a visible panel clipped off-screen after `WM_DPICHANGED`.
+pub(crate) fn reclamp_panel_for_scale_change(window: &WebviewWindow, new_scale: f64) {
+    if USER_DRAG_ACTIVE.load(Ordering::SeqCst) {
+        return;
+    }
+    if !window.is_visible().unwrap_or(false) {
+        return;
+    }
+    let Some(monitor) = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten())
+    else {
+        return;
+    };
+    let (_, work) = monitor_rects(&monitor);
+    let Ok(pos) = window.outer_position() else {
+        return;
+    };
+    let Ok(size) = window.outer_size() else {
+        return;
+    };
+    let Some((x, y, w, h)) = reclamped_bounds_for_scale(
+        (pos.x, pos.y),
+        (size.width as i32, size.height as i32),
+        work,
+        0,
+        panel_window_width(),
+        desired_panel_logical_height(),
+        new_scale,
+    ) else {
+        return;
+    };
+    suppress_move_snaps();
+    set_window_bounds_sync(window, x, y, w, h);
 }
 
 /// Whether the primary mouse button is still held. A drag that pauses without emitting `Moved` events
@@ -869,9 +1140,9 @@ pub(crate) fn note_user_move(app: &AppHandle) {
 pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
     let Ok(position) = window.outer_position() else { return };
     let size = window.outer_size().unwrap_or(PhysicalSize::new(472, 680));
-    let win_w = size.width as i32;
-    let win_h = size.height as i32;
-    let center = (position.x + win_w / 2, position.y + win_h / 2);
+    let cur_w = size.width as i32;
+    let cur_h = size.height as i32;
+    let center = (position.x + cur_w / 2, position.y + cur_h / 2);
     let Some(monitor) = window
         .monitor_from_point(center.0 as f64, center.1 as f64)
         .ok()
@@ -881,11 +1152,17 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
         return;
     };
     let (full, work) = monitor_rects(&monitor);
-    let scale = monitor.scale_factor();
+    let scale = sanitize_scale(monitor.scale_factor());
     let margin = 0;
-    // Fit the destination work area before placing: an over-tall panel would otherwise pin its top and
-    // leave its bottom offscreen (#204 review).
-    let fitted_h = fit_panel_height(work, margin, win_h);
+    // Compute destination physical bounds at the target monitor's scale so dragging across mixed-DPI
+    // monitors fits cleanly on the drop display.
+    let (win_w, fitted_h) = compute_target_physical_size(
+        panel_window_width(),
+        desired_panel_logical_height(),
+        work,
+        margin,
+        scale,
+    );
     // Judge the drop by where the fitted panel lands, not by the oversized source rect.
     let dropped_center = (position.x + win_w / 2, position.y + fitted_h / 2);
     let anchor = PanelAnchor::nearest(work, dropped_center);
@@ -905,13 +1182,14 @@ pub(crate) fn snap_panel_to_work_area(window: &WebviewWindow) {
         main_width: (active_panel_theme().main_width() * scale).round() as i32,
     });
     suppress_move_snaps();
-    if fitted_h != win_h {
-        let _ = window.set_size(PhysicalSize::new(size.width, fitted_h as u32));
-    }
-    let _ = window.set_position(PhysicalPosition::new(x, y));
+    set_window_bounds_sync(window, x, y, win_w, fitted_h);
 }
 
-fn present_panel_for_user_on_main_thread(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>) {
+fn present_panel_for_user_on_main_thread(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    tray_rect: Option<tauri::Rect>,
+) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
@@ -919,14 +1197,20 @@ fn present_panel_for_user_on_main_thread(app: &AppHandle, anchor: Option<Physica
         .lock()
         .map(|mut state| state.begin_present())
         .unwrap_or(1);
-    let edge = position_popover(&window, anchor);
+    let was_visible = window.is_visible().unwrap_or(false);
+    if !was_visible {
+        set_window_cloaked(&window, true);
+    }
+    let edge = position_popover(&window, anchor, tray_rect);
+    apply_tool_window_style(&window);
     let script = format!(
         "window.dispatchEvent(new CustomEvent('menumijia:panel-present', {{ detail: {{ seq: {seq}, edge: '{edge}' }} }}))"
     );
     let _ = window.eval(&script);
-    if !window.is_visible().unwrap_or(false) {
+    if !was_visible {
         let _ = window.show();
     }
+    set_window_cloaked(&window, false);
     if !window.is_focused().unwrap_or(false) {
         let _ = window.set_focus();
     }
@@ -943,7 +1227,7 @@ pub(crate) fn present_panel_for_user_and_eval(
 ) {
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        present_panel_for_user_on_main_thread(&app_clone, anchor);
+        present_panel_for_user_on_main_thread(&app_clone, anchor, None);
         if let Some(script) = after_present_script {
             if let Some(window) = app_clone.get_webview_window("main") {
                 let _ = window.eval(script);
@@ -952,7 +1236,12 @@ pub(crate) fn present_panel_for_user_and_eval(
     });
 }
 
-pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPosition<f64>>, from_tray_click: bool) {
+pub(crate) fn toggle_main_window(
+    app: &AppHandle,
+    anchor: Option<PhysicalPosition<f64>>,
+    tray_rect: Option<tauri::Rect>,
+    from_tray_click: bool,
+) {
     let cursor = physical_point(anchor);
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
@@ -960,10 +1249,12 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
             return;
         };
         let is_visible = window.is_visible().unwrap_or(false);
+        let scale = monitor_scale_at(&window, anchor);
+        let phys_rect = tray_rect.map(|r| physical_rect_from_tauri(r, scale));
         let action = if let Ok(mut state) = PANEL_VISIBILITY.lock() {
             let is_open = is_visible && !state.closing;
             if from_tray_click {
-                state.decide_tray_release(is_open, now_epoch_ms(), cursor)
+                state.decide_tray_release(is_open, now_epoch_ms(), cursor, phys_rect, scale)
             } else {
                 state.clear_tray_press();
                 if is_open {
@@ -979,7 +1270,9 @@ pub(crate) fn toggle_main_window(app: &AppHandle, anchor: Option<PhysicalPositio
         };
         match action {
             TrayToggleAction::Hide => request_hide_panel_on_main_thread(&app_clone),
-            TrayToggleAction::Present => present_panel_for_user_on_main_thread(&app_clone, anchor),
+            TrayToggleAction::Present => {
+                present_panel_for_user_on_main_thread(&app_clone, anchor, tray_rect)
+            }
             TrayToggleAction::Noop => {}
         }
     });
@@ -1214,5 +1507,89 @@ mod tests {
         flag.store(true, Ordering::SeqCst);
         assert!(consume_settings_allow_close(&flag));
         assert!(!consume_settings_allow_close(&flag));
+    }
+
+    #[test]
+    fn mixed_dpi_target_size_and_scale_reclamp_stay_inside_work_area() {
+        // 100% 1080p display -> 150% 1440p display: physical size scales cleanly from logical dims.
+        let work_150 = Rect::new(1920, 0, 2560, 1368);
+        assert_eq!(
+            compute_target_physical_size(472.0, 680.0, work_150, 0, 1.5),
+            (708, 1020)
+        );
+        // Short 150% laptop screen (1920x1080 -> 1008px work height) clamps height to work area.
+        let short_150 = Rect::new(0, 0, 1920, 1008);
+        assert_eq!(
+            compute_target_physical_size(472.0, 740.0, short_150, 0, 1.5),
+            (708, 1008)
+        );
+        // Invalid scale falls back safely to 1.0.
+        assert_eq!(
+            compute_target_physical_size(472.0, 680.0, Rect::new(0, 0, 1920, 1032), 0, 0.0),
+            (472, 680)
+        );
+
+        // ScaleFactorChanged secondary clamp pulls a clipped right/bottom edge back inside `work`
+        // and is idempotent once already clamped.
+        let clipped = reclamped_bounds_for_scale(
+            (1920 + 2560 - 472, 1368 - 680),
+            (472, 680),
+            work_150,
+            0,
+            472.0,
+            680.0,
+            1.5,
+        );
+        assert_eq!(clipped, Some((1920 + 2560 - 708, 1368 - 1020, 708, 1020)));
+        assert_eq!(
+            reclamped_bounds_for_scale(
+                (1920 + 2560 - 708, 1368 - 1020),
+                (708, 1020),
+                work_150,
+                0,
+                472.0,
+                680.0,
+                1.5,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn tool_window_ex_style_adds_toolwindow_and_strips_appwindow() {
+        let initial = WIN32_WS_EX_APPWINDOW | 0x0000_0008; // WS_EX_TOPMOST
+        let updated = tool_window_ex_style(initial);
+        assert_ne!(updated & WIN32_WS_EX_TOOLWINDOW, 0);
+        assert_eq!(updated & WIN32_WS_EX_APPWINDOW, 0);
+        assert_ne!(updated & 0x0000_0008, 0);
+        // Idempotent when applied again.
+        assert_eq!(tool_window_ex_style(updated), updated);
+    }
+
+    #[test]
+    fn tray_rect_hit_test_scales_padding_on_high_dpi_displays() {
+        // 4K 200% DPI tray icon: 64x64 physical px, padded by 8 * 2.0 = 16 px on each side.
+        let icon_rect = Rect::new(3520, 2080, 64, 64);
+        let mut state = PanelVisibilityState::default();
+        let _ = state.begin_present();
+        // Focus loss at the far corner of the icon + 12px jitter (44px from opposite edge, which
+        // would have exceeded the old unscaled 36px slop from cursor center).
+        state.note_focus_loss(1_000, Some((3520 - 12, 2080 - 12)));
+        let _ = state.begin_hide(true);
+        state.note_tray_press_down(false, 1_040, Some((3578, 2138)), Some(icon_rect), 2.0);
+        assert_eq!(
+            state.decide_tray_release(false, 1_090, Some((3578, 2138)), Some(icon_rect), 2.0),
+            TrayToggleAction::Noop
+        );
+
+        // Click well outside the padded rect still reopens the panel.
+        let _ = state.begin_present();
+        state.note_focus_loss(2_000, Some((3480, 2080)));
+        let _ = state.begin_hide(true);
+        state.note_tray_press_down(false, 2_040, Some((3552, 2112)), Some(icon_rect), 2.0);
+        assert_eq!(
+            state.decide_tray_release(false, 2_090, Some((3552, 2112)), Some(icon_rect), 2.0),
+            TrayToggleAction::Present
+        );
     }
 }
