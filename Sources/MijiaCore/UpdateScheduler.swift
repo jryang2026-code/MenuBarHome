@@ -76,7 +76,7 @@ public final class BackgroundUpdateScheduler {
     public typealias ActivityFactory = @Sendable (String) -> any BackgroundActivityScheduling
     public typealias RandomUnitGenerator = @Sendable () -> Double
     public typealias DelayOperation = @Sendable (TimeInterval) async throws -> Void
-    public typealias CheckOperation = @MainActor () async -> Void
+    public typealias CheckOperation = @MainActor () async -> Date?
 
     private let identifier: String
     private let interval: TimeInterval
@@ -85,6 +85,7 @@ public final class BackgroundUpdateScheduler {
     private let makeActivity: ActivityFactory
     private let randomUnit: RandomUnitGenerator
     private let delay: DelayOperation
+    private let now: @MainActor () -> Date
     private let performCheck: CheckOperation
 
     private var activeActivity: (any BackgroundActivityScheduling)?
@@ -104,6 +105,7 @@ public final class BackgroundUpdateScheduler {
             guard seconds > 0 else { return }
             try await Task.sleep(for: .seconds(seconds))
         },
+        now: @escaping @MainActor () -> Date = { Date() },
         performCheck: @escaping CheckOperation
     ) {
         self.identifier = identifier
@@ -113,6 +115,7 @@ public final class BackgroundUpdateScheduler {
         self.makeActivity = makeActivity
         self.randomUnit = randomUnit
         self.delay = delay
+        self.now = now
         self.performCheck = performCheck
     }
 
@@ -127,6 +130,7 @@ public final class BackgroundUpdateScheduler {
             guard seconds > 0 else { return }
             try await Task.sleep(for: .seconds(seconds))
         },
+        now: @escaping @MainActor () -> Date = { Date() },
         performCheck: @escaping CheckOperation
     ) {
         self.init(
@@ -137,6 +141,7 @@ public final class BackgroundUpdateScheduler {
             makeActivity: { SystemBackgroundActivityScheduler(identifier: $0) },
             randomUnit: randomUnit,
             delay: delay,
+            now: now,
             performCheck: performCheck
         )
     }
@@ -158,11 +163,24 @@ public final class BackgroundUpdateScheduler {
     public func start() {
         stop()
         isRunning = true
+        scheduleActivity()
 
-        let activity = makeActivity(identifier)
-        activity.repeats = true
-        activity.interval = interval
-        activity.tolerance = tolerance
+        let jitterDelay = Self.computeInitialJitter(randomUnit: randomUnit(), maxJitter: maxInitialJitter)
+        lastScheduledJitterDelay = jitterDelay
+        let delayOperation = delay
+        initialCheckTask = Task { @MainActor [weak self] in
+            do { try await delayOperation(jitterDelay) } catch { return }
+            guard let self, !Task.isCancelled, self.isRunning else { return }
+            _ = await self.performCheck()
+        }
+    }
+
+    private func scheduleActivity(retryAt: Date? = nil) {
+        activeActivity?.invalidate()
+        let activity = makeActivity(retryAt == nil ? identifier : identifier + ".retry")
+        activity.repeats = retryAt == nil
+        activity.interval = retryAt.map { max(1, $0.timeIntervalSince(now()).rounded(.up)) } ?? interval
+        activity.tolerance = retryAt == nil ? tolerance : 0
         activity.qualityOfService = .utility
         activeActivity = activity
 
@@ -175,18 +193,22 @@ public final class BackgroundUpdateScheduler {
                     return
                 }
                 if activity.shouldDefer { completion(.deferred); return }
-                await self.performCheck()
-                completion(activity.shouldDefer ? .deferred : .finished)
+                let retryAt = await self.performCheck()
+                guard self.activeActivity === activity else {
+                    completion(.finished)
+                    return
+                }
+                if let retryAt {
+                    // Replace the early repeat with a fresh delay to the persisted deadline.
+                    completion(.finished)
+                    self.scheduleActivity(retryAt: retryAt)
+                } else if activity.shouldDefer {
+                    completion(.deferred)
+                } else {
+                    completion(.finished)
+                    if !activity.repeats { self.scheduleActivity() }
+                }
             }
-        }
-
-        let jitterDelay = Self.computeInitialJitter(randomUnit: randomUnit(), maxJitter: maxInitialJitter)
-        lastScheduledJitterDelay = jitterDelay
-        let delayOperation = delay
-        initialCheckTask = Task { @MainActor [weak self] in
-            do { try await delayOperation(jitterDelay) } catch { return }
-            guard let self, !Task.isCancelled, self.isRunning else { return }
-            await self.performCheck()
         }
     }
 
