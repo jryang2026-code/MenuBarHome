@@ -429,14 +429,12 @@ struct MiotCompatibilityTests {
         defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
         store.assistantAutoResetTiming = .never
         try await store.waitForTestSnapshot()
+        // Keep the mock's unchanged standby snapshot from overwriting optimistic state under CI load.
+        await mock.holdSnapshots()
         store.setAIAssistantEnabled(true)
 
         await store.applyAssistantSuggestion(turnOnSuggestion, offersUndoBanner: true)
         store.pauseUndoBannerCountdown()
-        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
-        while await mock.executedCommands.isEmpty, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
-        }
         #expect(await mock.executedCommands == [.pressButton(entityId: "miot-action:tv1:2:2")])
         #expect(store.devices.first?.isActiveOn == true)
         #expect(store.undoBanner?.restoreCommands == [.pressButton(entityId: "miot-action:tv1:2:1")])
