@@ -79,7 +79,7 @@ public final class CameraEventStore: @unchecked Sendable {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try data.write(to: directory.appendingPathComponent(name), options: .atomic)
                 events[index] = updated
-                try persistLocked()
+                try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
                 return updated
             } catch {
                 try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
@@ -112,17 +112,13 @@ public final class CameraEventStore: @unchecked Sendable {
                     try snapshotData.write(to: directory.appendingPathComponent(snapshotFile), options: .atomic)
                 }
                 events.insert(event, at: 0)
-                pruneLocked(now: now)
-                try persistLocked()
+                pruneLocked(now: clock())
+                try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
             } catch {
                 if let snapshotFile { try? FileManager.default.removeItem(at: directory.appendingPathComponent(snapshotFile)) }
             }
             return event
         }
-    }
-
-    private func persistLocked() throws {
-        try JSONEncoder.cameraEvent.encode(events).write(to: eventsURL, options: .atomic)
     }
 
     private func load() {

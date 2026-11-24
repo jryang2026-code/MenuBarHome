@@ -1252,14 +1252,15 @@ public struct DeviceCardView: View {
 
 private struct CameraStillWall: View {
     let store: HomeStore
-    @Environment(\.effectiveReduceMotion) private var reduceMotion
 
     private var cameras: [SmartDevice] {
-        store.devices.filter { if case .camera = $0.kind { return true }; return false }.prefix(4).map { $0 }
+        let allCameras = store.devices.filter { if case .camera = $0.kind { return true }; return false }
+        let withEvents = allCameras.filter { store.cameraEventStore.latestEvent(for: $0.id) != nil }
+        return Array((withEvents + allCameras.filter { camera in !withEvents.contains(where: { $0.id == camera.id }) }).prefix(4))
     }
 
     var body: some View {
-        let _ = store.cameraEventStoreRevision
+        let _ = store.cameraEventRevision
         if cameras.contains(where: { store.cameraEventStore.latestEvent(for: $0.id) != nil }) {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
                 ForEach(cameras) { camera in
@@ -1272,7 +1273,6 @@ private struct CameraStillWall: View {
             }
             .accessibilityElement(children: .contain)
             .accessibilityLabel(L10n.tr("摄像头事件画面", "Camera event stills"))
-            .animation(AppleMotion.resolve(.reveal, reduceMotion: reduceMotion), value: store.cameraEventStoreRevision)
         }
     }
 }
@@ -1306,6 +1306,6 @@ private struct CameraStillTile: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.white.opacity(0.12)))
         .contentShape(RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel(L10n.tr("查看 (camera.name) 实时画面", "View live feed for (camera.name)"))
+        .accessibilityLabel(Text(L10n.tr("查看 (camera.name) 实时画面", "View live feed for (camera.name)")))
     }
 }
