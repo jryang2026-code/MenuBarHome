@@ -263,8 +263,8 @@ struct HAHomeSnapshot {
         typePrunePolicy: HATypePrunePolicy = .unpruned
     ) -> SynthesizedHome? {
         guard pendingInitialResults.isEmpty else { return nil }
-        let home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
-        var home = applyTypePruning(to: home, policy: typePrunePolicy)
+        var home = DeviceSynthesizer.synthesize(areas: areas, devices: devices, entities: entities, states: states)
+        home = applyTypePruning(to: home, policy: typePrunePolicy)
         for device in home.devices {
             let keys = DeviceSynthesizer.haCardReadKeys(
                 for: device,
